@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.5"
+skill_version: "5.0.7"
 plexi_version: "0.3.5"
-last_verified: "2026-10-04"
+last_verified: "2026-10-05"
 ---
 
 # Plexi CLI
@@ -58,6 +58,18 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   declare a `[state]` section are addressable; the path is resolved from the
   manifest and the calling context, never passed in. A running app picks the
   write up on its own event loop.
+- **App tools** — call a tool a running app exposes and get its JSON result:
+  `plexi app call <app_id> <tool> --input '<json object>'`. It uses the same
+  dispatcher as the Assistant, scoped to your pane's context. The app sees
+  `pane:<id>` from the host credential or peer; a missing pane is never
+  `user`. Identity fields in `--input` are ignored. `--json` prints the
+  structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
+  one live instance when several panes of that app are open. A rejection exits 1.
+- **Assistant permission** — list, show, or resolve a pending grant:
+  `plexi assistant permission list`, `plexi assistant permission show <id>`,
+  `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
+  `always`, `deny`, and `revoke` are the choices. This is the observation
+  seam for the desktop permission sheet.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

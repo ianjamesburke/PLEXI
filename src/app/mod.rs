@@ -1,4 +1,5 @@
 pub mod account;
+mod app_call;
 pub mod app_trait;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
@@ -579,7 +580,7 @@ const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 /// only variants that carry a `peer_pid` field — so `handle_pane_ipc_request`
 /// can resolve the sender pane from a value the client never controlled,
 /// instead of trusting the wire-supplied `source_context_id`/`source_pane_id`.
-fn handle_socket_line(
+pub(crate) fn handle_socket_line(
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     peer_ancestry: Option<&[u32]>,
@@ -596,6 +597,15 @@ fn handle_socket_line(
                 crate::protocol::AppRequest::Notify { peer_pid: p, .. }
                 | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
+                }
+                crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. } => {
+                    // Overwrite any client-supplied ancestry. A missing capture
+                    // leaves the vector empty so the call cannot pretend to be a pane.
+                    *p = peer_ancestry.unwrap_or(&[]).to_vec();
+                    log::info!(
+                        "pane_ipc: stamped CallAppTool peer ancestry ({} pid(s))",
+                        p.len()
+                    );
                 }
                 _ => {}
             }
@@ -2871,6 +2881,16 @@ impl PlexiApp {
             .cloned()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
+        let call_credential = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        )
+        .issue_credential(
+            Some(pane_id),
+            context_id,
+            &workspace_root,
+            &format!("pane:{pane_id}"),
+        );
+        env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
         if let Some((port, token)) =
             host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
         {

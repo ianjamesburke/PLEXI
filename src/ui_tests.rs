@@ -360,6 +360,7 @@ impl PlexiUiHarness {
         let path = app_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
             app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
+                .map(|_| ())
         })?;
         self.with_app(|app| {
             app.windows[app.active_window]

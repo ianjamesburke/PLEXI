@@ -69,6 +69,7 @@ impl AppEventSender {
                     name,
                     input_json,
                     caller_id,
+                    authorization,
                 } = event
                 {
                     stdin
@@ -78,6 +79,7 @@ impl AppEventSender {
                             "name": name,
                             "input_json": input_json,
                             "caller_id": caller_id,
+                            "authorization": authorization,
                         }))
                         .map_err(|error| format!("send ToolCall to Python app: {error}"))?;
                 }
@@ -89,6 +91,7 @@ impl AppEventSender {
                     name,
                     input_json,
                     caller_id,
+                    authorization: _,
                 } = event
                 else {
                     return Err("WASM tool sender only accepts ToolCall events".to_string());
@@ -179,11 +182,9 @@ impl ToolRegistry {
     /// `context_id` equality (or, in a later stint, a `CrossContextGrant`)
     /// grants reach.
     ///
-    /// If two panes expose the same tool name, both are **excluded** from the
-    /// snapshot and an `error!` is logged listing the conflicting pane IDs.
-    /// Silently picking a winner would dispatch to an arbitrary pane — callers
-    /// instead get `tool_not_found`, which is the correct fail-visible signal
-    /// until the apps are fixed or namespaced.
+    /// If two panes expose the same tool name, the bare name is not offered.
+    /// Each instance stays addressable as `<tool>@<pane_id>`. Silently picking
+    /// a pane would let a grant for one board reach the other.
     fn snapshot_for_caller(
         &self,
         viewer_context_id: u64,
@@ -202,7 +203,7 @@ impl ToolRegistry {
             .collect();
         pane_ids.sort_unstable();
 
-        let mut owners_by_name: HashMap<String, Vec<u64>> = HashMap::new();
+        let mut owners_by_name: HashMap<String, Vec<(u64, AiTool)>> = HashMap::new();
         for &pane_id in &pane_ids {
             let Some(entry) = self.entries.get(&pane_id) else {
                 continue;
@@ -211,23 +212,25 @@ impl ToolRegistry {
                 owners_by_name
                     .entry(tool.name.clone())
                     .or_default()
-                    .push(pane_id);
-                map.insert(
-                    tool.name.clone(),
-                    (pane_id, tool.name.clone(), tool.clone()),
-                );
+                    .push((pane_id, tool.clone()));
             }
         }
         for (name, mut owners) in owners_by_name {
-            if owners.len() > 1 {
-                owners.sort_unstable();
-                log::error!(
-                    "tool_dispatch: tool name {:?} conflict — exposed by panes {:?}; \
-                     tool withheld from model until conflict is resolved",
-                    name,
-                    owners
-                );
-                map.remove(&name);
+            owners.sort_by_key(|(pane_id, _)| *pane_id);
+            if owners.len() == 1 {
+                let (pane_id, tool) = owners.pop().unwrap();
+                map.insert(name, (pane_id, tool.name.clone(), tool));
+                continue;
+            }
+            let panes: Vec<u64> = owners.iter().map(|(pane_id, _)| *pane_id).collect();
+            log::info!(
+                "tool_dispatch: tool {name} is live on panes {panes:?}; address {name}@<pane>"
+            );
+            for (pane_id, tool) in owners {
+                let qualified = format!("{name}@{pane_id}");
+                let mut exposed = tool.clone();
+                exposed.name = qualified.clone();
+                map.insert(qualified, (pane_id, tool.name, exposed));
             }
         }
         map
@@ -237,8 +240,9 @@ impl ToolRegistry {
     /// named `<app_id>__<tool>`. The original tool name remains attached to
     /// the target so dispatch sends the provider exactly what it registered.
     ///
-    /// Multiple live instances of the same app expose the same external name.
-    /// Those collisions are withheld instead of selecting an arbitrary pane.
+    /// Multiple live instances keep distinct names `<app>:<pane>__<tool>`.
+    /// The unqualified `<app>__<tool>` name is offered only when one instance
+    /// is live, so a call cannot land on an arbitrary pane.
     fn namespaced_snapshot_for_caller(
         &self,
         viewer_context_id: u64,
@@ -275,18 +279,23 @@ impl ToolRegistry {
 
         let mut snapshot = HashMap::new();
         for (external_name, mut owners) in candidates {
+            owners.sort_by_key(|(pane_id, _, _)| *pane_id);
             if owners.len() == 1 {
                 snapshot.insert(external_name, owners.pop().unwrap());
-            } else {
-                let mut pane_ids: Vec<u64> =
-                    owners.iter().map(|(pane_id, _, _)| *pane_id).collect();
-                pane_ids.sort_unstable();
-                log::error!(
-                    "tool_dispatch: namespaced tool {:?} conflict — exposed by panes {:?}; \
-                     tool withheld from external MCP callers",
-                    external_name,
-                    pane_ids
-                );
+                continue;
+            }
+            let panes: Vec<u64> = owners.iter().map(|(pane_id, _, _)| *pane_id).collect();
+            log::info!(
+                "tool_dispatch: {external_name} is live on panes {panes:?}; address <app>:<pane>__<tool>"
+            );
+            let app_id = external_name
+                .split_once("__")
+                .map(|(app, _)| app)
+                .unwrap_or(external_name.as_str());
+            for (pane_id, provider_name, mut tool) in owners {
+                let qualified = format!("{app_id}:{pane_id}__{provider_name}");
+                tool.name = qualified.clone();
+                snapshot.insert(qualified, (pane_id, provider_name, tool));
             }
         }
         snapshot
@@ -357,6 +366,10 @@ pub(crate) fn unregister(pane_id: u64) {
 pub struct ToolCallResult {
     pub output_json: Option<String>,
     pub error: Option<String>,
+    /// Stable code: `permission_required`, `permission_denied`, `stale_revision`,
+    /// `edit_conflict`, `operation_conflict`, `outcome_unknown`, or `None`.
+    pub error_code: Option<String>,
+    pub pending_request_id: Option<String>,
 }
 
 impl ToolCallResult {
@@ -365,6 +378,8 @@ impl ToolCallResult {
         Self {
             output_json: Some(output_json.into()),
             error: None,
+            error_code: None,
+            pending_request_id: None,
         }
     }
 
@@ -379,6 +394,17 @@ impl ToolCallResult {
         Self {
             output_json: None,
             error: Some(error.into()),
+            error_code: None,
+            pending_request_id: None,
+        }
+    }
+
+    pub fn coded(code: &str, call_id: &str, pending: Option<&str>) -> Self {
+        Self {
+            output_json: None,
+            error: Some(crate::broker::gate::structured_error(code, call_id, pending)),
+            error_code: Some(code.to_string()),
+            pending_request_id: pending.map(str::to_string),
         }
     }
 }
@@ -415,10 +441,9 @@ pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
 /// `before_call` may block while a decision is collected on the UI thread.
 /// Callers that install no hooks (PGAP apps, `AgentHost`) are unaffected.
 pub trait ToolCallHooks: Send + Sync {
-    /// Called after the registry lookup, before the call is sent to the
-    /// providing app. `Err(reason)` blocks the call; the reason is returned
-    /// to the model as the tool error.
-    fn before_call(&self, name: &str, input_json: &str) -> Result<(), String>;
+    /// Called after the monitor admits the call, before it is sent. This
+    /// cannot allow or deny the call.
+    fn before_call(&self, name: &str, input_json: &str);
 
     /// Called with the call outcome (`error: None` = success, with the
     /// tool's `output_json` when one was produced — the Assistant lifts
@@ -436,14 +461,63 @@ pub trait ToolCallHooks: Send + Sync {
 /// Only contains tools reachable from the caller's context — cross-context
 /// tools are excluded at construction time (via `evaluate_reach`) and never
 /// visible to the dispatching app or the model it drives.
+/// Who is dispatching. The monitor binds the grant to these fields.
+#[derive(Debug, Clone)]
+pub struct DispatchScope {
+    pub caller_pane_id: u64,
+    pub caller_app_id: String,
+    pub actor_type: crate::broker::ActorType,
+    pub actor_scope: crate::broker::ActorScope,
+    pub workspace_root: std::path::PathBuf,
+    pub context_id: u64,
+    pub trust_origin: String,
+}
+
+impl DispatchScope {
+    pub fn new(
+        caller_pane_id: u64,
+        caller_app_id: impl Into<String>,
+        workspace_root: impl Into<std::path::PathBuf>,
+        context_id: u64,
+    ) -> Self {
+        let caller_app_id = caller_app_id.into();
+        let actor_type = if caller_app_id.starts_with("agent:") || caller_app_id.starts_with("pane:")
+        {
+            crate::broker::ActorType::Agent
+        } else {
+            crate::broker::ActorType::App
+        };
+        Self {
+            caller_pane_id,
+            caller_app_id,
+            actor_type,
+            actor_scope: crate::broker::ActorScope::User,
+            workspace_root: workspace_root.into(),
+            context_id,
+            trust_origin: "host".to_string(),
+        }
+    }
+}
+
+/// Desktop sheet (or another in-process presenter). MCP, CLI, and socket
+/// callers leave this empty and receive `permission_required`.
+pub trait PermissionPresenter: Send + Sync {
+    fn present(
+        &self,
+        pending_id: &str,
+        tool: &str,
+        summary: &str,
+        actor: &str,
+        resource: &str,
+    ) -> crate::broker::gate::ApprovalChoice;
+}
+
 pub struct ToolDispatcher {
     /// Snapshot: exposed_name → (provider_pane_id, provider_tool_name, AiTool).
     /// Already filtered to the caller's context.
     tools: HashMap<String, (u64, String, AiTool)>,
-    /// Caller-local host tools (Phase D3: the Assistant's
-    /// `host.events.subscribe`/`unsubscribe`). Dispatched through
-    /// `host_handler`, never sent to a pane. Unaffected by `retain_allowed`
-    /// — the registering caller owns their gating.
+    /// Caller-local host tools. Dispatched through `host_handler`, never sent
+    /// to a pane. Still admitted by the permission monitor.
     host_tools: HashMap<String, AiTool>,
     /// Handler for `host_tools` calls. Runs on the broker worker thread.
     host_handler: Option<HostToolHandler>,
@@ -451,8 +525,11 @@ pub struct ToolDispatcher {
     caller_app_id: String,
     /// Caller pane id for audit logging.
     caller_pane_id: u64,
-    /// Optional per-call hooks (permission gating + call observation).
+    scope: DispatchScope,
+    monitor: Arc<crate::broker::gate::PermissionMonitor>,
+    /// Observation only. A hook cannot allow or deny a call.
     hooks: Option<Arc<dyn ToolCallHooks>>,
+    presenter: Option<Arc<dyn PermissionPresenter>>,
 }
 
 /// Handler for caller-local host tools: `(tool_name, input_json) → result`.
@@ -466,6 +543,7 @@ impl std::fmt::Debug for ToolDispatcher {
             .field("caller_app_id", &self.caller_app_id)
             .field("caller_pane_id", &self.caller_pane_id)
             .field("hooks", &self.hooks.is_some())
+            .field("presenter", &self.presenter.is_some())
             .finish()
     }
 }
@@ -474,46 +552,64 @@ impl ToolDispatcher {
     /// Build a dispatcher scoped to `viewer_context_id` — the caller's own
     /// host-established context, never `router.active()` or a client-supplied
     /// path. Only tools reachable from that context are included.
-    pub fn from_registry(
-        caller_pane_id: u64,
-        caller_app_id: String,
-        viewer_context_id: u64,
-    ) -> Self {
+    pub fn from_registry(scope: DispatchScope, monitor: Arc<crate::broker::gate::PermissionMonitor>) -> Self {
         let registry = global_registry().lock().unwrap();
-        let tools = registry.snapshot_for_caller(viewer_context_id);
+        let tools = registry.snapshot_for_caller(scope.context_id);
         let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
         log::info!(
-            "tool_dispatch: dispatcher for caller={caller_app_id} pane={caller_pane_id} viewer_context={viewer_context_id} — {} tool(s) visible: {visible:?}",
+            "tool_dispatch: dispatcher for caller={} pane={} viewer_context={} — {} tool(s) visible: {visible:?}",
+            scope.caller_app_id,
+            scope.caller_pane_id,
+            scope.context_id,
             tools.len(),
         );
-        Self {
-            tools,
-            host_tools: HashMap::new(),
-            host_handler: None,
-            caller_app_id,
-            caller_pane_id,
-            hooks: None,
-        }
+        Self::from_parts(scope, monitor, tools)
     }
 
     /// Build the context-scoped snapshot exposed by the singleton host MCP
     /// server. Definitions are namespaced `<app_id>__<tool>` while dispatch
     /// retains the provider's original tool name.
-    pub(crate) fn from_namespaced_registry(caller_pane_id: u64, viewer_context_id: u64) -> Self {
-        let caller_app_id = format!("mcp:pane:{caller_pane_id}");
+    pub(crate) fn from_namespaced_registry(
+        scope: DispatchScope,
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+    ) -> Self {
+        Self::namespaced_for(scope, monitor)
+    }
+
+    /// The same namespaced, context-scoped snapshot for a host-identified
+    /// caller. The identity is stamped by the host, never by the caller.
+    pub(crate) fn namespaced_for(
+        scope: DispatchScope,
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+    ) -> Self {
         let registry = global_registry().lock().unwrap();
-        let tools = registry.namespaced_snapshot_for_caller(viewer_context_id);
+        let tools = registry.namespaced_snapshot_for_caller(scope.context_id);
         log::info!(
-            "tool_dispatch: external MCP dispatcher caller={caller_app_id} viewer_context={viewer_context_id} — {} tool(s) visible",
+            "tool_dispatch: namespaced dispatcher caller={} viewer_context={} — {} tool(s) visible",
+            scope.caller_app_id,
+            scope.context_id,
             tools.len(),
         );
+        Self::from_parts(scope, monitor, tools)
+    }
+
+    fn from_parts(
+        scope: DispatchScope,
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+        tools: HashMap<String, (u64, String, AiTool)>,
+    ) -> Self {
+        let caller_app_id = scope.caller_app_id.clone();
+        let caller_pane_id = scope.caller_pane_id;
         Self {
             tools,
             host_tools: HashMap::new(),
             host_handler: None,
             caller_app_id,
             caller_pane_id,
+            scope,
+            monitor,
             hooks: None,
+            presenter: None,
         }
     }
 
@@ -532,10 +628,14 @@ impl ToolDispatcher {
         self.host_handler = Some(handler);
     }
 
-    /// Install per-call hooks (Phase D: the Assistant's ask-gate). Hooks see
-    /// every `dispatch_call` on this snapshot.
+    /// Observation and presentation only. Hooks cannot allow or deny a call;
+    /// the permission monitor inside `dispatch_call` is the only authorizer.
     pub fn set_hooks(&mut self, hooks: Arc<dyn ToolCallHooks>) {
         self.hooks = Some(hooks);
+    }
+
+    pub fn set_presenter(&mut self, presenter: Arc<dyn PermissionPresenter>) {
+        self.presenter = Some(presenter);
     }
 
     /// All tools visible at snapshot time, for injection into the LLM request.
@@ -574,60 +674,269 @@ impl ToolDispatcher {
         }
     }
 
-    /// Dispatch a single tool call. Blocks until the app responds or times
-    /// out. When hooks are installed, `before_call` runs first (and may block
-    /// the call) and `after_call` observes the outcome.
+    /// Dispatch a single tool call. The permission monitor admits the call
+    /// before any handler runs. Hooks only observe a call that was admitted.
     pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
-        // Host tools never reach a pane: hooks observe them, the caller's
-        // host handler resolves them in-process.
-        if self.host_tools.contains_key(name) {
-            let Some(handler) = &self.host_handler else {
-                return ToolCallResult::err(format!(
-                    "host_tool_unhandled: no handler for {name:?}"
-                ));
-            };
-            if let Some(hooks) = &self.hooks {
-                if let Err(reason) = hooks.before_call(name, &input_json) {
-                    log::info!(
-                        "tool_dispatch: caller={} — host tool '{name}' blocked by hook: {reason}",
-                        self.caller_app_id
+        let known = self.host_tools.contains_key(name) || self.tools.contains_key(name);
+        if !known {
+            crate::broker::gate::trace_gate(format!(
+                "tool_dispatch: tool_not_found caller={} tool={name} call_id={call_id}",
+                self.caller_app_id
+            ));
+            return self.dispatch_inner(call_id, name, input_json, None);
+        }
+        let (package, instance) = self.provider_of(name);
+        let target_type = if self.host_tools.contains_key(name) {
+            crate::broker::TargetType::HostTool
+        } else {
+            crate::broker::TargetType::AppConnector
+        };
+        let mut admission = self.monitor.admit(crate::broker::gate::AdmitRequest {
+            call_id: &call_id,
+            tool: name,
+            input_json: &input_json,
+            actor_type: self.scope.actor_type,
+            actor_id: &self.scope.caller_app_id,
+            actor_scope: self.scope.actor_scope,
+            trust_origin: &self.scope.trust_origin,
+            workspace_root: &self.scope.workspace_root,
+            context_id: self.scope.context_id,
+            package_id: &package,
+            instance_id: instance,
+            target_type,
+        });
+        if let crate::broker::gate::Admission::Required { pending_request_id } = &admission {
+            if let Some(presenter) = &self.presenter {
+                let (_, resource_id) = crate::broker::gate::resource_of(name, &input_json);
+                let choice = presenter.present(
+                    pending_request_id,
+                    name,
+                    &input_json,
+                    &self.scope.caller_app_id,
+                    resource_id.as_deref().unwrap_or(""),
+                );
+                if choice == crate::broker::gate::ApprovalChoice::Deny {
+                    let _ = self.monitor.approve_pending(
+                        pending_request_id,
+                        crate::broker::gate::ApprovalChoice::Deny,
                     );
-                    return ToolCallResult::err(reason);
+                    return ToolCallResult::coded("permission_denied", &call_id, Some(pending_request_id));
                 }
+                if self
+                    .monitor
+                    .approve_pending(pending_request_id, choice)
+                    .is_err()
+                {
+                    return ToolCallResult::coded("permission_denied", &call_id, Some(pending_request_id));
+                }
+                admission = self.monitor.admit(crate::broker::gate::AdmitRequest {
+                    call_id: &call_id,
+                    tool: name,
+                    input_json: &input_json,
+                    actor_type: self.scope.actor_type,
+                    actor_id: &self.scope.caller_app_id,
+                    actor_scope: self.scope.actor_scope,
+                    trust_origin: &self.scope.trust_origin,
+                    workspace_root: &self.scope.workspace_root,
+                    context_id: self.scope.context_id,
+                    package_id: &package,
+                    instance_id: instance,
+                    target_type,
+                });
+            } else {
+                log::info!(
+                    "tool_dispatch: permission_required caller={} tool={name} pending={pending_request_id}",
+                    self.caller_app_id
+                );
+                return ToolCallResult::coded(
+                    "permission_required",
+                    &call_id,
+                    Some(pending_request_id),
+                );
             }
+        }
+        let crate::broker::gate::Admission::Proceed {
+            grant_id,
+            fingerprint,
+            resource_id,
+            resource_scope,
+        } = admission
+        else {
+            let code = match admission {
+                crate::broker::gate::Admission::Denied { code } => code,
+                crate::broker::gate::Admission::Required { .. } => "permission_required",
+                crate::broker::gate::Admission::Proceed { .. } => "permission_denied",
+            };
+            return ToolCallResult::coded(code, &call_id, None);
+        };
+        let operation_id = crate::broker::gate::operation_id_of(&input_json);
+        let resource = resource_id.clone().unwrap_or_default();
+        if self
+            .monitor
+            .note_use(
+                &self.scope.caller_app_id,
+                &call_id,
+                &grant_id,
+                &fingerprint,
+                &resource,
+                &operation_id,
+            )
+            .is_err()
+        {
             log::info!(
-                "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?}",
+                "tool_dispatch: blocked before execution caller={} tool={name} call_id={call_id}",
                 self.caller_app_id
             );
-            let result = handler(name, &input_json);
-            if let Some(hooks) = &self.hooks {
-                hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
-            }
-            return result;
-        }
-        if !self.tools.contains_key(name) {
-            // Fall through to dispatch_inner's tool_not_found path without
-            // invoking hooks for tools the snapshot does not contain.
-            return self.dispatch_inner(call_id, name, input_json);
+            return ToolCallResult::coded("permission_denied", &call_id, None);
         }
         if let Some(hooks) = &self.hooks {
-            if let Err(reason) = hooks.before_call(name, &input_json) {
-                log::info!(
-                    "tool_dispatch: caller={} pane={} — tool '{name}' blocked by hook: {reason}",
-                    self.caller_app_id,
-                    self.caller_pane_id
-                );
-                return ToolCallResult::err(reason);
-            }
+            hooks.before_call(name, &input_json);
         }
-        let result = self.dispatch_inner(call_id, name, input_json);
+        let envelope = authorization_envelope(
+            &grant_id,
+            &self.scope.caller_app_id,
+            &package,
+            resource_id.as_deref(),
+            &call_id,
+            resource_scope,
+        );
+        let result = if self.host_tools.contains_key(name) {
+            let Some(handler) = &self.host_handler else {
+                return ToolCallResult::err(format!("host_tool_unhandled: no handler for {name:?}"));
+            };
+            log::info!(
+                "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?} grant={grant_id}",
+                self.caller_app_id
+            );
+            handler(name, &input_json)
+        } else {
+            self.dispatch_inner(call_id.clone(), name, input_json, Some(envelope))
+        };
+        if let Some(error) = &result.error {
+            let code = result.error_code.as_deref().unwrap_or("error");
+            let detail: String = error.chars().take(180).collect();
+            crate::broker::gate::trace_gate(format!(
+                "tool_dispatch: result code={code} caller={} tool={name} call_id={call_id} detail={detail}",
+                self.scope.caller_app_id
+            ));
+        }
+        let outcome = if result.error.is_none() { "ok" } else { "error" };
+        let (revision_before, revision_after) =
+            crate::broker::gate::revisions_from_output(result.output_json.as_deref());
+        if self
+            .monitor
+            .note_outcome(
+                &self.scope.caller_app_id,
+                &call_id,
+                &grant_id,
+                &fingerprint,
+                &resource,
+                &operation_id,
+                outcome,
+                &revision_before,
+                &revision_after,
+            )
+            .is_err()
+            && result.error.is_none()
+        {
+            self.monitor
+                .consume_once(&grant_id, Some(operation_id.as_str()).filter(|s| !s.is_empty()));
+            let mut unknown = result;
+            unknown.error_code = Some("outcome_unknown".to_string());
+            unknown.error = Some(crate::broker::gate::structured_error(
+                "outcome_unknown",
+                &call_id,
+                None,
+            ));
+            return unknown;
+        }
+        if result.error.is_none() {
+            self.monitor
+                .consume_once(&grant_id, Some(operation_id.as_str()).filter(|s| !s.is_empty()));
+        }
         if let Some(hooks) = &self.hooks {
             hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
         }
         result
     }
 
-    fn dispatch_inner(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
+    /// Pick the exposed name for an app tool. One live instance keeps
+    /// `<app>__<tool>`. Several instances require `<app>:<pane>__<tool>`.
+    pub(crate) fn select_app_tool(
+        &self,
+        app_id: &str,
+        tool: &str,
+        target_pane: Option<u64>,
+    ) -> Result<String, String> {
+        let plain = format!("{app_id}__{tool}");
+        if let Some(pane) = target_pane {
+            let qualified = format!("{app_id}:{pane}__{tool}");
+            if self.tools.contains_key(&qualified) {
+                log::info!("tool_dispatch: routed {plain} to pane {pane}");
+                return Ok(qualified);
+            }
+            if let Some((provider, _, _)) = self.tools.get(&plain) {
+                if *provider == pane {
+                    return Ok(plain);
+                }
+            }
+            log::info!("tool_dispatch: pane {pane} does not expose {plain}");
+            return Err(format!("tool_not_found: pane {pane} does not expose {tool}"));
+        }
+        if self.tools.contains_key(&plain) {
+            return Ok(plain);
+        }
+        let prefix = format!("{app_id}:");
+        let suffix = format!("__{tool}");
+        let mut matches: Vec<String> = self
+            .tools
+            .keys()
+            .filter(|name| name.starts_with(&prefix) && name.ends_with(&suffix))
+            .cloned()
+            .collect();
+        matches.sort();
+        if matches.is_empty() {
+            return Ok(plain);
+        }
+        log::info!(
+            "tool_dispatch: ambiguous {plain}; address one of {}",
+            matches.join(", ")
+        );
+        Err(format!(
+            "ambiguous_instance: {plain} is live on multiple panes; address {}",
+            matches.join(", ")
+        ))
+    }
+
+    fn provider_of(&self, name: &str) -> (String, u64) {
+        if let Some((pane, provider_name, _)) = self.tools.get(name) {
+            let package = name
+                .split_once("__")
+                .map(|(app, _)| {
+                    app.split(':')
+                        .next()
+                        .unwrap_or(app)
+                        .to_string()
+                })
+                .unwrap_or_else(|| {
+                    provider_name
+                        .split('.')
+                        .next()
+                        .unwrap_or("app")
+                        .to_string()
+                });
+            return (package, *pane);
+        }
+        ("host".to_string(), self.caller_pane_id)
+    }
+
+    fn dispatch_inner(
+        &self,
+        call_id: String,
+        name: &str,
+        input_json: String,
+        authorization: Option<String>,
+    ) -> ToolCallResult {
         let (pane_id, provider_tool_name, tool) = match self.tools.get(name) {
             Some(entry) => entry,
             None => {
@@ -665,6 +974,7 @@ impl ToolDispatcher {
                         name: provider_tool_name.clone(),
                         input_json,
                         caller_id: self.caller_app_id.clone(),
+                        authorization,
                     })
                     .is_ok()
             } else {
@@ -708,6 +1018,27 @@ impl ToolDispatcher {
             }
         }
     }
+}
+
+fn authorization_envelope(
+    grant_id: &str,
+    actor: &str,
+    package: &str,
+    resource_id: Option<&str>,
+    call_id: &str,
+    resource_scope: crate::broker::ResourceScope,
+) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "grant_id": grant_id,
+        "actor": actor,
+        "package": package,
+        "game_id": resource_id,
+        "resource_scope": format!("{resource_scope:?}").to_ascii_lowercase(),
+        "call_id": call_id,
+        "human_interaction": false,
+    })
+    .to_string()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -889,7 +1220,10 @@ mod tests {
         );
 
         // Build a dispatcher for a caller in context A.
-        let dispatcher = ToolDispatcher::from_registry(1, "app_a".to_string(), 100);
+        let dispatcher = ToolDispatcher::from_registry(
+            DispatchScope::new(1, "app_a", "/ws-a", 100),
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+        );
 
         // The tool must not appear in the visible set.
         let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
@@ -916,10 +1250,10 @@ mod tests {
         unregister(999);
     }
 
-    /// Two panes in the same context exposing the same tool name must both be
-    /// excluded from the snapshot — no silent winner selection.
+    /// Two panes exposing the same tool name stay addressable by pane id.
+    /// The bare name is not offered, so dispatch cannot pick a winner.
     #[test]
-    fn conflicting_tool_names_excluded_from_snapshot() {
+    fn conflicting_tool_names_are_addressable_by_pane() {
         let mut reg = ToolRegistry::new();
         let (tx1, _rx1) = std::sync::mpsc::channel();
         let (tx2, _rx2) = std::sync::mpsc::channel();
@@ -941,8 +1275,11 @@ mod tests {
         let snap = reg.snapshot_for_caller(50);
         assert!(
             !snap.contains_key("shared_tool"),
-            "conflicting tool must be excluded from snapshot, not silently picked"
+            "the bare name must not pick a pane"
         );
+        assert_eq!(snap["shared_tool@10"].0, 10);
+        assert_eq!(snap["shared_tool@20"].0, 20);
+        assert_eq!(snap["shared_tool@10"].1, "shared_tool");
         assert!(
             snap.contains_key("unique_a"),
             "non-conflicting tool from pane 10 must remain visible"
@@ -954,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn namespaced_snapshot_withholds_duplicate_app_instances() {
+    fn namespaced_snapshot_addresses_duplicate_app_instances_by_pane() {
         let mut reg = ToolRegistry::new();
         let (tx1, _rx1) = std::sync::mpsc::channel();
         let (tx2, _rx2) = std::sync::mpsc::channel();
@@ -978,6 +1315,8 @@ mod tests {
             !snapshot.contains_key("same-app__echo"),
             "two live instances must not select an arbitrary provider"
         );
+        assert_eq!(snapshot["same-app:30__echo"].0, 30);
+        assert_eq!(snapshot["same-app:20__echo"].0, 20);
         let (pane_id, provider_name, tool) = &snapshot["same-app__unique"];
         assert_eq!(*pane_id, 20);
         assert_eq!(provider_name, "unique");
@@ -988,14 +1327,14 @@ mod tests {
     /// unknown tools must return `tool_not_found` without invoking hooks.
     #[test]
     fn hooks_block_calls_and_skip_unknown_tools() {
-        struct DenyHook;
-        impl ToolCallHooks for DenyHook {
-            fn before_call(&self, _name: &str, _input: &str) -> Result<(), String> {
-                Err("permission_denied: test gate".to_string())
+        struct ObserveHook {
+            seen: std::sync::Mutex<u32>,
+        }
+        impl ToolCallHooks for ObserveHook {
+            fn before_call(&self, _name: &str, _input: &str) {
+                *self.seen.lock().unwrap() += 1;
             }
-            fn after_call(&self, _name: &str, _error: Option<&str>, _output: Option<&str>) {
-                panic!("after_call must not run for blocked or unknown calls");
-            }
+            fn after_call(&self, _name: &str, _error: Option<&str>, _output: Option<&str>) {}
         }
 
         let (tx, _rx) = std::sync::mpsc::channel();
@@ -1006,19 +1345,18 @@ mod tests {
             AppEventSender::Channel(tx),
             origin(70, 998),
         );
-        let mut dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), 70);
-        dispatcher.set_hooks(Arc::new(DenyHook));
+        let hook = Arc::new(ObserveHook {
+            seen: std::sync::Mutex::new(0),
+        });
+        let mut dispatcher = ToolDispatcher::from_registry(
+            DispatchScope::new(2, "agent:assistant", "/ws-hooks", 70),
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+        );
+        dispatcher.set_hooks(hook.clone());
 
         let blocked = dispatcher.dispatch_call("c1".to_string(), "gated_tool", "{}".to_string());
-        assert!(
-            blocked
-                .error
-                .as_deref()
-                .unwrap_or("")
-                .contains("permission_denied"),
-            "hook denial must surface as the tool error: {:?}",
-            blocked.error
-        );
+        assert_eq!(blocked.error_code.as_deref(), Some("permission_required"));
+        assert_eq!(*hook.seen.lock().unwrap(), 0, "a refused call is not observed as started");
 
         let unknown = dispatcher.dispatch_call("c2".to_string(), "nope", "{}".to_string());
         assert!(
@@ -1044,7 +1382,37 @@ mod tests {
             AppEventSender::Wasm(sender),
             origin(80, 997),
         );
-        let dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), 80);
+        let input = r#"{"value":7}"#;
+        let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
+        let fp = crate::broker::gate::fingerprint_args(input).unwrap();
+        monitor.store().record(crate::broker::GrantRecord::from_binding(
+            &crate::broker::ExactBinding {
+                actor_type: crate::broker::ActorType::Agent,
+                actor_id: "agent:assistant".to_string(),
+                actor_scope: crate::broker::ActorScope::User,
+                trust_origin: "host".to_string(),
+                workspace_root: PathBuf::from("/ws-wasm"),
+                target_type: crate::broker::TargetType::AppConnector,
+                target_id: "wasm.echo".to_string(),
+                resource_scope: crate::broker::ResourceScope::Workspace,
+                resource_id: None,
+                args_fingerprint: fp,
+                session_id: Some(monitor.session_id().to_string()),
+                package_id: "wasm".to_string(),
+                instance_id: Some(997),
+                context_id: Some(80),
+                call_id: "wasm-call-1".to_string(),
+                operation_id: String::new(),
+            },
+            crate::broker::Decision::Allow,
+            crate::broker::GrantDuration::Always,
+            crate::broker::GrantSource::User,
+            "g-wasm",
+        ));
+        let dispatcher = ToolDispatcher::from_registry(
+            DispatchScope::new(2, "agent:assistant", "/ws-wasm", 80),
+            monitor,
+        );
         let worker = std::thread::spawn(move || {
             dispatcher.dispatch_call(
                 "wasm-call-1".to_string(),
@@ -1079,14 +1447,6 @@ mod tests {
 
     #[test]
     fn denied_wasm_tool_call_never_reaches_the_guest() {
-        struct DenyHook;
-        impl ToolCallHooks for DenyHook {
-            fn before_call(&self, _name: &str, _input: &str) -> Result<(), String> {
-                Err("permission_denied: app connector denied".to_string())
-            }
-            fn after_call(&self, _name: &str, _error: Option<&str>, _output: Option<&str>) {}
-        }
-
         let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
         register(
             996,
@@ -1095,18 +1455,17 @@ mod tests {
             AppEventSender::Wasm(sender),
             origin(90, 996),
         );
-        let mut dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), 90);
-        dispatcher.set_hooks(Arc::new(DenyHook));
+        let dispatcher = ToolDispatcher::from_registry(
+            DispatchScope::new(2, "agent:assistant", "/ws-denied", 90),
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+        );
 
         let result = dispatcher.dispatch_call(
             "wasm-call-denied".to_string(),
             "wasm.write",
             "{}".to_string(),
         );
-        assert_eq!(
-            result.error.as_deref(),
-            Some("permission_denied: app connector denied")
-        );
+        assert_eq!(result.error_code.as_deref(), Some("permission_required"));
         assert!(
             queue.is_empty(),
             "denied calls must not enter WASM update()"

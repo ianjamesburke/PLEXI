@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
-    PermissionPosture, PermissionRequest, ResourceScope, TargetType,
+    PermissionPosture, PermissionRequest,
 };
 use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
@@ -68,6 +68,8 @@ pub fn evaluate_and_record_subscription(
         publisher_app_id,
         subscriber_type,
         subscriber_id,
+        ActorScope::User,
+        None,
         &event_names,
     );
     if decision != Decision::Allow {
@@ -125,6 +127,7 @@ fn publish_targets(app_id: &str, event_names: &[String]) -> Vec<String> {
 /// Run the broker over every target a subscription touches and return the
 /// strictest decision (`Deny` > `Ask` > `Allow`). Records nothing — callers
 /// decide what to do with the verdict (record on `Allow`, prompt on `Ask`).
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_subscription(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
@@ -132,6 +135,8 @@ pub fn evaluate_subscription(
     publisher_app_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
+    actor_scope: ActorScope,
+    session_id: Option<&str>,
     event_names: &[String],
 ) -> Decision {
     evaluate_targets(
@@ -140,12 +145,15 @@ pub fn evaluate_subscription(
         workspace_root,
         subscriber_type,
         subscriber_id,
+        actor_scope,
+        session_id,
         &subscription_targets(publisher_app_id, event_names),
     )
 }
 
 /// Publish twin of [`evaluate_subscription`]: evaluate the broker over the
 /// `publish:`-prefixed targets so a subscribe grant never authorizes a publish.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_publish(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
@@ -153,6 +161,8 @@ fn evaluate_publish(
     app_id: &str,
     actor_type: ActorType,
     actor_id: &str,
+    actor_scope: ActorScope,
+    session_id: Option<&str>,
     event_names: &[String],
 ) -> Decision {
     evaluate_targets(
@@ -161,6 +171,8 @@ fn evaluate_publish(
         workspace_root,
         actor_type,
         actor_id,
+        actor_scope,
+        session_id,
         &publish_targets(app_id, event_names),
     )
 }
@@ -169,23 +181,34 @@ fn evaluate_publish(
 /// decision (`Deny` > `Ask` > `Allow`). The shared core of
 /// [`evaluate_subscription`] and [`evaluate_publish`] — they differ only in how
 /// they build the target ids.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_targets(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
     actor_type: ActorType,
     actor_id: &str,
+    actor_scope: ActorScope,
+    session_id: Option<&str>,
     targets: &[String],
 ) -> Decision {
+    let Some(workspace) = workspace_root else {
+        log::info!(
+            "event_subscriptions: deny actor={actor_id} — event grants require a workspace"
+        );
+        return Decision::Deny;
+    };
     let mut strictest = Decision::Allow;
     for target in targets {
-        let req = PermissionRequest::new(
+        let binding = crate::broker::ExactBinding::event_stream(
             actor_type,
             actor_id,
-            TargetType::AppEventStream,
+            actor_scope,
             target,
-            workspace_root,
+            workspace,
+            session_id.map(str::to_string),
         );
+        let req = PermissionRequest::exact(&binding);
         match grant_store.evaluate(&req, posture) {
             Decision::Allow => {}
             Decision::Deny => strictest = Decision::Deny,
@@ -325,6 +348,8 @@ pub struct PendingEventConsent {
     /// self-contained; by the time `resolve_consent` runs, the pane that
     /// requested this may have closed).
     pub subscriber_context_id: u64,
+    /// Workspace the exact grant is bound to. Captured at classify time.
+    pub workspace_root: PathBuf,
     /// The effect to apply once allowed — owns the transport's reply channel.
     action: ConsentAction,
 }
@@ -588,6 +613,8 @@ impl HostSubscriptionService {
             &req.publisher_app_id,
             subscriber_type,
             &broker_actor_id,
+            ActorScope::User,
+            None,
             &req.event_names,
         );
         match decision {
@@ -633,6 +660,7 @@ impl HostSubscriptionService {
                     app_id: req.publisher_app_id,
                     event_names: req.event_names,
                     subscriber_context_id,
+                    workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
                     action: ConsentAction::Subscribe {
                         payload_mode: req.payload_mode,
                         trigger_mode: req.trigger_mode,
@@ -665,6 +693,7 @@ impl HostSubscriptionService {
             app_id,
             event_names,
             subscriber_context_id,
+            workspace_root,
             action,
         } = consent;
 
@@ -683,6 +712,7 @@ impl HostSubscriptionService {
                 &broker_actor_id,
                 &app_id,
                 &targets,
+                &workspace_root,
                 config_dir,
             );
         }
@@ -804,25 +834,20 @@ impl HostSubscriptionService {
         actor_id: &str,
         app_id: &str,
         targets: &[String],
+        workspace_root: &Path,
         config_dir: &Path,
     ) {
-        let created_at = crate::platform::clock::now_secs() as i64;
         for target in targets {
-            self.grant_store.record(GrantRecord {
+            self.grant_store.record(GrantRecord::event_stream_allow(
                 actor_type,
-                actor_id: actor_id.to_string(),
-                actor_scope: ActorScope::User,
-                workspace_root: None,
-                target_type: TargetType::AppEventStream,
-                target_id: target.clone(),
-                resource_scope: ResourceScope::Global,
-                resource_id: None,
-                decision: Decision::Allow,
-                duration: GrantDuration::Always,
-                source: GrantSource::User,
-                created_at,
-                expires_at: None,
-            });
+                actor_id,
+                ActorScope::User,
+                target,
+                workspace_root,
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            ));
         }
         self.grant_store.save();
         // Keep the in-memory store consistent with disk for later evals.
@@ -886,6 +911,8 @@ impl HostSubscriptionService {
             &req.app_id,
             actor_type,
             &actor_id,
+            ActorScope::User,
+            None,
             &event_names,
         );
         let pane_id = req.from_pane_id.unwrap_or(0);
@@ -922,6 +949,7 @@ impl HostSubscriptionService {
                     app_id: req.app_id,
                     event_names,
                     subscriber_context_id: context_id,
+                    workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
                     action: ConsentAction::Publish {
                         publish: req.action,
                         pane_id,
@@ -982,7 +1010,7 @@ impl HostSubscriptionService {
 mod tests {
     use super::*;
     use crate::protocol::{AppEventActor, EventStreamDecl};
-    use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource, ResourceScope};
+    use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource};
     use crate::host::app_timeline::EmittedEvent;
 
     /// Fixed owning/viewer context for tests that don't exercise
@@ -991,21 +1019,16 @@ mod tests {
     const CTX: u64 = 1;
 
     fn allow_grant(actor_id: &str, target_id: &str) -> GrantRecord {
-        GrantRecord {
-            actor_type: ActorType::Agent,
-            actor_id: actor_id.to_string(),
-            actor_scope: ActorScope::User,
-            workspace_root: None,
-            target_type: TargetType::AppEventStream,
-            target_id: target_id.to_string(),
-            resource_scope: ResourceScope::Global,
-            resource_id: None,
-            decision: Decision::Allow,
-            duration: GrantDuration::Session,
-            source: GrantSource::Session,
-            created_at: 0,
-            expires_at: None,
-        }
+        GrantRecord::event_stream_allow(
+            ActorType::Agent,
+            actor_id,
+            ActorScope::User,
+            target_id,
+            Path::new("/tmp/ws"),
+            GrantDuration::Always,
+            GrantSource::User,
+            None,
+        )
     }
 
     fn timeline_with_stream() -> Arc<Mutex<AppTimeline>> {
@@ -1092,6 +1115,7 @@ mod tests {
         let mut store = GrantStore::default();
         let mut grant = allow_grant("notes-app", "event-probe::probe.tick");
         grant.actor_type = ActorType::App;
+        grant.workspace_root = Some(PathBuf::from("/workspace/notes"));
         store.record(grant);
         let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);

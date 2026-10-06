@@ -25,10 +25,10 @@ pub struct AuditEvent {
 }
 
 impl AuditEvent {
-    pub fn now(kind: &str, target: &str, decision: &str, summary: &str) -> Self {
+    pub fn now(actor: &str, kind: &str, target: &str, decision: &str, summary: &str) -> Self {
         Self {
             ts: crate::host::event_log::now_timestamp(),
-            actor: "agent:assistant".to_string(),
+            actor: actor.to_string(),
             kind: kind.to_string(),
             target: target.to_string(),
             decision: decision.to_string(),
@@ -47,20 +47,20 @@ impl AuditLog {
         Self { path }
     }
 
-    /// Append one event. Failures are logged loudly, never fatal — an audit
-    /// write must not take down a tool call that already happened.
-    pub fn append(&self, event: &AuditEvent) {
+    /// Append one event. A failure is returned so a caller can block an
+    /// action that has not started. Callers that already executed log it.
+    pub fn append(&self, event: &AuditEvent) -> Result<(), String> {
         let line = match serde_json::to_string(event) {
             Ok(line) => line,
             Err(e) => {
                 log::error!("assistant audit: serialize failed: {e}");
-                return;
+                return Err(e.to_string());
             }
         };
         if let Some(parent) = self.path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::error!("assistant audit: create {}: {e}", parent.display());
-                return;
+                return Err(e.to_string());
             }
         }
         let write = std::fs::OpenOptions::new()
@@ -69,14 +69,21 @@ impl AuditLog {
             .open(&self.path)
             .and_then(|mut f| writeln!(f, "{line}"));
         match write {
-            Ok(()) => log::info!(
-                "assistant audit: {} {} = {} ({})",
-                event.kind,
-                event.target,
-                event.decision,
-                self.path.display()
-            ),
-            Err(e) => log::error!("assistant audit: write {}: {e}", self.path.display()),
+            Ok(()) => {
+                log::info!(
+                    "assistant audit: {} actor={} {} = {} ({})",
+                    event.kind,
+                    event.actor,
+                    event.target,
+                    event.decision,
+                    self.path.display()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("assistant audit: write {}: {e}", self.path.display());
+                Err(e.to_string())
+            }
         }
     }
 
@@ -122,11 +129,13 @@ mod tests {
 
         for i in 0..5 {
             log.append(&AuditEvent::now(
+                "agent:assistant",
                 "tool_call",
                 &format!("app.t{i}"),
                 "ok",
                 "",
-            ));
+            ))
+            .unwrap();
         }
         let last3 = log.tail(3);
         assert_eq!(last3.len(), 3);
@@ -140,11 +149,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");
         let log = AuditLog::new(path.clone());
-        log.append(&AuditEvent::now("tool_call", "app.x", "ok", ""));
+        log.append(&AuditEvent::now("agent:assistant", "tool_call", "app.x", "ok", "")).unwrap();
         let mut raw = std::fs::read_to_string(&path).unwrap();
         raw.push_str("not json\n");
         std::fs::write(&path, raw).unwrap();
-        log.append(&AuditEvent::now("tool_call", "app.y", "error", "boom"));
+        log.append(&AuditEvent::now("agent:assistant", "tool_call", "app.y", "error", "boom")).unwrap();
         let events = log.tail(10);
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].target, "app.y");
