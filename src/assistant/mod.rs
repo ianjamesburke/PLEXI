@@ -1831,9 +1831,57 @@ impl AssistantApp {
         }
     }
 
+    /// Show a folder-secret ask on the existing permission sheet. The click
+    /// is a real "Allow once" button; the grant is applied by the host gate.
+    fn adopt_folder_secret_sheet(&mut self) {
+        if self.model.pending_permission.is_some() {
+            return;
+        }
+        let Some(sheet) = crate::workspace::secrets::take_folder_secret_sheet() else {
+            return;
+        };
+        log::info!(
+            "assistant: folder secret sheet pending={} actor={} resource={}",
+            sheet.pending_id, sheet.actor_id, sheet.resource_id
+        );
+        self.model.permission_requested_scoped(
+            crate::workspace::secrets::SECRET_READ_TOOL,
+            &sheet.summary,
+            &sheet.actor_id,
+            &sheet.resource_id,
+            &sheet.pending_id,
+        );
+    }
+
+    /// A folder-secret sheet has no tool-worker reply. The click word goes
+    /// to the host gate, which calls `approve_pending` for exactly that pending.
+    fn deliver_folder_secret_sheet(&mut self, choice: PermissionChoice) -> bool {
+        let Some(pending) = self.model.pending_permission.as_ref() else {
+            return false;
+        };
+        if pending.tool != crate::workspace::secrets::SECRET_READ_TOOL {
+            return false;
+        }
+        let pending_id = pending.pending_request_id.clone();
+        let word = match choice {
+            PermissionChoice::AllowOnce => "once",
+            PermissionChoice::AllowSession => "session",
+            PermissionChoice::AllowAlways => "always",
+            PermissionChoice::Deny => "deny",
+        };
+        if !crate::workspace::secrets::deliver_folder_secret_choice(word) {
+            return false;
+        }
+        log::info!("assistant: folder secret sheet decision pending={pending_id} choice={word}");
+        let effects = self.model.permission_resolved(choice);
+        self.execute_effects(effects);
+        true
+    }
+
     /// Per-frame pump: tool-flow events, live stream deltas, finished turns,
     /// and queued app-event deliveries.
     fn pump_turn_io(&mut self) {
+        self.adopt_folder_secret_sheet();
         self.pump_deliveries();
         // Stream deltas and tool-flow events arrive on separate channels
         // with no cross-channel ordering, but the worker sends a tool call's
@@ -2114,6 +2162,9 @@ impl AssistantApp {
     pub(crate) fn resolve_permission(&mut self, choice: PermissionChoice) {
         if self.pending_subscribe.is_some() {
             self.resolve_subscribe_permission(choice);
+            return;
+        }
+        if self.deliver_folder_secret_sheet(choice) {
             return;
         }
         let Some(pending) = self.model.pending_permission.clone() else {
@@ -3673,7 +3724,10 @@ impl App for AssistantApp {
     }
 
     fn needs_background_tick(&self) -> bool {
-        self.model.streaming.in_flight || self.compact_pending || !self.pending_commands.is_empty()
+        self.model.streaming.in_flight
+            || self.compact_pending
+            || !self.pending_commands.is_empty()
+            || crate::workspace::secrets::folder_secret_sheet_pending()
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {

@@ -9,7 +9,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLEXI="${1:-$REPO_ROOT/target/release/plexi}"
+PLEXI="${PLEXI_BIN:-${1:-$REPO_ROOT/target/release/plexi}}"
 WORK="$(mktemp -d -t plexi-folder-secrets-XXXXXX)"
 HOME_DIR="$WORK/home"
 DIR_A="$WORK/A"
@@ -224,12 +224,10 @@ pane_marker() {
   fi
 }
 
-# A window is optional. macOS does not need X. Headless runs, and
-# PLEXI_E2E_SKIP_PANES=1, skip the pane check instead of failing it.
+# Pane checks always run when a display is available. This script does not
+# set a skip-panes variable.
 pane_gui=0
-if [[ "${PLEXI_E2E_SKIP_PANES:-}" == 1 ]]; then
-  printf 'SKIP: pane checks (PLEXI_E2E_SKIP_PANES=1)\n'
-elif [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$(uname -s)" == "Darwin" ]]; then
   if pgrep -q WindowServer; then
     pane_gui=1
   else
@@ -293,24 +291,88 @@ else
 fi
 rm -f "$audit_pat"
 
-# ── grant, then read ─────────────────────────────────────────────────────────
+# ── CLI grant does not record an allow ──────────────────────────────────────
 grant_out="$("$PLEXI" secret grant FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/grant.err")" || grant_code=$?
 grant_code="${grant_code:-0}"
 grant_err="$(cat "$WORK/grant.err" 2>/dev/null || true)"
-if [[ "$grant_code" -eq 0 ]] && ! contains_secret "$grant_out" && ! contains_secret "$grant_err"; then
-  pass "secret grant records an allow without printing the value"
+if [[ "$grant_code" -ne 0 ]] \
+  && [[ "$grant_out" == *"permission_denied"* ]] \
+  && ! contains_secret "$grant_out" \
+  && ! contains_secret "$grant_err"; then
+  pass "secret grant does not record an allow"
 else
-  fail "secret grant records an allow without printing the value"
+  fail "secret grant does not record an allow (exit ${grant_code})"
 fi
 
 got="$("$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/read2.err")" || got_code=$?
 got_code="${got_code:-0}"
-if [[ "$got_code" -eq 0 && "$got" == "$SECRET" ]]; then
-  pass "agent with the grant reads the secret"
+if [[ "$got_code" -ne 0 ]] && ! contains_secret "$got" && [[ "$got" != "$SECRET" ]]; then
+  pass "a refused grant does not let the next read return the value"
 else
-  fail "agent with the grant reads the secret (exit ${got_code})"
+  fail "a refused grant does not let the next read return the value (exit ${got_code})"
 fi
 got=""
+
+# ── keyboard grant ───────────────────────────────────────────────────────────
+# The pending id came from the ungranted read. A click on Allow once is the
+# grant. `secret grant` above is the negative and is not this click.
+pending_id=""
+if [[ "$read_out" == *"pending_request_id="* ]]; then
+  pending_id="${read_out#*pending_request_id=}"
+  pending_id="${pending_id%%$'\n'*}"
+fi
+if [[ ! -f "$REPO_ROOT/scripts/e2e/human.sh" ]]; then
+  fail "human click grants the pending read (scripts/e2e/human.sh missing)"
+elif ! command -v xdotool >/dev/null 2>&1; then
+  fail "human click grants the pending read (xdotool missing)"
+elif [[ "$HOST_STARTED" != 1 ]]; then
+  fail "human click grants the pending read (host is not running)"
+elif [[ -z "$pending_id" ]]; then
+  fail "human click grants the pending read (no pending)"
+else
+  assist=""
+  for _i in $(seq 1 20); do
+    "$PLEXI" pane list >"$WORK/panes.json" 2>/dev/null || true
+    assist="$(python3 - "$WORK/panes.json" <<'PY'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+for row in rows:
+    title = str(row.get("title") or "")
+    manifest = str(row.get("manifest_id") or "")
+    if row.get("type") == "app" and (
+        title.lower() == "assistant" or manifest.lower() == "assistant"
+    ):
+        print(row.get("id", ""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$assist" ]] && break
+    sleep 0.3
+  done
+  if [[ -n "$assist" ]]; then
+    "$PLEXI" pane focus "$assist" >/dev/null 2>&1 || true
+  fi
+  export BIN="$PLEXI"
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/e2e/human.sh"
+  if HUMAN_APPROVE "$pending_id" once; then
+    clicked="$("$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/read-click.err")" || click_code=$?
+    click_code="${click_code:-0}"
+    if [[ "$click_code" -eq 0 && "$clicked" == "$SECRET" ]]; then
+      pass "human click grants the pending read"
+    else
+      fail "human click grants the pending read (exit ${click_code})"
+    fi
+    clicked=""
+  else
+    fail "human click grants the pending read"
+  fi
+fi
 
 # ── plaintext search ─────────────────────────────────────────────────────────
 pat="$(mktemp)"
