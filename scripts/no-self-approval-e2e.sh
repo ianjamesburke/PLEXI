@@ -120,23 +120,39 @@ SOCK="$(python3 -c 'import json; print(json.load(open("'"$EVID/logs/host-status.
 "$BIN" app open assistant --right >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
 "$BIN" app open permissions >"$EVID/logs/open-permissions.out" 2>"$EVID/logs/open-permissions.err" || true
 
-"$BIN" pane list >"$EVID/logs/panes.json"
-TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
+# Opens from outside a pane are queued. Wait until the host has applied them.
+TERM=""
+ASSISTANT=""
+for _ in $(seq 1 30); do
+  "$BIN" pane list >"$EVID/logs/panes.json" 2>"$EVID/logs/panes.err" || true
+  TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
 import json, sys
-rows=json.load(open(sys.argv[1]))
+try:
+    rows=json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit
 terms=[str(r["id"]) for r in rows if r.get("type")=="terminal"]
 print(terms[-1] if terms else "")
 PY
 )"
-ASSISTANT="$(python3 - "$EVID/logs/panes.json" <<'PY'
+  ASSISTANT="$(python3 - "$EVID/logs/panes.json" <<'PY'
 import json, sys
-rows=json.load(open(sys.argv[1]))
+try:
+    rows=json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit
 hits=[str(r["id"]) for r in rows if "assistant" in str(r.get("title","")).lower()]
 print(hits[-1] if hits else "")
 PY
 )"
-[[ -n "$TERM" ]] || { record FAIL panes "no terminal"; exit 1; }
-[[ -n "$ASSISTANT" ]] || { record FAIL panes "no assistant pane"; exit 1; }
+  [[ -n "$TERM" && -n "$ASSISTANT" ]] && break
+  sleep 0.5
+done
+[[ -n "$TERM" ]] || { record FAIL panes "no terminal ($(cat "$EVID/logs/panes.json" 2>/dev/null))"; exit 1; }
+[[ -n "$ASSISTANT" ]] || {
+  record FAIL panes "no assistant pane ($(cat "$EVID/logs/open-assistant.out" "$EVID/logs/open-assistant.err" "$EVID/logs/panes.json" 2>/dev/null))"
+  exit 1
+}
 note "terminal $TERM assistant $ASSISTANT"
 
 in_pane() {
