@@ -228,17 +228,23 @@ else
 fi
 
 # A fresh terminal for the in-pane calls. Chess stays on screen beside it.
+# `pane new` from outside a pane is queued; wait until the terminal exists.
 "$BIN" pane new >"$EVID/logs/pane-new-step2.out" 2>"$EVID/logs/pane-new-step2.err" || true
-sleep 0.6
-"$BIN" pane list >"$EVID/logs/panes.json"
-TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
+TERM=""
+for _ in $(seq 1 20); do
+  "$BIN" pane list >"$EVID/logs/panes.json"
+  TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
 import json, sys
 rows=json.load(open(sys.argv[1]))
 terms=[str(r["id"]) for r in rows if r.get("type")=="terminal"]
 print(terms[-1] if terms else "")
 PY
 )"
+  [[ -n "$TERM" ]] && break
+  sleep 0.5
+done
 [[ -n "$TERM" ]] || { record FAIL panes "no terminal after the human move"; exit 1; }
+sleep 1
 
 # ── 2. Ungranted app call does not move ──────────────────────────────────────
 PLAY_G1=$(python3 - <<'PY'

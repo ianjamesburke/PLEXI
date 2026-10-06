@@ -14,10 +14,16 @@ import sys
 
 from PIL import Image
 
-LIGHT = (205, 214, 244)
-CURSOR = (137, 180, 250)
-SELECTED = (249, 226, 175)
-TOL = 24
+# apps/chess source fills, plus the colors the host framebuffer actually
+# stores for those fills (light squares land near #81869d, not #a6adc8).
+TARGETS = (
+    (166, 173, 200),  # source light
+    (205, 214, 244),  # theme text, sometimes sampled on a clipped board
+    (129, 134, 157),  # rendered light square
+    (137, 180, 250),  # cursor square
+    (249, 226, 175),  # selected square
+)
+TOL = 16
 
 
 def close(pixel: tuple, target: tuple) -> bool:
@@ -25,7 +31,7 @@ def close(pixel: tuple, target: tuple) -> bool:
 
 
 def square_pixel(pixel: tuple) -> bool:
-    return close(pixel, LIGHT) or close(pixel, CURSOR) or close(pixel, SELECTED)
+    return any(close(pixel, target) for target in TARGETS)
 
 
 def components(image: Image.Image) -> list[tuple[int, int, int, int, int]]:
