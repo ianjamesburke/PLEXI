@@ -311,7 +311,17 @@ pub fn reject_untrusted_audit(path: &Path, reason: &str) {
 /// Drop the MAC key from every pane. Agent panes also lose any value that
 /// contains the profile directory, including the Unix command socket.
 pub fn scrub_pane_env(env: &mut HashMap<String, String>, agent_pane: bool) {
-    let key_hex = key_hex().ok();
+    // Read a key that already exists. Creating one here opens the macOS
+    // keychain while the first pane is being built, before `host start` can
+    // report ready.
+    let key_hex = match existing_mac_key() {
+        Ok(Some(bytes)) => Some(Zeroizing::new(hex_encode(bytes.as_slice()))),
+        Ok(None) => None,
+        Err(error) => {
+            log::error!("permission_seal: pane env scrub could not read the mac key: {error}");
+            None
+        }
+    };
     let profile = crate::config::config_dir();
     let profile_text = profile.display().to_string();
     let canonical = crate::platform::path::canonical_or_self(&profile);
@@ -621,6 +631,25 @@ mod tests {
             hex_encode(&mac),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
+    }
+
+    #[test]
+    #[test]
+    fn scrub_does_not_create_a_mac_key() {
+        let before = existing_mac_key().unwrap();
+        let mut env = HashMap::new();
+        env.insert("OK".into(), "fine".into());
+        scrub_pane_env(&mut env, true);
+        let after = existing_mac_key().unwrap();
+        assert_eq!(
+            before.is_some(),
+            after.is_some(),
+            "pane env scrub created or dropped the mac key"
+        );
+        if let (Some(left), Some(right)) = (&before, &after) {
+            assert_eq!(left.as_slice(), right.as_slice());
+        }
+        assert_eq!(env.get("OK").map(String::as_str), Some("fine"));
     }
 
     #[test]
