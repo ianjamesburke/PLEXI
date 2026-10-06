@@ -94,6 +94,8 @@ taffy = "0.5"
 tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
+# Folder-secret encrypted-file fallback (AES-256-GCM). Already in the tree via transitive deps.
+ring = "0.17"
 wasmtime = "43.0.2"
 wasmtime-wasi = "43.0.2"
 bytes = "1"
