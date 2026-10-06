@@ -127,6 +127,13 @@ pub enum AppRequest {
         input_json: String,
         response_file: String,
     },
+    /// Assign, cancel, or list headless queue tasks for a lead.
+    AgentQueue {
+        op: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        response_file: String,
+    },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
         request_id: String,
@@ -2927,7 +2934,7 @@ mod tests {
         assert!(is_reserved_shortcut("h"));
         assert!(is_reserved_shortcut("l"));
         assert!(is_reserved_shortcut("J")); // case-insensitive
-        // Digit-select keys — reserved
+                                            // Digit-select keys — reserved
         assert!(is_reserved_shortcut("1"));
         assert!(is_reserved_shortcut("9"));
         // 0 is NOT reserved (1-9 only)
