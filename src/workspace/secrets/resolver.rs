@@ -171,6 +171,19 @@ pub fn resolve_with_source(
     router: &WorkspaceSecrets,
     store: &dyn NonDestructiveStore,
 ) -> ResolveWithSourceOutcome {
+    if crate::workspace::secrets::workspace_id_is_reserved(workspace_id)
+        || crate::workspace::secrets::secret_account_is_reserved(&keychain_workspace_name(
+            workspace_id,
+            canonical_name,
+        ))
+    {
+        log::info!(
+            "workspace_secrets: refused reserved namespace workspace_id={workspace_id} secret={canonical_name}"
+        );
+        return ResolveWithSourceOutcome::HardMissing {
+            reason: crate::workspace::secrets::reserved_secret_error(workspace_id),
+        };
+    }
     // Step 1+2: workspace route (apps.<id> first, then [default]).
     if let Some(friendly) = router.route_for(app_id, canonical_name) {
         let account = keychain_workspace_name(workspace_id, friendly);
@@ -405,6 +418,22 @@ mod tests {
         match resolve("ws-1", "terminal", "OPENAI_API_KEY", &r, &store) {
             ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "sk-workspace"),
             other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reserved_workspace_id_cannot_resolve_the_host_seal_account() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:host:permission-mac", "not-the-seal-key")
+            .unwrap();
+        let r = router("fallback = true\n");
+        match resolve_with_source("host", "sample", "permission-mac", &r, &store) {
+            ResolveWithSourceOutcome::HardMissing { reason } => {
+                assert!(reason.contains("reserved"), "{reason}");
+                assert!(reason.contains("plexi secret get"), "{reason}");
+            }
+            other => panic!("expected HardMissing, got {other:?}"),
         }
     }
 

@@ -522,7 +522,8 @@ fn review_raw_wasm_open_with_reader(
     let config_dir = crate::config::config_dir();
     let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
     let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
-    let (granted, blocked) = store.build_wasm_permission_sets(&app_id, &workspace_root, &declared);
+    let (granted, blocked) = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
+        .materialize_wasm_sets(&app_id, &workspace_root, &declared);
     let blocked_required: Vec<String> = required_caps
         .iter()
         .filter(|cap| blocked.contains(*cap))
@@ -542,15 +543,25 @@ fn review_raw_wasm_open_with_reader(
     if !prompt_raw_wasm_review(&app_id, &workspace_root, &missing, is_tty, reader)? {
         return Err("raw WASM launch cancelled".to_string());
     }
-    for capability_id in missing {
+    for capability_id in &missing {
         store.set_wasm(
             &app_id,
             &workspace_root,
-            &capability_id,
+            capability_id,
             crate::app::permissions::PermissionState::Green,
         );
     }
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
+    for capability_id in &missing {
+        monitor.grant_capability_id(
+            &app_id,
+            &workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
     log::info!(
         "open:cli: raw wasm review app={} path={} workspace={} grants={:?}",
         app_id,
@@ -599,6 +610,16 @@ fn trust_raw_wasm_open(path: &Path) -> Result<(), String> {
         );
     }
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
+    for capability_id in &granted {
+        monitor.grant_capability_id(
+            &app_id,
+            &workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
     log::info!(
         "open:cli: app trust granted app={} path={} workspace={} grants={:?}",
         app_id,
@@ -920,11 +941,19 @@ mod open_cli_tests {
         review_raw_wasm_open_with_reader(&fixture, true, &mut reader)
             .expect("tty approval should persist review");
 
-        let store = crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        let monitor = crate::broker::gate::PermissionMonitor::open_profile(config_dir.path());
+        let workspace = crate::platform::path::canonical_or_self(workspace_root);
+        let store = monitor.store();
         for capability_id in required {
+            let decision = store.records().iter().find_map(|record| {
+                (record.actor_id == app_id
+                    && record.target_id == capability_id
+                    && record.workspace_root.as_deref() == Some(workspace.as_path()))
+                .then_some(record.decision)
+            });
             assert_eq!(
-                store.get_wasm(app_id, workspace_root, &capability_id),
-                Some(crate::app::permissions::PermissionState::Green),
+                decision,
+                Some(crate::broker::Decision::Allow),
                 "{capability_id} should be remembered"
             );
         }
@@ -948,15 +977,23 @@ mod open_cli_tests {
 
         super::trust_raw_wasm_open(&fixture).expect("trust should persist grants");
 
-        let store = crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        let monitor = crate::broker::gate::PermissionMonitor::open_profile(config_dir.path());
+        let workspace = crate::platform::path::canonical_or_self(workspace_root);
+        let store = monitor.store();
         let mut expected = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
             .expect("inspect fixture grants")
             .capability_ids();
         expected.push("fs.pick".to_string());
         for capability_id in expected {
+            let decision = store.records().iter().find_map(|record| {
+                (record.actor_id == app_id
+                    && record.target_id == capability_id
+                    && record.workspace_root.as_deref() == Some(workspace.as_path()))
+                .then_some(record.decision)
+            });
             assert_eq!(
-                store.get_wasm(app_id, workspace_root, &capability_id),
-                Some(crate::app::permissions::PermissionState::Green),
+                decision,
+                Some(crate::broker::Decision::Allow),
                 "{capability_id} should be trusted"
             );
         }

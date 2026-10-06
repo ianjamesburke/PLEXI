@@ -393,6 +393,18 @@ impl PlexiApp {
                 );
             }
             store.save();
+            let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                &crate::config::config_dir(),
+            );
+            for capability in &review.missing_capabilities {
+                monitor.grant_capability_id(
+                    &review.app_id,
+                    &review.workspace_root,
+                    capability,
+                    crate::broker::Decision::Allow,
+                    crate::broker::GrantSource::User,
+                );
+            }
             log::info!(
                 "raw_wasm_review: approved {} imports for app_id={} path={}",
                 review.missing_capabilities.len(),
