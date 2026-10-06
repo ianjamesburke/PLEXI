@@ -4004,17 +4004,22 @@ impl AssistantApp {
 
     fn release_external_waiters_for_turn(&mut self, turn_id: &str) {
         self.note_permission_wait(turn_id);
-        let Some(waiters) = self.external_replies.remove(turn_id) else {
+        // Leave the waiter registered so the finished turn overwrites this
+        // file with the outcome. The first write is the fast phone ack.
+        let Some(waiters) = self.external_replies.get(turn_id) else {
             return;
         };
-        for waiter in waiters {
+        let files: Vec<(String, String)> = waiters
+            .iter()
+            .map(|waiter| (waiter.request_id.clone(), waiter.response_file.clone()))
+            .collect();
+        for (request_id, response_file) in files {
             log::info!(
-                "assistant: external turn waiting for desktop approval request_id={} turn_id={turn_id} pending_request_id={turn_id}",
-                waiter.request_id
+                "assistant: external turn waiting for desktop approval request_id={request_id} turn_id={turn_id} pending_request_id={turn_id}"
             );
             crate::rpc::write_json_response(
-                &waiter.response_file,
-                waiting_for_permission_json(&waiter.request_id, Some(turn_id), turn_id),
+                &response_file,
+                waiting_for_permission_json(&request_id, Some(turn_id), turn_id),
             );
         }
     }

@@ -357,13 +357,15 @@ fn decode_array<const N: usize>(text: &str) -> Option<[u8; N]> {
 mod tests {
     use super::*;
 
+    fn crypto_script() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("services/relay/phone_crypto.py")
+    }
+
     fn python_phone(pending: &PendingDesktopKey) -> Value {
+        let public = URL_SAFE_NO_PAD.encode(pending.public);
         let output = std::process::Command::new("python3")
-            .args([
-                "services/relay/phone_crypto.py",
-                "handshake-for",
-                &URL_SAFE_NO_PAD.encode(pending.public),
-            ])
+            .arg(crypto_script())
+            .args(["handshake-for", "--", &public])
             .output()
             .expect("python phone_crypto");
         assert!(
@@ -430,7 +432,8 @@ mod tests {
         let pending = generate_desktop_key().unwrap();
         let public = URL_SAFE_NO_PAD.encode(pending.public);
         let output = std::process::Command::new("python3")
-            .args(["services/relay/phone_crypto.py", "handshake-for", &public])
+            .arg(crypto_script())
+            .args(["handshake-for", "--", &public])
             .output()
             .unwrap();
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -465,8 +468,8 @@ mod tests {
         );
         let sealed = seal_reply(&mut session, "mock-reply", None, "req-vector").unwrap();
         let opened = std::process::Command::new("python3")
+            .arg(crypto_script())
             .args([
-                "services/relay/phone_crypto.py",
                 "open-reply",
                 "--desktop-pub",
                 &public,
