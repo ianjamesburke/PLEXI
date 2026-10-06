@@ -508,7 +508,7 @@ struct TurnDone {
 /// Run one prompt through the permission gate and the model. The caller owns
 /// the run record; this does not journal or finish a run.
 pub fn run_prompt(workspace: &Path, head: &str, text: &str) -> Value {
-    let done = run_model_turn(workspace, head, text, &mut http_complete);
+    let done = run_model_turn(workspace, head, text, None, &mut http_complete);
     log::info!("lead: prompt finished head={head} state={}", done.state);
     json!({"state": done.state, "reply": done.reply, "error": done.error})
 }
