@@ -914,26 +914,28 @@ fn status_house(tenant: Option<&str>) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
-const WRITE_DECISION: &str = "\
-import json, os, sys\n\
-from pathlib import Path\n\
-body = json.load(sys.stdin)\n\
-path = Path('/tenant/pairing-decision.json')\n\
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n\
-with os.fdopen(fd, 'w', encoding='utf-8') as handle:\n\
-    json.dump(body, handle)\n\
-";
+// `concat!` keeps the indented bodies. A `\` line continuation would drop
+// that indent, and Python would reject the script.
+const WRITE_DECISION: &str = concat!(
+    "import json, os, sys\n",
+    "from pathlib import Path\n",
+    "body = json.load(sys.stdin)\n",
+    "path = Path('/tenant/pairing-decision.json')\n",
+    "fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n",
+    "with os.fdopen(fd, 'w', encoding='utf-8') as handle:\n",
+    "    json.dump(body, handle)\n",
+);
 
-const WRITE_VAULT: &str = "\
-import os, sys\n\
-from pathlib import Path\n\
-path = Path('/tenant/vault')\n\
-path.mkdir(parents=True, exist_ok=True)\n\
-target = path / 'model'\n\
-fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n\
-with os.fdopen(fd, 'wb') as handle:\n\
-    handle.write(sys.stdin.buffer.read())\n\
-";
+const WRITE_VAULT: &str = concat!(
+    "import os, sys\n",
+    "from pathlib import Path\n",
+    "path = Path('/tenant/vault')\n",
+    "path.mkdir(parents=True, exist_ok=True)\n",
+    "target = path / 'model'\n",
+    "fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n",
+    "with os.fdopen(fd, 'wb') as handle:\n",
+    "    handle.write(sys.stdin.buffer.read())\n",
+);
 
 fn exec_stdin(container: &str, script: &str, bytes: &[u8]) -> Result<(), String> {
     let mut child = Command::new("docker")
@@ -1223,7 +1225,9 @@ mod tests {
             .iter()
             .any(|arg| arg.contains("docker.sock") || arg.contains("/opt/plexi/plexi")));
         assert!(!WRITE_VAULT.contains("sk-"));
+        assert!(WRITE_VAULT.contains("\n    handle.write"));
         assert!(!WRITE_DECISION.contains("pairing_code"));
+        assert!(WRITE_DECISION.contains("\n    json.dump"));
         let env = agent_env(&names, "local");
         assert!(env
             .iter()
