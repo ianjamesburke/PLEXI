@@ -8,5 +8,12 @@
 //! does not open that database and does not connect the desktop to the phone
 //! relay. It prunes logs Plexi controls, and local ledger and assistant
 //! conversation files when `[cloud] retain_local_history` is set.
+//!
+//! `plexi cloud agent` hosts one packaged agent in a local container. That
+//! runner calls [`retention::run`] on the tenant volume. It does not mount
+//! host secrets and it does not approve tool calls. A tenant model credential
+//! lives in [`vault`] and is injected at container start. The hosting rules
+//! are `docs/security/cloud-hosting-guardrails.md`.
 
 pub mod retention;
+pub mod vault;

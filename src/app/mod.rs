@@ -2512,6 +2512,20 @@ impl PlexiApp {
         self.windows[win_idx].focused_pane = saved;
     }
 
+    /// Move the empty window `new_for_test` builds off context 1 onto
+    /// `context_id`. Harnesses call this before any pane exists so the
+    /// process-global tool registry keeps each test in its own namespace.
+    #[cfg(test)]
+    pub(crate) fn set_initial_context_id_for_test(&mut self, context_id: u64) {
+        assert!(
+            self.windows.len() == 1 && self.windows[0].panes.is_empty(),
+            "set_initial_context_id_for_test runs before panes exist"
+        );
+        self.windows[0].context_id = context_id;
+        self.router.get_mut(0).context_id = context_id;
+        log::info!("test harness: isolated tool namespace context_id={context_id}");
+    }
+
     /// Create a `PlexiApp` for headless tests. No workspace restore, no macOS
     /// menu setup, no PTY or audio hardware. Initialises a single empty window
     /// so `state().open_panes` is empty and the harness can add panes via

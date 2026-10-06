@@ -132,6 +132,15 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AccountCmd,
     },
+    /// Host one agent package in a local container. No account is required.
+    ///
+    /// The runner starts the packaged chess opponent on an internal Docker
+    /// network. Tool calls are admitted inside that container by the permission
+    /// gate. The runner cannot approve them.
+    Cloud {
+        #[command(subcommand)]
+        cmd: CloudCmd,
+    },
     /// Watch installed CLI tools for changes to their available commands and options.
     Registry {
         #[command(subcommand)]
@@ -1006,6 +1015,165 @@ pub enum AccountCmd {
     },
     /// Log out and clear the local session.
     Logout,
+}
+
+/// `plexi cloud <cmd>`.
+#[derive(Subcommand)]
+pub enum CloudCmd {
+    /// Run, stop, or inspect the local house-agent container.
+    Agent {
+        #[command(subcommand)]
+        cmd: CloudAgentCmd,
+    },
+}
+
+/// `plexi cloud agent <cmd>`.
+#[derive(Subcommand)]
+pub enum CloudAgentCmd {
+    /// Start the packaged agent in Docker.
+    ///
+    /// Omitted `--agent` hosts `chess-opponent`. Omitted `--tenant` uses `local`.
+    Run {
+        /// Agent package id.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Tenant id. Lowercase letters, digits, and hyphens.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Stop the tenant's containers and internal network.
+    Stop {
+        /// Tenant id. Omitted, stops `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Report whether the tenant container is running.
+    Status {
+        /// Tenant id. Omitted, reports `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Admit one tool call through the permission gate.
+    ///
+    /// This is the in-tenant seam. A runner must not call it to approve a call
+    /// on the host profile.
+    Admit {
+        /// Tenant profile directory that holds `grants.toml`.
+        ///
+        /// Not `--profile`: that flag is the channel selector and is removed
+        /// before clap runs.
+        #[arg(long)]
+        tenant_profile: std::path::PathBuf,
+        /// Workspace root the grant is bound to.
+        #[arg(long)]
+        workspace: std::path::PathBuf,
+        /// Tool name, such as `agent.turn` or `app.chess.play`.
+        #[arg(long)]
+        tool: String,
+        /// Canonical JSON object of arguments.
+        #[arg(long)]
+        input: String,
+        /// Agent actor id. Omitted, the actor is `chess-opponent`.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Write the house grants for the packaged chess opponent.
+    Grant {
+        /// Tenant profile directory.
+        ///
+        /// Not `--profile`: that flag is the channel selector and is removed
+        /// before clap runs.
+        #[arg(long)]
+        tenant_profile: std::path::PathBuf,
+        /// Workspace root the grants are bound to.
+        #[arg(long)]
+        workspace: std::path::PathBuf,
+    },
+    /// Apply the 30-day ceiling to a tenant profile.
+    Retain {
+        /// Tenant profile directory.
+        ///
+        /// Not `--profile`: that flag is the channel selector and is removed
+        /// before clap runs.
+        #[arg(long)]
+        tenant_profile: std::path::PathBuf,
+    },
+    /// List phone pairings waiting for approval.
+    ///
+    /// Omitted `--tenant` uses `local`. The JSON `needs_you` array is this
+    /// tenant's desktop list. An unapproved pairing cannot send a turn.
+    Pending {
+        /// Tenant id. Omitted, reports `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Approve a pending phone pairing.
+    ///
+    /// Omitted `--tenant` uses `local`.
+    Approve {
+        /// Tenant id. Omitted, approves on `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Pairing id from `cloud agent pending` or from `run`.
+        #[arg(long)]
+        pairing_id: String,
+    },
+    /// Deny a pending phone pairing.
+    ///
+    /// Omitted `--tenant` uses `local`.
+    Deny {
+        /// Tenant id. Omitted, denies on `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Pairing id from `cloud agent pending` or from `run`.
+        #[arg(long)]
+        pairing_id: String,
+    },
+    /// Store or inspect the tenant model credential.
+    Vault {
+        #[command(subcommand)]
+        cmd: CloudVaultCmd,
+    },
+}
+
+/// `plexi cloud agent vault <cmd>`.
+///
+/// The secret is read from stdin. It is not a flag, so it stays out of the
+/// process list and out of `docker inspect`.
+#[derive(Subcommand)]
+pub enum CloudVaultCmd {
+    /// Store a model credential read from stdin.
+    ///
+    /// Omitted `--tenant` uses `local`. Refuses to overwrite; use `rotate`.
+    Set {
+        /// Tenant id. Omitted, stores on `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Replace the stored model credential with stdin.
+    ///
+    /// Omitted `--tenant` uses `local`. Fails when no credential is stored.
+    Rotate {
+        /// Tenant id. Omitted, rotates `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Delete the stored model credential.
+    ///
+    /// Omitted `--tenant` uses `local`. A second revoke is success.
+    Revoke {
+        /// Tenant id. Omitted, revokes `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Report whether a model credential is stored, by fingerprint only.
+    ///
+    /// Omitted `--tenant` uses `local`.
+    Status {
+        /// Tenant id. Omitted, reports `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2035,8 +2203,8 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
-        SecretCmd,
+        normalize_config_scope_aliases, AppCmd, Cli, CloudAgentCmd, CloudCmd, CloudVaultCmd,
+        Commands, ConfigCmd, ConfigScope, NotifyCmd, SecretCmd,
     };
     use clap::Parser;
 
@@ -2154,6 +2322,90 @@ mod tests {
             assert_eq!(text, "hello", "text mis-parsed for {argv:?}");
             assert!(submit, "--submit not seen for {argv:?}");
         }
+    }
+
+    #[test]
+    fn house_grant_uses_tenant_profile_not_the_channel_flag() {
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "cloud",
+            "agent",
+            "grant",
+            "--tenant-profile",
+            "/tenant/profile",
+            "--workspace",
+            "/tenant",
+        ])
+        .unwrap();
+        assert!(cli.profile.is_none());
+        let Some(Commands::Cloud {
+            cmd:
+                CloudCmd::Agent {
+                    cmd:
+                        CloudAgentCmd::Grant {
+                            tenant_profile,
+                            workspace,
+                        },
+                },
+        }) = cli.command
+        else {
+            panic!("expected cloud agent grant");
+        };
+        assert_eq!(tenant_profile, std::path::PathBuf::from("/tenant/profile"));
+        assert_eq!(workspace, std::path::PathBuf::from("/tenant"));
+    }
+
+    #[test]
+    fn house_approve_and_vault_do_not_take_a_secret_flag() {
+        let approve = Cli::try_parse_from([
+            "plexi",
+            "cloud",
+            "agent",
+            "approve",
+            "--tenant",
+            "local",
+            "--pairing-id",
+            "pair-1",
+        ])
+        .unwrap();
+        assert!(approve.profile.is_none());
+        let Some(Commands::Cloud {
+            cmd:
+                CloudCmd::Agent {
+                    cmd:
+                        CloudAgentCmd::Approve {
+                            tenant,
+                            pairing_id,
+                        },
+                },
+        }) = approve.command
+        else {
+            panic!("expected cloud agent approve");
+        };
+        assert_eq!(tenant.as_deref(), Some("local"));
+        assert_eq!(pairing_id, "pair-1");
+
+        let set = Cli::try_parse_from(["plexi", "cloud", "agent", "vault", "set"]).unwrap();
+        let Some(Commands::Cloud {
+            cmd:
+                CloudCmd::Agent {
+                    cmd: CloudAgentCmd::Vault { cmd: CloudVaultCmd::Set { tenant } },
+                },
+        }) = set.command
+        else {
+            panic!("expected cloud agent vault set");
+        };
+        assert!(tenant.is_none());
+        assert!(Cli::try_parse_from([
+            "plexi",
+            "cloud",
+            "agent",
+            "vault",
+            "set",
+            "--secret",
+            "sk-test",
+        ])
+        .is_err());
     }
 
     #[test]

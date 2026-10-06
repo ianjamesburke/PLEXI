@@ -290,7 +290,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, CloudAgentCmd, CloudCmd, CloudVaultCmd, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -1273,6 +1273,64 @@ fn main() -> eframe::Result {
                             }
                             AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
                         }
+                    }
+                    Commands::Cloud { cmd } => {
+                        let CloudCmd::Agent { cmd } = cmd;
+                        let code = match cmd {
+                            CloudAgentCmd::Run { agent, tenant } => {
+                                cli::cloud_agent_run_cli(agent.as_deref(), tenant.as_deref())
+                            }
+                            CloudAgentCmd::Stop { tenant } => {
+                                cli::cloud_agent_stop_cli(tenant.as_deref())
+                            }
+                            CloudAgentCmd::Status { tenant } => {
+                                cli::cloud_agent_status_cli(tenant.as_deref())
+                            }
+                            CloudAgentCmd::Admit {
+                                tenant_profile,
+                                workspace,
+                                tool,
+                                input,
+                                actor,
+                            } => cli::cloud_agent_admit_cli(
+                                &tenant_profile,
+                                &workspace,
+                                &tool,
+                                &input,
+                                actor.as_deref(),
+                            ),
+                            CloudAgentCmd::Grant {
+                                tenant_profile,
+                                workspace,
+                            } => cli::cloud_agent_grant_cli(&tenant_profile, &workspace),
+                            CloudAgentCmd::Retain { tenant_profile } => {
+                                cli::cloud_agent_retain_cli(&tenant_profile)
+                            }
+                            CloudAgentCmd::Pending { tenant } => {
+                                cli::cloud_agent_pending_cli(tenant.as_deref())
+                            }
+                            CloudAgentCmd::Approve { tenant, pairing_id } => {
+                                cli::cloud_agent_approve_cli(tenant.as_deref(), &pairing_id)
+                            }
+                            CloudAgentCmd::Deny { tenant, pairing_id } => {
+                                cli::cloud_agent_deny_cli(tenant.as_deref(), &pairing_id)
+                            }
+                            CloudAgentCmd::Vault { cmd } => match cmd {
+                                CloudVaultCmd::Set { tenant } => {
+                                    cli::cloud_agent_vault_set_cli(tenant.as_deref())
+                                }
+                                CloudVaultCmd::Rotate { tenant } => {
+                                    cli::cloud_agent_vault_rotate_cli(tenant.as_deref())
+                                }
+                                CloudVaultCmd::Revoke { tenant } => {
+                                    cli::cloud_agent_vault_revoke_cli(tenant.as_deref())
+                                }
+                                CloudVaultCmd::Status { tenant } => {
+                                    cli::cloud_agent_vault_status_cli(tenant.as_deref())
+                                }
+                            },
+                        };
+                        std::process::exit(code);
                     }
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {
