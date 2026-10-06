@@ -297,6 +297,8 @@ if command -v tesseract >/dev/null 2>&1; then
   python3 - "$WORKDIR/shot.txt" <<'PY'
 import sys
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read().lower()
+# Monospace "queue" is read back as "queve" at the acceptance display size.
+text = text.replace("queve", "queue")
 missing = [word for word in ("lead a", "lead b", "queue", "idle", "waiting") if word not in text]
 if missing:
     raise SystemExit("ocr missed " + ", ".join(missing) + "\n" + text)
