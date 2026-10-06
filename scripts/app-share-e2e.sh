@@ -439,6 +439,54 @@ PY
     exit 1
   fi
   wait "$send_pid" || true
+  # A combined host writes waiting_for_permission as soon as the sheet is up,
+  # then records the finished turn separately. The first body is the ack.
+  if "$BIN" assistant send --help 2>&1 | grep -q -- '--status-for'; then
+    local state turn
+    state="$(python3 - "$WORK/greet-send.json" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+print(data.get("state") or "")
+PY
+)"
+    if [[ "$state" == "waiting_for_permission" ]]; then
+      turn="$(python3 - "$WORK/greet-send.json" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+print(data.get("turn_id") or "")
+PY
+)"
+      echo "assistant send acked waiting_for_permission; polling turn $turn"
+      if [[ -n "$turn" ]]; then
+        local i
+        for i in $(seq 1 40); do
+          "$BIN" assistant send --pane-id "$assist" --status-for "$turn" --request-id "share-poll-${i}" --json >"$WORK/greet-send.json" 2>>"$WORK/greet-send.err" || true
+          state="$(python3 - "$WORK/greet-send.json" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+print(data.get("state") or "")
+PY
+)"
+          if [[ -n "$state" && "$state" != "waiting_for_permission" ]]; then
+            break
+          fi
+          sleep 0.4
+        done
+      fi
+    fi
+  fi
   if ! python3 - "$WORK/greet-send.json" <<'PY'
 import json, sys
 outer=json.load(open(sys.argv[1]))
