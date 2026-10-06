@@ -82,6 +82,28 @@ def write_bytes(path: str, content: bytes | bytearray) -> FileWrite:
 
 
 @dataclass
+class ReadPermissionDecisions:
+    """Ask the host for the live permission-monitor inventory.
+
+    The host replies with :class:`events.PermissionInventory`. The app does
+    not keep its own grant store.
+    """
+
+
+@dataclass
+class PermissionDecision:
+    """Change one live permission row.
+
+    ``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
+    Permissions app is a human decision. The host replies with a fresh
+    :class:`events.PermissionInventory`.
+    """
+
+    id: str
+    action: str
+
+
+@dataclass
 class ReadHostLog:
     """Request the tail of the Plexi host channel log (`logs.read` capability).
 

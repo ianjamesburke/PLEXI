@@ -218,6 +218,63 @@ impl PlexiApp {
         };
         log::info!("assistant_host_tool: executing '{name}' in process");
         match name {
+            "host.help" => {
+                let topic = parsed
+                    .get("topic")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("permissions");
+                let guidance = if topic == "permissions" || topic == "ui" {
+                    crate::broker::gate::PERMISSION_GUIDANCE
+                } else {
+                    "No verified steps for this topic. Say you are not sure. Do not invent Plexi UI, shortcuts, or commands."
+                };
+                log::info!("assistant_host_tool: host.help topic={topic}");
+                ToolCallResult::ok_value(serde_json::json!({
+                    "ok": true,
+                    "topic": topic,
+                    "guidance": guidance,
+                }))
+            }
+            "host.permissions.list" => {
+                let entries = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                )
+                .list_entries();
+                log::info!(
+                    "assistant_host_tool: host.permissions.list count={}",
+                    entries.len()
+                );
+                ToolCallResult::ok_value(serde_json::json!({"ok": true, "entries": entries}))
+            }
+            "host.permissions.revoke" | "host.permissions.reset" | "host.permissions.allow" => {
+                let Some(id) = parsed.get("id").and_then(serde_json::Value::as_str) else {
+                    return ToolCallResult::err("invalid_input: id is required".to_string());
+                };
+                let action = name.rsplit('.').next().unwrap_or("");
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                );
+                let outcome = monitor.mutate_entry(
+                    id,
+                    action,
+                    &crate::broker::gate::PermissionCaller {
+                        human: false,
+                        actor_id: format!("agent:assistant:{origin_pane_id}"),
+                    },
+                );
+                log::info!("assistant_host_tool: {name} id={id}");
+                let body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+                if matches!(
+                    outcome,
+                    crate::broker::gate::PermissionMutation::NeedsYou { .. }
+                        | crate::broker::gate::PermissionMutation::Rejected { .. }
+                        | crate::broker::gate::PermissionMutation::Missing { .. }
+                ) {
+                    ToolCallResult::err(body.to_string())
+                } else {
+                    ToolCallResult::ok_value(body)
+                }
+            }
             "host.panes.list" => ToolCallResult::ok_value(self.assistant_pane_list()),
             "host.panes.state" => {
                 let Some(id) = parsed.get("pane_id").and_then(serde_json::Value::as_u64) else {

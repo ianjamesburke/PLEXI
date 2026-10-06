@@ -74,6 +74,7 @@ impl PlexiApp {
                     "session" => Some(crate::broker::gate::ApprovalChoice::Session),
                     "always" => Some(crate::broker::gate::ApprovalChoice::Always),
                     "deny" => Some(crate::broker::gate::ApprovalChoice::Deny),
+                    "deny_always" => Some(crate::broker::gate::ApprovalChoice::DenyAlways),
                     _ => None,
                 };
                 match parsed {
@@ -90,12 +91,60 @@ impl PlexiApp {
                     },
                     None => serde_json::json!({
                         "ok": false,
-                        "error": "choice must be once, session, always, deny, or revoke",
+                        "error": "choice must be once, session, always, deny, deny_always, or revoke",
                     }),
                 }
                 }
             }
             _ => serde_json::json!({"ok": false, "error": "unknown permission operation"}),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
+    pub(crate) fn permissions_cli_request(
+        &mut self,
+        op: &str,
+        id: Option<&str>,
+        pane_id: Option<u64>,
+        credential: Option<&str>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let credential_set = credential.is_some_and(|value| !value.is_empty());
+        let human = pane_id.is_none() && !credential_set;
+        let actor_id = match pane_id {
+            Some(id) => format!("pane:{id}"),
+            None if credential_set => "agent:credential".to_string(),
+            None => "user".to_string(),
+        };
+        let body = if op == "list" {
+            let entries = monitor.list_entries();
+            log::info!(
+                "permissions:cli list count={} human={human} actor={actor_id}",
+                entries.len()
+            );
+            serde_json::json!({"ok": true, "entries": entries})
+        } else {
+            let id = id.unwrap_or("");
+            let outcome = monitor.mutate_entry(
+                id,
+                op,
+                &crate::broker::gate::PermissionCaller {
+                    human,
+                    actor_id: actor_id.clone(),
+                },
+            );
+            log::info!("permissions:cli {op} id={id} human={human} actor={actor_id}");
+            let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+            let ok = matches!(
+                outcome,
+                crate::broker::gate::PermissionMutation::Applied { .. }
+            );
+            if let Some(map) = body.as_object_mut() {
+                map.insert("ok".to_string(), serde_json::json!(ok));
+            }
+            body
         };
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }

@@ -2949,6 +2949,8 @@ impl LivePythonPane {
             Some("file_write") => self.handle_file_write(&message),
             Some("open_file_picker") => self.handle_open_file_picker(&message),
             Some("read_host_log") => self.handle_read_host_log(&message),
+            Some("read_permission_decisions") => self.handle_read_permission_decisions(),
+            Some("permission_decision") => self.handle_permission_decision(&message),
             Some("http_request") => self.handle_http_request(&message),
             Some("mcp_connect") => self.handle_mcp_connect(&message),
             Some("mcp_send") => self.handle_mcp_send(&message),
@@ -3223,6 +3225,65 @@ impl LivePythonPane {
         }
     }
 
+    fn permission_entries() -> Vec<crate::broker::gate::PermissionEntry> {
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .list_entries()
+    }
+
+    fn send_permission_inventory(&mut self, notice: &str, status: &str) {
+        let entries = Self::permission_entries();
+        if let Err(error) = self.runtime.send(&json!({
+            "type": "permission_inventory",
+            "entries": entries,
+            "notice": notice,
+            "status": status,
+        })) {
+            log::error!("app::{}: send permission_inventory: {error}", self.app_id);
+        }
+    }
+
+    fn handle_read_permission_decisions(&mut self) {
+        self.send_permission_inventory("", "list");
+    }
+
+    fn handle_permission_decision(&mut self, message: &Value) {
+        let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+        let action = message
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let outcome = monitor.mutate_entry(
+            id,
+            action,
+            &crate::broker::gate::PermissionCaller {
+                human: true,
+                actor_id: format!("app:{}", self.app_id),
+            },
+        );
+        log::info!(
+            "app::{}: permission {action} id={id} human=true",
+            self.app_id
+        );
+        let (notice, status) = match &outcome {
+            crate::broker::gate::PermissionMutation::Applied { entry_id } => {
+                (format!("{action} applied for {entry_id}"), "applied".to_string())
+            }
+            crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
+                format!("filed Needs you {needs_you_id}"),
+                "needs_you".to_string(),
+            ),
+            crate::broker::gate::PermissionMutation::Missing { entry_id } => {
+                (format!("missing {entry_id}"), "missing".to_string())
+            }
+            crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
+                (error.clone(), "rejected".to_string())
+            }
+        };
+        self.send_permission_inventory(&notice, &status);
+    }
+
     fn handle_http_request(&mut self, message: &Value) {
         let request_id = message
             .get("request_id")
@@ -3493,7 +3554,7 @@ impl LivePythonPane {
     }
 
     fn states_json(&self) -> Value {
-        Value::Object(
+        let mut states = Value::Object(
             self.config
                 .state_scopes
                 .iter()
@@ -3509,7 +3570,25 @@ impl LivePythonPane {
                     )
                 })
                 .collect(),
-        )
+        );
+        if self.app_id == "permissions" {
+            let entries = Self::permission_entries();
+            log::info!(
+                "app::{}: seeded permission inventory count={}",
+                self.app_id,
+                entries.len()
+            );
+            if let Some(scope) = states
+                .get_mut(self.default_scope().as_str())
+                .and_then(Value::as_object_mut)
+            {
+                scope.insert(
+                    "entries".to_string(),
+                    serde_json::to_value(&entries).unwrap_or(json!([])),
+                );
+            }
+        }
+        states
     }
 
     /// Send the guest's `init` handshake exactly once. `size` is the pane's

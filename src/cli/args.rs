@@ -158,6 +158,16 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: NeedsYouCmd,
     },
+    /// List and change decisions stored by the permission monitor.
+    ///
+    /// `list` prints the live rows. `reset` clears a stored denial so the next
+    /// call asks again. `revoke` removes an allow. `allow` turns a denial into
+    /// an allow. Reset and allow from a pane, a call credential, or an agent
+    /// file a Needs you item and leave the decision unchanged.
+    Permissions {
+        #[command(subcommand)]
+        cmd: PermissionsCmd,
+    },
     /// Send a notification to the Plexi UI.
     Notify {
         #[command(subcommand)]
@@ -342,15 +352,40 @@ pub enum NeedsYouCmd {
 }
 
 #[derive(Subcommand)]
+pub enum PermissionsCmd {
+    /// List live permission decisions.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear a stored denial so the next call asks again.
+    Reset {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Remove an allow, or refuse a pending ask.
+    Revoke {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Turn a denial or a pending ask into an allow.
+    Allow {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AssistantPermissionCmd {
     /// List pending permission requests as JSON.
     List,
     /// Show one pending permission request as JSON.
     Show { id: String },
-    /// Resolve one pending request: once, session, always, or deny.
+    /// Resolve one pending request: once, session, always, deny, or deny_always.
     Resolve {
         id: String,
-        #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
+        #[arg(long, value_parser = ["once", "session", "always", "deny", "deny_always", "revoke"])]
         choice: String,
     },
 }

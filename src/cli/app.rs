@@ -1677,6 +1677,24 @@ pub fn app_render(
         &capabilities,
         &allowed_hosts,
     );
+    let seed_state = if seed_state.is_none() && app_id == "permissions" {
+        let entries = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        )
+        .list_entries();
+        log::info!(
+            "app_render: seeding permissions inventory count={}",
+            entries.len()
+        );
+        Some(serde_json::json!({
+            "entries": entries,
+            "selected": 0,
+            "mode": "list",
+            "notice": "",
+        }))
+    } else {
+        seed_state
+    };
     let tree = match crate::host::wasm_python::run_headless_frame(
         &launch_config,
         (width as f32, height as f32),

@@ -2071,6 +2071,92 @@
         },
         {
           "additionalProperties": false,
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "properties": {
+            "credential": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permissions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "List items waiting on the human. The host expires due items first.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve one needs-you item exactly once. `approve` false denies it.",
+          "properties": {
+            "approve": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "resolve_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "approve",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Call an app-exposed tool through the host tool dispatcher. Sent by\n`plexi app call`. The host resolves the viewer context from\n`caller_pane_id` (the credential's context when absent), stamps the\ncaller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or\n`session:<id>` — never `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the app answers or the host deadline passes.",
           "properties": {
             "app_id": {

@@ -41,7 +41,7 @@ Observe and resolve pending permission requests. This is not `plexi agent reques
 |---|---|
 | `list` | List pending permission requests as JSON |
 | `show` | Show one pending permission request as JSON |
-| `resolve` | Resolve one pending request: once, session, always, or deny |
+| `resolve` | Resolve one pending request: once, session, always, deny, or deny_always |
 
 #### `plexi assistant permission list`
 
@@ -57,7 +57,7 @@ Show one pending permission request as JSON
 
 #### `plexi assistant permission resolve`
 
-Resolve one pending request: once, session, always, or deny
+Resolve one pending request: once, session, always, deny, or deny_always
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -161,6 +161,52 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
 | `--global` | flag | no | Delete from the global store instead of the project-scoped store |
+
+## `plexi connector`
+
+Connect third-party services over OAuth.
+
+Sign-in runs in your browser; the resulting token is kept in the platform secret store and is never printed — commands report only a credential reference. Revoke removes it locally and at the issuer.
+
+| Subcommand | Description |
+|---|---|
+| `login` | Sign in to a connector and store its credential |
+| `status` | Show a connector's stored credential reference as JSON (never the token) |
+| `revoke` | Revoke a connector's credential at the issuer and delete it locally |
+
+### `plexi connector login`
+
+Sign in to a connector and store its credential.
+
+Opens the issuer's sign-in page in your browser and waits for it to redirect back to a one-time loopback address. Prints the stored credential reference as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes | Connector id (currently only `stub`, a local test issuer) |
+| `--issuer` | string | no | Base URL of the stub issuer; must be a loopback address |
+| `--no-browser` | flag | no | Print the sign-in URL instead of opening a browser |
+| `--timeout` | string | no | Seconds to wait for the browser to redirect back Default: `300`. |
+| `--surface` | string | no | Default: `desktop`. |
+
+### `plexi connector status`
+
+Show a connector's stored credential reference as JSON (never the token)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes |  |
+| `--surface` | string | no | Default: `desktop`. |
+
+### `plexi connector revoke`
+
+Revoke a connector's credential at the issuer and delete it locally.
+
+The local credential is deleted even when the issuer cannot be reached; that case exits 1 and says so.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes |  |
+| `--surface` | string | no | Default: `desktop`. |
 
 ## `plexi routine`
 
@@ -1275,6 +1321,80 @@ Print the host MCP server config for an MCP-aware agent.
 Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
+## `plexi needs-you`
+
+List and resolve everything waiting on you.
+
+One host record covers click approvals, agent questions, and blocked runs. Resolving an id from here, the desktop badge, or the phone page resolves it everywhere, exactly once.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List open items waiting on you as JSON |
+| `resolve` | Resolve one item. Approve lets a click-gated tool proceed; deny refuses it |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi needs-you resolve`
+
+Resolve one item. Approve lets a click-gated tool proceed; deny refuses it
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Approve the item |
+| `--deny` | flag | no | Deny the item |
+
+## `plexi permissions`
+
+List and change decisions stored by the permission monitor.
+
+`list` prints the live rows. `reset` clears a stored denial so the next call asks again. `revoke` removes an allow. `allow` turns a denial into an allow. Reset and allow from a pane, a call credential, or an agent file a Needs you item and leave the decision unchanged.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List live permission decisions |
+| `reset` | Clear a stored denial so the next call asks again |
+| `revoke` | Remove an allow, or refuse a pending ask |
+| `allow` | Turn a denial or a pending ask into an allow |
+
+### `plexi permissions list`
+
+List live permission decisions
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi permissions reset`
+
+Clear a stored denial so the next call asks again
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
+### `plexi permissions revoke`
+
+Remove an allow, or refuse a pending ask
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
+### `plexi permissions allow`
+
+Turn a denial or a pending ask into an allow
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
 
 ## `plexi notify`
 

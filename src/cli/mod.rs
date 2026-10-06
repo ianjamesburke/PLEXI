@@ -230,6 +230,7 @@ pub mod notes;
 pub mod notify;
 pub mod open;
 pub mod pane;
+pub mod permissions;
 pub mod registry_watch;
 pub mod release_resolver;
 pub mod routine;
@@ -1291,6 +1292,7 @@ pub use open::{
     app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
     parse_prefix, AgentBootRequest, OpenPrefix,
 };
+pub use permissions::permissions_cli;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,
