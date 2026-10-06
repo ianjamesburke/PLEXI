@@ -305,6 +305,16 @@ fn main() -> eframe::Result {
                             }
                         },
                     },
+                    Commands::CommandView { cmd, json: _, follow } => {
+                        if follow && cmd.is_some() {
+                            eprintln!("error: --follow prints the live projection and takes no subcommand");
+                            std::process::exit(2);
+                        }
+                        if follow {
+                            std::process::exit(cli::command_view_follow_cli());
+                        }
+                        std::process::exit(cli::command_view_cli(cmd));
+                    }
                     Commands::Run {
                         command,
                         extra_args,

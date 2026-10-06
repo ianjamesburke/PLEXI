@@ -1274,6 +1274,85 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
+## `plexi command-view`
+
+List leads and steer them. `--json` prints the projection. `--follow` streams host events until interrupted
+
+| Subcommand | Description |
+|---|---|
+| `send` | Send a message to a lead. Admitted by the permission gate |
+| `enqueue` | Enqueue a pending task for a lead. Admitted by the permission gate |
+| `pause` | Pause a run. Admitted by the permission gate |
+| `cancel` | Cancel a run. Admitted by the permission gate |
+| `block` | File a blocked-run needs-you item and mark that run waiting |
+| `resolve` | Resolve a needs-you item from this view. Approve resumes the run |
+| `allow` | Record an exact allow for one steer. The tool, lead or run, and text must match the later command |
+
+### `plexi command-view send`
+
+Send a message to a lead. Admitted by the permission gate
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--lead` | string | yes |  |
+| `--text` | string | yes |  |
+
+### `plexi command-view enqueue`
+
+Enqueue a pending task for a lead. Admitted by the permission gate
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--lead` | string | yes |  |
+| `--text` | string | yes |  |
+
+### `plexi command-view pause`
+
+Pause a run. Admitted by the permission gate
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--run` | string | yes |  |
+
+### `plexi command-view cancel`
+
+Cancel a run. Admitted by the permission gate
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--run` | string | yes |  |
+
+### `plexi command-view block`
+
+File a blocked-run needs-you item and mark that run waiting
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--lead` | string | yes |  |
+| `--run` | string | yes |  |
+| `--summary` | string | yes |  |
+
+### `plexi command-view resolve`
+
+Resolve a needs-you item from this view. Approve resumes the run
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no |  |
+| `--deny` | flag | no |  |
+
+### `plexi command-view allow`
+
+Record an exact allow for one steer. The tool, lead or run, and text must match the later command
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--tool` | string | yes |  |
+| `--lead` | string | no |  |
+| `--run` | string | no |  |
+| `--text` | string | no |  |
+
 ## `plexi notify`
 
 Send a notification to the Plexi UI

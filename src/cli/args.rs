@@ -148,6 +148,19 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: EventsCmd,
     },
+    /// List leads and steer them. `--json` prints the projection. `--follow`
+    /// streams host events until interrupted.
+    #[command(name = "command-view")]
+    CommandView {
+        #[command(subcommand)]
+        cmd: Option<CommandViewCmd>,
+        /// Print the projection as JSON.
+        #[arg(long, global = true)]
+        json: bool,
+        /// Stream command.view events as NDJSON until interrupted.
+        #[arg(long, global = true)]
+        follow: bool,
+    },
     /// Send a notification to the Plexi UI.
     Notify {
         #[command(subcommand)]
@@ -256,6 +269,63 @@ pub enum Commands {
     /// List run completions (hidden, used by shell completions)
     #[command(hide = true, name = "_complete-run")]
     CompleteRun,
+}
+
+#[derive(Subcommand)]
+pub enum CommandViewCmd {
+    /// Send a message to a lead. Admitted by the permission gate.
+    Send {
+        #[arg(long)]
+        lead: String,
+        #[arg(long)]
+        text: String,
+    },
+    /// Enqueue a pending task for a lead. Admitted by the permission gate.
+    Enqueue {
+        #[arg(long)]
+        lead: String,
+        #[arg(long)]
+        text: String,
+    },
+    /// Pause a run. Admitted by the permission gate.
+    Pause {
+        #[arg(long)]
+        run: String,
+    },
+    /// Cancel a run. Admitted by the permission gate.
+    Cancel {
+        #[arg(long)]
+        run: String,
+    },
+    /// File a blocked-run needs-you item and mark that run waiting.
+    Block {
+        #[arg(long)]
+        lead: String,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        summary: String,
+    },
+    /// Resolve a needs-you item from this view. Approve resumes the run.
+    Resolve {
+        id: String,
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        approve: bool,
+        #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
+        deny: bool,
+    },
+    /// Record an exact allow for one steer. The tool, lead or run, and text
+    /// must match the later command.
+    Allow {
+        #[arg(long)]
+        tool: String,
+        #[arg(long)]
+        lead: Option<String>,
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long)]
+        text: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -4,6 +4,7 @@ pub mod app_trait;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
+pub mod command_view_app;
 mod dispatch;
 pub mod file_handlers;
 mod focus;
@@ -794,6 +795,11 @@ fn handle_socket_connection(
             }
             Some("events_list") => {
                 handle_events_list(write_half, &val);
+                return;
+            }
+            Some("command_view_follow") => {
+                log::info!("command_view: follow connected");
+                crate::host::command_view::serve_follow(write_half);
                 return;
             }
             Some("events_declare") | Some("events_emit") => {

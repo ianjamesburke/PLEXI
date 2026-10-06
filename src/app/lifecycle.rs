@@ -243,6 +243,33 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
+            crate::protocol::AppRequest::CommandView {
+                op,
+                lead,
+                run,
+                text,
+                summary,
+                tool,
+                id,
+                approve,
+                workspace,
+                response_file,
+            } => {
+                log::info!("command_view: ipc op={op}");
+                let body = crate::host::command_view::handle(&crate::host::command_view::CommandRequest {
+                    op,
+                    lead,
+                    run,
+                    text,
+                    summary,
+                    tool,
+                    id,
+                    approve: *approve,
+                    workspace,
+                });
+                write_json_response(response_file, body);
+                self.ctx.request_repaint();
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;

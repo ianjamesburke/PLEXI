@@ -37,6 +37,10 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - **Login bash does not read `~/.bashrc`.** Host panes exec `bash -i -l` (`apply_initial_cmd`). Bash completion registration has to land on the login file in `prepare_path_registration`; a `.bashrc`-only snippet never reaches a pane. See `scripts/DISTRIBUTION.md`.
 - **`just merge-pr` must run from the canonical alpha checkout.** Stint state lives in ignored `.stint/` files that feature worktrees may not have. If a PR body references stint IDs, running merge closeout from a feature worktree can fail before merge with missing `.stint/tasks`; rerun from `/Users/ianburke/Documents/GitHub/PLEXI` on `alpha`.
 
+## Installed checks
+
+- `command-view-e2e.sh` drives `plexi command-view` against a private-home host. The profile directory follows `resolve_channel_dir` in `src/config/mod.rs`. The projection contract is `src/host/command_view.rs`.
+
 ## Child DOX Index
 
 - `default-scripts/` — default app scripts bundled into new user profiles.

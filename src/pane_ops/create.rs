@@ -83,6 +83,9 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
         "secrets_manager" => Some(Box::new(crate::app::secrets_app::SecretsApp::new(
             cwd.to_path_buf(),
         ))),
+        "command" | "command-view" => {
+            Some(Box::new(crate::app::command_view_app::CommandViewApp))
+        }
         _ => None,
     }
 }
@@ -111,7 +114,7 @@ fn builtin_restore_args(
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
-        "file_browser" | "secrets_manager" => Some(vec![]),
+        "file_browser" | "secrets_manager" | "command" | "command-view" => Some(vec![]),
         _ => None,
     }
 }

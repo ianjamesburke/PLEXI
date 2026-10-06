@@ -35,6 +35,68 @@ pub enum ApprovalChoice {
     Deny,
 }
 
+/// A blocked run waiting on the human. Command view files these rows.
+/// Click approvals and questions belong to the Needs you surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedsYouKind {
+    BlockedRun,
+}
+
+impl NeedsYouKind {
+    pub fn as_str(self) -> &'static str {
+        let Self::BlockedRun = self;
+        "blocked_run"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedsYouResolution {
+    Approved,
+    Denied,
+}
+
+impl NeedsYouResolution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NeedsYouRecord {
+    pub id: String,
+    pub kind: NeedsYouKind,
+    pub actor: String,
+    pub resource: String,
+    pub summary: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub run_tag: Option<String>,
+    pub resolution: Option<NeedsYouResolution>,
+}
+
+/// A question or a blocked run filed by the host. Approvals are filed by the gate.
+#[derive(Debug, Clone)]
+pub struct NeedsYouFile {
+    pub kind: NeedsYouKind,
+    pub actor: String,
+    pub resource: String,
+    pub summary: String,
+    pub expires_at: Option<i64>,
+    pub run_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeedsYouReceipt {
+    pub id: String,
+    pub resolution: NeedsYouResolution,
+    pub already: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingView {
     pub pending_request_id: String,
@@ -79,6 +141,10 @@ pub struct PermissionMonitor {
     audit_path: Option<PathBuf>,
     audit_mem: Mutex<Vec<AuditFact>>,
     fail_audit: AtomicBool,
+    /// Open and resolved items waiting on the human. One map, one resolution.
+    needs_you: Mutex<BTreeMap<String, NeedsYouRecord>>,
+    /// Serializes list, expiry, and resolve so one terminal receipt wins.
+    needs_resolve: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -183,6 +249,8 @@ impl PermissionMonitor {
             audit_path,
             audit_mem: Mutex::new(Vec::new()),
             fail_audit: AtomicBool::new(false),
+            needs_you: Mutex::new(BTreeMap::new()),
+            needs_resolve: Mutex::new(()),
         }
     }
 
@@ -568,6 +636,184 @@ impl PermissionMonitor {
             .map(pending_view)
     }
 
+    /// File a blocked run. Gate approvals stay on the pending list.
+    pub fn file_needs_you(&self, filed: NeedsYouFile) -> Result<String, String> {
+        if filed.actor.is_empty() || filed.summary.is_empty() {
+            return Err("needs-you actor and summary are required".to_string());
+        }
+        let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tag) = filed.run_tag.as_deref() {
+            if let Some(existing) = map.values().find(|row| {
+                row.resolution.is_none()
+                    && row.kind == filed.kind
+                    && row.run_tag.as_deref() == Some(tag)
+            }) {
+                log::info!("needs_you: reuse {} kind={}", existing.id, existing.kind.as_str());
+                return Ok(existing.id.clone());
+            }
+        }
+        let id = format!("ny_{}", uuid::Uuid::new_v4());
+        let record = NeedsYouRecord {
+            id: id.clone(),
+            kind: filed.kind,
+            actor: filed.actor,
+            resource: filed.resource,
+            summary: filed.summary,
+            created_at: self.now_secs(),
+            expires_at: filed.expires_at,
+            run_tag: filed.run_tag,
+            resolution: None,
+        };
+        log::info!(
+            "needs_you: filed {} kind={} actor={} resource={}",
+            record.id,
+            record.kind.as_str(),
+            record.actor,
+            record.resource
+        );
+        map.insert(id.clone(), record);
+        Ok(id)
+    }
+
+    fn expire_needs_you_locked(&self) {
+        let now = self.now_secs();
+        let due: Vec<NeedsYouRecord> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| {
+                row.resolution.is_none() && row.expires_at.is_some_and(|expires| now >= expires)
+            })
+            .cloned()
+            .collect();
+        for row in due {
+            if !self.close_needs_you(&row.id, NeedsYouResolution::Denied, "auto_denied", "") {
+                continue;
+            }
+            log::info!(
+                "needs_you: auto-denied {} kind={}",
+                row.id,
+                row.kind.as_str()
+            );
+        }
+    }
+
+    /// Open items without expiring. Command view reads this for the projection.
+    pub fn open_needs_you(&self) -> Vec<NeedsYouRecord> {
+        let mut rows: Vec<NeedsYouRecord> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| row.resolution.is_none())
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        rows
+    }
+
+    /// Resolve one item. A second call returns the first receipt.
+    pub fn resolve_needs_you(&self, id: &str, approve: bool) -> Result<NeedsYouReceipt, String> {
+        let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        self.expire_needs_you_locked();
+        let Some(row) = self.needs_you_of(id) else {
+            return Err(format!("unknown needs-you item {id}"));
+        };
+        if let Some(resolution) = row.resolution {
+            log::info!("needs_you: resolve {id} already {}", resolution.as_str());
+            return Ok(NeedsYouReceipt {
+                id: id.to_string(),
+                resolution,
+                already: true,
+            });
+        }
+        let resolution = if approve {
+            NeedsYouResolution::Approved
+        } else {
+            NeedsYouResolution::Denied
+        };
+        let decision = if approve { "approved" } else { "denied" };
+        if !self.close_needs_you(id, resolution, decision, "") {
+            if let Some(existing) = self.resolved_receipt(id, true) {
+                return Ok(existing);
+            }
+            return Err(format!("needs-you item {id} could not be audited"));
+        }
+        self.resolved_receipt(id, false)
+            .ok_or_else(|| format!("needs-you item {id} was not resolved"))
+    }
+
+    fn resolved_receipt(&self, id: &str, already: bool) -> Option<NeedsYouReceipt> {
+        self.needs_you_of(id)
+            .and_then(|row| row.resolution)
+            .map(|resolution| NeedsYouReceipt {
+                id: id.to_string(),
+                resolution,
+                already,
+            })
+    }
+
+    fn needs_you_of(&self, id: &str) -> Option<NeedsYouRecord> {
+        self.needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    /// Mark an open item resolved and audit it. Returns false when it was already
+    /// resolved or the audit write failed (the item stays open in that case).
+    fn close_needs_you(
+        &self,
+        id: &str,
+        resolution: NeedsYouResolution,
+        decision: &str,
+        grant_id: &str,
+    ) -> bool {
+        let snapshot = {
+            let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(row) = map.get_mut(id) else {
+                return false;
+            };
+            if row.resolution.is_some() {
+                return false;
+            }
+            row.resolution = Some(resolution);
+            row.clone()
+        };
+        let fact = AuditFact {
+            kind: "needs_you".to_string(),
+            actor: snapshot.actor.clone(),
+            call_id: snapshot.run_tag.clone().unwrap_or_else(|| snapshot.id.clone()),
+            grant_id: grant_id.to_string(),
+            resource_id: snapshot.resource.clone(),
+            args_fingerprint: String::new(),
+            operation_id: snapshot.id.clone(),
+            decision: decision.to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        };
+        if let Err(error) = self.audit(&fact) {
+            log::error!("needs_you: audit failed for {id}: {error}");
+            if let Some(row) = self
+                .needs_you
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(id)
+            {
+                row.resolution = None;
+            }
+            return false;
+        }
+        log::info!("needs_you: resolved {id} {decision}");
+        true
+    }
+
+    fn now_secs(&self) -> i64 {
+        crate::platform::clock::now_secs() as i64
+    }
+
     pub fn issue_credential(
         &self,
         pane_id: Option<u64>,
@@ -874,6 +1120,21 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
         if let Some(game_id) = game {
             return (ResourceScope::Game, Some(game_id));
         }
+    }
+    if let Some(resource) = tool
+        .strip_prefix("command.")
+        .filter(|name| matches!(*name, "send" | "enqueue" | "pause" | "cancel"))
+        .and_then(|_| {
+            parsed.as_ref().and_then(|value| {
+                value
+                    .get("resource")
+                    .and_then(|item| item.as_str())
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+            })
+        })
+    {
+        return (ResourceScope::Workspace, Some(resource));
     }
     if let Some(path) = parsed.as_ref().and_then(|value| {
         value
