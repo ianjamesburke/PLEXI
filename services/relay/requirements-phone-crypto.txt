@@ -1,0 +1,2 @@
+# phone_crypto.py only. The relay process does not import this.
+cryptography==41.0.7
