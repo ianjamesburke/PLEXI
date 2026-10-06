@@ -323,7 +323,7 @@ The namespace is configuration and diagnostics end to end. **No verb sends a mes
 | Verb | Referent | Does | Status | Callers |
 |---|---|---|---|---|
 | `init` | An agent *app* | Pure alias for `app_init(name, "python_agent")` — app scaffolding, nothing agent-specific beyond the template | Thin but real | Survives as the replacement for the removed `app init --agent`; a public SKILL.md cites it |
-| `add` / `update` / `list` | An agent *definition* | Copies `AGENT.md` into `<workspace>/<channel>/agents/<name>/` with empty `memory/` and `logs/` | **Demo-grade — nothing in the host reads the result** | `plexi agent list` only |
+| `add` / `update` / `list` | An agent *definition* | Copies `AGENT.md` into `<workspace>/.plexi/agents/<name>/` with empty `memory/` and `logs/` | **Demo-grade — nothing in the host reads the result** | `plexi agent list` only |
 | `report` | An external *process* | Sends `set_agent_state` over the pane socket → `AppRequest::SetAgentState` → Cmd+P rows and activity pips | **Load-bearing, and a machine ABI** | Three *externally installed* consumers: hook entries written into `~/.claude/settings.json`, the Codex hooks file, and the pi extension |
 | `status` / `hook` | An external *process* | Human and skill entry points onto `report`'s mechanism | Load-bearing | Generated CLI docs; `assets/hooks/`; a currently-disabled dispatch skill |
 
@@ -339,7 +339,7 @@ The namespace is configuration and diagnostics end to end. **No verb sends a mes
 
 - **The skill-surface gate reads only one file.** It checks `skills/plexi-cli/SKILL.md`, while live invocations also sit in `README.md`, the website drafts, `docs/pgap.md`, and the disabled dispatch skill — checked by nothing. Its coverage floors sit well below current coverage, so a namespace deletion is silently absorbed rather than failing the gate.
 - **The website CLI reference regenerates only through self-committing recipes**, per the trap recorded in the root `AGENTS.md`. Documentation drift after a rename is the default outcome, not the unlucky one.
-- **`plexi agent add` already prints a path it does not write** — it reports `.plexi/agents/` while writing the channel directory, and the published CLI docs repeat the wrong path. The surface is documented incorrectly today, before anything moves.
+- **`plexi agent add` writes `<workspace>/.plexi/agents/<name>/`**, the same path it prints. A definition left under the channel directory is copied there once on the next add, update, or list.
 
 **Two seams are clean and should stay that way.** `NotifyScope` and `RoutineCmd` have zero coupling to the agent namespaces — which is exactly what §5 assumes when it puts heads behind routines and notifications. Neither needs to move for any of this.
 
