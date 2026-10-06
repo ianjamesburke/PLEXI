@@ -16,9 +16,10 @@
 //!   by this binary. `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file
 //!   and never falls back to the login keychain. The `security` tool is not
 //!   the creating binary, so a direct keychain read does not yield the key.
-//!   Every call disables the credential dialog first. A fresh binary's value
-//!   read otherwise waits on Allow, and `PlexiApp::new` does that read before
-//!   the notify socket can answer `host start`.
+//!   The first call disables keychain prompts for the process and leaves them
+//!   off, same as `MacKeychain`. A fresh binary's value read otherwise waits
+//!   on Allow, and `PlexiApp::new` does that read before the notify socket
+//!   can answer `host start`. Turning prompts back on would undo that.
 //! - Windows stores it in Credential Manager under `plexi-host-seal/`, which
 //!   `plexi secret get` does not read.
 
@@ -517,7 +518,6 @@ mod mac {
     use super::HOST_SERVICE;
     use security_framework::base::Error;
     use security_framework::os::macos::keychain::SecKeychain;
-    use std::sync::Mutex;
     use zeroize::Zeroizing;
 
     // errSecItemNotFound. A missing host item is an empty store, not a failure.
@@ -525,51 +525,25 @@ mod mac {
     // errSecInteractionNotAllowed. The call would have opened a credential dialog.
     const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
 
-    #[link(name = "Security", kind = "framework")]
-    unsafe extern "C" {
-        fn SecKeychainSetUserInteractionAllowed(state: u8) -> i32;
-    }
-
-    static PROMPT_DEPTH: Mutex<u32> = Mutex::new(0);
-
-    /// Keep Security.framework from opening a dialog for the duration of one call.
+    /// Disable keychain dialogs once and leak the guard.
     ///
-    /// `PlexiApp::new` reads the audit tip before the event loop exists. A
-    /// dialog there never returns on the install runners, so `host start`
-    /// times out at 15s. Nested calls share one process-wide flag.
-    struct SuppressPrompt;
-
-    impl SuppressPrompt {
-        fn enter() -> Self {
-            let mut depth = PROMPT_DEPTH
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if *depth == 0 {
-                // SAFETY: the flag is process-global and this is the only
-                // writer. `state` is a Boolean (0 or 1).
-                unsafe {
-                    SecKeychainSetUserInteractionAllowed(0);
-                }
+    /// `MacKeychain` does the same. Dropping the guard turns prompts back on,
+    /// which would let a later seal read block `host start` again. The audit
+    /// tip is read from `PlexiApp::new`, before the event loop can answer
+    /// `ListPanes`.
+    fn keychain_calls_cannot_prompt() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| match SecKeychain::disable_user_interaction() {
+            Ok(guard) => {
+                std::mem::forget(guard);
+                log::info!(
+                    "permission_seal: disabled keychain prompts so host startup cannot wait on a credential dialog"
+                );
             }
-            *depth += 1;
-            Self
-        }
-    }
-
-    impl Drop for SuppressPrompt {
-        fn drop(&mut self) {
-            let mut depth = PROMPT_DEPTH
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            *depth = depth.saturating_sub(1);
-            if *depth == 0 {
-                // SAFETY: same flag as `enter`. Restoring interaction lets a
-                // later user-secret read show its own dialog.
-                unsafe {
-                    SecKeychainSetUserInteractionAllowed(1);
-                }
+            Err(error) => {
+                log::warn!("permission_seal: could not disable keychain prompts: {error}");
             }
-        }
+        });
     }
 
     fn keychain() -> Result<SecKeychain, String> {
@@ -602,7 +576,7 @@ mod mac {
     }
 
     pub(super) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-        let _suppress = SuppressPrompt::enter();
+        keychain_calls_cannot_prompt();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
             Ok((password, _item)) => {
@@ -617,7 +591,7 @@ mod mac {
     }
 
     pub(super) fn add_new(account: &str, value: &str) -> Result<(), String> {
-        let _suppress = SuppressPrompt::enter();
+        keychain_calls_cannot_prompt();
         if get(account)?.is_some() {
             return Err(format!("host key already exists: {account}"));
         }
@@ -632,7 +606,7 @@ mod mac {
     }
 
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
-        let _suppress = SuppressPrompt::enter();
+        keychain_calls_cannot_prompt();
         let chain = keychain()?;
         chain
             .set_generic_password(HOST_SERVICE, account, value.as_bytes())
@@ -642,7 +616,7 @@ mod mac {
     }
 
     pub(super) fn delete(account: &str) -> Result<(), String> {
-        let _suppress = SuppressPrompt::enter();
+        keychain_calls_cannot_prompt();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
             Ok((_password, item)) => item

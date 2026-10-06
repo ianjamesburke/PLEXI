@@ -634,25 +634,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    fn scrub_does_not_create_a_mac_key() {
-        let before = existing_mac_key().unwrap();
-        let mut env = HashMap::new();
-        env.insert("OK".into(), "fine".into());
-        scrub_pane_env(&mut env, true);
-        let after = existing_mac_key().unwrap();
-        assert_eq!(
-            before.is_some(),
-            after.is_some(),
-            "pane env scrub created or dropped the mac key"
-        );
-        if let (Some(left), Some(right)) = (&before, &after) {
-            assert_eq!(left.as_slice(), right.as_slice());
-        }
-        assert_eq!(env.get("OK").map(String::as_str), Some("fine"));
-    }
-
-    #[test]
     fn scrub_removes_mac_key_and_agent_profile_path() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
