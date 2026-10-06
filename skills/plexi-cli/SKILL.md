@@ -256,7 +256,7 @@ plexi notify dismiss "$NOTICE"
 
 ### Review an agent file edit before it is written
 
-`plexi changes propose` admits the edit through the permission gate and stores a change set. The file is unchanged until `accept`. `preview` prints the diff. If the file changed after propose, `accept` reports stale until `refresh`. `revert` restores a committed change set. The audit and `change-ledger.jsonl` name the agent and do not replace the permission gate. `plexi changes profile` prints the channel profile directory. An open text editor shows the pending diff with Accept and Reject before the buffer changes; unsaved editor text is stale and is not overwritten.
+`plexi changes propose` admits the edit through the permission gate and stores a change set. The file is unchanged until `accept`. `preview` prints the diff. If the file changed after propose, `accept` reports stale until `refresh`. `revert` restores a committed change set. The audit and `change-ledger.jsonl` name the agent and do not replace the permission gate. `plexi changes profile` prints the channel profile directory. An open text editor shows the pending diff with Accept and Reject before the buffer changes; unsaved editor text is stale and is not overwritten. `plexi assistant tool host.editors.list --input '{}'` lists open editor paths. `plexi assistant tool host.files.edit --input '<json>'` proposes a change set through the Assistant gate, including for an open file outside the workspace. Exit 2 is `permission_required`; resolve it with `plexi assistant permission resolve <id> --choice once` and retry the same tool.
 
 ```bash
 plexi changes allow --agent editor-bot --file notes/draft.txt --old alpha --new beta

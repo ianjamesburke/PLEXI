@@ -6,7 +6,16 @@ use crate::release::ReleaseFeature;
 const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
         "Workspace",
-        &["run", "workspace", "secret", "connector", "routine", "agent", "context"],
+        &[
+            "run",
+            "workspace",
+            "secret",
+            "connector",
+            "routine",
+            "agent",
+            "context",
+            "changes",
+        ],
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),

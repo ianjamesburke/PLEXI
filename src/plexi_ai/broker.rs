@@ -35,6 +35,10 @@ use crate::protocol::{AiMessage, AiTool, ModelTier};
 pub struct PaneContext {
     pub type_id: String,
     pub pane_id: u64,
+    /// Absolute path of an open text-editor buffer, when this pane has one.
+    pub path: Option<String>,
+    /// True when that buffer has unsaved edits.
+    pub dirty: bool,
 }
 
 // ── Global pane context snapshot ────────────────────────────────────────────
@@ -639,8 +643,22 @@ fn build_context_prefix(workspace_root: &std::path::Path, open_panes: &[PaneCont
         out.push_str("open panes:");
         for p in open_panes {
             out.push_str(&format!(" {}(pane_id={})", p.type_id, p.pane_id));
+            if let Some(path) = &p.path {
+                out.push_str(&format!(" path={path}"));
+                if p.dirty {
+                    out.push_str(" dirty=true");
+                }
+            }
         }
         out.push('\n');
+        out.push_str(
+            "Open text editors are listed with an absolute path and a dirty flag. \
+             Edit an open file with host.files.edit using that absolute path, even when \
+             the file is outside the workspace. That proposes a change set: the editor \
+             shows Accept and Reject, and the file stays unchanged until the user accepts. \
+             The permission gate asks once, scoped to that path. Do not call \
+             host.panes.open or host.apps.open on a pane that already has the file.\n",
+        );
     }
 
     // Append up to 20 recent workspace events (~8000 chars budget).

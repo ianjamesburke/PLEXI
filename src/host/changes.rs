@@ -180,6 +180,37 @@ pub fn allow_edit(agent: &str, path: &Path, old: &str, new: &str) -> Result<(), 
     Ok(())
 }
 
+/// Record a saved once-grant so `plexi changes accept` in another process can
+/// commit a set the Assistant already prepared. The editor's Accept button
+/// does not use this grant; the click itself is the human decision.
+pub fn authorize_accept(id: &str) -> Result<(), String> {
+    let set = load_set(id)?;
+    let edit = bind(
+        &set.agent_id,
+        Path::new(&set.path),
+        &set.old_string,
+        &set.new_string,
+    )?;
+    let bound = binding(&edit)?;
+    let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+    let record = GrantRecord::from_binding(
+        &bound,
+        Decision::Allow,
+        GrantDuration::Once,
+        GrantSource::User,
+        &grant_id,
+    );
+    let mon = monitor();
+    mon.store().record(record);
+    mon.store().save();
+    log::info!(
+        "changes: recorded once accept grant id={} path={} grant={grant_id}",
+        set.id,
+        set.path
+    );
+    Ok(())
+}
+
 struct AdmissionOk {
     grant_id: String,
     fingerprint: String,
@@ -297,16 +328,51 @@ pub fn diff_for(set: &ChangeSet) -> String {
     unified_diff(&set.base_text, &set.proposed_text, &set.path)
 }
 
-/// Change sets whose file is `path`, newest first.
-pub fn sets_for_path(path: &Path) -> Vec<ChangeSet> {
-    let Ok(want) = std::fs::canonicalize(path) else {
+struct IndexedSet {
+    canonical_path: String,
+    mtime: Option<std::time::SystemTime>,
+    set: ChangeSet,
+}
+
+struct SetIndex {
+    dir: PathBuf,
+    /// Name, mtime, and length of each json file. A content rewrite changes
+    /// mtime even when the directory mtime does not, so accept is visible on
+    /// the next frame without re-reading every set while nothing changed.
+    stamp: Vec<(String, Option<std::time::SystemTime>, u64)>,
+    sets: Vec<IndexedSet>,
+}
+
+fn set_index() -> &'static std::sync::Mutex<Option<SetIndex>> {
+    static INDEX: std::sync::OnceLock<std::sync::Mutex<Option<SetIndex>>> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn directory_stamp(dir: &Path) -> Vec<(String, Option<std::time::SystemTime>, u64)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let want = want.display().to_string();
-    let Ok(entries) = std::fs::read_dir(sets_dir()) else {
+    let mut stamp = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let meta = entry.metadata().ok();
+        let mtime = meta.as_ref().and_then(|meta| meta.modified().ok());
+        let len = meta.map(|meta| meta.len()).unwrap_or(0);
+        stamp.push((name, mtime, len));
+    }
+    stamp.sort_by(|a, b| a.0.cmp(&b.0));
+    stamp
+}
+
+fn read_index(dir: &Path) -> Vec<IndexedSet> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut found = Vec::new();
+    let mut sets = Vec::new();
     for entry in entries.flatten() {
         let file = entry.path();
         if file.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -318,14 +384,61 @@ pub fn sets_for_path(path: &Path) -> Vec<ChangeSet> {
         let Ok(set) = serde_json::from_slice::<ChangeSet>(&body) else {
             continue;
         };
-        let set_path = std::fs::canonicalize(&set.path)
+        let canonical_path = std::fs::canonicalize(&set.path)
             .map(|canonical| canonical.display().to_string())
             .unwrap_or_else(|_| set.path.clone());
-        if set_path == want {
-            let mtime = entry.metadata().and_then(|meta| meta.modified()).ok();
-            found.push((mtime, set));
-        }
+        let mtime = entry.metadata().and_then(|meta| meta.modified()).ok();
+        sets.push(IndexedSet {
+            canonical_path,
+            mtime,
+            set,
+        });
     }
+    sets
+}
+
+/// Change sets whose file is `path`, newest first.
+///
+/// The directory is parsed again only when a set file is added or rewritten.
+/// Scanning it on every frame stalled the UI thread while a repaint was pending.
+pub fn sets_for_path(path: &Path) -> Vec<ChangeSet> {
+    let Ok(want) = std::fs::canonicalize(path) else {
+        return Vec::new();
+    };
+    let want = want.display().to_string();
+    let dir = sets_dir();
+    let stamp = directory_stamp(&dir);
+    let mut guard = set_index().lock().unwrap_or_else(|error| error.into_inner());
+    let fresh = !matches!(
+        guard.as_ref(),
+        Some(cached) if cached.dir == dir && cached.stamp == stamp
+    );
+    if fresh {
+        let started = std::time::Instant::now();
+        let sets = read_index(&dir);
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= 50 {
+            log::warn!(
+                "changes: indexed {} set(s) in {}ms",
+                sets.len(),
+                elapsed.as_millis()
+            );
+        }
+        *guard = Some(SetIndex {
+            dir,
+            stamp,
+            sets,
+        });
+    }
+    let Some(index) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let mut found: Vec<_> = index
+        .sets
+        .iter()
+        .filter(|entry| entry.canonical_path == want)
+        .map(|entry| (entry.mtime, entry.set.clone()))
+        .collect();
     found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     found.into_iter().map(|(_, set)| set).collect()
 }

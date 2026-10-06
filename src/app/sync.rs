@@ -67,31 +67,56 @@ impl PlexiApp {
     }
 
     /// Build a snapshot of all open panes across all windows and push it into
-    /// the global pane context used by the AI broker (#396). Skips the rebuild
-    /// when the total pane count hasn't changed since the last push.
+    /// the global pane context used by the AI broker (#396). Skips the push
+    /// when pane ids, types, editor paths, and dirty flags are unchanged.
     pub(super) fn update_pane_context_snapshot(&mut self) {
-        let current_len: usize = self.windows.iter().map(|w| w.panes.len()).sum();
-        if current_len == self.pane_snapshot_len {
-            return;
-        }
-        self.pane_snapshot_len = current_len;
-
-        let mut panes = Vec::with_capacity(current_len);
+        let mut panes = Vec::new();
         for window in &self.windows {
             for pane in window.panes.values() {
                 if let Some(app) = pane.as_app() {
+                    let buffer = app.runtime.editor_buffer();
                     panes.push(PaneContext {
                         type_id: app.manifest_id.clone(),
                         pane_id: app.id,
+                        path: buffer.as_ref().map(|buffer| buffer.path.clone()),
+                        dirty: buffer.as_ref().is_some_and(|buffer| buffer.dirty),
                     });
                 } else if let Some(term) = pane.as_terminal() {
                     panes.push(PaneContext {
                         type_id: "terminal".to_string(),
                         pane_id: term.id,
+                        path: None,
+                        dirty: false,
                     });
                 }
             }
         }
+        let fingerprint = pane_snapshot_fingerprint(&panes);
+        if fingerprint == self.pane_snapshot_fp {
+            return;
+        }
+        self.pane_snapshot_fp = fingerprint;
         crate::plexi_ai::broker::update_pane_snapshot(panes);
     }
+}
+
+fn pane_snapshot_fingerprint(panes: &[PaneContext]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for pane in panes {
+        for byte in pane.type_id.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= pane.pane_id;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        if let Some(path) = &pane.path {
+            for byte in path.bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash ^= u64::from(pane.dirty);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }

@@ -292,6 +292,16 @@ pub enum AssistantCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Run one Assistant host tool through the host permission gate.
+    ///
+    /// Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","old_string":"a","new_string":"b"}'
+    Tool {
+        /// Tool name, for example `host.editors.list` or `host.files.edit`.
+        name: String,
+        /// JSON object passed as the tool input.
+        #[arg(long)]
+        input: String,
+    },
     /// Observe and resolve pending permission requests. This is not `plexi agent request`.
     Permission {
         #[command(subcommand)]

@@ -81,6 +81,7 @@ const HOST_TOOL_FILES_WRITE: &str = "host.files.write";
 const HOST_TOOL_FILES_EDIT: &str = "host.files.edit";
 const HOST_TOOL_FILES_GREP: &str = "host.files.grep";
 const HOST_TOOL_FILES_LIST: &str = "host.files.list";
+const HOST_TOOL_EDITORS_LIST: &str = "host.editors.list";
 const HOST_TOOL_BUILD_RUN: &str = "host.build.run";
 use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 
@@ -1215,8 +1216,8 @@ impl AssistantApp {
             },
             AiTool {
                 name: HOST_TOOL_PANES_OPEN.into(),
-                description: "Open an app or terminal pane by native type id.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"type_id":{"type":"string"},"layout":{"type":"string"},"cwd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"pane_id":{"type":"integer","description":"Open into this existing empty terminal pane instead of spawning a new one. The pane must be an idle terminal; occupied panes return an error."}},"required":["type_id"]}),
+                description: "Open an app or terminal pane by native type id. Do not pass pane_id of a pane that already has the file: a text editor returns already_open with its absolute path. Edit that file with host.files.edit.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"type_id":{"type":"string"},"layout":{"type":"string"},"cwd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"pane_id":{"type":"integer","description":"Open into this existing empty terminal pane instead of spawning a new one. Idle terminals only. A text-editor pane returns already_open with its path; do not retry."}},"required":["type_id"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
@@ -1305,7 +1306,8 @@ impl AssistantApp {
                 name: HOST_TOOL_FILES_LIST.into(),
                 description: "List files (with sizes) under the current context \
                     root. Relative paths resolve from the context root; omit \
-                    path to list the root."
+                    path to list the root. A bare file name that is not in the \
+                    workspace resolves to an open text editor's absolute path."
                     .into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Optional relative or granted absolute directory; defaults to the current context root."}}}),
                 output_schema: serde_json::json!({"type":"object"}),
@@ -1327,15 +1329,32 @@ impl AssistantApp {
             AiTool {
                 name: HOST_TOOL_FILES_EDIT.into(),
                 description: "Replace one unique occurrence of old_string with \
-                    new_string in a file inside the current context root (or \
-                    global Plexi apps directory). Relative paths resolve from \
-                    the context root. Fails loudly if old_string is absent or \
-                    matches more than once. Returns a unified diff."
+                    new_string. This proposes a change set and does not write \
+                    the file. An open text editor shows the diff with Accept \
+                    and Reject; the file changes only when the user accepts. \
+                    Use the editor's absolute path from host.editors.list or \
+                    the host context, including files outside the workspace. \
+                    The gate asks once, scoped to that path. Fails loudly if \
+                    old_string is absent or matches more than once."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Path relative to the current context root, or an absolute path under a granted root."},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path of an open editor, a path relative to the context root, or an absolute path under a granted root."},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_EDITORS_LIST.into(),
+                description: "List open text-editor buffers. Each entry has \
+                    pane_id, the absolute path, dirty, and focused. To change \
+                    an open file, call host.files.edit with that absolute path \
+                    — even outside the workspace. That proposes a change set \
+                    the editor shows with Accept and Reject. Do not \
+                    host.panes.open a pane that already has the file."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
             },
             AiTool {
                 name: HOST_TOOL_BUILD_RUN.into(),
@@ -3326,7 +3345,17 @@ impl AssistantApp {
         } else {
             panes
                 .iter()
-                .map(|pane| format!("{} (pane {})", pane.type_id, pane.pane_id))
+                .map(|pane| {
+                    let mut line = format!("{} (pane {})", pane.type_id, pane.pane_id);
+                    if let Some(path) = &pane.path {
+                        line.push(' ');
+                        line.push_str(path);
+                        if pane.dirty {
+                            line.push_str(" dirty");
+                        }
+                    }
+                    line
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -5916,6 +5945,8 @@ enabled = ["allowed.tool"]
         crate::plexi_ai::broker::update_pane_snapshot(vec![crate::plexi_ai::broker::PaneContext {
             type_id: "text-editor".to_string(),
             pane_id: 42,
+            path: None,
+            dirty: false,
         }]);
         let mut app = test_app(ws.path());
         app.model.composer = "/context".to_string();

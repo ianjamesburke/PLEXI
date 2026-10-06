@@ -437,9 +437,10 @@ pub struct PlexiApp {
     /// Monotonically increasing counter. Assigned to each new `Window` as its
     /// stable `window_id`. Never reused — only increments.
     pub(crate) next_window_id: u64,
-    /// Pane count from the last snapshot push. Avoids rebuilding the global
-    /// pane context every frame when no panes were opened or closed.
-    pane_snapshot_len: usize,
+    /// Fingerprint of the last pane-context push (id, type, editor path, dirty).
+    /// A dirty flag or a newly opened buffer refreshes the Assistant prompt
+    /// even when the pane count is unchanged.
+    pane_snapshot_fp: u64,
     /// In-flight pane swap animations. Each entry fades out over 160 ms.
     pane_anims: Vec<PaneSwapAnim>,
     /// Boundary edge pulse — shown when a swap is attempted at the wall.
@@ -1718,7 +1719,7 @@ impl PlexiApp {
                     context_active_window: ws.context_active_window,
                     minimap_visible_per_context: HashMap::new(),
                     next_window_id: next_id,
-                    pane_snapshot_len: 0,
+                    pane_snapshot_fp: 0,
                     pane_anims: Vec::new(),
                     edge_pulse: None,
                     click_flash: None,
@@ -1994,7 +1995,7 @@ impl PlexiApp {
             context_active_window: HashMap::new(),
             minimap_visible_per_context: HashMap::new(),
             next_window_id: 2,
-            pane_snapshot_len: 0,
+            pane_snapshot_fp: 0,
             pane_anims: Vec::new(),
             edge_pulse: None,
             click_flash: None,
@@ -2717,7 +2718,7 @@ impl PlexiApp {
                 context_active_window: HashMap::new(),
                 minimap_visible_per_context: HashMap::new(),
                 next_window_id: 2,
-                pane_snapshot_len: 0,
+                pane_snapshot_fp: 0,
                 pane_anims: Vec::new(),
                 edge_pulse: None,
                 click_flash: None,

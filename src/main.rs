@@ -290,6 +290,9 @@ fn main() -> eframe::Result {
                         AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
                             std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
                         }
+                        AssistantCmd::Tool { name, input } => {
+                            std::process::exit(cli::assistant_tool_cli(&name, &input))
+                        }
                         AssistantCmd::Permission { cmd } => match cmd {
                             AssistantPermissionCmd::List => {
                                 std::process::exit(cli::assistant_permission_cli("list", None, None))

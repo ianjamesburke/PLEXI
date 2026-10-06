@@ -1016,6 +1016,13 @@ impl AppRuntime {
         }
     }
 
+    pub(crate) fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
+        match self {
+            AppRuntime::Builtin(app) => app.editor_buffer(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
     /// Lifecycle is an observation of the runtime, not a pane-existence flag.
     pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
         match self {

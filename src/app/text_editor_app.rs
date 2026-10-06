@@ -493,7 +493,25 @@ impl TextEditorApp {
         let Some(id) = self.change_view.as_ref().map(|view| view.id.clone()) else {
             return;
         };
-        match crate::host::changes::accept_gated(&id) {
+        // The click is the human. The propose was already admitted. Do not
+        // ask the agent gate a second time.
+        let unsaved = self
+            .change_view
+            .as_ref()
+            .is_some_and(|view| view.conflict.is_some())
+            || crate::host::changes::sets_for_path(&self.path)
+                .into_iter()
+                .find(|set| set.id == id)
+                .is_some_and(|set| self.composed() != set.base_text);
+        if unsaved {
+            if let Err(error) = crate::host::changes::mark_stale(&id, "unsaved editor buffer") {
+                log::warn!("changes: editor could not mark stale id={id}: {error}");
+            }
+            log::info!("changes: editor accept refused id={id} reason=unsaved editor buffer");
+            self.apply_change_set();
+            return;
+        }
+        match crate::host::changes::commit_prepared(&id) {
             Ok(set) => {
                 self.replace_body(&set.proposed_text);
                 self.applied_change = Some((set.id.clone(), "committed".to_string()));
@@ -505,10 +523,20 @@ impl TextEditorApp {
                 );
             }
             Err(error) => {
-                log::info!("changes: editor accept refused id={id} error={error:?}");
+                log::info!("changes: editor accept refused id={id} error={error}");
                 self.apply_change_set();
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accept_for_test(&mut self) {
+        self.accept_visible_change();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn composed_for_test(&self) -> String {
+        self.composed()
     }
 
     fn reject_visible_change(&mut self) {
@@ -2229,6 +2257,7 @@ impl super::PlexiApp {
     /// Show change-set previews on open text editors and publish their buffers
     /// so `plexi changes accept` can refuse an unsaved conflict.
     pub(super) fn sync_editor_change_sets(&mut self) -> bool {
+        let started = std::time::Instant::now();
         let mut changed = false;
         let mut buffers = Vec::new();
         for window in &mut self.windows {
@@ -2246,6 +2275,13 @@ impl super::PlexiApp {
             }
         }
         crate::host::changes::publish_editor_buffers(&buffers);
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= 50 {
+            log::warn!(
+                "changes: editor sync blocked the UI thread for {}ms",
+                elapsed.as_millis()
+            );
+        }
         changed
     }
 }
