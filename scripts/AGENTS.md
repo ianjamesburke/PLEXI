@@ -10,7 +10,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 
 - [DISTRIBUTION.md](DISTRIBUTION.md) — package, installation and publication contract.
 - [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md) — channel table, feature gates, RC flow, bare CLI shim, stable release flow.
-- `folder-secrets-e2e.sh` — installed-binary check for folder-scoped secrets. The contract is `src/workspace/AGENTS.md`. On macOS it creates `$WORK/test.keychain-db`, restores the user search list and default keychain, and points the binary at that file with `PLEXI_KEYCHAIN_PATH`. `PLEXI_E2E_SKIP_PANES=1` skips the windowed pane check.
+- `folder-secrets-e2e.sh` — installed-binary check for folder-scoped secrets. The contract is `src/workspace/AGENTS.md`. On macOS it sets `PLEXI_KEYCHAIN_PATH` to `$WORK/test.keychain-db` and `PLEXI_KEYCHAIN_PASSWORD`. It does not call `security`. The EXIT trap deletes that file with `rm`. `PLEXI_E2E_SKIP_PANES=1` skips the windowed pane check.
 
 ## Stability Ladder
 

@@ -69,8 +69,10 @@ pub enum SecretError {
 
 /// `PLEXI_KEYCHAIN_PATH` is a test hook for the installed-binary e2e. It is
 /// not a user setting. Unset or empty keeps the process on the default
-/// keychain. A set path is opened directly and is never added to the search
-/// list, and the login keychain is not consulted.
+/// keychain. A set path is created with `SecKeychainCreate` when missing,
+/// then opened with `SecKeychainOpen` and unlocked. None of those calls
+/// change the user search list or the default keychain. `PLEXI_KEYCHAIN_PASSWORD`
+/// is required with the path so unlock never prompts.
 #[cfg(any(test, all(target_os = "macos", not(test))))]
 #[derive(Debug, PartialEq, Eq)]
 enum KeychainPathChoice {
@@ -83,6 +85,16 @@ fn keychain_path_override(value: Option<&std::ffi::OsStr>) -> KeychainPathChoice
     match value {
         Some(raw) if !raw.is_empty() => KeychainPathChoice::Explicit(std::path::PathBuf::from(raw)),
         _ => KeychainPathChoice::Default,
+    }
+}
+
+/// `PLEXI_KEYCHAIN_PASSWORD` must be non-empty whenever the path hook is set.
+/// An empty password would make `SecKeychainUnlock` prompt.
+#[cfg(any(test, all(target_os = "macos", not(test))))]
+fn explicit_keychain_password(value: Option<&str>) -> Result<&str, &'static str> {
+    match value {
+        Some(password) if !password.is_empty() => Ok(password),
+        _ => Err("PLEXI_KEYCHAIN_PASSWORD is required when PLEXI_KEYCHAIN_PATH is set"),
     }
 }
 
@@ -140,34 +152,71 @@ fn silence_keychain_ui() -> Result<(), SecretError> {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
-fn open_explicit_keychain(
-) -> Result<Option<security_framework::os::macos::keychain::SecKeychain>, SecretError> {
-    use security_framework::os::macos::keychain::SecKeychain;
+fn open_explicit_keychain()
+-> Result<Option<security_framework::os::macos::keychain::SecKeychain>, SecretError> {
+    use security_framework::os::macos::keychain::{CreateOptions, SecKeychain};
+    use zeroize::Zeroizing;
 
     let KeychainPathChoice::Explicit(path) =
         keychain_path_override(std::env::var_os("PLEXI_KEYCHAIN_PATH").as_deref())
     else {
         return Ok(None);
     };
-    if !path.is_file() {
-        return Err(SecretError::Backend(format!(
-            "PLEXI_KEYCHAIN_PATH does not name a keychain file ({}); the login keychain was not used",
-            path.display()
-        )));
-    }
+    // Interaction is off before create/open/unlock. `SecKeychainCreate`,
+    // `SecKeychainOpen`, and `SecKeychainUnlock` take a path and a password.
+    // They do not call `SecKeychainSetSearchList` or `SecKeychainSetDefault`.
+    // `security create-keychain` is the CLI that adds a new file to the
+    // search list; this process never invokes it. Query-time
+    // `kSecMatchSearchList` / `kSecUseKeychain` name this same reference and
+    // do not write the user's list.
+    silence_keychain_ui()?;
+    let password =
+        explicit_keychain_password(std::env::var("PLEXI_KEYCHAIN_PASSWORD").ok().as_deref())
+            .map(|text| Zeroizing::new(text.to_string()))
+            .map_err(|error| SecretError::Backend(error.to_string()))?;
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
         log::info!(
-            "workspace_secrets: test keychain {} (login keychain and search list unchanged)",
+            "workspace_secrets: test keychain {} opened by path (search list and default keychain unchanged)",
             path.display()
         );
     });
-    SecKeychain::open(&path).map(Some).map_err(|error| {
+    let mut keychain = if path.is_file() {
+        SecKeychain::open(&path).map_err(|error| {
+            SecretError::Backend(format!(
+                "could not open test keychain {}: {error}",
+                path.display()
+            ))
+        })?
+    } else {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    SecretError::Backend(format!(
+                        "could not create test keychain directory {}: {error}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
+        CreateOptions::new()
+            .password(password.as_str())
+            .prompt_user(false)
+            .create(&path)
+            .map_err(|error| {
+                SecretError::Backend(format!(
+                    "could not create test keychain {}: {error}",
+                    path.display()
+                ))
+            })?
+    };
+    keychain.unlock(Some(password.as_str())).map_err(|error| {
         SecretError::Backend(format!(
-            "could not open test keychain {}: {error}",
+            "could not unlock test keychain {}: {error}",
             path.display()
         ))
-    })
+    })?;
+    Ok(Some(keychain))
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -808,6 +857,9 @@ mod tests {
             keychain_path_override(Some(std::ffi::OsStr::new("/tmp/test.keychain-db"))),
             KeychainPathChoice::Explicit(std::path::PathBuf::from("/tmp/test.keychain-db"))
         );
+        assert!(explicit_keychain_password(None).is_err());
+        assert!(explicit_keychain_password(Some("")).is_err());
+        assert_eq!(explicit_keychain_password(Some("pw")).unwrap(), "pw");
     }
 
     #[test]
