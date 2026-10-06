@@ -25,8 +25,15 @@
 # snapshotted from scripts/default-config.toml and restored after every item
 # so a gate or relay rewrite of [ai] backend cannot poison the ledger item.
 #
+# Before any item, a preflight installs or verifies three VM dependencies:
+# Python Pillow (V1-02 board clicks), Docker (V1-08 relay), and an unlocked
+# gnome-keyring on a private session bus (V1-11 and the Linux journal /
+# sealed audit; integration risk #8). A dependency that cannot be made to
+# work is ENV-FAIL on the items that need it, not a product FAIL.
+#
 # Exit 0 when every item is PASS, 1 when any item is FAIL (including a
-# bypass), 2 when the run is incomplete (NOT-LANDED and no FAIL).
+# bypass), 3 when the only failures are ENV-FAIL, 2 when the run is
+# incomplete (NOT-LANDED and no FAIL or ENV-FAIL).
 
 set -uo pipefail
 
@@ -116,13 +123,19 @@ export PLEXI_KEYCHAIN_PATH="$HOME/v1-acceptance.keychain"
 export PLEXI_KEYCHAIN_PASSWORD
 PLEXI_KEYCHAIN_PASSWORD="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
 : >"$PLEXI_KEYCHAIN_PATH"
-# Do not attach to a user secret service. Scripts that need a private bus
-# start one with dbus-run-session.
-unset DBUS_SESSION_BUS_ADDRESS || true
+# Drop a caller's session bus. The preflight starts a private one under this
+# HOME and unlocks gnome-keyring on it. Item scripts must not attach to the
+# login secret service.
+unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID || true
 
 XVFB_PID=""
 MOCK_PID=""
 DISPLAY_NUM=""
+KEYRING_PID=""
+DOCKERD_PID=""
+PREFLIGHT_PILLOW_ERR=""
+PREFLIGHT_DOCKER_ERR=""
+PREFLIGHT_SECRETS_ERR=""
 
 cleanup() {
   if [[ -n "${REPO:-}" ]]; then
@@ -133,6 +146,15 @@ cleanup() {
   fi
   if [[ -n "$MOCK_PID" ]]; then
     kill "$MOCK_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$KEYRING_PID" ]]; then
+    kill "$KEYRING_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${DBUS_SESSION_BUS_PID:-}" ]]; then
+    kill "$DBUS_SESSION_BUS_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$DOCKERD_PID" ]]; then
+    sudo -n kill "$DOCKERD_PID" >/dev/null 2>&1 || kill "$DOCKERD_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "$XVFB_PID" ]]; then
     kill "$XVFB_PID" >/dev/null 2>&1 || true
@@ -180,7 +202,9 @@ if ! command -v Xvfb >/dev/null 2>&1; then
 fi
 start_xvfb
 
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
+# Private runtime dir. The login XDG_RUNTIME_DIR is not this suite's bus,
+# and gnome-keyring refuses a control socket it cannot own.
+export XDG_RUNTIME_DIR="$WORK_HOME/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" || true
 if [[ -f /usr/share/vulkan/icd.d/lvp_icd.json ]]; then
@@ -188,6 +212,239 @@ if [[ -f /usr/share/vulkan/icd.d/lvp_icd.json ]]; then
   export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
 fi
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+
+# Install the packages the preflight checks. One apt transaction. A missing
+# sudo or a failed install leaves the later per-dep check to say ENV-FAIL.
+preflight_apt() {
+  local -a need=()
+  if ! python3 -c 'import PIL' >/dev/null 2>&1; then
+    need+=(python3-pil)
+  fi
+  if ! python3 -c 'import dbus' >/dev/null 2>&1; then
+    need+=(python3-dbus)
+  fi
+  if ! command -v secret-tool >/dev/null 2>&1; then
+    need+=(libsecret-tools)
+  fi
+  if ! command -v gnome-keyring-daemon >/dev/null 2>&1; then
+    need+=(gnome-keyring)
+  fi
+  if ! command -v dbus-launch >/dev/null 2>&1; then
+    need+=(dbus-x11)
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    need+=(docker.io)
+  fi
+  if [[ ${#need[@]} -eq 0 ]]; then
+    return 0
+  fi
+  if ! sudo -n true >/dev/null 2>&1; then
+    echo "apt: sudo -n is not available; cannot install: ${need[*]}" >>"$EVID/preflight-apt.log"
+    return 1
+  fi
+  if ! sudo -n DEBIAN_FRONTEND=noninteractive apt-get update -qq >>"$EVID/preflight-apt.log" 2>&1; then
+    echo "apt: apt-get update failed" >>"$EVID/preflight-apt.log"
+    return 1
+  fi
+  if ! sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y "${need[@]}" >>"$EVID/preflight-apt.log" 2>&1; then
+    echo "apt: apt-get install failed: ${need[*]}" >>"$EVID/preflight-apt.log"
+    return 1
+  fi
+  return 0
+}
+
+# gnome-keyring on this bus, login collection unlocked, no prompt.
+# A nested dbus-run-session cannot activate org.freedesktop.secrets while
+# that daemon is running, so the wrapper runs those item scripts here.
+preflight_secrets() {
+  local log="$EVID/preflight-secrets.log"
+  : >"$log"
+  if ! command -v gnome-keyring-daemon >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1; then
+    PREFLIGHT_SECRETS_ERR="gnome-keyring or dbus-launch is not installed (log $log)"
+    return 1
+  fi
+  if ! python3 -c 'import dbus' >/dev/null 2>&1 || ! command -v secret-tool >/dev/null 2>&1; then
+    PREFLIGHT_SECRETS_ERR="python3-dbus or secret-tool is not installed (log $log)"
+    return 1
+  fi
+  local launch
+  launch="$(dbus-launch --sh-syntax 2>>"$log")" || {
+    PREFLIGHT_SECRETS_ERR="dbus-launch failed (log $log)"
+    return 1
+  }
+  # shellcheck disable=SC1090
+  eval "$launch"
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    PREFLIGHT_SECRETS_ERR="dbus-launch did not set DBUS_SESSION_BUS_ADDRESS (log $log)"
+    return 1
+  fi
+  export DBUS_SESSION_BUS_ADDRESS
+  local pass
+  pass="$(openssl rand -hex 16 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(16))')"
+  printf '%s' "$pass" | gnome-keyring-daemon --unlock --components=secrets --daemonize >>"$log" 2>&1 || true
+  KEYRING_PID="$(pgrep -u "$(id -u)" -n -f '/usr/bin/gnome-keyring-daemon' || true)"
+  local verify="" code=1 attempt
+  for attempt in 1 2 3 4 5 6 7 8; do
+    sleep 0.3
+    verify="$(python3 - <<'PY' 2>>"$log"
+import dbus, sys
+bus = dbus.SessionBus()
+proxy = bus.get_object("org.freedesktop.secrets", "/org/freedesktop/secrets")
+svc = dbus.Interface(proxy, "org.freedesktop.Secret.Service")
+default = str(svc.ReadAlias("default"))
+session = str(svc.ReadAlias("session"))
+print(f"default={default}")
+print(f"session={session}")
+if default in ("", "/"):
+    sys.exit(2)
+coll = bus.get_object("org.freedesktop.secrets", default)
+locked = dbus.Interface(coll, "org.freedesktop.DBus.Properties").Get(
+    "org.freedesktop.Secret.Collection", "Locked"
+)
+print(f"locked={int(bool(locked))}")
+if int(bool(locked)) != 0:
+    sys.exit(3)
+output, session_path = svc.OpenSession("plain", dbus.String("", variant_level=1))
+props = dbus.Dictionary({
+    "org.freedesktop.Secret.Item.Label": "v1-acceptance-probe",
+    "org.freedesktop.Secret.Item.Attributes": dbus.Dictionary({
+        "xdg:schema": "com.plexi.HostSeal",
+        "item": "v1-acceptance-probe",
+    }, signature="ss"),
+}, signature="sv")
+secret = dbus.Struct((
+    dbus.ObjectPath(session_path),
+    dbus.ByteArray(b""),
+    dbus.ByteArray(b"probe"),
+    "text/plain",
+))
+item, prompt = dbus.Interface(coll, "org.freedesktop.Secret.Collection").CreateItem(props, secret, True)
+print(f"prompt={prompt}")
+if str(prompt) != "/":
+    sys.exit(4)
+print(f"item={item}")
+PY
+)"
+    code=$?
+    if [[ "$code" -eq 0 ]]; then
+      break
+    fi
+  done
+  printf '%s\n' "$verify" >>"$log"
+  if [[ "$code" -ne 0 ]]; then
+    PREFLIGHT_SECRETS_ERR="gnome-keyring did not unlock a login collection (exit $code, log $log)"
+    return 1
+  fi
+  if ! printf 'probe-value' | secret-tool store --label='v1-acceptance-probe' service v1-acceptance account probe >>"$log" 2>&1; then
+    PREFLIGHT_SECRETS_ERR="secret-tool store failed on the unlocked keyring (log $log)"
+    return 1
+  fi
+  local got
+  got="$(secret-tool lookup service v1-acceptance account probe 2>>"$log" || true)"
+  if [[ "$got" != "probe-value" ]]; then
+    PREFLIGHT_SECRETS_ERR="secret-tool lookup did not return the probe (log $log)"
+    return 1
+  fi
+  secret-tool clear service v1-acceptance account probe >>"$log" 2>&1 || true
+  mkdir -p "$EVID/bin"
+  cat >"$EVID/bin/dbus-run-session" <<'EOF'
+#!/usr/bin/env bash
+# Acceptance preflight unlocked gnome-keyring on DBUS_SESSION_BUS_ADDRESS.
+# A second session bus cannot activate org.freedesktop.secrets while that
+# daemon is running, so journal and sealed-audit scripts stay on this bus.
+if [[ -n "${PLEXI_V1_SECRETS_READY:-}" && -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  exec "$@"
+fi
+exec /usr/bin/dbus-run-session "$@"
+EOF
+  chmod +x "$EVID/bin/dbus-run-session"
+  export PATH="$EVID/bin:${PATH}"
+  export PLEXI_V1_SECRETS_READY=1
+  return 0
+}
+
+preflight_secrets_cleanup_failed() {
+  if [[ -n "$KEYRING_PID" ]]; then
+    kill "$KEYRING_PID" >/dev/null 2>&1 || true
+    KEYRING_PID=""
+  fi
+  if [[ -n "${DBUS_SESSION_BUS_PID:-}" ]]; then
+    kill "$DBUS_SESSION_BUS_PID" >/dev/null 2>&1 || true
+  fi
+  unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID PLEXI_V1_SECRETS_READY || true
+}
+
+preflight_docker() {
+  local log="$EVID/preflight-docker.log"
+  : >"$log"
+  if ! command -v docker >/dev/null 2>&1; then
+    PREFLIGHT_DOCKER_ERR="docker is not installed (log $EVID/preflight-apt.log)"
+    return 1
+  fi
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  # The package may be installed while the daemon is not running. This VM
+  # has no systemd, so start dockerd directly. vfs is the fallback when the
+  # default storage driver cannot mount inside a container.
+  local driver
+  for driver in "" vfs; do
+    local -a args=(--host=unix:///var/run/docker.sock --iptables=false)
+    if [[ -n "$driver" ]]; then
+      args+=(--storage-driver="$driver")
+    fi
+    if [[ -n "$DOCKERD_PID" ]]; then
+      sudo -n kill "$DOCKERD_PID" >/dev/null 2>&1 || true
+      wait "$DOCKERD_PID" 2>/dev/null || true
+      DOCKERD_PID=""
+    fi
+    sudo -n dockerd "${args[@]}" >>"$log" 2>&1 &
+    DOCKERD_PID=$!
+    local i
+    for i in $(seq 1 40); do
+      if [[ -S /var/run/docker.sock ]]; then
+        sudo -n chmod 666 /var/run/docker.sock >>"$log" 2>&1 || true
+      fi
+      if docker info >/dev/null 2>&1; then
+        return 0
+      fi
+      if ! kill -0 "$DOCKERD_PID" 2>/dev/null; then
+        # dockerd often daemonizes and the sudo parent exits. A live socket
+        # is still success.
+        if docker info >/dev/null 2>&1; then
+          return 0
+        fi
+        break
+      fi
+      sleep 0.5
+    done
+  done
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  PREFLIGHT_DOCKER_ERR="dockerd did not become ready (log $log)"
+  return 1
+}
+
+run_preflight() {
+  preflight_apt || true
+  if python3 -c 'from PIL import Image' >/dev/null 2>&1; then
+    PREFLIGHT_PILLOW_ERR=""
+  else
+    PREFLIGHT_PILLOW_ERR="python3-pil is not importable (log $EVID/preflight-apt.log)"
+  fi
+  if preflight_docker; then
+    PREFLIGHT_DOCKER_ERR=""
+  fi
+  if preflight_secrets; then
+    PREFLIGHT_SECRETS_ERR=""
+  else
+    preflight_secrets_cleanup_failed
+  fi
+}
 
 resolve_bin() {
   local candidate="" base
@@ -334,6 +591,7 @@ N_PASS=0
 N_FAIL=0
 N_LANDED=0
 N_BYPASS=0
+N_ENV=0
 
 note_row() {
   local id="$1" status="$2" detail="$3"
@@ -347,8 +605,38 @@ note_row() {
         N_BYPASS=$((N_BYPASS + 1))
       fi
       ;;
+    ENV-FAIL) N_ENV=$((N_ENV + 1)) ;;
     NOT-LANDED) N_LANDED=$((N_LANDED + 1)) ;;
   esac
+}
+
+# A missing VM dependency is not a product failure. Skip the item and say
+# which preflight check could not be made to work.
+env_blocked() {
+  local id="$1"
+  local why=""
+  case "$id" in
+    V1-02)
+      if [[ -n "$PREFLIGHT_PILLOW_ERR" ]]; then
+        why="Pillow: $PREFLIGHT_PILLOW_ERR"
+      fi
+      ;;
+    V1-08)
+      if [[ -n "$PREFLIGHT_DOCKER_ERR" ]]; then
+        why="Docker: $PREFLIGHT_DOCKER_ERR"
+      fi
+      ;;
+    V1-04|V1-05|V1-06|V1-11|V1-15)
+      if [[ -n "$PREFLIGHT_SECRETS_ERR" ]]; then
+        why="Secret Service: $PREFLIGHT_SECRETS_ERR"
+      fi
+      ;;
+  esac
+  if [[ -n "$why" ]]; then
+    note_row "$id" "ENV-FAIL" "$why"
+    return 0
+  fi
+  return 1
 }
 
 skip_item() {
@@ -1053,22 +1341,13 @@ run_one() {
       return
     fi
   fi
-  if [[ "$id" == "V1-08" ]] && ! command -v docker >/dev/null 2>&1; then
-    local kind="none"
-    if [[ -f "$REPO/services/relay/e2e_installed.sh" ]]; then
-      kind="$(script_bypass "$REPO/services/relay/e2e_installed.sh" /dev/null)"
-    fi
-    if [[ "$kind" == bypass:* ]]; then
-      note_row "$id" "FAIL" "bypass: ${kind#bypass:} — local Docker relay required and docker is not installed"
-    elif [[ "$requires_human" -eq 1 && "$kind" != "human" ]]; then
-      note_row "$id" "FAIL" "bypass: none — local Docker relay required and docker is not installed; script never calls HUMAN_APPROVE (scripts/e2e/plexi-bin.md)"
-    else
-      note_row "$id" "FAIL" "local Docker relay required and docker is not installed"
-    fi
+  if env_blocked "$id"; then
     return
   fi
   run_scripts "$id" "$id" "$requires_human" "${rest[@]}"
 }
+
+run_preflight
 
 echo "v1-acceptance"
 echo "binary    ${BIN:-<none>} (${BIN_BASE:-})"
@@ -1083,6 +1362,21 @@ echo "openrouter $OPENROUTER_MODE"
 echo "evidence  $EVID"
 seed_config_baseline
 echo "config    $(profile_config_path) (restored between items)"
+if [[ -z "$PREFLIGHT_PILLOW_ERR" ]]; then
+  echo "preflight pillow ok"
+else
+  echo "preflight pillow ENV-FAIL $PREFLIGHT_PILLOW_ERR"
+fi
+if [[ -z "$PREFLIGHT_DOCKER_ERR" ]]; then
+  echo "preflight docker ok"
+else
+  echo "preflight docker ENV-FAIL $PREFLIGHT_DOCKER_ERR"
+fi
+if [[ -z "$PREFLIGHT_SECRETS_ERR" ]]; then
+  echo "preflight secret-service ok (gnome-keyring login unlocked)"
+else
+  echo "preflight secret-service ENV-FAIL $PREFLIGHT_SECRETS_ERR"
+fi
 echo
 
 with_config item_v1_01
@@ -1124,9 +1418,12 @@ exit_code=0
 if [[ "$N_FAIL" -gt 0 ]]; then
   verdict="FAIL"
   exit_code=1
+elif [[ "$N_ENV" -gt 0 ]]; then
+  verdict="ENV-FAIL"
+  exit_code=3
 elif [[ "$N_LANDED" -gt 0 ]]; then
   verdict="INCOMPLETE"
   exit_code=2
 fi
-echo "VERDICT ${verdict}  pass=${N_PASS} fail=${N_FAIL} not-landed=${N_LANDED} bypass-fail=${N_BYPASS}"
+echo "VERDICT ${verdict}  pass=${N_PASS} fail=${N_FAIL} not-landed=${N_LANDED} bypass-fail=${N_BYPASS} env-fail=${N_ENV}"
 exit "$exit_code"
