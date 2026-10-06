@@ -10,7 +10,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
-    ("AI", &["assistant", "ai", "ledger"]),
+    ("AI", &["assistant", "ai", "ledger", "needs-you", "permissions"]),
     (
         "System",
         &[

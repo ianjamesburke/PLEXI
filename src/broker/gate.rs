@@ -508,7 +508,9 @@ impl PermissionMonitor {
     }
 
     /// Revoke under the admission lock so a commit that has not entered yet
-    /// observes the removal.
+    /// observes the removal. No socket path calls this. A later desktop
+    /// Permissions surface should call it from a real click.
+    #[cfg(test)]
     pub fn revoke_grant_id(&self, grant_id: &str) -> bool {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.revoke_locked(grant_id)
@@ -519,6 +521,7 @@ impl PermissionMonitor {
         self.revoke_locked(grant_id)
     }
 
+    #[cfg(test)]
     fn revoke_locked(&self, grant_id: &str) -> bool {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         let mut store = self.store();
@@ -566,6 +569,32 @@ impl PermissionMonitor {
             .iter()
             .find(|row| row.id == id)
             .map(pending_view)
+    }
+
+    /// A socket, CLI, or synthetic-input resolve. The pending stays, no grant
+    /// is written, and the audit records the refusal.
+    pub fn refuse_client_resolve(&self, pending_id: &str) {
+        let actor = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|row| row.id == pending_id)
+            .map(|row| row.binding.actor_id.clone())
+            .unwrap_or_else(|| "socket".to_string());
+        let _ = self.audit(&AuditFact {
+            kind: "refuse".to_string(),
+            actor,
+            call_id: pending_id.to_string(),
+            grant_id: String::new(),
+            resource_id: String::new(),
+            args_fingerprint: String::new(),
+            operation_id: String::new(),
+            decision: "refused_resolve".to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        });
+        log::info!("permission_monitor: refused resolve pending={pending_id}");
     }
 
     pub fn issue_credential(
@@ -1343,6 +1372,35 @@ mod tests {
         monitor.fail_audit(false);
         let _ = monitor.list_pending();
         let _ = monitor.audit_records();
+    }
+
+    #[test]
+    fn client_resolve_is_refused_and_leaves_the_pending() {
+        let monitor = PermissionMonitor::ephemeral();
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-refuse"}"#;
+        let fp = fingerprint_args(args).unwrap();
+        let mut row = binding(&fp);
+        row.session_id = Some(monitor.session_id().to_string());
+        let id = match admit_of(&monitor, &row, args) {
+            Admission::Required { pending_request_id } => pending_request_id,
+            Admission::Proceed { .. } => panic!("expected a pending ask, grant matched"),
+            Admission::Denied { code } => panic!("expected a pending ask, denied {code}"),
+        };
+        monitor.refuse_client_resolve(&id);
+        assert!(monitor.show_pending(&id).is_some(), "the pending stays");
+        let audit = monitor.audit_records();
+        assert!(
+            audit.iter().any(|fact| {
+                fact.kind == "refuse"
+                    && fact.decision == "refused_resolve"
+                    && fact.call_id == id
+            }),
+            "refuse row missing: {audit:?}"
+        );
+        assert!(
+            monitor.approve_pending(&id, ApprovalChoice::Once).is_ok(),
+            "the desktop path can still approve"
+        );
     }
 }
 
