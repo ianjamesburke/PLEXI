@@ -1098,6 +1098,82 @@ pub enum CloudAgentCmd {
         #[arg(long)]
         tenant_profile: std::path::PathBuf,
     },
+    /// List phone pairings waiting for approval.
+    ///
+    /// Omitted `--tenant` uses `local`. The JSON `needs_you` array is this
+    /// tenant's desktop list. An unapproved pairing cannot send a turn.
+    Pending {
+        /// Tenant id. Omitted, reports `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Approve a pending phone pairing.
+    ///
+    /// Omitted `--tenant` uses `local`.
+    Approve {
+        /// Tenant id. Omitted, approves on `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Pairing id from `cloud agent pending` or from `run`.
+        #[arg(long)]
+        pairing_id: String,
+    },
+    /// Deny a pending phone pairing.
+    ///
+    /// Omitted `--tenant` uses `local`.
+    Deny {
+        /// Tenant id. Omitted, denies on `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Pairing id from `cloud agent pending` or from `run`.
+        #[arg(long)]
+        pairing_id: String,
+    },
+    /// Store or inspect the tenant model credential.
+    Vault {
+        #[command(subcommand)]
+        cmd: CloudVaultCmd,
+    },
+}
+
+/// `plexi cloud agent vault <cmd>`.
+///
+/// The secret is read from stdin. It is not a flag, so it stays out of the
+/// process list and out of `docker inspect`.
+#[derive(Subcommand)]
+pub enum CloudVaultCmd {
+    /// Store a model credential read from stdin.
+    ///
+    /// Omitted `--tenant` uses `local`. Refuses to overwrite; use `rotate`.
+    Set {
+        /// Tenant id. Omitted, stores on `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Replace the stored model credential with stdin.
+    ///
+    /// Omitted `--tenant` uses `local`. Fails when no credential is stored.
+    Rotate {
+        /// Tenant id. Omitted, rotates `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Delete the stored model credential.
+    ///
+    /// Omitted `--tenant` uses `local`. A second revoke is success.
+    Revoke {
+        /// Tenant id. Omitted, revokes `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Report whether a model credential is stored, by fingerprint only.
+    ///
+    /// Omitted `--tenant` uses `local`.
+    Status {
+        /// Tenant id. Omitted, reports `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2127,8 +2203,8 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, AppCmd, Cli, CloudAgentCmd, CloudCmd, Commands, ConfigCmd,
-        ConfigScope, NotifyCmd, SecretCmd,
+        normalize_config_scope_aliases, AppCmd, Cli, CloudAgentCmd, CloudCmd, CloudVaultCmd,
+        Commands, ConfigCmd, ConfigScope, NotifyCmd, SecretCmd,
     };
     use clap::Parser;
 
@@ -2277,6 +2353,59 @@ mod tests {
         };
         assert_eq!(tenant_profile, std::path::PathBuf::from("/tenant/profile"));
         assert_eq!(workspace, std::path::PathBuf::from("/tenant"));
+    }
+
+    #[test]
+    fn house_approve_and_vault_do_not_take_a_secret_flag() {
+        let approve = Cli::try_parse_from([
+            "plexi",
+            "cloud",
+            "agent",
+            "approve",
+            "--tenant",
+            "local",
+            "--pairing-id",
+            "pair-1",
+        ])
+        .unwrap();
+        assert!(approve.profile.is_none());
+        let Some(Commands::Cloud {
+            cmd:
+                CloudCmd::Agent {
+                    cmd:
+                        CloudAgentCmd::Approve {
+                            tenant,
+                            pairing_id,
+                        },
+                },
+        }) = approve.command
+        else {
+            panic!("expected cloud agent approve");
+        };
+        assert_eq!(tenant.as_deref(), Some("local"));
+        assert_eq!(pairing_id, "pair-1");
+
+        let set = Cli::try_parse_from(["plexi", "cloud", "agent", "vault", "set"]).unwrap();
+        let Some(Commands::Cloud {
+            cmd:
+                CloudCmd::Agent {
+                    cmd: CloudAgentCmd::Vault { cmd: CloudVaultCmd::Set { tenant } },
+                },
+        }) = set.command
+        else {
+            panic!("expected cloud agent vault set");
+        };
+        assert!(tenant.is_none());
+        assert!(Cli::try_parse_from([
+            "plexi",
+            "cloud",
+            "agent",
+            "vault",
+            "set",
+            "--secret",
+            "sk-test",
+        ])
+        .is_err());
     }
 
     #[test]

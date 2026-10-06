@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +24,7 @@ use crate::cloud::retention::{self, RetentionInput, RetentionReport};
 const HOUSE_PACKAGE: &str = "house";
 const HOUSE_ACTOR: &str = "chess-opponent";
 const HOUSE_AGENT: &str = "chess-opponent";
+const TENANT_UID: &str = "65532:65532";
 
 struct ToolPolicy {
     tool: &'static str,
@@ -50,6 +51,10 @@ const HOUSE_POLICIES: &[ToolPolicy] = &[
     ToolPolicy {
         tool: "host.secret.read",
         decision: Decision::Deny,
+    },
+    ToolPolicy {
+        tool: "model.complete",
+        decision: Decision::Allow,
     },
 ];
 
@@ -505,6 +510,8 @@ fn agent_run_args(names: &HouseNames, tenant: &str, binary: &Path, image: &str) 
         "--read-only".into(),
         "--tmpfs".into(),
         "/tmp:rw,noexec,nosuid,size=32m".into(),
+        "--user".into(),
+        TENANT_UID.into(),
         "--cap-drop".into(),
         "ALL".into(),
         "--security-opt".into(),
@@ -795,7 +802,11 @@ fn run_house(agent: Option<&str>, tenant: Option<&str>) -> Result<serde_json::Va
         remove_runtime(&names);
         return Err(error);
     }
-    if let Err(error) = start_containers(&names, &relay_args, &agent_args) {
+    if let Err(error) = start_containers(&names, &relay_args, &agent_args, &staged.tag) {
+        remove_runtime(&names);
+        return Err(error);
+    }
+    if let Err(error) = inject_tenant_vault(&names.agent, &tenant) {
         remove_runtime(&names);
         return Err(error);
     }
@@ -823,11 +834,36 @@ fn create_networks(names: &HouseNames) -> Result<(), String> {
     Ok(())
 }
 
+fn chown_volume_args(volume: &str, image: &str) -> Vec<String> {
+    vec![
+        "run".into(),
+        "--rm".into(),
+        "--user".into(),
+        "0:0".into(),
+        "--network".into(),
+        "none".into(),
+        "--read-only".into(),
+        "--mount".into(),
+        format!("type=volume,source={volume},target=/tenant"),
+        "--entrypoint".into(),
+        "python".into(),
+        image.into(),
+        "-c".into(),
+        "import os\nuid, gid = 65532, 65532\nos.chown('/tenant', uid, gid)\nos.chmod('/tenant', 0o700)\nfor root, dirs, files in os.walk('/tenant'):\n    for name in dirs + files:\n        os.chown(os.path.join(root, name), uid, gid)\n".into(),
+    ]
+}
+
 fn start_containers(
     names: &HouseNames,
     relay_args: &[String],
     agent_args: &[String],
+    image: &str,
 ) -> Result<(), String> {
+    log::info!(
+        "cloud agent: chown tenant volume uid={TENANT_UID} volume={}",
+        names.volume
+    );
+    run_docker(&chown_volume_args(&names.volume, image))?;
     run_docker(relay_args)?;
     run_docker(&relay_attach_args(names))?;
     run_docker(agent_args)?;
@@ -876,6 +912,240 @@ fn status_house(tenant: Option<&str>) -> Result<serde_json::Value, String> {
         }
     }
     Ok(value)
+}
+
+const WRITE_DECISION: &str = "\
+import json, os, sys\n\
+from pathlib import Path\n\
+body = json.load(sys.stdin)\n\
+path = Path('/tenant/pairing-decision.json')\n\
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n\
+with os.fdopen(fd, 'w', encoding='utf-8') as handle:\n\
+    json.dump(body, handle)\n\
+";
+
+const WRITE_VAULT: &str = "\
+import os, sys\n\
+from pathlib import Path\n\
+path = Path('/tenant/vault')\n\
+path.mkdir(parents=True, exist_ok=True)\n\
+target = path / 'model'\n\
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n\
+with os.fdopen(fd, 'wb') as handle:\n\
+    handle.write(sys.stdin.buffer.read())\n\
+";
+
+fn exec_stdin(container: &str, script: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut child = Command::new("docker")
+        .args([
+            "exec", "-i", "--user", TENANT_UID, container, "python", "-c", script,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("docker exec: {error}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "docker exec stdin".to_string())?
+        .write_all(bytes)
+        .map_err(|error| format!("write docker exec stdin: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("docker exec: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("docker exec failed: {}", detail.trim()));
+    }
+    Ok(())
+}
+
+fn inject_tenant_vault(container: &str, tenant: &str) -> Result<(), String> {
+    let vault = crate::cloud::vault::TenantVault::for_profile();
+    let Some(secret) = vault.get(tenant)? else {
+        log::info!("cloud agent: vault absent tenant={tenant}");
+        return Ok(());
+    };
+    exec_stdin(container, WRITE_VAULT, secret.as_bytes())?;
+    let fingerprint = crate::cloud::vault::fingerprint(secret.as_str());
+    log::info!("cloud agent: vault injected tenant={tenant} fingerprint={fingerprint}");
+    Ok(())
+}
+
+fn clear_injected_vault(container: &str) -> Result<(), String> {
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "--user",
+            TENANT_UID,
+            container,
+            "python",
+            "-c",
+            "from pathlib import Path\nPath('/tenant/vault/model').unlink(missing_ok=True)\n",
+        ])
+        .output()
+        .map_err(|error| format!("docker exec: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("clear vault failed: {}", detail.trim()));
+    }
+    Ok(())
+}
+
+pub fn cloud_agent_pending_cli(tenant: Option<&str>) -> i32 {
+    match pending_house(tenant) {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+pub fn cloud_agent_approve_cli(tenant: Option<&str>, pairing_id: &str) -> i32 {
+    match decide_house(tenant, pairing_id, "approve") {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+pub fn cloud_agent_deny_cli(tenant: Option<&str>, pairing_id: &str) -> i32 {
+    match decide_house(tenant, pairing_id, "deny") {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+pub fn cloud_agent_vault_set_cli(tenant: Option<&str>) -> i32 {
+    match vault_write(tenant, false) {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+pub fn cloud_agent_vault_rotate_cli(tenant: Option<&str>) -> i32 {
+    match vault_write(tenant, true) {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+pub fn cloud_agent_vault_revoke_cli(tenant: Option<&str>) -> i32 {
+    match vault_revoke(tenant) {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+pub fn cloud_agent_vault_status_cli(tenant: Option<&str>) -> i32 {
+    match vault_status(tenant) {
+        Ok(value) => print_json(&value),
+        Err(error) => fail(&error),
+    }
+}
+
+fn pending_house(tenant: Option<&str>) -> Result<serde_json::Value, String> {
+    let tenant = tenant_id(tenant)?;
+    let names = house_names(&tenant);
+    if container_state(&names.agent) != Some(true) {
+        log::info!("cloud agent: needs you tenant={tenant} pending=0");
+        return Ok(serde_json::json!({"tenant": tenant, "needs_you": []}));
+    }
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "--user",
+            TENANT_UID,
+            &names.agent,
+            "python",
+            "-c",
+            "from pathlib import Path\npath = Path('/tenant/needs-you.json')\nprint(path.read_text(encoding='utf-8') if path.is_file() else '')\n",
+        ])
+        .output()
+        .map_err(|error| format!("docker exec: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("needs you: {}", detail.trim()));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let body = if text.trim().is_empty() {
+        serde_json::json!({"needs_you": []})
+    } else {
+        serde_json::from_str(text.trim()).unwrap_or_else(|_| serde_json::json!({"needs_you": []}))
+    };
+    let count = body
+        .get("needs_you")
+        .and_then(|item| item.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    log::info!("cloud agent: needs you tenant={tenant} pending={count}");
+    let mut value = body;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("tenant".into(), serde_json::Value::String(tenant));
+    }
+    Ok(value)
+}
+
+fn decide_house(
+    tenant: Option<&str>,
+    pairing_id: &str,
+    decision: &str,
+) -> Result<serde_json::Value, String> {
+    let tenant = tenant_id(tenant)?;
+    if pairing_id.is_empty() {
+        return Err("pairing id is required".into());
+    }
+    let names = house_names(&tenant);
+    if container_state(&names.agent) != Some(true) {
+        return Err(format!("tenant {tenant} is not running"));
+    }
+    let body = serde_json::json!({"pairing_id": pairing_id, "decision": decision});
+    let bytes = serde_json::to_vec(&body).map_err(|error| error.to_string())?;
+    exec_stdin(&names.agent, WRITE_DECISION, &bytes)?;
+    log::info!("cloud agent: {decision} tenant={tenant} pairing_id={pairing_id}");
+    Ok(serde_json::json!({
+        "tenant": tenant,
+        "pairing_id": pairing_id,
+        "decision": decision,
+    }))
+}
+
+fn vault_write(tenant: Option<&str>, rotate: bool) -> Result<serde_json::Value, String> {
+    let tenant = tenant_id(tenant)?;
+    let secret = crate::cloud::vault::read_secret_from_stdin()?;
+    let vault = crate::cloud::vault::TenantVault::for_profile();
+    let fingerprint = if rotate {
+        vault.rotate(&tenant, &secret)?
+    } else {
+        vault.set(&tenant, &secret)?
+    };
+    if container_state(&house_names(&tenant).agent) == Some(true) {
+        exec_stdin(&house_names(&tenant).agent, WRITE_VAULT, secret.as_bytes())?;
+        log::info!("cloud agent: vault injected tenant={tenant} fingerprint={fingerprint}");
+    }
+    Ok(serde_json::json!({
+        "tenant": tenant,
+        "present": true,
+        "fingerprint": fingerprint,
+    }))
+}
+
+fn vault_revoke(tenant: Option<&str>) -> Result<serde_json::Value, String> {
+    let tenant = tenant_id(tenant)?;
+    let vault = crate::cloud::vault::TenantVault::for_profile();
+    vault.revoke(&tenant)?;
+    let names = house_names(&tenant);
+    if container_state(&names.agent) == Some(true) {
+        clear_injected_vault(&names.agent)?;
+    }
+    Ok(serde_json::json!({
+        "tenant": tenant,
+        "present": false,
+        "fingerprint": null,
+    }))
+}
+
+fn vault_status(tenant: Option<&str>) -> Result<serde_json::Value, String> {
+    let tenant = tenant_id(tenant)?;
+    crate::cloud::vault::TenantVault::for_profile().status(&tenant)
 }
 
 #[cfg(test)]
@@ -939,6 +1209,21 @@ mod tests {
             .windows(2)
             .any(|pair| pair[0] == "--network" && pair[1] == names.edge));
         assert!(!agent.iter().any(|arg| arg == "--publish"));
+        assert!(agent
+            .windows(2)
+            .any(|pair| pair[0] == "--user" && pair[1] == "65532:65532"));
+        let chown = chown_volume_args(&names.volume, "plexi-house-agent:test");
+        assert!(chown
+            .windows(2)
+            .any(|pair| pair[0] == "--user" && pair[1] == "0:0"));
+        assert!(chown
+            .windows(2)
+            .any(|pair| pair[0] == "--network" && pair[1] == "none"));
+        assert!(!chown
+            .iter()
+            .any(|arg| arg.contains("docker.sock") || arg.contains("/opt/plexi/plexi")));
+        assert!(!WRITE_VAULT.contains("sk-"));
+        assert!(!WRITE_DECISION.contains("pairing_code"));
         let env = agent_env(&names, "local");
         assert!(env
             .iter()

@@ -12,9 +12,12 @@ PR="${1:?usage: scripts/house-agent-e2e.sh <PR>}"
 BIN="plexi-pr-${PR}"
 fail_all() {
   echo "FAIL start: ${1:-skipped}"
+  echo "FAIL non-root: skipped"
+  echo "FAIL unapproved: skipped"
   echo "FAIL reply: skipped"
   echo "FAIL denied: skipped"
   echo "FAIL no-host-secret: skipped"
+  echo "FAIL vault: skipped"
   echo "FAIL retention: skipped"
   echo "FAIL egress: skipped"
   echo "FAIL stop: skipped"
@@ -46,9 +49,12 @@ VOLUME="plexi-tenant-${TENANT}"
 RELAY_VOLUME="plexi-relay-${TENANT}"
 STARTED=0
 START="FAIL"
+NONROOT="FAIL"
+UNAPPROVED="FAIL"
 REPLY="FAIL"
 DENIED="FAIL"
 SECRET="FAIL"
+VAULT="FAIL"
 RETENTION="FAIL"
 EGRESS="FAIL"
 STOP="FAIL"
@@ -80,6 +86,11 @@ echo "binary: $BIN_PATH"
 echo "profile: $PROFILE"
 echo "tenant: $TENANT"
 
+MODEL_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(16), end="")')"
+VAULT_SET="$(printf '%s\n' "$MODEL_KEY" | "$BIN_PATH" cloud agent vault set --tenant "$TENANT" || true)"
+echo "vault-set: $VAULT_SET"
+MODEL_FP="$(MODEL_KEY="$MODEL_KEY" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["MODEL_KEY"].encode()).hexdigest()[:12])')"
+
 if RUN_JSON="$("$BIN_PATH" cloud agent run --agent chess-opponent --tenant "$TENANT")"; then
   echo "run: $RUN_JSON"
   STARTED=1
@@ -92,6 +103,85 @@ read -r PORT CODE PAIR_ID < <(python3 -c 'import json,sys; body=json.loads(sys.a
 if [[ -n "$PORT" && -n "$CODE" && -n "$PAIR_ID" ]]; then
   START="PASS"
 fi
+
+AGENT_USER="$(docker inspect -f '{{.Config.User}}' "$AGENT" 2>/dev/null || true)"
+if [[ "$AGENT_USER" == "65532:65532" ]] && docker exec "$AGENT" python -c 'import os,sys
+st = os.stat("/tenant")
+sys.exit(0 if os.getuid() == 65532 and st.st_uid == 65532 else 1)'; then
+  NONROOT="PASS"
+else
+  echo "tenant is not running as uid 65532 (user=${AGENT_USER})"
+fi
+
+cat >/tmp/house-unapproved.py <<'PY'
+import json, sys, time, urllib.error, urllib.request
+port, code, pairing_id = sys.argv[1:4]
+base = f"http://127.0.0.1:{port}"
+
+def http(method, url, body=None, cookie=None):
+    data = None if body is None else json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    if cookie:
+        headers["Cookie"] = f"plexi_phone={cookie}"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read().decode()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        status = exc.code
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        parsed = {"raw": raw}
+    return status, parsed
+
+status, pending = http("POST", f"{base}/api/pair", {"code": code, "label": "house-e2e"})
+if status != 202 or pending.get("status") != "pending_desktop":
+    raise SystemExit(f"pair did not stay pending: {status} {pending}")
+polled = {}
+for _ in range(6):
+    status, polled = http("GET", f"{base}/api/pair/{pairing_id}")
+    if polled.get("status") != "pending_desktop":
+        raise SystemExit(f"pair changed before approval: {status} {polled}")
+    time.sleep(0.25)
+turn_status, turn_body = http(
+    "POST",
+    f"{base}/api/turns",
+    {
+        "schema_version": 1,
+        "request_id": "req-unapproved",
+        "content": [{"type": "text", "text": "should-not-send"}],
+    },
+)
+if turn_status == 202:
+    raise SystemExit(f"unapproved turn was accepted: {turn_body}")
+print(f"held status={polled.get('status')} turn={turn_status}")
+PY
+if UNAUTH_OUT="$(python3 /tmp/house-unapproved.py "$PORT" "$CODE" "$PAIR_ID")"; then
+  echo "unapproved: $UNAUTH_OUT"
+else
+  echo "unapproved probe failed: ${UNAUTH_OUT:-}"
+  UNAUTH_OUT=""
+fi
+PENDING_JSON=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  PENDING_JSON="$("$BIN_PATH" cloud agent pending --tenant "$TENANT" || true)"
+  if [[ "$PENDING_JSON" == *"$PAIR_ID"* ]]; then
+    break
+  fi
+  sleep 0.3
+done
+echo "pending: $PENDING_JSON"
+if [[ "$UNAUTH_OUT" == held* && "$PENDING_JSON" == *"$PAIR_ID"* ]]; then
+  UNAPPROVED="PASS"
+else
+  echo "unapproved pair was able to send, or it never reached Needs you"
+fi
+
+APPROVE_JSON="$("$BIN_PATH" cloud agent approve --tenant "$TENANT" --pairing-id "$PAIR_ID" || true)"
+echo "approve: $APPROVE_JSON"
 
 cat >/tmp/house-turns.py <<'PY'
 import json, sys, time, urllib.error, urllib.request
@@ -164,9 +254,14 @@ def turn(request_id, text):
 
 hello = turn("req-hello", json.dumps({"kind": "message", "text": "hello"}))
 denied = turn("req-play", json.dumps({"kind": "tool", "name": "app.chess.play", "input": {}}))
+model = turn("req-model", json.dumps({"kind": "model"}))
+with open("/tmp/house-phone-cookie", "w", encoding="utf-8") as handle:
+    handle.write(cookie or "")
 print(hello)
 print("---")
 print(denied)
+print("---")
+print(model)
 PY
 if TURN_OUT="$(python3 /tmp/house-turns.py "$PORT" "$CODE" "$PAIR_ID")"; then
   echo "turns: $TURN_OUT"
@@ -175,7 +270,9 @@ else
   TURN_OUT=""
 fi
 HELLO_TEXT="${TURN_OUT%%---*}"
-DENIED_TEXT="${TURN_OUT#*---}"
+REST_TEXT="${TURN_OUT#*---}"
+DENIED_TEXT="${REST_TEXT%%---*}"
+MODEL_TEXT="${REST_TEXT#*---}"
 if [[ "$HELLO_TEXT" == *"Chess Opponent ready."* ]]; then
   REPLY="PASS"
 fi
@@ -196,11 +293,18 @@ for root in roots:
     path = pathlib.Path(root)
     if not path.exists():
         continue
-    for item in path.rglob("*"):
-        if not item.is_file() or item.stat().st_size > 2_000_000:
+    try:
+        items = list(path.rglob("*"))
+    except PermissionError:
+        continue
+    for item in items:
+        try:
+            if not item.is_file() or item.stat().st_size > 2_000_000:
+                continue
+            sys.stdout.buffer.write(item.read_bytes())
+            sys.stdout.buffer.write(b"\n")
+        except PermissionError:
             continue
-        sys.stdout.buffer.write(item.read_bytes())
-        sys.stdout.buffer.write(b"\n")
 ' > /tmp/house-dump.bin; then
   MOUNTS="$(docker inspect -f '{{range .Mounts}}{{.Type}} {{.Source}} {{.Destination}}{{println}}{{end}}' "$AGENT")"
   echo "mounts: $MOUNTS"
@@ -216,6 +320,85 @@ for root in roots:
   fi
 else
   echo "could not read the container filesystem"
+fi
+
+VAULT_OK=0
+if [[ "$VAULT_SET" != *"$MODEL_KEY"* && "$MODEL_TEXT" == *"model ${MODEL_FP}"* ]]; then
+  if printf '%s' "$MODEL_KEY" | docker exec -i "$AGENT" python -c 'import os, pathlib, sys
+key = sys.stdin.read()
+stored = pathlib.Path("/tenant/vault/model").read_text(encoding="utf-8")
+visible = "\n".join(f"{name}={value}" for name, value in os.environ.items())
+opt = pathlib.Path("/opt/house")
+if opt.exists():
+    for item in opt.rglob("*"):
+        if item.is_file() and item.stat().st_size < 2_000_000:
+            visible += "\n" + item.read_text(encoding="utf-8", errors="replace")
+sys.exit(0 if stored == key and key not in visible else 1)'; then
+    VAULT_OK=1
+  else
+    echo "model credential was baked into the image or missing from the volume"
+  fi
+else
+  echo "vault set leaked the secret, or the model reply was not the fingerprint"
+fi
+REVOKE_JSON="$("$BIN_PATH" cloud agent vault revoke --tenant "$TENANT" || true)"
+echo "vault-revoke: $REVOKE_JSON"
+cat >/tmp/house-revoked.py <<'PY'
+import json, pathlib, sys, time, urllib.error, urllib.request
+port = sys.argv[1]
+cookie = pathlib.Path("/tmp/house-phone-cookie").read_text(encoding="utf-8")
+base = f"http://127.0.0.1:{port}"
+
+def http(method, url, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    headers = {"Content-Type": "application/json", "Cookie": f"plexi_phone={cookie}"}
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read().decode()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        status = exc.code
+    return status, json.loads(raw or "{}")
+
+request_id = "req-revoked"
+status, queued = http(
+    "POST",
+    f"{base}/api/turns",
+    {
+        "schema_version": 1,
+        "request_id": request_id,
+        "content": [{"type": "text", "text": json.dumps({"kind": "model"})}],
+    },
+)
+if status != 202:
+    raise SystemExit(f"revoked turn was not queued: {status} {queued}")
+for _ in range(80):
+    _status, page = http("GET", f"{base}/api/conversation")
+    texts = [
+        event.get("text", "")
+        for event in page.get("events", [])
+        if event.get("request_id") == request_id
+        and event.get("kind") == "assistant_reply"
+        and event.get("text")
+    ]
+    if texts:
+        print("\n".join(texts))
+        raise SystemExit(0)
+    time.sleep(0.25)
+raise SystemExit("no reply for revoked model turn")
+PY
+REVOKED_TEXT=""
+if [[ -f /tmp/house-phone-cookie ]]; then
+  REVOKED_TEXT="$(python3 /tmp/house-revoked.py "$PORT" || true)"
+fi
+echo "revoked-turn: $REVOKED_TEXT"
+if [[ "$VAULT_OK" == 1 && "$REVOKE_JSON" != *"$MODEL_KEY"* && "$REVOKED_TEXT" == *"vault_revoked"* ]] \
+  && docker exec "$AGENT" python -c 'import pathlib,sys; sys.exit(0 if not pathlib.Path("/tenant/vault/model").exists() else 1)'; then
+  VAULT="PASS"
+else
+  echo "revoked model credential was still usable"
 fi
 
 read -r OLD_DAY KEPT_DAY OLD_TS KEPT_TS < <(python3 - <<'PY'
@@ -310,14 +493,17 @@ fi
 fi
 
 echo "CHECK start: $START"
+echo "CHECK non-root: $NONROOT"
+echo "CHECK unapproved: $UNAPPROVED"
 echo "CHECK reply: $REPLY"
 echo "CHECK denied: $DENIED"
 echo "CHECK no-host-secret: $SECRET"
+echo "CHECK vault: $VAULT"
 echo "CHECK retention: $RETENTION"
 echo "CHECK egress: $EGRESS"
 echo "CHECK stop: $STOP"
 
-if [[ "$START" == PASS && "$REPLY" == PASS && "$DENIED" == PASS && "$SECRET" == PASS && "$RETENTION" == PASS && "$EGRESS" == PASS && "$STOP" == PASS ]]; then
+if [[ "$START" == PASS && "$NONROOT" == PASS && "$UNAPPROVED" == PASS && "$REPLY" == PASS && "$DENIED" == PASS && "$SECRET" == PASS && "$VAULT" == PASS && "$RETENTION" == PASS && "$EGRESS" == PASS && "$STOP" == PASS ]]; then
   exit 0
 fi
 exit 1

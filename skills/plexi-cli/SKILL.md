@@ -87,12 +87,15 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   local credential even if its remote revoke attempt fails. Mobile connector
   operations explicitly report that they are not yet supported.
 - **House agent** — `plexi cloud agent run|stop|status` hosts the packaged
-  `chess-opponent` agent in a local container. No account is required. The
-  agent container's only network is internal, with the relay as its peer.
-  The relay publishes on loopback. Disk is a per-tenant volume, and host
-  secrets are not mounted. Tool calls are admitted inside
-  the container by the permission gate; the runner cannot approve them.
-  `retain` applies the 30-day ceiling to that tenant profile.
+  `chess-opponent` agent in a local container as a non-root user. No account
+  is required. The agent container's only network is internal, with the relay
+  as its peer. The relay publishes on loopback. Disk is a per-tenant volume,
+  and host secrets are not mounted. Tool calls are admitted inside the
+  container by the permission gate; the runner cannot approve them. A phone
+  pairing stays pending until `plexi cloud agent approve` (`pending` prints
+  the Needs you list). `vault set|rotate|revoke|status` keeps one model
+  credential per tenant; the secret is read from stdin. `retain` applies the
+  30-day ceiling to that tenant profile.
 - **Agents** — install workspace definitions, report or inspect agent state,
   and operate agent heads: `plexi agent --help`. `agent head create` stores a
   named head under `.plexi/agents` with `--grant tool=allow|ask|deny`. `AGENT.md`

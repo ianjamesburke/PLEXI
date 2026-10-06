@@ -8,6 +8,7 @@ not approve calls and it does not read a host secret.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -21,6 +22,9 @@ PROFILE = Path("/tenant/profile")
 WORKSPACE = Path("/tenant")
 EFFECTS = WORKSPACE / "effects"
 PAIRING = WORKSPACE / "pairing.json"
+DECISION = WORKSPACE / "pairing-decision.json"
+NEEDS = WORKSPACE / "needs-you.json"
+VAULT_KEY = WORKSPACE / "vault" / "model"
 AGENT_MD = Path("/opt/house/agent/AGENT.md")
 
 
@@ -104,6 +108,34 @@ def handle_text(text: str) -> dict:
             "error": error,
             "decision": decision,
             "executed": False,
+        }
+    if body.get("kind") == "model":
+        code, decision = admit("model.complete", {})
+        if code != 0 or decision != "allow":
+            error = "permission_denied" if decision == "deny" else "waiting_for_permission"
+            state = "waiting_for_permission" if decision == "ask" else "failed"
+            return {
+                "state": state,
+                "reply": f"blocked {error}",
+                "error": error,
+                "decision": decision,
+                "executed": False,
+            }
+        key = model_key()
+        if not key:
+            return {
+                "state": "failed",
+                "reply": "blocked vault_revoked",
+                "error": "vault_revoked",
+                "decision": decision,
+                "executed": False,
+            }
+        digest = hashlib.sha256(key.encode()).hexdigest()[:12]
+        return {
+            "state": "succeeded",
+            "reply": f"model {digest}",
+            "decision": decision,
+            "executed": True,
         }
     payload = {"text": str(body.get("text") or text)}
     code, decision = admit("agent.turn", payload)
@@ -210,6 +242,51 @@ def send_json(sock: socket.socket, body: dict) -> dict:
         return parsed
 
 
+def model_key() -> str:
+    try:
+        return VAULT_KEY.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def write_secret(path: Path, body: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(body, handle)
+
+
+def read_decision() -> dict | None:
+    try:
+        body = json.loads(DECISION.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def apply_decision(sock: socket.socket, pending_id: str, tenant: str) -> bool:
+    body = read_decision()
+    if not body or body.get("pairing_id") != pending_id:
+        return False
+    choice = body.get("decision")
+    if choice == "approve":
+        reply = send_json(sock, {"type": "pair_confirm", "pairing_id": pending_id})
+        if reply.get("type") != "pair_confirmed":
+            log("pair_approve_rejected", tenant=tenant)
+            return False
+        DECISION.unlink(missing_ok=True)
+        NEEDS.unlink(missing_ok=True)
+        log("pair_approved", tenant=tenant)
+        return True
+    if choice == "deny":
+        send_json(sock, {"type": "pair_deny", "pairing_id": pending_id})
+        DECISION.unlink(missing_ok=True)
+        NEEDS.unlink(missing_ok=True)
+        log("pair_denied", tenant=tenant)
+        return True
+    return False
+
+
 def prepare() -> None:
     if not AGENT_MD.is_file():
         raise SystemExit("chess-opponent package is missing from the image")
@@ -255,8 +332,15 @@ def serve() -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump({"pairing_id": issued.get("pairing_id", ""), "code": issued["code"]}, handle)
     log("paired_waiting", tenant=tenant)
+    sock.settimeout(0.5)
+    waiting = ""
     while True:
-        opcode, payload = ws_recv(sock)
+        if waiting and apply_decision(sock, waiting, tenant):
+            waiting = ""
+        try:
+            opcode, payload = ws_recv(sock)
+        except TimeoutError:
+            continue
         if opcode == 0x8:
             return
         if opcode == 0x9:
@@ -269,8 +353,25 @@ def serve() -> None:
             continue
         kind = message.get("type")
         if kind == "pair_pending":
-            send_json(sock, {"type": "pair_confirm", "pairing_id": message.get("pairing_id", "")})
-            log("pair_confirmed", tenant=tenant)
+            pending_id = str(message.get("pairing_id") or "")
+            write_secret(
+                NEEDS,
+                {
+                    "needs_you": [
+                        {
+                            "kind": "pair",
+                            "tenant": tenant,
+                            "pairing_id": pending_id,
+                            "device_label": str(message.get("device_label") or ""),
+                            "fingerprint": str(message.get("fingerprint") or ""),
+                        }
+                    ]
+                },
+            )
+            log("needs_you", tenant=tenant, pairing_id=pending_id)
+            waiting = pending_id
+            if waiting and apply_decision(sock, waiting, tenant):
+                waiting = ""
             continue
         if kind != "deliver":
             continue

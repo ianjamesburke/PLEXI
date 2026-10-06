@@ -1267,8 +1267,10 @@ pub use app::{
 pub use app_check::app_check_cli;
 pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use cloud_agent::{
-    cloud_agent_admit_cli, cloud_agent_grant_cli, cloud_agent_retain_cli, cloud_agent_run_cli,
-    cloud_agent_status_cli, cloud_agent_stop_cli,
+    cloud_agent_admit_cli, cloud_agent_approve_cli, cloud_agent_deny_cli, cloud_agent_grant_cli,
+    cloud_agent_pending_cli, cloud_agent_retain_cli, cloud_agent_run_cli, cloud_agent_status_cli,
+    cloud_agent_stop_cli, cloud_agent_vault_revoke_cli, cloud_agent_vault_rotate_cli,
+    cloud_agent_vault_set_cli, cloud_agent_vault_status_cli,
 };
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
