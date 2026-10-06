@@ -32,6 +32,8 @@
 //! land in the agent's transcript, which is the host-visible record of what
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
+pub mod heads;
+
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
     PermissionRequest, TargetType,
