@@ -208,6 +208,7 @@ pub mod test_env;
 
 pub mod account;
 pub mod agent;
+pub mod agents_api;
 pub mod ai;
 pub mod app;
 pub mod app_check;
@@ -1254,6 +1255,7 @@ pub use agent::{
     agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
     agent_report_cli, agent_status_cli, agent_update,
 };
+pub use agents_api::{agent_delegate_cli, agent_head_dispatch, agent_run_dispatch};
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
     app_action_cli, app_call_cli, assistant_permission_cli, assistant_send_cli, app_info, app_init,

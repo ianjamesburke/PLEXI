@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -80,10 +80,17 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
   project secrets and routines: `plexi workspace --help`, `plexi run --help`,
   `plexi secret --help`, and `plexi routine --help`.
-- **Agents** — install workspace definitions and report or inspect agent state:
-  `plexi agent --help`. `agent report --event` preserves a provider lifecycle
-  event separately from its UI state; `--blocked-reason` supplies a typed reason.
-  Read `agent report --help` before using these optional fields.
+- **Agents** — install workspace definitions, report or inspect agent state,
+  and operate agent heads: `plexi agent --help`. `agent head create` stores a
+  named head under `.plexi/agents` with `--grant tool=allow|ask|deny`. `AGENT.md`
+  is guidance and grants nothing. `agent run spawn` starts a run; repeat the
+  same `--admission` to get that run back, and a second admission while it is
+  active returns `assignment_conflict`. `agent run finish` stops it. `agent delegate`
+  starts a temporary child with a subset of the parent run's grants. Ask-tier
+  calls wait on `plexi assistant permission list`. `agent report --event` preserves
+  a provider lifecycle event separately from its UI state; `--blocked-reason`
+  supplies a typed reason. Read `agent report --help` before using these optional
+  fields.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
@@ -229,6 +236,21 @@ severity or urgency flag.
 NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to inspect.' \
   --scope context --timeout 30)
 plexi notify dismiss "$NOTICE"
+```
+
+### Create an agent head and claim a run
+
+Heads live in the workspace `.plexi/agents` directory. Grants are the permission
+gate's authority. The same admission id returns the original run.
+
+```bash
+plexi agent head create lead --display-name Lead --description 'Lead agent' --grant agents.ping=allow --grant agents.review=ask --json
+plexi agent head list --all --json
+plexi agent run spawn --head lead --admission adm-1 --client-ref acme --kind output --input-tokens 11 --output-tokens 4 --json
+plexi agent run list --json
+plexi agent run show run_example --json
+plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+plexi agent run finish run_example --json
 ```
 
 ## Installation health

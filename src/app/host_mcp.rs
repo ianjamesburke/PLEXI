@@ -45,6 +45,11 @@ fn discovery() -> Option<u16> {
     DISCOVERY.get().copied()
 }
 
+/// Port the host MCP listener bound, when the server is up.
+pub(crate) fn bound_port() -> Option<u16> {
+    discovery()
+}
+
 #[derive(Clone)]
 struct McpCaller {
     pane_id: u64,
@@ -53,6 +58,9 @@ struct McpCaller {
     /// this, never from `workspace_root` path-equality.
     context_id: u64,
     workspace_root: PathBuf,
+    /// Set when the bearer is an agent run token rather than a pane credential.
+    run_id: Option<String>,
+    actor_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -79,6 +87,8 @@ fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathB
                 pane_id,
                 context_id,
                 workspace_root,
+                run_id: None,
+                actor_id: None,
             },
         );
         return token;
@@ -91,6 +101,8 @@ fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathB
             pane_id,
             context_id,
             workspace_root: workspace_root.clone(),
+            run_id: None,
+            actor_id: None,
         },
     );
     log::info!(
@@ -170,6 +182,8 @@ pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
             pane_id,
             context_id,
             workspace_root: workspace_root.clone(),
+            run_id: None,
+            actor_id: None,
         },
     );
     log::info!(
@@ -179,7 +193,22 @@ pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
 }
 
 fn authenticate(token: &str) -> Option<McpCaller> {
-    credentials().lock().unwrap().by_token.get(token).cloned()
+    if let Some(caller) = credentials().lock().unwrap().by_token.get(token).cloned() {
+        return Some(caller);
+    }
+    let auth = crate::agent::heads::authenticate_run_token(token)?;
+    log::info!(
+        "host_mcp: authenticated agent run {} actor={}",
+        auth.run_id,
+        auth.actor_id
+    );
+    Some(McpCaller {
+        pane_id: 0,
+        context_id: 0,
+        workspace_root: auth.workspace,
+        run_id: Some(auth.run_id),
+        actor_id: Some(auth.actor_id),
+    })
 }
 
 #[cfg(test)]
@@ -334,6 +363,7 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
             "outputSchema": tool.output_schema,
         })
     }));
+    tools.extend(crate::agent::heads::mcp_tool_defs());
     serde_json::Value::Array(tools)
 }
 
@@ -392,23 +422,41 @@ fn handle_connection(
                 caller.pane_id,
                 caller.workspace_root.display()
             );
-            let result = match tool_name {
-                "list_event_streams" => tool_list_event_streams(&caller),
-                "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, &caller),
-                other => {
-                    let input_json = serde_json::to_string(&arguments)
-                        .map_err(|error| format!("serialize tool arguments: {error}"));
-                    match input_json {
-                        Ok(input_json) => {
-                            let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
-                            let result = dispatcher.dispatch_call(call_id, other, input_json);
-                            match (result.output_json, result.error) {
-                                (_, Some(error)) => Err(error),
-                                (Some(output), None) => Ok(output),
-                                (None, None) => Ok("null".to_string()),
+            let result = if tool_name.starts_with("agents.") {
+                match serde_json::to_string(&arguments) {
+                    Ok(input_json) => {
+                        let auth = crate::agent::heads::McpAuth {
+                            workspace: caller.workspace_root.clone(),
+                            run_id: caller.run_id.clone(),
+                            actor_id: caller.actor_id.clone(),
+                            pane_id: caller.pane_id,
+                            context_id: caller.context_id,
+                        };
+                        crate::agent::heads::mcp_call(&auth, tool_name, &input_json)
+                    }
+                    Err(error) => Err(format!("serialize tool arguments: {error}")),
+                }
+            } else {
+                match tool_name {
+                    "list_event_streams" => tool_list_event_streams(&caller),
+                    "subscribe_and_wait" => {
+                        tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
+                    }
+                    other => {
+                        let input_json = serde_json::to_string(&arguments)
+                            .map_err(|error| format!("serialize tool arguments: {error}"));
+                        match input_json {
+                            Ok(input_json) => {
+                                let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
+                                let result = dispatcher.dispatch_call(call_id, other, input_json);
+                                match (result.output_json, result.error) {
+                                    (_, Some(error)) => Err(error),
+                                    (Some(output), None) => Ok(output),
+                                    (None, None) => Ok("null".to_string()),
+                                }
                             }
+                            Err(error) => Err(error),
                         }
-                        Err(error) => Err(error),
                     }
                 }
             };
