@@ -81,32 +81,121 @@ else
 fi
 
 # ── 3. Every plexi command named in the skill exists ─────────────────────────
+# Fenced blocks are stripped before inline spans are paired, because a ```
+# fence leaves leftover backticks that would swallow the rest of the file.
+# A token is a subcommand only when the parent's --help lists it. Anything
+# after that is a positional and is not part of the command path.
 if python3 - "$CLAUDE_SKILL" "$BIN" <<'PY'
 import re, subprocess, sys
 text = open(sys.argv[1]).read()
 binary = sys.argv[2]
-paths = set()
-for chunk in re.findall(r"`([^`]+)`", text):
-    if not chunk.startswith("plexi ") and not chunk.startswith("plexi\n"):
-        continue
-    tokens = []
-    for tok in chunk.split():
+
+def is_command_word(tok):
+    return bool(re.fullmatch(r"[a-z][a-z0-9-]*", tok))
+
+def subcommands(prefix):
+    run = subprocess.run([binary, *prefix, "--help"], capture_output=True, text=True)
+    if run.returncode != 0:
+        return None
+    # Root help groups commands under Workspace/Apps/… headings. Nested help
+    # uses clap's Commands: list. Both print a name in the first column,
+    # followed by at least two spaces and a description.
+    names = []
+    for line in run.stdout.splitlines():
+        match = re.match(r"  ([a-z][a-z0-9-]*)\s{2,}\S", line)
+        if match and match.group(1) != "help":
+            names.append(match.group(1))
+    return names
+
+def resolve(tokens):
+    path = []
+    saw_word = False
+    for tok in tokens:
         if tok == "plexi":
             continue
-        if not re.fullmatch(r"[a-z0-9-]+", tok):
+        if not is_command_word(tok):
             break
-        tokens.append(tok)
-    if tokens:
-        paths.add(tuple(tokens))
+        saw_word = True
+        known = subcommands(path)
+        if known is None or tok not in known:
+            if not path:
+                return None
+            break
+        path.append(tok)
+    if not saw_word:
+        return ()
+    return tuple(path)
+
+def strip_fences(src):
+    buf, fences, cur = [], [], None
+    for line in src.splitlines(True):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            if cur is None:
+                cur = [stripped[3:].strip(), []]
+            else:
+                fences.append((cur[0], "".join(cur[1])))
+                cur = None
+        elif cur is not None:
+            cur[1].append(line)
+        else:
+            buf.append(line)
+    return "".join(buf), fences
+
+inline, fences = strip_fences(text)
+named = []
+
+def take(label, tokens):
+    path = resolve(tokens)
+    if path is None:
+        named.append((label, None))
+    elif path:
+        named.append((label, path))
+
+for chunk in re.findall(r"`([^`\n]+)`", inline):
+    idx = chunk.find("plexi")
+    if idx < 0:
+        continue
+    tokens = chunk[idx:].split()
+    if tokens and tokens[0] == "plexi":
+        take(chunk.strip(), tokens)
+
+for lang, body in fences:
+    lines = body.splitlines()
+    if lang == "":
+        for line in lines:
+            if not line.strip() or line[:1].isspace():
+                continue
+            take(line.strip(), line.split())
+    elif lang in ("bash", "sh"):
+        for line in lines:
+            normalized = "".join(" " if c in "()|;&`$" else c for c in line)
+            tokens = normalized.split()
+            i = 0
+            while i < len(tokens):
+                if tokens[i] != "plexi":
+                    i += 1
+                    continue
+                j = i + 1
+                while j < len(tokens) and tokens[j] != "plexi":
+                    j += 1
+                take(" ".join(tokens[i:j]), tokens[i:j])
+                i = j
+
 missing = []
-for tokens in sorted(paths):
-    run = subprocess.run([binary, *tokens, "--help"], capture_output=True, text=True)
-    if run.returncode != 0:
-        missing.append(" ".join(tokens))
+seen = set()
+for label, path in named:
+    if path is None:
+        missing.append(label)
+        continue
+    seen.add(path)
+if len(seen) < 20:
+    print(f"extraction collapse: only {len(seen)} commands")
+    raise SystemExit(1)
 if missing:
     print("missing: " + ", ".join(missing))
     raise SystemExit(1)
-print(f"commands ok: {len(paths)}")
+print(f"commands ok: {len(seen)}")
 PY
 then
   record PASS step3 "every named command exists"
