@@ -22,6 +22,10 @@ use super::relay_ws::{self, Incoming, WsConn};
 const STATUS_FILE: &str = "relay-status.json";
 const IDENTITY_FILE: &str = "relay-host.json";
 const PROTOCOL_VERSION: i64 = 1;
+/// Returned from the session when hello versions differ. The process must not
+/// open another socket until the user runs `relay connect` or the app starts again.
+const PROTOCOL_STOP: &str = "protocol_mismatch";
+const BACKOFF_CAP_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Clone, Copy)]
 enum Dispatch {
@@ -71,6 +75,11 @@ struct Session {
     queued: VecDeque<PendingTurn>,
     inflight: Option<Inflight>,
     last_ping: Instant,
+    /// True after `hello_ok`. Failed hellos before this keep growing the backoff.
+    linked: bool,
+    /// Earliest time to open the socket again. The loop keeps polling control
+    /// while this is in the future, so a five-minute cap does not freeze confirm.
+    wait_until: Option<Instant>,
 }
 
 pub fn relay_connect_cli(url: Option<String>) -> i32 {
@@ -104,6 +113,13 @@ pub fn relay_connect_cli(url: Option<String>) -> i32 {
         None => {}
     }
     if let Err(error) = run_session(&url, dispatch, "cli") {
+        if let Some(detail) = protocol_stop_detail(&error) {
+            eprintln!("error: {detail}");
+            log::error!(
+                "relay: protocol mismatch, not reconnecting until relay connect or an app update"
+            );
+            return 1;
+        }
         if error == ALREADY_RUNNING {
             if matches!(live_connection(), Some(LiveConnection::Host)) {
                 println!("attached to the host relay");
@@ -172,6 +188,10 @@ pub fn start_host_relay() {
         if let Err(error) = run_session(&url, Dispatch::Host, "host") {
             if error == ALREADY_RUNNING {
                 log::info!("relay: host did not open a second connection");
+            } else if protocol_stop_detail(&error).is_some() {
+                log::error!(
+                    "relay: protocol mismatch, not reconnecting until relay connect or an app update"
+                );
             } else {
                 log::error!("relay: host session ended outcome={error}");
             }
@@ -231,6 +251,8 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
         queued: VecDeque::new(),
         inflight: None,
         last_ping: Instant::now(),
+        linked: false,
+        wait_until: None,
     };
     write_status(&session, "connecting", None, None, None)?;
     log::info!(
@@ -261,9 +283,17 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
         }
         pump_assistant(&mut session, &mut socket)?;
         if socket.is_none() {
+            if let Some(when) = session.wait_until {
+                if Instant::now() < when {
+                    let remaining = when.saturating_duration_since(Instant::now());
+                    thread::sleep(remaining.min(Duration::from_millis(200)));
+                    continue;
+                }
+                session.wait_until = None;
+            }
             match WsConn::connect(&session.url) {
                 Ok(mut connected) => {
-                    send_json(
+                    if send_json(
                         &mut connected,
                         &json!({
                             "type": "hello",
@@ -276,8 +306,18 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
                                 "fingerprint": device.fingerprint,
                             })).collect::<Vec<_>>(),
                         }),
-                    )?;
-                    attempt = 0;
+                    )
+                    .is_err()
+                    {
+                        log::info!(
+                            "relay: hello send failed host_id={} outcome=send_failed",
+                            session.identity.host_id
+                        );
+                        drop(connected);
+                        schedule_retry(&mut session, &mut socket, &mut attempt);
+                        continue;
+                    }
+                    session.linked = false;
                     session.last_ping = Instant::now();
                     socket = Some(connected);
                     log::info!(
@@ -290,8 +330,7 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
                         "relay: connect retry outcome=failed host={}",
                         session.url.host
                     );
-                    backoff(attempt);
-                    attempt = attempt.saturating_add(1);
+                    schedule_retry(&mut session, &mut socket, &mut attempt);
                     continue;
                 }
             }
@@ -313,14 +352,35 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
                     "relay: desktop socket closed host_id={}",
                     session.identity.host_id
                 );
-                socket = None;
-                backoff(attempt);
-                attempt = attempt.saturating_add(1);
+                schedule_retry(&mut session, &mut socket, &mut attempt);
             }
             Ok(Incoming::Text(text)) => {
                 let message: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                if let Some(conn) = socket.as_mut() {
-                    handle_relay_message(&mut session, conn, &message)?;
+                match after_desktop_frame(&message, session.linked) {
+                    Some(ConnectOutcome::Stop) => {
+                        log::info!(
+                            "relay: protocol mismatch host_id={} outcome=protocol_mismatch",
+                            session.identity.host_id
+                        );
+                        let detail = protocol_problem(&message)
+                            .unwrap_or_else(|| "protocol mismatch".to_string());
+                        return Err(format!("{PROTOCOL_STOP}: {detail}"));
+                    }
+                    Some(ConnectOutcome::Retry) => {
+                        log::info!(
+                            "relay: hello failed host_id={} outcome=retry",
+                            session.identity.host_id
+                        );
+                        schedule_retry(&mut session, &mut socket, &mut attempt);
+                    }
+                    None => {
+                        if let Some(conn) = socket.as_mut() {
+                            handle_relay_message(&mut session, conn, &message)?;
+                        }
+                        if session.linked {
+                            attempt = 0;
+                        }
+                    }
                 }
             }
             Err(_) => {
@@ -328,7 +388,7 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
                     "relay: desktop socket error host_id={} outcome=read_failed",
                     session.identity.host_id
                 );
-                socket = None;
+                schedule_retry(&mut session, &mut socket, &mut attempt);
             }
         }
     }
@@ -339,19 +399,13 @@ fn handle_relay_message(
     conn: &mut WsConn,
     message: &Value,
 ) -> Result<(), String> {
-    if let Some(problem) = protocol_problem(message) {
-        log::info!(
-            "relay: protocol mismatch host_id={} outcome=protocol_mismatch",
-            session.identity.host_id
-        );
-        return Err(problem);
-    }
     let kind = message
         .get("type")
         .and_then(|value| value.as_str())
         .unwrap_or("");
     match kind {
         "hello_ok" => {
+            session.linked = true;
             session.devices = reconcile_paired(&session.devices, &devices_from_message(message));
             persist_record(&session.identity, &session.devices)?;
             log::info!(
@@ -1269,14 +1323,68 @@ fn json_str(value: &Value, key: &str) -> String {
         .to_string()
 }
 
-fn backoff(attempt: u32) {
-    let shift = attempt.min(4);
-    let base = 500u64.saturating_mul(1u64 << shift).min(8_000);
-    let jitter = (std::process::id() as u64)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectOutcome {
+    /// Wait, then open the socket again.
+    Retry,
+    /// Versions differ. Do not open another socket in this process.
+    Stop,
+}
+
+fn after_desktop_frame(message: &Value, linked: bool) -> Option<ConnectOutcome> {
+    if protocol_problem(message).is_some() {
+        return Some(ConnectOutcome::Stop);
+    }
+    let kind = message
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if !linked && kind == "error" {
+        return Some(ConnectOutcome::Retry);
+    }
+    None
+}
+
+fn protocol_stop_detail(error: &str) -> Option<&str> {
+    error
+        .strip_prefix(PROTOCOL_STOP)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+/// 500ms, doubling, plus up to 20% jitter, never past five minutes.
+fn backoff_delay(attempt: u32, entropy: u64) -> Duration {
+    let shift = attempt.min(16);
+    let base = 500u64.saturating_mul(1u64 << shift).min(BACKOFF_CAP_MS);
+    if base >= BACKOFF_CAP_MS {
+        let span = BACKOFF_CAP_MS / 10;
+        let jitter = if span == 0 { 0 } else { entropy % span };
+        return Duration::from_millis(BACKOFF_CAP_MS - jitter);
+    }
+    let span = (base / 5).max(1);
+    let jitter = entropy % span;
+    Duration::from_millis(base + jitter)
+}
+
+fn backoff_entropy(attempt: u32) -> u64 {
+    (std::process::id() as u64)
         .wrapping_mul(17)
-        .wrapping_add(attempt as u64 * 13)
-        % 400;
-    thread::sleep(Duration::from_millis(base + jitter));
+        .wrapping_add(u64::from(attempt).wrapping_mul(13))
+}
+
+fn schedule_retry(session: &mut Session, socket: &mut Option<WsConn>, attempt: &mut u32) {
+    *socket = None;
+    session.linked = false;
+    let delay = backoff_delay(*attempt, backoff_entropy(*attempt));
+    log::info!(
+        "relay: reconnect wait host_id={} attempt={} wait_ms={}",
+        session.identity.host_id,
+        *attempt,
+        delay.as_millis()
+    );
+    session.wait_until = Some(Instant::now() + delay);
+    *attempt = attempt.saturating_add(1);
 }
 
 fn machine_label() -> String {
@@ -1305,6 +1413,50 @@ mod tests {
 
     /// `STOP` and the in-memory test keychain are process-global.
     static SESSION_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn backoff_grows_to_five_minutes_and_mismatch_does_not_reconnect() {
+        assert_eq!(backoff_delay(0, 0), Duration::from_millis(500));
+        assert_eq!(backoff_delay(1, 0), Duration::from_millis(1000));
+        assert!(backoff_delay(2, 0) > backoff_delay(1, 0));
+        assert_eq!(backoff_delay(30, 0), Duration::from_secs(5 * 60));
+        let jittered = backoff_delay(0, 7);
+        assert!(jittered > Duration::from_millis(500));
+        assert!(jittered < Duration::from_millis(700));
+        let at_cap = backoff_delay(30, 999_999);
+        assert!(at_cap <= Duration::from_secs(5 * 60));
+        assert!(at_cap >= Duration::from_secs(270));
+        let stop = json!({
+            "type": "error",
+            "error": "protocol_mismatch",
+            "message": "desktop and relay differ",
+        });
+        assert_eq!(
+            after_desktop_frame(&stop, false),
+            Some(ConnectOutcome::Stop)
+        );
+        assert_eq!(
+            after_desktop_frame(&json!({"type": "hello_ok", "devices": []}), false),
+            Some(ConnectOutcome::Stop)
+        );
+        assert_eq!(
+            after_desktop_frame(&json!({"type": "error", "error": "hello_rejected"}), false),
+            Some(ConnectOutcome::Retry)
+        );
+        assert_eq!(
+            after_desktop_frame(&json!({"type": "error", "error": "rate_limited"}), false),
+            Some(ConnectOutcome::Retry)
+        );
+        assert_eq!(
+            after_desktop_frame(&json!({"type": "error", "error": "hello_rejected"}), true),
+            None
+        );
+        assert!(
+            protocol_stop_detail("protocol_mismatch: desktop and relay differ")
+                .unwrap()
+                .contains("differ")
+        );
+    }
 
     #[test]
     fn protocol_mismatch_stops_and_reconcile_keeps_local_labels() {

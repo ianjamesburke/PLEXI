@@ -572,6 +572,27 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(reloaded.device_summaries("host-idle"), [])
         self.assertIsNone(reloaded.device_for_token(token))
 
+    def test_hello_token_bucket_limits_a_flood(self) -> None:
+        clock = Clock()
+        logs = LogCapture()
+        relay.log.setLevel(logging.INFO)
+        relay.log.addHandler(logs)
+        self.addCleanup(relay.log.removeHandler, logs)
+        box = relay.Relay(clock=clock, public_origin="http://127.0.0.1")
+        for _ in range(4):
+            self.assertTrue(box.allow_hello("203.0.113.5", "host-a"))
+        self.assertFalse(box.allow_hello("203.0.113.5", "host-a"))
+        self.assertFalse(box.allow_hello("203.0.113.5", "host-a"))
+        limited = [line for line in logs.lines if "rate_limited" in line]
+        self.assertEqual(len(limited), 1)
+        self.assertFalse(box.allow_hello("203.0.113.9", "host-a"))
+        self.assertFalse(box.allow_hello("203.0.113.5", "host-b"))
+        self.assertLessEqual(sum(1 for line in logs.lines if "rate_limited" in line), 3)
+        clock.advance(30)
+        self.assertTrue(box.allow_hello("203.0.113.5", "host-a"))
+        fresh = relay.Relay(clock=clock, public_origin="http://127.0.0.1")
+        self.assertTrue(fresh.allow_hello("198.51.100.8", "host-c"))
+
     def test_unset_state_path_stays_in_memory(self) -> None:
         box = relay.Relay(public_origin="http://127.0.0.1")
         self.assertIsNone(box.registry)
@@ -601,6 +622,19 @@ class ProtocolTest(unittest.TestCase):
         self.addCleanup(wrong.close)
         self.assertEqual(wrong.hello.get("error"), "protocol_mismatch")
         self.assertNotIn("host-new", self.relay.hosts)
+
+    def test_repeated_mismatch_is_rate_limited(self) -> None:
+        logs = LogCapture()
+        relay.log.setLevel(logging.INFO)
+        relay.log.addHandler(logs)
+        self.addCleanup(relay.log.removeHandler, logs)
+        for index in range(8):
+            desk = Desktop(self.port, host_id=f"host-flood-{index}", protocol=None, expect_ok=False)
+            self.addCleanup(desk.close)
+        mismatch = [line for line in logs.lines if "protocol_mismatch" in line]
+        limited = [line for line in logs.lines if "rate_limited" in line]
+        self.assertEqual(len(mismatch), 4, logs.text)
+        self.assertEqual(len(limited), 1, logs.text)
 
     def test_unwritable_state_path_does_not_fall_back_to_memory(self) -> None:
         with self.assertRaises((OSError, sqlite3.Error)):

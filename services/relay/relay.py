@@ -6,7 +6,9 @@ desktop acknowledges delivery, and any still-undelivered body is purged after
 two minutes. Logs record ids, sizes, and outcomes — never message text, pairing
 codes, or session tokens.
 
-Pairing records can outlive this process. When RELAY_STATE_PATH is set, SQLite
+Hellos are token-bucketed per client address and per host_id so an old desktop
+that ignores a protocol mismatch cannot fill the log. Pairing records can
+outlive this process. When RELAY_STATE_PATH is set, SQLite
 stores host_id, device_id, a hash of the device token, fingerprint, created,
 last_seen, revoked, and a hash of the host token. It never stores a message
 body, a pairing code, or a raw token. Unset, the registry stays in memory.
@@ -46,6 +48,12 @@ PAIRING_TTL_SECONDS = 300.0
 HEARTBEAT_TIMEOUT_SECONDS = 45.0
 DEVICE_IDLE_SECONDS = 30 * 24 * 3600
 PROTOCOL_VERSION = 1
+# A desktop that ignores protocol_mismatch used to hello about once a second.
+# Four hellos may land immediately; after that, one per half minute, per address
+# and per host_id. Extra hellos are closed without a log line.
+HELLO_BURST = 4.0
+HELLO_REFILL_PER_SEC = 1.0 / 30.0
+HELLO_LIMIT_LOG_SECONDS = 60.0
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8000
 COOKIE = "plexi_phone"
@@ -328,6 +336,12 @@ class PairingRegistry:
         self.conn.commit()
 
 
+@dataclass
+class _HelloBucket:
+    tokens: float
+    updated: float
+
+
 class Relay:
     """Pairing plus in-memory delivery. No message body is written to disk."""
 
@@ -356,6 +370,8 @@ class Relay:
         self.by_request: dict[tuple[str, str], str] = {}  # (device_id, request_id) -> delivery_id
         self.events: dict[str, list[PhoneEvent]] = {}
         self.cursors: dict[str, int] = {}
+        self.hello_buckets: dict[str, _HelloBucket] = {}
+        self.hello_limit_logged: dict[str, float] = {}
         self.registry: PairingRegistry | None = None
         path = (state_path or "").strip()
         if path:
@@ -367,6 +383,62 @@ class Relay:
 
     def now(self) -> float:
         return self.clock()
+
+    def allow_hello(self, ip: str, host_id: str) -> bool:
+        """Token bucket for desktop hellos. False means close the socket quietly."""
+        address = (ip or "unknown")[:80]
+        host = host_id[:80] if isinstance(host_id, str) else ""
+        now = self.now()
+        with self.lock:
+            keys = [f"ip:{address}"]
+            if host:
+                keys.append(f"host:{host}")
+            denied = next((key for key in keys if not self._hello_ready_locked(key, now)), None)
+            if denied is not None:
+                self._log_hello_limited_locked(denied, host, now)
+                return False
+            for key in keys:
+                self._hello_take_locked(key, now)
+            self._prune_hello_buckets_locked(now)
+            return True
+
+    def _hello_bucket_locked(self, key: str, now: float) -> _HelloBucket:
+        bucket = self.hello_buckets.get(key)
+        if bucket is None:
+            bucket = _HelloBucket(tokens=HELLO_BURST, updated=now)
+            self.hello_buckets[key] = bucket
+            return bucket
+        elapsed = now - bucket.updated
+        if elapsed > 0:
+            bucket.tokens = min(HELLO_BURST, bucket.tokens + elapsed * HELLO_REFILL_PER_SEC)
+            bucket.updated = now
+        return bucket
+
+    def _hello_ready_locked(self, key: str, now: float) -> bool:
+        return self._hello_bucket_locked(key, now).tokens >= 1.0
+
+    def _hello_take_locked(self, key: str, now: float) -> None:
+        bucket = self._hello_bucket_locked(key, now)
+        bucket.tokens -= 1.0
+
+    def _log_hello_limited_locked(self, key: str, host_id: str, now: float) -> None:
+        last = self.hello_limit_logged.get(key, 0.0)
+        if now - last < HELLO_LIMIT_LOG_SECONDS:
+            return
+        self.hello_limit_logged[key] = now
+        trace(
+            "hello_rejected",
+            host_id=host_id or None,
+            outcome="rate_limited",
+        )
+
+    def _prune_hello_buckets_locked(self, now: float) -> None:
+        if len(self.hello_buckets) <= 64:
+            return
+        stale = [key for key, bucket in self.hello_buckets.items() if now - bucket.updated > 600]
+        for key in stale:
+            self.hello_buckets.pop(key, None)
+            self.hello_limit_logged.pop(key, None)
 
     # ── desktop ────────────────────────────────────────────────────────────
 
@@ -1113,6 +1185,14 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
             self.end_headers()
             self.wfile.write(data)
 
+        def _client_ip(self) -> str:
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                first = forwarded.split(",")[0].strip()
+                if first:
+                    return first[:80]
+            return str(self.client_address[0])
+
         def _upgrade(self) -> bool:
             if urlparse(self.path).path != "/v1/desktop":
                 return False
@@ -1132,7 +1212,7 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
             self.send_header("Connection", "Upgrade")
             self.send_header("Sec-WebSocket-Accept", accept)
             self.end_headers()
-            serve_desktop_socket(self.connection, relay)
+            serve_desktop_socket(self.connection, relay, self._client_ip())
             self.close_connection = True
             return True
 
@@ -1197,7 +1277,7 @@ def ws_recv(sock: socket.socket) -> tuple[int, bytes] | None:
     return opcode, payload
 
 
-def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
+def serve_desktop_socket(sock: socket.socket, relay: Relay, client_ip: str) -> None:
     link: DesktopLink | None = None
     host_id = ""
     try:
@@ -1243,9 +1323,22 @@ def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
                 if kind != "hello":
                     ws_send(sock, json.dumps({"type": "error", "error": "hello_required"}).encode())
                     continue
+                host_id = str(message.get("host_id", ""))[:80]
+                if not relay.allow_hello(client_ip, host_id):
+                    ws_send(
+                        sock,
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "error": "rate_limited",
+                                "message": "Too many hellos. Wait and try again.",
+                            }
+                        ).encode(),
+                    )
+                    break
                 version = message.get("protocol")
                 if isinstance(version, bool) or not isinstance(version, int) or version != PROTOCOL_VERSION:
-                    trace("hello_rejected", outcome="protocol_mismatch")
+                    trace("hello_rejected", host_id=host_id or None, outcome="protocol_mismatch")
                     ws_send(
                         sock,
                         json.dumps(
