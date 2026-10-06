@@ -193,6 +193,7 @@ pub fn enqueue(workspace: &Path, head: &str, text: &str) -> Value {
     }) {
         Ok(()) => {
             log::info!("queue: assigned head={head} task={id}");
+            crate::host::command_view::publish(&workspace, "queue assigned");
             json!({"ok": true, "task": task_json(&task)})
         }
         Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
@@ -224,7 +225,12 @@ pub fn request_cancel(workspace: &Path, task_id: &str) -> Value {
         log::info!("queue: cancel task={task_id} state={}", task.state);
         json!({"ok": true, "task": task_json(task)})
     }) {
-        Ok(value) => value,
+        Ok(value) => {
+            if value.get("ok").and_then(|item| item.as_bool()) == Some(true) {
+                crate::host::command_view::publish(&workspace, "queue cancelled");
+            }
+            value
+        }
         Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
     }
 }
@@ -306,6 +312,7 @@ pub fn request_cancel_run(workspace: &Path, run_id: &str) -> Value {
         }
     });
     log::info!("queue: cancel run={run_id}");
+    crate::host::command_view::publish(&workspace, "run cancel requested");
     json!({"ok": true, "run_id": run_id, "state": "cancelled"})
 }
 
@@ -356,6 +363,8 @@ pub fn finish_task(workspace: &Path, task_id: &str, state: &str, run_id: &str, e
     });
     if let Err(error) = result {
         log::error!("queue: finish {task_id} failed: {error}");
+    } else {
+        crate::host::command_view::publish(&workspace, "queue finished");
     }
 }
 

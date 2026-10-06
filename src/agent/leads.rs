@@ -288,7 +288,7 @@ pub fn pane_lines(workspace: &Path) -> Vec<String> {
                 .get("tool")
                 .and_then(|v| v.as_str())
                 .unwrap_or("approval");
-            lines.push(format!("needs you {id} {tool}"));
+            lines.push(format!("waiting {id} {tool}"));
         }
     }
     if let Some(tasks) = body.get("tasks").and_then(|value| value.as_array()) {
@@ -305,7 +305,7 @@ pub fn pane_lines(workspace: &Path) -> Vec<String> {
                 .get("state")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            lines.push(format!("task {id} {head} {state}"));
+            lines.push(format!("queue {id} {head} {state}"));
         }
     }
     if let Some(runs) = body.get("runs").and_then(|value| value.as_array()) {
@@ -327,6 +327,48 @@ pub fn pane_lines(workspace: &Path) -> Vec<String> {
     lines
 }
 
+/// Admit `assistant.turn` before a missing head can be created. Ask and deny
+/// leave no head directory. A grant still does not create the head.
+fn refuse_missing_head(workspace: &Path, head: &str, text: &str) -> Value {
+    let actor = actor_of(head);
+    let turn_input = json!({"head": head, "text": text}).to_string();
+    let call_id = format!("call_{}", uuid::Uuid::new_v4());
+    match admit(workspace, &actor, "assistant.turn", &turn_input, &call_id) {
+        Admission::Required { pending_request_id } => {
+            log::info!("lead: send refused before create head={head} pending={pending_request_id}");
+            crate::host::command_view::publish(workspace, "permission_required");
+            json!({
+                "ok": false,
+                "error_code": "permission_required",
+                "error": "permission_required",
+                "pending_request_id": pending_request_id,
+                "state": "permission_required",
+                "head": head,
+            })
+        }
+        Admission::Denied { code } => {
+            log::info!("lead: send denied before create head={head} code={code}");
+            json!({
+                "ok": false,
+                "error_code": code,
+                "error": code,
+                "state": code,
+                "head": head,
+            })
+        }
+        Admission::Proceed { .. } => {
+            log::info!("lead: granted send found no head={head}");
+            json!({
+                "ok": false,
+                "error_code": "head_not_found",
+                "error": format!("no head '{head}'"),
+                "state": "head_not_found",
+                "head": head,
+            })
+        }
+    }
+}
+
 /// Start a model turn for `head`. The worker writes `response_file` when the
 /// turn reaches a terminal state. A second turn for the same head waits.
 pub fn submit_turn(
@@ -342,7 +384,7 @@ pub fn submit_turn(
     }
     let workspace = canonical_workspace(workspace);
     if !head_exists(&workspace, head) {
-        return json!({"ok": false, "error_code": "head_not_found", "error": format!("no head '{head}'")});
+        return refuse_missing_head(&workspace, head, text);
     }
     log::info!(
         "lead: submit head={head} request_id={request_id} workspace={}",
@@ -508,6 +550,7 @@ fn run_job(job: &Job) -> Value {
         job.head,
         done.state
     );
+    crate::host::command_view::publish(&job.workspace, "turn finished");
     json!({
         "request_id": job.request_id,
         "state": done.state,
@@ -527,7 +570,7 @@ struct TurnDone {
 /// Run one prompt through the permission gate and the model. The caller owns
 /// the run record; this does not journal or finish a run.
 pub fn run_prompt(workspace: &Path, head: &str, text: &str) -> Value {
-    let done = run_model_turn(workspace, head, text, None, &mut http_complete);
+    let done = run_model_turn(workspace, head, text, None, None, &mut http_complete);
     log::info!("lead: prompt finished head={head} state={}", done.state);
     json!({"state": done.state, "reply": done.reply, "error": done.error})
 }
@@ -1354,6 +1397,63 @@ mod tests {
             audit.matches("\"operation_id\":\"lead.step\"").count(),
             1,
             "{audit}"
+        );
+    }
+
+    #[test]
+    fn ungranted_send_to_a_missing_head_creates_nothing() {
+        let fixture = Fixture::new();
+        let body = submit_turn(
+            fixture.ws(),
+            "ghost",
+            "hello",
+            "req-ghost",
+            "/tmp/unused",
+            None,
+        );
+        assert_eq!(body["error_code"], "permission_required", "{body}");
+        assert!(body["pending_request_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()));
+        assert!(!fixture
+            .ws()
+            .join(".plexi")
+            .join("agents")
+            .join("ghost")
+            .exists());
+        let lines = pane_lines(fixture.ws());
+        assert!(
+            lines.iter().any(|line| line.starts_with("waiting ")),
+            "{lines:?}"
+        );
+        crate::agent::queue::enqueue(fixture.ws(), "ghost", "later");
+        assert!(!fixture
+            .ws()
+            .join(".plexi")
+            .join("agents")
+            .join("ghost")
+            .exists());
+    }
+
+    #[test]
+    fn pane_lines_show_last_output_and_the_queue() {
+        let fixture = Fixture::new();
+        fixture.create("lead-a", &["assistant.turn=allow"]);
+        let done = run_model_turn(fixture.ws(), "lead-a", "hello", None, None, &mut scripted);
+        assert_eq!(done.state, "succeeded");
+        let queued = crate::agent::queue::enqueue(fixture.ws(), "lead-a", "later");
+        assert_eq!(queued["ok"], true, "{queued}");
+        let lines = pane_lines(fixture.ws());
+        assert!(
+            lines.iter().any(|line| line.starts_with("lead ")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("ok")), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("queue ") && line.ends_with("queued")),
+            "{lines:?}"
         );
     }
 }

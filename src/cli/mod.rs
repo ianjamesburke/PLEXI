@@ -1257,7 +1257,7 @@ pub use agent::{
 };
 pub use agents_api::{
     agent_assign_cli, agent_cancel_cli, agent_conversation_cli, agent_delegate_cli, agent_head_dispatch, agent_run_dispatch,
-    assistant_open_head_cli, command_view_cancel_cli, command_view_cli, command_view_refused, command_view_send_cli,
+    assistant_open_head_cli, command_view_cancel_cli, command_view_cli, command_view_follow_cli, command_view_refused, command_view_send_cli,
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{

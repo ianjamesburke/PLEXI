@@ -310,8 +310,15 @@ fn main() -> eframe::Result {
                             }
                         },
                     },
-                    Commands::CommandView { cmd, json } => {
+                    Commands::CommandView { cmd, json, follow } => {
                         exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                        if follow && cmd.is_some() {
+                            eprintln!("error: --follow prints the live projection and takes no subcommand");
+                            std::process::exit(2);
+                        }
+                        if follow {
+                            std::process::exit(cli::command_view_follow_cli());
+                        }
                         match cmd {
                             Some(CommandViewCmd::Open) => {
                                 std::process::exit(cli::command_view_cli("open", json))

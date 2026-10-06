@@ -29,9 +29,14 @@ WORKDIR="$(mktemp -d)"
 HOST_STARTED=0
 MOCK_PID=""
 SEND_PID=""
+FOLLOW_PID=""
 
 cleanup() {
   local status=$?
+  if [[ -n "$FOLLOW_PID" ]]; then
+    kill "$FOLLOW_PID" >/dev/null 2>&1 || true
+    wait "$FOLLOW_PID" 2>/dev/null || true
+  fi
   if [[ -n "$SEND_PID" ]]; then
     kill "$SEND_PID" >/dev/null 2>&1 || true
   fi
@@ -71,6 +76,75 @@ HOST_STARTED=1
 
 cli() { "$BIN" "$@"; }
 
+open_command_pane() {
+  local id="$1"
+  local before list pane
+  before="$(cli pane list)"
+  cli app open "$id" >/dev/null
+  pane=""
+  for _ in $(seq 1 40); do
+    list="$(cli pane list)"
+    pane="$(python3 - "$before" "$list" <<'PY'
+import json, sys
+before = {row.get("id") for row in json.loads(sys.argv[1])}
+for row in json.loads(sys.argv[2]):
+    if row.get("id") in before:
+        continue
+    if row.get("manifest_id") in ("command-view", "command") or row.get("title") == "Command":
+        print(row.get("id", ""))
+        break
+PY
+)"
+    if [[ -n "$pane" ]]; then
+      printf '%s\n' "$pane"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "FAIL: app open $id did not open a Command pane" >&2
+  cli pane list >&2 || true
+  return 1
+}
+
+wait_pane_gone() {
+  local id="$1"
+  for _ in $(seq 1 40); do
+    if python3 - "$id" "$(cli pane list)" <<'PY'
+import json, sys
+want = int(sys.argv[1])
+ids = {row.get("id") for row in json.loads(sys.argv[2])}
+raise SystemExit(0 if want not in ids else 1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "FAIL: pane $id did not close" >&2
+  return 1
+}
+
+echo "STEP app open command and command-view both open the Command pane"
+PANE_CMD="$(open_command_pane command)"
+echo "app open command -> pane $PANE_CMD"
+cli pane close "$PANE_CMD" >/dev/null
+wait_pane_gone "$PANE_CMD"
+PANE_VIEW="$(open_command_pane command-view)"
+echo "app open command-view -> pane $PANE_VIEW"
+cli pane close "$PANE_VIEW" >/dev/null
+wait_pane_gone "$PANE_VIEW"
+
+echo "STEP ungranted send exits 2 and creates no lead"
+set +e
+MISSING="$(cli command-view send not-a-lead "hello")"
+MISSING_CODE=$?
+set -e
+printf '%s\n' "$MISSING" >"$WORKDIR/missing.json"
+python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("error_code")=="permission_required", body; assert body.get("pending_request_id"), body' "$MISSING"
+test "$MISSING_CODE" -eq 2
+test ! -e "$WORKDIR/.plexi/agents/not-a-lead"
+echo "ungranted send exited $MISSING_CODE and created no lead"
+
 echo "STEP create two leads"
 A="$(cli agent head create lead-a --display-name 'Lead A' --grant assistant.turn=allow --json)"
 B="$(cli agent head create lead-b --display-name 'Lead B' --grant assistant.turn=allow --grant lead.step=allow --json)"
@@ -102,16 +176,6 @@ needs = app.get("needs_you") or []
 assert needs, body
 print("pane state heads", sorted(ids), "needs_you", len(needs))
 PY
-SHOT="$WORKDIR/command-view.png"
-if cli host screenshot --pane "$PANE" --output "$SHOT"; then
-  test -s "$SHOT"
-  mkdir -p /tmp/plexi-e2e
-  cp "$SHOT" /tmp/plexi-e2e/command-view-steer.png
-  echo "screenshot $SHOT"
-else
-  echo "FAIL: host screenshot"
-  exit 1
-fi
 
 echo "STEP command-view send produces a real turn"
 STATUS="$(cli command-view send lead-a "status?")"
@@ -119,6 +183,130 @@ python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("stat
 CONV="$(cli agent conversation --head lead-a --json)"
 python3 -c 'import json,sys; text=json.dumps(json.loads(sys.argv[1])); assert "idle" in text, text' "$CONV"
 echo "lead A conversation contains the status reply"
+
+printf '%s\n' '{"text":"remember 4"}' >"$WORKDIR/queue-task.json"
+echo "STEP queue a task so the pane can show it"
+QUEUED="$(cli agent assign --head lead-b --input "$WORKDIR/queue-task.json" --json)"
+python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok") is True, body' "$QUEUED"
+QTASK="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$QUEUED")"
+for _ in $(seq 1 40); do
+  if python3 - "$(cli command-view --json)" "$QTASK" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
+raise SystemExit(0 if task and task.get("state") not in (None, "queued", "running") else 1)
+PY
+  then
+    break
+  fi
+  sleep 0.25
+done
+python3 - "$(cli command-view --json)" "$QTASK" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
+assert task and task.get("state") not in (None, "queued", "running"), task
+print("queue task", task["id"], task["state"])
+PY
+
+echo "STEP command pane pixels show both leads, the queue, last output, and a waiting line"
+SHOT="$WORKDIR/command-view.png"
+if ! cli host screenshot --pane "$PANE" --output "$SHOT"; then
+  echo "FAIL: host screenshot"
+  exit 1
+fi
+test -s "$SHOT"
+mkdir -p /tmp/plexi-e2e /opt/cursor/artifacts
+cp "$SHOT" /tmp/plexi-e2e/command-view-steer.png
+cp "$SHOT" /opt/cursor/artifacts/command-view-steer.png
+python3 - "$SHOT" <<'PY'
+import struct, sys, zlib
+path = sys.argv[1]
+data = open(path, "rb").read()
+assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a png"
+pos = 8
+width = height = bit_depth = color_type = None
+idat = b""
+while pos + 8 <= len(data):
+    length = struct.unpack(">I", data[pos:pos + 4])[0]
+    kind = data[pos + 4:pos + 8]
+    chunk = data[pos + 8:pos + 8 + length]
+    pos += 12 + length
+    if kind == b"IHDR":
+        width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk[:10])
+    elif kind == b"IDAT":
+        idat += chunk
+    elif kind == b"IEND":
+        break
+assert width and height and width >= 200 and height >= 80, (width, height)
+assert bit_depth == 8 and color_type in (2, 6), (bit_depth, color_type)
+raw = zlib.decompress(idat)
+channels = 3 if color_type == 2 else 4
+stride = width * channels
+rows = []
+prev = bytearray(stride)
+i = 0
+for _y in range(height):
+    filt = raw[i]
+    i += 1
+    row = bytearray(raw[i:i + stride])
+    i += stride
+    if filt == 1:
+        for x in range(stride):
+            left = row[x - channels] if x >= channels else 0
+            row[x] = (row[x] + left) & 255
+    elif filt == 2:
+        for x in range(stride):
+            row[x] = (row[x] + prev[x]) & 255
+    elif filt == 3:
+        for x in range(stride):
+            left = row[x - channels] if x >= channels else 0
+            row[x] = (row[x] + ((left + prev[x]) // 2)) & 255
+    elif filt == 4:
+        def paeth(a, b, c):
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            if pa <= pb and pa <= pc:
+                return a
+            if pb <= pc:
+                return b
+            return c
+        for x in range(stride):
+            left = row[x - channels] if x >= channels else 0
+            up = prev[x]
+            ul = prev[x - channels] if x >= channels else 0
+            row[x] = (row[x] + paeth(left, up, ul)) & 255
+    elif filt != 0:
+        raise SystemExit(f"unsupported png filter {filt}")
+    prev = row
+    rows.append(row)
+target = (0xF9, 0xE2, 0xAF)
+close = 0
+for row in rows:
+    for x in range(0, stride, channels):
+        r, g, b = row[x], row[x + 1], row[x + 2]
+        dist = (r - target[0]) ** 2 + (g - target[1]) ** 2 + (b - target[2]) ** 2
+        if dist <= 40 * 40:
+            close += 1
+print(f"png {width}x{height} warning-pixels {close}")
+if close < 12:
+    raise SystemExit(f"waiting line is not in the warning color ({close} pixels near #f9e2af)")
+PY
+if command -v tesseract >/dev/null 2>&1; then
+  tesseract "$SHOT" stdout --psm 6 >"$WORKDIR/shot.txt" 2>"$WORKDIR/shot.ocr" || true
+  python3 - "$WORKDIR/shot.txt" <<'PY'
+import sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read().lower()
+missing = [word for word in ("lead a", "lead b", "queue", "idle", "waiting") if word not in text]
+if missing:
+    raise SystemExit("ocr missed " + ", ".join(missing) + "\n" + text)
+print("ocr saw both leads, the queue, the last output, and the waiting line")
+PY
+else
+  echo "FAIL: tesseract is required to read the command pane"
+  exit 1
+fi
+echo "screenshot $SHOT"
 
 echo "STEP cancel a live run"
 cli command-view send lead-b "long-task" >"$WORKDIR/long.out" 2>"$WORKDIR/long.err" &
@@ -220,5 +408,69 @@ if [[ "$FOUND" != 1 ]]; then
   exit 1
 fi
 echo "agent pane refused resolve and allow"
+
+echo "STEP follow streams command.view without another list"
+: >"$WORKDIR/follow.ndjson"
+cli command-view --follow >"$WORKDIR/follow.ndjson" 2>"$WORKDIR/follow.err" &
+FOLLOW_PID=$!
+SUBSCRIBED=0
+for _ in $(seq 1 40); do
+  if python3 - "$WORKDIR/follow.ndjson" <<'PY'
+import json, sys
+ok = False
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    body = json.loads(line)
+    if body.get("type") == "subscribed" and body.get("event") == "command.view" and body.get("app_id") == "plexi.host.command":
+        ok = True
+raise SystemExit(0 if ok else 1)
+PY
+  then
+    SUBSCRIBED=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$SUBSCRIBED" != 1 ]]; then
+  echo "FAIL: follow did not subscribe to command.view"
+  cat "$WORKDIR/follow.ndjson" "$WORKDIR/follow.err" >&2 || true
+  exit 1
+fi
+BEFORE="$(wc -l <"$WORKDIR/follow.ndjson" | tr -d ' ')"
+cli agent head create follow-lead --display-name 'Follow Lead' --grant assistant.turn=allow --json >/dev/null
+SEEN=0
+for _ in $(seq 1 40); do
+  if python3 - "$WORKDIR/follow.ndjson" "$BEFORE" <<'PY'
+import json, sys
+lines = [line for line in open(sys.argv[1]) if line.strip()]
+start = int(sys.argv[2])
+for line in lines[start:]:
+    body = json.loads(line)
+    heads = body.get("heads") or []
+    if (
+        body.get("event") == "command.view"
+        and body.get("app_id") == "plexi.host.command"
+        and any(item.get("id") == "follow-lead" for item in heads)
+    ):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    SEEN=1
+    break
+  fi
+  sleep 0.25
+done
+kill "$FOLLOW_PID" >/dev/null 2>&1 || true
+wait "$FOLLOW_PID" 2>/dev/null || true
+FOLLOW_PID=""
+if [[ "$SEEN" != 1 ]]; then
+  echo "FAIL: follow did not stream command.view for the new lead"
+  cat "$WORKDIR/follow.ndjson" "$WORKDIR/follow.err" >&2 || true
+  exit 1
+fi
+echo "follow streamed command.view from plexi.host.command without another list"
 
 echo "PASS command view steers real leads"

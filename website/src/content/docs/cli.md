@@ -80,7 +80,7 @@ Show every lead, its runs, and its queue. Send and cancel steer those leads.
 
 The rows come from the agents API head records, runs, and each head's conversation. `open` shows the same projection in a pane. `send` runs a real model turn. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
 
-Example: plexi command-view --json Example: plexi command-view open Example: plexi command-view send lead-a "status?" Example: plexi command-view cancel run_example
+Example: plexi command-view --json Example: plexi command-view --follow Example: plexi command-view open Example: plexi command-view send lead-a "status?" Example: plexi command-view cancel run_example
 
 | Subcommand | Description |
 |---|---|

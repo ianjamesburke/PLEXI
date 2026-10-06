@@ -797,6 +797,16 @@ fn handle_socket_connection(
                 handle_events_list(write_half, &val);
                 return;
             }
+            Some("command_view_follow") => {
+                let workspace = val
+                    .get("workspace")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                log::info!("command_view: follow connected");
+                crate::host::command_view::serve_follow(write_half, workspace);
+                return;
+            }
             Some("events_declare") | Some("events_emit") => {
                 handle_events_publish(write_half, val, &publish_mailbox, peer_ancestry.as_deref());
                 return;

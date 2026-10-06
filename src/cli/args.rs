@@ -54,6 +54,7 @@ pub enum Commands {
     /// grant, and an agent pane is refused.
     ///
     /// Example: plexi command-view --json
+    /// Example: plexi command-view --follow
     /// Example: plexi command-view open
     /// Example: plexi command-view send lead-a "status?"
     /// Example: plexi command-view cancel run_example
@@ -64,6 +65,9 @@ pub enum Commands {
         /// Print the projection as JSON.
         #[arg(long, global = true)]
         json: bool,
+        /// Stream `command.view` events from `plexi.host.command` until interrupted.
+        #[arg(long)]
+        follow: bool,
     },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
