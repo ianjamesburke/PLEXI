@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.9"
+skill_version: "5.0.10"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -73,8 +73,12 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json` and
   `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.
-  Resolving an id resolves it everywhere exactly once. Expired items are
-  auto-denied. A repeat resolve returns the existing resolution.
+  Questions and blocked runs settle from the terminal. A click approval does
+  not: `needs-you resolve --approve` leaves that row open and records a
+  refusal. The grant is a click on Allow once in the host window. `--deny`
+  still denies. A phone may deny or answer a question. A phone approve never
+  grants a permission. Expired items are auto-denied. A repeat resolve of an
+  already settled question or blocked run returns the existing resolution.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

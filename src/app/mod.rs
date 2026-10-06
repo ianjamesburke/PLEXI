@@ -150,6 +150,13 @@ pub(crate) struct PaneHeartbeat {
     pub next_fire: std::time::Instant,
 }
 
+/// Screen rect of one Allow once control, published for a real pointer click.
+pub(crate) struct ApprovalButton {
+    pub(crate) label: String,
+    pub(crate) bounds: [f32; 4],
+    pub(crate) pending_request_id: String,
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -219,6 +226,10 @@ pub struct PlexiApp {
     /// `config_dir()` in production; an isolated temp dir in tests so harness
     /// runs never read or write the developer's real permission store.
     pub(crate) permission_store_dir: std::path::PathBuf,
+    /// Allow once buttons drawn this frame, in window coordinates.
+    pub(crate) approval_buttons: Vec<ApprovalButton>,
+    /// This frame's pointer and key events were injected by pane IPC.
+    pub(crate) synthetic_input_frame: bool,
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
@@ -1651,6 +1662,8 @@ impl PlexiApp {
                     pane_heartbeats: restored_heartbeats,
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
+                    approval_buttons: Vec::new(),
+                    synthetic_input_frame: false,
                     renaming_window: None,
                     rename_buffer: String::new(),
                     editing_description: None,
@@ -1927,6 +1940,8 @@ impl PlexiApp {
             pane_heartbeats: HashMap::new(),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
+            approval_buttons: Vec::new(),
+            synthetic_input_frame: false,
             renaming_window: None,
             rename_buffer: String::new(),
             editing_description: None,
@@ -2647,6 +2662,8 @@ impl PlexiApp {
                     std::fs::create_dir_all(&dir).expect("create test permission store dir");
                     dir
                 },
+                approval_buttons: Vec::new(),
+                synthetic_input_frame: false,
                 renaming_window: None,
                 rename_buffer: String::new(),
                 editing_description: None,
@@ -3066,6 +3083,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
@@ -3105,6 +3123,9 @@ impl eframe::App for PlexiApp {
                     "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
                 );
             } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
+                if !batches.is_empty() {
+                    self.synthetic_input_frame = true;
+                }
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
                     raw_input.events.extend(batch.events);
@@ -3115,6 +3136,7 @@ impl eframe::App for PlexiApp {
             // multi-frame trajectory instead of a same-frame click.
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
+                    self.synthetic_input_frame = true;
                     raw_input.events.extend(batch.events);
                 }
                 if frames.is_empty() {
@@ -4177,6 +4199,7 @@ impl eframe::App for PlexiApp {
         // terminal only ever sees what the global allowlist left behind.
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
         self.render_panels(ui, focused_terminal_input);
+        self.draw_approval_banner(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.

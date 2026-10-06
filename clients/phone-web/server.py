@@ -288,8 +288,35 @@ class HostStore(StubStore):
         return self._needs_you_cli(["needs-you", "list", "--json"])
 
     def resolve_needs_you(self, item_id: str, decision: str) -> tuple[int, dict]:
+        if decision == "approve" and not self._phone_may_approve(item_id):
+            log.info("needs-you phone refused approve id=%s", item_id)
+            return 403, {
+                "ok": False,
+                "error_code": "permission_denied",
+                "error": "only the person at the desktop can resolve a permission",
+                "id": item_id,
+            }
         flag = "--approve" if decision == "approve" else "--deny"
         return self._needs_you_cli(["needs-you", "resolve", item_id, flag])
+
+    def _phone_may_approve(self, item_id: str) -> bool:
+        """A phone may answer a question or a blocked run. It never grants a permission."""
+        status, body = self.needs_you()
+        if status != 200 or body.get("ok") is not True:
+            log.info("needs-you phone approve blocked; list failed id=%s", item_id)
+            return False
+        items = body.get("items")
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if not isinstance(item, dict) or item.get("id") != item_id:
+                continue
+            kind = item.get("kind")
+            allowed = kind in ("question", "blocked_run")
+            log.info("needs-you phone approve id=%s kind=%s allowed=%s", item_id, kind, allowed)
+            return allowed
+        log.info("needs-you phone approve blocked; unknown id=%s", item_id)
+        return False
 
     def _needs_you_cli(self, args: list[str]) -> tuple[int, dict]:
         log.info("needs-you phone %s", " ".join(args))

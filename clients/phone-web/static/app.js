@@ -37,7 +37,8 @@ async function refreshNeeds() {
     const text = document.createElement("p");
     text.textContent = item.summary || item.kind || item.id;
     li.append(text);
-    for (const decision of ["approve", "deny"]) {
+    const mayApprove = item.kind === "question" || item.kind === "blocked_run";
+    for (const decision of mayApprove ? ["approve", "deny"] : ["deny"]) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = decision;

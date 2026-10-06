@@ -313,7 +313,7 @@ pub enum NeedsYouCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Resolve one item. Approve lets a click-gated tool proceed; deny refuses it.
+    /// Resolve one item. Approving a click approval is refused; deny still denies it.
     Resolve {
         id: String,
         /// Approve the item.

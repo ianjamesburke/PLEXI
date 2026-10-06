@@ -1071,6 +1071,32 @@ impl PermissionMonitor {
         self.audit_mem.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// A socket or CLI resolve of a click approval. The pending stays, no
+    /// grant is written, and the audit records the refusal.
+    pub fn refuse_client_resolve(&self, pending_id: &str) {
+        let actor = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|row| row.id == pending_id)
+            .map(|row| row.binding.actor_id.clone())
+            .unwrap_or_else(|| "socket".to_string());
+        let _ = self.audit(&AuditFact {
+            kind: "refuse".to_string(),
+            actor,
+            call_id: pending_id.to_string(),
+            grant_id: String::new(),
+            resource_id: String::new(),
+            args_fingerprint: String::new(),
+            operation_id: String::new(),
+            decision: "refused_resolve".to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        });
+        log::info!("permission_monitor: refused resolve pending={pending_id}");
+    }
+
     fn audit(&self, fact: &AuditFact) -> Result<(), String> {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.audit_locked(fact)
@@ -1770,6 +1796,36 @@ mod tests {
         assert_eq!(again.resolution, NeedsYouResolution::Approved);
         assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
         assert_eq!(needs_you_decisions(&monitor, "denied"), 0);
+    }
+
+    #[test]
+    fn refuse_client_resolve_leaves_the_click_open_and_deny_still_settles() {
+        let monitor = PermissionMonitor::ephemeral();
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-refuse"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("a click approval must be filed");
+        };
+        monitor.refuse_client_resolve(&pending_request_id);
+        assert_eq!(monitor.list_needs_you().len(), 1, "a refused approve leaves the row open");
+        assert!(
+            matches!(admit_of(&monitor, &base, args), Admission::Required { .. }),
+            "a refused approve does not unblock the tool"
+        );
+        assert!(
+            monitor.audit_records().iter().any(|fact| {
+                fact.kind == "refuse"
+                    && fact.decision == "refused_resolve"
+                    && fact.call_id == pending_request_id
+            }),
+            "the refusal is an audit row"
+        );
+        let denied = monitor.resolve_needs_you(&pending_request_id, false).unwrap();
+        assert!(!denied.already);
+        assert_eq!(denied.resolution, NeedsYouResolution::Denied);
+        assert!(monitor.list_needs_you().is_empty());
+        assert!(monitor.store().records().is_empty(), "deny does not mint a grant");
     }
 
     #[test]

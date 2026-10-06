@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Installed-binary check: create a click approval, list it, resolve it, and
-# confirm the tool proceeds with an audit row.
+# Installed-binary check: create a click approval, prove a terminal or phone
+# approve does not grant, click Allow once, and confirm the tool proceeds.
+# Check 7 races two denies. It does not approve from the CLI or the phone.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
-if [[ ! -x "$BIN" ]]; then
-  echo "error: missing binary $BIN (run just build first)" >&2
-  exit 1
+# A private session bus is where the unlocked login keyring lives. A nested
+# bus cannot see that daemon, so this re-exec is the only session the script
+# starts. The acceptance harness replaces dbus-run-session with a passthrough
+# once its own preflight has unlocked the keyring.
+if [[ "$(uname -s)" == "Linux" && -z "${NEEDS_YOU_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env NEEDS_YOU_E2E_INNER=1 "$0" "$@"
 fi
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${PHONE_PID:-}" ]]; then kill "$PHONE_PID" 2>/dev/null || true; wait "$PHONE_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; wait "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${KEYRING_PID:-}" ]]; then kill "$KEYRING_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -19,24 +23,130 @@ mkdir -p "$HOME/.plexi"
 if [[ -d "$ORIG_HOME/.plexi/wasm-bundles" ]]; then
   ln -s "$ORIG_HOME/.plexi/wasm-bundles" "$HOME/.plexi/wasm-bundles"
 fi
-export PLEXI_CHANNEL="needs-you-e2e"
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING || true
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
-mkdir -p "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR="$WORK/runtime"
+mkdir -p "$XDG_RUNTIME_DIR/keyring"
+chmod 700 "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 
-PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+if [[ -n "${PLEXI_E2E_SHIM:-}" ]]; then
+  # shellcheck disable=SC1090
+  source "$PLEXI_E2E_SHIM"
+fi
+if [[ -z "${BIN:-}" ]]; then
+  BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
+fi
+if [[ ! -x "$BIN" ]]; then
+  echo "error: missing binary $BIN (run just build first)" >&2
+  exit 1
+fi
+
+# A channel-named binary (`plexi-alpha`, `plexi-pr-N`) ignores PLEXI_CHANNEL.
+# The shim already set PROFILE from that name. Otherwise derive it here.
+if [[ -z "${PROFILE:-}" ]]; then
+  BIN_NAME="$(basename "$BIN")"
+  BIN_NAME="${BIN_NAME%.exe}"
+  if [[ "$BIN_NAME" == plexi-* ]]; then
+    unset PLEXI_CHANNEL || true
+    PROFILE="$HOME/.plexi-${BIN_NAME#plexi-}"
+  else
+    export PLEXI_CHANNEL="${PLEXI_CHANNEL:-needs-you-e2e}"
+    PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+  fi
+fi
 SOCKET="$PROFILE/notify.sock"
 INPUT='{"game_id":"game-1","expected_revision":0,"operation_id":"op-needs-you","move":"e2e4"}'
+INPUT2='{"game_id":"game-1","expected_revision":1,"operation_id":"op-needs-you-2","move":"e7e5"}'
+
+unlock_keyring() {
+  if ! command -v gnome-keyring-daemon >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1; then
+    echo "error: gnome-keyring or dbus-launch is not installed" >&2
+    exit 1
+  fi
+  if ! python3 -c 'import dbus' >/dev/null 2>&1 || ! command -v secret-tool >/dev/null 2>&1; then
+    echo "error: python3-dbus or secret-tool is not installed" >&2
+    exit 1
+  fi
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    local launch
+    launch="$(dbus-launch --sh-syntax 2>"$WORK/dbus.log")" || {
+      echo "error: dbus-launch failed" >&2
+      cat "$WORK/dbus.log" >&2 || true
+      exit 1
+    }
+    # shellcheck disable=SC1090
+    eval "$launch"
+    export DBUS_SESSION_BUS_ADDRESS
+  fi
+  local pass
+  pass="$(openssl rand -hex 16 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(16))')"
+  printf '%s' "$pass" | gnome-keyring-daemon --unlock --components=secrets --daemonize >"$WORK/keyring.log" 2>&1 || true
+  KEYRING_PID="$(pgrep -u "$(id -u)" -n -f '/usr/bin/gnome-keyring-daemon' || true)"
+  local attempt code=1
+  for attempt in 1 2 3 4 5 6 7 8; do
+    sleep 0.3
+    if python3 - >"$WORK/keyring-verify.txt" 2>>"$WORK/keyring.log" <<'PY'
+import dbus, sys
+bus = dbus.SessionBus()
+proxy = bus.get_object("org.freedesktop.secrets", "/org/freedesktop/secrets")
+svc = dbus.Interface(proxy, "org.freedesktop.Secret.Service")
+default = str(svc.ReadAlias("default"))
+print(f"default={default}")
+if default in ("", "/"):
+    sys.exit(2)
+coll = bus.get_object("org.freedesktop.secrets", default)
+locked = dbus.Interface(coll, "org.freedesktop.DBus.Properties").Get(
+    "org.freedesktop.Secret.Collection", "Locked"
+)
+print(f"locked={int(bool(locked))}")
+if int(bool(locked)) != 0:
+    sys.exit(3)
+PY
+    then
+      code=0
+      break
+    fi
+  done
+  if [[ "$code" -ne 0 ]]; then
+    echo "error: gnome-keyring did not unlock a login collection" >&2
+    cat "$WORK/keyring.log" "$WORK/keyring-verify.txt" >&2 || true
+    exit 1
+  fi
+  if ! printf 'probe-value' | secret-tool store --label='needs-you-e2e-probe' service needs-you-e2e account probe >>"$WORK/keyring.log" 2>&1; then
+    echo "error: secret-tool store failed on the unlocked keyring" >&2
+    exit 1
+  fi
+  local got
+  got="$(secret-tool lookup service needs-you-e2e account probe 2>>"$WORK/keyring.log" || true)"
+  secret-tool clear service needs-you-e2e account probe >>"$WORK/keyring.log" 2>&1 || true
+  if [[ "$got" != "probe-value" ]]; then
+    echo "error: secret-tool lookup did not return the probe" >&2
+    exit 1
+  fi
+  echo "secret service unlocked"
+}
+
+unlock_keyring
+
+# Parent and host share one X server so xdotool can click Allow once.
+display_n=$((80 + RANDOM % 40))
+export DISPLAY=":$display_n"
+Xvfb "$DISPLAY" -screen 0 1280x800x24 >"$WORK/xvfb.log" 2>&1 &
+XVFB_PID=$!
+for _ in $(seq 1 50); do
+  if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+  echo "error: Xvfb did not become ready on $DISPLAY" >&2
+  cat "$WORK/xvfb.log" >&2 || true
+  exit 1
+fi
 
 start_host() {
-  # A stale DISPLAY (common on this VM) makes winit fail before the socket exists.
-  unset DISPLAY
-  if command -v xvfb-run >/dev/null 2>&1; then
-    xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
-  else
-    "$BIN" >"$WORK/host.log" 2>&1 &
-  fi
+  "$BIN" >"$WORK/host.log" 2>&1 &
   HOST_PID=$!
 }
 
@@ -59,6 +169,33 @@ if [[ ! -S "$SOCKET" ]]; then
   exit 1
 fi
 export PLEXI_SOCKET="$SOCKET"
+
+export PLEXI_PHONE_TOKEN="needs-you-e2e-token"
+PHONE_PORT=$((18000 + RANDOM % 2000))
+python3 "$ROOT/clients/phone-web/server.py" --backend host --plexi-bin "$BIN" --port "$PHONE_PORT" >"$WORK/phone.log" 2>&1 &
+PHONE_PID=$!
+phone_up=0
+for _ in $(seq 1 40); do
+  if python3 - "$PHONE_PORT" "$PLEXI_PHONE_TOKEN" <<'PY'
+import sys, urllib.request
+port, token = sys.argv[1:]
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/needs-you",
+    headers={"Authorization": f"Bearer {token}"},
+)
+urllib.request.urlopen(req, timeout=2).read()
+PY
+  then
+    phone_up=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$phone_up" != 1 ]]; then
+  echo "error: phone shell did not answer" >&2
+  cat "$WORK/phone.log" >&2 || true
+  exit 1
+fi
 
 echo "opening chess"
 "$BIN" app open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
@@ -106,14 +243,16 @@ run_in_pane() {
   return 1
 }
 
-echo "creating approval"
-asked=0
-for _ in $(seq 1 40); do
-  if ! run_in_pane "$WORK/call1.out" "$BIN app call chess chess.play --json --input '$INPUT' > '$WORK/call1.out' 2>&1"; then
-    sleep 1
-    continue
-  fi
-  if python3 - "$WORK/call1.out" <<'PY'
+ask_approval() {
+  local input="$1"
+  local outfile="$2"
+  local asked=0
+  for _ in $(seq 1 40); do
+    if ! run_in_pane "$outfile" "$BIN app call chess chess.play --json --input '$input' > '$outfile' 2>&1"; then
+      sleep 1
+      continue
+    fi
+    if python3 - "$outfile" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
 start = text.find("{")
@@ -128,18 +267,22 @@ if code == "permission_required" and pending:
     raise SystemExit(0)
 raise SystemExit(1)
 PY
-  then
-    asked=1
-    break
+    then
+      asked=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$asked" != 1 ]]; then
+    echo "error: chess.play did not ask for approval" >&2
+    cat "$outfile" >&2 || true
+    return 1
   fi
-  sleep 1
-done
-if [[ "$asked" != 1 ]]; then
-  echo "error: chess.play did not ask for approval" >&2
-  cat "$WORK/call1.out" >&2 || true
-  exit 1
-fi
-ID="$(cat "$WORK/call1.out.id")"
+  cat "$outfile.id"
+}
+
+echo "creating approval"
+ID="$(ask_approval "$INPUT" "$WORK/call1.out")"
 echo "pending $ID"
 
 echo "listing needs-you"
@@ -156,17 +299,99 @@ if item.get("kind") != "approval_click" or item.get("resolution") is not None:
     raise SystemExit(f"unexpected row {item}")
 PY
 
-echo "resolving $ID"
-RESOLVE="$("$BIN" needs-you resolve "$ID" --approve)"
+echo "terminal resolve must not grant"
+set +e
+RESOLVE="$("$BIN" needs-you resolve "$ID" --approve 2>"$WORK/resolve.err")"
+RESOLVE_CODE=$?
+set -e
 printf '%s\n' "$RESOLVE" >"$WORK/resolve.json"
-python3 - "$WORK/resolve.json" "$ID" <<'PY'
+python3 - "$WORK/resolve.json" "$RESOLVE_CODE" "$WORK/resolve.err" <<'PY'
 import json, sys
-body = json.load(open(sys.argv[1]))
-if body.get("ok") is not True or body.get("resolution") != "approved" or body.get("id") != sys.argv[2]:
-    raise SystemExit(f"resolve failed: {body}")
-if body.get("already") is True:
-    raise SystemExit(f"first resolve was already settled: {body}")
+text = open(sys.argv[1]).read()
+code = int(sys.argv[2])
+err = open(sys.argv[3]).read()
+body = {}
+start = text.find("{")
+if start >= 0:
+    try:
+        body = json.loads(text[start:])
+    except json.JSONDecodeError:
+        body = {}
+granted = code == 0 and body.get("ok") is True and body.get("resolution") == "approved"
+if granted:
+    raise SystemExit(f"terminal resolve granted: {text} {err}")
+if body.get("error_code") != "permission_denied":
+    raise SystemExit(f"terminal resolve was not permission_denied: {text} {err}")
+print("terminal resolve did not grant")
 PY
+
+echo "item still open"
+LIST2="$("$BIN" needs-you list --json)"
+python3 - "$LIST2" "$ID" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is None or item.get("resolution") is not None:
+    raise SystemExit(f"pending item was settled from the terminal: {body}")
+PY
+
+AUDIT="$PROFILE/permission-audit.jsonl"
+python3 - "$AUDIT" "$ID" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+refused = [
+    row for row in rows
+    if row.get("kind") == "refuse"
+    and row.get("decision") == "refused_resolve"
+    and row.get("call_id") == sys.argv[2]
+]
+if not refused:
+    raise SystemExit(f"no refuse audit row for {sys.argv[2]}")
+print("refuse audit row recorded")
+PY
+
+echo "phone approve must not grant"
+python3 - "$PHONE_PORT" "$PLEXI_PHONE_TOKEN" "$ID" <<'PY'
+import json, sys, urllib.error, urllib.request
+port, token, item_id = sys.argv[1:]
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/needs-you/{item_id}/resolve",
+    data=json.dumps({"decision": "approve"}).encode(),
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=20) as response:
+        body = json.load(response)
+        raise SystemExit(f"phone approve granted: {response.status} {body}")
+except urllib.error.HTTPError as exc:
+    raw = exc.read().decode()
+    body = json.loads(raw) if raw else {}
+    if exc.code == 200 or body.get("ok") is True or body.get("resolution") == "approved":
+        raise SystemExit(f"phone approve granted: {exc.code} {body}")
+    if body.get("error_code") != "permission_denied":
+        raise SystemExit(f"phone approve was not permission_denied: {exc.code} {body}")
+print("phone approve did not grant")
+PY
+
+LIST3="$("$BIN" needs-you list --json)"
+python3 - "$LIST3" "$ID" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is None or item.get("resolution") is not None:
+    raise SystemExit(f"pending item was settled from the phone: {body}")
+PY
+
+echo "clicking Allow once"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
+if ! HUMAN_APPROVE "$ID"; then
+  echo "error: HUMAN_APPROVE did not grant $ID" >&2
+  "$BIN" assistant permission list >"$WORK/buttons.json" 2>&1 || true
+  cat "$WORK/buttons.json" >&2 || true
+  exit 1
+fi
 
 echo "retrying the tool"
 run_in_pane "$WORK/call2.out" "$BIN app call chess chess.play --json --input '$INPUT' > '$WORK/call2.out' 2>&1"
@@ -182,7 +407,6 @@ if body.get("ok") is not True:
 PY
 
 echo "checking audit"
-AUDIT="$PROFILE/permission-audit.jsonl"
 if [[ ! -f "$AUDIT" ]]; then
   echo "error: missing audit file $AUDIT" >&2
   exit 1
@@ -196,6 +420,74 @@ if not needs:
     raise SystemExit(f"no needs_you audit row for {sys.argv[2]}")
 if not grants:
     raise SystemExit("no allow_once audit row")
+print(f"allow_once rows {len(grants)}")
+PY
+
+echo "check 7: concurrent deny"
+ID2="$(ask_approval "$INPUT2" "$WORK/call3.out")"
+echo "pending $ID2"
+GRANTS_BEFORE="$(python3 - "$AUDIT" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+print(sum(1 for row in rows if row.get("decision") == "allow_once"))
+PY
+)"
+set +e
+"$BIN" needs-you resolve "$ID2" --deny >"$WORK/deny-a.json" 2>"$WORK/deny-a.err" &
+DENY_A=$!
+"$BIN" needs-you resolve "$ID2" --deny >"$WORK/deny-b.json" 2>"$WORK/deny-b.err" &
+DENY_B=$!
+wait "$DENY_A"
+wait "$DENY_B"
+set -e
+python3 - "$WORK/deny-a.json" "$WORK/deny-b.json" "$ID2" <<'PY'
+import json, sys
+bodies = []
+for path in sys.argv[1:3]:
+    text = open(path).read()
+    start = text.find("{")
+    if start < 0:
+        raise SystemExit(f"deny reply was not json: {text}")
+    bodies.append(json.loads(text[start:]))
+if any(body.get("resolution") == "approved" and body.get("ok") is True for body in bodies):
+    raise SystemExit(f"concurrent resolve approved: {bodies}")
+denied = [body for body in bodies if body.get("resolution") == "denied"]
+if len(denied) != 2:
+    raise SystemExit(f"both racers must observe the denial: {bodies}")
+winners = [body for body in denied if body.get("already") is not True]
+if len(winners) != 1:
+    raise SystemExit(f"one deny must win: {bodies}")
+print("concurrent deny settled once")
+PY
+LIST4="$("$BIN" needs-you list --json)"
+python3 - "$LIST4" "$ID2" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is not None:
+    raise SystemExit(f"denied item still open: {item}")
+PY
+GRANTS_AFTER="$(python3 - "$AUDIT" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+print(sum(1 for row in rows if row.get("decision") == "allow_once"))
+PY
+)"
+if [[ "$GRANTS_BEFORE" != "$GRANTS_AFTER" ]]; then
+  echo "error: check 7 wrote a grant ($GRANTS_BEFORE -> $GRANTS_AFTER)" >&2
+  exit 1
+fi
+run_in_pane "$WORK/call4.out" "$BIN app call chess chess.play --json --input '$INPUT2' > '$WORK/call4.out' 2>&1" || true
+python3 - "$WORK/call4.out" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read()
+start = text.find("{")
+if start < 0:
+    raise SystemExit(f"retry after deny produced no json: {text}")
+body = json.loads(text[start:])
+if body.get("ok") is True:
+    raise SystemExit(f"denied tool proceeded: {text}")
+print("denied tool did not proceed")
 PY
 
 echo "needs-you e2e passed"
