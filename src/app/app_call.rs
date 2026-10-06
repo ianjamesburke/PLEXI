@@ -100,6 +100,43 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    pub(crate) fn observe_needs_you(
+        &mut self,
+        op: &str,
+        id: Option<&String>,
+        approve: Option<bool>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let body = match op {
+            "list" => {
+                let items = monitor.list_needs_you();
+                log::info!("needs_you: host list count={}", items.len());
+                serde_json::json!({"ok": true, "items": items})
+            }
+            "resolve" => {
+                let id = id.map(String::as_str).unwrap_or("");
+                let approve = approve.unwrap_or(false);
+                log::info!("needs_you: host resolve {id} approve={approve}");
+                match monitor.resolve_needs_you(id, approve) {
+                    Ok(receipt) => serde_json::json!({
+                        "ok": !receipt.already,
+                        "id": receipt.id,
+                        "resolution": receipt.resolution.as_str(),
+                        "already": receipt.already,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "ok": false,
+                        "error": error,
+                    }),
+                }
+            }
+            _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,

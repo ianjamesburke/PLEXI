@@ -1276,6 +1276,35 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
+## `plexi needs-you`
+
+List and resolve everything waiting on you.
+
+One host record covers click approvals, agent questions, and blocked runs. Resolving an id from here, the desktop badge, or the phone page resolves it everywhere, exactly once.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List open items waiting on you as JSON |
+| `resolve` | Resolve one item. Approve lets a click-gated tool proceed; deny refuses it |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi needs-you resolve`
+
+Resolve one item. Approve lets a click-gated tool proceed; deny refuses it
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Approve the item |
+| `--deny` | flag | no | Deny the item |
+
 ## `plexi notify`
 
 Send a notification to the Plexi UI

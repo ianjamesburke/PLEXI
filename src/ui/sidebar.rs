@@ -8,6 +8,12 @@ use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
 
+fn open_needs_you() -> Vec<crate::broker::gate::NeedsYouRecord> {
+    crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+        .map(|monitor| monitor.open_needs_you())
+        .unwrap_or_default()
+}
+
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
         if mouse_y <= rect.center().y {
@@ -175,6 +181,15 @@ impl PlexiApp {
                     .size(10.0)
                     .color(self.colors.text_section),
             );
+            let waiting = open_needs_you();
+            if !waiting.is_empty() {
+                crate::ui::badge::badge(
+                    ui,
+                    &waiting.len().to_string(),
+                    self.colors.warning,
+                    &self.colors,
+                );
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
                 if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
@@ -182,6 +197,16 @@ impl PlexiApp {
                 }
             });
         });
+        if let Some(first) = open_needs_you().first() {
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                crate::ui::typography::caption(
+                    ui,
+                    format!("Needs you · {}", first.summary),
+                    &self.colors,
+                );
+            });
+        }
         ui.add_space(4.0);
 
         let num_contexts = self.router.len();

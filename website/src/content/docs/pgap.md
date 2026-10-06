@@ -598,6 +598,24 @@ Resolve one pending permission request from the desktop observation seam.
 | `pending_request_id` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `list_needs_you`
+
+List items waiting on the human. The host expires due items first.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `resolve_needs_you`
+
+Resolve one needs-you item exactly once. `approve` false denies it.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `approve` | `boolean` | yes |
+| `id` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `call_app_tool`
 
 Call an app-exposed tool through the host tool dispatcher. Sent by `plexi app call`. The host resolves the viewer con...
