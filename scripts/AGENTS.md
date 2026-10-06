@@ -18,6 +18,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 ## Rules
 
 - **Channel-agnostic.** Every script must work identically on all build channels.
+- `change-sets-e2e.sh` drives the installed `plexi changes` binary: propose leaves the file untouched, accept and revert round-trip it, and a disk edit after propose is stale until refresh.
 - **Never hardcode profile paths.** Derive from binary name or `config_dir()`.
 - Scripts are the only place `just` recipes call into. Do not duplicate logic in the justfile.
 - `default-config.toml` is the config template seeded on install. Keep in sync with `docs/CONFIG.md`.

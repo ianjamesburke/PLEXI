@@ -10,6 +10,7 @@
 pub const MAX_FILE_IO_BYTES: usize = 64 * 1024 * 1024;
 
 pub mod anchor;
+pub mod changes;
 pub mod app_timeline;
 pub mod command;
 pub mod context;

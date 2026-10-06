@@ -71,6 +71,10 @@ answer to stint 0745's open question — that split is correct, not a missing
 migration. `ScopeOrigin`'s module doc bans env vars as authority inputs for the
 same reason.
 
+## Change sets
+
+`host.files.edit` and `host.files.write` prepare a change set in `host::changes` and do not write the target file. `plexi changes accept` is the disk write. It re-admits the same `host.files.edit` grant; it does not consult a second permission store. The agent id is the audit actor and the `agent_id` field of `change-ledger.jsonl`. A digest mismatch marks the set `stale` and accept refuses it until `refresh` rebases that same edit. An open text editor for that path shows the pending diff (Accept / Reject) before the buffer changes. The editor Accept button commits that prepared set; the click is the human decision and does not ask the agent gate again. Accept and revert update the open buffer when it still matches the set's base or committed text. Buffer text that differs from the base is a conflict: the set is marked `stale` and neither the buffer nor, on accept, the file is overwritten. The Assistant sees open editor buffers (absolute path and dirty flag) in its host context and through `host.editors.list`. A file outside the workspace that is open in an editor is in scope for that path only: the gate asks once, scoped to the path. `host.panes.open` on that editor pane returns `already_open` with the path. Change-set lookup is stamp-cached; a frame does not reparse every set file while the directory is unchanged.
+
 ## Traps
 
 - **The host's launch env leaks into every pane.** Anything not overridden in

@@ -204,6 +204,12 @@ fn truncate_fetch_body(body: &str) -> (String, bool) {
     )
 }
 
+struct AssistantEditor {
+    pane_id: u64,
+    path: String,
+    dirty: bool,
+}
+
 impl PlexiApp {
     pub(super) fn handle_assistant_host_tool(
         &mut self,
@@ -218,6 +224,7 @@ impl PlexiApp {
         };
         log::info!("assistant_host_tool: executing '{name}' in process");
         match name {
+            "host.editors.list" => ToolCallResult::ok_value(self.assistant_editors()),
             "host.panes.list" => ToolCallResult::ok_value(self.assistant_pane_list()),
             "host.panes.state" => {
                 let Some(id) = parsed.get("pane_id").and_then(serde_json::Value::as_u64) else {
@@ -252,6 +259,21 @@ impl PlexiApp {
                     })
                     .unwrap_or_default();
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
+                if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id)) {
+                    log::info!(
+                        "assistant_host_tool: panes.open already_open pane={} path={}",
+                        already.pane_id,
+                        already.path
+                    );
+                    return ToolCallResult::ok_value(serde_json::json!({
+                        "ok": true,
+                        "already_open": true,
+                        "pane_id": already.pane_id,
+                        "path": already.path,
+                        "dirty": already.dirty,
+                        "message": "this pane already has the file open; edit it with host.files.edit using the absolute path",
+                    }));
+                }
                 match self.assistant_spawn_pane(
                     origin_pane_id,
                     origin_context_id,
@@ -310,6 +332,22 @@ impl PlexiApp {
                     })
                     .unwrap_or_default();
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
+                if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id)) {
+                    log::info!(
+                        "assistant_host_tool: apps.open already_open pane={} path={}",
+                        already.pane_id,
+                        already.path
+                    );
+                    return ToolCallResult::ok_value(serde_json::json!({
+                        "ok": true,
+                        "already_open": true,
+                        "pane_id": already.pane_id,
+                        "path": already.path,
+                        "dirty": already.dirty,
+                        "app": app,
+                        "message": "this pane already has the file open; edit it with host.files.edit using the absolute path",
+                    }));
+                }
                 match self.assistant_spawn_pane(
                     origin_pane_id,
                     origin_context_id,
@@ -409,7 +447,8 @@ impl PlexiApp {
                     .map(|n| n as usize)
                     .unwrap_or(MAX_READ_LINES);
                 let roots = self.assistant_file_roots(origin_context_id);
-                match read_scoped_file_slice(&roots, path, offset, limit) {
+                let editors = self.open_editor_paths();
+                match read_scoped_file_slice_in(&roots, path, offset, limit, &editors) {
                     Ok(slice) => ToolCallResult::ok_value(serde_json::json!({
                         "path": path,
                         "content": slice.content,
@@ -432,7 +471,8 @@ impl PlexiApp {
                     .map(|n| (n as usize).clamp(1, MAX_GREP_MATCHES))
                     .unwrap_or(DEFAULT_GREP_MATCHES);
                 let roots = self.assistant_file_roots(origin_context_id);
-                match grep_scoped(&roots, path, pattern, max_matches) {
+                let editors = self.open_editor_paths();
+                match grep_scoped_in(&roots, path, pattern, max_matches, &editors) {
                     Ok(result) => ToolCallResult::ok_value(result),
                     Err(error) => ToolCallResult::err(error),
                 }
@@ -440,7 +480,8 @@ impl PlexiApp {
             "host.files.list" => {
                 let path = parsed.get("path").and_then(serde_json::Value::as_str);
                 let roots = self.assistant_file_roots(origin_context_id);
-                match list_scoped(&roots, path) {
+                let editors = self.open_editor_paths();
+                match list_scoped_in(&roots, path, &editors) {
                     Ok(result) => ToolCallResult::ok_value(result),
                     Err(error) => ToolCallResult::err(error),
                 }
@@ -454,10 +495,26 @@ impl PlexiApp {
                     return ToolCallResult::err("invalid_input: content is required".to_string());
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
-                match write_scoped_file(&roots, path, content) {
-                    Ok(outcome) => ToolCallResult::ok_value(serde_json::json!({
-                        "ok": true, "path": path, "bytes": content.len(),
-                        "created": outcome.created, "diff": outcome.diff,
+                let editors = self.open_editor_paths();
+                let resolved = match resolve_scoped_file_path_in(&roots, path, &editors) {
+                    Ok(resolved) => resolved,
+                    Err(error) => return ToolCallResult::err(error),
+                };
+                let agent = parsed
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("assistant");
+                match crate::host::changes::prepare_replace(&resolved, content, agent) {
+                    Ok(prepared) => ToolCallResult::ok_value(serde_json::json!({
+                        "ok": true,
+                        "path": path,
+                        "bytes": content.len(),
+                        "created": false,
+                        "applied": prepared.applied,
+                        "change_set_id": prepared.id,
+                        "diff": prepared.diff,
+                        "revision_before": prepared.base_digest,
+                        "revision_after": prepared.base_digest,
                     })),
                     Err(error) => ToolCallResult::err(error),
                 }
@@ -479,9 +536,24 @@ impl PlexiApp {
                     );
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
-                match edit_scoped_file(&roots, path, old_string, new_string) {
-                    Ok(diff) => ToolCallResult::ok_value(serde_json::json!({
-                        "ok": true, "path": path, "diff": diff,
+                let editors = self.open_editor_paths();
+                let resolved = match resolve_scoped_file_path_in(&roots, path, &editors) {
+                    Ok(resolved) => resolved,
+                    Err(error) => return ToolCallResult::err(error),
+                };
+                let agent = parsed
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("assistant");
+                match crate::host::changes::prepare_edit(&resolved, old_string, new_string, agent) {
+                    Ok(prepared) => ToolCallResult::ok_value(serde_json::json!({
+                        "ok": true,
+                        "path": path,
+                        "applied": prepared.applied,
+                        "change_set_id": prepared.id,
+                        "diff": prepared.diff,
+                        "revision_before": prepared.base_digest,
+                        "revision_after": prepared.base_digest,
                     })),
                     Err(error) => ToolCallResult::err(error),
                 }
@@ -758,10 +830,16 @@ impl PlexiApp {
                                 ("portal", format!("portal:{}", portal.target_context_id))
                             }
                         };
+                        let buffer = match pane {
+                            crate::host::pane::Pane::App(app) => app.runtime.editor_buffer(),
+                            _ => None,
+                        };
                         serde_json::json!({
                             "id": id, "type": kind, "title": title,
                             "focused": window_index == active && focused == Some(*id),
                             "context_id": window.context_id, "window_id": window.window_id,
+                            "path": buffer.as_ref().map(|buffer| buffer.path.clone()),
+                            "dirty": buffer.as_ref().is_some_and(|buffer| buffer.dirty),
                         })
                     })
             })
@@ -824,10 +902,14 @@ impl PlexiApp {
             .iter()
             .find_map(|window| window.panes.get(&pane_id))?;
         Some(if let Some(app) = pane.as_app() {
+            let buffer = app.runtime.editor_buffer();
             serde_json::json!({
                 "pane_id": pane_id, "type": "app", "title": app.name,
                 "manifest_id": app.manifest_id, "runtime": app.runtime.runtime_kind(),
+                "path": buffer.as_ref().map(|buffer| buffer.path.clone()),
+                "dirty": buffer.as_ref().is_some_and(|buffer| buffer.dirty),
                 "semantic": app.semantic_state(),
+                "app_state": app.runtime.semantic_details(),
             })
         } else if let Some(term) = pane.as_terminal() {
             serde_json::json!({
@@ -837,6 +919,157 @@ impl PlexiApp {
         } else {
             serde_json::json!({"pane_id": pane_id, "type": "portal"})
         })
+    }
+
+    /// Open text-editor buffers. The Assistant uses this instead of guessing
+    /// a workspace-relative name for a file the user already has open.
+    fn assistant_editors(&self) -> serde_json::Value {
+        let active = self.active_window;
+        let editors = self
+            .windows
+            .iter()
+            .enumerate()
+            .flat_map(|(window_index, window)| {
+                let focused = window
+                    .focused_pane
+                    .and_then(|tile| window.tree.tiles.get(tile))
+                    .and_then(|tile| match tile {
+                        egui_tiles::Tile::Pane(id) => Some(*id),
+                        _ => None,
+                    });
+                window.panes.iter().filter_map(move |(id, pane)| {
+                    let app = pane.as_app()?;
+                    if app.runtime.type_id() != "text-editor" {
+                        return None;
+                    }
+                    let buffer = app.runtime.editor_buffer()?;
+                    Some(serde_json::json!({
+                        "pane_id": id,
+                        "path": buffer.path,
+                        "dirty": buffer.dirty,
+                        "focused": window_index == active && focused == Some(*id),
+                    }))
+                })
+            })
+            .collect::<Vec<_>>();
+        log::info!("assistant_host_tool: editors.list count={}", editors.len());
+        serde_json::json!({"editors": editors})
+    }
+
+    fn assistant_open_editor(&self, pane_id: u64) -> Option<AssistantEditor> {
+        let pane = self
+            .windows
+            .iter()
+            .find_map(|window| window.panes.get(&pane_id))?;
+        let app = pane.as_app()?;
+        if app.runtime.type_id() != "text-editor" {
+            return None;
+        }
+        let buffer = app.runtime.editor_buffer()?;
+        Some(AssistantEditor {
+            pane_id,
+            path: buffer.path,
+            dirty: buffer.dirty,
+        })
+    }
+
+    fn open_editor_paths(&self) -> Vec<std::path::PathBuf> {
+        let mut paths = Vec::new();
+        for window in &self.windows {
+            for pane in window.panes.values() {
+                let Some(app) = pane.as_app() else {
+                    continue;
+                };
+                if let Some(buffer) = app.runtime.editor_buffer() {
+                    paths.push(std::path::PathBuf::from(buffer.path));
+                }
+            }
+        }
+        paths
+    }
+
+    /// Admit one Assistant host tool the way `ToolDispatcher::dispatch_call`
+    /// does, then run it. A first call with no grant returns
+    /// `permission_required`. `plexi assistant tool` and the harness e2e use
+    /// this path; the desktop Assistant uses the same admit before the handler.
+    pub(crate) fn dispatch_assistant_host_tool(
+        &mut self,
+        name: &str,
+        input_json: &str,
+    ) -> crate::plexi_ai::tool_dispatch::ToolCallResult {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::plexi_ai::tool_dispatch::ToolCallResult;
+
+        let context_id = self
+            .windows
+            .get(self.active_window)
+            .map(|window| window.context_id)
+            .unwrap_or(0);
+        let workspace = self
+            .context_root_for(context_id)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        if workspace.as_os_str().is_empty() {
+            return ToolCallResult::err("permission_denied: no workspace");
+        }
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let actor = "agent:assistant";
+        let call_id = format!("call_{}", uuid::Uuid::new_v4());
+        let admission = monitor.admit(AdmitRequest {
+            call_id: &call_id,
+            tool: name,
+            input_json,
+            actor_type: ActorType::Agent,
+            actor_id: actor,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: &workspace,
+            context_id,
+            package_id: "host",
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        });
+        let (grant_id, fingerprint, resource) = match admission {
+            Admission::Required { pending_request_id } => {
+                log::info!(
+                    "assistant_host_tool: permission_required tool={name} pending={pending_request_id}"
+                );
+                return ToolCallResult::coded(
+                    "permission_required",
+                    &call_id,
+                    Some(&pending_request_id),
+                );
+            }
+            Admission::Denied { code } => return ToolCallResult::coded(code, &call_id, None),
+            Admission::Proceed {
+                grant_id,
+                fingerprint,
+                resource_id,
+                ..
+            } => (grant_id, fingerprint, resource_id.unwrap_or_default()),
+        };
+        if monitor
+            .note_use(actor, &call_id, &grant_id, &fingerprint, &resource, "")
+            .is_err()
+        {
+            return ToolCallResult::coded("permission_denied", &call_id, None);
+        }
+        log::info!("assistant_host_tool: admitted tool={name} grant={grant_id}");
+        let result = self.handle_assistant_host_tool(name, input_json, 0, context_id);
+        if result.error.is_none() && matches!(name, "host.files.edit" | "host.files.write") {
+            if let Some(output) = result.output_json.as_deref() {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(output) {
+                    if let Some(id) = value.get("change_set_id").and_then(|item| item.as_str()) {
+                        if let Err(error) = crate::host::changes::authorize_accept(id) {
+                            log::warn!(
+                                "changes: could not record accept grant for {id}: {error}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -859,17 +1092,32 @@ fn is_skipped_walk_dir(name: &str) -> bool {
 const MAX_WALK_DEPTH: usize = 8;
 const MAX_WALK_FILES: usize = 5000;
 const MAX_LIST_ENTRIES: usize = 500;
-/// Unified-diff shaping for edit/write results rendered in the transcript.
+/// Unified-diff shaping for the scoped edit helpers exercised by tests.
+#[cfg(test)]
 const DIFF_CONTEXT_LINES: usize = 3;
+#[cfg(test)]
 const MAX_DIFF_CHARS: usize = 4000;
 
 /// Resolve `raw` against the allowed roots. Relative paths use the primary
 /// root, while absolute and `~/` paths may address any explicit root. The
 /// deepest existing prefix is canonicalized before containment is checked so
 /// a workspace symlink cannot redirect direct reads or writes outside scope.
+#[cfg(test)]
 fn resolve_scoped_file_path(
     roots: &[std::path::PathBuf],
     raw: &str,
+) -> Result<std::path::PathBuf, String> {
+    resolve_scoped_file_path_in(roots, raw, &[])
+}
+
+/// Like [`resolve_scoped_file_path`], and also allows a path that is an open
+/// text-editor buffer. A bare file name falls back to that buffer only when
+/// the workspace path does not exist. The match is the file itself, not its
+/// parent directory.
+fn resolve_scoped_file_path_in(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    editor_paths: &[std::path::PathBuf],
 ) -> Result<std::path::PathBuf, String> {
     let Some(primary_root) = roots.first() else {
         return Err("path_scope_unavailable: this context has no file root".to_string());
@@ -890,8 +1138,15 @@ fn resolve_scoped_file_path(
     let absolute = if requested.is_absolute() {
         requested
     } else {
-        primary_root.join(requested)
+        primary_root.join(&requested)
     };
+    if let Some(editor) = match_open_editor(roots, raw, &absolute, editor_paths)? {
+        log::info!(
+            "assistant_host_tool: open editor path raw={raw} path={}",
+            editor.display()
+        );
+        return Ok(editor);
+    }
     let resolved = super::canvas_bindings::canonicalize_existing_prefix(&absolute);
     let allowed = roots
         .iter()
@@ -910,8 +1165,66 @@ fn resolve_scoped_file_path(
     Ok(resolved)
 }
 
+fn match_open_editor(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    absolute: &std::path::Path,
+    editor_paths: &[std::path::PathBuf],
+) -> Result<Option<std::path::PathBuf>, String> {
+    let editors: Vec<std::path::PathBuf> = editor_paths
+        .iter()
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .collect();
+    if editors.is_empty() {
+        return Ok(None);
+    }
+    let bare = !raw.starts_with("~/")
+        && !std::path::Path::new(raw).is_absolute()
+        && !raw.contains('/')
+        && !raw.contains('\\');
+    if bare {
+        if roots.first().is_some_and(|root| root.join(raw).exists()) {
+            return Ok(None);
+        }
+        let mut matches: Vec<std::path::PathBuf> = editors
+            .into_iter()
+            .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some(raw))
+            .collect();
+        matches.sort();
+        matches.dedup();
+        return match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.into_iter().next()),
+            _ => Err(format!(
+                "path_ambiguous: {raw} matches {}",
+                matches
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        };
+    }
+    if absolute.is_absolute() {
+        let resolved = super::canvas_bindings::canonicalize_existing_prefix(absolute);
+        if editors.iter().any(|path| path == &resolved) {
+            return Ok(Some(resolved));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
 fn read_scoped_file(roots: &[std::path::PathBuf], raw: &str) -> Result<String, String> {
-    let path = resolve_scoped_file_path(roots, raw)?;
+    read_scoped_file_in(roots, raw, &[])
+}
+
+fn read_scoped_file_in(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    editor_paths: &[std::path::PathBuf],
+) -> Result<String, String> {
+    let path = resolve_scoped_file_path_in(roots, raw, editor_paths)?;
     let size = std::fs::metadata(&path)
         .map_err(|error| format!("read_failed: {}: {error}", path.display()))?
         .len();
@@ -937,11 +1250,22 @@ struct ReadSlice {
 /// Read lines `offset..offset+limit` (1-based) of a scoped file, each
 /// prefixed with its line number — the same contract coding agents use, so
 /// follow-up edits can reference exact locations.
+#[cfg(test)]
 fn read_scoped_file_slice(
     roots: &[std::path::PathBuf],
     raw: &str,
     offset: usize,
     limit: usize,
+) -> Result<ReadSlice, String> {
+    read_scoped_file_slice_in(roots, raw, offset, limit, &[])
+}
+
+fn read_scoped_file_slice_in(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    offset: usize,
+    limit: usize,
+    editor_paths: &[std::path::PathBuf],
 ) -> Result<ReadSlice, String> {
     if offset == 0 {
         return Err("invalid_input: offset is 1-based and must be >= 1".to_string());
@@ -949,7 +1273,7 @@ fn read_scoped_file_slice(
     if limit == 0 {
         return Err("invalid_input: limit must be >= 1".to_string());
     }
-    let content = read_scoped_file(roots, raw)?;
+    let content = read_scoped_file_in(roots, raw, editor_paths)?;
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     if offset > total_lines && total_lines > 0 {
@@ -1034,13 +1358,14 @@ fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool)
 
 /// Resolve the search start points for grep/list: an explicit scoped path, or
 /// the primary existing root when no path is given.
-fn scoped_walk_starts(
+fn scoped_walk_starts_in(
     roots: &[std::path::PathBuf],
     raw_path: Option<&str>,
+    editor_paths: &[std::path::PathBuf],
 ) -> Result<Vec<std::path::PathBuf>, String> {
     match raw_path {
         Some(raw) => {
-            let path = resolve_scoped_file_path(roots, raw)?;
+            let path = resolve_scoped_file_path_in(roots, raw, editor_paths)?;
             if !path.exists() {
                 return Err(format!("path_not_found: {raw}"));
             }
@@ -1057,14 +1382,25 @@ fn scoped_walk_starts(
 
 /// Regex search across scoped workspace files — the in-process replacement
 /// for the `cat`/`grep` PTY round-trips that burned the tool budget.
+#[cfg(test)]
 fn grep_scoped(
     roots: &[std::path::PathBuf],
     raw_path: Option<&str>,
     pattern: &str,
     max_matches: usize,
 ) -> Result<serde_json::Value, String> {
+    grep_scoped_in(roots, raw_path, pattern, max_matches, &[])
+}
+
+fn grep_scoped_in(
+    roots: &[std::path::PathBuf],
+    raw_path: Option<&str>,
+    pattern: &str,
+    max_matches: usize,
+    editor_paths: &[std::path::PathBuf],
+) -> Result<serde_json::Value, String> {
     let regex = regex::Regex::new(pattern).map_err(|error| format!("invalid_pattern: {error}"))?;
-    let starts = scoped_walk_starts(roots, raw_path)?;
+    let starts = scoped_walk_starts_in(roots, raw_path, editor_paths)?;
     let mut matches = Vec::new();
     let mut files_scanned = 0usize;
     let mut truncated = false;
@@ -1107,11 +1443,20 @@ fn grep_scoped(
 }
 
 /// List scoped workspace files with sizes.
+#[cfg(test)]
 fn list_scoped(
     roots: &[std::path::PathBuf],
     raw_path: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let starts = scoped_walk_starts(roots, raw_path)?;
+    list_scoped_in(roots, raw_path, &[])
+}
+
+fn list_scoped_in(
+    roots: &[std::path::PathBuf],
+    raw_path: Option<&str>,
+    editor_paths: &[std::path::PathBuf],
+) -> Result<serde_json::Value, String> {
+    let starts = scoped_walk_starts_in(roots, raw_path, editor_paths)?;
     let mut entries = Vec::new();
     let mut truncated = false;
     'outer: for start in &starts {
@@ -1133,9 +1478,8 @@ fn list_scoped(
 }
 
 /// Minimal single-hunk unified diff: trims the common prefix/suffix and
-/// wraps the changed span in up to `DIFF_CONTEXT_LINES` of context. Exact
-/// for single-span changes (every `host.files.edit`); for multi-span writes
-/// the one hunk covers the full changed region.
+/// wraps the changed span in up to `DIFF_CONTEXT_LINES` of context.
+#[cfg(test)]
 fn unified_diff(old: &str, new: &str, path: &str) -> String {
     if old == new {
         return String::new();
@@ -1195,12 +1539,14 @@ fn unified_diff(old: &str, new: &str, path: &str) -> String {
 
 /// Outcome of a scoped write: whether the file was created, and the diff
 /// against the previous content when it was overwritten.
+#[cfg(test)]
 #[derive(Debug)]
 struct WriteOutcome {
     created: bool,
     diff: Option<String>,
 }
 
+#[cfg(test)]
 fn write_scoped_file(
     roots: &[std::path::PathBuf],
     raw: &str,
@@ -1226,6 +1572,7 @@ fn write_scoped_file(
 /// Replace exactly one occurrence of `old_string` and return the unified
 /// diff of the change. Zero or multiple matches fail loudly — the same
 /// edit-verification contract proven by Claude Code's Edit tool.
+#[cfg(test)]
 fn edit_scoped_file(
     roots: &[std::path::PathBuf],
     raw: &str,
@@ -1648,6 +1995,7 @@ mod tests {
             "{read:?}"
         );
 
+        let notes = workspace.path().join("notes/new.txt");
         let write = harness.app.handle_assistant_host_tool(
             "host.files.write",
             r#"{"path":"notes/new.txt","content":"before\n"}"#,
@@ -1655,6 +2003,13 @@ mod tests {
             context,
         );
         assert!(write.error.is_none(), "{write:?}");
+        assert!(
+            !notes.exists(),
+            "a write is a change set and must not create the file"
+        );
+        let write_id = change_set_id(&write);
+        crate::host::changes::commit_prepared(&write_id).unwrap();
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "before\n");
 
         let edit = harness.app.handle_assistant_host_tool(
             "host.files.edit",
@@ -1664,9 +2019,22 @@ mod tests {
         );
         assert!(edit.error.is_none(), "{edit:?}");
         assert_eq!(
-            std::fs::read_to_string(workspace.path().join("notes/new.txt")).unwrap(),
-            "after\n"
+            std::fs::read_to_string(&notes).unwrap(),
+            "before\n",
+            "an edit is a change set and must not touch disk"
         );
+        let edit_id = change_set_id(&edit);
+        crate::host::changes::commit_prepared(&edit_id).unwrap();
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "after\n");
+    }
+
+    fn change_set_id(result: &crate::plexi_ai::tool_dispatch::ToolCallResult) -> String {
+        let value: serde_json::Value =
+            serde_json::from_str(result.output_json.as_deref().expect("output")).unwrap();
+        value["change_set_id"]
+            .as_str()
+            .expect("change_set_id")
+            .to_string()
     }
 
     #[cfg(unix)]
@@ -1998,5 +2366,136 @@ mod tests {
             "{:?}",
             result.error
         );
+    }
+
+    #[test]
+    fn assistant_proposes_change_set_for_open_editor_outside_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("temp.md");
+        std::fs::write(&file, "alpha\n").unwrap();
+
+        let mut harness = HostHarness::new();
+        harness
+            .app
+            .set_context_root(workspace.path().to_path_buf(), None);
+        let context = harness.app.windows[0].context_id;
+        harness.app.open_builtin_app_pane(
+            Box::new(crate::app::text_editor_app::TextEditorApp::new(file.clone())),
+            crate::app::permissions::AppPermissions::builtin(),
+            workspace.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        let editor_id = harness
+            .app
+            .windows
+            .iter()
+            .flat_map(|window| window.panes.iter())
+            .find_map(|(id, pane)| {
+                let app = pane.as_app()?;
+                (app.runtime.type_id() == "text-editor").then_some(*id)
+            })
+            .expect("text editor pane");
+
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        );
+        let approve = |result: &crate::plexi_ai::tool_dispatch::ToolCallResult| {
+            assert_eq!(result.error_code.as_deref(), Some("permission_required"));
+            let pending = result.pending_request_id.as_deref().unwrap();
+            monitor
+                .approve_pending(pending, crate::broker::gate::ApprovalChoice::Once)
+                .unwrap();
+        };
+
+        let listed = harness
+            .app
+            .dispatch_assistant_host_tool("host.editors.list", "{}");
+        approve(&listed);
+        let listed = harness
+            .app
+            .dispatch_assistant_host_tool("host.editors.list", "{}");
+        let listed_body = listed.output_json.unwrap();
+        assert!(
+            listed_body.contains(&file.display().to_string()),
+            "{listed_body}"
+        );
+        assert!(listed_body.contains("\"dirty\":false"), "{listed_body}");
+
+        let bare = harness.app.handle_assistant_host_tool(
+            "host.files.list",
+            r#"{"path":"temp.md"}"#,
+            editor_id,
+            context,
+        );
+        let bare_body = bare.output_json.expect("bare name resolves to the open editor");
+        assert!(
+            bare_body.contains(&file.display().to_string()),
+            "{bare_body}"
+        );
+
+        let outside_denied = harness.app.handle_assistant_host_tool(
+            "host.files.read",
+            r#"{"path":"/etc/passwd"}"#,
+            editor_id,
+            context,
+        );
+        assert!(
+            outside_denied
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("path_out_of_scope"),
+            "{outside_denied:?}"
+        );
+
+        let reopened = harness.app.handle_assistant_host_tool(
+            "host.panes.open",
+            &serde_json::json!({"type_id": "text-editor", "pane_id": editor_id}).to_string(),
+            editor_id,
+            context,
+        );
+        let reopened_body = reopened.output_json.expect("already open");
+        assert!(reopened_body.contains("\"already_open\":true"), "{reopened_body}");
+        assert!(
+            reopened_body.contains(&file.display().to_string()),
+            "{reopened_body}"
+        );
+
+        let input = serde_json::json!({
+            "path": file,
+            "old_string": "alpha\n",
+            "new_string": "beta\n",
+        })
+        .to_string();
+        let first = harness
+            .app
+            .dispatch_assistant_host_tool("host.files.edit", &input);
+        approve(&first);
+        let proposed = harness
+            .app
+            .dispatch_assistant_host_tool("host.files.edit", &input);
+        assert!(proposed.error.is_none(), "{proposed:?}");
+        let proposed_body = proposed.output_json.unwrap();
+        assert!(proposed_body.contains("\"applied\":false"), "{proposed_body}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+
+        harness.app.sync_editor_change_sets();
+        let state = harness
+            .app
+            .assistant_pane_state(editor_id)
+            .expect("editor state");
+        let change = &state["app_state"]["change_set"];
+        assert_eq!(change["status"], "pending");
+        let diff = change["diff"].as_str().unwrap();
+        assert!(diff.contains("-alpha"), "{diff}");
+        assert!(diff.contains("+beta"), "{diff}");
+        assert_eq!(state["app_state"]["source_text"], "alpha\n");
+
+        harness.text_editor_mut(editor_id).accept_for_test();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
+        assert_eq!(harness.text_editor_mut(editor_id).composed_for_test(), "beta\n");
     }
 }

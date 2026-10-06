@@ -347,4 +347,14 @@ pub trait App: Send {
     /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// Pull a prepared change set into this pane. Default: not an editor.
+    fn sync_change_set(&mut self) -> bool {
+        false
+    }
+
+    /// On-disk body of an open text editor, when this pane is one.
+    fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
+        None
+    }
 }

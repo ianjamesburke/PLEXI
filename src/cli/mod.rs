@@ -207,6 +207,7 @@ pub mod subprocess;
 pub mod test_env;
 
 pub mod account;
+pub mod changes;
 pub mod agent;
 pub mod ai;
 pub mod app;
@@ -1257,7 +1258,7 @@ pub use agent::{
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_call_cli, assistant_permission_cli, assistant_send_cli, app_info, app_init,
+    app_action_cli, app_call_cli, assistant_permission_cli, assistant_send_cli, assistant_tool_cli, app_info, app_init,
     app_inspect_cli, app_install_package, app_install_with_pin, app_list, app_package_cli,
     app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };
@@ -1300,6 +1301,10 @@ pub use pane::{
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;
+pub use changes::{
+    changes_accept_cli, changes_allow_cli, changes_preview_cli, changes_profile_cli,
+    changes_propose_cli, changes_refresh_cli, changes_revert_cli,
+};
 pub use workspace::{
     workspace_clean_cli, workspace_init, workspace_secret_delete, workspace_secret_get,
     workspace_secret_list, workspace_secret_set,

@@ -91,6 +91,14 @@ pub enum AppRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
     },
+    /// Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)
+    /// through the same permission gate the desktop Assistant uses. The host
+    /// writes `{"ok":true,"output":...}` or `{"ok":false,"error_code":...}`.
+    AssistantHostTool {
+        name: String,
+        input_json: String,
+        response_file: String,
+    },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
         request_id: String,
