@@ -150,6 +150,14 @@ pub(crate) struct PaneHeartbeat {
     pub next_fire: std::time::Instant,
 }
 
+/// A host-chrome approval button, in window points, for the human-intent driver.
+#[derive(Clone, Debug)]
+pub(crate) struct ApprovalButton {
+    pub label: String,
+    pub bounds: [f32; 4],
+    pub pending_request_id: String,
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -197,6 +205,10 @@ pub struct PlexiApp {
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `AppRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
+    /// Banner buttons drawn last frame. `assistant permission list` publishes them.
+    pub(crate) approval_buttons: Vec<ApprovalButton>,
+    /// This frame's raw input includes socket-injected pane events.
+    pub(crate) synthetic_input_frame: bool,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -1645,6 +1657,8 @@ impl PlexiApp {
                     prev_screen_rect: None,
                     drag_window_last_seen: None,
                     pending_screenshots: Vec::new(),
+                    approval_buttons: Vec::new(),
+                    synthetic_input_frame: false,
                     pending_slot_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1921,6 +1935,8 @@ impl PlexiApp {
             prev_screen_rect: None,
             drag_window_last_seen: None,
             pending_screenshots: Vec::new(),
+            approval_buttons: Vec::new(),
+            synthetic_input_frame: false,
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2650,6 +2666,8 @@ impl PlexiApp {
                 prev_screen_rect: None,
                 drag_window_last_seen: None,
                 pending_screenshots: Vec::new(),
+                approval_buttons: Vec::new(),
+                synthetic_input_frame: false,
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
@@ -3080,6 +3098,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
@@ -3119,6 +3138,9 @@ impl eframe::App for PlexiApp {
                     "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
                 );
             } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
+                if !batches.is_empty() {
+                    self.synthetic_input_frame = true;
+                }
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
                     raw_input.events.extend(batch.events);
@@ -3129,6 +3151,7 @@ impl eframe::App for PlexiApp {
             // multi-frame trajectory instead of a same-frame click.
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
+                    self.synthetic_input_frame = true;
                     raw_input.events.extend(batch.events);
                 }
                 if frames.is_empty() {
@@ -4183,6 +4206,7 @@ impl eframe::App for PlexiApp {
         // terminal only ever sees what the global allowlist left behind.
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
         self.render_panels(ui, focused_terminal_input);
+        self.draw_approval_banner(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
