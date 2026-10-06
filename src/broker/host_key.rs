@@ -31,6 +31,10 @@ pub(crate) const MAC_ITEM: &str = "permission-mac";
 const HOST_SERVICE: &str = "plexi-host-seal";
 
 /// Why Linux will not write a plaintext seal key.
+///
+/// macOS and Windows have their own host stores, so a release build on those
+/// platforms does not call this. Tests on every platform do.
+#[cfg(any(test, not(any(target_os = "macos", windows))))]
 pub(crate) fn plaintext_seal_refusal(detail: &str) -> String {
     format!(
         "Linux refuses to seal the permission MAC with a plaintext key in secrets.json. \
