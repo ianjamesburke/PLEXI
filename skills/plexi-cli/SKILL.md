@@ -143,6 +143,8 @@ note
 notes
 relay
 relay connect [--url <relay>]
+relay enable [--url <relay>]
+relay disable
 relay confirm [pairing-id]
 relay revoke <device-id>
 relay pair

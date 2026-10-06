@@ -321,6 +321,8 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::relay_revoke_cli(&device_id))
                         }
                         RelayCmd::Pair => std::process::exit(cli::relay_pair_cli()),
+                        RelayCmd::Enable { url } => std::process::exit(cli::relay_enable_cli(url)),
+                        RelayCmd::Disable => std::process::exit(cli::relay_disable_cli()),
                         RelayCmd::Status => std::process::exit(cli::relay_status_cli()),
                     },
                     Commands::Run {

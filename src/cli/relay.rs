@@ -63,6 +63,8 @@ struct Session {
     dispatch: Dispatch,
     pairing_id: Option<String>,
     devices: Vec<PairedDevice>,
+    /// `host` when the host process owns the socket, `cli` for `relay connect`.
+    owner: &'static str,
     control: String,
     queued: VecDeque<PendingTurn>,
     inflight: Option<Inflight>,
@@ -81,12 +83,98 @@ pub fn relay_connect_cli(url: Option<String>) -> i32 {
         Ok(value) if value == "echo" => Dispatch::Echo,
         _ => Dispatch::Host,
     };
-    if let Err(error) = run_session(&url, dispatch) {
+    match live_connection() {
+        Some(LiveConnection::Host) => {
+            println!("attached to the host relay");
+            if let Ok(text) = fs::read_to_string(status_path()) {
+                println!("{text}");
+            }
+            log::info!("relay: attached to the host connection");
+            return 0;
+        }
+        Some(LiveConnection::Other) => {
+            eprintln!(
+                "error: a relay connection is already running. Stop it before starting another. A second connection would replace this desktop on the relay."
+            );
+            log::info!("relay: refused a second connection outcome=already_running");
+            return 1;
+        }
+        None => {}
+    }
+    if let Err(error) = run_session(&url, dispatch, "cli") {
+        if error == ALREADY_RUNNING {
+            if matches!(live_connection(), Some(LiveConnection::Host)) {
+                println!("attached to the host relay");
+                log::info!("relay: attached to the host connection");
+                return 0;
+            }
+            eprintln!(
+                "error: a relay connection is already running. Stop it before starting another. A second connection would replace this desktop on the relay."
+            );
+            log::info!("relay: refused a second connection outcome=already_running");
+            return 1;
+        }
         eprintln!("error: {error}");
         log::error!("relay: connect failed outcome={error}");
         return 1;
     }
     0
+}
+
+pub fn relay_enable_cli(url: Option<String>) -> i32 {
+    let url = match url.or_else(configured_url) {
+        Some(url) => url,
+        None => {
+            eprintln!("error: pass --url or set PLEXI_RELAY_URL");
+            return 1;
+        }
+    };
+    if relay_ws::parse_relay_url(&url).is_err() {
+        eprintln!("error: relay url must be ws:// or wss://");
+        return 1;
+    }
+    if let Err(error) = write_relay_config(true, &url) {
+        eprintln!("error: {error}");
+        return 1;
+    }
+    log::info!("relay: enabled");
+    println!("Relay enabled. It connects when the host starts.");
+    0
+}
+
+pub fn relay_disable_cli() -> i32 {
+    let url = configured_url().unwrap_or_default();
+    if let Err(error) = write_relay_config(false, &url) {
+        eprintln!("error: {error}");
+        return 1;
+    }
+    log::info!("relay: disabled");
+    println!("Relay disabled. The host will not connect on the next start.");
+    0
+}
+
+pub fn start_host_relay() {
+    if !relay_enabled() {
+        return;
+    }
+    let Some(url) = configured_url() else {
+        log::warn!("relay: enabled but no url is configured");
+        return;
+    };
+    if live_connection().is_some() {
+        log::info!("relay: host left the existing connection in place");
+        return;
+    }
+    log::info!("relay: host connecting");
+    thread::spawn(move || {
+        if let Err(error) = run_session(&url, Dispatch::Host, "host") {
+            if error == ALREADY_RUNNING {
+                log::info!("relay: host did not open a second connection");
+            } else {
+                log::error!("relay: host session ended outcome={error}");
+            }
+        }
+    });
 }
 
 pub fn relay_confirm_cli(pairing_id: Option<String>) -> i32 {
@@ -115,10 +203,11 @@ pub fn relay_status_cli() -> i32 {
     }
 }
 
-fn run_session(url: &str, dispatch: Dispatch) -> Result<(), String> {
+fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(), String> {
     let parsed = relay_ws::parse_relay_url(url)?;
     fs::create_dir_all(crate::config::config_dir())
         .map_err(|error| format!("relay profile: {error}"))?;
+    let _lock = try_session_lock()?;
     let (identity, devices) = load_identity(crate::workspace::secrets::system_store())?;
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|error| format!("relay control: {error}"))?;
@@ -135,6 +224,7 @@ fn run_session(url: &str, dispatch: Dispatch) -> Result<(), String> {
         dispatch,
         pairing_id: None,
         devices,
+        owner,
         control: control.clone(),
         queued: VecDeque::new(),
         inflight: None,
@@ -157,7 +247,10 @@ fn run_session(url: &str, dispatch: Dispatch) -> Result<(), String> {
             log::info!("relay: stopping host_id={}", session.identity.host_id);
             return Ok(());
         }
-        if matches!(session.dispatch, Dispatch::Host) && !host_socket_open() {
+        if session.owner != "host"
+            && matches!(session.dispatch, Dispatch::Host)
+            && !host_socket_open()
+        {
             log::info!(
                 "relay: host gone, closing desktop link host_id={}",
                 session.identity.host_id
@@ -792,6 +885,7 @@ fn write_status(
         "host_id": session.identity.host_id,
         "control": session.control,
         "phase": phase,
+        "owner": session.owner,
         "url_host": session.url.host,
         "url_port": session.url.port,
         "tls": session.url.tls,
@@ -956,6 +1050,71 @@ fn devices_from_message(message: &Value) -> Vec<PairedDevice> {
         .unwrap_or_default()
 }
 
+const ALREADY_RUNNING: &str = "relay_already_running";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveConnection {
+    Host,
+    Other,
+}
+
+pub(crate) fn classify_connection(
+    control_open: bool,
+    owner: Option<&str>,
+) -> Option<LiveConnection> {
+    if !control_open {
+        None
+    } else if owner == Some("host") {
+        Some(LiveConnection::Host)
+    } else {
+        Some(LiveConnection::Other)
+    }
+}
+
+fn live_connection() -> Option<LiveConnection> {
+    let text = fs::read_to_string(status_path()).ok()?;
+    let status: Value = serde_json::from_str(&text).ok()?;
+    let control = status.get("control").and_then(|value| value.as_str())?;
+    let open = TcpStream::connect_timeout(
+        &control
+            .parse()
+            .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap()),
+        Duration::from_millis(200),
+    )
+    .is_ok();
+    classify_connection(open, status.get("owner").and_then(|value| value.as_str()))
+}
+
+fn try_session_lock() -> Result<fs::File, String> {
+    let path = crate::config::config_dir().join("relay.lock");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| format!("relay lock: {error}"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(ALREADY_RUNNING.to_string()),
+        Err(std::fs::TryLockError::Error(error)) => Err(format!("relay lock: {error}")),
+    }
+}
+
+fn write_relay_config(enabled: bool, url: &str) -> Result<(), String> {
+    let body = format!("enabled = {enabled}\nurl = \"{url}\"\n");
+    write_private(&crate::config::config_dir().join("relay.toml"), &body)
+}
+
+pub(crate) fn relay_enabled() -> bool {
+    let Ok(text) = fs::read_to_string(crate::config::config_dir().join("relay.toml")) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let rest = line.trim().strip_prefix("enabled");
+        rest.is_some_and(|rest| rest.trim().trim_start_matches('=').trim() == "true")
+    })
+}
+
 fn configured_url() -> Option<String> {
     if let Ok(url) = std::env::var("PLEXI_RELAY_URL") {
         let url = url.trim();
@@ -1077,6 +1236,67 @@ mod tests {
     }
 
     #[test]
+    fn a_live_host_connection_attaches_and_a_cli_connection_is_busy() {
+        assert_eq!(
+            classify_connection(true, Some("host")),
+            Some(LiveConnection::Host)
+        );
+        assert_eq!(
+            classify_connection(true, Some("cli")),
+            Some(LiveConnection::Other)
+        );
+        assert_eq!(classify_connection(false, Some("host")), None);
+    }
+
+    #[test]
+    fn enable_persists_the_url_the_host_reads() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        assert!(!relay_enabled());
+        assert_eq!(
+            relay_enable_cli(Some("ws://127.0.0.1:9/v1/desktop".to_string())),
+            0
+        );
+        assert!(relay_enabled());
+        assert_eq!(
+            configured_url().as_deref(),
+            Some("ws://127.0.0.1:9/v1/desktop")
+        );
+        assert_eq!(relay_disable_cli(), 0);
+        assert!(!relay_enabled());
+    }
+
+    #[test]
+    fn a_second_session_does_not_open_another_socket() {
+        let _session = SESSION_TEST.lock().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        STOP.store(false, Ordering::SeqCst);
+        let profile_path = profile.path().to_path_buf();
+        let worker = thread::spawn(move || {
+            let _guard = crate::config::set_test_profile_dir(profile_path);
+            run_session("ws://127.0.0.1:1/v1/desktop", Dispatch::Echo, "cli")
+        });
+        let status = wait_status(profile.path(), "control");
+        assert_eq!(status["owner"], "cli");
+        let profile_path = profile.path().to_path_buf();
+        let error = thread::spawn(move || {
+            let _guard = crate::config::set_test_profile_dir(profile_path);
+            run_session("ws://127.0.0.1:1/v1/desktop", Dispatch::Echo, "cli")
+                .expect_err("second session")
+        })
+        .join()
+        .unwrap();
+        assert_eq!(error, ALREADY_RUNNING);
+        assert_eq!(
+            relay_connect_cli(Some("ws://127.0.0.1:1/v1/desktop".to_string())),
+            1
+        );
+        assert_eq!(control_roundtrip(json!({"type": "stop"})), 0);
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn echo_round_trip_correlates_request_and_conversation() {
         let _session = SESSION_TEST.lock().unwrap();
         let profile = tempfile::tempdir().unwrap();
@@ -1100,7 +1320,7 @@ mod tests {
         let url = format!("ws://127.0.0.1:{port}/v1/desktop");
         let worker = thread::spawn(move || {
             let _guard = crate::config::set_test_profile_dir(profile_path);
-            run_session(&url, Dispatch::Echo).expect("session");
+            run_session(&url, Dispatch::Echo, "cli").expect("session");
         });
         let status = wait_status(profile.path(), "code");
         let code = status["code"].as_str().unwrap().to_string();
@@ -1200,7 +1420,7 @@ mod tests {
             let profile_path = profile_path.clone();
             move || {
                 let _guard = crate::config::set_test_profile_dir(profile_path);
-                run_session(&url, Dispatch::Echo).expect("session");
+                run_session(&url, Dispatch::Echo, "cli").expect("session");
             }
         });
         let status = wait_status(profile.path(), "code");
@@ -1274,7 +1494,7 @@ mod tests {
         STOP.store(false, Ordering::SeqCst);
         let worker = thread::spawn(move || {
             let _guard = crate::config::set_test_profile_dir(profile_path);
-            run_session(&url, Dispatch::Echo).expect("resume");
+            run_session(&url, Dispatch::Echo, "cli").expect("resume");
         });
         let resumed = wait_for_phase(profile.path(), "paired");
         let listed = resumed["devices"].as_array().unwrap();

@@ -176,10 +176,14 @@ done
 if [[ -n "$COOKIE" ]]; then pass "phone session"; else fail "phone session" "no cookie after confirm"; fi
 SAVED_DEVICE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("device_id") or "")' "$STATUS" 2>/dev/null || true)"
 
+status_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' "$STATUS" "$1" 2>/dev/null || true
+}
+
 post_turn() {
-  local id="$1" text="$2"
+  local id="$1" text="$2" cookie="${3:-$COOKIE}"
   curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/turns" \
-    -H "cookie: plexi_phone=$COOKIE" -H 'content-type: application/json' \
+    -H "cookie: plexi_phone=$cookie" -H 'content-type: application/json' \
     -d "{\"schema_version\":1,\"request_id\":\"$id\",\"content\":[{\"type\":\"text\",\"text\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$text")}]}"
 }
 
@@ -199,6 +203,72 @@ for _ in $(seq 1 160); do
   sleep 0.25
 done
 if [[ -n "$ROUND_OK" ]]; then pass "round trip"; else fail "round trip" "mock reply did not arrive: ${PAGE:0:400}"; fi
+
+# The host owns the relay after this. The CLI client must not keep a second socket.
+"$BIN" relay enable --url "$URL" >"$LOG.enable" 2>&1 || true
+kill "$CONNECT_PID" 2>/dev/null || true
+wait "$CONNECT_PID" 2>/dev/null || true
+CONNECT_PID=""
+"$BIN" host stop >"$LOG.stop-persist" 2>&1 || true
+"$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host-persist" 2>&1 || true
+"$BIN" app open assistant >"$LOG.open-persist" 2>&1 || true
+PERSIST_OK=""
+for _ in $(seq 1 100); do
+  if [[ "$(status_field phase)" == "paired" && "$(status_field owner)" == "host" && "$(status_field device_id)" == "$SAVED_DEVICE" ]]; then
+    PERSIST_OK=1
+    break
+  fi
+  sleep 0.1
+done
+if [[ -n "$PERSIST_OK" ]]; then pass "restart kept pairing"; else fail "restart kept pairing" "phase=$(status_field phase) owner=$(status_field owner) device=$(status_field device_id)"; fi
+RESUME_CODE="$(post_turn req-resume "still paired $CANARY")"
+if [[ "$RESUME_CODE" == "202" ]]; then
+  RESUME_OK=""
+  for _ in $(seq 1 160); do
+    PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
+    if saw_reply "$PAGE" req-resume "mock-reply"; then RESUME_OK=1; break; fi
+    sleep 0.25
+  done
+  if [[ -n "$RESUME_OK" ]]; then pass "resume without pairing"; else fail "resume without pairing" "mock reply missing"; fi
+else
+  fail "resume without pairing" "http $RESUME_CODE $(cat /tmp/relay-e2e-body)"
+fi
+
+OLD_PAIRING="$PAIRING"
+"$BIN" relay pair >/dev/null 2>&1 || true
+NEW_CODE=""
+NEW_PAIRING=""
+for _ in $(seq 1 80); do
+  NEW_CODE="$(status_field code)"
+  NEW_PAIRING="$(status_field pairing_id)"
+  if [[ -n "$NEW_CODE" && -n "$NEW_PAIRING" && "$NEW_PAIRING" != "$OLD_PAIRING" ]]; then break; fi
+  sleep 0.1
+done
+REDEEM2="$(curl -s -X POST "$BASE/api/pair" -H 'content-type: application/json' -d "{\"code\":\"$NEW_CODE\",\"label\":\"second-phone\"}" || true)"
+COOKIE2=""
+for _ in $(seq 1 50); do
+  [[ "$(status_field phase)" == "pending_confirm" ]] && break
+  sleep 0.1
+done
+if [[ -n "$NEW_PAIRING" ]] && "$BIN" relay confirm "$NEW_PAIRING" >/dev/null; then
+  for _ in $(seq 1 50); do
+    curl -sD /tmp/relay-e2e-headers -o /tmp/relay-e2e-body "$BASE/api/pair/$NEW_PAIRING" >/dev/null || true
+    if python3 -c 'import json; raise SystemExit(0 if json.load(open("/tmp/relay-e2e-body")).get("status")=="confirmed" else 1)'; then
+      COOKIE2="$(python3 -c 'import pathlib; text=pathlib.Path("/tmp/relay-e2e-headers").read_text();
+line=next((l for l in text.splitlines() if l.lower().startswith("set-cookie:")), "");
+print(line.split(":",1)[1].split(";",1)[0].strip().split("=",1)[1] if "=" in line else "")')"
+      [[ -n "$COOKIE2" ]] && break
+    fi
+    sleep 0.1
+  done
+fi
+SECOND_CODE="$(post_turn req-second "second phone $CANARY" "$COOKIE2")"
+if [[ -n "$COOKIE2" && "$SECOND_CODE" == "202" ]]; then pass "second device"; else fail "second device" "cookie=${COOKIE2:-missing} http $SECOND_CODE redeem=$REDEEM2"; fi
+if "$BIN" relay connect --url "$URL" >"$LOG.attach" 2>&1 && grep -q "attached to the host relay" "$LOG.attach"; then
+  pass "second connect attaches"
+else
+  fail "second connect attaches" "$(tail -c 200 "$LOG.attach" 2>/dev/null || true)"
+fi
 
 CODE_TOOL="$(post_turn req-approve "APPROVAL-TOOL $CANARY")"
 if [[ "$CODE_TOOL" == "202" ]]; then pass "approval turn accepted"; else fail "approval turn accepted" "http $CODE_TOOL"; fi
@@ -250,23 +320,17 @@ raise SystemExit(0 if any(e.get("request_id")=="req-hold" and e.get("state")=="e
 done
 if [[ -n "$EXPIRED" ]]; then pass "ttl purge"; else fail "ttl purge" "held turn did not expire"; fi
 
-# Desktop is back only so revoke can be sent on the socket.
+# The enabled host reconnects on its own. Do not start a second client.
 "$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host2" 2>&1 || true
 "$BIN" app open assistant >"$LOG.open2" 2>&1 || true
-rm -f "$STATUS"
-"$BIN" relay connect --url "$URL" >"$LOG.connect2" 2>&1 &
-CONNECT_PID=$!
 READY=""
-for _ in $(seq 1 80); do
-  PHASE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("phase") or "")' "$STATUS" 2>/dev/null || true)"
-  if [[ "$PHASE" == "waiting_for_phone" || "$PHASE" == "pending_confirm" || "$PHASE" == "confirmed" ]]; then READY=1; break; fi
+for _ in $(seq 1 100); do
+  PHASE="$(status_field phase)"
+  OWNER="$(status_field owner)"
+  if [[ "$OWNER" == "host" && ( "$PHASE" == "paired" || "$PHASE" == "confirmed" ) ]]; then READY=1; break; fi
   sleep 0.1
 done
-DEVICE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("device_id") or "")' "$STATUS" 2>/dev/null || true)"
-if [[ -z "$DEVICE" ]]; then
-  # The restarted client has not seen the old device id. Revoke the id from the earlier status if we saved it.
-  DEVICE="${SAVED_DEVICE:-}"
-fi
+DEVICE="${SAVED_DEVICE:-}"
 if [[ -n "$READY" && -n "$DEVICE" ]]; then
   if "$BIN" relay revoke "$DEVICE" >/dev/null; then
     pass "revoke sent"
@@ -279,6 +343,12 @@ fi
 sleep 0.4
 REVOKED="$(curl -s -o /tmp/relay-e2e-body -w '%{http_code}' "$BASE/api/status" -H "cookie: plexi_phone=$COOKIE")"
 if [[ "$REVOKED" == "401" ]]; then pass "revoked phone rejected"; else fail "revoked phone rejected" "http $REVOKED $(cat /tmp/relay-e2e-body)"; fi
+if [[ -n "${COOKIE2:-}" ]]; then
+  KEPT="$(post_turn req-kept-e2e "kept $CANARY" "$COOKIE2")"
+  if [[ "$KEPT" == "202" ]]; then pass "second device survived revoke"; else fail "second device survived revoke" "http $KEPT"; fi
+else
+  fail "second device survived revoke" "no second cookie"
+fi
 
 if docker logs "$CONTAINER" 2>&1 | grep -q "$CANARY"; then
   fail "canary absent from relay logs" "marker leaked"

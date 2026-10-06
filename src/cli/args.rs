@@ -321,6 +321,14 @@ pub enum RelayCmd {
     },
     /// Start a pairing code for another phone. Phones already paired stay paired.
     Pair,
+    /// Remember the relay URL and connect it from the host on startup.
+    Enable {
+        /// Relay websocket URL (`ws://` locally, `wss://` in production).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Stop connecting to the relay when the host starts.
+    Disable,
     /// Print the desktop's relay status.
     Status,
 }
