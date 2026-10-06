@@ -42,7 +42,7 @@ KEYCHAIN=""
 unset PLEXI_SOCKET PLEXI_CHANNEL PLEXI_CONTEXT_ROOT PLEXI_CONTEXT_ID \
   PLEXI_CONTEXT_NAME PLEXI_RUNNING PLEXI_PANE_ID PLEXI_CALL_CREDENTIAL \
   PLEXI_HOST_MCP_PORT PLEXI_HOST_MCP_TOKEN PLEXI_KEYCHAIN_PATH \
-  PLEXI_KEYCHAIN_PASSWORD
+  PLEXI_KEYCHAIN_PASSWORD PLEXI_FOLDER_SECRETS_BACKEND
 # The pane check opens a real window. Keep the caller's X cookie; a private
 # HOME would otherwise hide ~/.Xauthority and the host could not connect.
 if [[ -z "${XAUTHORITY:-}" ]]; then
@@ -69,15 +69,37 @@ fi
 pass() { PASS_N=$((PASS_N + 1)); printf 'PASS: %s\n' "$1"; }
 fail() { FAIL_N=$((FAIL_N + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 
-# Point plexi at a path it creates with SecKeychainCreate and opens with
-# SecKeychainOpen. This script never calls `security`, so it cannot change
-# the user search list or the default keychain.
+# Point plexi at a path it creates and opens by path. Reads and writes use
+# that file only. This script's `security` calls are read-only: no `-s` and
+# no keychain path, which are the forms that rewrite the search list or the
+# default keychain.
 isolate_macos_keychain() {
   [[ "$(uname -s)" == "Darwin" ]] || return 0
   KEYCHAIN="$WORK/test.keychain-db"
   export PLEXI_KEYCHAIN_PATH="$KEYCHAIN"
   export PLEXI_KEYCHAIN_PASSWORD
   PLEXI_KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+}
+
+# Linux has no login keychain. Force the labeled file so the check never
+# probes Secret Service (a probe can launch a keyring dialog).
+isolate_linux_backend() {
+  [[ "$(uname -s)" == "Darwin" ]] && return 0
+  export PLEXI_FOLDER_SECRETS_BACKEND=encrypted-file-fallback
+}
+
+# Print the default keychain and the search list. Exit status is part of
+# the snapshot so a later failure cannot compare as equal to an earlier one.
+user_keychain_snapshot() {
+  if ! command -v security >/dev/null 2>&1; then
+    printf 'security-absent\n'
+    return 0
+  fi
+  local def="" list="" def_rc=0 list_rc=0
+  def="$(security default-keychain 2>>"$WORK/security-snapshot.err")" || def_rc=$?
+  list="$(security list-keychains 2>>"$WORK/security-snapshot.err")" || list_rc=$?
+  printf 'default_rc:%s\ndefault:%s\nlist_rc:%s\nlist:%s\n' \
+    "$def_rc" "$def" "$list_rc" "$list"
 }
 
 cleanup() {
@@ -101,8 +123,10 @@ trap cleanup EXIT
 
 mkdir -p "$HOME_DIR" "$DIR_A" "$DIR_B" "$DIR_SIB" "$KEY_DIR"
 # The binary creates and opens this file by path. The trap above deletes
-# only that file.
+# only that file. The Linux override selects the encrypted file and does
+# not contact Secret Service.
 isolate_macos_keychain
+isolate_linux_backend
 export HOME="$HOME_DIR"
 export XDG_DATA_HOME="$HOME_DIR/.local/share"
 export XDG_CONFIG_HOME="$HOME_DIR/.config"
@@ -122,6 +146,8 @@ fi
 
 SECRET="$(openssl rand -hex 24)"
 SECRET="fs9-${SECRET}"
+
+KEYCHAIN_BEFORE="$(user_keychain_snapshot)"
 
 # ── set ──────────────────────────────────────────────────────────────────────
 set_out="$(printf '%s\n' "$SECRET" | "$PLEXI" secret set FOLDER_E2E_SECRET --folder "$DIR_A" 2>"$WORK/set.err")"
@@ -302,6 +328,24 @@ else
   fail "grep of ~/.plexi-* , logs, and the key file finds no value"
   printf '  leaked in:\n' >&2
   printf '%s\n' "$leaks" | sed 's/^/    /' >&2
+fi
+
+if [[ "$HOST_STARTED" == 1 ]]; then
+  "$PLEXI" host stop >/dev/null 2>&1 || true
+  HOST_STARTED=0
+fi
+
+KEYCHAIN_AFTER="$(user_keychain_snapshot)"
+if [[ "$KEYCHAIN_BEFORE" == "$KEYCHAIN_AFTER" ]]; then
+  if [[ -n "$KEYCHAIN" && "$KEYCHAIN_AFTER" == *"$KEYCHAIN"* ]]; then
+    fail "default keychain and search list are unchanged"
+    printf '  temp keychain path is in the user keychain snapshot\n' >&2
+  else
+    pass "default keychain and search list are unchanged"
+  fi
+else
+  fail "default keychain and search list are unchanged"
+  printf '  before:\n%s\n  after:\n%s\n' "$KEYCHAIN_BEFORE" "$KEYCHAIN_AFTER" >&2
 fi
 
 echo

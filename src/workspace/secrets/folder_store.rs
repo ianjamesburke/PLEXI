@@ -26,6 +26,18 @@ use zeroize::Zeroizing;
 #[cfg(any(test, target_os = "linux"))]
 pub const ENCRYPTED_FILE_LABEL: &str = "encrypted-file fallback: not Secret Service and not an OS keyring; ciphertext only; the unlock key is stored outside the Plexi profile";
 
+/// `PLEXI_FOLDER_SECRETS_BACKEND` test hook. `encrypted-file-fallback` selects
+/// the labeled file and does not contact Secret Service. Any other non-empty
+/// value is an error so a typo cannot fall through to the user keyring.
+#[cfg(any(test, target_os = "linux"))]
+pub fn folder_backend_override(value: Option<&str>) -> Result<Option<&'static str>, &'static str> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some("encrypted-file-fallback") => Ok(Some("encrypted-file-fallback")),
+        Some(_) => Err("PLEXI_FOLDER_SECRETS_BACKEND must be unset or encrypted-file-fallback"),
+    }
+}
+
 #[cfg(all(target_os = "linux", not(test)))]
 const ENCRYPTED_FILE: &str = "folder-secrets.enc";
 #[cfg(all(target_os = "linux", not(test)))]
@@ -404,6 +416,22 @@ fn secret_service_available() -> bool {
 fn linux_kind() -> LinuxBackend {
     static KIND: std::sync::OnceLock<LinuxBackend> = std::sync::OnceLock::new();
     *KIND.get_or_init(|| {
+        match folder_backend_override(std::env::var("PLEXI_FOLDER_SECRETS_BACKEND").ok().as_deref())
+        {
+            Ok(Some(_)) => {
+                log::info!(
+                    "folder_secrets: backend=encrypted-file-fallback (PLEXI_FOLDER_SECRETS_BACKEND); Secret Service not contacted"
+                );
+                return LinuxBackend::EncryptedFile;
+            }
+            Err(message) => {
+                log::warn!(
+                    "folder_secrets: {message}; using encrypted-file fallback and not contacting Secret Service"
+                );
+                return LinuxBackend::EncryptedFile;
+            }
+            Ok(None) => {}
+        }
         if let Some(saved) = read_choice() {
             log::info!("folder_secrets: backend={}", backend_name(saved));
             return saved;
@@ -661,5 +689,48 @@ mod tests {
             .delete("plexi:folder:aabb:FOLDER_E2E_SECRET")
             .expect("delete");
         assert!(store.get("plexi:folder:aabb:FOLDER_E2E_SECRET").is_none());
+    }
+
+    #[test]
+    fn folder_backend_override_accepts_only_the_file_fallback() {
+        assert_eq!(folder_backend_override(None).unwrap(), None);
+        assert_eq!(folder_backend_override(Some("")).unwrap(), None);
+        assert_eq!(folder_backend_override(Some("  ")).unwrap(), None);
+        assert_eq!(
+            folder_backend_override(Some("encrypted-file-fallback")).unwrap(),
+            Some("encrypted-file-fallback")
+        );
+        assert!(folder_backend_override(Some("secret-service")).is_err());
+        assert!(folder_backend_override(Some("macos-keychain")).is_err());
+    }
+
+    #[test]
+    fn folder_secrets_e2e_snapshots_the_user_keychain_without_rewriting_it() {
+        let script = include_str!("../../../scripts/folder-secrets-e2e.sh");
+        assert!(
+            script.contains("security default-keychain"),
+            "e2e must record the default keychain"
+        );
+        assert!(
+            script.contains("security list-keychains"),
+            "e2e must record the keychain search list"
+        );
+        assert!(
+            script.contains("encrypted-file-fallback"),
+            "e2e must be able to force the file backend"
+        );
+        for forbidden in [
+            "create-keychain",
+            "delete-keychain",
+            "list-keychains -s",
+            "default-keychain -s",
+            "default-keychain \"",
+            "set-keychain-search-list",
+        ] {
+            assert!(
+                !script.contains(forbidden),
+                "e2e must not rewrite the user keychain via {forbidden}"
+            );
+        }
     }
 }
