@@ -294,6 +294,9 @@ fn run_ingress(ingress: Ingress) {
         Ingress::Mcp => assert!(actor.starts_with("mcp:pane:"), "{output}"),
         Ingress::Socket => assert_eq!(actor, format!("pane:{pane}"), "{output}"),
     }
+    // The guest writes the receipt and the move event as separate messages.
+    // The receipt can be visible one frame before the timeline records it.
+    pump_until(&mut h, |_| commits_for(start, &op) >= 1);
     assert_eq!(commits_for(start, &op), 1, "one commit");
     let intruder = h.add_test_pane();
     let intruder_credential =

@@ -15,6 +15,16 @@ Run these commands from a Plexi pane when they act on a host. The pane's context
 and connection are supplied automatically. For app state and host state, use the
 CLI or app SDK; do not inspect Plexi profile files directly.
 
+## Install
+
+This binary carries the skill. One command writes it where Claude Code and
+Codex load a user skill:
+
+```bash
+plexi skill install --agent claude
+plexi skill install --agent codex
+```
+
 ## Feature map
 
 - **Host launch** — `plexi host start --ephemeral --timeout-secs 15` waits for

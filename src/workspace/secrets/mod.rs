@@ -45,16 +45,20 @@ mod store;
 #[cfg(all(target_os = "macos", not(test)))]
 mod index;
 
-// Consumed by the macOS startup migration in `main.rs` and by tests. No other
-// platform ever had a legacy Keychain to migrate from.
-#[cfg(any(target_os = "macos", test))]
+// Consumed by the macOS startup migration in `main.rs`. No other platform
+// ever had a legacy Keychain to migrate from, and the test stub exists only
+// so that macOS test binaries still link the call in `main`.
+#[cfg(target_os = "macos")]
 pub use migrate::migrate_legacy_global_secrets;
 pub use store::{NonDestructiveStore, SecretStore};
 
-// Only test code outside this module names the error type or the rename record;
-// in-module callers reach both through their defining submodule.
+// Only test code outside this module names these. `SecretError` is named from
+// the macOS keychain-counting tests; every platform's tests name the in-memory
+// store. In-module callers reach both through their defining submodule.
 #[cfg(test)]
-pub use store::{InMemoryKeychain, SecretError};
+pub use store::InMemoryKeychain;
+#[cfg(all(test, target_os = "macos"))]
+pub use store::SecretError;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;
