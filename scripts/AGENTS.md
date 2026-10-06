@@ -10,6 +10,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 
 - [DISTRIBUTION.md](DISTRIBUTION.md) — package, installation and publication contract.
 - [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md) — channel table, feature gates, RC flow, bare CLI shim, stable release flow.
+- `folder-secrets-e2e.sh` — installed-binary check for folder-scoped secrets. The contract is `src/workspace/AGENTS.md`.
 
 ## Stability Ladder
 

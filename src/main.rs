@@ -403,12 +403,24 @@ fn main() -> eframe::Result {
                             from_env,
                             global,
                             alias,
-                        } => std::process::exit(cli::workspace_secret_set(
-                            &friendly_name,
-                            from_env,
-                            global,
-                            alias.as_deref(),
-                        )),
+                            folder,
+                        } => {
+                            if let Some(folder) = folder.as_deref() {
+                                std::process::exit(cli::folder_secret_set(
+                                    &friendly_name,
+                                    from_env,
+                                    global,
+                                    alias.as_deref(),
+                                    folder,
+                                ))
+                            }
+                            std::process::exit(cli::workspace_secret_set(
+                                &friendly_name,
+                                from_env,
+                                global,
+                                alias.as_deref(),
+                            ))
+                        }
                         SecretCmd::Get {
                             friendly_name,
                             global,
@@ -421,6 +433,34 @@ fn main() -> eframe::Result {
                             global,
                         } => {
                             std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
+                        }
+                        SecretCmd::Rm { name, folder } => {
+                            std::process::exit(cli::folder_secret_rm(&name, &folder))
+                        }
+                        SecretCmd::Grant {
+                            name,
+                            agent,
+                            app,
+                            folder,
+                        } => std::process::exit(cli::folder_secret_grant(
+                            &name,
+                            agent.as_deref(),
+                            app.as_deref(),
+                            folder.as_deref(),
+                        )),
+                        SecretCmd::Read {
+                            name,
+                            agent,
+                            app,
+                            folder,
+                        } => std::process::exit(cli::folder_secret_read(
+                            &name,
+                            agent.as_deref(),
+                            app.as_deref(),
+                            folder.as_deref(),
+                        )),
+                        SecretCmd::Exec { cwd, command } => {
+                            std::process::exit(cli::folder_secret_exec(&cwd, &command))
                         }
                     },
                     Commands::App { cmd } => {

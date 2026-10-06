@@ -19,6 +19,8 @@ One resolver serves every consumer that needs a credential: terminal PTY env con
 | `reconcile.rs` | `reconcile`, `reconcile_index_with_keychain`, `FRIENDLY_NAME_ALIASES`, `canonical_friendly` |
 | `resolver.rs` | `WorkspaceConfig`, `WorkspaceSecrets`, `resolve`, `resolve_with_source`, `resolve_terminal_env` |
 | `file.rs` | `init_workspace`, `write_default_route`, `write_terminal_env_inject` and the raw-TOML upserters |
+| `folder.rs` | Folder-scoped secrets: canonical directory binding, `env_for_cwd`, `grant_folder_secret`, `read_folder_secret` |
+| `folder_store.rs` | Backend behind `folder_store`: OS keychain, Linux Secret Service, labeled encrypted-file fallback |
 
 - **Canonical name**: the env var name a tool expects (e.g. `OPENAI_API_KEY`) — the primary identity and default Keychain suffix.
 - **Scope**: `workspace` or `global`. Workspace values win over global values; global is a cross-workspace fallback, never a workspace-local override.
@@ -40,6 +42,8 @@ Resolution order for a canonical name with no alias route (`resolve_with_source`
 - **A rename is a partial rename**: a secret's friendly name persists in three places — the Keychain account, `secrets-index.json` (rebuilt by reconcile), and route *values* in each workspace's `secrets.toml` (`[terminal.env].inject` holds canonical env-var names and is unaffected). Reconcile is workspace-blind (no workspace-id→root registry) and cannot rewrite route files, so the resolver honors routed legacy spellings via the alias table and warns loudly until the file is fixed. Anything that adds a new persisted home for a friendly name must wire it into this list and into that normalization.
 
 Secret values never live in TOML — `secrets.toml` carries only routes and metadata (display label, provider, docs URL). Process-env and legacy lowercase key names are compatibility fallbacks, not a second primary resolution system — do not reintroduce a parallel injection path.
+
+Folder secrets are not workspace routes and do not use `system_store()`. `folder_store()` selects the Keychain on macOS and Credential Manager on Windows. On Linux it uses Secret Service (`secret-tool` / `org.freedesktop.secrets`) when that daemon answers, otherwise an AES-256-GCM file `folder-secrets.enc` in the channel profile. That file's label is `ENCRYPTED_FILE_LABEL`. Its key is `folder-secret.key` under `dirs::data_local_dir()/plexi`, outside the profile. The chosen Linux backend is written to `folder-secrets-backend.txt` and is not silently switched later. Account names are `plexi:folder:<hex(canonical path bytes)>:<ENV_NAME>`. `env_for_cwd` injects a secret from `shell::build_env` when the spawn cwd is that directory or a descendant (`Path::starts_with`); the nearer directory wins a shared name. A cwd change after spawn does not change the environment. `read_folder_secret` calls `PermissionMonitor::admit` for tool `secret.read` before any store read. The resource id is `{name}@{folder}`. Logs, audit facts, grant records, the AI ledger, and the event bus carry the name and folder, never the value.
 
 ## Style
 
