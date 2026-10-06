@@ -1064,6 +1064,17 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
+                let requester_is_pane = spec
+                    .peer_ancestry
+                    .as_deref()
+                    .filter(|pids| !pids.is_empty())
+                    .is_some_and(|pids| self.resolve_socket_peer_pane(pids).is_some());
+                let inject_folder_secrets = !requester_is_pane;
+                if requester_is_pane {
+                    log::info!(
+                        "pane_ipc: spawn_pane requester is a pane; withholding folder secrets"
+                    );
+                }
                 let mut response_pane_id = self.host.next_pane_id();
 
                 let active = self.active_window;
@@ -1130,6 +1141,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             spec.no_focus,
+                            inject_folder_secrets,
                         );
                         if let Some(ref pane_name) = spec.name {
                             if !pane_name.is_empty() {
@@ -1166,6 +1178,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            inject_folder_secrets,
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1188,6 +1201,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            inject_folder_secrets,
                         );
                         if spec.no_focus {
                             self.restore_window_focused_pane(target_win_idx, original_focused);
@@ -1231,6 +1245,7 @@ impl PlexiApp {
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
                                             cwd_override,
+                                            inject_folder_secrets,
                                         ) {
                                             Some(seeded_id) => response_pane_id = seeded_id,
                                             None => {
@@ -1278,6 +1293,7 @@ impl PlexiApp {
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
                                 cwd_override,
+                                inject_folder_secrets,
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,
                                 None => launch_result = Err("failed to seed root pane".into()),
@@ -1310,6 +1326,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             keep_focus,
+                            inject_folder_secrets,
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -2792,6 +2809,7 @@ impl PlexiApp {
                             Some(cmd.as_str()),
                             false,
                             None,
+                            true,
                         );
                     }
                 }
@@ -3595,6 +3613,7 @@ impl PlexiApp {
                 ephemeral,
                 cwd,
                 false,
+                true,
             )
         });
 
@@ -3663,6 +3682,7 @@ impl PlexiApp {
                 // `pane new --agent` requires PLEXI_SOCKET for this reason.
                 agent_cmd: None,
                 boot_timeout_secs: None,
+                peer_ancestry: None,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {

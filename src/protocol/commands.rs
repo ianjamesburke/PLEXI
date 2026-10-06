@@ -405,6 +405,12 @@ pub enum AppRequest {
         /// answering with a typed timeout. Requires `agent_cmd`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         boot_timeout_secs: Option<f64>,
+        /// Host-stamped ancestor pids of the socket peer. The client cannot
+        /// set this: `handle_socket_line` overwrites it from the kernel
+        /// credential captured at accept. `None` means the request did not
+        /// arrive on the command socket (spawn queue, in-process).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_ancestry: Option<Vec<u32>>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`

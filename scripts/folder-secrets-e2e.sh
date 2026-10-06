@@ -34,7 +34,9 @@ profile_dirname() {
 PROFILE="$HOME_DIR/$(profile_dirname "$PLEXI")"
 KEY_DIR="$HOME_DIR/.local/share/plexi"
 SECRET=""
+SECRET_B=""
 HOST_STARTED=0
+XVFB_PID=""
 PASS_N=0
 FAIL_N=0
 KEYCHAIN=""
@@ -107,15 +109,20 @@ cleanup() {
   if [[ "$HOST_STARTED" == 1 ]]; then
     "$PLEXI" host stop >/dev/null 2>&1 || true
   fi
+  if [[ -n "$XVFB_PID" ]]; then
+    kill "$XVFB_PID" >/dev/null 2>&1 || true
+    XVFB_PID=""
+  fi
   if [[ -n "$KEYCHAIN" ]]; then
     rm -f "$KEYCHAIN"
     KEYCHAIN=""
   fi
   unset PLEXI_KEYCHAIN_PASSWORD
-  if [[ -n "$SECRET" ]]; then
-    # Drop the value before removing the work tree so a crash dump of the
+  if [[ -n "$SECRET" || -n "$SECRET_B" ]]; then
+    # Drop the values before removing the work tree so a crash dump of the
     # script's environment is the only remaining copy, and it is not on disk.
     SECRET=""
+    SECRET_B=""
   fi
   rm -rf "$WORK"
 }
@@ -136,7 +143,8 @@ set +o history
 
 contains_secret() {
   local text="$1"
-  [[ -n "$SECRET" && "$text" == *"$SECRET"* ]]
+  { [[ -n "$SECRET" && "$text" == *"$SECRET"* ]] ; } \
+    || { [[ -n "$SECRET_B" && "$text" == *"$SECRET_B"* ]] ; }
 }
 
 if [[ ! -x "$PLEXI" ]]; then
@@ -146,6 +154,8 @@ fi
 
 SECRET="$(openssl rand -hex 24)"
 SECRET="fs9-${SECRET}"
+SECRET_B="$(openssl rand -hex 24)"
+SECRET_B="fsb-${SECRET_B}"
 
 KEYCHAIN_BEFORE="$(user_keychain_snapshot)"
 
@@ -176,6 +186,22 @@ if [[ "$list_err" == *"encrypted-file fallback"* || "$list_err" == *"secret-serv
   pass "secret list names the backend"
 else
   fail "secret list names the backend"
+fi
+
+set_b_out="$(printf '%s\n' "$SECRET_B" | "$PLEXI" secret set FOLDER_B_SECRET --folder "$DIR_B" 2>"$WORK/set-b.err")"
+set_b_code=$?
+set_b_err="$(cat "$WORK/set-b.err" 2>/dev/null || true)"
+if [[ "$set_b_code" -eq 0 ]] && ! contains_secret "$set_b_out" && ! contains_secret "$set_b_err"; then
+  pass "secret set stored FOLDER_B_SECRET for folder B without printing the value"
+else
+  fail "secret set stored FOLDER_B_SECRET for folder B without printing the value"
+fi
+
+help_out="$("$PLEXI" secret --help 2>&1 || true)"
+if [[ "$help_out" == *"Same-user native processes are not isolated"* ]]; then
+  pass "secret help states same-user processes are not isolated"
+else
+  fail "secret help states same-user processes are not isolated"
 fi
 
 # ── spawn env, same map a new pane receives ──────────────────────────────────
@@ -224,8 +250,8 @@ pane_marker() {
   fi
 }
 
-# A window is optional. macOS does not need X. Headless runs, and
-# PLEXI_E2E_SKIP_PANES=1, skip the pane check instead of failing it.
+# A window is optional only when PLEXI_E2E_SKIP_PANES=1. macOS does not need
+# X. On Linux with no display, start Xvfb so the pane refusals still run.
 pane_gui=0
 if [[ "${PLEXI_E2E_SKIP_PANES:-}" == 1 ]]; then
   printf 'SKIP: pane checks (PLEXI_E2E_SKIP_PANES=1)\n'
@@ -237,6 +263,23 @@ elif [[ "$(uname -s)" == "Darwin" ]]; then
   fi
 elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
   pane_gui=1
+elif command -v Xvfb >/dev/null 2>&1; then
+  xvfb_display=":47"
+  Xvfb "$xvfb_display" -screen 0 1280x800x24 >"$WORK/xvfb.log" 2>&1 &
+  XVFB_PID=$!
+  export DISPLAY="$xvfb_display"
+  export LIBGL_ALWAYS_SOFTWARE=1
+  export WINIT_UNIX_BACKEND=x11
+  if [[ -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ]]; then
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  fi
+  sleep 0.5
+  if kill -0 "$XVFB_PID" 2>/dev/null; then
+    pane_gui=1
+  else
+    printf 'SKIP: pane checks (Xvfb exited)\n'
+    XVFB_PID=""
+  fi
 else
   printf 'SKIP: pane checks (no display)\n'
 fi
@@ -260,6 +303,128 @@ if [[ "$pane_gui" == 1 ]]; then
     else
       fail "pane in folder B does not see the env var ($mark_b)"
     fi
+
+    # Commands run inside a pane whose cwd is folder A. Markers only.
+    # Stdout that might contain a value stays in $WORK and is never echoed.
+    agent_script="$WORK/pane-agent-check.sh"
+    cat >"$agent_script" <<EOF
+set -u
+meta="\$1"
+PLEXI="$PLEXI"
+DIR_B="$DIR_B"
+"\$PLEXI" secret exec --cwd "\$DIR_B" -- env >"\$meta.exec" 2>"\$meta.exec.err" || echo "exec_code:\$?" >>"\$meta"
+if [[ ! -f "\$meta" ]] || ! grep -q '^exec_code:' "\$meta"; then
+  echo "exec_code:0" >>"\$meta"
+fi
+env -u PLEXI_PANE_ID "\$PLEXI" secret exec --cwd "\$DIR_B" -- env >"\$meta.execu" 2>"\$meta.execu.err" || echo "execu_code:\$?" >>"\$meta"
+if ! grep -q '^execu_code:' "\$meta"; then
+  echo "execu_code:0" >>"\$meta"
+fi
+case "\$(basename "\$PLEXI")" in
+  plexi-*)
+    env -u PLEXI_PANE_ID -u PLEXI_SOCKET "\$PLEXI" secret exec --cwd "\$DIR_B" -- env >"\$meta.execboth" 2>"\$meta.execboth.err" || echo "execboth_code:\$?" >>"\$meta"
+    if ! grep -q '^execboth_code:' "\$meta"; then
+      echo "execboth_code:0" >>"\$meta"
+    fi
+    ;;
+esac
+"\$PLEXI" secret grant FOLDER_B_SECRET --agent me --folder "\$DIR_B" >"\$meta.grant" 2>"\$meta.grant.err" || echo "grant_code:\$?" >>"\$meta"
+if ! grep -q '^grant_code:' "\$meta"; then
+  echo "grant_code:0" >>"\$meta"
+fi
+if env | grep -q '^PLEXI_TERMINAL_ENV_VALUE_'; then
+  echo "dup:present" >>"\$meta"
+else
+  echo "dup:absent" >>"\$meta"
+fi
+nested=\$("\$PLEXI" pane new --cwd "\$DIR_B" --no-focus 'if [ -n "\$FOLDER_B_SECRET" ]; then echo folder-b-present; else echo folder-b-absent; fi; sleep 30' | tr -d '[:space:]')
+echo "nested:\$nested" >>"\$meta"
+if [[ "\$nested" =~ ^[0-9]+\$ ]]; then
+  folderb="unseen"
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    cap=\$("\$PLEXI" pane capture "\$nested" --plain 2>/dev/null || true)
+    printf '%s\n' "\$cap" >"\$meta.capture"
+    if [[ "\$cap" == *folder-b-present* ]]; then
+      folderb="present"
+      break
+    fi
+    if [[ "\$cap" == *folder-b-absent* ]]; then
+      folderb="absent"
+      break
+    fi
+    sleep 0.5
+  done
+  "\$PLEXI" pane close "\$nested" >/dev/null 2>&1 || true
+  echo "folderb:\$folderb" >>"\$meta"
+else
+  echo "folderb:no-pane" >>"\$meta"
+fi
+echo done >>"\$meta"
+EOF
+    chmod 700 "$agent_script"
+    agent_meta="$WORK/agent"
+    agent_pane="$("$PLEXI" pane new --cwd "$DIR_A" --no-focus "bash '$agent_script' '$agent_meta'" 2>"$WORK/agent-pane.err" | tr -d '[:space:]')"
+    if [[ "$agent_pane" =~ ^[0-9]+$ ]]; then
+      for _i in {1..80}; do
+        if [[ -f "$agent_meta" ]] && grep -q '^done$' "$agent_meta"; then
+          break
+        fi
+        sleep 0.5
+      done
+      "$PLEXI" pane close "$agent_pane" >/dev/null 2>&1 || true
+    fi
+    agent_body="$(cat "$agent_meta" 2>/dev/null || true)"
+    exec_body="$(cat "$agent_meta.exec" 2>/dev/null || true)"
+    execu_body="$(cat "$agent_meta.execu" 2>/dev/null || true)"
+    execboth_body="$(cat "$agent_meta.execboth" 2>/dev/null || true)"
+    grant_body="$(cat "$agent_meta.grant" 2>/dev/null || true)"
+    grant_err_body="$(cat "$agent_meta.grant.err" 2>/dev/null || true)"
+    capture_body="$(cat "$agent_meta.capture" 2>/dev/null || true)"
+    leaked=0
+    if contains_secret "$exec_body" || contains_secret "$execu_body" || contains_secret "$execboth_body" || contains_secret "$grant_body" || contains_secret "$grant_err_body" || contains_secret "$capture_body" || contains_secret "$agent_body"; then
+      leaked=1
+    fi
+    rm -f "$agent_meta.exec" "$agent_meta.execu" "$agent_meta.execboth" "$agent_meta.grant" "$agent_meta.grant.err" "$agent_meta.capture" "$agent_meta.exec.err" "$agent_meta.execu.err" "$agent_meta.execboth.err"
+    if [[ "$leaked" -eq 0 ]] \
+      && [[ "$exec_body" == *"permission_denied"* ]] \
+      && grep -q '^exec_code:1$' <<<"$agent_body"; then
+      pass "pane in folder A: secret exec --cwd B is permission_denied"
+    else
+      fail "pane in folder A: secret exec --cwd B is permission_denied"
+    fi
+    if [[ "$leaked" -eq 0 ]] \
+      && [[ "$execu_body" == *"permission_denied"* ]] \
+      && grep -q '^execu_code:1$' <<<"$agent_body"; then
+      pass "pane in folder A: secret exec survives env -u PLEXI_PANE_ID"
+    else
+      fail "pane in folder A: secret exec survives env -u PLEXI_PANE_ID"
+    fi
+    if [[ "$leaked" -eq 0 ]] \
+      && [[ "$grant_body" == *"permission_denied"* ]] \
+      && grep -q '^grant_code:1$' <<<"$agent_body"; then
+      pass "pane in folder A: secret grant --folder B is permission_denied"
+    else
+      fail "pane in folder A: secret grant --folder B is permission_denied"
+    fi
+    if [[ "$agent_body" == *"dup:absent"* ]]; then
+      pass "pane env has no PLEXI_TERMINAL_ENV_VALUE_ duplicate"
+    else
+      fail "pane env has no PLEXI_TERMINAL_ENV_VALUE_ duplicate"
+    fi
+    if [[ "$leaked" -eq 0 && "$agent_body" == *"folderb:absent"* ]]; then
+      pass "pane in folder A cannot spawn a pane that receives folder B"
+    else
+      fail "pane in folder A cannot spawn a pane that receives folder B"
+    fi
+    if [[ -f "$agent_meta" ]] && grep -q '^execboth_code:' "$agent_meta"; then
+      if [[ "$leaked" -eq 0 ]] \
+        && [[ "$execboth_body" == *"permission_denied"* ]] \
+        && grep -q '^execboth_code:1$' <<<"$agent_body"; then
+        pass "pane in folder A: secret exec survives clearing PLEXI_PANE_ID and PLEXI_SOCKET"
+      else
+        fail "pane in folder A: secret exec survives clearing PLEXI_PANE_ID and PLEXI_SOCKET"
+      fi
+    fi
     unset PLEXI_SOCKET
   else
     fail "pane in folder A sees the env var (host did not become ready)"
@@ -282,7 +447,7 @@ fi
 audit="$PROFILE/permission-audit.jsonl"
 audit_pat="$(mktemp)"
 chmod 600 "$audit_pat"
-printf '%s' "$SECRET" >"$audit_pat"
+printf '%s\n%s\n' "$SECRET" "$SECRET_B" >"$audit_pat"
 if [[ -f "$audit" ]] \
   && grep -q 'FOLDER_E2E_SECRET' "$audit" \
   && grep -q '"kind":"ask"' "$audit" \
@@ -297,25 +462,28 @@ rm -f "$audit_pat"
 grant_out="$("$PLEXI" secret grant FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/grant.err")" || grant_code=$?
 grant_code="${grant_code:-0}"
 grant_err="$(cat "$WORK/grant.err" 2>/dev/null || true)"
-if [[ "$grant_code" -eq 0 ]] && ! contains_secret "$grant_out" && ! contains_secret "$grant_err"; then
-  pass "secret grant records an allow without printing the value"
+if [[ "$grant_code" -ne 0 ]] \
+  && [[ "$grant_out" == *"permission_denied"* ]] \
+  && ! contains_secret "$grant_out" \
+  && ! contains_secret "$grant_err"; then
+  pass "secret grant does not record an allow"
 else
-  fail "secret grant records an allow without printing the value"
+  fail "secret grant does not record an allow (exit ${grant_code})"
 fi
 
 got="$("$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/read2.err")" || got_code=$?
 got_code="${got_code:-0}"
-if [[ "$got_code" -eq 0 && "$got" == "$SECRET" ]]; then
-  pass "agent with the grant reads the secret"
+if [[ "$got_code" -ne 0 ]] && ! contains_secret "$got" && [[ "$got" != "$SECRET" ]]; then
+  pass "a refused grant does not let the next read return the value"
 else
-  fail "agent with the grant reads the secret (exit ${got_code})"
+  fail "a refused grant does not let the next read return the value (exit ${got_code})"
 fi
 got=""
 
 # ── plaintext search ─────────────────────────────────────────────────────────
 pat="$(mktemp)"
 chmod 600 "$pat"
-printf '%s' "$SECRET" >"$pat"
+printf '%s\n%s\n' "$SECRET" "$SECRET_B" >"$pat"
 shopt -s nullglob
 roots=("$HOME_DIR"/.plexi "$HOME_DIR"/.plexi-* "$KEY_DIR")
 shopt -u nullglob

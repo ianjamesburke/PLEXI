@@ -77,6 +77,10 @@ pub enum Commands {
     /// fallback. Their values are never written in plaintext under `.plexi`. A new
     /// terminal pane whose working directory is inside that folder receives the name
     /// as an environment variable. Agents and app tools read it only with a grant.
+    ///
+    /// Same-user native processes are not isolated from each other. A process
+    /// running as this user can still read a value that a pane already holds.
+    /// Folder secrets stop accidental injection into the wrong directory.
     #[command(alias = "secrets")]
     Secret {
         #[command(subcommand)]
@@ -592,10 +596,12 @@ pub enum SecretCmd {
         #[arg(long)]
         folder: std::path::PathBuf,
     },
-    /// Allow an agent or app to read a folder secret through the permission gate.
+    /// Ask for an allow on a folder secret. This command does not record one.
     ///
-    /// The grant's resource is the secret name plus the folder. It does not
-    /// contain the value.
+    /// Returns `permission_denied` and writes an audit row with the secret name
+    /// and folder, never the value. This process does not record an allow. An
+    /// agent pane cannot grant itself a secret, including a secret bound to
+    /// another folder.
     Grant {
         /// Environment variable name
         name: String,
@@ -627,6 +633,11 @@ pub enum SecretCmd {
     },
     /// Run a command with the environment a new terminal pane in `--cwd` receives,
     /// including folder secrets for that directory.
+    ///
+    /// Refused with `permission_denied` when the caller is a pane agent, including
+    /// a child of that pane that cleared `PLEXI_PANE_ID`. The command is not
+    /// started and no secret value is printed. Same-user native processes are
+    /// not isolated from each other.
     Exec {
         /// Working directory of the spawned command, and the pane cwd used for injection.
         #[arg(long)]

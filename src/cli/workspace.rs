@@ -571,6 +571,13 @@ fn read_secret_value(name: &str, from_env: bool) -> Result<zeroize::Zeroizing<St
     Ok(zeroize::Zeroizing::new(value))
 }
 
+fn audit_folder_denial(actor: &str, resource: &str, call_id: &str) {
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    monitor.note_denial(actor, call_id, resource, "", "permission_denied");
+    log::info!("folder_secrets: refused actor={actor} resource={resource} call_id={call_id}");
+}
+
 fn actor_from_flags(
     agent: Option<&str>,
     app: Option<&str>,
@@ -702,51 +709,54 @@ pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
     }
 }
 
+type HostFolderGrant = fn(
+    &crate::broker::gate::PermissionMonitor,
+    &dyn crate::workspace::secrets::SecretStore,
+    &crate::workspace::secrets::SecretActor,
+    &str,
+    &std::path::Path,
+) -> Result<String, String>;
+
 /// `plexi secret grant NAME --agent <id>`.
+///
+/// The CLI does not write an allow. A pane agent (and any other socket
+/// client) used to open the permission monitor in this process and store a
+/// `User`/`Always` grant with no human present. The command now returns
+/// `permission_denied`, audits the name and folder, and does not read the
+/// secret value. Recording a grant stays on
+/// [`crate::workspace::secrets::grant_folder_secret`], which the host calls
+/// when a person approves.
 pub fn folder_secret_grant(
     name: &str,
     agent: Option<&str>,
     app: Option<&str>,
     folder: Option<&std::path::Path>,
 ) -> i32 {
+    // Referenced, not called. `grant_folder_secret` is the host approval
+    // entry. This command must not invoke it.
+    let _host_grant: HostFolderGrant = crate::workspace::secrets::grant_folder_secret;
     let actor = match actor_from_flags(agent, app) {
         Ok(actor) => actor,
         Err(code) => return code,
     };
-    let folder = match resolve_secret_folder(name, folder) {
-        Ok(folder) => folder,
-        Err(code) => return code,
-    };
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        match crate::workspace::secrets::grant_folder_secret(
-            &monitor,
-            crate::workspace::secrets::folder_store(),
-            &actor,
-            name,
-            &folder,
-        ) {
-            Ok(grant_id) => {
-                println!(
-                    "Granted '{name}' in {} to {} ({grant_id})",
-                    folder.display(),
-                    actor.id
-                );
-                0
-            }
+    let folder = match folder {
+        Some(folder) => match crate::workspace::secrets::canonical_folder(folder) {
+            Ok(folder) => folder,
             Err(err) => {
                 eprintln!("error: {err}");
-                1
+                return 1;
             }
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (name, actor, folder);
-        eprintln!("error: keychain not available on this platform");
-        1
-    }
+        },
+        None => match resolve_secret_folder(name, None) {
+            Ok(folder) => folder,
+            Err(code) => return code,
+        },
+    };
+    let resource = format!("{name}@{}", folder.display());
+    let call_id = format!("secret-grant-{}", uuid::Uuid::new_v4());
+    audit_folder_denial(&actor.id, &resource, &call_id);
+    println!("permission_denied");
+    1
 }
 
 /// `plexi secret read NAME --agent <id>`.
@@ -807,9 +817,24 @@ pub fn folder_secret_read(
 
 /// Run `command` with the environment [`crate::host::shell::build_env`] builds
 /// for a new terminal pane whose cwd is `cwd`.
+///
+/// Refused when this process is a pane agent. The command is not started, so
+/// a pane in folder A cannot print folder B's secrets with `--cwd`.
 pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
     if command.is_empty() {
         eprintln!("error: secret exec needs a command");
+        return 1;
+    }
+    if super::pane_caller::caller_is_pane_agent() {
+        let resource = format!("exec@{}", cwd.display());
+        let call_id = format!("secret-exec-{}", uuid::Uuid::new_v4());
+        let actor = std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+            .map(|id| format!("pane:{id}"))
+            .unwrap_or_else(|| "pane:ancestor".to_string());
+        audit_folder_denial(&actor, &resource, &call_id);
+        println!("permission_denied");
         return 1;
     }
     let pane_env = crate::host::shell::build_env(Some(cwd));
@@ -836,7 +861,9 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
 
 #[cfg(test)]
 mod secret_set_tests {
-    use super::{delete_existing_secret, secret_list_scope, SecretListScope};
+    use super::{
+        delete_existing_secret, folder_secret_grant, secret_list_scope, SecretListScope,
+    };
     use crate::workspace::secrets::InMemoryKeychain;
     use std::fs;
     use tempfile::TempDir;
@@ -854,6 +881,36 @@ mod secret_set_tests {
             .expect_err("an absent secret must not report a successful delete");
 
         assert_eq!(error, "secret 'missing' not found");
+    }
+
+    #[test]
+    fn cli_secret_grant_does_not_write_an_allow_or_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let folder = dir.path().join("B");
+        fs::create_dir(&folder).unwrap();
+        let code = folder_secret_grant(
+            "FOLDER_B_SECRET",
+            Some("me"),
+            None,
+            Some(folder.as_path()),
+        );
+        assert_eq!(code, 1);
+        assert!(
+            !profile.join("grants.toml").exists(),
+            "the cli must not record a folder-secret allow"
+        );
+        let audit = fs::read_to_string(profile.join("permission-audit.jsonl"))
+            .expect("refusal is audited");
+        assert!(audit.contains("permission_denied"));
+        assert!(audit.contains("FOLDER_B_SECRET"));
+        assert!(!audit.contains("secret-value-canary"));
+        assert_eq!(
+            crate::workspace::secrets::backend_label(),
+            "in-memory",
+            "grant refusal must not select a real keychain"
+        );
     }
 
     /// Helper: checks whether a given `cwd` path would be rejected by the

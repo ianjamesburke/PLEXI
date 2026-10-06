@@ -392,13 +392,16 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
                     .unwrap_or_default();
                 for (key, value) in resolved {
                     log::info!("shell::build_env: folder secret {key}");
-                    if !names.iter().any(|name| name == &key) {
-                        names.push(key.clone());
-                    }
-                    env.insert(preserved_terminal_env_name(&key), value.to_string());
+                    // One copy of the value, under its real name. The
+                    // PLEXI_TERMINAL_ENV_VALUE_* duplicate is readable in the
+                    // process environment for the whole life of a non-zsh pane.
+                    names.retain(|name| name != &key);
+                    env.remove(&preserved_terminal_env_name(&key));
                     env.insert(key, value.to_string());
                 }
-                if !names.is_empty() {
+                if names.is_empty() {
+                    env.remove(TERMINAL_ENV_NAMES_VAR);
+                } else {
                     env.insert(TERMINAL_ENV_NAMES_VAR.into(), names.join(":"));
                 }
             }
@@ -433,6 +436,84 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
 
 fn preserved_terminal_env_name(name: &str) -> String {
     format!("{TERMINAL_ENV_VALUE_PREFIX}{name}")
+}
+
+/// Drop folder secrets from a terminal spawn when `inject` is false.
+///
+/// A pane-requested `pane new` passes `inject = false`. A human shell and the
+/// scheduler pass `true` and keep the map `build_env` already filled. The
+/// values are not logged.
+pub(crate) fn apply_folder_secret_injection(
+    env: &mut HashMap<String, String>,
+    cwd: Option<&Path>,
+    inject: bool,
+) {
+    if inject {
+        return;
+    }
+    log::info!(
+        "folder_secrets: withholding folder secrets from spawned pane cwd={}",
+        cwd.map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string())
+    );
+    withhold_folder_secrets(env, cwd);
+}
+
+/// Remove folder-secret values from a spawn environment. Used when the
+/// requester is a live pane: that pane must not mint a terminal that receives
+/// another folder's secrets. Names and the `PLEXI_TERMINAL_ENV_VALUE_*`
+/// duplicates are removed. The values are not logged.
+pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Option<&Path>) {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    {
+        let Some(dir) = cwd else {
+            return;
+        };
+        let resolved = match crate::workspace::secrets::env_for_cwd(
+            dir,
+            crate::workspace::secrets::folder_store(),
+        ) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                log::warn!(
+                    "shell::withhold_folder_secrets: skipped for {}: {err}",
+                    dir.display()
+                );
+                return;
+            }
+        };
+        if resolved.is_empty() {
+            return;
+        }
+        log::info!(
+            "shell::withhold_folder_secrets: removing {} folder secret(s) for {}",
+            resolved.len(),
+            dir.display()
+        );
+        let mut names: Vec<String> = env
+            .get(TERMINAL_ENV_NAMES_VAR)
+            .map(|raw| {
+                raw.split(':')
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (key, _) in resolved {
+            names.retain(|name| name != &key);
+            env.remove(&preserved_terminal_env_name(&key));
+            env.remove(&key);
+        }
+        if names.is_empty() {
+            env.remove(TERMINAL_ENV_NAMES_VAR);
+        } else {
+            env.insert(TERMINAL_ENV_NAMES_VAR.into(), names.join(":"));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (env, cwd);
+    }
 }
 
 fn is_shell_env_name(name: &str) -> bool {

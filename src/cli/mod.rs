@@ -200,6 +200,7 @@ pub mod crawl;
 pub mod help;
 pub mod registry;
 pub mod setup;
+mod pane_caller;
 #[cfg(test)]
 mod skill_surface;
 pub mod subprocess;
