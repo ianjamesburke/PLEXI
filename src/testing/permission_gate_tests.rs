@@ -58,6 +58,18 @@ fn commits_for(start: usize, op: &str) -> usize {
         .count()
 }
 
+/// The tool receipt can land a frame before the guest's emit is recorded.
+fn wait_commits(h: &mut HostHarness, start: usize, op: &str, want: usize) {
+    let started = Instant::now();
+    while commits_for(start, op) < want {
+        h.run_frames(1);
+        assert!(
+            started.elapsed() < super::load_aware_timeout(Duration::from_secs(5)),
+            "timed out waiting for {want} chess.move_committed events for {op}"
+        );
+    }
+}
+
 fn mcp_error_code(body: &serde_json::Value) -> Option<String> {
     let text = body.pointer("/result/content/0/text")?.as_str()?;
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
@@ -292,6 +304,7 @@ fn run_ingress(ingress: Ingress) {
         Ingress::Mcp => assert!(actor.starts_with("mcp:pane:"), "{output}"),
         Ingress::Socket => assert_eq!(actor, format!("pane:{pane}"), "{output}"),
     }
+    wait_commits(&mut h, start, &op, 1);
     assert_eq!(commits_for(start, &op), 1, "one commit");
     let intruder = h.add_test_pane();
     let intruder_credential =
