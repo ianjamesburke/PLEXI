@@ -8,11 +8,29 @@
 #   HUMAN_PLAY_UCI <uci>          # click the chess board (e2e4, g1f3, …)
 #
 # Requires BIN (the installed channel binary), DISPLAY, and xdotool.
+# Board clicks also require Pillow on the python3 that runs board_click.py.
 # Button rects come from `pane state` (accesskit bounds) or, when the host
 # publishes them, from `assistant permission list` → buttons. The click is
 # xdotool on the host window — never pane click, pane key, or a resolve CLI.
 
 human__root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Board squares are found by scripts/e2e/board_click.py, which imports PIL.
+# A missing module used to surface as "could not locate" after the click was
+# skipped. Callers should exit on failure instead of continuing the suite.
+human__require_pillow() {
+  local py err
+  py="$(command -v python3 || true)"
+  if [[ -z "$py" ]]; then
+    echo "human: env error: board clicks need python3 with Pillow, and python3 is not on PATH" >&2
+    return 1
+  fi
+  if err="$("$py" -c 'import PIL' 2>&1)"; then
+    return 0
+  fi
+  echo "human: env error: board clicks need Pillow for $py ($err)" >&2
+  return 1
+}
 
 human__label_for() {
   case "$1" in
@@ -241,6 +259,9 @@ HUMAN_DENY() {
 # Uses a full-window screenshot to find the board, then xdotool.
 HUMAN_PLAY_UCI() {
   local uci="${1:?uci move}"
+  if ! human__require_pillow; then
+    exit 1
+  fi
   local pid wid shot
   pid="$(human__host_pid)"
   wid="$(human__window_id "$pid")"

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::app::app_trait::App;
-use crate::broker::gate::{fingerprint_args, gate_log_contains, ApprovalChoice, PermissionMonitor};
+use crate::broker::gate::{
+    fingerprint_args, gate_log_contains, AdmitRequest, Admission, ApprovalChoice, PermissionMonitor,
+};
 use crate::broker::{
     ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
     ResourceScope, TargetType,
@@ -955,6 +957,111 @@ fn gate_denial_reaches_the_host_log() {
     assert_eq!(commits_for(start, "ghost-log"), 0);
     let _ = pane;
     log::info!("permission_gate: denial logged");
+}
+
+fn refuse_rows(mon: &PermissionMonitor, pending_id: &str) -> usize {
+    mon.audit_records()
+        .iter()
+        .filter(|fact| {
+            fact.kind == "refuse"
+                && fact.decision == "refused_resolve"
+                && fact.call_id == pending_id
+        })
+        .count()
+}
+
+/// Socket resolve, a sheet key, and a click on the approval button are
+/// refused. The pending stays, and the desktop `approve_pending` path still
+/// grants.
+#[test]
+fn socket_and_synthetic_resolve_are_refused() {
+    let mut h = HostHarness::new();
+    let assistant = h.add_assistant_pane();
+    h.run_frames(2);
+    let workspace = h.workspace_root();
+    let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-socket-refuse"}"#;
+    let mon = monitor();
+    let pending_id = match mon.admit(AdmitRequest {
+        call_id: "call-socket-refuse",
+        tool: "chess.play",
+        input_json: args,
+        actor_type: ActorType::Agent,
+        actor_id: "agent:chess",
+        actor_scope: ActorScope::User,
+        trust_origin: "host",
+        workspace_root: &workspace,
+        context_id: 1,
+        package_id: "chess",
+        instance_id: 1,
+        target_type: TargetType::AppConnector,
+    }) {
+        Admission::Required { pending_request_id } => pending_request_id,
+        Admission::Proceed { .. } => panic!("expected a pending ask, grant matched"),
+        Admission::Denied { code } => panic!("expected a pending ask, denied {code}"),
+    };
+
+    let resolve_path = workspace.join("resolve.json");
+    h.inject_ipc(AppRequest::ResolvePermissionRequest {
+        pending_request_id: pending_id.clone(),
+        choice: "always".to_string(),
+        response_file: resolve_path.to_string_lossy().to_string(),
+    });
+    pump_until(&mut h, |_| resolve_path.is_file());
+    let resolve_body = std::fs::read_to_string(&resolve_path).unwrap();
+    assert!(
+        resolve_body.contains("permission_denied"),
+        "{resolve_body}"
+    );
+    assert!(mon.show_pending(&pending_id).is_some(), "resolve leaves the pending");
+
+    let key_path = workspace.join("key.json");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id: assistant,
+        key: "enter".to_string(),
+        response_file: Some(key_path.to_string_lossy().to_string()),
+    });
+    pump_until(&mut h, |_| key_path.is_file());
+    let key_body = std::fs::read_to_string(&key_path).unwrap();
+    assert!(key_body.contains("permission_denied"), "{key_body}");
+
+    let (win, tile) = h
+        .app
+        .find_pane_in_any_window(assistant)
+        .expect("assistant tile");
+    let rect = h.app.windows[win]
+        .tree
+        .tiles
+        .rect(tile)
+        .expect("assistant rect");
+    let abs = rect.min + egui::vec2(12.0, 8.0);
+    h.app.approval_buttons.push(crate::app::ApprovalButton {
+        label: "Allow once".to_string(),
+        bounds: [abs.x - 4.0, abs.y - 4.0, abs.x + 24.0, abs.y + 12.0],
+        pending_request_id: pending_id.clone(),
+    });
+    let click_path = workspace.join("click.json");
+    h.inject_ipc(AppRequest::ClickPane {
+        pane_id: assistant,
+        x: 12.0,
+        y: 8.0,
+        button: Some("left".to_string()),
+        response_file: Some(click_path.to_string_lossy().to_string()),
+    });
+    pump_until(&mut h, |_| click_path.is_file());
+    let click_body = std::fs::read_to_string(&click_path).unwrap();
+    assert!(click_body.contains("permission_denied"), "{click_body}");
+
+    assert!(
+        refuse_rows(&mon, &pending_id) >= 3,
+        "one refuse row per attempt, got {}",
+        refuse_rows(&mon, &pending_id)
+    );
+    assert!(mon.show_pending(&pending_id).is_some(), "the pending stays");
+    assert!(
+        mon.approve_pending(&pending_id, ApprovalChoice::Once).is_ok(),
+        "the desktop path can still approve"
+    );
+    log::info!("permission_gate: socket and synthetic resolve refused");
 }
 
 #[test]
