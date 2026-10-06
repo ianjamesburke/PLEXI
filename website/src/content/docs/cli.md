@@ -29,6 +29,8 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | `--request-id` | string | no |  |
 | `--pane-id` | string | no |  |
 | `--context-id` | string | no |  |
+| `--client` | string | no | Ledger client tag for this run. Omitted uses `[ai] client` |
+| `--kind` | string | no | Ledger run kind: `system` or `output`. Omitted means `output` |
 | `--json` | flag | no |  |
 
 ### `plexi assistant permission`
@@ -39,7 +41,7 @@ Observe and resolve pending permission requests. This is not `plexi agent reques
 |---|---|
 | `list` | List pending permission requests as JSON |
 | `show` | Show one pending permission request as JSON |
-| `resolve` | Resolve one pending request: once, session, always, or deny |
+| `resolve` | Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal |
 
 #### `plexi assistant permission list`
 
@@ -55,12 +57,46 @@ Show one pending permission request as JSON
 
 #### `plexi assistant permission resolve`
 
-Resolve one pending request: once, session, always, or deny
+Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
+
+## `plexi needs-you`
+
+Items waiting on the person at the desktop. The terminal cannot resolve them
+
+| Subcommand | Description |
+|---|---|
+| `resolve` | Ask the host to resolve an item. The host refuses |
+
+### `plexi needs-you resolve`
+
+Ask the host to resolve an item. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Request approval. The host still refuses |
+| `--deny` | flag | no | Request denial. The host still refuses |
+
+## `plexi permissions`
+
+Permission grants. Allowing from the terminal is refused
+
+| Subcommand | Description |
+|---|---|
+| `allow` | Ask the host to allow a pending request. The host refuses |
+
+### `plexi permissions allow`
+
+Ask the host to allow a pending request. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
 
 ## `plexi run`
 
@@ -800,7 +836,7 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 
 ## `plexi account`
 
-Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+Optional account that links this desktop to relay and cloud features.
 
 Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
@@ -1327,6 +1363,26 @@ Interactive wizard to configure a local AI model via Ollama.
 Walks through Ollama installation detection, model recommendation based on your hardware, pulling the recommended model, and writing the [ai.ollama] section to your config.toml so Plexi apps can use it immediately.
 
 Example: plexi ai setup
+
+## `plexi ledger`
+
+Summarize recorded AI usage from this channel's ledger.
+
+Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+
+| Subcommand | Description |
+|---|---|
+| `summary` | Totals for tokens, cost, run count, and wall time |
+
+### `plexi ledger summary`
+
+Totals for tokens, cost, run count, and wall time
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--by` | string | no | Group rows by `client` or `kind`. Omitted means `client` |
+| `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
+| `--json` | flag | no | Print one JSON object on stdout |
 
 ## `plexi completions`
 

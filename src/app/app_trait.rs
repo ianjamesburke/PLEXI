@@ -222,6 +222,11 @@ pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
 
+    /// Pending approval this app is showing, when it is an approval surface.
+    fn approval_request_id(&self) -> Option<String> {
+        None
+    }
+
     /// Human-readable display name shown in the pane title.
     fn display_name(&self) -> String;
 
@@ -340,6 +345,20 @@ pub trait App: Send {
         _response_file: String,
     ) -> Result<(), String> {
         Err("this app does not accept external turns".to_string())
+    }
+
+    /// Same as [`submit_external_turn`] with optional ledger `client` and `kind`
+    /// overrides. Apps that ignore tags keep the untagged path.
+    fn submit_tagged_turn(
+        &mut self,
+        text: String,
+        request_id: String,
+        response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) -> Result<(), String> {
+        let _ = (client, kind);
+        self.submit_external_turn(text, request_id, response_file)
     }
 
     /// Deliver a host file/URL drop through the app's production handler.

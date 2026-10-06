@@ -1038,7 +1038,17 @@ mod tests {
             .arg("5")
             .spawn()
             .expect("spawn sleep");
-        let name = get_pid_name(child.id());
+        // `comm` is inherited across fork and only changes at exec. Under a
+        // loaded CI runner the read can land in that window and see this
+        // test's truncated thread name instead of `sleep`.
+        let mut name = None;
+        for _ in 0..50 {
+            name = get_pid_name(child.id());
+            if name.as_deref() == Some("sleep") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(name.as_deref(), Some("sleep"));

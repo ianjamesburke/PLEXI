@@ -216,7 +216,10 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind } => {
+                if pane_id.is_none() {
+                    let _ = self.ensure_headless_assistant(*context_id);
+                }
                 let mut submitted = false;
                 let mut failure = None;
                 for window in &mut self.windows {
@@ -226,7 +229,7 @@ impl PlexiApp {
                         let Some(app) = pane.as_app_mut() else { continue; };
                         if app.runtime.type_id() != "assistant" { continue; }
                         submitted = true;
-                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone()) { failure = Some(error); }
+                        if let Err(error) = app.runtime.submit_tagged_turn(text.clone(), request_id.clone(), response_file.clone(), client.clone(), kind.clone()) { failure = Some(error); }
                         break;
                     }
                     if submitted { break; }
@@ -1566,6 +1569,14 @@ impl PlexiApp {
                     "pane_ipc: kind=key_pane pane_id={pane_id} key_chars={}",
                     key.chars().count()
                 );
+                if self.refuse_synthetic_approval(
+                    *pane_id,
+                    Some(key),
+                    None,
+                    response_file.as_deref(),
+                ) {
+                    // Sheet keys from the socket never reach the approval widget.
+                } else {
                 let mut passthrough_raw = None;
                 // Mirror the live dispatch gate (stint 0456): while this
                 // pane's TextInput holds egui focus, keys belong to the
@@ -1680,6 +1691,7 @@ impl PlexiApp {
                     };
                     write_response(rf, json.as_bytes());
                 }
+                }
             }
             crate::protocol::AppRequest::DropFile {
                 pane_id,
@@ -1730,6 +1742,21 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=click_pane pane_id={pane_id} x={x} y={y} button={button:?}"
                 );
+                let click_abs = self.find_pane_in_any_window(*pane_id).and_then(|(win, tile)| {
+                    self.windows[win]
+                        .tree
+                        .tiles
+                        .rect(tile)
+                        .map(|rect| rect.min + egui::vec2(*x, *y))
+                });
+                if self.refuse_synthetic_approval(
+                    *pane_id,
+                    None,
+                    click_abs,
+                    response_file.as_deref(),
+                ) {
+                    // A socket click on an approval button or surface is not a grant.
+                } else {
                 let result: Result<serde_json::Value, String> = (|| {
                     let Some((win_idx, tile_id)) = self.find_pane_in_any_window(*pane_id) else {
                         return Err(format!("pane {pane_id} not found"));
@@ -1829,6 +1856,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
                 }
             }
             crate::protocol::AppRequest::ClickPaneNode {
@@ -2281,6 +2309,53 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}"
                 );
+                let approval_verb = {
+                    let name = action.to_ascii_lowercase();
+                    ["allow", "approve", "resolve", "grant", "deny", "revoke"]
+                        .iter()
+                        .any(|word| name == *word || name.contains(word))
+                };
+                if approval_verb
+                    && self.refuse_synthetic_approval(
+                        *pane_id,
+                        None,
+                        None,
+                        response_file.as_deref(),
+                    )
+                {
+                    // The surface itself refused.
+                } else if approval_verb {
+                    let pending_id = self
+                        .synthetic_approval_target(*pane_id, None, None)
+                        .or_else(|| {
+                            crate::broker::gate::PermissionMonitor::for_profile(
+                                &crate::config::config_dir(),
+                            )
+                            .list_pending()
+                            .into_iter()
+                            .next()
+                            .map(|row| row.pending_request_id)
+                        })
+                        .unwrap_or_else(|| "none".to_string());
+                    crate::broker::gate::PermissionMonitor::for_profile(
+                        &crate::config::config_dir(),
+                    )
+                    .refuse_client_resolve(&pending_id);
+                    log::info!(
+                        "permission_monitor: refused synthetic action pane={pane_id} action={action} pending={pending_id}"
+                    );
+                    if let Some(path) = response_file.as_deref() {
+                        crate::rpc::write_json_response(
+                            path,
+                            serde_json::json!({
+                                "ok": false,
+                                "error_code": "permission_denied",
+                                "error": "synthetic input cannot resolve a permission",
+                                "pending_request_id": pending_id,
+                            }),
+                        );
+                    }
+                } else {
                 let result = match self
                     .windows
                     .iter_mut()
@@ -2309,6 +2384,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
                 }
             }
             crate::protocol::AppRequest::CallAppTool {

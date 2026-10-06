@@ -854,14 +854,18 @@ pub enum AppRuntime {
 }
 
 impl AppRuntime {
-    pub fn submit_external_turn(
+    pub fn submit_tagged_turn(
         &mut self,
         text: String,
         request_id: String,
         response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
     ) -> Result<(), String> {
         match self {
-            AppRuntime::Builtin(app) => app.submit_external_turn(text, request_id, response_file),
+            AppRuntime::Builtin(app) => {
+                app.submit_tagged_turn(text, request_id, response_file, client, kind)
+            }
             AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
                 Err("this app does not accept external turns".to_string())
             }
@@ -974,6 +978,13 @@ impl AppRuntime {
     }
 
     /// Deliver the CLI/host semantic action contract to every app runtime.
+    pub fn approval_request_id(&self) -> Option<String> {
+        match self {
+            AppRuntime::Builtin(app) => app.approval_request_id(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
     pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
             AppRuntime::Wasm(app) => {
