@@ -68,6 +68,16 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: WorkspaceCmd,
     },
+    /// Preview and accept an agent's file edit before it is written.
+    ///
+    /// `propose` stores a change set and does not modify the file. `preview`
+    /// prints the diff. `accept` writes it after the permission gate admits
+    /// the same edit. If the file changed since propose, accept reports
+    /// `stale` until `refresh`. `revert` restores a committed set.
+    Changes {
+        #[command(subcommand)]
+        cmd: ChangesCmd,
+    },
     /// Store and retrieve secrets (API keys, passwords, tokens) for your project.
     ///
     /// On macOS, secrets are saved to the system keychain. On Linux, they are saved in
@@ -288,6 +298,16 @@ pub enum AssistantCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Run one Assistant host tool through the host permission gate.
+    ///
+    /// Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","old_string":"a","new_string":"b"}'
+    Tool {
+        /// Tool name, for example `host.editors.list` or `host.files.edit`.
+        name: String,
+        /// JSON object passed as the tool input.
+        #[arg(long)]
+        input: String,
+    },
     /// Observe and resolve pending permission requests. This is not `plexi agent request`.
     Permission {
         #[command(subcommand)]
@@ -323,6 +343,65 @@ pub enum AssistantPermissionCmd {
         #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
         choice: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ChangesCmd {
+    /// Record a permission-gate allow for one exact edit.
+    Allow {
+        /// Agent id the grant and the later audit row name.
+        #[arg(long)]
+        agent: String,
+        /// File the edit applies to.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Exact text to replace. It must occur once.
+        #[arg(long)]
+        old: String,
+        /// Replacement text.
+        #[arg(long)]
+        new: String,
+    },
+    /// Prepare an edit. The file is not modified.
+    Propose {
+        /// Agent id recorded on the change set.
+        #[arg(long)]
+        agent: String,
+        /// File the edit applies to.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Exact text to replace. It must occur once.
+        #[arg(long)]
+        old: String,
+        /// Replacement text.
+        #[arg(long)]
+        new: String,
+    },
+    /// Print the prepared diff and whether the set is stale.
+    Preview {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Write a pending change set after the permission gate admits it.
+    Accept {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Rebase a stale change set onto the file's current text.
+    Refresh {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Restore the file to the text from before accept.
+    Revert {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Print this binary's profile directory.
+    ///
+    /// Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`).
+    /// Scripts should ask here instead of assuming `~/.plexi`.
+    Profile,
 }
 
 #[derive(Subcommand)]
