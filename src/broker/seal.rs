@@ -481,11 +481,28 @@ fn backup_corrupt(path: &Path, error: &str) {
     }
 }
 
-fn key_hex() -> Result<Zeroizing<String>, String> {
+/// Permission MAC if the host seal store already has one. Does not create a key.
+///
+/// Callers that seal with this key, including the Needs you journal, use this
+/// instead of reading `secrets.json`.
+pub(crate) fn existing_mac_key() -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     super::host_key::scrub_user_secret_host_namespace();
-    if let Some(existing) = super::host_key::get(super::host_key::MAC_ITEM)? {
-        decode_hex(existing.trim())?;
-        return Ok(Zeroizing::new(existing.trim().to_string()));
+    match super::host_key::get(super::host_key::MAC_ITEM)? {
+        Some(existing) => Ok(Some(Zeroizing::new(decode_hex(existing.trim())?))),
+        None => Ok(None),
+    }
+}
+
+/// Permission MAC, creating it in the host seal store when this is the first use.
+pub(crate) fn mac_key_bytes() -> Result<Zeroizing<Vec<u8>>, String> {
+    let hex = key_hex()?;
+    let bytes = decode_hex(hex.as_str())?;
+    Ok(Zeroizing::new(bytes))
+}
+
+fn key_hex() -> Result<Zeroizing<String>, String> {
+    if let Some(existing) = existing_mac_key()? {
+        return Ok(Zeroizing::new(hex_encode(&existing)));
     }
     let hex = fresh_key_hex();
     match super::host_key::add_new(super::host_key::MAC_ITEM, &hex) {
@@ -493,21 +510,15 @@ fn key_hex() -> Result<Zeroizing<String>, String> {
             log::info!("permission_seal: created host permission mac key");
             Ok(Zeroizing::new(hex))
         }
-        Err(error) => match super::host_key::get(super::host_key::MAC_ITEM)? {
-            Some(existing) => {
-                let trimmed = existing.trim().to_string();
-                decode_hex(&trimmed)?;
-                Ok(Zeroizing::new(trimmed))
-            }
+        Err(error) => match existing_mac_key()? {
+            Some(existing) => Ok(Zeroizing::new(hex_encode(&existing))),
             None => Err(error),
         },
     }
 }
 
 fn key_bytes() -> Result<Zeroizing<Vec<u8>>, String> {
-    let hex = key_hex()?;
-    let bytes = decode_hex(hex.as_str())?;
-    Ok(Zeroizing::new(bytes))
+    mac_key_bytes()
 }
 
 fn fresh_key_hex() -> String {
