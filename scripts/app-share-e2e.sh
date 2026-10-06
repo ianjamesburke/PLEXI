@@ -5,6 +5,11 @@
 # permissions.toml does not change the list.
 set -euo pipefail
 
+# Auto-grant has to seal grants.toml. Linux can do that only with Secret Service.
+if [[ "$(uname -s)" == "Linux" && -z "${APP_SHARE_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env APP_SHARE_E2E_INNER=1 "$0" "$@"
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
 if [[ ! -x "$BIN" ]]; then
@@ -12,8 +17,17 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
+# A channel-named binary ignores PLEXI_CHANNEL. Match its profile dir.
+bin_base="$(basename "$BIN")"
+bin_base="${bin_base%.exe}"
+if [[ "$bin_base" == plexi-* ]]; then
+  export PLEXI_CHANNEL="${bin_base#plexi-}"
+else
+  export PLEXI_CHANNEL="${PLEXI_CHANNEL:-app-share-e2e}"
+fi
+
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -21,10 +35,9 @@ mkdir -p "$HOME/.plexi"
 if [[ -d "$ORIG_HOME/.plexi/wasm-bundles" ]]; then
   ln -s "$ORIG_HOME/.plexi/wasm-bundles" "$HOME/.plexi/wasm-bundles"
 fi
-export PLEXI_CHANNEL="app-share-e2e"
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING || true
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
+export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" || true
 
@@ -35,9 +48,9 @@ APP_ID="sample-share"
 start_host() {
   unset DISPLAY
   if command -v xvfb-run >/dev/null 2>&1; then
-    xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
+    setsid xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
   else
-    "$BIN" >"$WORK/host.log" 2>&1 &
+    setsid "$BIN" >"$WORK/host.log" 2>&1 &
   fi
   HOST_PID=$!
   for _ in $(seq 1 90); do
@@ -58,7 +71,7 @@ start_host() {
 
 stop_host() {
   if [[ -n "${HOST_PID:-}" ]]; then
-    kill "$HOST_PID" 2>/dev/null || true
+    kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true
     wait "$HOST_PID" 2>/dev/null || true
     unset HOST_PID
   fi
@@ -139,7 +152,16 @@ rm -f "$PROFILE/permissions.toml"
 stop_host
 start_host
 export PLEXI_SOCKET="$SOCKET"
-"$BIN" permissions list --json >"$WORK/list-after.json"
+ready=0
+for _ in $(seq 1 40); do
+  if "$BIN" permissions list --json >"$WORK/list-after.json" 2>"$WORK/list-after.err"; then
+    if grep -q timer "$WORK/list-after.json"; then
+      ready=1
+      break
+    fi
+  fi
+  sleep 1
+done
 python3 - "$WORK/list-before.json" "$WORK/list-after.json" <<'PY'
 import json, sys
 def items(path):
