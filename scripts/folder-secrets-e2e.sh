@@ -22,12 +22,11 @@ HOST_STARTED=0
 PASS_N=0
 FAIL_N=0
 KEYCHAIN=""
-SEARCH_FILE=""
-DEFAULT_KC=""
 
 unset PLEXI_SOCKET PLEXI_CHANNEL PLEXI_CONTEXT_ROOT PLEXI_CONTEXT_ID \
   PLEXI_CONTEXT_NAME PLEXI_RUNNING PLEXI_PANE_ID PLEXI_CALL_CREDENTIAL \
-  PLEXI_HOST_MCP_PORT PLEXI_HOST_MCP_TOKEN PLEXI_KEYCHAIN_PATH
+  PLEXI_HOST_MCP_PORT PLEXI_HOST_MCP_TOKEN PLEXI_KEYCHAIN_PATH \
+  PLEXI_KEYCHAIN_PASSWORD
 # The pane check opens a real window. Keep the caller's X cookie; a private
 # HOME would otherwise hide ~/.Xauthority and the host could not connect.
 if [[ -z "${XAUTHORITY:-}" ]]; then
@@ -54,56 +53,15 @@ fi
 pass() { PASS_N=$((PASS_N + 1)); printf 'PASS: %s\n' "$1"; }
 fail() { FAIL_N=$((FAIL_N + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 
-restore_keychain_search() {
-  [[ "$(uname -s)" == "Darwin" ]] || return 0
-  [[ -f "${SEARCH_FILE:-}" ]] || return 0
-  local -a paths=()
-  local line
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && paths+=("$line")
-  done <"$SEARCH_FILE"
-  if ((${#paths[@]})); then
-    security list-keychains -d user -s "${paths[@]}" >/dev/null
-  fi
-  if [[ -n "${DEFAULT_KC:-}" ]]; then
-    security default-keychain -s "$DEFAULT_KC" >/dev/null 2>&1 || true
-  fi
-}
-
-# Snapshot the real user's keychain list, create a throwaway keychain, then
-# put the list and the default keychain back. `security create-keychain` adds
-# the new file to the search list; the restore runs before HOME changes so
-# the login keychain is what it was.
+# Point plexi at a path it creates with SecKeychainCreate and opens with
+# SecKeychainOpen. This script never calls `security`, so it cannot change
+# the user search list or the default keychain.
 isolate_macos_keychain() {
   [[ "$(uname -s)" == "Darwin" ]] || return 0
   KEYCHAIN="$WORK/test.keychain-db"
-  SEARCH_FILE="$WORK/keychain-search.txt"
-  : >"$SEARCH_FILE"
-  local line pw
-  while IFS= read -r line; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%\"}"
-    line="${line#\"}"
-    [[ -n "$line" ]] && printf '%s\n' "$line" >>"$SEARCH_FILE"
-  done < <(security list-keychains -d user)
-  DEFAULT_KC="$(security default-keychain 2>/dev/null | tr -d '"' | awk '{$1=$1; print}' || true)"
-  pw="$(openssl rand -hex 24)"
-  if ! security create-keychain -p "$pw" "$KEYCHAIN"; then
-    echo "FAIL: could not create an isolated keychain" >&2
-    exit 1
-  fi
-  restore_keychain_search
-  if ! security unlock-keychain -p "$pw" "$KEYCHAIN"; then
-    echo "FAIL: could not unlock the isolated keychain" >&2
-    exit 1
-  fi
-  security set-keychain-settings -t 3600 "$KEYCHAIN" >/dev/null
-  unset pw
   export PLEXI_KEYCHAIN_PATH="$KEYCHAIN"
-  if security list-keychains -d user | grep -F "$KEYCHAIN" >/dev/null; then
-    echo "FAIL: isolated keychain is still on the user search list" >&2
-    exit 1
-  fi
+  export PLEXI_KEYCHAIN_PASSWORD
+  PLEXI_KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
 }
 
 cleanup() {
@@ -112,10 +70,10 @@ cleanup() {
     "$PLEXI" host stop >/dev/null 2>&1 || true
   fi
   if [[ -n "$KEYCHAIN" ]]; then
-    restore_keychain_search
-    security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || rm -f "$KEYCHAIN"
+    rm -f "$KEYCHAIN"
     KEYCHAIN=""
   fi
+  unset PLEXI_KEYCHAIN_PASSWORD
   if [[ -n "$SECRET" ]]; then
     # Drop the value before removing the work tree so a crash dump of the
     # script's environment is the only remaining copy, and it is not on disk.
@@ -126,9 +84,8 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$HOME_DIR" "$DIR_A" "$DIR_B" "$DIR_SIB" "$KEY_DIR"
-# Create the keychain while HOME is still the caller's, then restore the
-# search list and the default keychain. The binary reads PLEXI_KEYCHAIN_PATH
-# and does not open the login keychain.
+# The binary creates and opens this file by path. The trap above deletes
+# only that file.
 isolate_macos_keychain
 export HOME="$HOME_DIR"
 export XDG_DATA_HOME="$HOME_DIR/.local/share"
