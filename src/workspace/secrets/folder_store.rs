@@ -29,19 +29,19 @@ const SERVICE_INDEX: &str = "folder-secrets-names.txt";
 pub fn backend_label() -> String {
     #[cfg(test)]
     {
-        return "in-memory".to_string();
+        "in-memory".to_string()
     }
     #[cfg(all(not(test), target_os = "linux"))]
     {
-        return linux_backend_label();
+        linux_backend_label()
     }
     #[cfg(all(not(test), target_os = "macos"))]
     {
-        return "macos-keychain".to_string();
+        "macos-keychain".to_string()
     }
     #[cfg(all(not(test), windows))]
     {
-        return "windows-credential-manager".to_string();
+        "windows-credential-manager".to_string()
     }
     #[cfg(all(
         not(test),
