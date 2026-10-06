@@ -259,7 +259,8 @@ mod tests {
     use crate::app::account::AccountStore;
     use crate::assistant::model::{Turn, TurnRole};
     use crate::assistant::store::AssistantStore;
-    use crate::plexi_ai::ledger::{append_result, LedgerRow};
+    use crate::plexi_ai::backend::BillingModel;
+    use crate::plexi_ai::ledger::{append, LedgerRow};
     use chrono::TimeZone;
 
     fn utc(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -284,16 +285,18 @@ mod tests {
         assert!(AccountStore::open().current().is_none());
         assert!(!profile.path().join("account.toml").exists());
 
-        append_result(&LedgerRow::for_agent_run(
-            "run-live",
-            "agent:local",
-            "internal/unallocated",
-            "system",
+        // A row written through the alpha ledger. Its timestamp is the real
+        // clock, so the frozen 30-day cutoff keeps it. `run-live` is the marker
+        // the assertions look for.
+        append(&LedgerRow::with_attribution(
+            "agents",
+            BillingModel::Metered,
+            Some("run-live".to_string()),
             None,
-            3,
-            4,
-        ))
-        .unwrap();
+            Some(3),
+            Some(4),
+            None,
+        ));
         let ledger = profile.path().join("ai-ledger.jsonl");
         let mut extra = std::fs::read_to_string(&ledger).unwrap();
         extra.push_str(
