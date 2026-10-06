@@ -193,16 +193,24 @@ for attempt in $(seq 1 12); do
     sleep 2
     continue
   fi
-  P="$(python3 - "$EVID/logs/ask.json" <<'PY'
-import json, sys
-try:
-    data=json.load(open(sys.argv[1]))
-except Exception:
+  # The host prints the needs-grant envelope on stderr (`error: {…}`),
+  # with the id nested under error.pending_request_id. --json only prints
+  # stdout after that check passes.
+  P="$(python3 - "$EVID/logs/ask.json" "$EVID/logs/ask.err" <<'PY'
+import json, re, sys
+text = ""
+for path in sys.argv[1:]:
+    try:
+        text += open(path).read() + "\n"
+    except OSError:
+        pass
+if "permission_required" not in text:
     print(""); raise SystemExit
-print(data.get("pending_request_id") or "")
+match = re.search(r'"pending_request_id"\s*:\s*"([^"]+)"', text)
+print(match.group(1) if match else "")
 PY
 )"
-  if [[ -n "$P" ]] && grep -q 'permission_required' "$EVID/logs/ask.json"; then
+  if [[ -n "$P" ]]; then
     break
   fi
   sleep 2
