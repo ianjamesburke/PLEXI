@@ -41,10 +41,22 @@ impl PlexiApp {
                     "permission_monitor: list pending count={}",
                     pending.len()
                 );
+                let buttons: Vec<serde_json::Value> = self
+                    .approval_buttons
+                    .iter()
+                    .map(|button| {
+                        serde_json::json!({
+                            "label": button.label,
+                            "bounds": button.bounds,
+                            "pending_request_id": button.pending_request_id,
+                        })
+                    })
+                    .collect();
                 serde_json::json!({
                     "ok": true,
                     "pending": pending,
                     "audit": monitor.audit_records(),
+                    "buttons": buttons,
                 })
             }
             "show" => {
@@ -98,6 +110,60 @@ impl PlexiApp {
             _ => serde_json::json!({"ok": false, "error": "unknown permission operation"}),
         };
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
+    /// Floating Allow once control for a pending gate ask. A primary pointer
+    /// click approves. Keyboard input does not.
+    pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let pending = monitor.list_pending();
+        let previous = self
+            .approval_buttons
+            .first()
+            .map(|button| button.pending_request_id.clone());
+        self.approval_buttons.clear();
+        if pending.is_empty() {
+            return;
+        }
+        let pending_id = pending[0].pending_request_id.clone();
+        let caption = format!("{} wants {}", pending[0].actor_id, pending[0].tool);
+        let mut clicked = false;
+        let mut rect = None;
+        egui::Area::new(egui::Id::new("approval_banner"))
+            .fixed_pos(egui::pos2(12.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(caption);
+                    let response = ui.add(egui::Button::new("Allow once"));
+                    rect = Some(response.rect);
+                    clicked = response.clicked_by(egui::PointerButton::Primary);
+                });
+            });
+        if let Some(rect) = rect {
+            self.approval_buttons.push(crate::app::ApprovalButton {
+                label: "Allow once".to_string(),
+                bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                pending_request_id: pending_id.clone(),
+            });
+        }
+        if previous.as_deref() != Some(pending_id.as_str()) {
+            log::info!("permission_monitor: banner showing {pending_id}");
+        }
+        if clicked {
+            match monitor.approve_pending(
+                &pending_id,
+                crate::broker::gate::ApprovalChoice::Once,
+            ) {
+                Ok(()) => log::info!("permission_monitor: banner approved {pending_id}"),
+                Err(error) => {
+                    log::warn!(
+                        "permission_monitor: banner approve {pending_id} failed: {error}"
+                    )
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
