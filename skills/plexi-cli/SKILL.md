@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.8"
+skill_version: "5.0.9"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -14,6 +14,16 @@ surface. Help is the reference for arguments and flags in the installed binary.
 Run these commands from a Plexi pane when they act on a host. The pane's context
 and connection are supplied automatically. For app state and host state, use the
 CLI or app SDK; do not inspect Plexi profile files directly.
+
+## Install
+
+This binary carries the skill. One command writes it where Claude Code and
+Codex load a user skill:
+
+```bash
+plexi skill install --agent claude
+plexi skill install --agent codex
+```
 
 ## Feature map
 

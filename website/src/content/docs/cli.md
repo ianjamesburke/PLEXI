@@ -1362,6 +1362,26 @@ Walks through Ollama installation detection, model recommendation based on your 
 
 Example: plexi ai setup
 
+## `plexi skill`
+
+Install the agent skill compiled into this binary.
+
+Writes `SKILL.md` where Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) load user skills. The bytes are the copy embedded at build time, so the installed `plexi_version` matches this binary.
+
+Example: plexi skill install --agent claude
+
+| Subcommand | Description |
+|---|---|
+| `install` | Write this binary's skill for one agent CLI, or both |
+
+### `plexi skill install`
+
+Write this binary's skill for one agent CLI, or both
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Which agent CLI loads the skill: claude, codex, or all |
+
 ## `plexi completions`
 
 Print a shell completion script to stdout.
