@@ -354,6 +354,30 @@ PY
     cat "$WORK/reopen.log" "$WORK/app-panes.json" >&2 || true
     exit 1
   fi
+  local app_pane
+  app_pane="$(python3 - "$WORK/app-panes.json" "$APP_ID" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+want=sys.argv[2]
+hits=[str(r["id"]) for r in rows if want in str(r.get("title","")) or want in str(r.get("app_id",""))]
+print(hits[-1] if hits else "")
+PY
+)"
+  # The guest exposes tools after WASM init. A turn sent before that sees
+  # only host tools and never asks for demo.greet.
+  local exposed=0
+  for _ in $(seq 1 40); do
+    if grep -Eq "registered [0-9]+ tool\\(s\\) for pane ${app_pane}([^0-9]|$)" "$WORK/host.log"; then
+      exposed=1
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$exposed" != 1 ]]; then
+    echo "error: sample app did not expose tools" >&2
+    exit 1
+  fi
+  echo "sample app exposed tools on pane $app_pane"
   "$BIN" app open assistant >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
   local assist=""
   for _ in $(seq 1 20); do
