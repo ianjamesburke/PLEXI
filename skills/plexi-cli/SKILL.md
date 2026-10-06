@@ -84,6 +84,14 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `plexi agent --help`. `agent report --event` preserves a provider lifecycle
   event separately from its UI state; `--blocked-reason` supplies a typed reason.
   Read `agent report --help` before using these optional fields.
+- **AI ledger** — totals for tokens, cost, runs, and wall time from this
+  channel's ledger, grouped by client or kind: `plexi ledger summary --help`.
+  The command reads the local ledger file and does not need a running host.
+  `assistant send --client` and `--kind` override the tags for one run;
+  omitted, the client comes from `[ai] client` and the kind is `output`.
+  Send does not require `app open assistant` first: with no pane named, the
+  host reuses an Assistant in the context or creates a hidden one. A pane id
+  that does not exist still fails.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
@@ -116,6 +124,7 @@ events
 agent
 config
 ai
+ledger
 doctor
 update
 account
@@ -252,6 +261,18 @@ severity or urgency flag.
 NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to inspect.' \
   --scope context --timeout 30)
 plexi notify dismiss "$NOTICE"
+```
+
+### Summarize AI ledger usage
+
+Group this channel's ledger by client. `--since` keeps rows at or after a
+date. Each group reports runs, input and output tokens, cost, and wall time
+(`null` when that field was not recorded). A client or kind that was never
+tagged is the null group.
+
+```bash
+plexi ledger summary --by client --since 2026-01-01 --json
+plexi assistant send --text "hello" --client narrative --kind output
 ```
 
 ## Installation health

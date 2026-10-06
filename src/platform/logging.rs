@@ -142,36 +142,48 @@ fn rotate_and_prune(
         }
     }
 
-    // Pruning: delete dated files whose name-date is before the cutoff.
+    let pruned = prune_controlled_logs(config_dir, today, retention_days);
+    if pruned > 0 {
+        messages.push(format!(
+            "pruned {pruned} log file(s) older than {retention_days} days"
+        ));
+    }
+
+    messages
+}
+
+/// Delete dated `plexi-YYYY-MM-DD.log` archives whose name-date is strictly
+/// older than `retention_days` before `today`. The live `plexi.log` is not a
+/// dated archive and is left in place. This is the log half of cloud retention.
+pub(crate) fn prune_controlled_logs(
+    config_dir: &Path,
+    today: chrono::NaiveDate,
+    retention_days: u32,
+) -> u32 {
     let cutoff = today - chrono::Duration::days(retention_days as i64);
-    if let Ok(entries) = std::fs::read_dir(config_dir) {
-        let mut pruned = 0u32;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if let Some(date_str) = name_str
-                .strip_prefix("plexi-")
-                .and_then(|s| s.strip_suffix(".log"))
-            {
-                if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    if date < cutoff {
-                        if let Err(e) = std::fs::remove_file(entry.path()) {
-                            eprintln!("[plexi::logging] could not prune {name_str}: {e}");
-                        } else {
-                            pruned += 1;
-                        }
+    let Ok(entries) = std::fs::read_dir(config_dir) else {
+        return 0;
+    };
+    let mut pruned = 0u32;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if let Some(date_str) = name_str
+            .strip_prefix("plexi-")
+            .and_then(|s| s.strip_suffix(".log"))
+        {
+            if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                if date < cutoff {
+                    if let Err(e) = std::fs::remove_file(entry.path()) {
+                        eprintln!("[plexi::logging] could not prune {name_str}: {e}");
+                    } else {
+                        pruned += 1;
                     }
                 }
             }
         }
-        if pruned > 0 {
-            messages.push(format!(
-                "pruned {pruned} log file(s) older than {retention_days} days"
-            ));
-        }
     }
-
-    messages
+    pruned
 }
 
 /// Initialise the logger. Must be called before any `log::` macro is used.

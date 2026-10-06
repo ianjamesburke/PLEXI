@@ -851,7 +851,9 @@ impl AssistantApp {
                 AssistantEffect::AiQuery {
                     conversation_id,
                     prompt,
-                } => self.start_turn(conversation_id, prompt),
+                    client,
+                    kind,
+                } => self.start_turn(conversation_id, prompt, client, kind),
                 AssistantEffect::SessionWrite { .. } => self.session_write(),
                 AssistantEffect::ListTools => self.cmd_list_tools(),
                 AssistantEffect::ListApps => self.cmd_list_apps(),
@@ -1665,7 +1667,13 @@ impl AssistantApp {
     }
 
     /// Run one model turn on a worker thread (the broker blocks on network).
-    fn start_turn(&mut self, conversation_id: String, prompt: String) {
+    fn start_turn(
+        &mut self,
+        conversation_id: String,
+        prompt: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) {
         let (delta_tx, delta_rx) = std::sync::mpsc::channel();
         self.delta_rx = Some(delta_rx);
         // Fresh cancel token per turn — a clone goes to the worker/broker, the
@@ -1763,6 +1771,17 @@ impl AssistantApp {
         // rounds than a typical chat turn; raise the cap so the assistant
         // pauses gracefully later instead of being cut short mid-build.
         const APP_BUILD_MAX_TOOL_ITERATIONS: usize = 60;
+        let client = nonempty_tag(client).or_else(|| agent.client.clone());
+        let kind = match kind.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+            Some(text) => match crate::plexi_ai::ledger::RunKind::parse(text) {
+                Ok(kind) => Some(kind),
+                Err(error) => {
+                    log::warn!("assistant[{conversation_id}]: {error}; recording kind as output");
+                    Some(crate::plexi_ai::ledger::RunKind::Output)
+                }
+            },
+            None => agent.kind,
+        };
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
             model_tier: tier,
@@ -1776,9 +1795,11 @@ impl AssistantApp {
             tool_dispatcher: Some(Arc::new(dispatcher)),
             cancel,
             max_tool_iterations: is_app_build_turn.then_some(APP_BUILD_MAX_TOOL_ITERATIONS),
+            client,
+            kind,
         };
         log::info!(
-            "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={}",
+            "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={} client={:?} kind={}",
             agent.id,
             request.model_tier.as_str(),
             request
@@ -1795,7 +1816,12 @@ impl AssistantApp {
                 .tool_dispatcher
                 .as_ref()
                 .map(|dispatcher| dispatcher.all_tools().len())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            request.client.as_deref(),
+            request
+                .kind
+                .map(crate::plexi_ai::ledger::RunKind::as_str)
+                .unwrap_or("output")
         );
         let broker = Arc::clone(&self.broker);
         let outcome_tx = self.outcome_tx.clone();
@@ -2113,7 +2139,8 @@ impl AssistantApp {
         // triggered it, same as a `submit()`-dispatched turn.
         self.model.turn_anchor = Some(self.model.turns.len());
         let conversation_id = self.model.conversation_id.clone();
-        self.start_turn(conversation_id, String::new());
+        let (client, kind) = self.model.take_queued_run_tags();
+        self.start_turn(conversation_id, String::new(), client, kind);
     }
 
     /// User pressed ESC during an in-flight turn. Stop generating, and if the
@@ -3683,6 +3710,17 @@ impl AssistantApp {
     }
 }
 
+fn nonempty_tag(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 impl App for AssistantApp {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -3699,13 +3737,29 @@ impl App for AssistantApp {
         request_id: String,
         response_file: String,
     ) -> Result<(), String> {
+        self.submit_tagged_turn(text, request_id, response_file, None, None)
+    }
+
+    fn submit_tagged_turn(
+        &mut self,
+        text: String,
+        request_id: String,
+        response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err("text must not be empty".to_string());
         }
+        if let Some(kind) = kind.as_deref() {
+            crate::plexi_ai::ledger::RunKind::parse(kind)?;
+        }
         self.external_replies
             .push_back((request_id.clone(), response_file));
-        log::info!("assistant: external turn accepted request_id={request_id}");
-        let effects = self.model.submit_prompt(text);
+        log::info!(
+            "assistant: external turn accepted request_id={request_id} client={client:?} kind={kind:?}"
+        );
+        let effects = self.model.submit_prompt_tagged(text, client, kind);
         self.execute_effects(effects);
         Ok(())
     }

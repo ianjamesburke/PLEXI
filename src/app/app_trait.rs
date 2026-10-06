@@ -342,6 +342,20 @@ pub trait App: Send {
         Err("this app does not accept external turns".to_string())
     }
 
+    /// Same as [`submit_external_turn`] with optional ledger `client` and `kind`
+    /// overrides. Apps that ignore tags keep the untagged path.
+    fn submit_tagged_turn(
+        &mut self,
+        text: String,
+        request_id: String,
+        response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) -> Result<(), String> {
+        let _ = (client, kind);
+        self.submit_external_turn(text, request_id, response_file)
+    }
+
     /// Deliver a host file/URL drop through the app's production handler.
     fn drop_file(&mut self, _path_or_url: &str) -> Result<serde_json::Value, String> {
         Err("this app does not accept file drops".to_string())

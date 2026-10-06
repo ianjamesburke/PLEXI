@@ -120,7 +120,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AppCmd,
     },
-    /// Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+    /// Optional account that links this desktop to relay and cloud features.
     ///
     /// Free apps install without an account. Login requires the accounts backend
     /// enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails
@@ -169,6 +169,15 @@ pub enum Commands {
     Ai {
         #[command(subcommand)]
         cmd: AiCmd,
+    },
+    /// Summarize recorded AI usage from this channel's ledger.
+    ///
+    /// Reads `ai-ledger.jsonl` in the channel profile. Does not require a
+    /// running host. Rows written before run tags existed are migrated in
+    /// place to explicit null `client` and `kind`.
+    Ledger {
+        #[command(subcommand)]
+        cmd: LedgerCmd,
     },
 
     // ── System ────────────────────────────────────────────────────────────────
@@ -277,6 +286,12 @@ pub enum AssistantCmd {
         pane_id: Option<u64>,
         #[arg(long)]
         context_id: Option<u64>,
+        /// Ledger client tag for this run. Omitted uses `[ai] client`.
+        #[arg(long)]
+        client: Option<String>,
+        /// Ledger run kind: `system` or `output`. Omitted means `output`.
+        #[arg(long)]
+        kind: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -284,6 +299,22 @@ pub enum AssistantCmd {
     Permission {
         #[command(subcommand)]
         cmd: AssistantPermissionCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LedgerCmd {
+    /// Totals for tokens, cost, run count, and wall time.
+    Summary {
+        /// Group rows by `client` or `kind`. Omitted means `client`.
+        #[arg(long)]
+        by: Option<String>,
+        /// Include rows at or after this YYYY-MM-DD or RFC3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Print one JSON object on stdout.
+        #[arg(long)]
+        json: bool,
     },
 }
 

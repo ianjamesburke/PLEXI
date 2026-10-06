@@ -2182,6 +2182,91 @@ impl PlexiApp {
         Some(predicted)
     }
 
+    /// Reuse an Assistant in `context_id` (or the active window's context), or
+    /// insert a hidden one that is not in the tile tree. Phone, relay, and
+    /// CLI sends call this when they did not name a pane, so `assistant send`
+    /// works without `app open assistant`. A caller that names a missing pane
+    /// must not land here — that stays `assistant_pane_not_found`.
+    ///
+    /// Returns `None` when the Assistant feature is off or the context has no
+    /// window.
+    pub(crate) fn ensure_headless_assistant(&mut self, context_id: Option<u64>) -> Option<PaneId> {
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
+            return None;
+        }
+        let win_idx = match context_id {
+            Some(id) => self.windows.iter().position(|window| window.context_id == id)?,
+            None => self.active_window,
+        };
+        let caller_context_id = self.windows[win_idx].context_id;
+        for window in &self.windows {
+            if window.context_id != caller_context_id {
+                continue;
+            }
+            for (id, pane) in &window.panes {
+                if pane
+                    .as_app()
+                    .is_some_and(|app| app.runtime.type_id() == "assistant")
+                {
+                    log::info!(
+                        "assistant: reusing pane {id} in context {caller_context_id} for a headless send"
+                    );
+                    return Some(*id);
+                }
+            }
+        }
+
+        let workspace_root = self
+            .context_root_for(caller_context_id)
+            .or_else(crate::config::active_workspace_root)
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
+            crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
+        );
+        let app = Box::new(crate::assistant::AssistantApp::new(
+            workspace_root.clone(),
+            broker,
+            &crate::config::config_dir(),
+            caller_context_id,
+        ));
+        let id = self.host.alloc_pane_id();
+        log::info!(
+            "assistant: created hidden pane {id} for a headless send in context {caller_context_id} workspace {}",
+            workspace_root.display()
+        );
+        self.windows[win_idx].panes.insert(
+            id,
+            Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
+                id,
+                runtime: crate::host::pane::AppRuntime::Builtin(app),
+                workspace_root,
+                permissions: crate::app::permissions::AppPermissions::builtin(),
+                manifest_id: "assistant".to_string(),
+                name: "Assistant".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: true,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            })),
+        );
+        let context_root = self.context_root_for(caller_context_id);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::AppSpawned {
+                app_id: "assistant".to_string(),
+                type_id: "assistant".to_string(),
+                pane_id: id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
+        Some(id)
+    }
+
     /// Create a new scratch note in `notes/inbox/` and open it in a text-editor
     /// pane. Each press creates a fresh timestamped note — scratch notes share
     /// the inbox with quick notes and flow through the same triage. Notes whose
