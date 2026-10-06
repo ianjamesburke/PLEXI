@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#16181d">
+  <title>Plexi</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Plexi</h1>
+    <p id="connection" role="status" aria-live="polite" data-state="connecting">Connecting…</p>
+  </header>
+  <main>
+    <section id="needs-you" aria-label="Needs you">
+      <h2>Needs you</h2>
+      <ol id="needs-list"></ol>
+    </section>
+    <h2 class="visually-hidden">Conversation</h2>
+    <ol id="transcript" aria-live="polite" aria-label="Conversation transcript"></ol>
+  </main>
+  <form id="composer" class="composer" autocomplete="off">
+    <label for="message" class="visually-hidden">Message</label>
+    <textarea id="message" name="message" rows="2" maxlength="8000" placeholder="Message" required></textarea>
+    <div class="actions">
+      <button type="button" id="cancel" disabled>Cancel</button>
+      <button type="submit" id="send">Send</button>
+    </div>
+  </form>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

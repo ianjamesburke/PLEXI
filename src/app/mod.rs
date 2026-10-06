@@ -3164,6 +3164,14 @@ impl eframe::App for PlexiApp {
             }
         }
 
+        // Expired needs-you items auto-deny even while the window is hidden.
+        // Only an already-open monitor is touched, so a frame never creates a profile.
+        if let Some(monitor) =
+            crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+        {
+            monitor.expire_needs_you();
+        }
+
         // Screenshot capture is an external-client request path, not UI: the
         // viewport request, the readback poll, and the bounded-deadline reply
         // all live here so an occluded or minimized host — which never enters

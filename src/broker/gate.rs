@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use sha2::{Digest, Sha256};
 
@@ -33,6 +33,79 @@ pub enum ApprovalChoice {
     Session,
     Always,
     Deny,
+}
+
+/// One host record for everything waiting on the human.
+///
+/// Each-time and time-boxed sign-off live on the Touch ID spike. This gate
+/// files click approvals, agent questions, and blocked runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedsYouKind {
+    ApprovalClick,
+    Question,
+    BlockedRun,
+}
+
+impl NeedsYouKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApprovalClick => "approval_click",
+            Self::Question => "question",
+            Self::BlockedRun => "blocked_run",
+        }
+    }
+
+    fn is_approval(self) -> bool {
+        matches!(self, Self::ApprovalClick)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedsYouResolution {
+    Approved,
+    Denied,
+}
+
+impl NeedsYouResolution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NeedsYouRecord {
+    pub id: String,
+    pub kind: NeedsYouKind,
+    pub actor: String,
+    pub resource: String,
+    pub summary: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub run_tag: Option<String>,
+    pub resolution: Option<NeedsYouResolution>,
+}
+
+/// A question or a blocked run filed by the host. Approvals are filed by the gate.
+#[derive(Debug, Clone)]
+pub struct NeedsYouFile {
+    pub kind: NeedsYouKind,
+    pub actor: String,
+    pub resource: String,
+    pub summary: String,
+    pub expires_at: Option<i64>,
+    pub run_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeedsYouReceipt {
+    pub id: String,
+    pub resolution: NeedsYouResolution,
+    pub already: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -79,6 +152,12 @@ pub struct PermissionMonitor {
     audit_path: Option<PathBuf>,
     audit_mem: Mutex<Vec<AuditFact>>,
     fail_audit: AtomicBool,
+    /// Open and resolved items waiting on the human. One map, one resolution.
+    needs_you: Mutex<BTreeMap<String, NeedsYouRecord>>,
+    /// Serializes list, expiry, and resolve so one terminal receipt wins.
+    needs_resolve: Mutex<()>,
+    #[cfg(test)]
+    now_override: AtomicI64,
 }
 
 #[derive(Clone)]
@@ -183,7 +262,23 @@ impl PermissionMonitor {
             audit_path,
             audit_mem: Mutex::new(Vec::new()),
             fail_audit: AtomicBool::new(false),
+            needs_you: Mutex::new(BTreeMap::new()),
+            needs_resolve: Mutex::new(()),
+            #[cfg(test)]
+            now_override: AtomicI64::new(0),
         }
+    }
+
+    /// The process-cached monitor for `dir`, if something in this process has
+    /// already opened it. Painting and expiry use this so a frame never creates
+    /// a profile store just to discover that nothing is waiting.
+    pub fn loaded(dir: &Path) -> Option<Arc<Self>> {
+        let key = crate::platform::path::canonical_or_self(dir);
+        monitors()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
     }
 
     pub fn store(&self) -> std::sync::MutexGuard<'_, GrantStore> {
@@ -305,14 +400,16 @@ impl PermissionMonitor {
 
     fn persist_pending(&self, binding: &ExactBinding, tool: &str, input_json: &str) -> String {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)) {
+        if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)).cloned() {
             log::info!(
                 "permission_monitor: reuse pending {} for actor={} tool={}",
                 existing.id,
                 binding.actor_id,
                 tool
             );
-            return existing.id.clone();
+            let id = existing.id.clone();
+            self.upsert_approval_needs_you(&existing);
+            return id;
         }
         let id = format!("req_{}", uuid::Uuid::new_v4());
         log::info!(
@@ -321,12 +418,14 @@ impl PermissionMonitor {
             tool,
             binding.resource_id
         );
-        pending.push(Pending {
+        let row = Pending {
             id: id.clone(),
             binding: binding.clone(),
             tool: tool.to_string(),
             input_summary: summarize(input_json),
-        });
+        };
+        self.upsert_approval_needs_you(&row);
+        pending.push(row);
         id
     }
 
@@ -339,6 +438,12 @@ impl PermissionMonitor {
             .copied()
         {
             return if previous == choice {
+                let _ = self.close_needs_you(
+                    pending_id,
+                    resolution_for_choice(choice),
+                    decision_for_choice(choice),
+                    "",
+                );
                 Ok(())
             } else {
                 Err(format!("pending {pending_id} already resolved"))
@@ -373,6 +478,7 @@ impl PermissionMonitor {
                 revision_after: String::new(),
             });
             log::info!("permission_monitor: denied pending {pending_id}");
+            let _ = self.close_needs_you(pending_id, NeedsYouResolution::Denied, "denied", "");
             return Ok(());
         }
         let (duration, session_id, expires_at) = match choice {
@@ -435,7 +541,272 @@ impl PermissionMonitor {
             revision_after: String::new(),
         })?;
         log::info!("permission_monitor: approved pending {pending_id} as {grant_id}");
+        let _ = self.close_needs_you(
+            pending_id,
+            NeedsYouResolution::Approved,
+            "approved",
+            &grant_id,
+        );
         Ok(())
+    }
+
+    /// File an agent question or a blocked run. Gate approvals are filed by admission.
+    pub fn file_needs_you(&self, filed: NeedsYouFile) -> Result<String, String> {
+        if filed.kind.is_approval() {
+            return Err("approval items are filed by the permission gate".to_string());
+        }
+        if filed.actor.is_empty() || filed.summary.is_empty() {
+            return Err("needs-you actor and summary are required".to_string());
+        }
+        let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tag) = filed.run_tag.as_deref() {
+            if let Some(existing) = map.values().find(|row| {
+                row.resolution.is_none()
+                    && row.kind == filed.kind
+                    && row.run_tag.as_deref() == Some(tag)
+            }) {
+                log::info!("needs_you: reuse {} kind={}", existing.id, existing.kind.as_str());
+                return Ok(existing.id.clone());
+            }
+        }
+        let id = format!("ny_{}", uuid::Uuid::new_v4());
+        let record = NeedsYouRecord {
+            id: id.clone(),
+            kind: filed.kind,
+            actor: filed.actor,
+            resource: filed.resource,
+            summary: filed.summary,
+            created_at: self.now_secs(),
+            expires_at: filed.expires_at,
+            run_tag: filed.run_tag,
+            resolution: None,
+        };
+        log::info!(
+            "needs_you: filed {} kind={} actor={} resource={}",
+            record.id,
+            record.kind.as_str(),
+            record.actor,
+            record.resource
+        );
+        map.insert(id.clone(), record);
+        Ok(id)
+    }
+
+    /// Drop expired open items, denying each one once.
+    pub fn expire_needs_you(&self) {
+        let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        self.expire_needs_you_locked();
+    }
+
+    fn expire_needs_you_locked(&self) {
+        let now = self.now_secs();
+        let due: Vec<NeedsYouRecord> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| {
+                row.resolution.is_none() && row.expires_at.is_some_and(|expires| now >= expires)
+            })
+            .cloned()
+            .collect();
+        for row in due {
+            if !self.close_needs_you(&row.id, NeedsYouResolution::Denied, "auto_denied", "") {
+                continue;
+            }
+            log::info!(
+                "needs_you: auto-denied {} kind={}",
+                row.id,
+                row.kind.as_str()
+            );
+            if row.kind.is_approval() {
+                if let Err(error) = self.approve_pending(&row.id, ApprovalChoice::Deny) {
+                    log::info!("needs_you: auto-deny pending {} failed: {error}", row.id);
+                }
+            }
+        }
+    }
+
+    /// Open items, after expired ones have been auto-denied.
+    pub fn list_needs_you(&self) -> Vec<NeedsYouRecord> {
+        self.expire_needs_you();
+        let rows = self.open_needs_you();
+        log::info!("needs_you: list open count={}", rows.len());
+        rows
+    }
+
+    /// Open items without expiring. The frame loop expires; the badge only reads.
+    pub fn open_needs_you(&self) -> Vec<NeedsYouRecord> {
+        let mut rows: Vec<NeedsYouRecord> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| row.resolution.is_none())
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        rows
+    }
+
+    /// Resolve one item from any surface. A second call returns the first receipt.
+    pub fn resolve_needs_you(&self, id: &str, approve: bool) -> Result<NeedsYouReceipt, String> {
+        let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        self.expire_needs_you_locked();
+        let Some(row) = self.needs_you_of(id) else {
+            return Err(format!("unknown needs-you item {id}"));
+        };
+        if let Some(resolution) = row.resolution {
+            log::info!("needs_you: resolve {id} already {}", resolution.as_str());
+            return Ok(NeedsYouReceipt {
+                id: id.to_string(),
+                resolution,
+                already: true,
+            });
+        }
+        match row.kind {
+            NeedsYouKind::ApprovalClick => {
+                let choice = if approve {
+                    ApprovalChoice::Once
+                } else {
+                    ApprovalChoice::Deny
+                };
+                if let Err(error) = self.approve_pending(id, choice) {
+                    if let Some(existing) = self.resolved_receipt(id, true) {
+                        return Ok(existing);
+                    }
+                    return Err(error);
+                }
+            }
+            NeedsYouKind::Question | NeedsYouKind::BlockedRun => {
+                let resolution = if approve {
+                    NeedsYouResolution::Approved
+                } else {
+                    NeedsYouResolution::Denied
+                };
+                let decision = if approve { "approved" } else { "denied" };
+                if !self.close_needs_you(id, resolution, decision, "") {
+                    if let Some(existing) = self.resolved_receipt(id, true) {
+                        return Ok(existing);
+                    }
+                    return Err(format!("needs-you item {id} could not be audited"));
+                }
+            }
+        }
+        self.resolved_receipt(id, false)
+            .ok_or_else(|| format!("needs-you item {id} was not resolved"))
+    }
+
+    fn resolved_receipt(&self, id: &str, already: bool) -> Option<NeedsYouReceipt> {
+        self.needs_you_of(id)
+            .and_then(|row| row.resolution)
+            .map(|resolution| NeedsYouReceipt {
+                id: id.to_string(),
+                resolution,
+                already,
+            })
+    }
+
+    fn needs_you_of(&self, id: &str) -> Option<NeedsYouRecord> {
+        self.needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    fn upsert_approval_needs_you(&self, pending: &Pending) {
+        let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+        if map.contains_key(&pending.id) {
+            return;
+        }
+        let record = NeedsYouRecord {
+            id: pending.id.clone(),
+            kind: NeedsYouKind::ApprovalClick,
+            actor: pending.binding.actor_id.clone(),
+            resource: pending
+                .binding
+                .resource_id
+                .clone()
+                .unwrap_or_else(|| pending.tool.clone()),
+            summary: pending.input_summary.clone(),
+            created_at: self.now_secs(),
+            expires_at: None,
+            run_tag: Some(pending.binding.call_id.clone()),
+            resolution: None,
+        };
+        log::info!(
+            "needs_you: filed {} kind={} actor={} resource={}",
+            record.id,
+            record.kind.as_str(),
+            record.actor,
+            record.resource
+        );
+        map.insert(record.id.clone(), record);
+    }
+
+    /// Mark an open item resolved and audit it. Returns false when it was already resolved
+    /// or the audit write failed (the item stays open in that case).
+    fn close_needs_you(
+        &self,
+        id: &str,
+        resolution: NeedsYouResolution,
+        decision: &str,
+        grant_id: &str,
+    ) -> bool {
+        let snapshot = {
+            let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(row) = map.get_mut(id) else {
+                return false;
+            };
+            if row.resolution.is_some() {
+                return false;
+            }
+            row.resolution = Some(resolution);
+            row.clone()
+        };
+        let fact = AuditFact {
+            kind: "needs_you".to_string(),
+            actor: snapshot.actor.clone(),
+            call_id: snapshot.run_tag.clone().unwrap_or_else(|| snapshot.id.clone()),
+            grant_id: grant_id.to_string(),
+            resource_id: snapshot.resource.clone(),
+            args_fingerprint: String::new(),
+            operation_id: snapshot.id.clone(),
+            decision: decision.to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        };
+        if let Err(error) = self.audit(&fact) {
+            log::error!("needs_you: audit failed for {id}: {error}");
+            if let Some(row) = self
+                .needs_you
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(id)
+            {
+                row.resolution = None;
+            }
+            return false;
+        }
+        log::info!("needs_you: resolved {id} {decision}");
+        true
+    }
+
+    fn now_secs(&self) -> i64 {
+        #[cfg(test)]
+        {
+            let over = self.now_override.load(Ordering::SeqCst);
+            if over > 0 {
+                return over;
+            }
+        }
+        crate::platform::clock::now_secs() as i64
+    }
+
+    #[cfg(test)]
+    pub fn set_now_for_test(&self, unix_secs: i64) {
+        self.now_override.store(unix_secs, Ordering::SeqCst);
     }
 
     /// Record use before execution. Failure denies the call. Revoke that wins
@@ -744,6 +1115,24 @@ impl PermissionMonitor {
             fact.operation_id
         ));
         Ok(())
+    }
+}
+
+fn resolution_for_choice(choice: ApprovalChoice) -> NeedsYouResolution {
+    match choice {
+        ApprovalChoice::Deny => NeedsYouResolution::Denied,
+        ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always => {
+            NeedsYouResolution::Approved
+        }
+    }
+}
+
+fn decision_for_choice(choice: ApprovalChoice) -> &'static str {
+    match choice {
+        ApprovalChoice::Once => "allow_once",
+        ApprovalChoice::Session => "allow_session",
+        ApprovalChoice::Always => "allow_until",
+        ApprovalChoice::Deny => "deny",
     }
 }
 
@@ -1343,6 +1732,115 @@ mod tests {
         monitor.fail_audit(false);
         let _ = monitor.list_pending();
         let _ = monitor.audit_records();
+    }
+
+    #[test]
+    fn needs_you_click_approval_resolves_once_and_the_tool_proceeds() {
+        let monitor = PermissionMonitor::ephemeral();
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-1"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("a click approval must be filed");
+        };
+        let open = monitor.list_needs_you();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].id, pending_request_id);
+        assert_eq!(open[0].kind, NeedsYouKind::ApprovalClick);
+        assert!(open[0].resolution.is_none());
+        assert!(open[0].expires_at.is_none());
+        assert_eq!(open[0].actor, base.actor_id);
+        assert_eq!(open[0].resource, "game-1");
+        assert_eq!(open[0].run_tag.as_deref(), Some(base.call_id.as_str()));
+        monitor.set_now_for_test(9_000_000_000);
+        assert_eq!(monitor.list_needs_you().len(), 1, "click items do not expire");
+        let receipt = monitor.resolve_needs_you(&pending_request_id, true).unwrap();
+        assert!(!receipt.already);
+        assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
+        assert!(monitor.list_needs_you().is_empty());
+        assert!(
+            matches!(admit_of(&monitor, &base, args), Admission::Proceed { .. }),
+            "the approved tool proceeds"
+        );
+        assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
+        let again = monitor.resolve_needs_you(&pending_request_id, false).unwrap();
+        assert!(again.already);
+        assert_eq!(again.resolution, NeedsYouResolution::Approved);
+        assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
+        assert_eq!(needs_you_decisions(&monitor, "denied"), 0);
+    }
+
+    #[test]
+    fn needs_you_question_and_blocked_run_resolve_without_a_grant() {
+        let monitor = PermissionMonitor::ephemeral();
+        monitor.set_now_for_test(1_000);
+        let question = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::Question,
+                actor: "agent:guide".into(),
+                resource: "repo".into(),
+                summary: "Which branch should I push?".into(),
+                expires_at: Some(1_050),
+                run_tag: Some("run-9".into()),
+            })
+            .unwrap();
+        let blocked = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::BlockedRun,
+                actor: "agent:guide".into(),
+                resource: "ci".into(),
+                summary: "Runner stopped before the build finished".into(),
+                expires_at: None,
+                run_tag: Some("run-9".into()),
+            })
+            .unwrap();
+        assert!(monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::ApprovalClick,
+                actor: "agent:guide".into(),
+                resource: "repo".into(),
+                summary: "no".into(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .is_err());
+        let again_blocked = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::BlockedRun,
+                actor: "agent:guide".into(),
+                resource: "ci".into(),
+                summary: "Runner stopped before the build finished".into(),
+                expires_at: None,
+                run_tag: Some("run-9".into()),
+            })
+            .unwrap();
+        assert_eq!(again_blocked, blocked);
+        assert_eq!(monitor.list_needs_you().len(), 2);
+        monitor.set_now_for_test(1_050);
+        let open = monitor.list_needs_you();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, blocked);
+        assert_eq!(needs_you_decisions(&monitor, "auto_denied"), 1);
+        let grants = monitor.store().records().len();
+        let receipt = monitor.resolve_needs_you(&blocked, true).unwrap();
+        assert!(!receipt.already);
+        assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
+        assert_eq!(monitor.store().records().len(), grants);
+        let again = monitor.resolve_needs_you(&blocked, false).unwrap();
+        assert!(again.already);
+        assert_eq!(again.resolution, NeedsYouResolution::Approved);
+        let denied = monitor.resolve_needs_you(&question, true).unwrap();
+        assert!(denied.already);
+        assert_eq!(denied.resolution, NeedsYouResolution::Denied);
+        assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
+    }
+
+    fn needs_you_decisions(monitor: &PermissionMonitor, decision: &str) -> usize {
+        monitor
+            .audit_records()
+            .iter()
+            .filter(|fact| fact.kind == "needs_you" && fact.decision == decision)
+            .count()
     }
 }
 
