@@ -37,14 +37,21 @@ mkdir -p "$HOME"
 unset PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING PLEXI_CHANNEL PLEXI_SOCKET || true
 export PLEXI_KEYCHAIN_PATH="$WORK/keychain"
 mkdir -p "$PLEXI_KEYCHAIN_PATH"
-if [[ -z "${DISPLAY:-}" ]] || ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-  export DISPLAY="${DISPLAY:-:99}"
-  if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-    Xvfb "$DISPLAY" -screen 0 1280x800x24 >/dev/null 2>&1 &
-    XVFB_PID=$!
-    sleep 0.4
+# Always a private X server. An ambient DISPLAY can answer xdpyinfo and still
+# never become ready for the wgpu host (software Vulkan on Xvfb does).
+display_n=99
+while xdpyinfo -display ":$display_n" >/dev/null 2>&1; do
+  display_n=$((display_n + 1))
+done
+export DISPLAY=":$display_n"
+Xvfb "$DISPLAY" -screen 0 1280x800x24 >/dev/null 2>&1 &
+XVFB_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    break
   fi
-fi
+  sleep 0.1
+done
 export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
 if [[ -z "${VK_DRIVER_FILES:-}" && -f /usr/share/vulkan/icd.d/lvp_icd.json ]]; then
   export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
@@ -83,7 +90,7 @@ approve_pending() {
     return
   fi
   BYPASS=1
-  echo "VERIFIED-VIA-BYPASS permission $id"
+  echo "VERIFIED-VIA-BYPASS permission $id" >&2
   "$BIN" assistant permission resolve "$id" --choice once >/dev/null
 }
 
@@ -178,7 +185,7 @@ if [[ "$ACCEPT_CODE" -eq 2 ]]; then
 fi
 if [[ "$ACCEPT_MODE" != "human" ]]; then
   BYPASS=1
-  echo "VERIFIED-VIA-BYPASS accept $CS"
+  echo "VERIFIED-VIA-BYPASS accept $CS" >&2
 fi
 if [[ "$ACCEPT_CODE" -eq 0 ]] && python3 -c 'import pathlib,sys; sys.exit(0 if pathlib.Path(sys.argv[1]).read_bytes()==b"beta\n" else 1)' "$FILE"; then
   ok "accept writes the agent edit"
