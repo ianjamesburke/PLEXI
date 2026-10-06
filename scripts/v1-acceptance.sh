@@ -101,7 +101,15 @@ unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT \
 REAL_HOME="${HOME}"
 WORK_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-v1-home.XXXXXX")"
 export HOME="$WORK_HOME"
-mkdir -p "$HOME"
+mkdir -p "$HOME/.plexi"
+# Python apps (chess, packaged samples) load the WASI bundle from the
+# profile home. Item scripts symlink $ORIG_HOME/.plexi/wasm-bundles into
+# their own temp home, and ORIG_HOME is this one.
+if [[ -d /tmp/cpython-bundles ]]; then
+  ln -sfn /tmp/cpython-bundles "$HOME/.plexi/wasm-bundles"
+elif [[ -d "$REAL_HOME/.plexi/wasm-bundles" ]]; then
+  ln -sfn "$REAL_HOME/.plexi/wasm-bundles" "$HOME/.plexi/wasm-bundles"
+fi
 # Never the login keychain. Channel scripts that need a keychain file inherit
 # this; ones that create their own throwaway override it.
 export PLEXI_KEYCHAIN_PATH="$HOME/v1-acceptance.keychain"
