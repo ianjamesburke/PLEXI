@@ -619,9 +619,10 @@ mod mac {
         keychain_calls_cannot_prompt();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
-            Ok((_password, item)) => item
-                .delete()
-                .map_err(|error| map_keychain_error(account, error)),
+            Ok((_password, item)) => {
+                item.delete();
+                Ok(())
+            }
             Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
             Err(error) => Err(map_keychain_error(account, error)),
         }
