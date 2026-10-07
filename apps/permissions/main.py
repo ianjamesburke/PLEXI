@@ -28,6 +28,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "selected": 0,
     "mode": "list",
     "notice": "",
+    "inventory_seen": False,
 }
 
 
@@ -48,15 +49,28 @@ def update(event) -> list:
 
     if isinstance(event, PermissionInventory):
         data = _state()
-        data["entries"] = [_entry(row) for row in event.entries]
-        data["selected"] = _clamp(data["selected"], len(data["entries"]))
+        entries = [_entry(row) for row in event.entries]
+        selected = _clamp(data["selected"], len(entries))
         if event.notice:
-            data["notice"] = event.notice
+            notice = event.notice
         elif event.status == "list":
-            data["notice"] = ""
-        log.info(
-            f"permissions: inventory count={len(data['entries'])} status={event.status or 'list'}"
+            notice = ""
+        else:
+            notice = data["notice"]
+        log.debug(
+            f"permissions: inventory count={len(entries)} status={event.status or 'list'}"
         )
+        if (
+            data["inventory_seen"]
+            and entries == data["entries"]
+            and selected == data["selected"]
+            and notice == data["notice"]
+        ):
+            return []
+        data["entries"] = entries
+        data["selected"] = selected
+        data["notice"] = notice
+        data["inventory_seen"] = True
         return _commit(data)
 
     data = _state()
@@ -108,6 +122,7 @@ def _state() -> dict:
     data["selected"] = _clamp(int(data.get("selected") or 0), len(data["entries"]))
     data["mode"] = data.get("mode") if data.get("mode") in {"list", "detail"} else "list"
     data["notice"] = str(data.get("notice") or "")
+    data["inventory_seen"] = bool(data.get("inventory_seen"))
     return data
 
 
@@ -140,11 +155,12 @@ def _list_view(data: dict):
         }
         for entry in data["entries"]
     ]
-    body = (
-        SelectList(rows, selected_idx=data["selected"])
-        if rows
-        else Text("No permission decisions.", size=12.0)
-    )
+    if rows:
+        body = SelectList(rows, selected_idx=data["selected"])
+    elif not data["inventory_seen"]:
+        body = Text("Waiting for permission decisions…", size=12.0)
+    else:
+        body = Text("No permission decisions.", size=12.0)
     return Column(
         [
             Text("Permissions", bold=True, size=15.0),

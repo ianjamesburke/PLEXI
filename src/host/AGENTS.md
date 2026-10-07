@@ -114,3 +114,10 @@ same reason.
   roughly 4x slower (`PLEXI_SCENE_TIMEOUT_SCALE: '4'` in
   `.github/workflows/roadmap-evidence.yml` is the standing measurement) and 2000+
   tests compete for cores.
+- **CPython-WASM perf samples stay at debug.** `record_render_perf` writes one
+  line per painted Python pane per sample window. The Logs app tails the same
+  channel log and re-renders when the tail changes, so an info sample becomes a
+  permanent self-refreshing row of that pane's own telemetry. Guest `log` lines
+  must honor the SDK `level` field for the same reason: a debug inventory poll
+  that the host rewrites as info refills the tail. Unrecognized guest message
+  types warn once per type per window; repeats stay at debug.
