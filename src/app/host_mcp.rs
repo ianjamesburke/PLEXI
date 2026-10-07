@@ -332,6 +332,41 @@ pub fn start_host_mcp_server(
 fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> serde_json::Value {
     let mut tools = vec![
         serde_json::json!({
+            "name": "permissions_list",
+            "description": "List live permission decisions from the permission monitor. Same rows as `plexi permissions list`.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        serde_json::json!({
+            "name": "permissions_revoke",
+            "description": "Remove an allow or refuse a pending ask. Narrows authority.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_reset",
+            "description": "Ask to clear a stored denial. An MCP caller files Needs you and does not clear it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_allow",
+            "description": "Ask to allow a denial or a pending ask. An MCP caller files Needs you and does not grant it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
             "name": "list_event_streams",
             "description": "List the event streams currently declared by running Plexi apps. Returns an array of {app_id, stream} pairs.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -438,6 +473,12 @@ fn handle_connection(
                 }
             } else {
                 match tool_name {
+                    "permissions_list" => tool_permissions("list", &arguments, profile, &caller),
+                    "permissions_revoke" => {
+                        tool_permissions("revoke", &arguments, profile, &caller)
+                    }
+                    "permissions_reset" => tool_permissions("reset", &arguments, profile, &caller),
+                    "permissions_allow" => tool_permissions("allow", &arguments, profile, &caller),
                     "list_event_streams" => tool_list_event_streams(&caller),
                     "subscribe_and_wait" => {
                         tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
@@ -479,6 +520,50 @@ fn handle_connection(
 
     let body_bytes = serde_json::to_vec(&response_body).unwrap_or_else(|_| b"{}".to_vec());
     write_http_response(&mut write_stream, 200, &body_bytes)
+}
+
+/// Permission-monitor tools. MCP callers are agents: revoke narrows, reset and
+/// allow file Needs you and change nothing.
+fn tool_permissions(
+    op: &str,
+    arguments: &serde_json::Value,
+    profile: &std::path::Path,
+    caller: &McpCaller,
+) -> Result<String, String> {
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile);
+    if op == "list" {
+        let entries = monitor.list_entries();
+        log::info!(
+            "host_mcp: permissions_list count={} pane={}",
+            entries.len(),
+            caller.pane_id
+        );
+        return serde_json::to_string(&serde_json::json!({"ok": true, "entries": entries}))
+            .map_err(|error| error.to_string());
+    }
+    let id = arguments
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let outcome = monitor.mutate_entry(
+        id,
+        op,
+        &crate::broker::gate::PermissionCaller {
+            human: false,
+            actor_id: format!("mcp:pane:{}", caller.pane_id),
+        },
+    );
+    log::info!("host_mcp: permissions_{op} id={id} pane={}", caller.pane_id);
+    let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+    let ok = matches!(
+        outcome,
+        crate::broker::gate::PermissionMutation::Applied { .. }
+    );
+    if let Some(map) = body.as_object_mut() {
+        map.insert("ok".to_string(), serde_json::json!(ok));
+    }
+    let text = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+    if ok { Ok(text) } else { Err(text) }
 }
 
 /// `list_event_streams` — read declared streams from the global timeline,

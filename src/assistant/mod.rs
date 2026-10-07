@@ -82,6 +82,19 @@ const HOST_TOOL_FILES_EDIT: &str = "host.files.edit";
 const HOST_TOOL_FILES_GREP: &str = "host.files.grep";
 const HOST_TOOL_FILES_LIST: &str = "host.files.list";
 const HOST_TOOL_BUILD_RUN: &str = "host.build.run";
+const HOST_TOOL_INTROSPECT: &str = "host.introspect";
+
+/// The Assistant may name a Plexi control only after a tool result in this
+/// turn returned that text. Appended to every turn prompt.
+pub(crate) const GROUNDING_RULE: &str = "\
+Name a Plexi control, command, or setting only when a tool result in this turn returned that exact text. \
+Call host.introspect to read the live CLI, installed apps and their tools, open panes, and permission decisions. \
+If this turn's tool results do not name it, say you are not sure and offer to open the relevant pane.";
+
+pub(crate) fn push_grounding(system: &mut String) {
+    system.push_str("\n\n");
+    system.push_str(GROUNDING_RULE);
+}
 use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
@@ -192,6 +205,9 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
                 model::PermissionChoice::AllowSession => crate::broker::gate::ApprovalChoice::Session,
                 model::PermissionChoice::AllowAlways => crate::broker::gate::ApprovalChoice::Always,
                 model::PermissionChoice::Deny => crate::broker::gate::ApprovalChoice::Deny,
+                model::PermissionChoice::DenyAlways => {
+                    crate::broker::gate::ApprovalChoice::DenyAlways
+                }
             },
             _ => crate::broker::gate::ApprovalChoice::Deny,
         }
@@ -1200,6 +1216,46 @@ impl AssistantApp {
         });
         vec![
             AiTool {
+                name: HOST_TOOL_INTROSPECT.into(),
+                description: "Read this build's live CLI commands, installed apps and their tools, open panes, and permission decisions. Pass query to narrow the result. Name a Plexi control only when this result includes it.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string","description":"Case-insensitive substring. Example: permissions."}}}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: "host.permissions.list".into(),
+                description: "List live permission decisions. Same rows as `plexi permissions list`.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: "host.permissions.revoke".into(),
+                description: "Remove an allow or refuse a pending ask. id comes from host.permissions.list.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: "host.permissions.reset".into(),
+                description: "Ask to clear a stored denial. An Assistant call files Needs you and does not clear it.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: "host.permissions.allow".into(),
+                description: "Ask to allow a denial or a pending ask. An Assistant call files Needs you and does not grant it.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
                 name: HOST_TOOL_PANES_LIST.into(),
                 description: "List live Plexi panes and their context.".into(),
                 input_schema: serde_json::json!({"type":"object"}),
@@ -1730,6 +1786,7 @@ impl AssistantApp {
             .as_ref()
             .is_some_and(|skill| skill.name == skills::APP_BUILD_SKILL_NAME);
         let mut system = agent.prompt;
+        push_grounding(&mut system);
         system.push_str("\n\nCompaction status: ");
         system.push_str(&self.model.compaction_status());
         if let Some(skill) = selected_skill {
@@ -1893,6 +1950,7 @@ impl AssistantApp {
             PermissionChoice::AllowOnce => "once",
             PermissionChoice::AllowSession => "session",
             PermissionChoice::AllowAlways => "always",
+            PermissionChoice::DenyAlways => "deny_always",
             PermissionChoice::Deny => "deny",
         };
         if !crate::workspace::secrets::deliver_folder_secret_choice(word) {
@@ -2205,6 +2263,12 @@ impl AssistantApp {
         };
         let (decision_str, reply) = match choice {
             PermissionChoice::Deny => ("deny", PermissionReply::Deny),
+            PermissionChoice::DenyAlways => (
+                "deny_always",
+                PermissionReply::Allow {
+                    choice: PermissionChoice::DenyAlways,
+                },
+            ),
             PermissionChoice::AllowOnce => (
                 "allow_once",
                 PermissionReply::Allow { choice: PermissionChoice::AllowOnce },
@@ -2236,7 +2300,10 @@ impl AssistantApp {
                 &pending.input_summary,
             ))
             .is_err()
-            && choice != PermissionChoice::Deny
+            && !matches!(
+                choice,
+                PermissionChoice::Deny | PermissionChoice::DenyAlways
+            )
         {
             log::error!(
                 "assistant: audit write failed before '{}' — the call is denied",
@@ -2252,7 +2319,11 @@ impl AssistantApp {
             return;
         }
         let tool_input = self.pending_tool_input.take();
-        if choice != PermissionChoice::Deny && pending.tool == HOST_TOOL_SUBSCRIBE {
+        if !matches!(
+            choice,
+            PermissionChoice::Deny | PermissionChoice::DenyAlways
+        ) && pending.tool == HOST_TOOL_SUBSCRIBE
+        {
             match tool_input.as_deref() {
                 Some(input) => self.arm_subscribe_from_approval(input, choice),
                 None => log::warn!(
@@ -2323,9 +2394,23 @@ impl AssistantApp {
                 (GrantDuration::Session, GrantSource::Session, "allow_session")
             }
             PermissionChoice::AllowAlways => (GrantDuration::Always, GrantSource::User, "allow_always"),
-            PermissionChoice::Deny => {
-                let message =
-                    format!("permission_denied: the user denied the subscription to {target}");
+            PermissionChoice::Deny | PermissionChoice::DenyAlways => {
+                if choice == PermissionChoice::DenyAlways {
+                    self.record_grant_with_decision(
+                        ASSISTANT_ACTOR_ID,
+                        ActorScope::BuiltIn,
+                        TargetType::AppEventStream,
+                        &target,
+                        GrantDuration::Always,
+                        GrantSource::User,
+                        Decision::Deny,
+                    );
+                    self.grants().save();
+                }
+                let message = format!(
+                    "permission_denied: the user denied the subscription to {target}. {}",
+                    crate::cli::introspect::permission_undo_text()
+                );
                 log::info!("assistant: subscribe approval rejected: {message}");
                 return ToolCallResult::err(message);
             }
@@ -2366,6 +2451,7 @@ impl AssistantApp {
         } = pending;
         let decision_str = match choice {
             PermissionChoice::Deny => "deny",
+            PermissionChoice::DenyAlways => "deny_always",
             PermissionChoice::AllowOnce => "allow_once",
             PermissionChoice::AllowSession => {
                 self.record_assistant_grant(
@@ -2394,9 +2480,25 @@ impl AssistantApp {
             decision_str,
             "event stream subscription",
         ));
-        let result = if choice == PermissionChoice::Deny {
+        let result = if matches!(
+            choice,
+            PermissionChoice::Deny | PermissionChoice::DenyAlways
+        ) {
+            if choice == PermissionChoice::DenyAlways {
+                self.record_grant_with_decision(
+                    ASSISTANT_ACTOR_ID,
+                    ActorScope::BuiltIn,
+                    TargetType::AppEventStream,
+                    &target,
+                    GrantDuration::Always,
+                    GrantSource::User,
+                    Decision::Deny,
+                );
+                self.grants().save();
+            }
             ToolCallResult::err(format!(
-                "permission_denied: the user denied the subscription to {target}"
+                "permission_denied: the user denied the subscription to {target}. {}",
+                crate::cli::introspect::permission_undo_text()
             ))
         } else {
             self.subscribe_stream(&app, &event);
@@ -3874,6 +3976,14 @@ impl App for AssistantApp {
                 self.execute_effects(effects);
             }
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
+            Some(ComposerEvent::ReviewPermissions) => {
+                log::info!("assistant: review permissions opens the permissions pane");
+                self.pending_commands.push(AppCommand::SpawnApp {
+                    type_id: "permissions".to_string(),
+                    layout: Some("split_v".to_string()),
+                    args: Vec::new(),
+                });
+            }
             Some(ComposerEvent::OverlayConfirm) => self.confirm_overlay(),
             None => {}
         }
@@ -3891,6 +4001,22 @@ impl App for AssistantApp {
 mod tests {
     use super::*;
     use crate::plexi_ai::broker::AiBrokerResponse;
+
+    #[test]
+    fn turn_prompt_grounds_on_this_turns_tool_results() {
+        let mut system = String::from("agent");
+        push_grounding(&mut system);
+        assert!(system.contains("host.introspect"), "{system}");
+        assert!(system.contains("this turn"), "{system}");
+        assert!(system.contains("not sure"), "{system}");
+        assert!(!system.contains("host.help"), "{system}");
+        assert!(!system.contains("gear"), "{system}");
+        assert!(!system.contains("Cmd+Shift+P"), "{system}");
+        assert!(
+            !system.contains("plexi permissions list"),
+            "the prompt must not pre-seed commands: {system}"
+        );
+    }
 
     /// A `ScopeOrigin` for a tool provider pane in `context_id` — stint 0724
     /// Phase C. Every field but `context_id`/`pane_id` is a deterministic
@@ -4198,7 +4324,9 @@ enabled = ["allowed.tool"]
         assert_eq!(seen.len(), 2);
         assert_eq!(
             seen[0].system,
-            "Writer system prompt\n\nCompaction status: No compaction is running."
+            format!(
+                "Writer system prompt\n\n{GROUNDING_RULE}\n\nCompaction status: No compaction is running."
+            )
         );
         assert_eq!(seen[0].model_tier, ModelTier::Medium);
         assert_eq!(

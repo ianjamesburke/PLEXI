@@ -986,6 +986,7 @@ impl PlexiApp {
                             close_on_exit,
                             None,
                             true,
+                            false,
                             true,
                         );
                     } else {

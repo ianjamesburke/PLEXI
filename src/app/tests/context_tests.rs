@@ -2070,7 +2070,7 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None, true);
+        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None, false, true);
         new_x += 1;
     }
 
@@ -2957,6 +2957,7 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         "",
         Some(&std::path::PathBuf::from("/tmp/squad")),
         3,
+        false,
     );
     assert_eq!(
         settings.env.get("PLEXI_CONTEXT_ID"),

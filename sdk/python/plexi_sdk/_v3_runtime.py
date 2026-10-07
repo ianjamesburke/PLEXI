@@ -239,6 +239,15 @@ class V3AppRuntime:
             self._dispatch(events.FilePickCancelled(
                 request_id=ev.get("request_id", ""),
             ))
+        elif t == "permission_inventory":
+            entries = ev.get("entries") or []
+            if not isinstance(entries, list):
+                entries = []
+            self._dispatch(events.PermissionInventory(
+                entries=entries,
+                notice=str(ev.get("notice") or ""),
+                status=str(ev.get("status") or ""),
+            ))
         elif t == "host_log_result":
             content = ev.get("content")
             self._dispatch(events.HostLogResult(
@@ -696,6 +705,14 @@ class V3AppRuntime:
                     "type": "file_write",
                     "path": effect.path,
                     "content_b64": base64.b64encode(bytes(content)).decode("ascii"),
+                })
+            elif isinstance(effect, effects.ReadPermissionDecisions):
+                _emit({"type": "read_permission_decisions"})
+            elif isinstance(effect, effects.PermissionDecision):
+                _emit({
+                    "type": "permission_decision",
+                    "id": effect.id,
+                    "action": effect.action,
                 })
             elif isinstance(effect, effects.ReadHostLog):
                 _emit({"type": "read_host_log", "max_bytes": int(effect.max_bytes)})

@@ -136,16 +136,20 @@ pub enum PermissionChoice {
     AllowOnce,
     AllowSession,
     AllowAlways,
+    /// Store a denial until the person resets or allows it.
+    DenyAlways,
+    /// Refuse this call only. The next call asks again.
     Deny,
 }
 
 impl PermissionChoice {
     /// Left-to-right order the sheet renders its actions in — also the
-    /// Tab/arrow traversal order.
-    pub const ORDER: [PermissionChoice; 4] = [
+    /// Tab/arrow traversal order. Deny stays last so it remains the default.
+    pub const ORDER: [PermissionChoice; 5] = [
         PermissionChoice::AllowOnce,
         PermissionChoice::AllowSession,
         PermissionChoice::AllowAlways,
+        PermissionChoice::DenyAlways,
         PermissionChoice::Deny,
     ];
 }
@@ -1094,9 +1098,18 @@ impl AssistantModel {
             return Vec::new();
         };
         match choice {
-            PermissionChoice::Deny => {
+            PermissionChoice::Deny | PermissionChoice::DenyAlways => {
+                let lead = if choice == PermissionChoice::DenyAlways {
+                    "always denied by user"
+                } else {
+                    "denied by user for this call only"
+                };
                 self.push_flight_turn(Turn::tool(
-                    format!("{} — denied by user", pending.tool),
+                    format!(
+                        "{} — {lead}. {}",
+                        pending.tool,
+                        crate::cli::introspect::permission_undo_text()
+                    ),
                     ToolStatus::Failed,
                 ));
                 vec![AssistantEffect::SessionWrite {
@@ -1849,8 +1862,8 @@ mod tests {
         m.permission_move_prev();
         assert_eq!(
             m.permission_selected_choice(),
-            Some(PermissionChoice::AllowAlways),
-            "wraps backward from the first action to the last"
+            Some(PermissionChoice::DenyAlways),
+            "one step back from Deny lands on Always deny"
         );
 
         m.permission_move_next();
@@ -1891,6 +1904,9 @@ mod tests {
         let row = m.turns.last().unwrap();
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("denied by user"));
+        assert!(row.text.contains("plexi permissions list"));
+        assert!(row.text.contains("plexi permissions reset"));
+        assert!(!row.text.contains("gear"));
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
 
         // Resolving with no pending sheet is a no-op.

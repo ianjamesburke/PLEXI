@@ -246,6 +246,27 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
+            crate::protocol::AppRequest::Permissions {
+                op,
+                id,
+                pane_id,
+                credential,
+                response_file,
+            } => {
+                self.permissions_cli_request(
+                    op,
+                    id.as_deref(),
+                    *pane_id,
+                    credential.as_deref(),
+                    response_file,
+                );
+            }
+            crate::protocol::AppRequest::ListNeedsYou { response_file } => {
+                self.observe_needs_you("list", None, None, response_file);
+            }
+            crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
+                self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
+            }
             crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
                 let mut value = crate::agent::heads::handle_request(op, payload);
@@ -1145,6 +1166,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             spec.no_focus,
+                            spec.agent.is_some(),
                             inject_folder_secrets,
                         );
                         if let Some(ref pane_name) = spec.name {
@@ -1182,6 +1204,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            spec.agent.is_some(),
                             inject_folder_secrets,
                         );
                         if spec.no_focus {
@@ -1205,6 +1228,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            spec.agent.is_some(),
                             inject_folder_secrets,
                         );
                         if spec.no_focus {
@@ -1249,6 +1273,7 @@ impl PlexiApp {
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
                                             cwd_override,
+                                            spec.agent.is_some(),
                                             inject_folder_secrets,
                                         ) {
                                             Some(seeded_id) => response_pane_id = seeded_id,
@@ -1297,6 +1322,7 @@ impl PlexiApp {
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
                                 cwd_override,
+                                spec.agent.is_some(),
                                 inject_folder_secrets,
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,
@@ -1330,6 +1356,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             keep_focus,
+                            spec.agent.is_some(),
                             inject_folder_secrets,
                         );
                         if spec.no_focus {
@@ -2484,6 +2511,32 @@ impl PlexiApp {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
+                    if *state == crate::protocol::AgentState::Blocked
+                        && *blocked_reason != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
+                    {
+                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
+                            format!("{agent} is blocked")
+                        });
+                        let kind = if event.as_deref() == Some("AskQuestion") {
+                            crate::broker::gate::NeedsYouKind::Question
+                        } else {
+                            crate::broker::gate::NeedsYouKind::BlockedRun
+                        };
+                        let filed = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        )
+                        .file_needs_you(crate::broker::gate::NeedsYouFile {
+                            kind,
+                            actor: agent.clone(),
+                            resource: format!("pane:{pane_id}"),
+                            summary,
+                            expires_at: None,
+                            run_tag: session_id.clone().or_else(|| Some(format!("pane:{pane_id}"))),
+                        });
+                        if let Err(error) = filed {
+                            log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
+                        }
+                    }
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
                     // path is picked up by the level-triggered re-check in
@@ -2860,6 +2913,7 @@ impl PlexiApp {
                             Some(cmd.as_str()),
                             false,
                             None,
+                            false,
                             true,
                         );
                     }
@@ -3663,6 +3717,7 @@ impl PlexiApp {
                 Some(command),
                 ephemeral,
                 cwd,
+                false,
                 false,
                 true,
             )

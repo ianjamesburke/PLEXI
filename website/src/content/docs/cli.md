@@ -64,40 +64,6 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
 
-## `plexi needs-you`
-
-Items waiting on the person at the desktop. The terminal cannot resolve them
-
-| Subcommand | Description |
-|---|---|
-| `resolve` | Ask the host to resolve an item. The host refuses |
-
-### `plexi needs-you resolve`
-
-Ask the host to resolve an item. The host refuses
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | yes |  |
-| `--approve` | flag | no | Request approval. The host still refuses |
-| `--deny` | flag | no | Request denial. The host still refuses |
-
-## `plexi permissions`
-
-Permission grants. Allowing from the terminal is refused
-
-| Subcommand | Description |
-|---|---|
-| `allow` | Ask the host to allow a pending request. The host refuses |
-
-### `plexi permissions allow`
-
-Ask the host to allow a pending request. The host refuses
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | yes |  |
-
 ## `plexi run`
 
 Run a named command from your project's .plexi/commands.toml file.
@@ -1467,6 +1433,80 @@ Print the host MCP server config for an MCP-aware agent.
 Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
+## `plexi needs-you`
+
+List everything waiting on you. The terminal cannot resolve it.
+
+One host record covers click approvals, agent questions, and blocked runs. The desktop badge and the phone page resolve an id everywhere, exactly once. `resolve` from the terminal is refused.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List open items waiting on you as JSON |
+| `resolve` | Ask the host to resolve an item. The host refuses |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi needs-you resolve`
+
+Ask the host to resolve an item. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Request approval. The host still refuses |
+| `--deny` | flag | no | Request denial. The host still refuses |
+
+## `plexi permissions`
+
+List and change decisions stored by the permission monitor.
+
+`list` prints the live rows. `reset` clears a stored denial so the next call asks again. `revoke` removes an allow. `allow` turns a denial into an allow. Reset and allow from a pane, a call credential, or an agent file a Needs you item and leave the decision unchanged.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List live permission decisions |
+| `reset` | Clear a stored denial so the next call asks again |
+| `revoke` | Remove an allow, or refuse a pending ask |
+| `allow` | Turn a denial or a pending ask into an allow |
+
+### `plexi permissions list`
+
+List live permission decisions
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi permissions reset`
+
+Clear a stored denial so the next call asks again
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
+### `plexi permissions revoke`
+
+Remove an allow, or refuse a pending ask
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
+### `plexi permissions allow`
+
+Turn a denial or a pending ask into an allow
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
 
 ## `plexi notify`
 

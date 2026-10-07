@@ -10,6 +10,7 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 pub mod gate;
+pub(crate) mod seal;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
@@ -180,10 +181,21 @@ pub struct GrantRecord {
     /// Operation id that consumed a one-shot, for receipt recovery only.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
-    /// Tool scope: actor, tool, and resource still have to match, but argument
-    /// bytes do not. Exact call grants leave this false. A scope grant is how
-    /// an agent head is allowed to call a tool; it is still one `GrantRecord`
-    /// in this store, evaluated by `matches`.
+    /// Actor + tool + resource, ignoring the argument fingerprint.
+    ///
+    /// Exact one-shot and session grants stay fingerprint-bound. An explicit
+    /// Always deny, and an allow created from the Permissions app, set this so
+    /// the next call of that tool is answered without a matching payload.
+    /// A `tool_scoped` row matches its resource id when one is set, and any
+    /// resource when it is not. It does not also require package, instance,
+    /// context, or session equality.
+    #[serde(default)]
+    pub tool_scoped: bool,
+    /// Tool scope for an agent head: actor, tool, and resource still have to
+    /// match, but argument bytes do not. Exact call grants leave this false.
+    /// A scope grant is still one `GrantRecord` in this store, evaluated by
+    /// `matches`. The Permissions app does not use this flag; it uses
+    /// `tool_scoped`.
     #[serde(default)]
     pub args_unbound: bool,
 }
@@ -243,6 +255,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            tool_scoped: false,
             args_unbound: false,
         }
     }
@@ -282,6 +295,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            tool_scoped: false,
             args_unbound: false,
         }
     }
@@ -330,6 +344,12 @@ impl GrantRecord {
             return !toolish
                 && self.target_type == TargetType::Capability
                 && req.target_type == TargetType::Capability;
+        }
+        if self.tool_scoped {
+            return match &self.resource_id {
+                Some(id) => req.resource_id.as_deref() == Some(id.as_str()),
+                None => true,
+            };
         }
         if !self.args_unbound
             && (self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint)
@@ -652,51 +672,72 @@ struct GrantStoreData {
 /// in on load (loss-free, idempotent); the legacy store keeps working in
 /// parallel until every call site is switched.
 ///
-/// File handling (load-or-default, corrupt backup, atomic save) lives in
-/// [`TomlStore`]; this type owns only the grant evaluation rules.
+/// The file is HMAC-sealed. A missing or bad MAC drops every record.
 #[derive(Debug)]
 pub struct GrantStore {
     file: TomlStore<GrantStoreData>,
+    untrusted: Vec<seal::IntegrityFault>,
 }
 
 impl Default for GrantStore {
     fn default() -> Self {
         Self {
             file: TomlStore::detached(STORE_LABEL),
+            untrusted: Vec::new(),
         }
     }
 }
 
 impl GrantStore {
     /// Load `grants.toml` from the channel config dir and migrate any legacy
-    /// `permissions.toml` entries not yet represented. On parse failure the
-    /// corrupt file is backed up and an empty store returned (fail open to
-    /// empty, never crash the host).
+    /// `permissions.toml` entries not yet represented. A missing file is an
+    /// empty store. A missing or bad MAC quarantines the file and returns an
+    /// empty store; [`Self::integrity_faults`] names it. A signed file that
+    /// does not parse is backed up and also returns empty.
     pub fn load_or_default(config_dir: &Path) -> Self {
-        let file = TomlStore::load_or_default(
-            config_dir,
-            "grants.toml",
-            STORE_LABEL,
-            |data: &GrantStoreData, path| {
-                log::info!(
-                    "grant_store: loaded {} records from {}",
-                    data.records.len(),
-                    path.display()
-                );
-            },
-        );
-        let mut store = Self { file };
+        let path = config_dir.join("grants.toml");
+        let loaded = seal::load_toml::<GrantStoreData>(&path);
+        if loaded.trusted {
+            log::info!(
+                "grant_store: loaded {} records from {}",
+                loaded.data.records.len(),
+                path.display()
+            );
+        }
+        let mut untrusted = Vec::new();
+        if let Some(fault) = loaded.fault {
+            seal::note_integrity_fault(config_dir, fault.clone());
+            untrusted.push(fault);
+        }
+        let mut store = Self {
+            file: TomlStore::at(path, STORE_LABEL, loaded.data),
+            untrusted,
+        };
 
         let legacy = PermissionStore::load_or_default(config_dir);
-        let migrated = store.migrate_legacy(&legacy);
-        if migrated > 0 {
+        if let Some(fault) = legacy.integrity_fault().cloned() {
             log::info!(
-                "grant_store: migrated {migrated} legacy permissions.toml entries into {}",
-                store.file.path.display()
+                "grant_store: skipped legacy migration; permissions.toml failed integrity ({})",
+                fault.reason
             );
-            store.save();
+            seal::note_integrity_fault(config_dir, fault.clone());
+            store.untrusted.push(fault);
+        } else {
+            let migrated = store.migrate_legacy(&legacy);
+            if migrated > 0 {
+                log::info!(
+                    "grant_store: migrated {migrated} legacy permissions.toml entries into {}",
+                    store.file.path.display()
+                );
+                store.save();
+            }
         }
         store
+    }
+
+    /// Files the host refused while loading. Empty when the store is trusted.
+    pub fn integrity_faults(&self) -> &[seal::IntegrityFault] {
+        &self.untrusted
     }
 
     /// Import legacy `app_id::workspace::capability → state` entries as
@@ -802,9 +843,12 @@ impl GrantStore {
         &mut self.file.data.records
     }
 
-    /// Atomically write to disk. No-op for path-less test stores.
+    /// Atomically write a sealed file. No-op for path-less test stores.
     pub fn save(&self) {
-        self.file.save();
+        let label = self.file.label();
+        if let Err(error) = seal::write_toml(&self.file.path, label, &self.file.data) {
+            log::error!("{label}: failed to save {}: {error}", self.file.path.display());
+        }
     }
 
     /// Evaluate a request through the spec's ordered tiers:
@@ -1172,9 +1216,13 @@ mod tests {
             e.unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with("grants.toml.corrupt-")
+                .starts_with("grants.toml.untrusted-")
         });
         assert!(backup_exists);
+        assert!(
+            store.integrity_faults().iter().any(|fault| fault.file == "grants.toml"),
+            "an unsigned grants file is an integrity fault"
+        );
     }
 
     #[test]

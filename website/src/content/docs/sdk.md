@@ -92,6 +92,29 @@ file's exact bytes — WAV, PNG, any media round-trips unchanged.
 Binary-exact file write. Rejects non-bytes payloads and payloads over
 `MAX_FILE_IO_BYTES` immediately, before the host round trip.
 
+### `ReadPermissionDecisions`
+
+```python
+ReadPermissionDecisions()
+```
+
+Ask the host for the live permission-monitor inventory.
+
+The host replies with :class:`events.PermissionInventory`. The app does
+not keep its own grant store.
+
+### `PermissionDecision`
+
+```python
+PermissionDecision(id: str, action: str)
+```
+
+Change one live permission row.
+
+``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
+Permissions app is a human decision. The host replies with a fresh
+:class:`events.PermissionInventory`.
+
 ### `ReadHostLog`
 
 ```python
@@ -358,6 +381,18 @@ FileReadResult(content: Optional[bytes], error: Optional[str])
 ```python
 FileWriteResult(error: Optional[str])
 ```
+
+### `PermissionInventory`
+
+```python
+PermissionInventory(entries: list, notice: str = '', status: str = '')
+```
+
+Host reply to :class:`effects.ReadPermissionDecisions` or
+:class:`effects.PermissionDecision`.
+
+``entries`` is the permission monitor's live list. ``notice`` is empty
+on a plain read.
 
 ### `HostLogResult`
 

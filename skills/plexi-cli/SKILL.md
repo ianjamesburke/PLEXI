@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.10"
+skill_version: "5.0.12"
 plexi_version: "0.3.5"
-last_verified: "2026-10-06"
+last_verified: "2026-10-07"
 ---
 
 # Plexi CLI
@@ -52,7 +52,8 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
-  `plexi app --help`.
+  `plexi app --help`. `plexi app info <id>` prints the manifest and the tools
+  declared in that app's source.
 - **App state** — read or replace a file-backed app's state document, so a human
   and an agent can drive the same app: `plexi app state --help`. Only apps that
   declare a `[state]` section are addressable; the path is resolved from the
@@ -68,8 +69,30 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Assistant permission** — list or show a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id
-  and wait for the person at the desktop to decide. Do not approve, deny,
-  or widen a grant from the terminal. `assistant permission resolve`, `needs-you resolve`, and `permissions allow` are refused and do not grant.
+  and wait for the person at the desktop. Do not approve, deny, or widen a
+  grant from the terminal. `assistant permission resolve` and `needs-you resolve`
+  are refused and do not grant.
+- **Permissions** — the live permission monitor, the same rows as the Permissions app:
+
+  ```bash
+  plexi permissions list --json
+  plexi permissions reset <id>
+  plexi permissions revoke <id>
+  plexi permissions allow <id>  # agents do not grant
+  ```
+
+  Reset clears a stored denial. Revoke removes an allow. Allow turns a denial
+  into an allow for a human terminal. From a pane, a child of that pane, or
+  with `PLEXI_CALL_CREDENTIAL`, reset and allow file a Needs you item and do
+  not grant. Revoke runs from either caller. Open the app with
+  `plexi app open permissions`. Editing `grants.toml`, `permissions.toml`, or
+  `permission-audit.jsonl` does not grant a permission. The host ignores a
+  file whose signature does not match, asks again, and files Needs you.
+- **Needs you** — `plexi needs-you list --json` prints everything waiting on
+  the human. Click approvals, agent questions, and blocked runs share that
+  record. Expired items are auto-denied. Do not resolve from the terminal:
+  `needs-you resolve` is refused and does not grant. The person at the desktop
+  decides.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

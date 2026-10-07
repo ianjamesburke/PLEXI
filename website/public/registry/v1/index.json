@@ -44,11 +44,9 @@
       "id": "permissions",
       "name": "Permissions",
       "version": "0.1.0",
-      "description": "View and manage capability permissions for every app",
+      "description": "Review and change live tool permission decisions",
       "publisher": "plexi",
-      "capabilities": [
-        "permissions.manage"
-      ],
+      "capabilities": [],
       "tags": [
         "core",
         "free",
@@ -58,7 +56,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "801014be8ef95ce62973624dd5d851a73871f22575a29450e731be7c71526c95"
+      "checksum": "8e7379164e4f0b82c237c1a5275cc05d88c4eb2f7584c4b6f6d4c6c1b8bb4b76"
     },
     {
       "id": "todo",
