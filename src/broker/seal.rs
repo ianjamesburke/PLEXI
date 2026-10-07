@@ -1,9 +1,10 @@
 //! Integrity for permission files.
 //!
-//! `grants.toml` and `permissions.toml` are HMAC-SHA256 sealed. The audit log
-//! is an append-only hash chain whose tip lives in the secret store. The MAC
-//! key is `plexi:host:permission-mac` in that same store (`system_store()`).
-//! Agent panes never receive the key. A bad or missing MAC is not a grant.
+//! `grants.toml` is HMAC-SHA256 sealed. The audit log is an append-only hash
+//! chain. The MAC key and the audit tip live in the host seal store
+//! (`host_key`), never in `secrets.json` and never under a workspace id an
+//! agent can pass to `plexi secret get`. Agent panes never receive the key.
+//! A bad or missing MAC is not a grant.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -12,8 +13,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use zeroize::Zeroizing;
-
-use crate::workspace::secrets::system_store;
 
 /// Line prefix on a sealed TOML file. The HMAC covers every byte before it.
 const MAC_PREFIX: &str = "# plexi-mac:";
@@ -312,7 +311,17 @@ pub fn reject_untrusted_audit(path: &Path, reason: &str) {
 /// Drop the MAC key from every pane. Agent panes also lose any value that
 /// contains the profile directory, including the Unix command socket.
 pub fn scrub_pane_env(env: &mut HashMap<String, String>, agent_pane: bool) {
-    let key_hex = key_hex().ok();
+    // Read a key that already exists. Creating one here opens the macOS
+    // keychain while the first pane is being built, before `host start` can
+    // report ready.
+    let key_hex = match existing_mac_key() {
+        Ok(Some(bytes)) => Some(Zeroizing::new(hex_encode(bytes.as_slice()))),
+        Ok(None) => None,
+        Err(error) => {
+            log::error!("permission_seal: pane env scrub could not read the mac key: {error}");
+            None
+        }
+    };
     let profile = crate::config::config_dir();
     let profile_text = profile.display().to_string();
     let canonical = crate::platform::path::canonical_or_self(&profile);
@@ -409,20 +418,22 @@ fn tip_account(path: &Path) -> String {
 }
 
 fn read_tip(path: &Path) -> Option<String> {
-    system_store()
-        .get(&tip_account(path))
-        .map(|value| value.to_string())
+    match super::host_key::get(&tip_account(path)) {
+        Ok(value) => value.map(|tip| tip.to_string()),
+        Err(error) => {
+            log::error!("permission_seal: could not read audit tip: {error}");
+            None
+        }
+    }
 }
 
 fn store_tip(path: &Path, tip: &str) -> Result<(), String> {
-    system_store()
-        .set(&tip_account(path), tip)
-        .map_err(|error| error.to_string())
+    super::host_key::set(&tip_account(path), tip)
 }
 
 fn clear_audit_tip(path: &Path) {
     let account = tip_account(path);
-    if let Err(error) = system_store().delete(&account) {
+    if let Err(error) = super::host_key::delete(&account) {
         log::error!(
             "permission_seal: could not clear audit tip for {}: {error}",
             path.display()
@@ -480,33 +491,44 @@ fn backup_corrupt(path: &Path, error: &str) {
     }
 }
 
+/// Permission MAC if the host seal store already has one. Does not create a key.
+///
+/// Callers that seal with this key, including the Needs you journal, use this
+/// instead of reading `secrets.json`.
+pub(crate) fn existing_mac_key() -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    super::host_key::scrub_user_secret_host_namespace();
+    match super::host_key::get(super::host_key::MAC_ITEM)? {
+        Some(existing) => Ok(Some(Zeroizing::new(decode_hex(existing.trim())?))),
+        None => Ok(None),
+    }
+}
+
+/// Permission MAC, creating it in the host seal store when this is the first use.
+pub(crate) fn mac_key_bytes() -> Result<Zeroizing<Vec<u8>>, String> {
+    let hex = key_hex()?;
+    let bytes = decode_hex(hex.as_str())?;
+    Ok(Zeroizing::new(bytes))
+}
+
 fn key_hex() -> Result<Zeroizing<String>, String> {
-    let store = system_store();
-    if let Some(existing) = store.get(KEY_ACCOUNT) {
-        decode_hex(existing.trim())?;
-        return Ok(Zeroizing::new(existing.trim().to_string()));
+    if let Some(existing) = existing_mac_key()? {
+        return Ok(Zeroizing::new(hex_encode(&existing)));
     }
     let hex = fresh_key_hex();
-    match store.add_new(KEY_ACCOUNT, &hex) {
+    match super::host_key::add_new(super::host_key::MAC_ITEM, &hex) {
         Ok(()) => {
             log::info!("permission_seal: created host permission mac key");
             Ok(Zeroizing::new(hex))
         }
-        Err(error) => match store.get(KEY_ACCOUNT) {
-            Some(existing) => {
-                let trimmed = existing.trim().to_string();
-                decode_hex(&trimmed)?;
-                Ok(Zeroizing::new(trimmed))
-            }
-            None => Err(format!("permission mac key: {error}")),
+        Err(error) => match existing_mac_key()? {
+            Some(existing) => Ok(Zeroizing::new(hex_encode(&existing))),
+            None => Err(error),
         },
     }
 }
 
 fn key_bytes() -> Result<Zeroizing<Vec<u8>>, String> {
-    let hex = key_hex()?;
-    let bytes = decode_hex(hex.as_str())?;
-    Ok(Zeroizing::new(bytes))
+    mac_key_bytes()
 }
 
 fn fresh_key_hex() -> String {

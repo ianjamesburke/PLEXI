@@ -351,6 +351,35 @@ impl PermissionMonitor {
         }) {
             log::error!("permission_seal: could not file integrity alert: {error}");
         }
+        let fact = AuditFact {
+            kind: "integrity".to_string(),
+            actor: "host".to_string(),
+            call_id: String::new(),
+            grant_id: String::new(),
+            resource_id: fault.file.clone(),
+            args_fingerprint: String::new(),
+            operation_id: String::new(),
+            decision: fault.reason.clone(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        };
+        if let Some(path) = &self.audit_path {
+            match super::seal::append_audit(path, &fact) {
+                Ok(()) => {
+                    self.audit_mem
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(fact);
+                    log::info!(
+                        "permission_seal: audited integrity fault {} ({})",
+                        fault.file, fault.reason
+                    );
+                }
+                Err(error) => log::error!(
+                    "permission_seal: integrity needs-you stands; audit row was not written: {error}"
+                ),
+            }
+        }
     }
 
     fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
@@ -1112,6 +1141,161 @@ impl PermissionMonitor {
         entries
     }
 
+    /// Persist one app capability. A later click replaces an auto-grant of the
+    /// same capability instead of adding a second row.
+    pub fn grant_app_capability(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        cap: crate::app::permissions::Capability,
+        decision: Decision,
+    ) {
+        self.grant_capability_id(app_id, workspace_root, cap.as_str(), decision, GrantSource::User);
+    }
+
+    /// Persist one capability id (manifest capability or raw WASM import).
+    pub fn grant_capability_id(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+        decision: Decision,
+        source: GrantSource,
+    ) {
+        {
+            let mut store = self.store();
+            store.upsert_capability(app_id, workspace_root, capability_id, decision, source);
+        }
+        self.save_durable();
+        log::info!(
+            "permission_monitor: stored capability {capability_id} for {app_id} = {} ({source:?})",
+            decision.as_str()
+        );
+    }
+
+    /// Turn declared capabilities into gate rows and an [`AppPermissions`] set.
+    /// Non-sensitive capabilities with no stored decision are auto-granted.
+    /// Sensitive capabilities stay withheld until a human grant exists.
+    pub fn materialize_app_permissions(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &std::collections::HashSet<crate::app::permissions::Capability>,
+        allowed_hosts: Vec<String>,
+    ) -> crate::app::permissions::AppPermissions {
+        let ids: Vec<String> = declared.iter().map(|cap| cap.as_str().to_string()).collect();
+        let (granted, blocked) = self.materialize_capability_ids(app_id, workspace_root, &ids);
+        let mut capabilities = std::collections::HashSet::new();
+        let mut blocked_caps = std::collections::HashSet::new();
+        for id in granted {
+            if let Ok(cap) = crate::app::permissions::Capability::try_from(id.as_str()) {
+                capabilities.insert(cap);
+            }
+        }
+        for id in blocked {
+            if let Ok(cap) = crate::app::permissions::Capability::try_from(id.as_str()) {
+                blocked_caps.insert(cap);
+            }
+        }
+        crate::app::permissions::AppPermissions {
+            capabilities,
+            blocked: blocked_caps,
+            is_builtin: false,
+            allowed_hosts,
+        }
+    }
+
+    /// Raw WASM capability ids, same auto-grant rule as manifest capabilities.
+    pub fn materialize_wasm_sets(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &std::collections::HashSet<String>,
+    ) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+        let ids: Vec<String> = declared.iter().cloned().collect();
+        let (granted, blocked) = self.materialize_capability_ids(app_id, workspace_root, &ids);
+        (
+            granted.into_iter().collect(),
+            blocked.into_iter().collect(),
+        )
+    }
+
+    fn materialize_capability_ids(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &[String],
+    ) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+        let ws = crate::platform::path::canonical_or_self(workspace_root);
+        let now = self.now_secs();
+        let mut granted = std::collections::HashSet::new();
+        let mut blocked = std::collections::HashSet::new();
+        let mut dirty = false;
+        {
+            let mut store = self.store();
+            for capability_id in declared {
+                match stored_capability_decision(&store, app_id, &ws, capability_id, now) {
+                    Some(Decision::Deny) => {
+                        blocked.insert(capability_id.clone());
+                    }
+                    Some(Decision::Allow) => {
+                        granted.insert(capability_id.clone());
+                    }
+                    Some(Decision::Ask) => {}
+                    None if declared_capability_needs_click(capability_id) => {
+                        log::info!(
+                            "permission_monitor: withheld {capability_id} for {app_id} until a human grants it"
+                        );
+                    }
+                    None => {
+                        store.upsert_capability(
+                            app_id,
+                            workspace_root,
+                            capability_id,
+                            Decision::Allow,
+                            GrantSource::Workspace,
+                        );
+                        granted.insert(capability_id.clone());
+                        dirty = true;
+                        log::info!(
+                            "permission_monitor: auto-granted {capability_id} for {app_id}"
+                        );
+                    }
+                }
+            }
+            let declared_set: std::collections::HashSet<&str> =
+                declared.iter().map(String::as_str).collect();
+            let extras: Vec<(String, Decision)> = store
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.actor_type == ActorType::App
+                        && record.actor_id == app_id
+                        && record.target_type == TargetType::Capability
+                        && record.workspace_root.as_deref() == Some(ws.as_path())
+                        && !declared_set.contains(record.target_id.as_str())
+                        && record.expires_at.is_none_or(|expires| now < expires)
+                })
+                .map(|record| (record.target_id.clone(), record.decision))
+                .collect();
+            for (capability_id, decision) in extras {
+                match decision {
+                    Decision::Allow => {
+                        granted.insert(capability_id);
+                    }
+                    Decision::Deny => {
+                        blocked.insert(capability_id);
+                    }
+                    Decision::Ask => {}
+                }
+            }
+            if dirty {
+                store.save();
+            }
+        }
+        (granted, blocked)
+    }
+
     /// `reset` and `allow` widen. An agent files Needs you and changes nothing.
     /// `revoke` narrows and runs from any caller.
     pub fn mutate_entry(
@@ -1607,6 +1791,52 @@ impl PermissionMonitor {
             fact.operation_id
         ));
         Ok(())
+    }
+}
+
+fn declared_capability_needs_click(capability_id: &str) -> bool {
+    match crate::app::permissions::Capability::try_from(capability_id) {
+        Ok(cap) => cap.is_sensitive(),
+        Err(_) => crate::app::permissions::wasm_capability_requires_consent(capability_id),
+    }
+}
+
+fn stored_capability_decision(
+    store: &GrantStore,
+    app_id: &str,
+    workspace: &Path,
+    capability_id: &str,
+    now: i64,
+) -> Option<Decision> {
+    let mut allow = false;
+    let mut ask = false;
+    let mut deny = false;
+    for record in store.records() {
+        if record.actor_type != ActorType::App
+            || record.actor_id != app_id
+            || record.target_type != TargetType::Capability
+            || record.target_id != capability_id
+            || record.workspace_root.as_deref() != Some(workspace)
+        {
+            continue;
+        }
+        if record.expires_at.is_some_and(|expires| now >= expires) {
+            continue;
+        }
+        match record.decision {
+            Decision::Deny => deny = true,
+            Decision::Ask => ask = true,
+            Decision::Allow => allow = true,
+        }
+    }
+    if deny {
+        Some(Decision::Deny)
+    } else if ask {
+        Some(Decision::Ask)
+    } else if allow {
+        Some(Decision::Allow)
+    } else {
+        None
     }
 }
 

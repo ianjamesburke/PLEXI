@@ -3327,17 +3327,13 @@ impl PlexiApp {
             store.set(app_id, &ws, cap, new_state);
             store.save();
 
-            // Dual-write the unified broker store so grants.toml stays in
-            // lockstep with the legacy permissions.toml until all call sites
-            // read through the broker (permissions-broker spec, Phase A).
-            let mut grants = crate::broker::GrantStore::load_or_default(&self.permission_store_dir);
-            grants.record_app_capability(
-                app_id,
-                &ws,
-                cap,
-                crate::broker::Decision::from_permission_state(new_state),
-            );
-            grants.save();
+            crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
+                .grant_app_capability(
+                    app_id,
+                    &ws,
+                    cap,
+                    crate::broker::Decision::from_permission_state(new_state),
+                );
 
             // Live-update every running instance of this app in this workspace.
             let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
