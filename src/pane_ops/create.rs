@@ -1261,6 +1261,7 @@ impl PlexiApp {
                 &context.description,
                 context.root.as_ref(),
                 context.depth,
+                false,
             );
             if let Some(cmd) = initial_cmd {
                 super::apply_initial_cmd(&mut settings, cmd, false);
@@ -1315,6 +1316,7 @@ impl PlexiApp {
         cwd: Option<PathBuf>,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
+        agent_pane: bool,
         inject_folder_secrets: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
@@ -1327,6 +1329,7 @@ impl PlexiApp {
             &context.description,
             context.root.as_ref(),
             context.depth,
+            agent_pane,
         );
         if let Some(cmd) = initial_cmd {
             log::info!(
@@ -1375,6 +1378,7 @@ impl PlexiApp {
         close_on_exit: bool,
         cwd_override: Option<std::path::PathBuf>,
         keep_focus: bool,
+        agent_pane: bool,
         inject_folder_secrets: bool,
     ) -> crate::spatial::tiling::PaneId {
         let new_id = self.host.alloc_pane_id();
@@ -1393,6 +1397,7 @@ impl PlexiApp {
             &context.description,
             context.root.as_ref(),
             context.depth,
+            agent_pane,
         );
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);

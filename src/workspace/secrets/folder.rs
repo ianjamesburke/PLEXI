@@ -381,7 +381,7 @@ pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
     })
 }
 
-/// Forward a human click (`once`, `session`, `always`, or `deny`) to the
+/// Forward a human click (`once`, `session`, `always`, `deny`, or `deny_always`) to the
 /// waiter that calls `approve_pending`. Returns false when no sheet is armed.
 pub fn deliver_folder_secret_choice(choice: &str) -> bool {
     let reply = {
@@ -492,6 +492,7 @@ fn wait_for_human_choice(
         "once" => gate::ApprovalChoice::Once,
         "session" => gate::ApprovalChoice::Session,
         "always" => gate::ApprovalChoice::Always,
+        "deny_always" => gate::ApprovalChoice::DenyAlways,
         _ => gate::ApprovalChoice::Deny,
     };
     match monitor.approve_pending(&pending_id, approval) {

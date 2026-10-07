@@ -1692,7 +1692,7 @@ impl PlexiApp {
                 self.zoom_out_of_context();
             }
             crate::host::keys::Action::NewTab => {
-                self.new_tab(self.active_window, None, false, None, true);
+                self.new_tab(self.active_window, None, false, None, false, true);
                 self.mark_workspace_dirty();
             }
             crate::host::keys::Action::NewPageRight => {

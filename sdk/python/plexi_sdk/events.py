@@ -108,6 +108,20 @@ class FileWriteResult:
 
 
 @dataclass
+class PermissionInventory:
+    """Host reply to :class:`effects.ReadPermissionDecisions` or
+    :class:`effects.PermissionDecision`.
+
+    ``entries`` is the permission monitor's live list. ``notice`` is empty
+    on a plain read.
+    """
+
+    entries: list
+    notice: str = ""
+    status: str = ""
+
+
+@dataclass
 class HostLogResult:
     """Host reply to an `effects.ReadHostLog` request.
 

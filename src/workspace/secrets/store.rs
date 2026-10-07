@@ -132,6 +132,11 @@ fn keychain_status_message(code: i32, fallback: &str) -> String {
 ///
 /// Private, non-constructible outside this module, and absent from test
 /// builds entirely — [`system_store`] is the only handle.
+///
+/// The first call disables keychain user interaction for the process.
+/// Host startup reads the permission MAC on the thread that answers pane
+/// IPC; a credential dialog there never gets a click on CI and
+/// `plexi host start` times out.
 #[cfg(all(target_os = "macos", not(test)))]
 pub(super) struct MacKeychain;
 

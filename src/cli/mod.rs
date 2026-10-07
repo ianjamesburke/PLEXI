@@ -198,6 +198,7 @@ pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<Re
 pub mod args;
 pub mod crawl;
 pub mod help;
+pub mod introspect;
 pub mod registry;
 pub mod setup;
 mod pane_caller;
@@ -232,6 +233,7 @@ pub mod notes;
 pub mod notify;
 pub mod open;
 pub mod pane;
+pub mod permissions;
 pub mod registry_watch;
 pub mod release_resolver;
 pub mod routine;
@@ -1260,7 +1262,7 @@ pub use agent::{
 pub use agents_api::{agent_delegate_cli, agent_head_dispatch, agent_run_dispatch};
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_call_cli, assistant_permission_cli, assistant_send_cli, app_info, app_init,
+    app_action_cli, app_call_cli, assistant_permission_cli, assistant_send_cli, needs_you_cli, app_info, app_init,
     app_inspect_cli, app_install_package, app_install_with_pin, app_list, app_package_cli,
     app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };
@@ -1294,6 +1296,7 @@ pub use open::{
     app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
     parse_prefix, AgentBootRequest, OpenPrefix,
 };
+pub use permissions::permissions_cli;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,

@@ -218,6 +218,86 @@ impl PlexiApp {
         };
         log::info!("assistant_host_tool: executing '{name}' in process");
         match name {
+            "host.introspect" => {
+                let query = parsed
+                    .get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let live = crate::plexi_ai::tool_dispatch::live_exposed_tools()
+                    .into_iter()
+                    .map(|(app_id, pane_id, name, description)| {
+                        crate::cli::introspect::LiveTool {
+                            app_id,
+                            pane_id,
+                            name,
+                            description,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let permissions = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                )
+                .list_entries();
+                let permissions = serde_json::to_value(&permissions).unwrap_or(serde_json::json!([]));
+                let permissions = permissions.as_array().cloned().unwrap_or_default();
+                let panes = self.introspect_panes();
+                let doc = crate::cli::introspect::assemble(
+                    query,
+                    &crate::app::registry::apps_dir(),
+                    &panes,
+                    &permissions,
+                    &live,
+                );
+                log::info!(
+                    "assistant_host_tool: host.introspect query={} cli={} apps={} panes={} permissions={}",
+                    query.unwrap_or(""),
+                    doc["cli"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["apps"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["panes"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["permissions"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                );
+                ToolCallResult::ok_value(doc)
+            }
+            "host.permissions.list" => {
+                let entries = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                )
+                .list_entries();
+                log::info!(
+                    "assistant_host_tool: host.permissions.list count={}",
+                    entries.len()
+                );
+                ToolCallResult::ok_value(serde_json::json!({"ok": true, "entries": entries}))
+            }
+            "host.permissions.revoke" | "host.permissions.reset" | "host.permissions.allow" => {
+                let Some(id) = parsed.get("id").and_then(serde_json::Value::as_str) else {
+                    return ToolCallResult::err("invalid_input: id is required".to_string());
+                };
+                let action = name.rsplit('.').next().unwrap_or("");
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                );
+                let outcome = monitor.mutate_entry(
+                    id,
+                    action,
+                    &crate::broker::gate::PermissionCaller {
+                        human: false,
+                        actor_id: format!("agent:assistant:{origin_pane_id}"),
+                    },
+                );
+                log::info!("assistant_host_tool: {name} id={id}");
+                let body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+                if matches!(
+                    outcome,
+                    crate::broker::gate::PermissionMutation::NeedsYou { .. }
+                        | crate::broker::gate::PermissionMutation::Rejected { .. }
+                        | crate::broker::gate::PermissionMutation::Missing { .. }
+                ) {
+                    ToolCallResult::err(body.to_string())
+                } else {
+                    ToolCallResult::ok_value(body)
+                }
+            }
             "host.panes.list" => ToolCallResult::ok_value(self.assistant_pane_list()),
             "host.panes.state" => {
                 let Some(id) = parsed.get("pane_id").and_then(serde_json::Value::as_u64) else {
@@ -728,6 +808,53 @@ impl PlexiApp {
             }
         }
         result
+    }
+
+    fn introspect_panes(&self) -> Vec<serde_json::Value> {
+        let active = self.active_window;
+        self.windows
+            .iter()
+            .enumerate()
+            .flat_map(|(window_index, window)| {
+                let focused = window
+                    .focused_pane
+                    .and_then(|tile| window.tree.tiles.get(tile))
+                    .and_then(|tile| match tile {
+                        egui_tiles::Tile::Pane(id) => Some(*id),
+                        _ => None,
+                    });
+                window
+                    .panes
+                    .iter()
+                    .filter(move |(id, _)| window.tree.tiles.find_pane(id).is_some())
+                    .map(move |(id, pane)| {
+                        let (kind, title, app_id) = match pane {
+                            crate::host::pane::Pane::Terminal(term) => (
+                                "terminal",
+                                term.name.clone().unwrap_or_else(|| "terminal".to_string()),
+                                None,
+                            ),
+                            crate::host::pane::Pane::App(app) => {
+                                ("app", app.name.clone(), Some(app.manifest_id.clone()))
+                            }
+                            crate::host::pane::Pane::Portal(portal) => (
+                                "portal",
+                                format!("portal:{}", portal.target_context_id),
+                                None,
+                            ),
+                        };
+                        serde_json::json!({
+                            "id": id,
+                            "type": kind,
+                            "title": title,
+                            "app_id": app_id,
+                            "focused": window_index == active && focused == Some(*id),
+                            "context_id": window.context_id,
+                            "window_id": window.window_id,
+                        })
+                    })
+            })
+            .collect()
     }
 
     fn assistant_pane_list(&self) -> serde_json::Value {
@@ -1762,6 +1889,35 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("invalid_input"));
+    }
+
+    #[test]
+    fn introspect_reports_live_commands_and_the_open_pane() {
+        let mut harness = HostHarness::new();
+        let pane = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+        let listed = harness.app.handle_assistant_host_tool(
+            "host.introspect",
+            r#"{"query":"permissions"}"#,
+            pane,
+            context,
+        );
+        assert!(listed.error.is_none(), "{:?}", listed.error);
+        let output = listed.output_json.expect("introspect output");
+        assert!(output.contains("plexi permissions reset"), "{output}");
+        assert!(output.contains("plexi permissions list"), "{output}");
+        assert!(!output.contains("gear icon"), "{output}");
+        let open = harness.app.handle_assistant_host_tool(
+            "host.introspect",
+            "{}",
+            pane,
+            context,
+        );
+        let open_output = open.output_json.expect("unfiltered introspect");
+        assert!(
+            open_output.contains(&format!("\"id\":{pane}")),
+            "{open_output}"
+        );
     }
 
     #[test]

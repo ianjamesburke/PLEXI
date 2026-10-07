@@ -324,7 +324,12 @@ fn main() -> eframe::Result {
                         },
                     },
                     Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::List { json: _ } => {
+                            std::process::exit(cli::needs_you_cli("list", None, None))
+                        }
                         NeedsYouCmd::Resolve { id, approve: _, deny } => {
+                            // A terminal cannot grant. The desktop banner and the
+                            // phone page are the resolve paths.
                             let choice = if deny { "deny" } else { "once" };
                             std::process::exit(cli::assistant_permission_cli(
                                 "resolve",
@@ -334,12 +339,17 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::List { json } => {
+                            std::process::exit(cli::permissions_cli("list", None, json))
+                        }
+                        PermissionsCmd::Reset { id } => {
+                            std::process::exit(cli::permissions_cli("reset", Some(&id), true))
+                        }
+                        PermissionsCmd::Revoke { id } => {
+                            std::process::exit(cli::permissions_cli("revoke", Some(&id), true))
+                        }
                         PermissionsCmd::Allow { id } => {
-                            std::process::exit(cli::assistant_permission_cli(
-                                "resolve",
-                                Some(&id),
-                                Some("once"),
-                            ))
+                            std::process::exit(cli::permissions_cli("allow", Some(&id), true))
                         }
                     },
                     Commands::Run {

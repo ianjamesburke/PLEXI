@@ -78,6 +78,7 @@ impl PlexiApp {
             &ctx_desc,
             ctx_root.as_ref(),
             ctx_depth,
+            false,
         );
         let Some(term) = TerminalPane::new(
             new_id,

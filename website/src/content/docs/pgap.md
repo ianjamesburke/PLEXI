@@ -601,6 +601,36 @@ Resolve one pending permission request from the desktop observation seam.
 | `pending_request_id` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `permissions`
+
+Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `allow`. A pane id or a call credential ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `credential` | `string?` | no |
+| `id` | `string?` | no |
+| `op` | `string` | yes |
+| `pane_id` | `integer?` | no |
+| `response_file` | `string` | yes |
+
+### `list_needs_you`
+
+List items waiting on the human. The host expires due items first.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `resolve_needs_you`
+
+Resolve one needs-you item exactly once. `approve` false denies it.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `approve` | `boolean` | yes |
+| `id` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `agents_api`
 
 Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_ru...

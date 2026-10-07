@@ -46,17 +46,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
-    /// Items waiting on the person at the desktop. The terminal cannot resolve them.
-    #[command(name = "needs-you")]
-    NeedsYou {
-        #[command(subcommand)]
-        cmd: NeedsYouCmd,
-    },
-    /// Permission grants. Allowing from the terminal is refused.
-    Permissions {
-        #[command(subcommand)]
-        cmd: PermissionsCmd,
-    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -165,6 +154,26 @@ pub enum Commands {
     Events {
         #[command(subcommand)]
         cmd: EventsCmd,
+    },
+    /// List everything waiting on you. The terminal cannot resolve it.
+    ///
+    /// One host record covers click approvals, agent questions, and blocked
+    /// runs. The desktop badge and the phone page resolve an id everywhere,
+    /// exactly once. `resolve` from the terminal is refused.
+    #[command(name = "needs-you")]
+    NeedsYou {
+        #[command(subcommand)]
+        cmd: NeedsYouCmd,
+    },
+    /// List and change decisions stored by the permission monitor.
+    ///
+    /// `list` prints the live rows. `reset` clears a stored denial so the next
+    /// call asks again. `revoke` removes an allow. `allow` turns a denial into
+    /// an allow. Reset and allow from a pane, a call credential, or an agent
+    /// file a Needs you item and leave the decision unchanged.
+    Permissions {
+        #[command(subcommand)]
+        cmd: PermissionsCmd,
     },
     /// Send a notification to the Plexi UI.
     Notify {
@@ -332,6 +341,51 @@ pub enum LedgerCmd {
 }
 
 #[derive(Subcommand)]
+pub enum NeedsYouCmd {
+    /// List open items waiting on you as JSON.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask the host to resolve an item. The host refuses.
+    Resolve {
+        id: String,
+        /// Request approval. The host still refuses.
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        approve: bool,
+        /// Request denial. The host still refuses.
+        #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
+        deny: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PermissionsCmd {
+    /// List live permission decisions.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear a stored denial so the next call asks again.
+    Reset {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Remove an allow, or refuse a pending ask.
+    Revoke {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Turn a denial or a pending ask into an allow.
+    Allow {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AssistantPermissionCmd {
     /// List pending permission requests as JSON.
     List,
@@ -341,29 +395,9 @@ pub enum AssistantPermissionCmd {
     /// The host refuses every choice from the terminal.
     Resolve {
         id: String,
-        #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
+        #[arg(long, value_parser = ["once", "session", "always", "deny", "deny_always", "revoke"])]
         choice: String,
     },
-}
-
-#[derive(Subcommand)]
-pub enum NeedsYouCmd {
-    /// Ask the host to resolve an item. The host refuses.
-    Resolve {
-        id: String,
-        /// Request approval. The host still refuses.
-        #[arg(long)]
-        approve: bool,
-        /// Request denial. The host still refuses.
-        #[arg(long)]
-        deny: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum PermissionsCmd {
-    /// Ask the host to allow a pending request. The host refuses.
-    Allow { id: String },
 }
 
 #[derive(Subcommand)]

@@ -79,6 +79,9 @@ same reason.
   pane monochrome despite `COLORTERM=truecolor`, because color libraries check
   those first. `scrub_launcher_color_overrides` clears them at host startup, before
   the login-shell probes (which would otherwise re-adopt the inherited value).
+- **Agent pane env is scrubbed in `make_backend_settings`.** `scrub_pane_env`
+  runs for every pane. Pass `agent_pane: true` from `PaneLaunchSpec.agent` or
+  the profile path stays in the environment. The contract is in `src/cli/AGENTS.md`.
 - **`shared_dir()`, never `home_dir().join(".plexi")`.** `crate::config::shared_dir()`
   carries a thread-local test override; re-deriving the path by hand produces a
   tier no test can isolate, so unit tests write into the developer's real

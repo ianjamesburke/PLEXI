@@ -105,6 +105,91 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    pub(crate) fn permissions_cli_request(
+        &mut self,
+        op: &str,
+        id: Option<&str>,
+        pane_id: Option<u64>,
+        credential: Option<&str>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let credential_set = credential.is_some_and(|value| !value.is_empty());
+        let human = pane_id.is_none() && !credential_set;
+        let actor_id = match pane_id {
+            Some(id) => format!("pane:{id}"),
+            None if credential_set => "agent:credential".to_string(),
+            None => "user".to_string(),
+        };
+        let body = if op == "list" {
+            let entries = monitor.list_entries();
+            log::info!(
+                "permissions:cli list count={} human={human} actor={actor_id}",
+                entries.len()
+            );
+            serde_json::json!({"ok": true, "entries": entries})
+        } else {
+            let id = id.unwrap_or("");
+            let outcome = monitor.mutate_entry(
+                id,
+                op,
+                &crate::broker::gate::PermissionCaller {
+                    human,
+                    actor_id: actor_id.clone(),
+                },
+            );
+            log::info!("permissions:cli {op} id={id} human={human} actor={actor_id}");
+            let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+            let ok = matches!(
+                outcome,
+                crate::broker::gate::PermissionMutation::Applied { .. }
+            );
+            if let Some(map) = body.as_object_mut() {
+                map.insert("ok".to_string(), serde_json::json!(ok));
+            }
+            body
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
+    pub(crate) fn observe_needs_you(
+        &mut self,
+        op: &str,
+        id: Option<&String>,
+        approve: Option<bool>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let body = match op {
+            "list" => {
+                let items = monitor.list_needs_you();
+                log::info!("needs_you: host list count={}", items.len());
+                serde_json::json!({"ok": true, "items": items})
+            }
+            "resolve" => {
+                let id = id.map(String::as_str).unwrap_or("");
+                let approve = approve.unwrap_or(false);
+                log::info!("needs_you: host resolve {id} approve={approve}");
+                match monitor.resolve_needs_you(id, approve) {
+                    Ok(receipt) => serde_json::json!({
+                        "ok": !receipt.already,
+                        "id": receipt.id,
+                        "resolution": receipt.resolution.as_str(),
+                        "already": receipt.already,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "ok": false,
+                        "error": error,
+                    }),
+                }
+            }
+            _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,
@@ -250,8 +335,9 @@ impl PlexiApp {
         }
     }
 
-    /// Floating Allow once control for a pending app call. Real pointer
-    /// clicks approve. Socket-injected input is ignored for the frame.
+    /// Floating choices for a pending app call. A real pointer click is the
+    /// desktop decision: Allow once, Always deny, or Deny. Socket-injected
+    /// input is ignored for the frame.
     pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
@@ -272,37 +358,52 @@ impl PlexiApp {
         }
         let caption = format!("{} wants {}", pending[0].actor_id, pending[0].tool);
         let synthetic = self.synthetic_input_frame;
-        let mut clicked = false;
-        let mut rect = None;
+        let choices = [
+            ("Allow once", crate::broker::gate::ApprovalChoice::Once),
+            (
+                "Always deny",
+                crate::broker::gate::ApprovalChoice::DenyAlways,
+            ),
+            ("Deny", crate::broker::gate::ApprovalChoice::Deny),
+        ];
+        let mut chosen = None;
         egui::Area::new(egui::Id::new("approval_banner"))
             .fixed_pos(egui::pos2(12.0, 8.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(caption);
-                    let response = ui.add(egui::Button::new("Allow once"));
-                    rect = Some(response.rect);
-                    clicked = response.clicked();
+                    for (label, choice) in choices {
+                        let response = ui.add(egui::Button::new(label));
+                        let rect = response.rect;
+                        self.approval_buttons.push(ApprovalButton {
+                            label: label.to_string(),
+                            bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                            pending_request_id: pending_id.clone(),
+                        });
+                        if response.clicked() {
+                            chosen = Some((label, choice));
+                        }
+                    }
                 });
             });
-        if let Some(rect) = rect {
-            self.approval_buttons.push(ApprovalButton {
-                label: "Allow once".to_string(),
-                bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
-                pending_request_id: pending_id.clone(),
-            });
-        }
-        if clicked && !synthetic {
-            match monitor.approve_pending(&pending_id, crate::broker::gate::ApprovalChoice::Once) {
-                Ok(()) => {
-                    log::info!("permission_monitor: banner approved {pending_id}")
-                }
-                Err(error) => {
-                    log::warn!("permission_monitor: banner approve {pending_id} failed: {error}")
+        if let Some((label, choice)) = chosen {
+            if synthetic {
+                log::info!(
+                    "permission_monitor: ignored synthetic banner click {pending_id} choice={label}"
+                );
+            } else {
+                match monitor.approve_pending(&pending_id, choice) {
+                    Ok(()) => {
+                        log::info!("permission_monitor: banner decided {pending_id} choice={label}")
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "permission_monitor: banner decide {pending_id} choice={label} failed: {error}"
+                        )
+                    }
                 }
             }
-        } else if clicked {
-            log::info!("permission_monitor: ignored synthetic banner click {pending_id}");
         }
     }
 
