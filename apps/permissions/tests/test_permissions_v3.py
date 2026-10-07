@@ -103,3 +103,51 @@ def test_init_reads_the_monitor() -> None:
     _set_state(_sample_state())
     effects = permissions.init((800, 600), [])
     assert any(isinstance(effect, ReadPermissionDecisions) for effect in effects)
+
+
+def _texts(node) -> list[str]:
+    raw = node.to_node() if hasattr(node, "to_node") else node
+    found: list[str] = []
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "text" and isinstance(value.get("text"), str):
+                found.append(value["text"])
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(raw)
+    return found
+
+
+def test_unchanged_inventory_does_not_repaint() -> None:
+    _set_state(dict(permissions.DEFAULT_STATE))
+    event = PermissionInventory(entries=[], notice="", status="list")
+    first = permissions.update(event)
+    assert any(isinstance(effect, SetState) for effect in first)
+    _set_state(_state_effect(first))
+    second = permissions.update(PermissionInventory(entries=[], notice="", status="list"))
+    assert second == []
+
+
+def test_empty_inventory_is_honest() -> None:
+    _set_state(dict(permissions.DEFAULT_STATE))
+    waiting = _texts(permissions.view())
+    assert "Waiting for permission decisions…" in waiting
+    assert "No permission decisions." not in waiting
+
+    effects = permissions.update(PermissionInventory(entries=[], notice="", status="list"))
+    _set_state(_state_effect(effects))
+    empty = _texts(permissions.view())
+    assert "No permission decisions." in empty
+    assert "Waiting for permission decisions…" not in empty
+
+
+def test_seeded_entries_show_before_inventory() -> None:
+    _set_state(_sample_state())
+    texts = _texts(permissions.view())
+    assert "Waiting for permission decisions…" not in texts
+    assert "No permission decisions." not in texts
