@@ -563,6 +563,31 @@
         },
         {
           "additionalProperties": false,
+          "description": "Assign, cancel, or list headless queue tasks for a lead.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": {
+              "default": null
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_queue",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.",
           "properties": {
             "capability": {

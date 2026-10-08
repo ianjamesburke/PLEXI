@@ -1372,6 +1372,9 @@ impl PlexiApp {
         // wakeups and drains queued IPC in one late burst (stint 0479).
         #[cfg(target_os = "macos")]
         crate::platform::app_nap::disable_app_nap();
+        // File a death/tamper item and leave a running stamp before any client
+        // can connect. A kill skips `exit_host`, so the next start can see it.
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         spawn_socket_listener(
             pane_ipc_mailbox,
             event_subscribe_mailbox.clone(),
@@ -3477,6 +3480,20 @@ impl eframe::App for PlexiApp {
             if let Err(error) = self.open_assistant_for_head(&head, Some(context_id)) {
                 log::error!("lead: open pane head={head} failed: {error}");
             }
+        }
+        let mut queue_roots = Vec::new();
+        if let Some(root) = crate::config::active_workspace_root() {
+            queue_roots.push(root);
+        }
+        for window in &self.windows {
+            if let Some(root) = self.context_root_for(window.context_id) {
+                queue_roots.push(root);
+            }
+        }
+        queue_roots.sort();
+        queue_roots.dedup();
+        for root in queue_roots {
+            crate::agent::queue::pump(&root);
         }
 
         // App panes are external clients too: they answer assistant tool calls

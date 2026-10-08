@@ -4860,6 +4860,7 @@ impl App for AssistantApp {
                         &text,
                         &request_id,
                         &crate::rpc::response_file("assistant-composer", "json"),
+                        None,
                     );
                 }
             }
