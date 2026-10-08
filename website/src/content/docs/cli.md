@@ -1524,7 +1524,7 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 ## `plexi needs-you`
 
-List everything waiting on you. The terminal cannot resolve it.
+List everything waiting on you.
 
 One host record covers click approvals, agent questions, and blocked runs. The desktop badge and the phone page read that record. `resolve --approve` on a click approval is refused. `--deny` still denies.
 

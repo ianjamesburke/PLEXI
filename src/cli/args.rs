@@ -165,11 +165,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: EventsCmd,
     },
-    /// List everything waiting on you. The terminal cannot resolve it.
+    /// List everything waiting on you.
     ///
     /// One host record covers click approvals, agent questions, and blocked
-    /// runs. The desktop badge and the phone page resolve an id everywhere,
-    /// exactly once. `resolve` from the terminal is refused.
+    /// runs. The desktop badge and the phone page read that record.
+    /// `resolve --approve` on a click approval is refused. `--deny` still denies.
     #[command(name = "needs-you")]
     NeedsYou {
         #[command(subcommand)]
