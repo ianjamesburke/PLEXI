@@ -2,6 +2,7 @@
 # Installed-binary check: create a click approval, prove a terminal or phone
 # approve does not grant, click Allow once, and confirm the tool proceeds.
 # Check 7 races two denies. It does not approve from the CLI or the phone.
+# permission-audit.jsonl lines are sealed envelopes; the fact is the inner JSON.
 set -euo pipefail
 
 # A private session bus is where the unlocked login keyring lives. A nested
@@ -338,7 +339,23 @@ PY
 AUDIT="$PROFILE/permission-audit.jsonl"
 python3 - "$AUDIT" "$ID" <<'PY'
 import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+
+def audit_facts(path):
+    rows = []
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        fact = row.get("fact") if isinstance(row, dict) else None
+        if isinstance(fact, str):
+            row = json.loads(fact)
+        elif isinstance(fact, dict):
+            row = fact
+        rows.append(row)
+    return rows
+
+rows = audit_facts(sys.argv[1])
 refused = [
     row for row in rows
     if row.get("kind") == "refuse"
@@ -413,7 +430,23 @@ if [[ ! -f "$AUDIT" ]]; then
 fi
 python3 - "$AUDIT" "$ID" <<'PY'
 import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+
+def audit_facts(path):
+    rows = []
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        fact = row.get("fact") if isinstance(row, dict) else None
+        if isinstance(fact, str):
+            row = json.loads(fact)
+        elif isinstance(fact, dict):
+            row = fact
+        rows.append(row)
+    return rows
+
+rows = audit_facts(sys.argv[1])
 needs = [row for row in rows if row.get("kind") == "needs_you" and row.get("operation_id") == sys.argv[2] and row.get("decision") == "approved"]
 grants = [row for row in rows if row.get("decision") == "allow_once"]
 if not needs:
@@ -428,7 +461,23 @@ ID2="$(ask_approval "$INPUT2" "$WORK/call3.out")"
 echo "pending $ID2"
 GRANTS_BEFORE="$(python3 - "$AUDIT" <<'PY'
 import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+
+def audit_facts(path):
+    rows = []
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        fact = row.get("fact") if isinstance(row, dict) else None
+        if isinstance(fact, str):
+            row = json.loads(fact)
+        elif isinstance(fact, dict):
+            row = fact
+        rows.append(row)
+    return rows
+
+rows = audit_facts(sys.argv[1])
 print(sum(1 for row in rows if row.get("decision") == "allow_once"))
 PY
 )"
@@ -469,7 +518,23 @@ if item is not None:
 PY
 GRANTS_AFTER="$(python3 - "$AUDIT" <<'PY'
 import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+
+def audit_facts(path):
+    rows = []
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        fact = row.get("fact") if isinstance(row, dict) else None
+        if isinstance(fact, str):
+            row = json.loads(fact)
+        elif isinstance(fact, dict):
+            row = fact
+        rows.append(row)
+    return rows
+
+rows = audit_facts(sys.argv[1])
 print(sum(1 for row in rows if row.get("decision") == "allow_once"))
 PY
 )"
