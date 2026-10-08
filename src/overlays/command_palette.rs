@@ -757,24 +757,62 @@ fn pane_row_identity(
     }
 }
 
+/// Key chord shown next to a palette command, if the host binds one.
+fn palette_host_binding(
+    bindings: &crate::host::keys::KeyBindings,
+    command: &PaletteCommand,
+) -> Option<(egui::Modifiers, egui::Key)> {
+    use crate::host::keys::Action;
+    let binding = match command {
+        PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
+        PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
+        PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
+        PaletteCommand::Host(Action::ToggleNotificationModal) => {
+            bindings.toggle_notification_modal
+        }
+        PaletteCommand::Host(Action::SplitRight) => bindings.split_right,
+        PaletteCommand::Host(Action::SplitDown) => bindings.split_down,
+        PaletteCommand::Host(Action::OpenQuickNote) => bindings.open_quick_note,
+        PaletteCommand::Host(Action::OpenScratchpad) => bindings.open_scratchpad,
+        PaletteCommand::Host(Action::NewContext) => bindings.new_context,
+        PaletteCommand::Host(Action::RenameContext) => bindings.rename_context,
+        PaletteCommand::Host(Action::CloseContext) => bindings.close_context,
+        PaletteCommand::Host(Action::ParkContext) => bindings.park_context,
+        PaletteCommand::Host(Action::ContextZoomOut) => bindings.context_zoom_out,
+        PaletteCommand::Host(Action::NewTab) => bindings.new_tab,
+        PaletteCommand::Host(Action::NewPageRight) => bindings.new_page_right,
+        PaletteCommand::Host(Action::RenamePane) => bindings.rename_pane,
+        PaletteCommand::Host(Action::ClosePane) => bindings.close_pane,
+        PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
+        PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
+        PaletteCommand::Host(Action::NavBackApp) => bindings.nav_back,
+        PaletteCommand::OpenWorkspaceConfig => return None,
+        PaletteCommand::Host(other) => {
+            log_missing_palette_shortcut_once(other);
+            return None;
+        }
+    };
+    Some(binding)
+}
+
+/// Bindings with no palette label are logged once per action per process.
+/// Repeating the line on every Cmd+P open (the palette paints each command
+/// on every frame) drowned the host log.
+fn log_missing_palette_shortcut_once(action: &crate::host::keys::Action) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let key = format!("{action:?}");
+    let mut seen = SEEN.lock().unwrap_or_else(|err| err.into_inner());
+    if seen.iter().any(|seen| seen == &key) {
+        return;
+    }
+    seen.push(key);
+    log::debug!("palette: no shortcut label for host binding {action:?}");
+}
+
 impl PlexiApp {
     fn palette_shortcut(&self, command: &PaletteCommand) -> Option<String> {
-        let binding = match command {
-            PaletteCommand::Host(crate::host::keys::Action::OpenConfig) => self.key_bindings.open_config,
-            PaletteCommand::Host(crate::host::keys::Action::ReloadConfig) => self.key_bindings.reload_config,
-            PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker) => self.key_bindings.open_notes_picker,
-            PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal) => self.key_bindings.toggle_notification_modal,
-            PaletteCommand::Host(crate::host::keys::Action::SplitRight) => self.key_bindings.split_right,
-            PaletteCommand::Host(crate::host::keys::Action::SplitDown) => self.key_bindings.split_down,
-            PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote) => self.key_bindings.open_quick_note,
-            PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad) => self.key_bindings.open_scratchpad,
-            PaletteCommand::OpenWorkspaceConfig => return None,
-            PaletteCommand::Host(other) => {
-                log::warn!("palette: no shortcut label for host binding {other:?}");
-                return None;
-            }
-        };
-        Some(shortcut_label(binding))
+        palette_host_binding(&self.key_bindings, command).map(shortcut_label)
     }
 
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
@@ -1974,6 +2012,40 @@ mod tests {
             "Ctrl+Shift+F"
         };
         assert_eq!(shortcut_label(configured), expected);
+    }
+
+    /// Every host command the palette lists that has a key binding must show
+    /// that binding. The dogfood set (NewContext, ToggleZoom, NavBackApp, …)
+    /// used to miss this match and warn once per row per Cmd+P open.
+    #[test]
+    fn palette_lists_a_shortcut_for_every_bound_host_command() {
+        use crate::host::keys::{Action, KeyBindings};
+        let bindings = KeyBindings::default();
+        for entry in PALETTE_COMMANDS {
+            match &entry.command {
+                PaletteCommand::OpenWorkspaceConfig => {
+                    assert!(
+                        palette_host_binding(&bindings, &entry.command).is_none(),
+                        "workspace config is a palette-only handoff with no host chord"
+                    );
+                }
+                PaletteCommand::Host(action) => {
+                    let label = palette_host_binding(&bindings, &entry.command)
+                        .map(shortcut_label);
+                    assert!(
+                        label.is_some(),
+                        "palette command {action:?} ({}) must show its shortcut, got None",
+                        entry.name
+                    );
+                }
+            }
+        }
+        // Actions the palette does not list stay quiet: one debug line, not a
+        // warn on every paint. Calling twice must not grow the seen-set twice
+        // in a way that changes the result — both calls return None.
+        let unbound = PaletteCommand::Host(Action::OpenFileBrowser);
+        assert!(palette_host_binding(&bindings, &unbound).is_none());
+        assert!(palette_host_binding(&bindings, &unbound).is_none());
     }
 
     #[test]

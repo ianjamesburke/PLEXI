@@ -2105,6 +2105,13 @@ impl FileBrowserApp {
     pub(crate) fn show_hidden(&self) -> bool {
         self.columns.show_hidden
     }
+
+    /// Queue the same `OpenArtifact` a user activation (Enter / double-click)
+    /// queues. The host stamps `sender_pane_id` when it drains the command.
+    #[cfg(test)]
+    pub(crate) fn request_open_for_test(&mut self, path: &Path) {
+        self.open_file(path);
+    }
 }
 
 impl App for FileBrowserApp {

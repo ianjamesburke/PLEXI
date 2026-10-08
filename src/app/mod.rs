@@ -4277,6 +4277,11 @@ impl eframe::App for PlexiApp {
         // above already claimed global hotkeys from the same buffer, so the
         // terminal only ever sees what the global allowlist left behind.
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
+        // Host focus (keyboard nav, a click handled before this pass) is
+        // already current. egui focus still belongs to last frame until
+        // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
+        // an editor that just lost the pane cannot insert this frame's text.
+        crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
         self.render_panels(ui, focused_terminal_input);
         self.draw_approval_banner(ctx);
 

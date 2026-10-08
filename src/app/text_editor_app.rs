@@ -16,10 +16,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
-/// Mirrors the terminal pane name bar (`render_name_bar_and_dots`): same
-/// height, fill, and centered dim 11px text, so note panes match terminal chrome.
+/// Mirrors the terminal pane name bar (`render_name_bar_and_tabs`): same
+/// height and fill, so note panes and file panes match terminal chrome.
 const NOTE_HEADER_BAR_HEIGHT: f32 = 20.0;
-const NOTE_HEADER_FONT_SIZE: f32 = 11.0;
 const FONT_SIZE_DEFAULT: f32 = 14.0;
 const FONT_SIZE_MIN: f32 = 9.0;
 const FONT_SIZE_MAX: f32 = 32.0;
@@ -158,6 +157,12 @@ impl TextEditorApp {
             raw.len()
         );
         let is_note = crate::notes::tier_root_for_note(&path).is_some();
+        log::info!(
+            "notes_editor: editor chrome file_name={} note={is_note}",
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "untitled".to_string()),
+        );
         let (note_header, content, note_title) = split_note(is_note, raw);
         let mode = detect_mode(&path, is_note);
         log::info!(
@@ -997,6 +1002,105 @@ fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> s
     write_result
 }
 
+/// Header identity shared by the notes editor and a file opened from the
+/// browser. `title` is the note's frontmatter title when it is non-empty;
+/// `file_name` is always the on-disk name; `save_indicator` is the same
+/// three-state label in both surfaces.
+struct EditorChrome {
+    title: Option<String>,
+    file_name: String,
+    save_indicator: &'static str,
+}
+
+impl TextEditorApp {
+    /// Shared header for notes and ordinary files. Both surfaces used to
+    /// diverge: notes painted a title bar (frontmatter title, or the file
+    /// stem when the title was empty) and files painted nothing. One chrome
+    /// model feeds the bar and `semantic_state`.
+    fn editor_chrome(&self) -> EditorChrome {
+        let file_name = self
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled".to_string());
+        let title = self.note_title.trim();
+        let title = (self.is_note && !title.is_empty()).then(|| title.to_string());
+        EditorChrome {
+            title,
+            file_name,
+            save_indicator: editor_save_indicator(
+                self.last_edit.is_some(),
+                self.last_save_result.as_deref(),
+            ),
+        }
+    }
+}
+
+/// `"Save failed"` while a write error is still dirty, `"Unsaved"` while edits
+/// are waiting on the debounce, `"Saved"` once the buffer matches disk.
+fn editor_save_indicator(dirty: bool, last_save_result: Option<&str>) -> &'static str {
+    if dirty && last_save_result.is_some_and(|result| result.starts_with("error")) {
+        "Save failed"
+    } else if dirty {
+        "Unsaved"
+    } else {
+        "Saved"
+    }
+}
+
+/// Paint the shared editor header. Labels (not painter text) stay in the
+/// accessibility tree so harness queries can see the file name and save state.
+fn paint_editor_header(
+    ui: &mut egui::Ui,
+    colors: &crate::ui::theme::Colors,
+    chrome: &EditorChrome,
+) {
+    let bar_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
+    );
+    ui.advance_cursor_after_rect(bar_rect);
+    ui.painter()
+        .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+    let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+    let name_color = colors.text_secondary(colors.pane_header_bg());
+    let save_color = match chrome.save_indicator {
+        "Save failed" => colors.danger,
+        "Unsaved" => colors.warning,
+        _ => colors.text_dim,
+    };
+    bar_ui.horizontal_centered(|ui| {
+        ui.spacing_mut().item_spacing.x = crate::ui::style::SPACE_SM;
+        ui.add_space(crate::ui::style::SPACE_SM);
+        if let Some(title) = &chrome.title {
+            ui.label(
+                egui::RichText::new(title)
+                    .size(crate::ui::style::TEXT_HINT)
+                    .color(name_color),
+            );
+            ui.label(
+                egui::RichText::new("·")
+                    .size(crate::ui::style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        }
+        ui.label(
+            egui::RichText::new(&chrome.file_name)
+                .size(crate::ui::style::TEXT_HINT)
+                .color(name_color),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(crate::ui::style::SPACE_SM);
+            ui.label(
+                egui::RichText::new(chrome.save_indicator)
+                    .size(crate::ui::style::TEXT_HINT)
+                    .color(save_color),
+            );
+        });
+    });
+    ui.add_space(crate::ui::style::SPACE_XS);
+}
+
 impl App for TextEditorApp {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -1163,38 +1267,10 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        // Notes show their frontmatter title in a header bar styled exactly
-        // like the terminal pane name bar (same height, fill, and centered dim
-        // text — whether the title is custom or the file-name fallback). The
-        // YAML block itself is held out of the buffer and never rendered.
-        if self.is_note {
-            let title = if self.note_title.is_empty() {
-                self.path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "untitled".to_string())
-            } else {
-                self.note_title.clone()
-            };
-            let bar_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
-            );
-            ui.advance_cursor_after_rect(bar_rect);
-            ui.painter()
-                .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
-            // A real label (not painter text) so the title stays in the
-            // accessibility tree for UI-harness queries.
-            let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
-            bar_ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new(title)
-                        .size(NOTE_HEADER_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
-            });
-            ui.add_space(crate::ui::style::SPACE_XS);
-        }
+        // One header for notes and files opened from the browser: file name
+        // always, frontmatter title when a note has one, and the same save
+        // indicator. The YAML block itself stays out of the buffer.
+        paint_editor_header(ui, colors, &self.editor_chrome());
 
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         // The editor is this pane's default text surface (stint 0429): the
@@ -1210,12 +1286,19 @@ impl App for TextEditorApp {
             );
         }
 
-        // The memory entry is the production focus authority used by keyboard
-        // dispatch and survives CLI focus while the OS window is blurred.
-        let editor_focused = ui.ctx().memory(|memory| memory.has_focus(te_id));
+        // egui focus is reconciled at the end of the frame, so it can still
+        // name this editor on the frame host focus has already moved away.
+        // The published frame owner is current; both must agree before this
+        // pane inserts text or consumes shortcuts.
+        let egui_editor_focused = ui.ctx().memory(|memory| memory.has_focus(te_id));
+        let owns_input =
+            crate::app::input_owner::published_frame_owner_is_pane(ui.ctx(), ctx.pane_id)
+                .unwrap_or(true);
+        let editor_focused = egui_editor_focused && owns_input;
         let find_input_id = egui::Id::new("text_editor_find_input").with(&self.path);
         let replace_input_id = egui::Id::new("text_editor_replace_input").with(&self.path);
-        let find_focused = self.find_bar.is_some()
+        let find_focused = owns_input
+            && self.find_bar.is_some()
             && ui.ctx().memory(|memory| {
                 memory.has_focus(find_input_id) || memory.has_focus(replace_input_id)
             });
@@ -1403,7 +1486,10 @@ impl App for TextEditorApp {
         }
 
         if editor_focused != self.editor_focused {
-            log::info!("notes_editor: focus transition focused={editor_focused}");
+            log::info!(
+                "notes_editor: focus transition focused={editor_focused} \
+                 egui_focused={egui_editor_focused} owns_input={owns_input}"
+            );
             self.editor_focused = editor_focused;
         }
 
@@ -1664,6 +1750,7 @@ impl App for TextEditorApp {
                 })
             })
             .collect();
+        let chrome = self.editor_chrome();
         Some(serde_json::json!({
             "kind": "notes_editor",
             "source_text": sem.text,
@@ -1672,6 +1759,9 @@ impl App for TextEditorApp {
             "scroll": {"y": sem.scroll_y},
             "dirty": self.last_edit.is_some(),
             "last_save_result": self.last_save_result,
+            "file_name": chrome.file_name,
+            "header_title": chrome.title,
+            "save_indicator": chrome.save_indicator,
             "active_markdown_block": {
                 "start": line_start_char,
                 "end": line_end_char,
@@ -1956,6 +2046,52 @@ mod tests {
         assert_eq!(state["primary_selection"]["anchor"], 2);
         assert_eq!(state["primary_selection"]["caret"], 11);
         assert_eq!(app.doc.selected_text(), "e\ntwo\nthr");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn editor_chrome_shows_the_file_name_and_the_same_save_indicator() {
+        let dir = unique_temp_dir("editor-chrome");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let note_path = dir.join("note-20261008-175654.md");
+        std::fs::write(
+            &note_path,
+            "---\ntitle: \"\"\nsource: \"quick-note\"\n---\n\nand now?\n",
+        )
+        .unwrap();
+        let quick = TextEditorApp::new_for_test_note(note_path);
+        let quick_chrome = quick.editor_chrome();
+        assert_eq!(quick_chrome.file_name, "note-20261008-175654.md");
+        assert_eq!(quick_chrome.title, None, "an empty frontmatter title is not a header title");
+        assert_eq!(quick_chrome.save_indicator, "Saved");
+
+        let titled_path = dir.join("groceries.md");
+        std::fs::write(
+            &titled_path,
+            "---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\nmilk\n",
+        )
+        .unwrap();
+        let titled = TextEditorApp::new_for_test_note(titled_path);
+        let titled_chrome = titled.editor_chrome();
+        assert_eq!(titled_chrome.file_name, "groceries.md");
+        assert_eq!(titled_chrome.title.as_deref(), Some("Groceries"));
+        assert_eq!(titled_chrome.save_indicator, "Saved");
+
+        let file_path = dir.join("temp.md");
+        std::fs::write(&file_path, "# hello\n").unwrap();
+        let mut file = TextEditorApp::new(file_path);
+        let file_chrome = file.editor_chrome();
+        assert!(!file.is_note, "a file outside a notes tier is not a note");
+        assert_eq!(file_chrome.file_name, "temp.md");
+        assert_eq!(file_chrome.title, None);
+        assert_eq!(file_chrome.save_indicator, "Saved");
+
+        file.last_edit = Some(Instant::now());
+        assert_eq!(file.editor_chrome().save_indicator, "Unsaved");
+        file.last_save_result = Some("error: disk full".to_string());
+        assert_eq!(file.editor_chrome().save_indicator, "Save failed");
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
