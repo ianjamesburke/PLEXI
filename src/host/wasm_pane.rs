@@ -1376,6 +1376,8 @@ impl WasmPane {
                         max_tool_iterations: None,
                         client: None,
                         kind: None,
+                        single_completion: false,
+                        structured_messages: Vec::new(),
                     },
                     &mut on_delta,
                 );

@@ -130,6 +130,7 @@ plexi secret set openrouter-api-key --global
 | `per_app_daily_usd` | float | $1.00 | Per-app daily spend cap in USD. Default $1.00. |
 | `global_daily_usd` | float | $10.00 | Global daily spend cap across all apps in USD. Default $10.00. |
 | `client` | string | — | Default ledger client tag for Assistant and agent runs that do not set one. Free-form (`narrative`, `du`, `personal`). A blank or missing value leaves the row's client null. |
+| `harness` | string | — | Assistant loop. Unset or `"current"` keeps the shipped loop. `"pi"` selects the Pi-style harness. Any other value keeps the shipped loop. |
 
 #### OpenRouter (`[ai.openrouter]`)
 
@@ -312,6 +313,7 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# harness = "current"          # "current" (default) or "pi" (Pi-style assistant loop)
 # client = "personal"          # default AI ledger tag; a run can override it
 
 [ai.openrouter]

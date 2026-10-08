@@ -307,6 +307,8 @@ impl HostHarness {
                     tokens_in: 0,
                     tokens_out: 0,
                     error: Some("no AI broker in HostHarness".to_string()),
+                    tool_calls: Vec::new(),
+                    model_id: None,
                 }
             }
         }

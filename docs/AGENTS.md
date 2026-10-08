@@ -22,6 +22,7 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
 | `specs/agents-api-and-permission-gate.md` | Agents API and the one permission gate. P1 is the monitor, exact grants, and host-approved chess | none yet |
 | `assistant-host-app.md` | Host assistant app spec | see file |
+| `assistant-harness-pi.md` | Pi-style assistant loop behind `[ai] harness` | none yet |
 | `browser-surface.md` | Native browser App pane, profiles, context binding, automation, and live validation | see file |
 | `context-root-uniqueness-and-rollup.md` | Duplicate-root hard stop + parent-dir todo rollup — design brief awaiting a ruling | 0679 |
 | `context-state-persistence-audit.md` | Why context-scoped app state does not survive a restart — findings and evidence | 0678 |

@@ -1503,6 +1503,7 @@ impl PlexiApp {
                                     broker,
                                     &crate::config::config_dir(),
                                     saved_win.context_id,
+                                    config.ai.as_ref(),
                                 ));
                             }
                             if pane_entry.is_none() && app_type == "assistant" {
