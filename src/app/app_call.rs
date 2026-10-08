@@ -513,14 +513,21 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{caller_identity, phone_may_answer};
+    use super::caller_identity;
     use crate::broker::gate::NeedsYouKind;
+
+    fn phone_may_answer(kind: Option<NeedsYouKind>) -> bool {
+        kind.is_some_and(|kind| kind.phone_may_approve())
+    }
 
     #[test]
     fn phone_approve_answers_only_a_visible_non_click() {
         assert!(phone_may_answer(Some(NeedsYouKind::Question)));
         assert!(phone_may_answer(Some(NeedsYouKind::BlockedRun)));
         assert!(!phone_may_answer(Some(NeedsYouKind::ApprovalClick)));
+        assert!(!phone_may_answer(Some(NeedsYouKind::PermissionChange)));
+        assert!(!phone_may_answer(Some(NeedsYouKind::Integrity)));
+        assert!(!phone_may_answer(Some(NeedsYouKind::Keychain)));
         assert!(!phone_may_answer(None));
     }
 

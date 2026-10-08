@@ -81,8 +81,8 @@ impl NeedsYouKind {
     }
 
     /// A paired phone may answer a question or a blocked run.
-    /// An approval click, a permission change, and an integrity alert
-    /// stay on the desktop. Approving one of those is not a grant.
+    /// An approval click, a permission change, an integrity alert, and a
+    /// keychain prompt stay on the desktop. Approving one of those is not a grant.
     pub fn phone_may_approve(self) -> bool {
         matches!(self, Self::Question | Self::BlockedRun)
     }
@@ -3069,6 +3069,9 @@ mod tests {
         assert!(!NeedsYouKind::ApprovalClick.phone_may_approve());
         assert!(NeedsYouKind::Question.phone_may_approve());
         assert!(NeedsYouKind::BlockedRun.phone_may_approve());
+        assert!(!NeedsYouKind::PermissionChange.phone_may_approve());
+        assert!(!NeedsYouKind::Integrity.phone_may_approve());
+        assert!(!NeedsYouKind::Keychain.phone_may_approve());
         let items = needs_you_phone_items(&[NeedsYouRecord {
             id: "ny-1".to_string(),
             kind: NeedsYouKind::ApprovalClick,
