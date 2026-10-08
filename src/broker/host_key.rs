@@ -567,7 +567,6 @@ mod linux {
     use zeroize::Zeroizing;
     use zbus::blocking::Connection;
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
-    use zeroize::Zeroizing;
 
     const SCHEMA: &str = "com.plexi.HostSeal";
     /// Bound for the session handshake and for Secret Service method calls.
