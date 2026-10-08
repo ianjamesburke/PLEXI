@@ -2,8 +2,9 @@
 # Installed-binary check for a second real lead (V1-10 steps 1, 2, and 7).
 # Usage: scripts/multi-lead-e2e.sh <PR>
 # The binary is plexi-pr-<PR>. The model is scripts/e2e/lead_mock.py.
-# Human approval clicks are VERIFIED-VIA-BYPASS: the ungranted tool stops at
-# permission_required and does not run. W15 HUMAN_APPROVE is not invoked.
+# An ungranted host.files.write stops at permission_required. The script
+# then clicks Allow once with HUMAN_APPROVE (scripts/e2e/human.sh). It never
+# calls assistant permission resolve or command-view resolve.
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
@@ -59,7 +60,7 @@ export PLEXI_LEAD_MODEL="mock/lead"
 echo "workspace: $WORKDIR"
 echo "binary: $BIN_PATH"
 echo "mock: $PLEXI_OPENROUTER_BASE_URL"
-echo "approvals: VERIFIED-VIA-BYPASS (no human click; ungranted tool must not run)"
+echo "approvals: HUMAN_APPROVE (real pointer click; no CLI resolve)"
 
 "$BIN" workspace init
 if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
@@ -188,15 +189,53 @@ assert "I do not know a number" not in text, text
 print("lead A transcript has no lead B messages")
 PY
 
-echo "STEP ungranted tool does not run (VERIFIED-VIA-BYPASS)"
+echo "STEP ungranted write waits for a real Allow once click"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
+export BIN
 WRITE="$(cli assistant send --head lead-a --text 'write-file out.txt' || true)"
-python3 - "$WRITE" "$WORKDIR" <<'PY'
+printf '%s\n' "$WRITE" >"$WORKDIR/write-pending.json"
+PENDING="$(python3 - "$WRITE" "$WORKDIR" <<'PY'
 import json, sys
 from pathlib import Path
 body = json.loads(sys.argv[1])
 assert body.get("state") == "permission_required", body
-assert not (Path(sys.argv[2]) / "out.txt").exists()
-print("VERIFIED-VIA-BYPASS permission_required; file was not written")
+assert not (Path(sys.argv[2]) / "out.txt").exists(), "file written before a click"
+text = " ".join(str(body.get(key) or "") for key in ("error", "reply"))
+pending = ""
+for token in text.split():
+    if token.startswith("req_") or token.startswith("pending") or token.startswith("ny_"):
+        pending = token
+print(pending)
+PY
+)"
+if [[ -z "$PENDING" ]]; then
+  PENDING="$("$BIN" assistant permission list | python3 -c 'import json,sys
+data=json.load(sys.stdin)
+rows=data.get("pending") or []
+print(rows[0].get("pending_request_id","") if rows else "")')"
+fi
+if [[ -z "$PENDING" ]]; then
+  echo "FAIL: write did not file a pending approval"
+  echo "$WRITE"
+  exit 1
+fi
+echo "HUMAN_APPROVE pending $PENDING"
+if ! HUMAN_APPROVE "$PENDING" once; then
+  "$BIN" host screenshot --output "$WORKDIR/approve-miss.png" >/dev/null 2>&1 || true
+  echo "FAIL: HUMAN_APPROVE did not grant $PENDING"
+  "$BIN" assistant permission list || true
+  exit 1
+fi
+RETRY="$(cli assistant send --head lead-a --text 'write-file out.txt')"
+python3 - "$RETRY" "$WORKDIR" <<'PY'
+import json, sys
+from pathlib import Path
+body = json.loads(sys.argv[1])
+assert body.get("state") == "succeeded", body
+path = Path(sys.argv[2]) / "out.txt"
+assert path.read_text() == "ok", path.read_text() if path.exists() else "missing"
+print("HUMAN_APPROVE wrote out.txt")
 PY
 
 echo "STEP agent run spawn executes a mock model turn"
