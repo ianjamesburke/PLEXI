@@ -1408,8 +1408,7 @@ mod tests {
             &mut model,
         );
         assert_eq!(done.state, "cancelled", "{:?}", done.error);
-        let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
-            .unwrap_or_default();
+        let audit = fixture.audit_text();
         assert_eq!(
             audit.matches("\"operation_id\":\"lead.step\"").count(),
             1,
