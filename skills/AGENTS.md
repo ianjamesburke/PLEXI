@@ -24,15 +24,20 @@ re-reading the skill against the CLI when they change, per the same-PR rule in
 
 `plexi_version` is stamped by `just bump` (see `scripts/release-version.sh`),
 never hand-edited alone. Between releases, alpha's copy carries the last
-released version number while documenting alpha surface — that is fine
-**because the copy in this repo is never what users install**; see below.
+released version number while documenting alpha surface. That matches the
+binary a channel installs, because `plexi skill install` writes the copy
+embedded in that binary.
 
 ## Canonical Copy and the Published Mirror
 
-`skills/plexi-cli/SKILL.md` in this repo is **canonical**. The public repo
+`skills/plexi-cli/SKILL.md` in this repo is **canonical**. `plexi skill install`
+writes the bytes compiled into the binary that runs the command, under the
+agent's user skill directory (`~/.claude/skills/plexi-cli/SKILL.md`,
+`~/.codex/skills/plexi-cli/SKILL.md`). The public repo
 [`ianjamesburke/plexi-skills`](https://github.com/ianjamesburke/plexi-skills) is a
 manually published **mirror** consumed by the `npx skills` installer
-(vercel-labs). Never edit the mirror directly; edit here, then republish.
+(vercel-labs). Never edit the mirror directly; edit here, then republish at
+stable release.
 
 The mirror is republished **only at stable release time, only from the release
 tree** (the tree `promote.sh` promotes beta→main, after `just bump`). By then

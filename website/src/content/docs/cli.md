@@ -1670,6 +1670,26 @@ Totals for tokens, cost, run count, and wall time
 | `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
 | `--json` | flag | no | Print one JSON object on stdout |
 
+## `plexi skill`
+
+Install the agent skill compiled into this binary.
+
+Writes `SKILL.md` where Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) load user skills. The bytes are the copy embedded at build time, so the installed `plexi_version` matches this binary.
+
+Example: plexi skill install --agent claude
+
+| Subcommand | Description |
+|---|---|
+| `install` | Write this binary's skill for one agent CLI, or both |
+
+### `plexi skill install`
+
+Write this binary's skill for one agent CLI, or both
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Which agent CLI loads the skill: claude, codex, or all |
+
 ## `plexi completions`
 
 Print a shell completion script to stdout.
