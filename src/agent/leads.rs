@@ -920,6 +920,26 @@ mod tests {
             self._profile.path()
         }
 
+        /// Audit rows are sealed envelopes. Callers assert on the fact, which
+        /// is the JSON string inside `fact`.
+        fn audit_text(&self) -> String {
+            let raw = fs::read_to_string(self.profile().join("permission-audit.jsonl"))
+                .unwrap_or_default();
+            let mut facts = String::new();
+            for line in raw.lines() {
+                if let Ok(row) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(fact) = row.get("fact").and_then(|value| value.as_str()) {
+                        facts.push_str(fact);
+                        facts.push('\n');
+                        continue;
+                    }
+                }
+                facts.push_str(line);
+                facts.push('\n');
+            }
+            facts
+        }
+
         fn create(&self, name: &str, grants: &[&str]) {
             let body = crate::agent::heads::handle_request(
                 "create_head",
@@ -1022,8 +1042,7 @@ mod tests {
             direct.get("error_code").and_then(|v| v.as_str()),
             Some("permission_denied")
         );
-        let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
-            .unwrap_or_default();
+        let audit = fixture.audit_text();
         assert!(audit.contains("leads.conversation.read"), "{audit}");
         assert!(
             audit.contains("deny") || audit.contains("\"decision\":\"use\""),
@@ -1088,8 +1107,7 @@ mod tests {
             fs::read_to_string(fixture.ws().join("out.txt")).unwrap(),
             "ok"
         );
-        let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
-            .unwrap_or_default();
+        let audit = fixture.audit_text();
         assert!(audit.contains("\"decision\":\"use\""), "{audit}");
         assert!(audit.contains("leads.message"), "{audit}");
     }
