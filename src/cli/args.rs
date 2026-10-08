@@ -185,11 +185,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: EventsCmd,
     },
-    /// List everything waiting on you. The terminal cannot resolve it.
+    /// List everything waiting on you.
     ///
     /// One host record covers click approvals, agent questions, and blocked
-    /// runs. The desktop badge and the phone page resolve an id everywhere,
-    /// exactly once. `resolve` from the terminal is refused.
+    /// runs. The desktop badge and the phone page read that record.
+    /// `resolve --approve` on a click approval is refused. `--deny` still denies.
     #[command(name = "needs-you")]
     NeedsYou {
         #[command(subcommand)]
@@ -470,13 +470,13 @@ pub enum NeedsYouCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Ask the host to resolve an item. The host refuses.
+    /// Resolve one item. Approving a click approval is refused; deny still denies it.
     Resolve {
         id: String,
-        /// Request approval. The host still refuses.
+        /// Approve the item. A click approval stays open.
         #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
         approve: bool,
-        /// Request denial. The host still refuses.
+        /// Deny the item.
         #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
         deny: bool,
         /// Accepted so a paired phone can call resolve. The host still refuses

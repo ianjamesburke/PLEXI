@@ -177,9 +177,10 @@ impl PlexiApp {
                         )
                 }) || monitor.show_pending(id).is_some();
                 if grants && approve {
-                    // Socket, terminal, and phone resolves never mint a grant.
-                    // The desktop banner calls approve_pending, and the pairing
-                    // sheet calls confirm, only from a real pointer click.
+                    // Socket and protocol resolves never mint a grant. The
+                    // desktop banner calls approve_pending directly, and only
+                    // when the click was not synthetic. Deny still settles.
+                    // A phone or terminal approve is permission_denied.
                     log::info!("needs_you: refused socket resolve {id} approve={approve}");
                     monitor.refuse_client_resolve(id);
                     serde_json::json!({
@@ -196,6 +197,7 @@ impl PlexiApp {
                             "id": receipt.id,
                             "resolution": receipt.resolution.as_str(),
                             "already": receipt.already,
+                            "run_outcome": receipt.run_outcome.as_str(),
                         }),
                         Err(error) => serde_json::json!({
                             "ok": false,

@@ -355,17 +355,18 @@ fn main() -> eframe::Result {
                         }
                         NeedsYouCmd::Resolve {
                             id,
-                            approve: _,
+                            approve,
                             deny,
                             from_phone: _,
                         } => {
-                            // A terminal or phone flag cannot grant. The desktop
-                            // Allow once click is the grant.
-                            let choice = if deny { "deny" } else { "once" };
-                            std::process::exit(cli::assistant_permission_cli(
+                            // Approve of a click is refused in the host. Deny
+                            // still settles. Questions and blocked runs settle
+                            // from here and do not mint a grant. The phone flag
+                            // does not change that.
+                            std::process::exit(cli::needs_you_cli(
                                 "resolve",
                                 Some(&id),
-                                Some(choice),
+                                Some(approve && !deny),
                             ))
                         }
                     },

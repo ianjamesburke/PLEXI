@@ -88,8 +88,9 @@ plexi skill install --agent codex
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id
   and wait for the person at the desktop. Do not approve, deny, or widen a
-  grant from the terminal. `assistant permission resolve` and `needs-you resolve`
-  are refused and do not grant.
+  grant from the terminal. `assistant permission resolve` is refused and does
+  not grant. `needs-you resolve --approve` on a click approval is refused;
+  `--deny` still denies.
 - **Permissions** — the live permission monitor, the same rows as the Permissions app:
 
   ```bash
@@ -113,9 +114,13 @@ plexi skill install --agent codex
   of `host` is reserved.
 - **Needs you** — `plexi needs-you list --json` prints everything waiting on
   the human. Click approvals, agent questions, and blocked runs share that
-  record. Expired items are auto-denied. Do not resolve from the terminal:
-  `needs-you resolve` is refused and does not grant. The person at the desktop
-  decides.
+  record. Expired items are auto-denied. Open rows are sealed under the
+  profile `host` directory and listed again after a restart. Questions and
+  blocked runs settle from the terminal. A click approval does not:
+  `needs-you resolve --approve` leaves that row open and records a refusal.
+  The grant is a click on Allow once in the host window. `--deny` still
+  denies. A phone may deny or answer a question. A phone approve never grants
+  a permission.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
