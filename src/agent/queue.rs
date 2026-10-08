@@ -281,6 +281,37 @@ fn mark_orphans(workspace: &Path) -> Result<(), String> {
     })
 }
 
+fn pending_id_of(error: &str) -> Option<&str> {
+    error.split_whitespace().find(|token| token.starts_with("req_"))
+}
+
+/// A click does not rerun the turn by itself. Put an approved task back on
+/// the queue so the same assignment continues under the grant.
+fn release_approved(workspace: &Path) -> Result<(), String> {
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    with_tasks(workspace, true, |tasks| {
+        for task in tasks.iter_mut() {
+            if task.state != "permission_required" || task.cancel {
+                continue;
+            }
+            let Some(pending) = pending_id_of(&task.error) else {
+                continue;
+            };
+            if !monitor.approval_granted(pending) {
+                continue;
+            }
+            log::info!(
+                "queue: approval released task={} head={} pending={pending}",
+                task.id, task.head
+            );
+            task.state = "queued".to_string();
+            task.error.clear();
+            task.updated_at = now();
+        }
+    })
+}
+
 pub fn pump(workspace: &Path) {
     let workspace = crate::platform::path::canonical_or_self(workspace);
     if !queue_path(&workspace).exists() {
@@ -288,6 +319,10 @@ pub fn pump(workspace: &Path) {
     }
     if let Err(error) = mark_orphans(&workspace) {
         log::error!("queue: recover failed: {error}");
+        return;
+    }
+    if let Err(error) = release_approved(&workspace) {
+        log::error!("queue: release approved failed: {error}");
         return;
     }
     let ready = match with_tasks(&workspace, true, |tasks| {
@@ -458,5 +493,63 @@ mod tests {
         let cancelled = request_cancel(fixture.ws(), id);
         assert_eq!(cancelled["task"]["state"], "cancelled", "{cancelled}");
         assert!(cancel_requested(fixture.ws(), id));
+    }
+
+    #[test]
+    fn an_approved_click_returns_the_same_task_to_the_queue() {
+        use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        let fixture = Fixture::new();
+        let _ = crate::agent::heads::handle_request(
+            "create_head",
+            &json!({"workspace": fixture.ws(), "name": "lead-b"}),
+        );
+        let queued = enqueue(fixture.ws(), "lead-b", "write-file");
+        let id = queued["task"]["id"].as_str().unwrap().to_string();
+        let held = enqueue(fixture.ws(), "lead-b", "still-waiting");
+        let held_id = held["task"]["id"].as_str().unwrap().to_string();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let admission = monitor.admit(AdmitRequest {
+            call_id: "call-release",
+            tool: "host.files.write",
+            input_json: r#"{"file":"out.txt","content":"ok"}"#,
+            actor_type: ActorType::Agent,
+            actor_id: "agent:lead-b",
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: fixture.ws(),
+            context_id: 0,
+            package_id: "plexi",
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        });
+        let pending = match admission {
+            Admission::Required { pending_request_id } => pending_request_id,
+            Admission::Proceed { .. } => panic!("expected a pending ask, grant matched"),
+            Admission::Denied { code } => panic!("expected a pending ask, denied {code}"),
+        };
+        monitor
+            .approve_pending(&pending, ApprovalChoice::Once)
+            .unwrap();
+        with_tasks(fixture.ws(), true, |tasks| {
+            for task in tasks.iter_mut() {
+                if task.id == id {
+                    task.state = "permission_required".to_string();
+                    task.error = format!("permission_required {pending}");
+                } else if task.id == held_id {
+                    task.state = "permission_required".to_string();
+                    task.error = "permission_required req_still_waiting".to_string();
+                }
+            }
+        })
+        .unwrap();
+        release_approved(fixture.ws()).unwrap();
+        let rows = snapshot(fixture.ws());
+        let released = rows.iter().find(|row| row["id"] == id).unwrap();
+        assert_eq!(released["state"], "queued");
+        assert_eq!(released["error"], "");
+        let waiting = rows.iter().find(|row| row["id"] == held_id).unwrap();
+        assert_eq!(waiting["state"], "permission_required");
     }
 }

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Installed-binary check for the headless lead queue (V1-10 steps 3-6).
 # Usage: scripts/headless-queue-e2e.sh <PR>
-# Human approval clicks are VERIFIED-VIA-BYPASS. W15 HUMAN_APPROVE is not used.
+# host.files.write is not granted at head create. The script clicks Allow
+# once through HUMAN_APPROVE (scripts/e2e/human.sh). The queue resumes that
+# same task after the click. It never calls assistant permission resolve
+# or command-view resolve.
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
@@ -52,7 +55,7 @@ export PLEXI_LEAD_MODEL="mock/lead"
 echo "workspace: $WORKDIR"
 echo "binary: $BIN_PATH"
 echo "mock: $PLEXI_OPENROUTER_BASE_URL"
-echo "approvals: VERIFIED-VIA-BYPASS (grant is pre-recorded; no human click)"
+echo "approvals: HUMAN_APPROVE (real pointer click; no CLI resolve)"
 
 "$BIN" workspace init
 if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
@@ -64,26 +67,66 @@ HOST_STARTED=1
 cli() { "$BIN" "$@"; }
 
 echo "STEP create lead B with no assistant pane"
-CREATE="$(cli agent head create lead-b --display-name 'Lead B' --grant assistant.turn=allow --grant host.files.write=allow --grant lead.step=allow --json)"
+CREATE="$(cli agent head create lead-b --display-name 'Lead B' --grant assistant.turn=allow --grant lead.step=allow --json)"
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok") is True' "$CREATE"
 BEFORE="$(cli pane list)"
 python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); assert all(row.get("title")!="Lead B" for row in rows)' "$BEFORE"
 
-printf '%s\n' '{"text":"write-file"}' >"$WORKDIR/task.json"
-echo "STEP assign with no pane open"
-ASSIGN="$(cli agent assign --head lead-b --input "$WORKDIR/task.json" --json)"
-python3 - "$ASSIGN" <<'PY'
-import json, sys
-body = json.loads(sys.argv[1])
-assert body.get("ok") is True, body
-print(body["task"]["id"])
-PY
-TASK="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$ASSIGN")"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
+export BIN
 
-echo "STEP wait until the headless run finishes"
+printf '%s\n' '{"text":"write-file"}' >"$WORKDIR/task.json"
+echo "STEP assign with no pane open asks before it writes"
+ASK="$(cli agent assign --head lead-b --input "$WORKDIR/task.json" --json)"
+python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok") is True, body' "$ASK"
+ASK_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$ASK")"
+PENDING=""
 for _ in $(seq 1 40); do
   VIEW="$(cli command-view --json)"
-  if python3 - "$VIEW" "$TASK" <<'PY'
+  PENDING="$(python3 - "$VIEW" "$ASK_ID" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
+if task is None or task.get("state") != "permission_required":
+    raise SystemExit
+text = task.get("error") or ""
+for token in text.split():
+    if token.startswith("req_"):
+        print(token)
+        raise SystemExit
+print("")
+PY
+)"
+  if [[ -n "$PENDING" ]]; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ -z "$PENDING" ]]; then
+  PENDING="$("$BIN" assistant permission list | python3 -c 'import json,sys
+data=json.load(sys.stdin)
+rows=data.get("pending") or []
+print(rows[0].get("pending_request_id","") if rows else "")')"
+fi
+if [[ -z "$PENDING" ]]; then
+  echo "FAIL: headless write did not file a pending approval"
+  echo "$VIEW"
+  exit 1
+fi
+test ! -f "$WORKDIR/out.txt"
+echo "HUMAN_APPROVE pending $PENDING once"
+if ! HUMAN_APPROVE "$PENDING" once; then
+  "$BIN" host screenshot --output "$WORKDIR/approve-miss.png" >/dev/null 2>&1 || true
+  echo "FAIL: HUMAN_APPROVE did not grant $PENDING"
+  "$BIN" assistant permission list || true
+  exit 1
+fi
+
+echo "STEP the same assignment continues after Allow once"
+for _ in $(seq 1 40); do
+  VIEW="$(cli command-view --json)"
+  if python3 - "$VIEW" "$ASK_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
 task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
@@ -148,6 +191,7 @@ rm -f "$WORKDIR/out.txt"
 printf '%s\n' '{"text":"write-file"}' >"$WORKDIR/again.json"
 QUEUED="$(cli agent assign --head lead-b --input "$WORKDIR/again.json" --json)"
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body["task"]["state"]=="queued"' "$QUEUED"
+AGAIN_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$QUEUED")"
 python3 - "$WORKDIR" <<'PY'
 import json
 from pathlib import Path
@@ -172,9 +216,37 @@ if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
   exit 1
 fi
 HOST_STARTED=1
+CLICKED=0
 for _ in $(seq 1 40); do
   if [[ -f "$WORKDIR/out.txt" ]]; then
     break
+  fi
+  if [[ "$CLICKED" == 0 ]]; then
+    VIEW="$(cli command-view --json 2>/dev/null || true)"
+    PENDING="$(python3 - "$VIEW" "$AGAIN_ID" <<'PY' || true
+import json, sys
+raw = sys.argv[1]
+if not raw.strip():
+    raise SystemExit
+try:
+    body = json.loads(raw)
+except json.JSONDecodeError:
+    raise SystemExit
+task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
+if task is None or task.get("state") != "permission_required":
+    raise SystemExit
+for token in (task.get("error") or "").split():
+    if token.startswith("req_"):
+        print(token)
+        raise SystemExit
+PY
+)"
+    if [[ -n "$PENDING" ]]; then
+      echo "HUMAN_APPROVE restart pending $PENDING once"
+      if HUMAN_APPROVE "$PENDING" once; then
+        CLICKED=1
+      fi
+    fi
   fi
   sleep 0.5
 done

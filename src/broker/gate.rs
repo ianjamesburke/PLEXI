@@ -674,6 +674,18 @@ impl PermissionMonitor {
         id
     }
 
+    /// True when a desktop click already allowed this pending id.
+    pub fn approval_granted(&self, pending_id: &str) -> bool {
+        matches!(
+            self.resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(pending_id)
+                .copied(),
+            Some(ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always)
+        )
+    }
+
     pub fn approve_pending(&self, pending_id: &str, choice: ApprovalChoice) -> Result<(), String> {
         if let Some(previous) = self
             .resolutions
