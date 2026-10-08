@@ -485,10 +485,26 @@ impl PlexiApp {
                     }
                 });
 
-                // Computed before the mutable borrow of `ctx`: the pane that
-                // owns input this frame (stint 0429). `None` while an overlay
-                // owns input, so every pane renders unfocused under a modal.
-                let owner_pane = self.owner_pane(ui.ctx());
+                // Computed before the mutable borrow of `ctx`. Visual focus
+                // follows host pane focus, not OS window focus: a blurred
+                // window (Xvfb, another app in front) still paints the
+                // focused pane at full color, so a waiting line stays the
+                // theme warning color. `None` while an overlay owns input,
+                // so every pane renders unfocused under a modal. Key routing
+                // keeps the OS-focus gate via `input_owner`.
+                let owner_pane = self.visual_owner_pane();
+                if !ui.input(|i| i.viewport().focused.unwrap_or(true)) {
+                    if let Some(pane_id) = owner_pane {
+                        let logged_id = egui::Id::new("blurred_visual_owner_logged");
+                        let logged: bool = ui.ctx().data(|d| d.get_temp(logged_id).unwrap_or(false));
+                        if !logged {
+                            log::info!(
+                                "pane focus: blurred window keeps pane {pane_id} at full color"
+                            );
+                            ui.ctx().data_mut(|d| d.insert_temp(logged_id, true));
+                        }
+                    }
+                }
 
                 // Resolved before the mutable borrow of the active window. The
                 // explicit context root is a cheap field clone; the cwd-derived

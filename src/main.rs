@@ -406,13 +406,33 @@ fn main() -> eframe::Result {
                         RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
                         RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
-                    Commands::CommandView { cmd, json } => {
+                    Commands::CommandView { cmd, json, follow } => {
                         exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
-                        let op = match cmd {
-                            Some(CommandViewCmd::Open) => "open",
-                            None => "list",
-                        };
-                        std::process::exit(cli::command_view_cli(op, json))
+                        if follow && cmd.is_some() {
+                            eprintln!("error: --follow prints the live projection and takes no subcommand");
+                            std::process::exit(2);
+                        }
+                        if follow {
+                            std::process::exit(cli::command_view_follow_cli());
+                        }
+                        match cmd {
+                            Some(CommandViewCmd::Open) => {
+                                std::process::exit(cli::command_view_cli("open", json))
+                            }
+                            Some(CommandViewCmd::Send { lead, text }) => {
+                                std::process::exit(cli::command_view_send_cli(&lead, &text))
+                            }
+                            Some(CommandViewCmd::Cancel { run }) => {
+                                std::process::exit(cli::command_view_cancel_cli(&run))
+                            }
+                            Some(CommandViewCmd::Resolve { id: _ }) => {
+                                std::process::exit(cli::command_view_refused("resolve"))
+                            }
+                            Some(CommandViewCmd::Allow { tool: _ }) => {
+                                std::process::exit(cli::command_view_refused("allow"))
+                            }
+                            None => std::process::exit(cli::command_view_cli("list", json)),
+                        }
                     }
                     Commands::Run {
                         command,

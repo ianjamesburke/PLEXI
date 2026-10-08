@@ -148,8 +148,11 @@ plexi skill install --agent codex
   requests from an agent pane. `assistant send --head <id>` runs one model turn
   in that head's conversation. `assistant open --head <id>` opens an Assistant
   pane bound to that head. `agent conversation --head <id> --as <other>` is
-  refused when the ids differ. `command-view` lists heads from the agents API;
-  `command-view open` shows the same rows in a pane. `agent assign --head <id> --input task.json` queues work with no pane open. `agent cancel --id <task>` stops it before the next tool. A lead cannot read, write,
+  refused when the ids differ.   `command-view` lists heads, runs, and queued tasks from the agents API.
+  `command-view open` shows the same rows in a pane. `command-view send <lead> <text>`
+  runs a real turn in that head's conversation. `command-view cancel <run>` stops
+  that run before the next tool. `command-view resolve` and `command-view allow`
+  do not grant, and both are refused when `PLEXI_PANE_ID` is set. `agent assign --head <id> --input task.json` queues work with no pane open. `agent cancel --id <task>` stops it before the next tool. A lead cannot read, write,
   or message another lead. `agent report --event` preserves
   a provider lifecycle event separately from its UI state; `--blocked-reason`
   supplies a typed reason. Read `agent report --help` before using these optional
@@ -383,6 +386,10 @@ plexi assistant open --head lead
 plexi assistant send --head lead --text 'status?'
 plexi agent conversation --head lead --json
 plexi command-view --json
+plexi command-view send lead-a "status?"
+plexi command-view cancel run_example
+plexi command-view resolve pending_example
+plexi command-view allow --tool assistant.turn
 plexi agent assign --head lead --input task.json --json
 plexi agent cancel --id task_example --json
 ```

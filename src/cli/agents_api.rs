@@ -83,6 +83,18 @@ pub fn agent_conversation_cli(head: &str, as_head: Option<&str>, json: bool) -> 
     )
 }
 
+pub fn command_view_follow_cli() -> i32 {
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    log::info!("command_view:cli: follow workspace={}", workspace.display());
+    super::events::stream_control_line(json!({
+        "type": "command_view_follow",
+        "workspace": workspace,
+    }))
+}
+
 pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
     let workspace = match crate::cli::agent::resolve_workspace_cwd() {
         Ok(root) => root,
@@ -110,6 +122,92 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
         Ok(_) => 1,
         Err(_) => 1,
     }
+}
+
+pub fn command_view_send_cli(lead: &str, text: &str) -> i32 {
+    if text.trim().is_empty() {
+        eprintln!("error: text is required");
+        return 1;
+    }
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    log::info!("command_view:cli: send lead={lead} request_id={request_id}");
+    let content = match super::request_with(
+        json!({
+            "type": "command_view",
+            "op": "send",
+            "payload": {
+                "workspace": workspace,
+                "lead": lead,
+                "text": text,
+                "request_id": request_id,
+            }
+        }),
+        "command-view-send",
+        "command-view send",
+        std::time::Duration::from_secs(120),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<Value>(&content) {
+        Ok(value) if value.get("state").and_then(|item| item.as_str()) == Some("succeeded") => 0,
+        Ok(_) => 2,
+        Err(_) => 1,
+    }
+}
+
+pub fn command_view_cancel_cli(run: &str) -> i32 {
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    log::info!("command_view:cli: cancel run={run}");
+    let content = match super::request_with(
+        json!({
+            "type": "command_view",
+            "op": "cancel",
+            "payload": {"workspace": workspace, "run": run}
+        }),
+        "command-view-cancel",
+        "command-view cancel",
+        std::time::Duration::from_secs(20),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|item| item.as_bool()) == Some(true) => 0,
+        _ => 1,
+    }
+}
+
+/// `resolve` and `allow` do not grant. From an agent pane they are refused.
+pub fn command_view_refused(kind: &str) -> i32 {
+    let from_pane = std::env::var_os("PLEXI_PANE_ID").is_some();
+    let (code, error) = if from_pane {
+        (
+            "agent_cannot_approve",
+            "an agent pane cannot resolve or allow",
+        )
+    } else {
+        (
+            "not_an_approval",
+            "command-view resolve and allow do not grant",
+        )
+    };
+    log::info!("command_view:cli: refused {kind} code={code}");
+    println!(
+        "{}",
+        json!({"ok": false, "error_code": code, "error": error, "command": kind})
+    );
+    eprintln!("error: {error}");
+    1
 }
 
 pub fn assistant_open_head_cli(head: &str) -> i32 {

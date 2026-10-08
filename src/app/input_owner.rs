@@ -104,10 +104,12 @@ impl PlexiApp {
         InputOwner::Nobody
     }
 
-    /// The pane that owns input this frame, if the owner is a pane. Feeds the
-    /// tiling behavior's `is_focused` so pane visuals track real ownership.
-    pub(crate) fn owner_pane(&self, ctx: &egui::Context) -> Option<PaneId> {
-        match self.input_owner(ctx) {
+    /// The pane painted at full opacity. OS blur does not dim it: ghost
+    /// applies to the other panes only. An overlay still returns `None`, so
+    /// every pane dims under a modal. Key routing stays on [`Self::input_owner`],
+    /// which keeps the OS-focus gate.
+    pub(crate) fn visual_owner_pane(&self) -> Option<PaneId> {
+        match self.host_input_owner() {
             InputOwner::Pane(pane_id) => Some(pane_id),
             _ => None,
         }
