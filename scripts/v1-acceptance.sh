@@ -778,6 +778,9 @@ for idx, raw in enumerate(lines):
         continue
     if is_mention(line) or is_negative(idx, line):
         continue
+    # A raced deny settles the row as denied. It is not an approval.
+    if re.search(r"needs-you resolve\b", line) and "--deny" in line and "--approve" not in line:
+        continue
     positive.append(line.strip())
 
 kinds = []
