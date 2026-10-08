@@ -1348,6 +1348,9 @@ impl PlexiApp {
         // wakeups and drains queued IPC in one late burst (stint 0479).
         #[cfg(target_os = "macos")]
         crate::platform::app_nap::disable_app_nap();
+        // File a death/tamper item and leave a running stamp before any client
+        // can connect. A kill skips `exit_host`, so the next start can see it.
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         spawn_socket_listener(
             pane_ipc_mailbox,
             event_subscribe_mailbox.clone(),

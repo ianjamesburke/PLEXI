@@ -692,6 +692,8 @@ impl PermissionStore {
         if let Err(error) = crate::broker::seal::write_toml(&self.file.path, label, &self.file.data)
         {
             log::error!("{label}: failed to save {}: {error}", self.file.path.display());
+        } else {
+            crate::broker::integrity::note_saved_file(&self.file.path);
         }
     }
 
