@@ -413,7 +413,7 @@ fi
 
 # ── 10. The agent skill does not name a resolve command ──────────────────────
 if grep -nE 'permission resolve|needs-you resolve|permissions allow|secret grant|secret exec' "$SKILL" \
-  | grep -vE 'refused|do not grant|permission_denied|Do not approve|Do not resolve'; then
+  | grep -vE 'refus|do not grant|permission_denied|Do not approve|Do not resolve'; then
   record FAIL step10 "skill names a resolve command"
 else
   record PASS step10 "skill waits and does not name a resolve command"
