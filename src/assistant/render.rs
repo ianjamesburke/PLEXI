@@ -2,11 +2,12 @@
 //! streaming row, slash-command picker, and multiline composer. Pure view
 //! over `AssistantModel` — all state transitions go back through the model.
 //!
-//! Layout: the composer (plus permission sheet and hint bar) lives in a
-//! content-sized bottom panel so it stays glued to the pane's bottom edge.
+//! Layout: the hint bar and composer are placed from the pane floor at a
+//! height measured this frame. A content-sized bottom panel clips to last
+//! frame's height, so a Shift+Enter newline hid the hint bar for one frame.
 //! The slash-command picker is a floating `Area` popup anchored to the top
 //! edge of the composer — it grows and shrinks upward without resizing the
-//! panel or the transcript, so filtering never shifts surrounding layout.
+//! composer or the transcript, so filtering never shifts surrounding layout.
 //! Enter/Tab/arrow keys are consumed *before* the composer TextEdit renders,
 //! so completion and submit never flash an intermediate buffer state.
 
@@ -67,6 +68,153 @@ pub enum ComposerEvent {
     OverlayConfirm,
 }
 
+fn footer_hints(model: &AssistantModel) -> Vec<HintGroup<'static>> {
+    const TAB: &[&str] = &["\u{21e5}"];
+    const ENTER: &[&str] = &["\u{21b5}"];
+    const ESC: &[&str] = &["Esc"];
+    const ARROWS: &[&str] = &["\u{2191}", "\u{2193}"];
+    const SPACE: &[&str] = &["Space"];
+    const SHIFT_ENTER: &[&str] = &["\u{21e7}", "\u{21b5}"];
+    const SLASH: &[&str] = &["/"];
+    if model.pending_permission.is_some() {
+        vec![
+            HintGroup::new(TAB, "navigate"),
+            HintGroup::new(ENTER, "confirm"),
+            HintGroup::new(ESC, "deny"),
+        ]
+    } else if model.overlay_active() {
+        let mut hints = vec![
+            HintGroup::new(ARROWS, "navigate"),
+            HintGroup::new(ENTER, "confirm"),
+            HintGroup::new(ESC, "cancel"),
+        ];
+        if matches!(model.overlay, AssistantOverlay::PermissionsManager { .. }) {
+            hints.push(HintGroup::new(SPACE, "cycle"));
+        }
+        hints
+    } else {
+        let mut hints = vec![
+            HintGroup::new(ENTER, "send"),
+            HintGroup::new(SHIFT_ENTER, "newline"),
+            HintGroup::new(SLASH, "commands"),
+        ];
+        if model.streaming.in_flight {
+            hints.push(HintGroup::new(ESC, "stop"));
+        }
+        hints
+    }
+}
+
+fn composer_text_height(ui: &mut egui::Ui, text: &str, width: f32, cap: f32) -> f32 {
+    let font = egui::FontId::proportional(style::TEXT_BODY);
+    TextArea::composer(egui::Id::new("assistant_composer_measure"), "hint")
+        .font(font)
+        .content_height(ui, text, width, cap)
+}
+
+fn composer_outer_height(text_h: f32) -> f32 {
+    (text_h + style::SPACE_XS * 2.0 + COMPOSER_STROKE * 2.0).ceil()
+}
+
+/// `rows` menu entries including the shared list-row gap.
+fn menu_block_height(ui: &egui::Ui, rows: usize) -> f32 {
+    if rows == 0 {
+        return 0.0;
+    }
+    let row = style::LIST_ROW_H + style::LIST_ROW_GAP_V;
+    let gap = ui.spacing().item_spacing.y;
+    rows as f32 * row + rows.saturating_sub(1) as f32 * gap
+}
+
+/// "Medium — xiaomi/mimo-v2.5-pro", or just the tier when no id is configured.
+fn tier_menu_label(tier: ModelTier, model_id: Option<&str>) -> String {
+    let title = match tier {
+        ModelTier::Low => "Low",
+        ModelTier::Medium => "Medium",
+        ModelTier::High => "High",
+    };
+    match model_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => format!("{title} — {id}"),
+        None => title.to_string(),
+    }
+}
+
+fn role_caption(ui: &mut egui::Ui, label: &str, colors: &Colors, align: egui::Align) {
+    ui.with_layout(egui::Layout::top_down(align), |ui| {
+        ui.add(
+            egui::Label::new(
+                RichText::new(label)
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            )
+            .selectable(false),
+        );
+    });
+}
+
+fn draw_jump_to_latest(ui: &mut egui::Ui, transcript: egui::Rect, colors: &Colors) -> bool {
+    let label = "↓  Latest";
+    let galley = ui.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            label.to_owned(),
+            egui::FontId::proportional(style::TEXT_CAPTION),
+            colors.text_primary,
+        )
+    });
+    let pad = egui::vec2(style::SPACE_MD, style::SPACE_XS);
+    let size = galley.size() + pad * 2.0;
+    if size.x > transcript.width() || size.y > transcript.height() {
+        return false;
+    }
+    let origin = egui::pos2(
+        transcript.center().x - size.x * 0.5,
+        transcript.bottom() - size.y - style::SPACE_SM,
+    );
+    let mut clicked = false;
+    egui::Area::new(ui.id().with("assistant_jump"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(origin)
+        .show(ui.ctx(), |ui| {
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            let fill = if response.hovered() {
+                colors.bg_hover
+            } else {
+                colors.bg_active
+            };
+            ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
+            ui.painter().rect_stroke(
+                rect,
+                style::RADIUS_MD,
+                egui::Stroke::new(1.0_f32, colors.accent.gamma_multiply(0.65)),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().galley(
+                egui::pos2(rect.left() + pad.x, rect.center().y - galley.size().y * 0.5),
+                galley,
+                colors.text_primary,
+            );
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            clicked = response.clicked();
+        });
+    clicked
+}
+
+fn scope_top_down<R>(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        add,
+    )
+    .inner
+}
+
 /// Row label for a permission decision — "block" reads clearer than "deny" in
 /// the manager (matches the Space-cycle affordance).
 fn decision_label(decision: Decision) -> &'static str {
@@ -76,6 +224,12 @@ fn decision_label(decision: Decision) -> &'static str {
         Decision::Deny => "block",
     }
 }
+
+/// Composer frame stroke, matched by the footer height reservation.
+const COMPOSER_STROKE: f32 = 1.0;
+
+/// How close to the bottom (px) still counts as pinned.
+const SCROLL_BOTTOM_SLACK: f32 = 24.0;
 
 /// Which edge of the transcript a chat bubble anchors to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -182,95 +336,142 @@ impl AssistantRenderer {
         let picker_max_h =
             (style::LIST_ROW_H * 10.0).min((total_h * 0.8).max(style::LIST_ROW_H * 3.0));
         let mut event = None;
-        let mut composer_rect = None;
 
-        // Bottom-anchored, content-sized: composer pinned to the pane bottom.
-        // Stable height (composer + hints only) — the picker floats above it.
-        egui::Panel::bottom(pane_id.with("assistant_bottom"))
-            .show_separator_line(false)
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
-                left: style::SPACE_MD as i8,
-                right: style::SPACE_MD as i8,
-                top: style::SPACE_XS as i8,
-                bottom: style::SPACE_SM as i8,
-            }))
-            .show_inside(ui, |ui| {
-                // Keys first: Enter/Tab/arrows must be consumed before the
-                // TextEdit processes input, or completion renders a one-frame
-                // stale buffer (the autocomplete "glitch"). While the
-                // permission sheet or an overlay is open, it owns navigation
-                // keys and the composer stays inert. The sheet takes
-                // priority over the overlay — a permission ask can interrupt
-                // an open overlay's underlying turn.
-                let permission_pending = model.pending_permission.is_some();
-                if permission_pending {
-                    if let Some(perm_event) = Self::handle_permission_keys(ui, model) {
-                        event = Some(perm_event);
-                    }
-                } else if model.overlay_active() {
-                    if let Some(overlay_event) = Self::handle_overlay_keys(ui, model) {
-                        event = Some(overlay_event);
-                    }
-                } else if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
-                    event = Some(key_event);
-                }
-                if let Some(choice) = Self::draw_permission_sheet(ui, model, colors) {
-                    event = Some(ComposerEvent::Permission(choice));
-                }
-                composer_rect = Some(Self::draw_composer(
-                    ui,
-                    model,
-                    te_id,
-                    colors,
-                    total_h * Self::COMPOSER_MAX_FRACTION,
-                ));
-                if permission_pending {
-                    HintBar::new(&[
-                        HintGroup::new(&["\u{21e5}"], "navigate"),
-                        HintGroup::new(&["\u{21b5}"], "confirm"),
-                        HintGroup::new(&["Esc"], "deny"),
-                    ])
-                    .show(ui, colors);
-                } else if model.overlay_active() {
-                    let mut hints = vec![
-                        HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
-                        HintGroup::new(&["\u{21b5}"], "confirm"),
-                        HintGroup::new(&["Esc"], "cancel"),
-                    ];
-                    if matches!(model.overlay, AssistantOverlay::PermissionsManager { .. }) {
-                        hints.push(HintGroup::new(&["Space"], "cycle"));
-                    }
-                    HintBar::new(&hints).show(ui, colors);
-                } else {
-                    let mut hints = vec![
-                        HintGroup::new(&["\u{21b5}"], "send"),
-                        HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
-                        HintGroup::new(&["/"], "commands"),
-                    ];
-                    if model.streaming.in_flight {
-                        hints.push(HintGroup::new(&["Esc"], "stop"));
-                    }
-                    HintBar::new(&hints).show(ui, colors);
-                }
-            });
+        // Keys first: Enter/Tab/arrows must be consumed before the
+        // TextEdit processes input, or completion renders a one-frame
+        // stale buffer (the autocomplete "glitch"). While the
+        // permission sheet or an overlay is open, it owns navigation
+        // keys and the composer stays inert. The sheet takes
+        // priority over the overlay — a permission ask can interrupt
+        // an open overlay's underlying turn.
+        let permission_pending = model.pending_permission.is_some();
+        if permission_pending {
+            if let Some(perm_event) = Self::handle_permission_keys(ui, model) {
+                event = Some(perm_event);
+            }
+        } else if model.overlay_active() {
+            if let Some(overlay_event) = Self::handle_overlay_keys(ui, model) {
+                event = Some(overlay_event);
+            }
+        } else if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
+            event = Some(key_event);
+        }
 
-        let mut transcript_event = None;
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new().inner_margin(egui::Margin::symmetric(style::SPACE_MD as i8, 0)),
+        // Footer rects are derived from this frame's measurements, then each
+        // region paints top-down inside its own rect. The hint slot's height
+        // does not include the composer, so a newline cannot move or clip it.
+        let full = ui.available_rect_before_wrap();
+        let content = egui::Rect::from_min_max(
+            egui::pos2(full.left() + style::SPACE_MD, full.top()),
+            egui::pos2(full.right() - style::SPACE_MD, full.bottom() - style::SPACE_SM),
+        );
+        let hints = footer_hints(model);
+        let gap = style::SPACE_XS;
+        let hint_h = HintBar::new(&hints).height(ui, content.width());
+        let text_w =
+            (content.width() - style::SPACE_SM * 2.0 - COMPOSER_STROKE * 2.0).max(1.0);
+        let cap = (total_h * Self::COMPOSER_MAX_FRACTION).max(style::TEXT_BODY);
+        let text_h = composer_text_height(ui, &model.composer, text_w, cap);
+        let composer_h = composer_outer_height(text_h);
+        let lines = model.composer.lines().count().max(1);
+        let lines_id = pane_id.with("assistant_composer_lines");
+        let prev_lines = ui.ctx().data(|data| data.get_temp::<usize>(lines_id));
+        if prev_lines != Some(lines) {
+            log::info!(
+                "assistant: composer {:.0}px ({lines} lines); hint bar held at pane floor",
+                composer_h
+            );
+        }
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(lines_id, lines));
+
+        let hint_rect = egui::Rect::from_min_max(
+            egui::pos2(content.left(), content.bottom() - hint_h),
+            content.max,
+        );
+        let composer_bottom = hint_rect.top() - gap;
+        let composer_slot = egui::Rect::from_min_max(
+            egui::pos2(content.left(), composer_bottom - composer_h),
+            egui::pos2(content.right(), composer_bottom),
+        );
+        let perm_id = pane_id.with("assistant_perm_h");
+        let pending = model.pending_permission.is_some();
+        let stored_perm = if pending {
+            ui.ctx()
+                .data(|data| data.get_temp::<f32>(perm_id).unwrap_or(0.0))
+        } else {
+            0.0
+        };
+        let above_bottom = composer_slot.top() - gap;
+        let above = egui::Rect::from_min_max(
+            content.min,
+            egui::pos2(content.right(), above_bottom.max(content.top())),
+        );
+        let perm_known = pending && stored_perm > 1.0;
+        let perm_slot = if perm_known {
+            egui::Rect::from_min_max(
+                egui::pos2(
+                    content.left(),
+                    (above.bottom() - stored_perm).max(above.top()),
+                ),
+                above.max,
             )
-            .show_inside(ui, |ui| {
-                transcript_event = Self::draw_transcript(ui, model, md_cache, text_cache, colors);
+        } else if pending {
+            above
+        } else {
+            egui::Rect::NOTHING
+        };
+        let transcript_bottom = if perm_known {
+            (perm_slot.top() - gap).max(content.top())
+        } else {
+            above.bottom()
+        };
+        let transcript_rect = egui::Rect::from_min_max(
+            content.min,
+            egui::pos2(content.right(), transcript_bottom),
+        );
+
+        scope_top_down(ui, hint_rect, |ui| {
+            HintBar::new(&hints).show(ui, colors);
+        });
+        let composer_rect = scope_top_down(ui, composer_slot, |ui| {
+            Self::draw_composer(ui, model, te_id, colors, cap, text_h)
+        });
+        if pending {
+            let measured = scope_top_down(ui, perm_slot, |ui| {
+                let choice = Self::draw_permission_sheet(ui, model, colors);
+                let measured = ui.min_rect().height();
+                (choice, measured)
             });
+            if let Some(choice) = measured.0 {
+                event = Some(ComposerEvent::Permission(choice));
+            }
+            if (measured.1 - stored_perm).abs() > 1.0 && !ui.ctx().will_discard() {
+                ui.ctx().data_mut(|data| data.insert_temp(perm_id, measured.1));
+                ui.ctx()
+                    .request_discard("assistant permission sheet height");
+            }
+        }
+        let transcript_event = scope_top_down(ui, transcript_rect, |ui| {
+            Self::draw_transcript(ui, model, md_cache, text_cache, colors)
+        });
         if event.is_none() {
             event = transcript_event;
         }
 
-        if let Some(rect) = composer_rect {
+        {
             if model.overlay_active() {
-                Self::draw_overlay_popup(ui, model, pane_id, colors, rect, picker_max_h);
+                Self::draw_overlay_popup(ui, model, pane_id, colors, composer_rect, picker_max_h);
             } else if model.picker_active() {
-                Self::draw_picker_popup(ui, model, te_id, pane_id, colors, rect, picker_max_h);
+                Self::draw_picker_popup(
+                    ui,
+                    model,
+                    te_id,
+                    pane_id,
+                    colors,
+                    composer_rect,
+                    picker_max_h,
+                );
             }
         }
 
@@ -293,17 +494,56 @@ impl AssistantRenderer {
         // still scroll.
         ui.style_mut().interaction.selectable_labels = true;
         ui.style_mut().interaction.multi_widget_text_select = true;
-        egui::ScrollArea::vertical()
+
+        let follow_id = ui.id().with("assistant_follow");
+        let user_count_id = ui.id().with("assistant_user_turns");
+        let conv_id = ui.id().with("assistant_follow_conv");
+        let mut follow = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(follow_id).unwrap_or(true));
+        let was_following = follow;
+        let prev_conv = ui.ctx().data(|d| d.get_temp::<String>(conv_id));
+        if prev_conv.as_deref() != Some(model.conversation_id.as_str()) {
+            follow = true;
+        }
+        let user_turns = model
+            .turns
+            .iter()
+            .filter(|turn| turn.role == TurnRole::User)
+            .count();
+        let prev_users = ui
+            .ctx()
+            .data(|d| d.get_temp::<usize>(user_count_id).unwrap_or(0));
+        if user_turns > prev_users {
+            follow = true;
+            log::info!("assistant: transcript pinned to bottom on send");
+        }
+        // A wheel toward older messages releases the pin before this frame's
+        // stick runs, so the same gesture is not snapped back to the end.
+        // `animated(false)` consumes the raw delta; smoothing may lag a frame.
+        let scroll_up = ui.input(|input| input.smooth_scroll_delta.y > 1.0);
+        if scroll_up {
+            follow = false;
+        }
+        let scroll_id = ui.make_persistent_id(egui::Id::new("assistant_transcript"));
+        if follow {
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
+                state.offset.y = f32::MAX;
+                state.store(ui.ctx(), scroll_id);
+            }
+        }
+
+        let output = egui::ScrollArea::vertical()
             .id_salt("assistant_transcript")
             .auto_shrink([false, false])
+            .animated(false)
             .scroll_source(egui::scroll_area::ScrollSource {
                 drag: false,
                 ..Default::default()
             })
-            // Follow new content (streamed chunks, command output) whenever
-            // the view is already at the bottom; egui releases the stick as
-            // soon as the user scrolls up to read history.
-            .stick_to_bottom(true)
+            // Follow new content while pinned. Releasing the pin (scroll up)
+            // leaves the offset where the reader put it.
+            .stick_to_bottom(follow)
             .show(ui, |ui| {
                 ui.add_space(style::SPACE_SM);
                 // The in-flight turn renders at its anchor — right after the
@@ -353,9 +593,56 @@ impl AssistantRenderer {
                     model.show_thoughts,
                 ));
                 ui.add_space(style::SPACE_SM);
+                let anchor = ui.allocate_rect(
+                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(1.0, 1.0)),
+                    egui::Sense::hover(),
+                );
+                if follow {
+                    anchor.scroll_to_me(Some(egui::Align::BOTTOM));
+                }
                 review
-            })
-            .inner
+            });
+
+        let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+        let distance = max_offset - output.state.offset.y;
+        let at_bottom = distance <= SCROLL_BOTTOM_SLACK;
+        if at_bottom && !scroll_up {
+            follow = true;
+        }
+        let bar_drag = ui.input(|input| {
+            input.pointer.is_decidedly_dragging()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|pos| output.inner_rect.right() - pos.x < 16.0)
+        });
+        if bar_drag && !at_bottom {
+            follow = false;
+        }
+        if was_following && !follow {
+            log::info!("assistant: transcript follow paused — scrolled up to read");
+        }
+        if !at_bottom && draw_jump_to_latest(ui, output.inner_rect, colors) {
+            follow = true;
+            log::info!("assistant: jump to latest");
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), output.id) {
+                state.offset.y = f32::MAX;
+                state.store(ui.ctx(), output.id);
+            }
+        }
+        if follow && distance > SCROLL_BOTTOM_SLACK && !ui.ctx().will_discard() {
+            ui.ctx().request_discard("assistant stick to bottom");
+        }
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(follow_id, follow);
+            data.insert_temp(user_count_id, user_turns);
+            data.insert_temp(conv_id, model.conversation_id.clone());
+            data.insert_temp(
+                egui::Id::new("assistant_scroll_debug"),
+                (output.state.offset.y, max_offset, follow, at_bottom),
+            );
+        });
+        output.inner
     }
 
     /// Egui intentionally ignores wheel input while a child widget owns a
@@ -390,6 +677,12 @@ impl AssistantRenderer {
     ) -> Option<ComposerEvent> {
         let mut event = None;
         for (i, turn) in turns.iter().enumerate() {
+            let grouped = turns.get(i.wrapping_sub(1)).is_some_and(|prev| {
+                i > 0 && prev.role == turn.role
+            });
+            let next_grouped = turns
+                .get(i + 1)
+                .is_some_and(|next| next.role == turn.role);
             ui.push_id(index_offset + i, |ui| {
                 let row = Self::draw_turn_row(
                     ui,
@@ -400,11 +693,18 @@ impl AssistantRenderer {
                     colors,
                     turn,
                     show_thoughts,
+                    grouped,
                 );
                 if event.is_none() {
                     event = row;
                 }
             });
+            let gap = if next_grouped {
+                style::SPACE_XS
+            } else {
+                style::SPACE_MD
+            };
+            ui.add_space(gap);
         }
         event
     }
@@ -443,19 +743,47 @@ impl AssistantRenderer {
                 );
             }
         }
-        let header = RichText::new(format!("{icon} {}", turn.text))
-            .size(style::TEXT_CAPTION)
-            .monospace()
-            .color(color);
+        let name = turn.text.split(" — ").next().unwrap_or(turn.text.as_str());
+        let summary = turn.input_summary.as_deref().and_then(|raw| {
+            raw.lines()
+                .find(|line| !line.trim().is_empty())
+                .map(str::trim)
+        });
         let has_body =
             turn.input_summary.is_some() || turn.output_preview.is_some() || turn.detail.is_some();
         if !has_body {
-            ui.label(header);
+            ui.label(
+                RichText::new(format!("{icon} {name}"))
+                    .size(style::TEXT_CAPTION)
+                    .monospace()
+                    .color(color),
+            );
         } else {
-            egui::CollapsingHeader::new(header)
-                .id_salt("tool_call")
-                .default_open(failed)
-                .show(ui, |ui| {
+            let id = ui.make_persistent_id("tool_call");
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                failed,
+            );
+            let _collapsed = state
+                .show_header(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("{icon} {name}"))
+                                .size(style::TEXT_CAPTION)
+                                .monospace()
+                                .color(color),
+                        );
+                        if let Some(summary) = summary {
+                            ui.label(
+                                RichText::new(summary)
+                                    .size(style::TEXT_HINT)
+                                    .color(colors.text_dim),
+                            );
+                        }
+                    });
+                })
+                .body_unindented(|ui| {
                     if let Some(input) = &turn.input_summary {
                         Self::draw_preview_block(ui, colors, "in", input);
                     }
@@ -467,14 +795,15 @@ impl AssistantRenderer {
                     }
                 });
         }
-        let review = if turn.text.contains("plexi permissions list") {
-            let response = chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
-            response.clicked().then_some(ComposerEvent::ReviewPermissions)
+        if turn.text.contains("plexi permissions list") {
+            let response =
+                chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
+            response
+                .clicked()
+                .then_some(ComposerEvent::ReviewPermissions)
         } else {
             None
-        };
-        ui.add_space(style::SPACE_SM);
-        review
+        }
     }
 
     /// A labeled multi-line preview (tool input/output, stint 0460): real
@@ -570,6 +899,7 @@ impl AssistantRenderer {
         colors: &Colors,
         turn: &super::model::Turn,
         show_thoughts: bool,
+        grouped: bool,
     ) -> Option<ComposerEvent> {
         let text = turn.text.as_str();
         match turn.role {
@@ -581,7 +911,6 @@ impl AssistantRenderer {
                         .monospace()
                         .color(colors.accent),
                 );
-                ui.add_space(style::SPACE_SM);
             }
             // Completed tool calls are caret-dropdown rows (stint 0455).
             TurnRole::Tool => {
@@ -593,6 +922,9 @@ impl AssistantRenderer {
             // that galley, `Align::Max` pins the shrunk frame to the right edge,
             // and the galley's own `LEFT` halign keeps wrapped lines left-read.
             TurnRole::User => {
+                if !grouped {
+                    role_caption(ui, "You", colors, egui::Align::Max);
+                }
                 let cap = Self::bubble_content_cap(ui, 1.0);
                 let galley = ui.fonts_mut(|f| {
                     f.layout(
@@ -605,7 +937,6 @@ impl AssistantRenderer {
                 Self::chat_bubble(ui, colors, BubbleSide::Right, true, |ui| {
                     ui.add(egui::Label::new(galley));
                 });
-                ui.add_space(style::SPACE_MD);
             }
             // Assistant replies sit left-aligned in a soft unstroked bubble —
             // visible against the terminal surface — and render as markdown.
@@ -615,29 +946,30 @@ impl AssistantRenderer {
                         Self::draw_thoughts_section(ui, colors, thoughts);
                     }
                 }
+                if !grouped {
+                    role_caption(ui, "Assistant", colors, egui::Align::Min);
+                }
                 let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
                 Self::assistant_bubble(ui, colors, md_cache, markdown);
-                ui.add_space(style::SPACE_MD);
             }
             // Slash-command output reads like an assistant reply either way;
             // the split is who receives it, not how it looks (stint 0380).
             TurnRole::Command | TurnRole::Local => {
+                if !grouped {
+                    role_caption(ui, "Assistant", colors, egui::Align::Min);
+                }
                 let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
                 Self::assistant_bubble(ui, colors, md_cache, markdown);
-                ui.add_space(style::SPACE_MD);
             }
             TurnRole::Error => {
-                ui.label(
-                    RichText::new("error")
-                        .size(style::TEXT_HINT)
-                        .color(colors.danger),
-                );
+                if !grouped {
+                    role_caption(ui, "Error", colors, egui::Align::Min);
+                }
                 ui.label(
                     RichText::new(text)
                         .size(style::TEXT_BODY)
                         .color(colors.danger),
                 );
-                ui.add_space(style::SPACE_MD);
             }
         }
         None
@@ -946,24 +1278,33 @@ impl AssistantRenderer {
         // Same bubble as a committed reply, present from the first frame —
         // the thinking-dots beat and every streamed token sit on the
         // background, so it never appears only after streaming ends.
+        let show_dots = model.streaming.tool_progress.is_none() && model.active_tools.is_empty();
         if !model.streaming.partial_answer.is_empty() {
             let markdown = crate::ui::markdown::harden_soft_breaks(&model.streaming.partial_answer);
-            Self::assistant_bubble(ui, colors, md_cache, &markdown);
+            // One bubble from the first token through the rest of the turn:
+            // the thinking beat sits under the text instead of a second bubble
+            // popping in below it.
+            let inner_w =
+                Self::measure_wrapped_width(ui, &markdown, Self::bubble_content_cap(ui, 0.0));
+            Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
+                ui.set_width(inner_w);
+                Self::markdown_body(ui, md_cache, colors, &markdown);
+                if show_dots {
+                    ui.add_space(style::SPACE_XS);
+                    Self::draw_thinking_dots(ui, colors);
+                }
+            });
+        } else if show_dots {
+            Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
+                Self::draw_thinking_dots(ui, colors);
+            });
         }
         // Never-frozen rule (stint 0467): while a turn is in flight,
         // something on screen always animates. Priority: the tool-generation
         // row when the model is writing a call, the running-tool row (drawn
-        // by the caller) while one executes, the thinking dots otherwise —
-        // including after streamed text, which previously sat static for the
-        // whole argument stream.
+        // by the caller) while one executes, the thinking dots otherwise.
         if let Some(progress) = &model.streaming.tool_progress {
             Self::draw_tool_progress_row(ui, colors, progress);
-        } else if model.active_tools.is_empty() {
-            // The dots allocate an exact size, so the bubble self-sizes to
-            // them — no width measurement needed.
-            Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
-                Self::draw_thinking_dots(ui, colors);
-            });
         }
         ui.add_space(style::SPACE_MD);
     }
@@ -1174,9 +1515,7 @@ impl AssistantRenderer {
         // clamps to the space below that position — a feedback loop with a
         // stable collapsed state (the "one visible row" bug). Deriving the
         // height from the row count breaks the loop.
-        let row_gap = ui.spacing().item_spacing.y;
-        let content_h = matches.len() as f32 * style::LIST_ROW_H
-            + matches.len().saturating_sub(1) as f32 * row_gap;
+        let content_h = menu_block_height(ui, matches.len());
         let list_h = content_h.min(max_h.max(0.0));
         let margin = style::SPACE_XS;
         let popup_h = list_h + 2.0 * margin + 2.0;
@@ -1280,9 +1619,7 @@ impl AssistantRenderer {
     ) {
         let row_count = model.overlay_len().max(1);
         let selected = model.overlay_selected();
-        let row_gap = ui.spacing().item_spacing.y;
-        let content_h =
-            row_count as f32 * style::LIST_ROW_H + row_count.saturating_sub(1) as f32 * row_gap;
+        let content_h = menu_block_height(ui, row_count);
         let list_h = content_h.min(max_h.max(0.0));
         let margin = style::SPACE_XS;
         let popup_h = list_h + 2.0 * margin + 2.0;
@@ -1320,6 +1657,7 @@ impl AssistantRenderer {
                                     active_agent_id,
                                     tiers,
                                     agents,
+                                    &model.tier_model_ids,
                                 ),
                                 AssistantOverlay::PermissionsManager { grants, .. } => {
                                     Self::draw_permissions_rows(ui, colors, selected, grants)
@@ -1330,6 +1668,7 @@ impl AssistantRenderer {
             });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_model_picker_rows(
         ui: &mut egui::Ui,
         colors: &Colors,
@@ -1338,11 +1677,19 @@ impl AssistantRenderer {
         active_agent_id: &str,
         tiers: &[ModelTier],
         agents: &[super::model::AgentChoice],
+        model_ids: &[Option<String>],
     ) {
         Self::overlay_section_label(ui, colors, "Model tier");
-        for (i, tier) in tiers.iter().enumerate() {
-            let mut row = ListRow::new(tier.as_str()).selected(i == selected);
-            if *tier == current_tier {
+        let labels: Vec<String> = tiers
+            .iter()
+            .enumerate()
+            .map(|(i, tier)| {
+                tier_menu_label(*tier, model_ids.get(i).and_then(|id| id.as_deref()))
+            })
+            .collect();
+        for (i, label) in labels.iter().enumerate() {
+            let mut row = ListRow::new(label).selected(i == selected);
+            if tiers[i] == current_tier {
                 row = row.chip("current");
             }
             let resp = row.show(ui, colors);
@@ -1408,13 +1755,10 @@ impl AssistantRenderer {
         model: &mut AssistantModel,
         te_id: egui::Id,
         colors: &Colors,
-        max_h: f32,
+        cap: f32,
+        text_h: f32,
     ) -> egui::Rect {
         let font_id = egui::FontId::proportional(style::TEXT_BODY);
-        let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
-        // Grow up to `max_h` (75% of the pane) before scrolling, never below a
-        // single row even in a very short pane.
-        let max_text_h = max_h.max(row_height);
 
         // Accent outline while the composer holds keyboard focus — same
         // affordance as the host text fields.
@@ -1427,7 +1771,7 @@ impl AssistantRenderer {
 
         let frame_response = egui::Frame::new()
             .fill(colors.bg_active)
-            .stroke(egui::Stroke::new(1.0_f32, stroke_color))
+            .stroke(egui::Stroke::new(COMPOSER_STROKE, stroke_color))
             .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::symmetric(
                 style::SPACE_SM as i8,
@@ -1435,15 +1779,17 @@ impl AssistantRenderer {
             ))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                // TextArea owns multiline growth, overflow scrolling, focus
-                // lock, newline semantics, and the shared glyph-height caret.
+                // Pin the viewport to the height measured before this slot was
+                // reserved. A content-sized scroll area lags one frame and
+                // shoves the hint bar.
                 let response = TextArea::composer(
                     te_id,
                     RichText::new("Message the assistant — / for commands")
                         .size(style::TEXT_CAPTION)
                         .color(colors.text_dim),
                 )
-                .max_height(max_text_h)
+                .max_height(cap)
+                .pin_viewport(text_h)
                 .font(font_id)
                 .hint_color(colors.text_dim)
                 .show(ui, &mut model.composer, colors);
@@ -1458,7 +1804,7 @@ impl AssistantRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assistant::model::{Turn, TurnRole};
+    use crate::assistant::model::{AssistantModel, Turn, TurnRole};
     use std::sync::Arc;
 
     /// Walk a paint shape tree, collecting every text galley emitted.
@@ -1537,6 +1883,7 @@ mod tests {
                     0,
                     &colors,
                     &turn,
+                    false,
                     false,
                 );
             });
@@ -1734,6 +2081,239 @@ mod tests {
             galley.job.halign,
             egui::Align::LEFT,
             "wrapped user-bubble text must be left-justified"
+        );
+    }
+
+    fn paint_assistant(
+        ctx: &egui::Context,
+        model: &mut AssistantModel,
+        size: egui::Vec2,
+    ) -> egui::FullOutput {
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let mut md_cache = egui_commonmark::CommonMarkCache::default();
+        let mut text_cache = MarkdownTextCache::default();
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+        ctx.run_ui(raw, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let _ = AssistantRenderer::draw(
+                    ui,
+                    model,
+                    &mut md_cache,
+                    &mut text_cache,
+                    &colors,
+                    7,
+                );
+            });
+        })
+    }
+
+    fn text_clips(output: &egui::FullOutput, needle: &str) -> Vec<(egui::Rect, egui::Rect)> {
+        fn walk(
+            clip: egui::Rect,
+            shape: &egui::Shape,
+            needle: &str,
+            out: &mut Vec<(egui::Rect, egui::Rect)>,
+        ) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text().contains(needle) => {
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    out.push((clip, rect));
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(clip, shape, needle, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for clipped in &output.shapes {
+            walk(clipped.clip_rect, &clipped.shape, needle, &mut found);
+        }
+        found
+    }
+
+    /// Shift+Enter grows the composer upward. The hint label stays on the
+    /// same y on that frame and the next, and stays inside its clip.
+    #[test]
+    fn newline_keeps_the_hint_bar_on_the_pane_floor() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let mut model = AssistantModel::fresh();
+        model.composer = "hello".to_string();
+        let size = egui::vec2(480.0, 640.0);
+        let settled = paint_assistant(&ctx, &mut model, size);
+        model.composer = "hello\nworld".to_string();
+        let grown = paint_assistant(&ctx, &mut model, size);
+        let again = paint_assistant(&ctx, &mut model, size);
+
+        let hint = |output: &egui::FullOutput| {
+            let hits = text_clips(output, "newline");
+            assert!(!hits.is_empty(), "hint bar must paint its newline label");
+            let (clip, rect) = hits[0];
+            assert!(
+                clip.contains_rect(rect.shrink(0.5)),
+                "newline hint {rect:?} must sit inside clip {clip:?}"
+            );
+            (clip, rect.bottom())
+        };
+        let (settled_clip, settled_bottom) = hint(&settled);
+        let (grown_clip, grown_bottom) = hint(&grown);
+        let (again_clip, again_bottom) = hint(&again);
+        assert!(
+            (settled_bottom - grown_bottom).abs() < 1.0,
+            "hint bar moved when the composer grew ({settled_bottom} -> {grown_bottom})"
+        );
+        assert!(
+            (grown_bottom - again_bottom).abs() < 1.0,
+            "hint bar moved between the newline frame ({grown_bottom}) and the next ({again_bottom})"
+        );
+        assert_eq!(
+            settled_clip, grown_clip,
+            "hint clip changed on the newline frame"
+        );
+        assert_eq!(grown_clip, again_clip, "hint clip changed after settling");
+        assert!(
+            size.y - grown_bottom < 64.0,
+            "hint bar bottom {grown_bottom} should stay in the footer, pane is {}",
+            size.y
+        );
+    }
+
+    #[test]
+    fn send_and_stream_stick_to_bottom_until_the_reader_scrolls_up() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let mut model = AssistantModel::fresh();
+        model.turns = (0..40)
+            .map(|i| {
+                let role = if i % 2 == 0 {
+                    TurnRole::User
+                } else {
+                    TurnRole::Assistant
+                };
+                Turn {
+                    role,
+                    text: format!("message {i} {}", "line ".repeat(8)),
+                    created_at: format!("2026-07-18T00:00:{i:02}Z"),
+                    status: None,
+                    thoughts: None,
+                    detail: None,
+                    input_summary: None,
+                    output_preview: None,
+                }
+            })
+            .collect();
+        let size = egui::vec2(420.0, 360.0);
+        // First frame creates the scroll area; the next presents the pinned offset.
+        let _ = paint_assistant(&ctx, &mut model, size);
+        let _ = paint_assistant(&ctx, &mut model, size);
+        let pinned = paint_assistant(&ctx, &mut model, size);
+        let (offset, max_offset, follow, at_bottom) = ctx.data(|data| {
+            data.get_temp::<(f32, f32, bool, bool)>(egui::Id::new("assistant_scroll_debug"))
+                .expect("scroll debug")
+        });
+        let _ = pinned;
+        assert!(follow && at_bottom, "a fresh transcript starts pinned");
+        assert!(
+            max_offset - offset <= super::SCROLL_BOTTOM_SLACK,
+            "offset {offset} should be at the bottom {max_offset}"
+        );
+
+        model.streaming.in_flight = true;
+        model.streaming.partial_answer = "streaming reply that keeps growing".to_string();
+        let _ = paint_assistant(&ctx, &mut model, size);
+        let _ = paint_assistant(&ctx, &mut model, size);
+        let (_offset, _max, follow, at_bottom) = ctx.data(|data| {
+            data.get_temp::<(f32, f32, bool, bool)>(egui::Id::new("assistant_scroll_debug"))
+                .unwrap()
+        });
+        assert!(follow && at_bottom, "streaming stays pinned");
+
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+        raw.events.push(egui::Event::PointerMoved(egui::pos2(200.0, 80.0)));
+        // Point deltas under 8px are applied in full this frame. A single
+        // notch is smoothed across frames and would not leave the bottom yet.
+        for _ in 0..8 {
+            raw.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 6.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let mut md_cache = egui_commonmark::CommonMarkCache::default();
+        let mut text_cache = MarkdownTextCache::default();
+        let _ = ctx.run_ui(raw, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let _ = AssistantRenderer::draw(
+                    ui,
+                    &mut model,
+                    &mut md_cache,
+                    &mut text_cache,
+                    &colors,
+                    7,
+                );
+            });
+        });
+        let (_offset, _max, follow, at_bottom) = ctx.data(|data| {
+            data.get_temp::<(f32, f32, bool, bool)>(egui::Id::new("assistant_scroll_debug"))
+                .unwrap()
+        });
+        assert!(!follow, "scrolling up releases the pin");
+        assert!(!at_bottom, "the reader is above the latest line");
+        let jumped = text_clips(
+            &paint_assistant(&ctx, &mut model, size),
+            "Latest",
+        );
+        assert!(!jumped.is_empty(), "a jump-to-latest affordance is shown");
+    }
+
+    #[test]
+    fn model_picker_row_includes_the_configured_model_id() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let mut model = AssistantModel::fresh();
+        model.set_tier_model_ids(vec![
+            Some("qwen/qwen3.6-flash".to_string()),
+            Some("xiaomi/mimo-v2.5-pro".to_string()),
+            None,
+        ]);
+        model.open_model_picker(
+            crate::protocol::ModelTier::Medium,
+            vec![
+                crate::protocol::ModelTier::Low,
+                crate::protocol::ModelTier::Medium,
+                crate::protocol::ModelTier::High,
+            ],
+            vec![],
+        );
+        // An `Area` spends its first frame on a sizing pass and paints on the next.
+        let _ = paint_assistant(&ctx, &mut model, egui::vec2(480.0, 640.0));
+        let output = paint_assistant(&ctx, &mut model, egui::vec2(480.0, 640.0));
+        let hits = text_clips(&output, "xiaomi/mimo-v2.5-pro");
+        assert!(
+            hits.iter().any(|(_, rect)| rect.width() > 0.0),
+            "medium tier must show its configured model id"
+        );
+        assert_eq!(
+            super::tier_menu_label(
+                crate::protocol::ModelTier::Medium,
+                Some("xiaomi/mimo-v2.5-pro")
+            ),
+            "Medium — xiaomi/mimo-v2.5-pro"
+        );
+        assert_eq!(
+            super::tier_menu_label(crate::protocol::ModelTier::High, None),
+            "High"
         );
     }
 }

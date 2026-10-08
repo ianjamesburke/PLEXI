@@ -590,6 +590,20 @@ impl AiConfig {
     pub fn effective_global_daily_usd(&self) -> f64 {
         self.global_daily_usd.unwrap_or(10.0)
     }
+
+    /// Concrete model id for `tier` on the selected backend.
+    ///
+    /// `backend` defaults to `"openrouter"` when unset, matching the broker.
+    /// Returns `None` when that backend's section or tier key is absent.
+    pub fn model_for_tier(&self, tier: crate::protocol::ModelTier) -> Option<String> {
+        let backend = self.backend.as_deref().unwrap_or("openrouter");
+        let tiers = match backend {
+            "ollama" => self.ollama.as_ref().map(|cfg| &cfg.tiers),
+            "local" => self.local.as_ref().map(|cfg| &cfg.tiers),
+            _ => self.openrouter.as_ref().map(|cfg| &cfg.tiers),
+        };
+        tiers.and_then(|tiers| tiers.resolve(tier))
+    }
 }
 
 /// Per-tier concrete model identifiers. Every AI backend section carries this
@@ -1501,6 +1515,21 @@ impl PlexiConfig {
         }
     }
 
+    /// Read global and workspace config when those files already exist.
+    ///
+    /// Unlike [`load`] and [`load_with_workspace`], this never creates a
+    /// default `config.toml`. The assistant model picker calls it on the UI
+    /// thread and must not write the user's profile as a side effect.
+    pub fn read_for_workspace(workspace_root: Option<&Path>) -> Self {
+        let mut merged = Self::load_from_path(&config_path()).unwrap_or_default();
+        if let Some(root) = workspace_root {
+            if let Some(project) = Self::load_from_path(&workspace_config_path(root)) {
+                merged.overlay(project);
+            }
+        }
+        merged
+    }
+
     /// Load the global config and overlay the workspace's channel-scoped
     /// config on top if it exists. Project-level values override globals on a
     /// per-field basis; unset project fields preserve the global value.
@@ -2118,6 +2147,36 @@ mod tests {
         assert_eq!(
             lo.tiers.resolve(ModelTier::High).as_deref(),
             Some("lo-high")
+        );
+    }
+
+    #[test]
+    fn model_for_tier_follows_the_selected_backend() {
+        let cfg: PlexiConfig = toml::from_str(
+            "[ai]\n\
+             backend = \"ollama\"\n\
+             [ai.openrouter]\n\
+             model_medium = \"xiaomi/mimo-v2.5-pro\"\n\
+             [ai.ollama]\n\
+             model_medium = \"llama3.1\"\n",
+        )
+        .unwrap();
+        let ai = cfg.ai.unwrap();
+        assert_eq!(
+            ai.model_for_tier(ModelTier::Medium).as_deref(),
+            Some("llama3.1")
+        );
+        assert_eq!(ai.model_for_tier(ModelTier::Low), None);
+
+        let cfg: PlexiConfig = toml::from_str(
+            "[ai.openrouter]\n\
+             model_medium = \"xiaomi/mimo-v2.5-pro\"\n",
+        )
+        .unwrap();
+        let ai = cfg.ai.unwrap();
+        assert_eq!(
+            ai.model_for_tier(ModelTier::Medium).as_deref(),
+            Some("xiaomi/mimo-v2.5-pro")
         );
     }
 

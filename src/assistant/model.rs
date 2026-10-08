@@ -346,6 +346,10 @@ pub struct AssistantModel {
     history_cursor: Option<usize>,
     /// Modal picker/manager overlay currently open over the composer.
     pub overlay: AssistantOverlay,
+    /// Concrete model id for each tier row in the open model picker, in
+    /// tier order (`low`, `medium`, `high`). View-only: the agent loop never
+    /// reads it. Empty or missing entries render as the tier name alone.
+    pub tier_model_ids: Vec<Option<String>>,
 }
 
 impl AssistantModel {
@@ -369,7 +373,13 @@ impl AssistantModel {
             compaction: CompactionState::Idle,
             history_cursor: None,
             overlay: AssistantOverlay::None,
+            tier_model_ids: Vec::new(),
         }
+    }
+
+    /// View data for the model picker. Call before [`open_model_picker`].
+    pub fn set_tier_model_ids(&mut self, ids: Vec<Option<String>>) {
+        self.tier_model_ids = ids;
     }
 
     /// Set the user-visible session name. Blank/whitespace-only clears it.

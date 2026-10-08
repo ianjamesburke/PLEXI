@@ -69,6 +69,16 @@ impl<'a> HintBar<'a> {
             * (hint_row_height(ui) + ui.spacing().item_spacing.y)
     }
 
+    /// Full height of `show` at `available_width`, including the leading gap.
+    /// Callers that reserve the footer before laying it out use this so a
+    /// sibling growing above the bar cannot reflow it.
+    pub(crate) fn height(&self, ui: &egui::Ui, available_width: f32) -> f32 {
+        let rows = self.rows(ui, available_width).len().max(1);
+        let row_h = hint_row_height(ui);
+        let between = rows.saturating_sub(1) as f32 * ui.spacing().item_spacing.y;
+        style::SPACE_MD + rows as f32 * row_h + between
+    }
+
     pub(crate) fn show(self, ui: &mut egui::Ui, colors: &Colors) {
         let full = ui.available_width();
 
