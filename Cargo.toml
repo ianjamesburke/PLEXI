@@ -67,6 +67,10 @@ tiny-skia = "0.11"
 fontdue = "0.9"
 # HTTP broker (step 9a). Pure-Rust blocking client — no tokio.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# Phone relay desktop link. rustls is already in the tree via ureq; ring is its provider.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+ring = "0.17"
 # URL parsing for hardened allowed_hosts validation (#1179). Already transitive via ureq.
 url = "2"
 # Assistant host.files.grep pattern matching (stint 0421). regex-automata/-syntax already transitive.
@@ -94,8 +98,6 @@ taffy = "0.5"
 tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
-# Folder-secret encrypted-file fallback (AES-256-GCM). Already in the tree via transitive deps.
-ring = "0.17"
 wasmtime = "43.0.2"
 wasmtime-wasi = "43.0.2"
 bytes = "1"
@@ -103,6 +105,9 @@ tokio = { version = "1", features = ["io-util"] }
 sysinfo = "0.32"
 # Clipboard reads for capability-gated WASM effects. eframe owns writes through egui.
 arboard = "3"
+# Static X25519 so the desktop private key can live in the keychain across a
+# restart. ring only offers an ephemeral key that cannot be serialized.
+x25519-dalek = { version = "2", default-features = false, features = ["alloc", "precomputed-tables", "static_secrets", "zeroize"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Session-bus client for the host seal key. Pure Rust so the key never lands

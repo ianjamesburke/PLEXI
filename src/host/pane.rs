@@ -854,21 +854,33 @@ pub enum AppRuntime {
 }
 
 impl AppRuntime {
-    pub fn submit_tagged_turn(
+    pub fn submit_external_turn(
         &mut self,
         text: String,
         request_id: String,
         response_file: String,
-        client: Option<String>,
-        kind: Option<String>,
+        opts: crate::app::app_trait::ExternalTurnOpts,
     ) -> Result<(), String> {
         match self {
             AppRuntime::Builtin(app) => {
-                app.submit_tagged_turn(text, request_id, response_file, client, kind)
+                app.submit_external_turn(text, request_id, response_file, opts)
             }
             AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
                 Err("this app does not accept external turns".to_string())
             }
+        }
+    }
+
+    pub fn offer_relay_pairing(&mut self, code: &str, fingerprint: &str) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.offer_relay_pairing(code, fingerprint),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+        }
+    }
+
+    pub fn clear_relay_pairing_sheet(&mut self) {
+        if let AppRuntime::Builtin(app) = self {
+            app.clear_relay_pairing_sheet();
         }
     }
 

@@ -417,12 +417,24 @@
                 "null"
               ]
             },
+            "conversation_id": {
+              "description": "Caller-owned conversation. Absent means the host mints one.\nIgnored when `join_desktop` is true.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "head": {
               "description": "Lead (head) id. When set, the turn runs in that head's conversation.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "join_desktop": {
+              "default": false,
+              "description": "Opt in to the desktop Assistant transcript. Default is a separate conversation.",
+              "type": "boolean"
             },
             "kind": {
               "description": "Ledger run kind: `system` or `output`. Absent means `output`.",
@@ -445,6 +457,13 @@
             "response_file": {
               "type": "string"
             },
+            "status_for": {
+              "description": "Read the finished status of a turn that already returned\n`waiting_for_permission`. Does not submit a new prompt.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "text": {
               "type": "string"
             },
@@ -457,32 +476,6 @@
             "type",
             "text",
             "request_id",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites `{\"ok\":true,\"output\":...}` or `{\"ok\":false,\"error_code\":...}`.",
-          "properties": {
-            "input_json": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "type": {
-              "const": "assistant_host_tool",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "name",
-            "input_json",
             "response_file"
           ],
           "type": "object"
@@ -538,6 +531,32 @@
           "required": [
             "type",
             "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites `{\"ok\":true,\"output\":...}` or `{\"ok\":false,\"error_code\":...}`.",
+          "properties": {
+            "input_json": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "assistant_host_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "input_json",
             "response_file"
           ],
           "type": "object"

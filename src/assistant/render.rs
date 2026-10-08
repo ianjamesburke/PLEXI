@@ -724,23 +724,10 @@ impl AssistantRenderer {
                 ui.scope(|ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.set_max_width(ui.available_width());
-                    let who = if pending.actor_id.is_empty() {
-                        "assistant (medium)".to_string()
-                    } else {
-                        pending.actor_id.clone()
-                    };
-                    let resource = if pending.resource_id.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" on {}", pending.resource_id)
-                    };
                     ui.label(
-                        RichText::new(format!(
-                            "{who} wants to run '{tool}'{resource}",
-                            tool = pending.tool
-                        ))
-                        .size(style::TEXT_BODY)
-                        .color(colors.text_primary),
+                        RichText::new(pending.prompt_line())
+                            .size(style::TEXT_BODY)
+                            .color(colors.text_primary),
                     );
                     if let Some(mv) = move_label(&pending.input_summary) {
                         ui.label(
@@ -783,9 +770,33 @@ impl AssistantRenderer {
                 // `Ui::horizontal_wrapped` reflows buttons onto additional
                 // rows instead of clipping or forcing the frame wider than
                 // the pane, so the sheet stays usable at small window sizes.
+                let mut painted: Vec<(&str, [f64; 4])> = Vec::new();
                 ui.horizontal_wrapped(|ui| {
                     for (i, (label, kind, value)) in actions.into_iter().enumerate() {
                         let resp = chrome_button(ui, label, kind, colors, 0.0);
+                        let rect = resp.rect;
+                        // Pane state reads accesskit. The chrome button's
+                        // glyph runs are not a labeled button, so the click
+                        // driver cannot see "Allow once" unless we publish it.
+                        ui.ctx().accesskit_node_builder(resp.id, |node| {
+                            node.set_role(egui::accesskit::Role::Button);
+                            node.set_label(label);
+                            node.set_bounds(egui::accesskit::Rect {
+                                x0: f64::from(rect.left()),
+                                y0: f64::from(rect.top()),
+                                x1: f64::from(rect.right()),
+                                y1: f64::from(rect.bottom()),
+                            });
+                        });
+                        painted.push((
+                            label,
+                            [
+                                f64::from(rect.left()),
+                                f64::from(rect.top()),
+                                f64::from(rect.right()),
+                                f64::from(rect.bottom()),
+                            ],
+                        ));
                         if i == selected {
                             ui.painter().rect_stroke(
                                 resp.rect.expand(2.0),
@@ -799,6 +810,14 @@ impl AssistantRenderer {
                         }
                     }
                 });
+                // The click driver reads these bounds from `assistant permission
+                // list` when pane state has no labeled button. Window points,
+                // same space as the accesskit rect above.
+                if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(
+                    &crate::config::config_dir(),
+                ) {
+                    monitor.publish_sheet_buttons(&painted);
+                }
             });
         ui.add_space(style::SPACE_XS);
         choice
