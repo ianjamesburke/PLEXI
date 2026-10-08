@@ -832,7 +832,7 @@ if wants_human and not human_ok:
 lines = text.splitlines()
 grant = re.compile(
     r"assistant permission resolve|needs-you resolve|permissions allow|"
-    r"\bsecret grant\b|command-view resolve|\bchanges accept\b"
+    r"\bsecret grant\b|command-view resolve|\bcommand-view allow\b|\bchanges accept\b"
 )
 negative = (
     "must not grant",
@@ -1062,10 +1062,34 @@ run_scripts() {
   for path in "${required[@]}"; do
     present+=("$path")
   done
+  # An alternate whose body is `exec` of another alternate is a rename stub.
+  # Running it skips the <PR> shim and fails before the real script.
+  local -a alt_present=()
+  local other base wrapped
   for path in "${alternates[@]}"; do
-    if [[ -f "$REPO/$path" ]]; then
-      present+=("$path")
+    [[ -f "$REPO/$path" ]] || continue
+    wrapped=0
+    for other in "${alternates[@]}"; do
+      [[ "$other" == "$path" ]] && continue
+      base="$(basename "$other")"
+      if grep -qE "exec[[:space:]].*${base}" "$REPO/$path"; then
+        wrapped=1
+        break
+      fi
+    done
+    if [[ "$wrapped" -eq 0 ]]; then
+      alt_present+=("$path")
     fi
+  done
+  if [[ ${#alt_present[@]} -eq 0 ]]; then
+    for path in "${alternates[@]}"; do
+      if [[ -f "$REPO/$path" ]]; then
+        alt_present+=("$path")
+      fi
+    done
+  fi
+  for path in "${alt_present[@]}"; do
+    present+=("$path")
   done
   for path in "${optional[@]}"; do
     if [[ -f "$REPO/$path" ]]; then
@@ -1560,7 +1584,7 @@ with_config run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
 with_config run_one V1-08 1 -- services/relay/e2e_installed.sh
 with_config run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
 with_config run_one V1-10 1 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
-with_config run_one V1-11 0 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
+with_config run_one V1-11 1 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
 with_config run_one V1-12 1 --probe changes -- --any scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
 with_config run_one V1-13 0 -- scripts/cloud-basics-e2e.sh
 with_config item_v1_14
