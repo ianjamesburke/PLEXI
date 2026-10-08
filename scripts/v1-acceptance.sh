@@ -33,11 +33,11 @@
 # xvfb-run left on :99 with an auth cookie makes xdpyinfo report that display
 # down, and the next script then starts a host on a server it does not own.
 #
-# Before any item, a preflight installs or verifies three VM dependencies:
-# Python Pillow (V1-02 board clicks), Docker (V1-08 relay), and an unlocked
-# gnome-keyring on a private session bus (V1-11 and the Linux journal /
-# sealed audit; integration risk #8). A dependency that cannot be made to
-# work is ENV-FAIL on the items that need it, not a product FAIL.
+# Before any item, a preflight installs or verifies VM dependencies:
+# Python Pillow (V1-02 board clicks), Docker (V1-08 relay), tesseract
+# (V1-11 reads the command pane), and an unlocked gnome-keyring on a private
+# session bus (the Linux journal / sealed audit). A dependency that cannot
+# be made to work is ENV-FAIL on the items that need it, not a product FAIL.
 #
 # Exit 0 when every item is PASS, 1 when any item is FAIL (including a
 # bypass), 3 when the only failures are ENV-FAIL, 2 when the run is
@@ -146,6 +146,7 @@ DOCKERD_PID=""
 PREFLIGHT_PILLOW_ERR=""
 PREFLIGHT_DOCKER_ERR=""
 PREFLIGHT_SECRETS_ERR=""
+PREFLIGHT_TESSERACT_ERR=""
 
 cleanup() {
   if [[ -n "${REPO:-}" ]]; then
@@ -325,6 +326,9 @@ preflight_apt() {
   fi
   if ! command -v docker >/dev/null 2>&1; then
     need+=(docker.io)
+  fi
+  if ! command -v tesseract >/dev/null 2>&1; then
+    need+=(tesseract-ocr tesseract-ocr-eng)
   fi
   if [[ ${#need[@]} -eq 0 ]]; then
     return 0
@@ -544,6 +548,11 @@ run_preflight() {
     PREFLIGHT_SECRETS_ERR=""
   else
     preflight_secrets_cleanup_failed
+  fi
+  if command -v tesseract >/dev/null 2>&1; then
+    PREFLIGHT_TESSERACT_ERR=""
+  else
+    PREFLIGHT_TESSERACT_ERR="tesseract is not installed (log $EVID/preflight-apt.log)"
   fi
 }
 
@@ -765,8 +774,15 @@ env_blocked() {
         why="Docker: $PREFLIGHT_DOCKER_ERR"
       fi
       ;;
-    V1-04|V1-05|V1-06|V1-11|V1-15)
+    V1-04|V1-05|V1-06|V1-15)
       if [[ -n "$PREFLIGHT_SECRETS_ERR" ]]; then
+        why="Secret Service: $PREFLIGHT_SECRETS_ERR"
+      fi
+      ;;
+    V1-11)
+      if [[ -n "$PREFLIGHT_TESSERACT_ERR" ]]; then
+        why="tesseract: $PREFLIGHT_TESSERACT_ERR"
+      elif [[ -n "$PREFLIGHT_SECRETS_ERR" ]]; then
         why="Secret Service: $PREFLIGHT_SECRETS_ERR"
       fi
       ;;
@@ -1548,6 +1564,11 @@ if [[ -z "$PREFLIGHT_SECRETS_ERR" ]]; then
   echo "preflight secret-service ok (gnome-keyring login unlocked)"
 else
   echo "preflight secret-service ENV-FAIL $PREFLIGHT_SECRETS_ERR"
+fi
+if [[ -z "$PREFLIGHT_TESSERACT_ERR" ]]; then
+  echo "preflight tesseract ok"
+else
+  echo "preflight tesseract ENV-FAIL $PREFLIGHT_TESSERACT_ERR"
 fi
 echo
 
