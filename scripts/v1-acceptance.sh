@@ -811,12 +811,12 @@ if positive and not (wants_human and log_human and not log_bypass):
 elif log_bypass and positive:
     if "VIA-BYPASS" not in kinds:
         kinds.append("VIA-BYPASS")
+# A real click is a log line from human.sh. A script that only mentions
+# HUMAN_APPROVE did not approve.
 if wants_human and log_human and not kinds:
     print("human")
 elif kinds:
     print("bypass:" + ", ".join(kinds))
-elif wants_human:
-    print("human")
 else:
     print("none")
 PY
@@ -1464,7 +1464,7 @@ with_config run_one V1-06 1 -- scripts/folder-secrets-e2e.sh
 with_config run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
 with_config run_one V1-08 1 -- services/relay/e2e_installed.sh
 with_config run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
-with_config run_one V1-10 0 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
+with_config run_one V1-10 1 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
 with_config run_one V1-11 0 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
 with_config run_one V1-12 1 --probe changes -- --any scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
 with_config run_one V1-13 0 -- scripts/cloud-basics-e2e.sh
