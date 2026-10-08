@@ -372,7 +372,10 @@ pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
         return None;
     }
     let ticket = sheets.queue.pop_front()?;
-    sheets.armed = Some(ticket.reply);
+    sheets.armed = Some(ArmedClick {
+        reply: ticket.reply,
+        granted: ticket.granted,
+    });
     Some(FolderSecretSheet {
         pending_id: ticket.pending_id,
         actor_id: ticket.actor_id,
@@ -382,20 +385,27 @@ pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
 }
 
 /// Forward a human click (`once`, `session`, `always`, `deny`, or `deny_always`) to the
-/// waiter that calls `approve_pending`. Returns false when no sheet is armed.
+/// waiter that calls `approve_pending`. Returns after that grant is recorded,
+/// so the next read sees it. Returns false when no sheet is armed or the
+/// waiter does not finish.
 pub fn deliver_folder_secret_choice(choice: &str) -> bool {
-    let reply = {
+    let armed = {
         let mut sheets = human_sheets()
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         sheets.armed.take()
     };
-    let Some(reply) = reply else {
+    let Some(armed) = armed else {
         return false;
     };
-    let delivered = reply.send(choice.to_string()).is_ok();
-    log::info!("folder_secrets: human click choice={choice} delivered={delivered}");
-    delivered
+    let sent = armed.reply.send(choice.to_string()).is_ok();
+    let granted = sent
+        && armed
+            .granted
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok();
+    log::info!("folder_secrets: human click choice={choice} delivered={sent} granted={granted}");
+    granted
 }
 
 /// Ask the host process's permission monitor when its gate socket is up.
@@ -422,11 +432,18 @@ struct SheetTicket {
     resource_id: String,
     summary: String,
     reply: std::sync::mpsc::Sender<String>,
+    /// Signaled after `approve_pending` returns. The click waits on this.
+    granted: std::sync::mpsc::Receiver<()>,
+}
+
+struct ArmedClick {
+    reply: std::sync::mpsc::Sender<String>,
+    granted: std::sync::mpsc::Receiver<()>,
 }
 
 struct HumanSheets {
     queue: std::collections::VecDeque<SheetTicket>,
-    armed: Option<std::sync::mpsc::Sender<String>>,
+    armed: Option<ArmedClick>,
     /// Pending ids already handed to the host gate. Only `post_human_sheet`
     /// reads this, and that waiter exists on a Unix host build. Windows and
     /// `cfg(test)` admit locally, so the field is not part of those binaries.
@@ -448,7 +465,7 @@ fn human_sheets() -> &'static std::sync::Mutex<HumanSheets> {
 
 #[cfg(all(unix, not(test)))]
 fn post_human_sheet(pending_id: &str, actor_id: &str, resource: &str, summary: &str) {
-    let inbox = {
+    let (inbox, granted_tx) = {
         let mut sheets = human_sheets()
             .lock()
             .unwrap_or_else(|err| err.into_inner());
@@ -456,20 +473,22 @@ fn post_human_sheet(pending_id: &str, actor_id: &str, resource: &str, summary: &
             return;
         }
         let (reply, inbox) = std::sync::mpsc::channel();
+        let (granted_tx, granted_rx) = std::sync::mpsc::channel();
         sheets.queue.push_back(SheetTicket {
             pending_id: pending_id.to_string(),
             actor_id: actor_id.to_string(),
             resource_id: resource.to_string(),
             summary: summary.to_string(),
             reply,
+            granted: granted_rx,
         });
-        inbox
+        (inbox, granted_tx)
     };
     let owned_id = pending_id.to_string();
     let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
     if let Err(err) = std::thread::Builder::new()
         .name("folder-secret-approval".into())
-        .spawn(move || wait_for_human_choice(monitor, owned_id, inbox))
+        .spawn(move || wait_for_human_choice(monitor, owned_id, inbox, granted_tx))
     {
         log::warn!("folder_secrets: approval thread failed: {err}");
     }
@@ -484,6 +503,7 @@ fn wait_for_human_choice(
     monitor: std::sync::Arc<PermissionMonitor>,
     pending_id: String,
     inbox: std::sync::mpsc::Receiver<String>,
+    granted: std::sync::mpsc::Sender<()>,
 ) {
     let choice = inbox
         .recv_timeout(std::time::Duration::from_secs(180))
@@ -503,6 +523,7 @@ fn wait_for_human_choice(
             "folder_secrets: human choice failed pending={pending_id} err={err}"
         ),
     }
+    let _ = granted.send(());
     human_sheets()
         .lock()
         .unwrap_or_else(|err| err.into_inner())
