@@ -1526,12 +1526,12 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 List everything waiting on you. The terminal cannot resolve it.
 
-One host record covers click approvals, agent questions, and blocked runs. The desktop badge and the phone page resolve an id everywhere, exactly once. `resolve` from the terminal is refused.
+One host record covers click approvals, agent questions, and blocked runs. The desktop badge and the phone page read that record. `resolve --approve` on a click approval is refused. `--deny` still denies.
 
 | Subcommand | Description |
 |---|---|
 | `list` | List open items waiting on you as JSON |
-| `resolve` | Ask the host to resolve an item. The host refuses |
+| `resolve` | Resolve one item. Approving a click approval is refused; deny still denies it |
 
 ### `plexi needs-you list`
 
@@ -1543,13 +1543,13 @@ List open items waiting on you as JSON
 
 ### `plexi needs-you resolve`
 
-Ask the host to resolve an item. The host refuses
+Resolve one item. Approving a click approval is refused; deny still denies it
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
-| `--approve` | flag | no | Request approval. The host still refuses |
-| `--deny` | flag | no | Request denial. The host still refuses |
+| `--approve` | flag | no | Approve the item. A click approval stays open |
+| `--deny` | flag | no | Deny the item |
 
 ## `plexi permissions`
 

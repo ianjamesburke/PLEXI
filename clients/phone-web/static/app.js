@@ -7,6 +7,7 @@ const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired"]);
 const els = {
   connection: document.getElementById("connection"),
   transcript: document.getElementById("transcript"),
+  needs: document.getElementById("needs-list"),
   form: document.getElementById("composer"),
   message: document.getElementById("message"),
   send: document.getElementById("send"),
@@ -25,6 +26,41 @@ function apiHeaders(extra = {}) { return token ? { ...extra, Authorization: `Bea
 let sending = false;
 // Turns sent from this page that have not reached a terminal state, oldest first.
 const activeRequestIds = [];
+
+async function refreshNeeds() {
+  const res = await fetch("/api/needs-you", { cache: "no-store", headers: apiHeaders() });
+  if (!res.ok) return;
+  const body = await res.json();
+  els.needs.replaceChildren();
+  for (const item of body.items || []) {
+    const li = document.createElement("li");
+    const text = document.createElement("p");
+    text.textContent = item.summary || item.kind || item.id;
+    li.append(text);
+    const mayApprove = item.kind === "question" || item.kind === "blocked_run";
+    for (const decision of mayApprove ? ["approve", "deny"] : ["deny"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = decision;
+      button.textContent = decision === "approve" ? "Approve" : "Deny";
+      button.addEventListener("click", () => resolveNeeds(item.id, decision));
+      li.append(button);
+    }
+    els.needs.append(li);
+  }
+}
+
+async function resolveNeeds(id, decision) {
+  const res = await fetch(`/api/needs-you/${encodeURIComponent(id)}/resolve`, {
+    method: "POST",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ decision }),
+  });
+  if (!res.ok && res.status !== 409) {
+    console.warn("needs-you resolve failed", res.status);
+  }
+  await refreshNeeds();
+}
 
 function requestId() {
   // crypto.randomUUID is only exposed in secure contexts; LAN http is not one.
@@ -87,6 +123,7 @@ async function poll() {
     const page = await res.json();
     page.events.forEach(render);
     cursor = page.cursor;
+    await refreshNeeds();
   } catch (err) {
     console.warn("phone shell poll failed", err);
     setConnection("offline", "Offline · drafts are not sent");

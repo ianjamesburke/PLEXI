@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Installed-binary check: create a click approval, prove a terminal approve
-# does not grant, click Allow once with HUMAN_APPROVE, and confirm the tool proceeds.
-# The grant is a real XTEST click. This script never treats needs-you resolve as a grant.
+# Installed-binary check: create a click approval, prove a terminal or phone
+# approve does not grant, click Allow once, and confirm the tool proceeds.
+# Check 7 races two denies. It does not approve from the CLI or the phone.
 set -euo pipefail
 
 # A private session bus is where the unlocked login keyring lives. A nested
@@ -15,7 +15,7 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; wait "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${KEYRING_PID:-}" ]]; then kill "$KEYRING_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${PHONE_PID:-}" ]]; then kill "$PHONE_PID" 2>/dev/null || true; wait "$PHONE_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; wait "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${KEYRING_PID:-}" ]]; then kill "$KEYRING_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -170,6 +170,33 @@ if [[ ! -S "$SOCKET" ]]; then
 fi
 export PLEXI_SOCKET="$SOCKET"
 
+export PLEXI_PHONE_TOKEN="needs-you-e2e-token"
+PHONE_PORT=$((18000 + RANDOM % 2000))
+python3 "$ROOT/clients/phone-web/server.py" --backend host --plexi-bin "$BIN" --port "$PHONE_PORT" >"$WORK/phone.log" 2>&1 &
+PHONE_PID=$!
+phone_up=0
+for _ in $(seq 1 40); do
+  if python3 - "$PHONE_PORT" "$PLEXI_PHONE_TOKEN" <<'PY'
+import sys, urllib.request
+port, token = sys.argv[1:]
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/needs-you",
+    headers={"Authorization": f"Bearer {token}"},
+)
+urllib.request.urlopen(req, timeout=2).read()
+PY
+  then
+    phone_up=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$phone_up" != 1 ]]; then
+  echo "error: phone shell did not answer" >&2
+  cat "$WORK/phone.log" >&2 || true
+  exit 1
+fi
+
 echo "opening chess"
 "$BIN" app open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
   echo "error: app open failed" >&2
@@ -323,6 +350,39 @@ if not refused:
 print("refuse audit row recorded")
 PY
 
+echo "phone approve must not grant"
+python3 - "$PHONE_PORT" "$PLEXI_PHONE_TOKEN" "$ID" <<'PY'
+import json, sys, urllib.error, urllib.request
+port, token, item_id = sys.argv[1:]
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/needs-you/{item_id}/resolve",
+    data=json.dumps({"decision": "approve"}).encode(),
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=20) as response:
+        body = json.load(response)
+        raise SystemExit(f"phone approve granted: {response.status} {body}")
+except urllib.error.HTTPError as exc:
+    raw = exc.read().decode()
+    body = json.loads(raw) if raw else {}
+    if exc.code == 200 or body.get("ok") is True or body.get("resolution") == "approved":
+        raise SystemExit(f"phone approve granted: {exc.code} {body}")
+    if body.get("error_code") != "permission_denied":
+        raise SystemExit(f"phone approve was not permission_denied: {exc.code} {body}")
+print("phone approve did not grant")
+PY
+
+LIST3="$("$BIN" needs-you list --json)"
+python3 - "$LIST3" "$ID" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is None or item.get("resolution") is not None:
+    raise SystemExit(f"pending item was settled from the phone: {body}")
+PY
+
 echo "clicking Allow once"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
@@ -361,6 +421,73 @@ if not needs:
 if not grants:
     raise SystemExit("no allow_once audit row")
 print(f"allow_once rows {len(grants)}")
+PY
+
+echo "check 7: concurrent deny"
+ID2="$(ask_approval "$INPUT2" "$WORK/call3.out")"
+echo "pending $ID2"
+GRANTS_BEFORE="$(python3 - "$AUDIT" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+print(sum(1 for row in rows if row.get("decision") == "allow_once"))
+PY
+)"
+set +e
+"$BIN" needs-you resolve "$ID2" --deny >"$WORK/deny-a.json" 2>"$WORK/deny-a.err" &
+DENY_A=$!
+"$BIN" needs-you resolve "$ID2" --deny >"$WORK/deny-b.json" 2>"$WORK/deny-b.err" &
+DENY_B=$!
+wait "$DENY_A"
+wait "$DENY_B"
+set -e
+python3 - "$WORK/deny-a.json" "$WORK/deny-b.json" "$ID2" <<'PY'
+import json, sys
+bodies = []
+for path in sys.argv[1:3]:
+    text = open(path).read()
+    start = text.find("{")
+    if start < 0:
+        raise SystemExit(f"deny reply was not json: {text}")
+    bodies.append(json.loads(text[start:]))
+if any(body.get("resolution") == "approved" and body.get("ok") is True for body in bodies):
+    raise SystemExit(f"concurrent resolve approved: {bodies}")
+denied = [body for body in bodies if body.get("resolution") == "denied"]
+if len(denied) != 2:
+    raise SystemExit(f"both racers must observe the denial: {bodies}")
+winners = [body for body in denied if body.get("already") is not True]
+if len(winners) != 1:
+    raise SystemExit(f"one deny must win: {bodies}")
+print("concurrent deny settled once")
+PY
+LIST4="$("$BIN" needs-you list --json)"
+python3 - "$LIST4" "$ID2" <<'PY'
+import json, sys
+body = json.loads(sys.argv[1])
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is not None:
+    raise SystemExit(f"denied item still open: {item}")
+PY
+GRANTS_AFTER="$(python3 - "$AUDIT" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+print(sum(1 for row in rows if row.get("decision") == "allow_once"))
+PY
+)"
+if [[ "$GRANTS_BEFORE" != "$GRANTS_AFTER" ]]; then
+  echo "error: check 7 wrote a grant ($GRANTS_BEFORE -> $GRANTS_AFTER)" >&2
+  exit 1
+fi
+run_in_pane "$WORK/call4.out" "$BIN app call chess chess.play --json --input '$INPUT2' > '$WORK/call4.out' 2>&1" || true
+python3 - "$WORK/call4.out" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read()
+start = text.find("{")
+if start < 0:
+    raise SystemExit(f"retry after deny produced no json: {text}")
+body = json.loads(text[start:])
+if body.get("ok") is True:
+    raise SystemExit(f"denied tool proceeded: {text}")
+print("denied tool did not proceed")
 PY
 
 echo "needs-you e2e passed"

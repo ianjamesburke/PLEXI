@@ -389,13 +389,13 @@ pub enum NeedsYouCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Ask the host to resolve an item. The host refuses.
+    /// Resolve one item. Approving a click approval is refused; deny still denies it.
     Resolve {
         id: String,
-        /// Request approval. The host still refuses.
+        /// Approve the item. A click approval stays open.
         #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
         approve: bool,
-        /// Request denial. The host still refuses.
+        /// Deny the item.
         #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
         deny: bool,
     },
