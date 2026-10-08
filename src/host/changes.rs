@@ -947,6 +947,31 @@ mod tests {
         (dir, guard)
     }
 
+    /// Facts from the sealed audit. Each line is an envelope; the record lives
+    /// in `fact`, so a raw-file search misses `"decision":"commit"`.
+    fn audit_facts() -> String {
+        let path = crate::config::config_dir().join("permission-audit.jsonl");
+        let raw = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut facts = String::new();
+        for line in raw.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(value) => {
+                    if let Some(fact) = value.get("fact").and_then(|fact| fact.as_str()) {
+                        facts.push_str(fact);
+                    } else {
+                        facts.push_str(line);
+                    }
+                }
+                Err(_) => facts.push_str(line),
+            }
+            facts.push('\n');
+        }
+        facts
+    }
+
     fn sample(dir: &Path) -> PathBuf {
         let file = dir.join("draft.txt");
         std::fs::write(&file, "alpha\n").unwrap();
@@ -975,9 +1000,7 @@ mod tests {
         let error = propose_gated("editor-bot", &file, "alpha", "beta").unwrap_err();
         assert!(matches!(error, GateStop::Required { .. }));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
-        let audit =
-            std::fs::read_to_string(crate::config::config_dir().join("permission-audit.jsonl"))
-                .unwrap();
+        let audit = audit_facts();
         assert!(audit.contains("agent:editor-bot"), "{audit}");
         assert!(audit.contains("\"kind\":\"ask\""), "{audit}");
         assert!(!audit.contains("beta"), "{audit}");
@@ -992,9 +1015,7 @@ mod tests {
         let committed = accept_gated(&prepared.id).unwrap();
         assert_eq!(committed.status, "committed");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
-        let audit =
-            std::fs::read_to_string(crate::config::config_dir().join("permission-audit.jsonl"))
-                .unwrap();
+        let audit = audit_facts();
         let ledger =
             std::fs::read_to_string(crate::config::config_dir().join("change-ledger.jsonl"))
                 .unwrap();
