@@ -12,7 +12,7 @@ Before: the composer, permission sheet, and hint bar shared a content-sized bott
 
 A fresh conversation, a sent message, and a streaming reply stay pinned to the latest line. A wheel toward older messages, or a scrollbar drag that leaves the bottom, releases the pin and shows a Latest control. Choosing it pins again. Sending a message pins again even if the reader had scrolled up.
 
-Before: `stick_to_bottom` dropped the pin on the first frame the content outgrew the viewport, and nothing offered a way back. After: follow state is explicit, the offset is forced while pinned, and the jump control appears only when the reader is above the latest line.
+Before: `stick_to_bottom` dropped the pin on the first frame the content outgrew the viewport, and nothing offered a way back. After: follow state is explicit. While pinned, a pass that painted above the bottom stores the measured end offset and repaints that same frame, so the latest lines stay inside the pane. The jump control appears only when the reader is above the latest line.
 
 ## Messages
 

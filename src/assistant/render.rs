@@ -525,13 +525,13 @@ impl AssistantRenderer {
         if scroll_up {
             follow = false;
         }
+        // Offset used to place widgets this pass. Forcing `f32::MAX` here
+        // paints the whole transcript off-screen: egui clamps the stored
+        // offset only after layout, so accesskit rects never land in the pane.
         let scroll_id = ui.make_persistent_id(egui::Id::new("assistant_transcript"));
-        if follow {
-            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
-                state.offset.y = f32::MAX;
-                state.store(ui.ctx(), scroll_id);
-            }
-        }
+        let layout_offset = egui::scroll_area::State::load(ui.ctx(), scroll_id)
+            .map(|state| state.offset.y)
+            .unwrap_or(0.0);
 
         let output = egui::ScrollArea::vertical()
             .id_salt("assistant_transcript")
@@ -593,19 +593,16 @@ impl AssistantRenderer {
                     model.show_thoughts,
                 ));
                 ui.add_space(style::SPACE_SM);
-                let anchor = ui.allocate_rect(
-                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(1.0, 1.0)),
-                    egui::Sense::hover(),
-                );
-                if follow {
-                    anchor.scroll_to_me(Some(egui::Align::BOTTOM));
-                }
                 review
             });
 
         let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+        // `stick_to_bottom` updates the stored offset after widgets are placed,
+        // so the logical offset can already be the bottom while this pass's
+        // rects are still at `layout_offset`. Scene labels read those rects.
         let distance = max_offset - output.state.offset.y;
         let at_bottom = distance <= SCROLL_BOTTOM_SLACK;
+        let painted_distance = max_offset - layout_offset;
         if at_bottom && !scroll_up {
             follow = true;
         }
@@ -626,11 +623,19 @@ impl AssistantRenderer {
             follow = true;
             log::info!("assistant: jump to latest");
             if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), output.id) {
-                state.offset.y = f32::MAX;
+                state.offset.y = max_offset;
                 state.store(ui.ctx(), output.id);
             }
-        }
-        if follow && distance > SCROLL_BOTTOM_SLACK && !ui.ctx().will_discard() {
+            if !ui.ctx().will_discard() {
+                ui.ctx().request_discard("assistant jump to latest");
+            }
+        } else if follow && painted_distance > SCROLL_BOTTOM_SLACK && !ui.ctx().will_discard() {
+            // Repaint this frame at the measured bottom. A sentinel offset
+            // would clamp only after the widgets had already been placed.
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), output.id) {
+                state.offset.y = max_offset;
+                state.store(ui.ctx(), output.id);
+            }
             ui.ctx().request_discard("assistant stick to bottom");
         }
         ui.ctx().data_mut(|data| {
@@ -2222,6 +2227,18 @@ mod tests {
         assert!(
             max_offset - offset <= super::SCROLL_BOTTOM_SLACK,
             "offset {offset} should be at the bottom {max_offset}"
+        );
+        let latest = text_clips(&pinned, "message 39");
+        assert!(
+            !latest.is_empty(),
+            "the latest turn must be painted, not scrolled off the pane"
+        );
+        let (clip, rect) = latest[0];
+        assert!(
+            clip.intersects(rect.shrink(0.5))
+                && rect.top() >= 0.0
+                && rect.bottom() <= size.y + 1.0,
+            "latest turn {rect:?} must sit inside the pane clip {clip:?}"
         );
 
         model.streaming.in_flight = true;
