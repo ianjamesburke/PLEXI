@@ -556,8 +556,16 @@ impl PermissionStore {
     /// A missing or bad MAC quarantines the file and returns empty;
     /// [`Self::integrity_fault`] names it. A signed file that does not parse is
     /// backed up and also returns empty.
+    ///
+    /// A pre-seal file with no MAC is adopted in memory when
+    /// [`crate::broker::seal::profile_never_sealed`] is true. It is not
+    /// quarantined and it does not create a host key; the grant import seals
+    /// the profile and retires this file.
     pub fn load_or_default(config_dir: &Path) -> Self {
         let path = config_dir.join("permissions.toml");
+        if let Some(store) = Self::adopt_legacy_unsealed(config_dir, &path) {
+            return store;
+        }
         let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(&path);
         if loaded.trusted {
             log::info!(
@@ -584,6 +592,25 @@ impl PermissionStore {
             store.save();
         }
         store
+    }
+
+    fn adopt_legacy_unsealed(config_dir: &Path, path: &Path) -> Option<Self> {
+        let body = crate::broker::seal::legacy_unsealed_body(path)?;
+        if !crate::broker::seal::profile_never_sealed(config_dir) {
+            return None;
+        }
+        let mut data = toml::from_str::<PermissionStoreData>(&body).ok()?;
+        log::info!("permission_store: migrated legacy unsealed permissions.toml");
+        let migrated = Self::migrate_raw_path_keys(&mut data);
+        if migrated > 0 {
+            log::info!(
+                "permission_store: migrated {migrated} entries to canonical workspace paths"
+            );
+        }
+        Some(Self {
+            file: TomlStore::at(path.to_path_buf(), STORE_LABEL, data),
+            untrusted: None,
+        })
     }
 
     /// Set when the file on disk was refused. The in-memory entries are empty.
