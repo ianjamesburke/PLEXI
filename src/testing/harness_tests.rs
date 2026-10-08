@@ -4318,6 +4318,11 @@ fn input_owner_precedence_os_overlay_pane() {
         InputOwner::OsUnfocused,
         "an unfocused OS window owns nothing"
     );
+    assert_eq!(
+        h.app.visual_owner_pane(),
+        Some(pane),
+        "a blurred window still paints the focused pane at full color"
+    );
 }
 
 /// Typing into the inline sidebar rename must not reach the focused app

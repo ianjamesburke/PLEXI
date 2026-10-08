@@ -13,6 +13,7 @@ pub mod anchor;
 pub mod app_timeline;
 pub mod changes;
 pub mod command;
+pub mod command_view;
 pub mod context;
 pub mod context_state;
 pub mod effect;

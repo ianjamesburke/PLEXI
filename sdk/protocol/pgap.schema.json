@@ -519,7 +519,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Read or steer the command view. `op` is `list` or `open` here; later\nsteer ops share this request.",
+          "description": "Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`.\nSend starts a real lead turn. Cancel stops that run before the next tool.",
           "properties": {
             "op": {
               "type": "string"

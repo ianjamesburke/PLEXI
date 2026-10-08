@@ -24,6 +24,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
+fn reserved_host_publisher(app_id: &str) -> bool {
+    app_id == crate::host::pane_lifecycle::PUBLISHER
+        || app_id == crate::host::command_view::PUBLISHER
+}
+
 // ── Validated event ──────────────────────────────────────────────────────────
 
 /// A validated, host-accepted app event. Constructed only via
@@ -315,7 +320,7 @@ impl AppTimeline {
         app_id: &str,
         decls: Vec<EventStreamDecl>,
     ) -> Result<Vec<String>, String> {
-        if app_id == crate::host::pane_lifecycle::PUBLISHER {
+        if reserved_host_publisher(app_id) {
             return Err("pane lifecycle publisher is reserved for the host".into());
         }
         self.declare_streams_inner(context_id, app_id, decls)
@@ -400,7 +405,7 @@ impl AppTimeline {
         pane_id: u64,
         emitted: EmittedEvent,
     ) -> Result<EventOutcome, String> {
-        if app_id == crate::host::pane_lifecycle::PUBLISHER {
+        if reserved_host_publisher(app_id) {
             return Err("pane lifecycle publisher is reserved for the host".into());
         }
         self.record_event_inner(context_id, app_id, pane_id, emitted)
@@ -547,6 +552,54 @@ impl AppTimeline {
             state_ref: None, revision_before: None, rollback_token: None,
             changed_resources: vec![], suggested_trigger: None,
         })
+    }
+
+    /// Host-only producer for the command view. The payload is the agents API
+    /// projection a follower sees without polling.
+    pub(crate) fn record_command_view(
+        &mut self,
+        revision: u64,
+        summary: &str,
+        mut payload: serde_json::Value,
+    ) -> Result<EventOutcome, String> {
+        use crate::host::command_view::{PUBLISHER, STREAM};
+        if !self.has_stream(0, PUBLISHER, STREAM) {
+            self.declare_streams_inner(
+                0,
+                PUBLISHER,
+                vec![EventStreamDecl {
+                    name: STREAM.into(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: Some(
+                        "Command view projection; one event per revision".into(),
+                    ),
+                }],
+            )?;
+        }
+        payload["schema_version"] = serde_json::json!(1);
+        payload["revision"] = serde_json::json!(revision);
+        log::info!("command_view: record revision={revision} {summary}");
+        self.record_event_inner(
+            0,
+            PUBLISHER,
+            0,
+            EmittedEvent {
+                event: STREAM.into(),
+                actor: AppEventActor::System,
+                actor_id: Some(PUBLISHER.into()),
+                caused_by: None,
+                summary: summary.to_string(),
+                resource_id: revision.to_string(),
+                resource_scope: Some("command".into()),
+                revision_after: revision.to_string(),
+                payload: Some(payload),
+                state_ref: None,
+                revision_before: None,
+                rollback_token: None,
+                changed_resources: vec![],
+                suggested_trigger: None,
+            },
+        )
     }
 
     fn route_to_subscriptions(&mut self, app_id: &str, record: &AppEventRecord) -> usize {
@@ -1489,6 +1542,28 @@ mod tests {
 
         assert!(same_context.matches("chess", &record));
         assert!(!cross_context.matches("chess", &record));
+    }
+
+    #[test]
+    fn command_publisher_is_reserved_and_the_host_records_it() {
+        let mut timeline = AppTimeline::default();
+        let refused = timeline
+            .declare_streams(
+                0,
+                crate::host::command_view::PUBLISHER,
+                vec![decl("command.view")],
+            )
+            .unwrap_err();
+        assert!(refused.contains("reserved"), "{refused}");
+        let outcome = timeline
+            .record_command_view(3, "head created", serde_json::json!({"heads": []}))
+            .unwrap();
+        assert!(outcome.event_id >= 1);
+        assert!(timeline.has_stream(
+            0,
+            crate::host::command_view::PUBLISHER,
+            crate::host::command_view::STREAM
+        ));
     }
 }
 
