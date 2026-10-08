@@ -2112,6 +2112,34 @@ pub enum AgentCmd {
         #[command(subcommand)]
         cmd: AgentRunCmd,
     },
+    /// Assign work to a head. The task is stored even when no pane is open.
+    ///
+    /// The input file is JSON `{"text":"..."}` or a plain prompt. A running
+    /// host starts it. A stopped host leaves it queued until the next start.
+    ///
+    /// Example: plexi agent assign --head lead-b --input task.json --json
+    Assign {
+        /// Head that should run the task
+        #[arg(long)]
+        head: String,
+        /// Task file. JSON with a `text` field, or the prompt itself.
+        #[arg(long)]
+        input: std::path::PathBuf,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a queued or running headless task before the next tool call.
+    ///
+    /// Example: plexi agent cancel --id task_example --json
+    Cancel {
+        /// Task id returned by `agent assign`
+        #[arg(long)]
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
     /// Read one head's conversation.
     ///
     /// `--as` names the lead that is asking. A lead cannot read another
@@ -2329,8 +2357,7 @@ mod tests {
     #[test]
     fn notify_rejects_removed_level_flag() {
         assert!(
-            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"])
-                .is_err(),
+            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"]).is_err(),
             "removed notification level flag must fail loudly"
         );
     }

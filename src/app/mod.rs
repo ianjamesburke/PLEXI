@@ -3397,6 +3397,20 @@ impl eframe::App for PlexiApp {
                 log::error!("lead: open pane head={head} failed: {error}");
             }
         }
+        let mut queue_roots = Vec::new();
+        if let Some(root) = crate::config::active_workspace_root() {
+            queue_roots.push(root);
+        }
+        for window in &self.windows {
+            if let Some(root) = self.context_root_for(window.context_id) {
+                queue_roots.push(root);
+            }
+        }
+        queue_roots.sort();
+        queue_roots.dedup();
+        for root in queue_roots {
+            crate::agent::queue::pump(&root);
+        }
 
         // App panes are external clients too: they answer assistant tool calls
         // and raise notifications on their own schedule, with no dependence on
