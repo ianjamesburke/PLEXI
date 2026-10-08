@@ -70,6 +70,18 @@ need "$BIN"
 need python3
 need curl
 
+# Assistant, and therefore the pairing sheet, is release-gated to beta and
+# above. `build_channel` reads the binary's own name, not PLEXI_CHANNEL, so a
+# bare `plexi` is stable and never lists the pairing code. A click cannot
+# confirm what the host does not show. Use `plexi-alpha` or `plexi-pr-<N>`.
+case "$BIN_BASE" in
+  plexi-*) ;;
+  *)
+    echo "env error: $BIN is the stable binary. Pairing confirmation needs plexi-alpha or plexi-pr-<N> so the assistant sheet exists." >&2
+    exit 1
+    ;;
+esac
+
 python3 "$ROOT/services/relay/mock_openai.py" >"$LOG.mock" 2>&1 &
 MOCK_PID=$!
 for _ in $(seq 1 30); do
