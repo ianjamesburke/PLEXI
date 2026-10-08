@@ -73,19 +73,125 @@ pub(crate) fn scrub_user_secret_host_namespace() {
 }
 
 pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-    backend().get(account)
+    with_backend(|| backend().get(account))
 }
 
 pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
-    backend().add_new(account, value)
+    with_backend(|| backend().add_new(account, value))
 }
 
 pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
-    backend().set(account, value)
+    with_backend(|| backend().set(account, value))
 }
 
 pub(crate) fn delete(account: &str) -> Result<(), String> {
-    backend().delete(account)
+    with_backend(|| backend().delete(account))
+}
+
+fn with_backend<T>(body: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    {
+        let _guard = TestBackendGuard::acquire_if_needed();
+        body()
+    }
+    #[cfg(not(test))]
+    {
+        body()
+    }
+}
+
+/// Holds the process-local host-key map so a test can remove `permission-mac`
+/// without a parallel test observing that gap.
+#[cfg(test)]
+pub(crate) struct ExclusiveHostKey {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl ExclusiveHostKey {
+    pub(crate) fn acquire() -> Self {
+        let guard = host_key_test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        HOST_KEY_HELD.with(|held| held.set(true));
+        Self { _guard: guard }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ExclusiveHostKey {
+    fn drop(&mut self) {
+        HOST_KEY_HELD.with(|held| held.set(false));
+    }
+}
+
+/// Run `body` with the permission MAC absent, then put the previous key back.
+///
+/// The in-memory seal store is process-global. Legacy-adopt tests need a
+/// profile whose host has never created that key, including when an earlier
+/// test already did.
+#[cfg(test)]
+pub(crate) fn without_mac_key<T>(body: impl FnOnce() -> T) -> T {
+    let _exclusive = ExclusiveHostKey::acquire();
+    let previous = get(MAC_ITEM).expect("read permission mac");
+    if previous.is_some() {
+        delete(MAC_ITEM).expect("clear permission mac");
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    match &previous {
+        Some(value) => set(MAC_ITEM, value.as_str()).expect("restore permission mac"),
+        None => delete(MAC_ITEM).expect("clear permission mac created by the test"),
+    }
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static HOST_KEY_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn host_key_test_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    &LOCK
+}
+
+#[cfg(test)]
+struct TestBackendGuard {
+    release: bool,
+    _guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl TestBackendGuard {
+    fn acquire_if_needed() -> Self {
+        if HOST_KEY_HELD.with(|held| held.get()) {
+            return Self {
+                release: false,
+                _guard: None,
+            };
+        }
+        let guard = host_key_test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        HOST_KEY_HELD.with(|held| held.set(true));
+        Self {
+            release: true,
+            _guard: Some(guard),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBackendGuard {
+    fn drop(&mut self) {
+        if self.release {
+            HOST_KEY_HELD.with(|held| held.set(false));
+        }
+    }
 }
 
 fn backend() -> &'static dyn HostKeyBackend {

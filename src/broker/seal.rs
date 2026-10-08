@@ -5,6 +5,23 @@
 //! (`host_key`), never in `secrets.json` and never under a workspace id an
 //! agent can pass to `plexi secret get`. Agent panes never receive the key.
 //! A bad or missing MAC is not a grant.
+//!
+//! A profile that has never been sealed is the exception. Pre-seal builds
+//! wrote `grants.toml` and `permission-audit.jsonl` with no MAC. Those files
+//! are adopted once, then sealed. Adopt is allowed only when all three of
+//! these host-store records are absent:
+//!
+//! - the permission MAC key (`permission-mac`)
+//! - this profile's seal marker (`plexi:host:permission-seal:` plus the
+//!   profile directory hash)
+//! - this profile's audit tip
+//!
+//! Stripping `# plexi-mac:` clears none of them, so a sealed profile still
+//! quarantines. The MAC key is one item for the whole host seal store: the
+//! first profile that seals also closes legacy adopt for every other profile
+//! on that store. Deleting the key is not enough on its own; the marker and
+//! the tip still mean "sealed". A keychain or Secret Service read error
+//! refuses adopt as well.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -19,7 +36,10 @@ const MAC_PREFIX: &str = "# plexi-mac:";
 /// Create-only secret-store account. Never written into a pane environment.
 pub(crate) const KEY_ACCOUNT: &str = "plexi:host:permission-mac";
 const AUDIT_TIP_PREFIX: &str = "plexi:host:permission-audit-tip:";
+const SEAL_MARKER_PREFIX: &str = "plexi:host:permission-seal:";
+const SEAL_MARKER_VALUE: &str = "1";
 const GENESIS: &str = "genesis";
+const UNAUTHENTICATED_AUDIT: &str = "audit log has no authenticated tip";
 
 /// A grant, deny, or audit file the host refused to trust.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,21 +165,26 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
             fault: None,
             trusted: false,
         },
-        SealStatus::Trusted(body) => match toml::from_str::<T>(&body) {
-            Ok(data) => LoadedToml {
-                data,
-                fault: None,
-                trusted: true,
-            },
-            Err(error) => {
-                backup_corrupt(path, &error.to_string());
-                LoadedToml {
-                    data: T::default(),
+        SealStatus::Trusted(body) => {
+            if let Some(dir) = path.parent() {
+                mark_profile_sealed(dir);
+            }
+            match toml::from_str::<T>(&body) {
+                Ok(data) => LoadedToml {
+                    data,
                     fault: None,
-                    trusted: false,
+                    trusted: true,
+                },
+                Err(error) => {
+                    backup_corrupt(path, &error.to_string());
+                    LoadedToml {
+                        data: T::default(),
+                        fault: None,
+                        trusted: false,
+                    }
                 }
             }
-        },
+        }
         SealStatus::Rejected(reason) => {
             log::info!("permission_seal: rejected {file_name} ({reason})");
             quarantine(path);
@@ -193,7 +218,11 @@ pub fn write_sealed(path: &Path, body: &[u8]) -> Result<(), String> {
     let key = key_bytes()?;
     let mac = hex_encode(&hmac_sha256(key.as_slice(), &bytes));
     bytes.extend(format!("{MAC_PREFIX}{mac}\n").into_bytes());
-    crate::platform::fs::atomic_write_with_mode(path, &bytes, 0o600)
+    crate::platform::fs::atomic_write_with_mode(path, &bytes, 0o600)?;
+    if let Some(dir) = path.parent() {
+        mark_profile_sealed(dir);
+    }
+    Ok(())
 }
 
 /// Append one fact. Verifies the chain first. A bad chain is quarantined and
@@ -232,6 +261,9 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
         .map_err(|error| SealError::Io(error.to_string()))?;
     let tip = format!("{seq}:{}", sha256_hex(line.as_bytes()));
     store_tip(path, &tip).map_err(SealError::Io)?;
+    if let Some(dir) = path.parent() {
+        mark_profile_sealed(dir);
+    }
     Ok(())
 }
 
@@ -255,7 +287,7 @@ pub fn verify_audit(path: &Path) -> Result<(), String> {
         };
     }
     let Some(tip) = tip else {
-        return Err("audit log has no authenticated tip".to_string());
+        return Err(UNAUTHENTICATED_AUDIT.to_string());
     };
     let key = key_bytes()?;
     let mut prev = GENESIS.to_string();
@@ -306,6 +338,97 @@ pub fn reject_untrusted_audit(path: &Path, reason: &str) {
         quarantine(path);
     }
     clear_audit_tip(path);
+}
+
+/// True when `reason` is the pre-seal audit failure: a log with lines and no tip.
+pub(crate) fn unauthenticated_audit(reason: &str) -> bool {
+    reason == UNAUTHENTICATED_AUDIT
+}
+
+/// Body of a file that has no MAC line. Absent, empty, and sealed files are `None`.
+pub(crate) fn legacy_unsealed_body(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    if text.rfind(MAC_PREFIX).is_some() {
+        return None;
+    }
+    Some(text)
+}
+
+/// No MAC key, no seal marker, and no audit tip for `dir`.
+///
+/// A read error is sealed. Legacy adopt must not run when the host store
+/// cannot prove the profile is untouched.
+pub(crate) fn profile_never_sealed(dir: &Path) -> bool {
+    match existing_mac_key() {
+        Ok(None) => {}
+        Ok(Some(_)) => return false,
+        Err(error) => {
+            log::error!(
+                "permission_seal: host mac key unreadable; not adopting legacy files in {}: {error}",
+                dir.display()
+            );
+            return false;
+        }
+    }
+    match super::host_key::get(&marker_account(dir)) {
+        Ok(None) => {}
+        Ok(Some(_)) => return false,
+        Err(error) => {
+            log::error!(
+                "permission_seal: seal marker unreadable; not adopting legacy files in {}: {error}",
+                dir.display()
+            );
+            return false;
+        }
+    }
+    match tip_lookup(&dir.join("permission-audit.jsonl")) {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(error) => {
+            log::error!(
+                "permission_seal: audit tip unreadable; not adopting legacy files in {}: {error}",
+                dir.display()
+            );
+            false
+        }
+    }
+}
+
+/// Replace a pre-seal audit log with one authenticated migration line.
+///
+/// Does not quarantine. A profile that already has a tip is left untouched
+/// and returns an error so the caller keeps the tamper path.
+pub(crate) fn adopt_legacy_audit(path: &Path) -> Result<(), String> {
+    if tip_lookup(path)?.is_some() {
+        return Err("audit tip already exists".to_string());
+    }
+    if path.exists() {
+        let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let lines = content_lines(&raw);
+        if !lines.is_empty() {
+            log::info!(
+                "permission_seal: replaced legacy unsealed audit {} ({} lines)",
+                path.display(),
+                lines.len()
+            );
+        }
+        std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    let fact = serde_json::json!({
+        "kind": "legacy_migration",
+        "actor": "host",
+        "decision": "migrated legacy unsealed permission-audit.jsonl",
+    });
+    append_audit(path, &fact).map_err(|error| error.to_string())?;
+    log::info!(
+        "permission_seal: started authenticated audit tip for {}",
+        path.display()
+    );
+    Ok(())
 }
 
 /// Drop the MAC key from every pane. Agent panes also lose any value that
@@ -410,20 +533,55 @@ fn next_link(path: &Path) -> Result<(u64, String), String> {
     Ok((envelope.seq + 1, sha256_hex(last.as_bytes())))
 }
 
+fn profile_dir_hash(dir: &Path) -> String {
+    let canon = crate::platform::path::canonical_or_self(dir);
+    sha256_hex(canon.to_string_lossy().as_bytes())
+}
+
 fn tip_account(path: &Path) -> String {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let canon = crate::platform::path::canonical_or_self(dir);
-    let hash = sha256_hex(canon.to_string_lossy().as_bytes());
-    format!("{AUDIT_TIP_PREFIX}{hash}")
+    format!("{AUDIT_TIP_PREFIX}{}", profile_dir_hash(dir))
+}
+
+fn marker_account(dir: &Path) -> String {
+    format!("{SEAL_MARKER_PREFIX}{}", profile_dir_hash(dir))
+}
+
+fn tip_lookup(path: &Path) -> Result<Option<String>, String> {
+    super::host_key::get(&tip_account(path)).map(|tip| tip.map(|value| value.to_string()))
 }
 
 fn read_tip(path: &Path) -> Option<String> {
-    match super::host_key::get(&tip_account(path)) {
-        Ok(value) => value.map(|tip| tip.to_string()),
+    match tip_lookup(path) {
+        Ok(value) => value,
         Err(error) => {
             log::error!("permission_seal: could not read audit tip: {error}");
             None
         }
+    }
+}
+
+fn mark_profile_sealed(dir: &Path) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    let account = marker_account(dir);
+    match super::host_key::get(&account) {
+        Ok(Some(_)) => {}
+        Ok(None) => match super::host_key::set(&account, SEAL_MARKER_VALUE) {
+            Ok(()) => log::info!(
+                "permission_seal: recorded seal marker for {}",
+                dir.display()
+            ),
+            Err(error) => log::error!(
+                "permission_seal: could not record seal marker for {}: {error}",
+                dir.display()
+            ),
+        },
+        Err(error) => log::error!(
+            "permission_seal: could not read seal marker for {}: {error}",
+            dir.display()
+        ),
     }
 }
 

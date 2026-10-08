@@ -301,6 +301,9 @@ impl PermissionMonitor {
     }
 
     fn open(dir: &Path) -> Self {
+        // Snapshot before the grant load. Adopting a legacy file creates the
+        // MAC key, and a later check would then look sealed.
+        let never_sealed = super::seal::profile_never_sealed(dir);
         let store = GrantStore::load_or_default(dir);
         let mut faults = store.integrity_faults().to_vec();
         // `AgentHost::production` and `HostSubscriptionService::new` load the
@@ -317,11 +320,20 @@ impl PermissionMonitor {
         }
         let audit = dir.join("permission-audit.jsonl");
         if let Err(reason) = super::seal::verify_audit(&audit) {
-            super::seal::reject_untrusted_audit(&audit, &reason);
-            faults.push(super::seal::IntegrityFault {
-                file: "permission-audit.jsonl".to_string(),
-                reason,
-            });
+            if never_sealed
+                && super::seal::unauthenticated_audit(&reason)
+                && super::seal::adopt_legacy_audit(&audit).is_ok()
+            {
+                log::info!(
+                    "permission_monitor: migrated legacy unsealed permission-audit.jsonl"
+                );
+            } else {
+                super::seal::reject_untrusted_audit(&audit, &reason);
+                faults.push(super::seal::IntegrityFault {
+                    file: "permission-audit.jsonl".to_string(),
+                    reason,
+                });
+            }
         }
         log::info!(
             "permission_monitor: opened profile {} audit {} integrity_faults={}",
@@ -2908,6 +2920,297 @@ mod tests {
             monitor.approve_pending(&id, ApprovalChoice::Once).is_ok(),
             "the desktop path can still approve"
         );
+    }
+
+    #[test]
+    fn legacy_unsealed_grants_are_adopted_once() {
+        crate::broker::host_key::without_mac_key(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = tempfile::tempdir().unwrap();
+            let records = vec![
+                GrantRecord::event_stream_allow(
+                    ActorType::Agent,
+                    "assistant",
+                    ActorScope::User,
+                    "chess::*",
+                    ws.path(),
+                    GrantDuration::Always,
+                    GrantSource::User,
+                    None,
+                ),
+                GrantRecord::event_stream_allow(
+                    ActorType::Agent,
+                    "agent:default",
+                    ActorScope::User,
+                    "host.events.subscribe",
+                    ws.path(),
+                    GrantDuration::Always,
+                    GrantSource::User,
+                    None,
+                ),
+            ];
+            write_legacy_grants(
+                dir.path(),
+                records,
+                "[[records]]\nactor_id = \"skipped\"\n",
+            );
+            write_legacy_permissions(dir.path(), ws.path());
+            std::fs::write(
+                dir.path().join("permission-audit.jsonl"),
+                "{\"kind\":\"grant\",\"decision\":\"allow\"}\n",
+            )
+            .unwrap();
+
+            let preloaded = GrantStore::load_or_default(dir.path());
+            assert!(
+                preloaded.integrity_faults().is_empty(),
+                "{:?}",
+                preloaded.integrity_faults()
+            );
+            assert_legacy_grants_kept(&preloaded);
+            assert!(
+                dir.path().join("grants.toml").is_file(),
+                "adopt must not quarantine grants.toml"
+            );
+            let sealed = std::fs::read_to_string(dir.path().join("grants.toml")).unwrap();
+            assert!(
+                sealed.contains("# plexi-mac:"),
+                "adopted grants must be sealed: {sealed}"
+            );
+            assert!(
+                !dir.path().join("permissions.toml").is_file(),
+                "a readable legacy permissions.toml is imported"
+            );
+            assert_no_untrusted(dir.path());
+            crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
+                .expect("legacy audit is replaced with an authenticated tip");
+
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            assert!(
+                monitor.open_needs_you().is_empty(),
+                "legacy adopt files no integrity item: {:?}",
+                monitor.open_needs_you()
+            );
+            assert_legacy_grants_kept(&monitor.store());
+
+            crate::broker::host_key::delete(crate::broker::host_key::MAC_ITEM).unwrap();
+            strip_mac(&dir.path().join("grants.toml"));
+            let tampered = PermissionMonitor::open_profile(dir.path());
+            assert!(
+                tampered.store().records().is_empty(),
+                "seal marker and audit tip block adopt after the mac key is removed"
+            );
+            assert_grants_quarantined(dir.path(), &tampered);
+            assert!(
+                dir.path().join("permission-audit.jsonl").is_file(),
+                "the authenticated audit stays in place"
+            );
+            crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
+                .expect("audit tip still matches");
+        });
+    }
+
+    #[test]
+    fn legacy_unsealed_grants_without_an_audit_log_are_adopted() {
+        crate::broker::host_key::without_mac_key(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = tempfile::tempdir().unwrap();
+            write_legacy_grants(
+                dir.path(),
+                vec![GrantRecord::app_capability(
+                    "assistant",
+                    ws.path(),
+                    crate::app::permissions::Capability::FsRead,
+                    Decision::Allow,
+                )],
+                "",
+            );
+            assert!(!dir.path().join("permission-audit.jsonl").exists());
+
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            assert!(monitor.open_needs_you().is_empty(), "{:?}", monitor.open_needs_you());
+            assert!(monitor.store().records().iter().any(|record| {
+                record.actor_id == "assistant" && record.target_id == "fs.read"
+            }));
+            assert_no_untrusted(dir.path());
+            let audit = dir.path().join("permission-audit.jsonl");
+            assert!(audit.is_file(), "adopt starts an authenticated audit tip");
+            crate::broker::seal::verify_audit(&audit).expect("new audit tip verifies");
+        });
+    }
+
+    #[test]
+    fn sealed_profile_rejects_stripped_or_corrupt_mac() {
+        let stripped = tempfile::tempdir().unwrap();
+        seal_one_grant(stripped.path());
+        strip_mac(&stripped.path().join("grants.toml"));
+        let monitor = PermissionMonitor::open_profile(stripped.path());
+        assert!(monitor.store().records().is_empty());
+        assert_grants_quarantined(stripped.path(), &monitor);
+        assert_eq!(integrity_resources(&monitor), vec!["grants.toml".to_string()]);
+
+        let corrupt = tempfile::tempdir().unwrap();
+        seal_one_grant(corrupt.path());
+        corrupt_mac(&corrupt.path().join("grants.toml"));
+        let monitor = PermissionMonitor::open_profile(corrupt.path());
+        assert!(monitor.store().records().is_empty());
+        assert_grants_quarantined(corrupt.path(), &monitor);
+        let resources = integrity_resources(&monitor);
+        assert_eq!(resources, vec!["grants.toml".to_string()], "{resources:?}");
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .any(|row| row.summary.contains("bad mac")),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+
+        crate::broker::host_key::without_mac_key(|| {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("grants.toml"),
+                "records = []\n# plexi-mac:00\n",
+            )
+            .unwrap();
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            assert!(
+                monitor.store().records().is_empty(),
+                "a mac line is not a pre-seal file"
+            );
+            assert_grants_quarantined(dir.path(), &monitor);
+        });
+    }
+
+    fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>, extra: &str) {
+        let mut body =
+            toml::to_string_pretty(&super::super::GrantStoreData { records }).unwrap();
+        if !extra.is_empty() {
+            body.push('\n');
+            body.push_str(extra);
+            if !extra.ends_with('\n') {
+                body.push('\n');
+            }
+        }
+        assert!(
+            !body.contains("# plexi-mac:"),
+            "fixture must be unsealed: {body}"
+        );
+        std::fs::write(dir.join("grants.toml"), body).unwrap();
+    }
+
+    fn write_legacy_permissions(dir: &Path, workspace: &Path) {
+        let key = format!("sample::{}::fs.write", workspace.display());
+        let body = format!("[entries]\n\"{key}\" = \"green\"\n");
+        std::fs::write(dir.join("permissions.toml"), body).unwrap();
+    }
+
+    fn assert_legacy_grants_kept(store: &GrantStore) {
+        let records = store.records();
+        assert!(
+            records.iter().any(|record| {
+                record.actor_id == "assistant" && record.target_id == "chess::*"
+            }),
+            "assistant chess grant dropped: {records:?}"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.actor_id == "agent:default" && record.target_id == "host.events.subscribe"
+            }),
+            "agent subscribe grant dropped: {records:?}"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.actor_id == "sample"
+                    && record.target_id == "fs.write"
+                    && record.decision == Decision::Allow
+            }),
+            "legacy permissions.toml entry was not imported: {records:?}"
+        );
+        assert!(
+            records.iter().all(|record| record.actor_id != "skipped"),
+            "malformed record was kept: {records:?}"
+        );
+    }
+
+    fn seal_one_grant(dir: &Path) {
+        let ws = tempfile::tempdir().unwrap();
+        let mut store = GrantStore::load_or_default(dir);
+        store.record(GrantRecord::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+            Decision::Allow,
+        ));
+        store.save();
+        assert!(dir.join("grants.toml").is_file());
+    }
+
+    fn strip_mac(path: &Path) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let body = text
+            .lines()
+            .filter(|line| !line.starts_with("# plexi-mac:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(path, format!("{body}\n")).unwrap();
+    }
+
+    fn corrupt_mac(path: &Path) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let body = text
+            .lines()
+            .filter(|line| !line.starts_with("# plexi-mac:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(path, format!("{body}\n# plexi-mac:00\n")).unwrap();
+    }
+
+    fn assert_no_untrusted(dir: &Path) {
+        let names = dir_names(dir);
+        assert!(
+            names.iter().all(|name| !name.contains(".untrusted-")),
+            "{names:?}"
+        );
+    }
+
+    fn assert_grants_quarantined(dir: &Path, monitor: &PermissionMonitor) {
+        assert!(
+            !dir.join("grants.toml").is_file(),
+            "tampered grants.toml must be quarantined"
+        );
+        let names = dir_names(dir);
+        assert!(
+            names.iter().any(|name| name.starts_with("grants.toml.untrusted-")),
+            "{names:?}"
+        );
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .any(|row| row.kind == NeedsYouKind::Integrity && row.resource == "grants.toml"),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+    }
+
+    fn integrity_resources(monitor: &PermissionMonitor) -> Vec<String> {
+        monitor
+            .open_needs_you()
+            .into_iter()
+            .filter(|row| row.kind == NeedsYouKind::Integrity)
+            .map(|row| row.resource)
+            .collect()
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 }
 
