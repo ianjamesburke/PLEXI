@@ -269,9 +269,17 @@ elif command -v Xvfb >/dev/null 2>&1; then
   export DISPLAY="$xvfb_display"
   export LIBGL_ALWAYS_SOFTWARE=1
   export WINIT_UNIX_BACKEND=x11
-  if [[ -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ]]; then
-    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-  fi
+  export WGPU_BACKEND=vulkan
+  for icd in \
+    /usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+    /usr/share/vulkan/icd.d/lvp_icd.json
+  do
+    if [[ -f "$icd" ]]; then
+      export VK_ICD_FILENAMES="$icd"
+      export VK_DRIVER_FILES="$icd"
+      break
+    fi
+  done
   sleep 0.5
   if kill -0 "$XVFB_PID" 2>/dev/null; then
     pane_gui=1
