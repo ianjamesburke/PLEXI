@@ -46,6 +46,21 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
+    /// Show every lead and its latest transcript line.
+    ///
+    /// The rows come from the agents API head records and each head's
+    /// conversation. `open` shows the same projection in a pane.
+    ///
+    /// Example: plexi command-view --json
+    /// Example: plexi command-view open
+    #[command(name = "command-view")]
+    CommandView {
+        #[command(subcommand)]
+        cmd: Option<CommandViewCmd>,
+        /// Print the projection as JSON.
+        #[arg(long, global = true)]
+        json: bool,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -318,11 +333,20 @@ pub enum Commands {
 }
 
 #[derive(Subcommand)]
+pub enum CommandViewCmd {
+    /// Open the command view pane in the active context.
+    Open,
+}
+
+#[derive(Subcommand)]
 pub enum AssistantCmd {
     /// Submit through the same composer, model, and permission path as the desktop Assistant.
     Send {
         #[arg(long)]
         text: String,
+        /// Lead id. The turn runs in that head's conversation.
+        #[arg(long)]
+        head: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
         #[arg(long)]
@@ -347,6 +371,14 @@ pub enum AssistantCmd {
         /// JSON object passed as the tool input.
         #[arg(long)]
         input: String,
+    },
+    /// Open an Assistant pane bound to a head.
+    ///
+    /// Example: plexi assistant open --head lead-b
+    Open {
+        /// Head id created with `agent head create`.
+        #[arg(long)]
+        head: String,
     },
     /// Observe and resolve pending permission requests. This is not `plexi agent request`.
     Permission {
@@ -2080,6 +2112,23 @@ pub enum AgentCmd {
         #[command(subcommand)]
         cmd: AgentRunCmd,
     },
+    /// Read one head's conversation.
+    ///
+    /// `--as` names the lead that is asking. A lead cannot read another
+    /// lead's conversation. Omit `--as` to read as the operator.
+    ///
+    /// Example: plexi agent conversation --head lead-b --json
+    Conversation {
+        /// Head whose conversation to read
+        #[arg(long)]
+        head: String,
+        /// Lead id to act as. A different head is refused.
+        #[arg(long = "as")]
+        as_head: Option<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
     /// Start a child run whose grants are a subset of the parent run.
     ///
     /// A grant the parent does not hold is refused and audited. The child is
@@ -2134,7 +2183,7 @@ pub enum AgentHeadCmd {
 
 #[derive(Subcommand)]
 pub enum AgentRunCmd {
-    /// Claim a run of a head and append a ledger row.
+    /// Claim a run of a head, append a ledger row, and run a model turn.
     Spawn {
         /// Head id to run
         #[arg(long)]
@@ -2154,6 +2203,9 @@ pub enum AgentRunCmd {
         /// Output tokens recorded on the ledger row
         #[arg(long)]
         output_tokens: Option<u32>,
+        /// Prompt for the model turn. Defaults to `run` on the host.
+        #[arg(long)]
+        text: Option<String>,
         /// Print the host JSON reply
         #[arg(long)]
         json: bool,

@@ -1172,23 +1172,27 @@ mod tests {
         );
     }
 
+    /// A fork keeps the parent's `comm` until `execve`. On a busy runner that
+    /// window is visible: Linux then reports the test thread's name, truncated
+    /// to 15 bytes (`host::shell::te`), instead of the invoked basename.
+    fn wait_for_pid_name(pid: u32, expected: &str) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let name = get_pid_name(pid);
+            if name.as_deref() == Some(expected) || std::time::Instant::now() >= deadline {
+                return name;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn get_pid_name_reports_the_exec_basename() {
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("5")
             .spawn()
             .expect("spawn sleep");
-        // `comm` is inherited across fork and only changes at exec. Under a
-        // loaded CI runner the read can land in that window and see this
-        // test's truncated thread name instead of `sleep`.
-        let mut name = None;
-        for _ in 0..50 {
-            name = get_pid_name(child.id());
-            if name.as_deref() == Some("sleep") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let name = wait_for_pid_name(child.id(), "sleep");
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(name.as_deref(), Some("sleep"));
@@ -1211,7 +1215,7 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("spawn through symlink");
-        let name = get_pid_name(child.id());
+        let name = wait_for_pid_name(child.id(), "codex");
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);

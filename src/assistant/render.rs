@@ -65,6 +65,8 @@ pub enum ComposerEvent {
     ReviewPermissions,
     /// Enter pressed in an open picker/manager overlay: apply the selection.
     OverlayConfirm,
+    /// Header action: create another lead and open its Assistant pane.
+    NewLead,
 }
 
 /// Row label for a permission decision — "block" reads clearer than "deny" in
@@ -260,6 +262,13 @@ impl AssistantRenderer {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(style::SPACE_MD as i8, 0)),
             )
             .show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let title = model.session_name.as_deref().unwrap_or("Assistant");
+                    ui.label(RichText::new(format!("lead {title}")).strong().color(colors.text_primary));
+                    if ui.button("New lead").clicked() {
+                        event = Some(ComposerEvent::NewLead);
+                    }
+                });
                 transcript_event = Self::draw_transcript(ui, model, md_cache, text_cache, colors);
             });
         if event.is_none() {

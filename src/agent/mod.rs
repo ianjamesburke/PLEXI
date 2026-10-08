@@ -33,6 +33,7 @@
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
 pub mod heads;
+pub mod leads;
 
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,

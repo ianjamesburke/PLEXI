@@ -18,6 +18,7 @@ Submit a text turn to the running host Assistant
 |---|---|
 | `send` | Submit through the same composer, model, and permission path as the desktop Assistant |
 | `tool` | Run one Assistant host tool through the host permission gate |
+| `open` | Open an Assistant pane bound to a head |
 | `permission` | Observe and resolve pending permission requests. This is not `plexi agent request` |
 
 ### `plexi assistant send`
@@ -27,6 +28,7 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--text` | string | yes |  |
+| `--head` | string | no | Lead id. The turn runs in that head's conversation |
 | `--request-id` | string | no |  |
 | `--pane-id` | string | no |  |
 | `--context-id` | string | no |  |
@@ -44,6 +46,16 @@ Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","o
 |---|---|---|---|
 | `<name>` | string | yes | Tool name, for example `host.editors.list` or `host.files.edit` |
 | `--input` | string | yes | JSON object passed as the tool input |
+
+### `plexi assistant open`
+
+Open an Assistant pane bound to a head.
+
+Example: plexi assistant open --head lead-b
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head id created with `agent head create` |
 
 ### `plexi assistant permission`
 
@@ -75,6 +87,22 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 |---|---|---|---|
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
+
+## `plexi command-view`
+
+Show every lead and its latest transcript line.
+
+The rows come from the agents API head records and each head's conversation. `open` shows the same projection in a pane.
+
+Example: plexi command-view --json Example: plexi command-view open
+
+| Subcommand | Description |
+|---|---|
+| `open` | Open the command view pane in the active context |
+
+### `plexi command-view open`
+
+Open the command view pane in the active context
 
 ## `plexi run`
 
@@ -425,6 +453,7 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `hook` | Install or uninstall agent hook integrations |
 | `head` | Create or list an agent head stored under `.plexi/agents` |
 | `run` | Spawn, list, or finish a run of an agent head |
+| `conversation` | Read one head's conversation |
 | `delegate` | Start a child run whose grants are a subset of the parent run |
 
 ### `plexi agent init`
@@ -578,14 +607,14 @@ Example: plexi agent run spawn --head lead --admission adm-1 --json
 
 | Subcommand | Description |
 |---|---|
-| `spawn` | Claim a run of a head and append a ledger row |
+| `spawn` | Claim a run of a head, append a ledger row, and run a model turn |
 | `list` | List runs in the current workspace |
 | `show` | Show one run |
 | `finish` | Mark a run finished so another admission can claim the head |
 
 #### `plexi agent run spawn`
 
-Claim a run of a head and append a ledger row
+Claim a run of a head, append a ledger row, and run a model turn
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -595,6 +624,7 @@ Claim a run of a head and append a ledger row
 | `--kind` | string | no | `system` or `output` |
 | `--input-tokens` | string | no | Input tokens recorded on the ledger row |
 | `--output-tokens` | string | no | Output tokens recorded on the ledger row |
+| `--text` | string | no | Prompt for the model turn. Defaults to `run` on the host |
 | `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent run list`
@@ -621,6 +651,20 @@ Mark a run finished so another admission can claim the head
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent conversation`
+
+Read one head's conversation.
+
+`--as` names the lead that is asking. A lead cannot read another lead's conversation. Omit `--as` to read as the operator.
+
+Example: plexi agent conversation --head lead-b --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head whose conversation to read |
+| `--as` | string | no | Lead id to act as. A different head is refused |
 | `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent delegate`
