@@ -16,20 +16,20 @@
 //!   `PlexiApp::new` reads this key before the notify socket exists, so a bus
 //!   that accepts and never handshakes must not hold `host start` until its
 //!   own deadline.
-//! - macOS stores it in the keychain under service `plexi-host-seal`, created
-//!   by this binary. `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file
-//!   and never falls back to the login keychain. The `security` tool is not
-//!   the creating binary, so a direct keychain read does not yield the key.
-//!   The first call disables keychain prompts for the process and leaves them
-//!   off, same as `MacKeychain`. A fresh binary's value read otherwise waits
-//!   on Allow, and `PlexiApp::new` does that read before the notify socket
-//!   can answer `host start`. Turning prompts back on would undo that.
+//! - macOS stores it in the keychain under service `plexi-host-seal`.
+//!   `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file and never falls
+//!   back to the login keychain. The `security` tool is not the creating
+//!   binary, so a direct keychain read does not yield the key. Startup
+//!   disables keychain prompts so `host start` cannot block on Allow. A
+//!   Needs you approval is the only path that turns prompts on, for that
+//!   one read, and then turns them off again. New and interactively read
+//!   items trust this app's designated requirement so a same-signer rebuild
+//!   keeps access. An any-application ACL is never installed.
 //! - Windows stores it in Credential Manager under `plexi-host-seal/`, which
 //!   `plexi secret get` does not read.
 
 #[cfg(test)]
 use std::collections::BTreeMap;
-#[cfg(test)]
 use std::sync::Mutex;
 use zeroize::Zeroizing;
 
@@ -37,6 +37,37 @@ use crate::workspace::secrets::system_store;
 
 /// Item name of the MAC key inside the host store. Not a user-secret account.
 pub(crate) const MAC_ITEM: &str = "permission-mac";
+
+/// Prefix on a host-store read that did not return the secret.
+///
+/// A mismatch is a different failure: the key was read and the MAC did not
+/// match. Callers must not quarantine on this prefix.
+pub(crate) const KEY_UNREADABLE_PREFIX: &str = "key unreadable:";
+
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) fn key_unreadable(detail: &str) -> String {
+    format!("{KEY_UNREADABLE_PREFIX} {detail}")
+}
+
+pub(crate) fn is_key_unreadable(error: &str) -> bool {
+    error.starts_with(KEY_UNREADABLE_PREFIX)
+}
+
+#[cfg(test)]
+pub(crate) fn ensure_key_unreadable(error: String) -> String {
+    if is_key_unreadable(&error) {
+        error
+    } else {
+        key_unreadable(&error)
+    }
+}
+
+/// `errSecAuthFailed` (-25293), `errSecInteractionNotAllowed` (-25308), and
+/// `userCanceledErr` (-128). Item-not-found (-25300) is not an access failure.
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) fn keychain_status_is_unreadable(code: i32) -> bool {
+    matches!(code, -25293 | -25308 | -128)
+}
 
 /// Service name on macOS and the Credential Manager prefix on Windows.
 /// Distinct from the user-secret service `plexi`.
@@ -66,9 +97,7 @@ pub(crate) fn scrub_user_secret_host_namespace() {
     }
     for account in accounts {
         match store.delete(&account) {
-            Ok(()) => log::info!(
-                "permission_seal: removed {account} from the user secret store"
-            ),
+            Ok(()) => log::info!("permission_seal: removed {account} from the user secret store"),
             Err(error) => log::error!(
                 "permission_seal: could not remove {account} from the user secret store: {error}"
             ),
@@ -77,7 +106,68 @@ pub(crate) fn scrub_user_secret_host_namespace() {
 }
 
 pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-    with_backend(|| backend().get(account))
+    if account == MAC_ITEM {
+        if let Some(cached) = session_mac() {
+            return Ok(Some(cached));
+        }
+    }
+    match with_backend(|| backend().get(account)) {
+        Ok(value) => {
+            if account == MAC_ITEM && interaction_allowed() {
+                if let Some(value) = &value {
+                    remember_session_mac(value);
+                }
+            }
+            Ok(value)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Read `body` while keychain prompts are allowed.
+///
+/// Startup stays silent. The only caller is a person approving the keychain
+/// Needs you item, which is what lets macOS show Allow / Always Allow.
+pub(crate) fn with_keychain_interaction<T>(body: impl FnOnce() -> T) -> T {
+    KEYCHAIN_INTERACTION.with(|flag| flag.set(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    KEYCHAIN_INTERACTION.with(|flag| flag.set(false));
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn interaction_allowed() -> bool {
+    KEYCHAIN_INTERACTION.with(|flag| flag.get())
+}
+
+thread_local! {
+    static KEYCHAIN_INTERACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn session_mac_slot() -> &'static Mutex<Option<Zeroizing<String>>> {
+    static SLOT: std::sync::OnceLock<Mutex<Option<Zeroizing<String>>>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn session_mac() -> Option<Zeroizing<String>> {
+    session_mac_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn remember_session_mac(value: &Zeroizing<String>) {
+    *session_mac_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(value.clone());
+}
+
+fn clear_session_mac() {
+    *session_mac_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
 }
 
 pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
@@ -89,6 +179,9 @@ pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
 }
 
 pub(crate) fn delete(account: &str) -> Result<(), String> {
+    if account == MAC_ITEM {
+        clear_session_mac();
+    }
     with_backend(|| backend().delete(account))
 }
 
@@ -158,6 +251,84 @@ thread_local! {
 }
 
 #[cfg(test)]
+struct MacReadFault {
+    denied: bool,
+    interactive_reads: u32,
+}
+
+#[cfg(test)]
+fn mac_read_fault() -> &'static Mutex<MacReadFault> {
+    static FAULT: Mutex<MacReadFault> = Mutex::new(MacReadFault {
+        denied: false,
+        interactive_reads: 0,
+    });
+    &FAULT
+}
+
+#[cfg(test)]
+fn mac_read_denied() -> bool {
+    mac_read_fault()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .denied
+}
+
+#[cfg(test)]
+fn note_interactive_mac_read() {
+    let mut fault = mac_read_fault()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    fault.interactive_reads += 1;
+    fault.denied = false;
+}
+
+/// The permission MAC exists, but silent reads fail the way a rebuilt binary
+/// fails with `errSecAuthFailed` while prompts are off.
+///
+/// An interactive read counts once and then succeeds, which is the Always Allow
+/// / designated-requirement outcome. The guard holds the process-wide host-key
+/// lock so other tests do not observe the denial.
+#[cfg(test)]
+pub(crate) struct UnreadableMacKey {
+    _exclusive: ExclusiveHostKey,
+}
+
+#[cfg(test)]
+impl UnreadableMacKey {
+    pub(crate) fn acquire() -> Self {
+        let exclusive = ExclusiveHostKey::acquire();
+        clear_session_mac();
+        let mut fault = mac_read_fault()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        fault.denied = true;
+        fault.interactive_reads = 0;
+        Self {
+            _exclusive: exclusive,
+        }
+    }
+
+    pub(crate) fn interactive_reads(&self) -> u32 {
+        mac_read_fault()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .interactive_reads
+    }
+}
+
+#[cfg(test)]
+impl Drop for UnreadableMacKey {
+    fn drop(&mut self) {
+        let mut fault = mac_read_fault()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        fault.denied = false;
+        fault.interactive_reads = 0;
+        clear_session_mac();
+    }
+}
+
+#[cfg(test)]
 fn host_key_test_lock() -> &'static Mutex<()> {
     static LOCK: Mutex<()> = Mutex::new(());
     &LOCK
@@ -220,10 +391,7 @@ fn backend() -> &'static dyn HostKeyBackend {
         static WIN: WindowsBackend = WindowsBackend;
         &WIN
     }
-    #[cfg(all(
-        not(test),
-        not(any(target_os = "linux", target_os = "macos", windows))
-    ))]
+    #[cfg(all(not(test), not(any(target_os = "linux", target_os = "macos", windows))))]
     {
         static UNSUPPORTED: UnsupportedBackend = UnsupportedBackend;
         &UNSUPPORTED
@@ -246,6 +414,19 @@ struct MemoryBackend {
 #[cfg(test)]
 impl HostKeyBackend for MemoryBackend {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        if account == MAC_ITEM && mac_read_denied() {
+            let exists = self
+                .values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(account);
+            if exists {
+                if !interaction_allowed() {
+                    return Err(key_unreadable("errSecAuthFailed"));
+                }
+                note_interactive_mac_read();
+            }
+        }
         Ok(self
             .values
             .lock()
@@ -256,7 +437,10 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), String> {
-        let mut map = self.values.lock().unwrap_or_else(|error| error.into_inner());
+        let mut map = self
+            .values
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if map.contains_key(account) {
             return Err(format!("host key already exists: {account}"));
         }
@@ -347,16 +531,10 @@ impl HostKeyBackend for WindowsBackend {
     }
 }
 
-#[cfg(all(
-    not(test),
-    not(any(target_os = "linux", target_os = "macos", windows))
-))]
+#[cfg(all(not(test), not(any(target_os = "linux", target_os = "macos", windows))))]
 struct UnsupportedBackend;
 
-#[cfg(all(
-    not(test),
-    not(any(target_os = "linux", target_os = "macos", windows))
-))]
+#[cfg(all(not(test), not(any(target_os = "linux", target_os = "macos", windows))))]
 impl HostKeyBackend for UnsupportedBackend {
     fn get(&self, _account: &str) -> Result<Option<Zeroizing<String>>, String> {
         Err(plaintext_seal_refusal(
@@ -584,7 +762,12 @@ mod linux {
         create_item(&session, account, value, true)
     }
 
-    fn create_item(session: &Session, account: &str, value: &str, replace: bool) -> Result<(), String> {
+    fn create_item(
+        session: &Session,
+        account: &str,
+        value: &str,
+        replace: bool,
+    ) -> Result<(), String> {
         let mut properties: HashMap<&str, Value> = HashMap::new();
         properties.insert(
             "org.freedesktop.Secret.Item.Label",
@@ -674,21 +857,47 @@ mod linux {
 #[cfg(all(target_os = "macos", not(test)))]
 mod mac {
     use super::HOST_SERVICE;
+    use core_foundation::array::CFArray;
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::string::CFString;
     use security_framework::base::Error;
+    use security_framework::os::macos::access::SecAccess;
     use security_framework::os::macos::keychain::SecKeychain;
+    use security_framework::os::macos::keychain_item::SecKeychainItem;
+    use security_framework_sys::base::{errSecSuccess, SecAccessRef};
+    use security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed;
     use zeroize::Zeroizing;
 
     // errSecItemNotFound. A missing host item is an empty store, not a failure.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-    // errSecInteractionNotAllowed. The call would have opened a credential dialog.
-    const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+
+    // Not in security-framework-sys. A null path is the calling app's designated
+    // requirement. A null trusted list would trust every app, so this code never
+    // passes one.
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecTrustedApplicationCreateFromPath(
+            path: *const std::ffi::c_char,
+            app: *mut *mut std::ffi::c_void,
+        ) -> i32;
+        fn SecAccessCreate(
+            descriptor: *const std::ffi::c_void,
+            trusted_list: *const std::ffi::c_void,
+            access: *mut SecAccessRef,
+        ) -> i32;
+        fn SecKeychainItemSetAccess(
+            item: security_framework_sys::base::SecKeychainItemRef,
+            access: SecAccessRef,
+        ) -> i32;
+    }
 
     /// Disable keychain dialogs once and leak the guard.
     ///
-    /// `MacKeychain` does the same. Dropping the guard turns prompts back on,
+    /// `MacKeychain` does the same. Dropping that guard turns prompts back on,
     /// which would let a later seal read block `host start` again. The audit
     /// tip is read from `PlexiApp::new`, before the event loop can answer
-    /// `ListPanes`.
+    /// `ListPanes`. A Needs you approval turns prompts on for one read via
+    /// [`PromptScope`], then turns them off again.
     fn keychain_calls_cannot_prompt() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| match SecKeychain::disable_user_interaction() {
@@ -702,6 +911,48 @@ mod mac {
                 log::warn!("permission_seal: could not disable keychain prompts: {error}");
             }
         });
+    }
+
+    /// Turns prompts on only while a Needs you approval is reading the key.
+    struct PromptScope {
+        restore_off: bool,
+    }
+
+    impl PromptScope {
+        fn enter() -> Self {
+            keychain_calls_cannot_prompt();
+            if super::interaction_allowed() {
+                let code = unsafe { SecKeychainSetUserInteractionAllowed(1) };
+                if code != errSecSuccess {
+                    log::error!("permission_seal: could not allow a keychain prompt: {code}");
+                } else {
+                    log::info!("permission_seal: keychain interaction allowed for this read");
+                }
+                Self { restore_off: true }
+            } else {
+                let code = unsafe { SecKeychainSetUserInteractionAllowed(0) };
+                if code != errSecSuccess {
+                    log::error!("permission_seal: could not keep keychain prompts off: {code}");
+                }
+                Self { restore_off: false }
+            }
+        }
+    }
+
+    impl Drop for PromptScope {
+        fn drop(&mut self) {
+            if !self.restore_off {
+                return;
+            }
+            let code = unsafe { SecKeychainSetUserInteractionAllowed(0) };
+            if code != errSecSuccess {
+                log::error!("permission_seal: could not disable keychain prompts again: {code}");
+            } else {
+                log::info!(
+                    "permission_seal: keychain prompts disabled again after interactive read"
+                );
+            }
+        }
     }
 
     fn keychain() -> Result<SecKeychain, String> {
@@ -721,23 +972,25 @@ mod mac {
     }
 
     fn map_keychain_error(account: &str, error: Error) -> String {
-        if error.code() == ERR_SEC_INTERACTION_NOT_ALLOWED {
+        if super::keychain_status_is_unreadable(error.code()) {
             log::info!(
-                "permission_seal: macOS keychain would have shown a dialog for {account}; continuing without it"
+                "permission_seal: macOS keychain refused {account} ({})",
+                error.code()
             );
-            format!(
-                "macOS keychain would have shown a dialog for {account}; Plexi does not wait on it"
-            )
+            super::key_unreadable(&format!("{} ({})", error.code(), error))
         } else {
             error.to_string()
         }
     }
 
     pub(super) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-        keychain_calls_cannot_prompt();
+        let _prompts = PromptScope::enter();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
-            Ok((password, _item)) => {
+            Ok((password, item)) => {
+                if super::interaction_allowed() {
+                    trust_designated_requirement(account, &item);
+                }
                 let bytes = password.as_ref();
                 let text = String::from_utf8(bytes.to_vec())
                     .map_err(|_| "host seal item is not utf-8".to_string())?;
@@ -749,32 +1002,35 @@ mod mac {
     }
 
     pub(super) fn add_new(account: &str, value: &str) -> Result<(), String> {
-        keychain_calls_cannot_prompt();
+        let _prompts = PromptScope::enter();
         if get(account)?.is_some() {
             return Err(format!("host key already exists: {account}"));
         }
         let chain = keychain()?;
         // The creating binary is the trusted application. `security` is not,
-        // so a direct keychain read does not return the secret.
+        // so a direct keychain read does not return the secret. The ACL is
+        // then widened to this app's designated requirement, never to any app.
         chain
             .add_generic_password(HOST_SERVICE, account, value.as_bytes())
             .map_err(|error| map_keychain_error(account, error))?;
+        trust_item_in(account, &chain);
         log::info!("permission_seal: stored host item {account} in the macOS keychain");
         Ok(())
     }
 
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
-        keychain_calls_cannot_prompt();
+        let _prompts = PromptScope::enter();
         let chain = keychain()?;
         chain
             .set_generic_password(HOST_SERVICE, account, value.as_bytes())
             .map_err(|error| map_keychain_error(account, error))?;
+        trust_item_in(account, &chain);
         log::info!("permission_seal: updated host item {account} in the macOS keychain");
         Ok(())
     }
 
     pub(super) fn delete(account: &str) -> Result<(), String> {
-        keychain_calls_cannot_prompt();
+        let _prompts = PromptScope::enter();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
             // security-framework 3.7 `SecKeychainItem::delete` returns `()`
@@ -786,6 +1042,55 @@ mod mac {
             Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
             Err(error) => Err(map_keychain_error(account, error)),
         }
+    }
+
+    fn trust_item_in(account: &str, chain: &SecKeychain) {
+        match chain.find_generic_password(HOST_SERVICE, account) {
+            Ok((_password, item)) => trust_designated_requirement(account, &item),
+            Err(error) => log::error!(
+                "permission_seal: could not load {account} to update its keychain ACL: {error}"
+            ),
+        }
+    }
+
+    /// Trust this app's designated requirement. Failure leaves the cdhash ACL
+    /// the keychain already wrote. It does not fail the key write or the read.
+    fn trust_designated_requirement(account: &str, item: &SecKeychainItem) {
+        let status = unsafe { set_designated_requirement_acl(item) };
+        if status == errSecSuccess {
+            if account == super::MAC_ITEM {
+                log::info!(
+                    "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
+                );
+            }
+        } else {
+            log::error!(
+                "permission_seal: could not set keychain ACL for {account} to the designated requirement: {status}"
+            );
+        }
+    }
+
+    unsafe fn set_designated_requirement_acl(item: &SecKeychainItem) -> i32 {
+        let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
+        let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
+        if status != errSecSuccess || app.is_null() {
+            return if status == errSecSuccess { -1 } else { status };
+        }
+        let app = CFType::wrap_under_create_rule(app as CFTypeRef);
+        // One trusted application. A null list would allow any process.
+        let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
+        let label = CFString::new("Plexi permission seal");
+        let mut access: SecAccessRef = std::ptr::null_mut();
+        let status = SecAccessCreate(
+            label.as_concrete_TypeRef().cast(),
+            trusted.as_concrete_TypeRef().cast(),
+            &mut access,
+        );
+        if status != errSecSuccess || access.is_null() {
+            return if status == errSecSuccess { -1 } else { status };
+        }
+        let access = SecAccess::wrap_under_create_rule(access);
+        SecKeychainItemSetAccess(item.as_concrete_TypeRef(), access.as_concrete_TypeRef())
     }
 }
 
@@ -804,7 +1109,9 @@ mod windows {
 
     pub(super) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
         use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
-        use windows_sys::Win32::Security::Credentials::{CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC};
+        use windows_sys::Win32::Security::Credentials::{
+            CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+        };
 
         let wide = to_wide_nul(&target(account));
         let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
@@ -823,8 +1130,7 @@ mod windows {
             CredFree(credential as *const core::ffi::c_void);
             text
         };
-        text
-            .map(|value| Some(Zeroizing::new(value)))
+        text.map(|value| Some(Zeroizing::new(value)))
             .map_err(|_| "host seal item is not utf-8".to_string())
     }
 
@@ -885,6 +1191,24 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keychain_auth_failed_is_unreadable_not_a_seal_mismatch() {
+        assert!(keychain_status_is_unreadable(-25293));
+        assert!(keychain_status_is_unreadable(-25308));
+        assert!(keychain_status_is_unreadable(-128));
+        assert!(
+            !keychain_status_is_unreadable(-25300),
+            "a missing item is not an access failure"
+        );
+        assert!(!keychain_status_is_unreadable(0));
+        let error = ensure_key_unreadable(
+            "The user name or passphrase you entered is not correct.".to_string(),
+        );
+        assert!(is_key_unreadable(&error), "{error}");
+        assert!(is_key_unreadable(&key_unreadable("errSecAuthFailed")));
+        assert!(!is_key_unreadable("bad mac"));
+    }
 
     #[test]
     fn refusal_names_secret_service_and_the_plaintext_file() {
