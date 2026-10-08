@@ -1061,9 +1061,65 @@ mod tests {
 
         // Title row is a real ui.label; the YAML block lives only in
         // `note_header` and never reaches the TextEdit buffer (unit-tested
-        // via `split_note` in text_editor_app.rs).
+        // via `split_note` in text_editor_app.rs). The file name and save
+        // indicator share that header with a file opened from the browser.
+        let file_name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         h.harness().get_by_label("Groceries");
+        h.harness().get_by_label(&file_name);
+        h.harness().get_by_label("Saved");
         h.save_screenshot(&evidence_png!()).expect("render failed");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A markdown file opened outside the notes tier (the file-browser path)
+    /// uses the same header as a note: the file name and the save indicator.
+    #[test]
+    fn text_editor_file_header_shows_file_name_and_save_indicator() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        let path =
+            std::env::temp_dir().join(format!("plexi-ui-file-header-{}.md", std::process::id()));
+        std::fs::write(&path, "# hello\n").expect("seed file");
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                )),
+                workspace_root: crate::testing::scratch_context_root("ui"),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: file_name.clone(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        h.run_steps(2);
+
+        h.harness().get_by_label(&file_name);
+        h.harness().get_by_label("Saved");
 
         let _ = std::fs::remove_file(&path);
     }
