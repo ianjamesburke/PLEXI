@@ -76,16 +76,6 @@ Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an
 | `status_for` | `string?` | no |
 | `text` | `string` | yes |
 
-### `assistant_host_tool`
-
-Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) through the same permission gate the desktop ...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `input_json` | `string` | yes |
-| `name` | `string` | yes |
-| `response_file` | `string` | yes |
-
 ### `open_assistant_head`
 
 Open an Assistant pane bound to one head in the active context.
@@ -104,6 +94,16 @@ Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`. Sen
 |-------|------|----------|
 | `op` | `string` | yes |
 | `payload` | `any` | no |
+| `response_file` | `string` | yes |
+
+### `assistant_host_tool`
+
+Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) through the same permission gate the desktop ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `input_json` | `string` | yes |
+| `name` | `string` | yes |
 | `response_file` | `string` | yes |
 
 ### `agent_queue`
@@ -667,10 +667,7 @@ List items waiting on the human. The host expires due items first.
 
 ### `resolve_needs_you`
 
-Resolve one needs-you item. Approving a click approval is refused:
-the row stays open and only the desktop Allow once click grants it.
-`approve` false denies the item. Questions and blocked runs settle
-exactly once.
+Resolve one needs-you item. Approving a click approval is refused: the row stays open and only the desktop Allow once...
 
 | Field | Type | Required |
 |-------|------|----------|

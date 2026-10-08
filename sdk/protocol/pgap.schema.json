@@ -482,32 +482,6 @@
         },
         {
           "additionalProperties": false,
-          "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites `{\"ok\":true,\"output\":...}` or `{\"ok\":false,\"error_code\":...}`.",
-          "properties": {
-            "input_json": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "type": {
-              "const": "assistant_host_tool",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "name",
-            "input_json",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
           "description": "Open an Assistant pane bound to one head in the active context.",
           "properties": {
             "context_id": {
@@ -557,6 +531,32 @@
           "required": [
             "type",
             "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites `{\"ok\":true,\"output\":...}` or `{\"ok\":false,\"error_code\":...}`.",
+          "properties": {
+            "input_json": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "assistant_host_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "input_json",
             "response_file"
           ],
           "type": "object"

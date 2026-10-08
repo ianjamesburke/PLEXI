@@ -3848,7 +3848,10 @@ mod tests {
         let monitor = PermissionMonitor::open_profile(stripped.path());
         assert!(monitor.store().records().is_empty());
         assert_grants_quarantined(stripped.path(), &monitor);
-        assert_eq!(integrity_resources(&monitor), vec!["grants.toml".to_string()]);
+        assert_eq!(
+            sorted_integrity_resources(&monitor),
+            vec!["grants.toml".to_string(), "permission-profile".to_string()]
+        );
 
         let corrupt = tempfile::tempdir().unwrap();
         seal_one_grant(corrupt.path());
@@ -3856,8 +3859,11 @@ mod tests {
         let monitor = PermissionMonitor::open_profile(corrupt.path());
         assert!(monitor.store().records().is_empty());
         assert_grants_quarantined(corrupt.path(), &monitor);
-        let resources = integrity_resources(&monitor);
-        assert_eq!(resources, vec!["grants.toml".to_string()], "{resources:?}");
+        let resources = sorted_integrity_resources(&monitor);
+        assert_eq!(
+            resources,
+            vec!["grants.toml".to_string(), "permission-profile".to_string()]
+        );
         assert!(
             monitor
                 .open_needs_you()
@@ -4062,6 +4068,9 @@ mod tests {
             store.save();
         }
         monitor.note_denial("actor", "c1", "res", "op", "denied");
+        // This helper is a finished host session. A dirty running stamp would
+        // make the next open look like a crash on top of the keychain prompt.
+        crate::broker::integrity::mark_clean_shutdown(dir);
     }
 
     fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>, extra: &str) {
@@ -4126,6 +4135,10 @@ mod tests {
         ));
         store.save();
         assert!(dir.join("grants.toml").is_file());
+        // A saved grant refreshes the running stamp. The next open is a
+        // restart, so the fixture must look like a clean exit. An edit after
+        // this point is a profile change while the host was down.
+        crate::broker::integrity::mark_clean_shutdown(dir);
     }
 
     fn strip_mac(path: &Path) {
@@ -4183,6 +4196,12 @@ mod tests {
             .filter(|row| row.kind == NeedsYouKind::Integrity)
             .map(|row| row.resource)
             .collect()
+    }
+
+    fn sorted_integrity_resources(monitor: &PermissionMonitor) -> Vec<String> {
+        let mut resources = integrity_resources(monitor);
+        resources.sort();
+        resources
     }
 
     fn dir_names(dir: &Path) -> Vec<String> {

@@ -91,6 +91,64 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
 
+## `plexi relay`
+
+Pair a phone through the Plexi relay and deliver its messages to this desktop
+
+| Subcommand | Description |
+|---|---|
+| `connect` | Connect outbound to a phone relay and forward paired messages to the Assistant |
+| `confirm` | Confirm a phone that redeemed the pairing code shown by `relay connect` |
+| `revoke` | Revoke a paired phone. It must pair again and be confirmed |
+| `pair` | Start a pairing code for another phone. Phones already paired stay paired |
+| `enable` | Remember the relay URL and connect it from the host on startup |
+| `disable` | Stop connecting to the relay when the host starts |
+| `status` | Print the desktop's relay status |
+
+### `plexi relay connect`
+
+Connect outbound to a phone relay and forward paired messages to the Assistant
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
+
+### `plexi relay confirm`
+
+Confirm a phone that redeemed the pairing code shown by `relay connect`
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pairing_id>` | string | no | Pairing id. Omit to confirm the phone currently waiting |
+
+### `plexi relay revoke`
+
+Revoke a paired phone. It must pair again and be confirmed
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<device_id>` | string | yes | Device id printed when the phone was confirmed |
+
+### `plexi relay pair`
+
+Start a pairing code for another phone. Phones already paired stay paired
+
+### `plexi relay enable`
+
+Remember the relay URL and connect it from the host on startup
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
+
+### `plexi relay disable`
+
+Stop connecting to the relay when the host starts
+
+### `plexi relay status`
+
+Print the desktop's relay status
+
 ## `plexi command-view`
 
 Show every lead, its runs, and its queue. Send and cancel steer those leads.
@@ -151,64 +209,6 @@ Example: plexi command-view allow --tool assistant.turn
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--tool` | string | no | Tool name. Ignored. The command does not write a grant |
-
-## `plexi relay`
-
-Pair a phone through the Plexi relay and deliver its messages to this desktop
-
-| Subcommand | Description |
-|---|---|
-| `connect` | Connect outbound to a phone relay and forward paired messages to the Assistant |
-| `confirm` | Confirm a phone that redeemed the pairing code shown by `relay connect` |
-| `revoke` | Revoke a paired phone. It must pair again and be confirmed |
-| `pair` | Start a pairing code for another phone. Phones already paired stay paired |
-| `enable` | Remember the relay URL and connect it from the host on startup |
-| `disable` | Stop connecting to the relay when the host starts |
-| `status` | Print the desktop's relay status |
-
-### `plexi relay connect`
-
-Connect outbound to a phone relay and forward paired messages to the Assistant
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
-
-### `plexi relay confirm`
-
-Confirm a phone that redeemed the pairing code shown by `relay connect`
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<pairing_id>` | string | no | Pairing id. Omit to confirm the phone currently waiting |
-
-### `plexi relay revoke`
-
-Revoke a paired phone. It must pair again and be confirmed
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<device_id>` | string | yes | Device id printed when the phone was confirmed |
-
-### `plexi relay pair`
-
-Start a pairing code for another phone. Phones already paired stay paired
-
-### `plexi relay enable`
-
-Remember the relay URL and connect it from the host on startup
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
-
-### `plexi relay disable`
-
-Stop connecting to the relay when the host starts
-
-### `plexi relay status`
-
-Print the desktop's relay status
 
 ## `plexi run`
 
@@ -1727,6 +1727,7 @@ Resolve one item. Approving a click approval is refused; deny still denies it
 | `<id>` | string | yes |  |
 | `--approve` | flag | no | Approve the item. A click approval stays open |
 | `--deny` | flag | no | Deny the item |
+| `--from-phone` | flag | no | Accepted so a paired phone can call resolve. The host still refuses an approval. Only a desktop Allow once click grants |
 
 ## `plexi permissions`
 
