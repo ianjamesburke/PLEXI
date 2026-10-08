@@ -8,6 +8,13 @@
 # value is generated at runtime and is not written into this script.
 set -uo pipefail
 
+# The permission MAC is stored in Secret Service on Linux. A private session
+# bus keeps that key off the login keyring. Folder values still use the
+# encrypted-file backend below.
+if [[ "$(uname -s)" == "Linux" && -z "${FOLDER_SECRETS_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env FOLDER_SECRETS_E2E_INNER=1 "$0" "$@"
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLEXI="${PLEXI_BIN:-${1:-$REPO_ROOT/target/release/plexi}}"
 WORK="$(mktemp -d -t plexi-folder-secrets-XXXXXX)"
@@ -136,6 +143,15 @@ isolate_macos_keychain
 isolate_linux_backend
 export HOME="$HOME_DIR"
 export XDG_DATA_HOME="$HOME_DIR/.local/share"
+if [[ "$(uname -s)" == "Linux" ]] && command -v gnome-keyring-daemon >/dev/null 2>&1; then
+  # Unlocked empty collection on the private bus. CreateItem must not prompt.
+  keyring_env="$(printf '\n' | gnome-keyring-daemon --unlock --components=secrets || true)"
+  if [[ -n "$keyring_env" ]]; then
+    # shellcheck disable=SC2163
+    eval "$keyring_env"
+    export GNOME_KEYRING_CONTROL SSH_AUTH_SOCK
+  fi
+fi
 export XDG_CONFIG_HOME="$HOME_DIR/.config"
 export XDG_CACHE_HOME="$HOME_DIR/.cache"
 export HISTFILE=/dev/null
