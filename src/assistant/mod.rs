@@ -8,6 +8,7 @@
 //! dispatch-on-worker / outcome-channel pattern as `crate::agent::AgentHost`.
 
 pub mod audit;
+pub mod pi_harness;
 pub mod build_exec;
 pub mod commands;
 #[cfg(test)]
@@ -100,6 +101,18 @@ use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
 const ASSISTANT_ACTOR_ID: &str = "assistant";
+
+/// Inputs for one Pi-harness turn. Kept together so the spawn helper stays
+/// under the argument lint.
+struct PiTurnLaunch {
+    conversation_id: String,
+    prompt: String,
+    tier: ModelTier,
+    system: String,
+    is_app_build_turn: bool,
+    cancel: CancelToken,
+    ai: crate::config::AiConfig,
+}
 
 /// Outcome of one completed Assistant turn, sent back from the worker thread.
 struct TurnOutcome {
@@ -616,6 +629,10 @@ pub struct AssistantApp {
     /// turns never read it.
     #[cfg(test)]
     scripted_tools: Arc<Mutex<std::collections::VecDeque<(String, String)>>>,
+    /// `[ai] harness`. Stays on the shipped loop until `use_ai_config`.
+    harness_kind: pi_harness::HarnessKind,
+    ai_for_harness: Option<crate::config::AiConfig>,
+    pi_session: Arc<Mutex<pi_harness::PiSession>>,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -757,6 +774,9 @@ impl AssistantApp {
             }),
             #[cfg(test)]
             scripted_tools: Arc::new(Mutex::new(VecDeque::new())),
+            harness_kind: pi_harness::HarnessKind::Current,
+            ai_for_harness: None,
+            pi_session: Arc::new(Mutex::new(pi_harness::PiSession::default())),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -773,6 +793,46 @@ impl AssistantApp {
         // Persisted event-stream grants survive restarts: resubscribe them.
         app.resubscribe_granted_streams();
         app
+    }
+
+    /// Apply `[ai] harness`. Unset keeps the shipped loop. `"pi"` loads the
+    /// Pi session for the active conversation and routes `start_turn` through
+    /// that loop. Host tools stay on the shipped path.
+    pub fn use_ai_config(mut self, ai: Option<&crate::config::AiConfig>) -> Self {
+        self.harness_kind =
+            pi_harness::harness_kind_from_config(ai.and_then(|cfg| cfg.harness.as_deref()));
+        self.ai_for_harness = ai.cloned();
+        if self.harness_kind == pi_harness::HarnessKind::Pi {
+            log::info!("assistant: pi harness enabled");
+            let id = self.model.conversation_id.clone();
+            let session = self.load_pi_session(&id);
+            self.pi_session = Arc::new(Mutex::new(session));
+        }
+        self
+    }
+
+    fn assistant_dir(&self) -> PathBuf {
+        self.workspace_root
+            .join(crate::config::workspace_channel_dir())
+            .join("assistant")
+    }
+
+    fn load_pi_session(&self, conversation_id: &str) -> pi_harness::PiSession {
+        let dir = self.assistant_dir();
+        match pi_harness::PiSession::load(&dir, conversation_id) {
+            Ok(Some(session)) => session,
+            Ok(None) => pi_harness::PiSession {
+                id: conversation_id.to_string(),
+                entries: Vec::new(),
+            },
+            Err(error) => {
+                log::error!("assistant[{conversation_id}]: pi session load failed: {error}");
+                pi_harness::PiSession {
+                    id: conversation_id.to_string(),
+                    entries: Vec::new(),
+                }
+            }
+        }
     }
 
     /// Re-create timeline subscriptions for every persisted `Allow` grant on
@@ -1722,6 +1782,112 @@ impl AssistantApp {
         }
     }
 
+    fn spawn_pi_turn(&mut self, launch: PiTurnLaunch, delta_tx: Sender<StreamDelta>) {
+        let PiTurnLaunch {
+            conversation_id,
+            prompt,
+            tier,
+            system,
+            is_app_build_turn,
+            cancel,
+            ai,
+        } = launch;
+        let mut pi_config = pi_harness::PiConfig::from_ai(&ai, tier, &conversation_id);
+        pi_config.system = system;
+        pi_config.max_steps = if is_app_build_turn { 60 } else { 30 };
+        let assistant_dir = self.assistant_dir();
+        let session = {
+            let current = self
+                .pi_session
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            if current.id == conversation_id {
+                current
+            } else {
+                self.load_pi_session(&conversation_id)
+            }
+        };
+        log::info!(
+            "assistant[{conversation_id}]: pi harness turn provider={} model={}",
+            pi_config.provider, pi_config.configured_model
+        );
+        let broker = Arc::clone(&self.broker);
+        let outcome_tx = self.outcome_tx.clone();
+        let profile_dir = self.profile_dir.clone();
+        let pi_session = Arc::clone(&self.pi_session);
+        let spawn = std::thread::Builder::new()
+            .name("assistant-pi-turn".to_string())
+            .spawn(move || {
+                let stepper = Box::new(pi_harness::BrokerStepper::with_cancel(
+                    broker,
+                    cancel.clone(),
+                ));
+                let mut harness = pi_harness::PiHarness::from_session(
+                    pi_config,
+                    session,
+                    stepper,
+                    &profile_dir,
+                );
+                harness.set_cancel(cancel);
+                harness.set_assistant_dir(assistant_dir);
+                let panes = crate::plexi_ai::broker::get_pane_snapshot();
+                if !panes.is_empty() {
+                    log::info!(
+                        "assistant[{conversation_id}]: pi harness injecting {} open pane(s)",
+                        panes.len()
+                    );
+                    harness.add_plugin(Box::new(pi_harness::OpenPanePlugin::new(
+                        panes.iter()
+                            .map(|pane| pi_harness::OpenPane {
+                                app_type: pane.type_id.clone(),
+                                title: pane.type_id.clone(),
+                                path: None,
+                                focused: false,
+                                excerpt: String::new(),
+                            })
+                            .collect(),
+                    )));
+                }
+                let report = harness.run_user_turn_with(&prompt, &mut |delta| {
+                    let owned = match delta {
+                        TurnDelta::Text(chunk) => StreamDelta::Answer(chunk.to_string()),
+                        TurnDelta::Reasoning(chunk) => StreamDelta::Reasoning(chunk.to_string()),
+                        TurnDelta::ToolCallProgress { name, arg_chars } => {
+                            StreamDelta::ToolProgress {
+                                name: name.map(str::to_string),
+                                arg_chars,
+                            }
+                        }
+                    };
+                    let _ = delta_tx.send(owned);
+                });
+                if let Some(visibility) = harness.visibility() {
+                    log::info!(
+                        "assistant[{conversation_id}]: pi picker label {}",
+                        visibility.picker_label
+                    );
+                }
+                {
+                    let mut slot = pi_session.lock().unwrap_or_else(|error| error.into_inner());
+                    *slot = harness.session().clone();
+                }
+                let _ = outcome_tx.send(TurnOutcome {
+                    conversation_id,
+                    text: report.text,
+                    error: report.error,
+                });
+            });
+        if let Err(error) = spawn {
+            log::error!("assistant: failed to spawn pi turn thread: {error}");
+            let effects = self.model.finish_turn(
+                &self.model.conversation_id.clone(),
+                Err(format!("failed to spawn turn thread: {error}")),
+            );
+            self.execute_effects(effects);
+        }
+    }
+
     /// Run one model turn on a worker thread (the broker blocks on network).
     fn start_turn(
         &mut self,
@@ -1839,6 +2005,23 @@ impl AssistantApp {
             },
             None => agent.kind,
         };
+        if self.harness_kind == pi_harness::HarnessKind::Pi {
+            if let Some(ai) = self.ai_for_harness.clone() {
+                self.spawn_pi_turn(PiTurnLaunch {
+                    conversation_id,
+                    prompt,
+                    tier,
+                    system,
+                    is_app_build_turn,
+                    cancel,
+                    ai,
+                }, delta_tx);
+                return;
+            }
+            log::warn!(
+                "assistant[{conversation_id}]: pi harness selected without [ai] config; using the current loop"
+            );
+        }
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
             model_tier: tier,
@@ -1854,6 +2037,8 @@ impl AssistantApp {
             max_tool_iterations: is_app_build_turn.then_some(APP_BUILD_MAX_TOOL_ITERATIONS),
             client,
             kind,
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
         log::info!(
             "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={} client={:?} kind={}",
@@ -4086,6 +4271,8 @@ mod tests {
                     error: Some("mock_error: simulated broker failure".to_string()),
                     tokens_in: 0,
                     tokens_out: 0,
+                    tool_calls: Vec::new(),
+                    model_id: None,
                 },
             }
         }

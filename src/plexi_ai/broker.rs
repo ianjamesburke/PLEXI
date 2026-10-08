@@ -104,6 +104,13 @@ pub struct AiBrokerRequest {
     pub client: Option<String>,
     /// Ledger run kind. `None` means `output`.
     pub kind: Option<RunKind>,
+    /// One provider call. Tool calls are returned on the response and are not
+    /// dispatched. The Assistant's Pi harness owns that loop. Default callers
+    /// leave this false.
+    pub single_completion: bool,
+    /// Provider messages, including tool-call and tool-result rows. When
+    /// non-empty these replace `messages` for the backend request.
+    pub structured_messages: Vec<serde_json::Value>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -115,6 +122,11 @@ pub struct AiBrokerResponse {
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub error: Option<String>,
+    /// Tool calls from a `single_completion` request. Empty on the tool loop.
+    pub tool_calls: Vec<crate::plexi_ai::backend::RawToolCall>,
+    /// Model id recorded for this call. The Pi harness prefers the id the
+    /// stepper reports; the broker fills the configured slug.
+    pub model_id: Option<String>,
 }
 
 impl AiBrokerResponse {
@@ -124,6 +136,8 @@ impl AiBrokerResponse {
             tokens_in,
             tokens_out,
             error: None,
+            tool_calls: Vec::new(),
+            model_id: None,
         }
     }
 
@@ -133,6 +147,8 @@ impl AiBrokerResponse {
             tokens_in: 0,
             tokens_out: 0,
             error: Some(message.into()),
+            tool_calls: Vec::new(),
+            model_id: None,
         }
     }
 }
@@ -153,6 +169,17 @@ pub trait AiBroker: Send + Sync {
         request: AiBrokerRequest,
         on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
     ) -> AiBrokerResponse;
+
+    /// One provider completion. The default reports that this broker does not
+    /// implement it. `LiveAiBroker` runs `dispatch` with `single_completion`.
+    fn complete_once(
+        &self,
+        request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        let _ = (request, on_delta);
+        AiBrokerResponse::err("complete_once is not implemented by this broker")
+    }
 }
 
 /// Production broker: reads config from `AiConfig`, routes to the configured
@@ -177,6 +204,19 @@ impl LiveAiBroker {
 }
 
 impl AiBroker for LiveAiBroker {
+    fn complete_once(
+        &self,
+        mut request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        request.single_completion = true;
+        log::info!(
+            "ai_broker[{}]: single completion for the pi harness",
+            request.app_id
+        );
+        self.dispatch(request, on_delta)
+    }
+
     fn dispatch(
         &self,
         request: AiBrokerRequest,
@@ -740,8 +780,14 @@ fn run_turn_and_respond(
     );
     let all_tools: Arc<[AiTool]> = all_tools_vec.into();
 
-    // Convert messages to JSON values for the backend.
-    let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
+    // Convert messages to JSON values for the backend. The Pi harness passes
+    // tool-call rows in `structured_messages` so they are not flattened away.
+    let mut conv: Vec<serde_json::Value> = if request.structured_messages.is_empty() {
+        messages_to_json(&request.messages)
+    } else {
+        request.structured_messages.clone()
+    };
+    let mut returned_calls: Vec<crate::plexi_ai::backend::RawToolCall> = Vec::new();
 
     // High enough for multi-step host workflows (e.g. the build-plexi-app
     // pipeline pairs every terminal command with a host.terminals.read).
@@ -854,6 +900,17 @@ fn run_turn_and_respond(
                     break;
                 }
 
+                if request.single_completion {
+                    final_text = result.text;
+                    returned_calls = result.tool_calls;
+                    log::info!(
+                        "ai_broker[{}]: single completion returned {} tool call(s)",
+                        request.app_id,
+                        returned_calls.len()
+                    );
+                    break;
+                }
+
                 if result.tool_calls.is_empty() {
                     // No tool calls — done.
                     final_text = result.text;
@@ -955,7 +1012,7 @@ fn run_turn_and_respond(
         backend.name(),
         billing,
         Some(request.app_id.clone()),
-        Some(model_id),
+        Some(model_id.clone()),
         total_tokens_in,
         total_tokens_out,
         cost_usd,
@@ -1024,11 +1081,14 @@ fn run_turn_and_respond(
             );
         }
     }
-    AiBrokerResponse::ok(
+    let mut response = AiBrokerResponse::ok(
         final_text,
         total_tokens_in.unwrap_or(0),
         total_tokens_out.unwrap_or(0),
-    )
+    );
+    response.tool_calls = returned_calls;
+    response.model_id = Some(model_id);
+    response
 }
 
 /// Running USD cost across tool rounds. The total is `Some` only when every
@@ -1417,6 +1477,8 @@ mod tests {
                 max_tool_iterations: None,
                 client: None,
                 kind: None,
+                single_completion: false,
+                structured_messages: Vec::new(),
             },
             &mut |_| {},
         );
@@ -1458,6 +1520,8 @@ mod tests {
                 max_tool_iterations: None,
                 client: None,
                 kind: None,
+                single_completion: false,
+                structured_messages: Vec::new(),
             },
             &mut |_| {},
         );
@@ -1831,6 +1895,8 @@ mod tests {
                 max_tool_iterations: None,
                 client: None,
                 kind: None,
+                single_completion: false,
+                structured_messages: Vec::new(),
             },
             &mut |_| {},
         );
@@ -1871,6 +1937,8 @@ mod tests {
                 max_tool_iterations: None,
                 client: None,
                 kind: None,
+                single_completion: false,
+                structured_messages: Vec::new(),
             },
             &mut |_| {},
         );
@@ -1901,6 +1969,8 @@ mod tests {
             max_tool_iterations: None,
             client: None,
             kind: None,
+            single_completion: false,
+            structured_messages: Vec::new(),
         }
     }
 
@@ -2138,6 +2208,8 @@ mod tests {
             max_tool_iterations: None,
             client: None,
             kind: None,
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
 
         let billing = crate::plexi_ai::backend::BillingModel::Subscription;
@@ -2255,6 +2327,8 @@ mod tests {
             max_tool_iterations: Some(2),
             client: None,
             kind: None,
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
 
         let resp = run_turn_and_respond(
@@ -2344,6 +2418,8 @@ mod tests {
             max_tool_iterations: None,
             client: None,
             kind: None,
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
         let resp = run_turn_and_respond(
             request,
@@ -2429,6 +2505,8 @@ mod tests {
             max_tool_iterations: None,
             client: None,
             kind: None,
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
         let resp = run_turn_and_respond(
             request,
@@ -2569,6 +2647,8 @@ mod tests {
             max_tool_iterations: None,
             client: Some("narrative".to_string()),
             kind: Some(RunKind::Output),
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
         let started = std::time::Instant::now();
         let resp = run_turn_and_respond(

@@ -1087,6 +1087,8 @@ impl AgentHost {
             max_tool_iterations: None,
             client: agent.def.client.clone(),
             kind: agent.def.kind,
+            single_completion: false,
+            structured_messages: Vec::new(),
         };
         let agent_id = agent.def.id.clone();
         log::info!(

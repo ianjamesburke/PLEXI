@@ -169,13 +169,17 @@ pub(crate) fn restore_assistant_pane(
     broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker>,
     profile_dir: &std::path::Path,
     context_id: u64,
+    ai: Option<&crate::config::AiConfig>,
 ) -> Pane {
-    let app = Box::new(crate::assistant::AssistantApp::new(
-        workspace_root.clone(),
-        broker,
-        profile_dir,
-        context_id,
-    ));
+    let app = Box::new(
+        crate::assistant::AssistantApp::new(
+            workspace_root.clone(),
+            broker,
+            profile_dir,
+            context_id,
+        )
+        .use_ai_config(ai),
+    );
     let runtime_id = app.type_id().to_string();
     let name = app.display_name();
     log::info!(
@@ -2184,12 +2188,15 @@ impl PlexiApp {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
             crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
         );
-        let app = Box::new(crate::assistant::AssistantApp::new(
-            workspace_root.clone(),
-            broker,
-            &crate::config::config_dir(),
-            caller_context_id,
-        ));
+        let app = Box::new(
+            crate::assistant::AssistantApp::new(
+                workspace_root.clone(),
+                broker,
+                &crate::config::config_dir(),
+                caller_context_id,
+            )
+            .use_ai_config(self.config.ai.as_ref()),
+        );
         let perms = crate::app::permissions::AppPermissions::builtin();
         let predicted = self.host.next_pane_id();
         self.open_builtin_app_pane(app, perms, workspace_root, None, Some(hint), None);
@@ -2238,12 +2245,15 @@ impl PlexiApp {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
             crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
         );
-        let app = Box::new(crate::assistant::AssistantApp::new(
-            workspace_root.clone(),
-            broker,
-            &crate::config::config_dir(),
-            caller_context_id,
-        ));
+        let app = Box::new(
+            crate::assistant::AssistantApp::new(
+                workspace_root.clone(),
+                broker,
+                &crate::config::config_dir(),
+                caller_context_id,
+            )
+            .use_ai_config(self.config.ai.as_ref()),
+        );
         let id = self.host.alloc_pane_id();
         log::info!(
             "assistant: created hidden pane {id} for a headless send in context {caller_context_id} workspace {}",

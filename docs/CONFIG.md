@@ -59,6 +59,7 @@ Do not paste API keys into config.toml.
 ```toml
 [ai]
 backend = "openrouter"
+# harness = "current"   # "current" (default) or "pi"
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
@@ -231,6 +232,7 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# harness = "current"          # "current" (default) or "pi" (Pi-style assistant loop)
 # client = "personal"          # default AI ledger tag; a run can override it
 
 [ai.openrouter]

@@ -176,6 +176,11 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "AI backend: openrouter (default) or ollama",
     ),
     (
+        "ai.harness",
+        "string",
+        "Assistant loop: current (default) or pi",
+    ),
+    (
         "ai.per_app_daily_usd",
         "float",
         "Per-app daily spend cap in USD (default 1.00)",

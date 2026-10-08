@@ -134,6 +134,7 @@ const KNOWN_AI: &[&str] = &[
     "local",
     "per_app_daily_usd",
     "global_daily_usd",
+    "harness",
 ];
 const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
 const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
@@ -578,6 +579,9 @@ pub struct AiConfig {
     /// one. Free-form (`narrative`, `du`, `personal`). A blank or missing
     /// value leaves the row's client null.
     pub client: Option<String>,
+    /// Assistant loop. Unset or `"current"` keeps the shipped loop. `"pi"`
+    /// selects the Pi-style harness. Any other value keeps the shipped loop.
+    pub harness: Option<String>,
 }
 
 impl AiConfig {
@@ -673,6 +677,9 @@ impl AiConfig {
         }
         if other.client.as_ref().is_some_and(|client| !client.trim().is_empty()) {
             self.client = other.client;
+        }
+        if other.harness.as_ref().is_some_and(|harness| !harness.trim().is_empty()) {
+            self.harness = other.harness;
         }
         match (self.openrouter.as_mut(), other.openrouter) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
