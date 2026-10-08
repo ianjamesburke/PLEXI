@@ -336,14 +336,14 @@ fn main() -> eframe::Result {
                         NeedsYouCmd::List { json: _ } => {
                             std::process::exit(cli::needs_you_cli("list", None, None))
                         }
-                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
-                            // A terminal cannot grant. The desktop banner and the
-                            // phone page are the resolve paths.
-                            let choice = if deny { "deny" } else { "once" };
-                            std::process::exit(cli::assistant_permission_cli(
+                        NeedsYouCmd::Resolve { id, approve, deny } => {
+                            // Approve of a click is refused in the host. Deny
+                            // still settles. Questions and blocked runs settle
+                            // from here and do not mint a grant.
+                            std::process::exit(cli::needs_you_cli(
                                 "resolve",
                                 Some(&id),
-                                Some(choice),
+                                Some(approve && !deny),
                             ))
                         }
                     },
