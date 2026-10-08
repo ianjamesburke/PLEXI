@@ -237,6 +237,26 @@ impl PlexiApp {
                 if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
                 else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
             }
+            crate::protocol::AppRequest::AssistantHostTool { name, input_json, response_file } => {
+                log::info!("assistant_host_tool: ipc name={name}");
+                let result = self.dispatch_assistant_host_tool(name, input_json);
+                let body = if let Some(error) = result.error.as_deref() {
+                    serde_json::json!({
+                        "ok": false,
+                        "error": error,
+                        "error_code": result.error_code,
+                        "pending_request_id": result.pending_request_id,
+                    })
+                } else {
+                    let output = result
+                        .output_json
+                        .as_deref()
+                        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    serde_json::json!({"ok": true, "output": output})
+                };
+                write_json_response(response_file, body);
+            }
             crate::protocol::AppRequest::ListPermissionRequests { response_file } => {
                 self.observe_permissions("list", None, None, response_file);
             }

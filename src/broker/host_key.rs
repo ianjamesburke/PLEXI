@@ -11,7 +11,11 @@
 //!
 //! - Tests use a process-local mock. They do not open a keychain or a session bus.
 //! - Linux stores the key only in Secret Service. If that service is missing,
-//!   sealing fails and says why. There is no plaintext fallback.
+//!   sealing fails and says why. There is no plaintext fallback. The session
+//!   handshake and each Secret Service call stop at a short startup deadline.
+//!   `PlexiApp::new` reads this key before the notify socket exists, so a bus
+//!   that accepts and never handshakes must not hold `host start` until its
+//!   own deadline.
 //! - macOS stores it in the keychain under service `plexi-host-seal`, created
 //!   by this binary. `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file
 //!   and never falls back to the login keychain. The `security` tool is not
@@ -380,14 +384,62 @@ mod linux {
     use super::plaintext_seal_refusal;
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use zeroize::Zeroizing;
     use zbus::blocking::Connection;
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
 
     const SCHEMA: &str = "com.plexi.HostSeal";
+    /// Bound for the session handshake and for Secret Service method calls.
+    ///
+    /// Longer than a healthy local bus, shorter than `plexi host start`'s
+    /// readiness wait. A socket that accepts and never finishes SASL used to
+    /// sit in `Connection::session` until that wait expired, because this read
+    /// runs inside `PlexiApp::new` before the notify socket is bound.
+    const STARTUP_DEADLINE: Duration = Duration::from_secs(2);
+
+    fn bus_gave_up() -> &'static AtomicBool {
+        static GAVE_UP: AtomicBool = AtomicBool::new(false);
+        &GAVE_UP
+    }
 
     fn session() -> Result<Connection, String> {
-        Connection::session().map_err(|error| plaintext_seal_refusal(&error.to_string()))
+        if bus_gave_up().load(Ordering::Relaxed) {
+            return Err(plaintext_seal_refusal(
+                "session bus did not answer; host startup will not wait again",
+            ));
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("seal-bus".to_string())
+            .spawn(move || {
+                let built = zbus::blocking::connection::Builder::session()
+                    .and_then(|builder| builder.method_timeout(STARTUP_DEADLINE).build());
+                let _ = tx.send(built.map_err(|error| error.to_string()));
+            });
+        if let Err(error) = spawned {
+            return Err(plaintext_seal_refusal(&format!(
+                "could not start the session-bus handshake: {error}"
+            )));
+        }
+        match rx.recv_timeout(STARTUP_DEADLINE) {
+            Ok(Ok(connection)) => Ok(connection),
+            Ok(Err(error)) => Err(plaintext_seal_refusal(&error)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                bus_gave_up().store(true, Ordering::Relaxed);
+                log::info!(
+                    "permission_seal: session bus did not finish the handshake within {}s; continuing so the notify socket can bind",
+                    STARTUP_DEADLINE.as_secs()
+                );
+                Err(plaintext_seal_refusal(
+                    "session bus accepted a connection and did not complete the handshake before the startup deadline",
+                ))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(plaintext_seal_refusal(
+                "session bus handshake ended without a connection",
+            )),
+        }
     }
 
     fn call<B>(

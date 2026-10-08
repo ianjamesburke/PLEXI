@@ -456,6 +456,32 @@
         },
         {
           "additionalProperties": false,
+          "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites `{\"ok\":true,\"output\":...}` or `{\"ok\":false,\"error_code\":...}`.",
+          "properties": {
+            "input_json": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "assistant_host_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "input_json",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.",
           "properties": {
             "capability": {

@@ -17,6 +17,7 @@ Submit a text turn to the running host Assistant
 | Subcommand | Description |
 |---|---|
 | `send` | Submit through the same composer, model, and permission path as the desktop Assistant |
+| `tool` | Run one Assistant host tool through the host permission gate |
 | `permission` | Observe and resolve pending permission requests. This is not `plexi agent request` |
 
 ### `plexi assistant send`
@@ -32,6 +33,17 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | `--client` | string | no | Ledger client tag for this run. Omitted uses `[ai] client` |
 | `--kind` | string | no | Ledger run kind: `system` or `output`. Omitted means `output` |
 | `--json` | flag | no |  |
+
+### `plexi assistant tool`
+
+Run one Assistant host tool through the host permission gate.
+
+Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","old_string":"a","new_string":"b"}'
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Tool name, for example `host.editors.list` or `host.files.edit` |
+| `--input` | string | yes | JSON object passed as the tool input |
 
 ### `plexi assistant permission`
 
@@ -101,6 +113,82 @@ Remove pane slot files for panes that are no longer open
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--dry-run` | flag | no | Print slot directories that would be removed without deleting them |
+
+## `plexi changes`
+
+Preview and accept an agent's file edit before it is written.
+
+`propose` stores a change set and does not modify the file. `preview` prints the diff. `accept` writes it after the permission gate admits the same edit. If the file changed since propose, accept reports `stale` until `refresh`. `revert` restores a committed set.
+
+| Subcommand | Description |
+|---|---|
+| `allow` | Record a permission-gate allow for one exact edit |
+| `propose` | Prepare an edit. The file is not modified |
+| `preview` | Print the prepared diff and whether the set is stale |
+| `accept` | Write a pending change set after the permission gate admits it |
+| `refresh` | Rebase a stale change set onto the file's current text |
+| `revert` | Restore the file to the text from before accept |
+| `profile` | Print this binary's profile directory |
+
+### `plexi changes allow`
+
+Record a permission-gate allow for one exact edit
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Agent id the grant and the later audit row name |
+| `--file` | string | yes | File the edit applies to |
+| `--old` | string | yes | Exact text to replace. It must occur once |
+| `--new` | string | yes | Replacement text |
+
+### `plexi changes propose`
+
+Prepare an edit. The file is not modified
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Agent id recorded on the change set |
+| `--file` | string | yes | File the edit applies to |
+| `--old` | string | yes | Exact text to replace. It must occur once |
+| `--new` | string | yes | Replacement text |
+
+### `plexi changes preview`
+
+Print the prepared diff and whether the set is stale
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes accept`
+
+Write a pending change set after the permission gate admits it
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes refresh`
+
+Rebase a stale change set onto the file's current text
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes revert`
+
+Restore the file to the text from before accept
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes profile`
+
+Print this binary's profile directory.
+
+Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`). Scripts should ask here instead of assuming `~/.plexi`.
 
 ## `plexi secret`
 

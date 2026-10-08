@@ -25,7 +25,8 @@ use std::time::Duration;
 /// Default client-side wait for a host response.
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// A 50ms poll made twenty fast `pane key` replies take over a second.
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Entries in `rpc/` older than this are startup-sweep garbage: no live
 /// request/response round trip spans minutes.

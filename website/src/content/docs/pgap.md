@@ -72,6 +72,16 @@ Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an
 | `response_file` | `string` | yes |
 | `text` | `string` | yes |
 
+### `assistant_host_tool`
+
+Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) through the same permission gate the desktop ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `input_json` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `capability_request`
 
 Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.

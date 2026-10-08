@@ -35,7 +35,7 @@ fn claimed_state(pane: &Pane) -> Option<serde_json::Value> {
 /// every pid this module checks is a host-spawned child, so permission is
 /// never the failure mode in practice.
 #[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
@@ -44,7 +44,7 @@ fn pid_is_alive(pid: u32) -> bool {
 /// held, so the exit code is checked too: `STILL_ACTIVE` is the only answer
 /// that counts as alive.
 #[cfg(windows)]
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
