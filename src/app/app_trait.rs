@@ -243,6 +243,11 @@ pub trait App: Send {
     /// Human-readable display name shown in the pane title.
     fn display_name(&self) -> String;
 
+    /// Head id when this pane is one lead's Assistant. `None` for every other app.
+    fn bound_head(&self) -> Option<&str> {
+        None
+    }
+
     /// Render the app into the given Ui region. `pending_click` (stint 0469) is
     /// a synthetic pointer click queued by `plexi pane click --node` /
     /// `HostHarness::inject_node_click`, delivered the same frame a real click's

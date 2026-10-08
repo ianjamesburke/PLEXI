@@ -294,9 +294,9 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
-        ChangesCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd, HookAction,
-        HostCmd, LedgerCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, PermissionsCmd,
-        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
+        ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd,
+        HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
+        PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -309,7 +309,8 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind, json: _ } => {
+                        AssistantCmd::Send { text, head, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind, json: _ } => {
+                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                             std::process::exit(cli::assistant_send_cli(
                                 text.as_deref(),
                                 request_id.as_deref(),
@@ -321,8 +322,13 @@ fn main() -> eframe::Result {
                                     status_for: status_for.as_deref(),
                                     client: client.as_deref(),
                                     kind: kind.as_deref(),
+                                    head: head.as_deref(),
                                 },
                             ))
+                        }
+                        AssistantCmd::Open { head } => {
+                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                            std::process::exit(cli::assistant_open_head_cli(&head))
                         }
                         AssistantCmd::Tool { name, input } => {
                             std::process::exit(cli::assistant_tool_cli(&name, &input))
@@ -399,6 +405,14 @@ fn main() -> eframe::Result {
                         RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
                         RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
+                    Commands::CommandView { cmd, json } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                        let op = match cmd {
+                            Some(CommandViewCmd::Open) => "open",
+                            None => "list",
+                        };
+                        std::process::exit(cli::command_view_cli(op, json))
+                    }
                     Commands::Run {
                         command,
                         extra_args,
@@ -472,6 +486,9 @@ fn main() -> eframe::Result {
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
                         AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
                         AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
+                        AgentCmd::Conversation { head, as_head, json } => {
+                            std::process::exit(cli::agent_conversation_cli(&head, as_head.as_deref(), json))
+                        }
                         AgentCmd::Delegate {
                             parent_run,
                             name,

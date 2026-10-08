@@ -67,6 +67,7 @@ Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an
 | `client` | `string?` | no |
 | `context_id` | `integer?` | no |
 | `conversation_id` | `string?` | no |
+| `head` | `string?` | no |
 | `join_desktop` | `boolean` | no |
 | `kind` | `string?` | no |
 | `pane_id` | `integer?` | no |
@@ -83,6 +84,26 @@ Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) throug
 |-------|------|----------|
 | `input_json` | `string` | yes |
 | `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `open_assistant_head`
+
+Open an Assistant pane bound to one head in the active context.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer?` | no |
+| `head` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `command_view`
+
+Read or steer the command view. `op` is `list` or `open` here; later steer ops share this request.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | no |
 | `response_file` | `string` | yes |
 
 ### `capability_request`

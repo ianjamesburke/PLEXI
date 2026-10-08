@@ -4181,6 +4181,7 @@ dependencies = [
  "ropey",
  "schemars",
  "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "sha2",
