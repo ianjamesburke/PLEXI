@@ -3271,10 +3271,19 @@ impl eframe::App for PlexiApp {
         self.drain_notes_index_refresh();
 
         // Expired needs-you items auto-deny even while the window is hidden.
-        // Only an already-open monitor is touched, so a frame never creates a profile.
-        if let Some(monitor) =
-            crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+        // A queue file left by the previous process is opened once. A frame
+        // with no file does not create a profile store.
+        let profile = crate::config::config_dir();
+        if crate::broker::gate::PermissionMonitor::loaded(&profile).is_none()
+            && crate::broker::gate::PermissionMonitor::has_persisted_queue(&profile)
         {
+            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+            log::info!(
+                "needs_you: host opened restored queue count={}",
+                monitor.open_needs_you().len()
+            );
+        }
+        if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) {
             monitor.expire_needs_you();
         }
 

@@ -171,18 +171,41 @@ impl PlexiApp {
             "resolve" => {
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
-                log::info!("needs_you: host resolve {id} approve={approve}");
-                match monitor.resolve_needs_you(id, approve) {
-                    Ok(receipt) => serde_json::json!({
-                        "ok": !receipt.already,
-                        "id": receipt.id,
-                        "resolution": receipt.resolution.as_str(),
-                        "already": receipt.already,
-                    }),
-                    Err(error) => serde_json::json!({
+                let grants = monitor.list_needs_you().iter().any(|row| {
+                    row.id == id
+                        && matches!(
+                            row.kind,
+                            crate::broker::gate::NeedsYouKind::ApprovalClick
+                                | crate::broker::gate::NeedsYouKind::PermissionChange
+                        )
+                }) || monitor.show_pending(id).is_some();
+                if grants && approve {
+                    // Socket and protocol resolves never mint a grant. The
+                    // desktop banner calls approve_pending directly, and only
+                    // when the click was not synthetic. Deny still settles.
+                    log::info!("needs_you: refused socket resolve {id} approve={approve}");
+                    monitor.refuse_client_resolve(id);
+                    serde_json::json!({
                         "ok": false,
-                        "error": error,
-                    }),
+                        "error_code": "permission_denied",
+                        "error": "only the person at the desktop can resolve a permission",
+                        "id": id,
+                    })
+                } else {
+                    log::info!("needs_you: host resolve {id} approve={approve}");
+                    match monitor.resolve_needs_you(id, approve) {
+                        Ok(receipt) => serde_json::json!({
+                            "ok": !receipt.already,
+                            "id": receipt.id,
+                            "resolution": receipt.resolution.as_str(),
+                            "already": receipt.already,
+                            "run_outcome": receipt.run_outcome.as_str(),
+                        }),
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                        }),
+                    }
                 }
             }
             _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),

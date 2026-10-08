@@ -105,9 +105,10 @@ plexi skill install --agent codex
   of `host` is reserved.
 - **Needs you** — `plexi needs-you list --json` prints everything waiting on
   the human. Click approvals, agent questions, and blocked runs share that
-  record. Expired items are auto-denied. Do not resolve from the terminal:
-  `needs-you resolve` is refused and does not grant. The person at the desktop
-  decides.
+  record. Expired items are auto-denied. Open rows are sealed under the
+  profile `host` directory and listed again after a restart. Do not resolve
+  from the terminal: `needs-you resolve` is refused and does not grant. The
+  person at the desktop decides.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
