@@ -237,6 +237,10 @@ pub(crate) struct TextArea<'a> {
     rows: usize,
     desired_width: f32,
     max_height: Option<f32>,
+    /// When set, the scroll viewport is exactly this tall on the current
+    /// frame. A content-sized `ScrollArea` otherwise reports last frame's
+    /// height, which shoves whatever sits under the field for one frame.
+    pin_viewport: Option<f32>,
     font_id: egui::FontId,
     text_color: Option<egui::Color32>,
     hint_color: Option<egui::Color32>,
@@ -258,6 +262,7 @@ impl<'a> TextArea<'a> {
             rows: 3,
             desired_width: f32::INFINITY,
             max_height: None,
+            pin_viewport: None,
             font_id: egui::FontId::proportional(crate::ui::style::TEXT_BODY),
             text_color: None,
             hint_color: None,
@@ -323,6 +328,39 @@ impl<'a> TextArea<'a> {
         self
     }
 
+    /// Lock the scroll viewport to `height` for this frame. `height` is the
+    /// measured content height (already clamped to the cap).
+    pub(crate) fn pin_viewport(mut self, height: f32) -> Self {
+        self.pin_viewport = Some(height);
+        self.max_height = Some(height);
+        self
+    }
+
+    /// Height of the editor widget for `text` wrapped at `width` (the width
+    /// the `TextEdit` itself is given, including its margin). Clamped to
+    /// `cap` and at least one row.
+    pub(crate) fn content_height(
+        &self,
+        ui: &mut egui::Ui,
+        text: &str,
+        width: f32,
+        cap: f32,
+    ) -> f32 {
+        let margin = self.margin.sum();
+        let inner_w = (width - margin.x).max(1.0);
+        let galley = ui.fonts_mut(|fonts| {
+            fonts.layout(
+                text.to_owned(),
+                self.font_id.clone(),
+                egui::Color32::PLACEHOLDER,
+                inner_w,
+            )
+        });
+        let row = ui.fonts_mut(|fonts| fonts.row_height(&self.font_id));
+        let text_h = galley.size().y.max(row * self.rows as f32);
+        (text_h + margin.y).clamp(row + margin.y, cap.max(row + margin.y))
+    }
+
     pub(crate) fn font(mut self, font_id: egui::FontId) -> Self {
         self.font_id = font_id;
         self
@@ -378,7 +416,15 @@ impl<'a> TextArea<'a> {
         let surface = self.surface;
         let select_all_on_focus = self.select_all_on_focus;
         let log_name = self.log_name;
-        let response = if let Some(max_height) = self.max_height {
+        let response = if let Some(height) = self.pin_viewport {
+            egui::ScrollArea::vertical()
+                .id_salt(id.with("scroll"))
+                .max_height(height)
+                .min_scrolled_height(height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.show_editor(ui, buf, colors))
+                .inner
+        } else if let Some(max_height) = self.max_height {
             egui::ScrollArea::vertical()
                 .id_salt(id.with("scroll"))
                 .max_height(max_height)

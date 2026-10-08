@@ -265,8 +265,12 @@ impl<'a> ListRow<'a> {
         } else {
             style::LIST_ROW_H
         };
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
+        // The gap is part of the slot so every list (palette, slash menu,
+        // model picker) gets the same air without each caller remembering.
+        let slot_h = row_h + style::LIST_ROW_GAP_V;
+        let (slot, response) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), slot_h), egui::Sense::click());
+        let rect = egui::Rect::from_min_size(slot.min, Vec2::new(slot.width(), row_h));
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -301,7 +305,25 @@ impl<'a> ListRow<'a> {
         } else if response.hovered() {
             ui.painter()
                 .rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
+            // Fill alone disappears when the parent is already `bg_hover`
+            // (the assistant picker). A hairline keeps the hover readable.
+            ui.painter().rect_stroke(
+                inset,
+                style::RADIUS_SM,
+                Stroke::new(1.0_f32, colors.accent.gamma_multiply(0.45)),
+                StrokeKind::Inside,
+            );
         }
+        // Resting divider in the gap under the row. `text_dim` stays visible
+        // on both the palette surface and the picker fill.
+        let sep_y = rect.bottom() + style::LIST_ROW_GAP_V * 0.5;
+        let x0 = rect.left() + style::SPACE_SM;
+        let x1 = (rect.right() - style::SPACE_SM).max(x0);
+        ui.painter().hline(
+            x0..=x1,
+            sep_y,
+            Stroke::new(1.0_f32, colors.text_dim.gamma_multiply(0.35)),
+        );
 
         let x = rect.left() + style::LIST_ROW_PAD_H;
 
@@ -952,5 +974,92 @@ mod tests {
                 "two-line row: pip top ({pip_top:.1}) must clear chip bottom ({chip_bottom:.1})"
             );
         });
+    }
+
+    fn walk_shapes(shape: &egui::Shape, visit: &mut dyn FnMut(&egui::Shape)) {
+        visit(shape);
+        if let egui::Shape::Vec(shapes) = shape {
+            for shape in shapes {
+                walk_shapes(shape, visit);
+            }
+        }
+    }
+
+    /// Stacked rows keep air between them, a resting divider in that air, and
+    /// an accent stroke on hover so the row still reads when the parent fill
+    /// matches `bg_hover`.
+    #[test]
+    fn stacked_list_rows_keep_a_gap_divider_and_hover_stroke() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let size = egui::vec2(360.0, 420.0);
+        let paint = |pointer: Option<egui::Pos2>| {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            if let Some(pos) = pointer {
+                raw.events.push(egui::Event::PointerMoved(pos));
+            }
+            ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    ListRow::new("Alpha").show(ui, &colors);
+                    ListRow::new("Beta").show(ui, &colors);
+                });
+            })
+        };
+        let output = paint(None);
+        let mut labels = Vec::new();
+        let mut lines = Vec::new();
+        for clipped in &output.shapes {
+            walk_shapes(&clipped.shape, &mut |shape| match shape {
+                egui::Shape::Text(text) if text.galley.text().contains("Alpha") => {
+                    labels.push(("alpha", text.pos.y));
+                }
+                egui::Shape::Text(text) if text.galley.text().contains("Beta") => {
+                    labels.push(("beta", text.pos.y));
+                }
+                egui::Shape::LineSegment { points, stroke } => {
+                    if (points[0].y - points[1].y).abs() < 0.5 && stroke.color.a() > 0 {
+                        lines.push(points[0].y);
+                    }
+                }
+                _ => {}
+            });
+        }
+        let alpha = labels
+            .iter()
+            .find(|(name, _)| *name == "alpha")
+            .map(|(_, y)| *y)
+            .expect("alpha row");
+        let beta = labels
+            .iter()
+            .find(|(name, _)| *name == "beta")
+            .map(|(_, y)| *y)
+            .expect("beta row");
+        let stride = beta - alpha;
+        assert!(
+            stride >= style::LIST_ROW_H + style::LIST_ROW_GAP_V - 0.5,
+            "row stride {stride} must include the list-row gap"
+        );
+        assert!(
+            lines.iter().any(|y| *y > alpha && *y < beta),
+            "a divider should sit in the gap between rows ({lines:?})"
+        );
+
+        let hover = paint(Some(egui::pos2(80.0, alpha + 4.0)));
+        let accent = colors.accent.gamma_multiply(0.45);
+        let mut hover_stroke = false;
+        for clipped in &hover.shapes {
+            walk_shapes(&clipped.shape, &mut |shape| {
+                if let egui::Shape::Rect(rect) = shape {
+                    if rect.stroke.color == accent && rect.stroke.width > 0.0 {
+                        hover_stroke = true;
+                    }
+                }
+            });
+        }
+        assert!(hover_stroke, "hover paints an accent hairline");
     }
 }

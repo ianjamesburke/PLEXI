@@ -3284,6 +3284,20 @@ impl AssistantApp {
                 display_name: agent.display_name.clone(),
             })
             .collect();
+        // View-only labels. Read without creating a default config file.
+        let ai = crate::config::PlexiConfig::read_for_workspace(Some(&self.workspace_root)).ai;
+        let ids: Vec<Option<String>> = tiers
+            .iter()
+            .map(|tier| ai.as_ref().and_then(|cfg| cfg.model_for_tier(*tier)))
+            .collect();
+        log::info!(
+            "assistant[{}]: model picker ids low={:?} medium={:?} high={:?}",
+            self.model.conversation_id,
+            ids.first().and_then(|id| id.as_deref()),
+            ids.get(1).and_then(|id| id.as_deref()),
+            ids.get(2).and_then(|id| id.as_deref()),
+        );
+        self.model.set_tier_model_ids(ids);
         self.model.open_model_picker(current_tier, tiers, agents);
     }
 
