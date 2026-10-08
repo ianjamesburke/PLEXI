@@ -1977,15 +1977,26 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             }
             let path = evidence_png!(&format!("_ppp{ppp}"));
-            let image = h.render().expect("render terminal fixture");
-            image.save(&path).expect("save terminal screenshot");
-            assert!(
+            // The ready line can land in the PTY grid a frame before the bold
+            // RGB cells are in the screenshot. Keep painting until they are,
+            // or until the same deadline. A real bold-strips-RGB regression
+            // still fails: those pixels never appear.
+            let bold_rgb = |image: &image::RgbaImage| {
                 image
                     .pixels()
                     .filter(|p| p.0 == [117, 223, 255, 255])
                     .count()
-                    > 100,
-                "bold RGB slider must retain its requested foreground; screenshot: {path}"
+            };
+            let mut image = h.render().expect("render terminal fixture");
+            while bold_rgb(&image) <= 100 && std::time::Instant::now() < deadline {
+                h.run_steps(2);
+                image = h.render().expect("render terminal fixture");
+            }
+            image.save(&path).expect("save terminal screenshot");
+            let count = bold_rgb(&image);
+            assert!(
+                count > 100,
+                "bold RGB slider must retain its requested foreground ({count} px); screenshot: {path}"
             );
         }
     }
