@@ -3,7 +3,9 @@
 # Usage: scripts/command-view-steer-e2e.sh <PR>
 # Depends on the agents API records from #2706 / #2715 / #2716, not the
 # in-memory board on plexi-command-view-alpha (70139c1b).
-# Human approval clicks are VERIFIED-VIA-BYPASS. W15 HUMAN_APPROVE is not used.
+# The write is left pending so the command pane can show the warning-color
+# waiting line, then HUMAN_APPROVE clicks Allow once. The script never calls
+# assistant permission resolve or command-view resolve.
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
@@ -64,7 +66,7 @@ export PLEXI_LEAD_MODEL="mock/lead"
 echo "workspace: $WORKDIR"
 echo "binary: $BIN_PATH"
 echo "mock: $PLEXI_OPENROUTER_BASE_URL"
-echo "approvals: VERIFIED-VIA-BYPASS (grant is pre-recorded; no human click)"
+echo "approvals: HUMAN_APPROVE (real pointer click; no CLI resolve)"
 echo "command-view board dependency: plexi-command-view-alpha @ 70139c1b is not the data source"
 
 "$BIN" workspace init
@@ -144,6 +146,20 @@ python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("erro
 test "$MISSING_CODE" -eq 2
 test ! -e "$WORKDIR/.plexi/agents/not-a-lead"
 echo "ungranted send exited $MISSING_CODE and created no lead"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
+export BIN
+MISSING_PENDING="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pending_request_id") or "")' "$WORKDIR/missing.json")"
+if [[ -z "$MISSING_PENDING" ]]; then
+  echo "FAIL: ungranted send did not name a pending id"
+  exit 1
+fi
+echo "HUMAN_DENY pending $MISSING_PENDING so the later write owns the banner"
+if ! HUMAN_DENY "$MISSING_PENDING"; then
+  "$BIN" host screenshot --output "$WORKDIR/deny-miss.png" >/dev/null 2>&1 || true
+  echo "FAIL: HUMAN_DENY did not clear $MISSING_PENDING"
+  exit 1
+fi
 
 echo "STEP create two leads"
 A="$(cli agent head create lead-a --display-name 'Lead A' --grant assistant.turn=allow --json)"
@@ -310,6 +326,36 @@ else
 fi
 echo "screenshot $SHOT"
 
+WRITE_PENDING="$(python3 -c 'import json,sys
+body=json.load(open(sys.argv[1]))
+text=" ".join(str(body.get(key) or "") for key in ("error","reply","pending_request_id"))
+for token in text.split():
+    if token.startswith("req_"):
+        print(token)
+        break
+' "$WORKDIR/pending.json")"
+if [[ -z "$WRITE_PENDING" ]]; then
+  echo "FAIL: pending write did not name a request id"
+  cat "$WORKDIR/pending.json"
+  exit 1
+fi
+echo "HUMAN_APPROVE pending $WRITE_PENDING once"
+if ! HUMAN_APPROVE "$WRITE_PENDING" once; then
+  "$BIN" host screenshot --output "$WORKDIR/approve-miss.png" >/dev/null 2>&1 || true
+  echo "FAIL: HUMAN_APPROVE did not grant $WRITE_PENDING"
+  "$BIN" assistant permission list || true
+  exit 1
+fi
+echo "STEP the same write proceeds after Allow once"
+set +e
+WROTE="$(cli command-view send lead-a "write-file")"
+set -e
+printf '%s\n' "$WROTE" >"$WORKDIR/wrote.json"
+python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("state")=="succeeded", body' "$WROTE"
+test -f "$WORKDIR/out.txt"
+python3 -c 'import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text()=="ok"' "$WORKDIR/out.txt"
+echo "HUMAN_APPROVE wrote out.txt"
+
 echo "STEP cancel a live run"
 cli command-view send lead-b "long-task" >"$WORKDIR/long.out" 2>"$WORKDIR/long.err" &
 SEND_PID=$!
@@ -343,12 +389,12 @@ sleep 1
 AUDIT="${PROFILE}/permission-audit.jsonl"
 STEPS=0
 if [[ -f "$AUDIT" ]]; then
-  STEPS="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().count("\"operation_id\":\"lead.step\""))' "$AUDIT")"
+  STEPS="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().count("lead.step"))' "$AUDIT")"
 fi
 sleep 2
 LATER="$STEPS"
 if [[ -f "$AUDIT" ]]; then
-  LATER="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().count("\"operation_id\":\"lead.step\""))' "$AUDIT")"
+  LATER="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().count("lead.step"))' "$AUDIT")"
 fi
 python3 -c 'import sys; a,b=int(sys.argv[1]),int(sys.argv[2]); assert a==b, (a,b)' "$STEPS" "$LATER"
 CONV_B="$(cli agent conversation --head lead-b --json)"
