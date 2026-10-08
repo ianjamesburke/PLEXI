@@ -29,6 +29,9 @@
 # OpenRouter unless OPENROUTER_API_KEY is already set. config.toml is
 # snapshotted from scripts/default-config.toml and restored after every item
 # so a gate or relay rewrite of [ai] backend cannot poison the ledger item.
+# Between items the harness reaps Xvfb processes the item started. An
+# xvfb-run left on :99 with an auth cookie makes xdpyinfo report that display
+# down, and the next script then starts a host on a server it does not own.
 #
 # Before any item, a preflight installs or verifies three VM dependencies:
 # Python Pillow (V1-02 board clicks), Docker (V1-08 relay), and an unlocked
@@ -208,6 +211,94 @@ if ! command -v Xvfb >/dev/null 2>&1; then
   exit 1
 fi
 start_xvfb
+
+# Xvfb already running when the suite started, including this harness display.
+# Item scripts are not allowed to leave another one behind.
+BASELINE_XVFB_PIDS=" "
+record_baseline_xvfb() {
+  local pid
+  BASELINE_XVFB_PIDS=" "
+  if [[ -n "$XVFB_PID" ]]; then
+    BASELINE_XVFB_PIDS+="$XVFB_PID "
+  fi
+  if ! command -v pgrep >/dev/null 2>&1; then
+    return 0
+  fi
+  while read -r pid; do
+    [[ -z "$pid" ]] && continue
+    case " $BASELINE_XVFB_PIDS " in
+      *" $pid "*) ;;
+      *) BASELINE_XVFB_PIDS+="$pid " ;;
+    esac
+  done < <(pgrep -x Xvfb || true)
+}
+xvfb_is_baseline() {
+  case " $BASELINE_XVFB_PIDS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# kill -0 is true for a zombie. SIGKILL skips Xvfb's lock unlink, and a
+# zombie still answers kill -0 while its socket is already closed.
+proc_alive() {
+  local state
+  [[ -n "${1:-}" ]] || return 1
+  kill -0 "$1" 2>/dev/null || return 1
+  state="$(ps -o stat= -p "$1" 2>/dev/null || true)"
+  [[ "$state" == Z* ]] && return 1
+  return 0
+}
+# Drop X servers an item spawned, and the lock/socket of any display whose
+# server is already gone. A live baseline server (the harness display, a
+# display that was up before the suite) is left in place.
+reap_item_xvfb() {
+  local pid display holder lock
+  if ! command -v pgrep >/dev/null 2>&1; then
+    return 0
+  fi
+  while read -r pid; do
+    [[ -z "$pid" ]] && continue
+    if xvfb_is_baseline "$pid"; then
+      continue
+    fi
+    echo "$(date -u +%H:%M:%S) reaped item Xvfb pid=$pid" >>"$EVID/xvfb-reap.log"
+    kill "$pid" >/dev/null 2>&1 || true
+  done < <(pgrep -x Xvfb || true)
+  sleep 0.2
+  while read -r pid; do
+    [[ -z "$pid" ]] && continue
+    if xvfb_is_baseline "$pid"; then
+      continue
+    fi
+    kill -9 "$pid" >/dev/null 2>&1 || true
+  done < <(pgrep -x Xvfb || true)
+  shopt -s nullglob
+  for lock in /tmp/.X*-lock; do
+    display="${lock##*/}"
+    display="${display#.X}"
+    display="${display%-lock}"
+    if [[ ":$display" == "${DISPLAY:-}" ]]; then
+      continue
+    fi
+    holder="$(tr -dc '0-9' <"$lock" 2>/dev/null || true)"
+    if proc_alive "$holder"; then
+      if xvfb_is_baseline "$holder"; then
+        continue
+      fi
+      echo "$(date -u +%H:%M:%S) reaped X lock holder pid=$holder display=:$display" >>"$EVID/xvfb-reap.log"
+      kill "$holder" >/dev/null 2>&1 || true
+      sleep 0.1
+      kill -9 "$holder" >/dev/null 2>&1 || true
+      if proc_alive "$holder"; then
+        continue
+      fi
+    fi
+    rm -f "$lock" "/tmp/.X11-unix/X${display}"
+    echo "$(date -u +%H:%M:%S) removed stale X lock :$display" >>"$EVID/xvfb-reap.log"
+  done
+  shopt -u nullglob
+}
+record_baseline_xvfb
 
 # Private runtime dir. The login XDG_RUNTIME_DIR is not this suite's bus,
 # and gnome-keyring refuses a control socket it cannot own.
@@ -591,15 +682,19 @@ restore_config() {
 }
 with_config() {
   # A previous item's host holds this profile's socket. Stop it before and
-  # after so the next item starts its own host.
+  # after so the next item starts its own host. Reap that item's Xvfb too:
+  # xvfb-run -a leaves :99 with an auth cookie, xdpyinfo then reports the
+  # display down, and the next script starts a host on a server it does not own.
   if [[ -n "${BIN:-}" && -x "$BIN" ]]; then
     "$BIN" host stop >/dev/null 2>&1 || true
   fi
+  reap_item_xvfb
   restore_config
   "$@"
   if [[ -n "${BIN:-}" && -x "$BIN" ]]; then
     "$BIN" host stop >/dev/null 2>&1 || true
   fi
+  reap_item_xvfb
   restore_config
 }
 
