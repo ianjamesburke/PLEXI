@@ -2230,8 +2230,6 @@ pub fn assistant_send_cli(
     }
 }
 
-}
-
 #[cfg(test)]
 mod app_install_workspace_tests {
     use super::{classify_app_install_spec, AppInstallSpecKind};
