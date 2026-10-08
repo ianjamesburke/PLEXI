@@ -6,7 +6,11 @@
 //! Markdown lives in them; rendering belongs to the picker overlay and editing
 //! to the text editor.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
 
 // ─── Frontmatter ─────────────────────────────────────────────────────────────
 
@@ -87,7 +91,7 @@ pub(crate) fn set_title_in_content(content: &str, title: &str) -> String {
 // ─── Notes picker entries ────────────────────────────────────────────────────
 
 /// One selectable row in the Cmd+O notes picker.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct NotePickerEntry {
     pub path: PathBuf,
     /// Display title: frontmatter `title` → first body line → file name.
@@ -188,17 +192,110 @@ const PLEXI_DIR: &str = ".plexi";
 /// descended into when scanning.
 const ASSETS_DIR: &str = "assets";
 
-/// Directories the rollup walk never enters. Large, machine-generated, and
-/// never a place a user keeps notes.
-const WALK_IGNORE: [&str; 6] = ["node_modules", "target", "dist", "build", "vendor", ".venv"];
+/// Directory names the rollup walk never enters. Large, machine-generated, or
+/// (on macOS) the per-user `Library` tree — never a place a user keeps notes.
+/// Hidden directories are also skipped, except `.plexi` itself, which is an
+/// anchor. `.git` is both hidden and listed here so the prune set is explicit.
+pub(crate) const NOTES_WALK_PRUNE: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    ".venv",
+    "venv",
+    ".git",
+    "Library",
+    "Applications",
+    "Containers",
+    "Caches",
+    "Pods",
+    "DerivedData",
+    "Carthage",
+    "__pycache__",
+    "bower_components",
+    "coverage",
+    "site-packages",
+];
 
 /// How far below a tier root the rollup walk looks for nested tiers.
 const WALK_MAX_DEPTH: usize = 8;
 
-/// Hard cap on directories the rollup walk visits. A repo pathological enough
-/// to exhaust this gets a truncated scope list and one loud warning, never an
-/// unbounded stall at picker-open time.
+/// Hard cap on directories one rollup walk visits. A tree pathological enough
+/// to exhaust this gets a truncated scope list and one loud warning. The picker
+/// never waits on this walk: it publishes the in-memory index and refreshes
+/// off the UI thread. Pruning `Library` (and the rest of [`NOTES_WALK_PRUNE`])
+/// is what keeps a normal home directory from hitting the cap.
 const WALK_DIR_BUDGET: usize = 20_000;
+
+/// Directories visited by note-index walks on this thread. A cache hit must
+/// leave the counter unchanged — that is the "open does not walk" proof.
+#[derive(Clone, Copy, Default)]
+struct WalkStats {
+    visited: u64,
+    budget_hit: bool,
+}
+
+thread_local! {
+    static WALK_STATS: Cell<WalkStats> = const { Cell::new(WalkStats { visited: 0, budget_hit: false }) };
+}
+
+fn reset_walk_stats() {
+    WALK_STATS.with(|stats| stats.set(WalkStats::default()));
+}
+
+fn record_dir_visit() {
+    WALK_STATS.with(|stats| {
+        let mut current = stats.get();
+        current.visited = current.visited.saturating_add(1);
+        stats.set(current);
+    });
+}
+
+fn record_budget_hit() {
+    WALK_STATS.with(|stats| {
+        let mut current = stats.get();
+        current.budget_hit = true;
+        stats.set(current);
+    });
+}
+
+fn walk_stats() -> WalkStats {
+    WALK_STATS.with(|stats| stats.get())
+}
+
+/// Directories visited and whether the budget tripped during the most recent
+/// index build on this thread. The background worker reads this after
+/// [`build_notes_index`]; it is not a signal the UI thread can use.
+pub(crate) fn notes_walk_result() -> (u64, bool) {
+    let stats = walk_stats();
+    (stats.visited, stats.budget_hit)
+}
+
+#[cfg(test)]
+pub(crate) fn notes_walk_dirs() -> u64 {
+    walk_stats().visited
+}
+
+#[cfg(test)]
+pub(crate) fn notes_walk_budget_hit() -> bool {
+    walk_stats().budget_hit
+}
+
+#[cfg(test)]
+pub(crate) fn reset_notes_walk_dirs_for_test() {
+    reset_walk_stats();
+}
+
+fn name_is_pruned(name: &str) -> bool {
+    NOTES_WALK_PRUNE.contains(&name)
+}
+
+fn path_name_is_pruned(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(name_is_pruned)
+}
 
 /// `true` when `dir` is a notes tier root: either the global tier, or a
 /// `notes` directory whose parent is a `.plexi` directory.
@@ -252,7 +349,7 @@ pub(crate) fn anchored_root_for(start: &Path) -> Option<PathBuf> {
 }
 
 /// One tier to scan, with the chip shown on its rows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NotesScope {
     pub dir: PathBuf,
     /// Where this tier sits relative to the scope being listed: `None` for the
@@ -269,37 +366,32 @@ pub(crate) struct NotesScope {
 /// the others, because a context rooted at the home directory (which is what
 /// `new_context_empty` produces) resolves its own tier to exactly the global
 /// tier and must not be listed twice.
+///
+/// This is the CLI entry point. The picker builds the same scope list through
+/// [`build_notes_index`], adding context roots and previously cached tiers the
+/// CLI does not know about.
 pub(crate) fn notes_scopes_for_root(root: Option<&Path>) -> Vec<NotesScope> {
-    let mut scopes: Vec<NotesScope> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut push = |dir: PathBuf, label: Option<String>| {
-        if seen.insert(comparable_scope_path(&dir)) {
-            scopes.push(NotesScope { dir, label });
-        }
-    };
-
-    if let Some(root) = root {
-        push(context_notes_dir(root), None);
-        for nested in nested_tiers_below(root) {
-            let label = nested
-                .strip_prefix(root)
-                .ok()
-                .and_then(|rel| rel.parent().and_then(Path::parent))
-                .map(|rel| rel.to_string_lossy().into_owned())
-                .filter(|rel| !rel.is_empty());
-            push(nested, label);
-        }
-    }
-    push(global_notes_dir(), Some("global".to_string()));
-    scopes
+    reset_walk_stats();
+    discover_notes_scopes(&NotesDiscovery {
+        active_root: root.map(Path::to_path_buf),
+        known_roots: Vec::new(),
+        global_notes: global_notes_dir(),
+        home: dirs::home_dir(),
+        cached_tiers: Vec::new(),
+    })
 }
 
 /// Bounded breadth-first walk for `*/.plexi/notes` directories below `root`.
 ///
 /// Directories only, never following symlinks (a symlinked subtree could point
 /// anywhere, including back above the root). Deterministically sorted so two
-/// runs list tiers in the same order.
+/// runs list tiers in the same order. Hidden directories other than `.plexi`,
+/// and every name in [`NOTES_WALK_PRUNE`], are not entered — that is what keeps
+/// `~/Library` from exhausting [`WALK_DIR_BUDGET`] on a normal home directory.
 fn nested_tiers_below(root: &Path) -> Vec<PathBuf> {
+    if path_name_is_pruned(root) {
+        return Vec::new();
+    }
     let mut found = Vec::new();
     let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
     let mut visited = 0usize;
@@ -309,7 +401,9 @@ fn nested_tiers_below(root: &Path) -> Vec<PathBuf> {
             continue;
         }
         visited += 1;
+        record_dir_visit();
         if visited > WALK_DIR_BUDGET {
+            record_budget_hit();
             log::warn!(
                 "notes: rollup walk hit its {WALK_DIR_BUDGET}-directory budget under {root:?} — \
                  nested tiers below {dir:?} were not scanned"
@@ -340,7 +434,8 @@ fn nested_tiers_below(root: &Path) -> Vec<PathBuf> {
                 continue;
             }
             let name = name.to_string_lossy();
-            if name.starts_with('.') || WALK_IGNORE.contains(&name.as_ref()) {
+            // Hidden dirs (except `.plexi`, handled above) and heavy trees.
+            if name.starts_with('.') || name_is_pruned(&name) {
                 continue;
             }
             queue.push_back((path, depth + 1));
@@ -348,6 +443,373 @@ fn nested_tiers_below(root: &Path) -> Vec<PathBuf> {
     }
     found.sort();
     found
+}
+
+/// Inputs for one notes-index build. Paths are resolved on the calling thread
+/// (test overrides for the global tier are thread-local) and then moved to the
+/// background worker, which must not call [`global_notes_dir`] itself.
+pub(crate) struct NotesDiscovery {
+    pub active_root: Option<PathBuf>,
+    /// Context roots, the adopted workspace root, and any other directory
+    /// Plexi already knows. Checked directly — a tier inside `~/Library` is
+    /// still found when its project is one of these, without walking Library.
+    pub known_roots: Vec<PathBuf>,
+    pub global_notes: PathBuf,
+    pub home: Option<PathBuf>,
+    /// Tier directories from the previous snapshot. Re-stat, no tree walk.
+    pub cached_tiers: Vec<PathBuf>,
+}
+
+/// Scope list plus the picker rows built from it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct NotesIndexSnapshot {
+    pub scopes: Vec<NotesScope>,
+    pub entries: Vec<NotePickerEntry>,
+}
+
+/// What the background refresh hands back to the UI thread.
+pub(crate) struct NotesIndexBuild {
+    pub anchor: PathBuf,
+    pub snapshot: NotesIndexSnapshot,
+    pub generation: u64,
+    pub walk_dirs: u64,
+    pub budget_hit: bool,
+    pub elapsed: std::time::Duration,
+}
+
+/// In-memory picker index, keyed by the anchor the snapshot was built for.
+///
+/// A hit clones the stored rows and does not touch the filesystem. Invalidation
+/// bumps `generation` but keeps the rows so the picker can paint them while a
+/// refresh is in flight.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NotesIndexCache {
+    by_anchor: std::collections::HashMap<PathBuf, NotesIndexSnapshot>,
+    generation: u64,
+}
+
+impl NotesIndexCache {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn anchor_count(&self) -> usize {
+        self.by_anchor.len()
+    }
+
+    /// Stored rows for `anchor`, if this process has built or loaded them.
+    /// Does not stat, scan, or walk.
+    pub(crate) fn cached_entries(&self, anchor: &Path) -> Option<Vec<NotePickerEntry>> {
+        self.by_anchor
+            .get(&anchor_key(anchor))
+            .map(|snapshot| snapshot.entries.clone())
+    }
+
+    pub(crate) fn cached_tier_count(&self, anchor: &Path) -> usize {
+        self.by_anchor
+            .get(&anchor_key(anchor))
+            .map(|snapshot| snapshot.scopes.len())
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn cached_tier_dirs(&self, anchor: &Path) -> Vec<PathBuf> {
+        self.by_anchor
+            .get(&anchor_key(anchor))
+            .map(|snapshot| {
+                snapshot
+                    .scopes
+                    .iter()
+                    .map(|scope| scope.dir.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Drop the authority of every stored snapshot. The rows stay so the next
+    /// open can paint them; a refresh built at this generation replaces them.
+    pub(crate) fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        log::info!("notes_index: invalidated generation={}", self.generation);
+    }
+
+    /// Store `snapshot` when it was built at the current generation.
+    /// Returns false when a later invalidation has already superseded it.
+    pub(crate) fn store(
+        &mut self,
+        anchor: &Path,
+        snapshot: NotesIndexSnapshot,
+        built_generation: u64,
+    ) -> bool {
+        if built_generation != self.generation {
+            return false;
+        }
+        self.by_anchor.insert(anchor_key(anchor), snapshot);
+        true
+    }
+
+    pub(crate) fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let persisted = PersistedNotesIndex {
+            version: NOTES_INDEX_VERSION,
+            anchors: {
+                let mut anchors: Vec<PersistedAnchor> = self
+                    .by_anchor
+                    .iter()
+                    .map(|(anchor, snapshot)| PersistedAnchor {
+                        anchor: anchor.clone(),
+                        snapshot: snapshot.clone(),
+                    })
+                    .collect();
+                anchors.sort_by(|a, b| a.anchor.cmp(&b.anchor));
+                anchors
+            },
+        };
+        let body = serde_json::to_vec_pretty(&persisted)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    pub(crate) fn load(path: &Path) -> Option<Self> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) => {
+                log::warn!("notes_index: failed to read {path:?}: {err}");
+                return None;
+            }
+        };
+        match serde_json::from_slice::<PersistedNotesIndex>(&bytes) {
+            Ok(parsed) if parsed.version == NOTES_INDEX_VERSION => {
+                let mut cache = Self::default();
+                for anchor in parsed.anchors {
+                    cache.by_anchor.insert(anchor.anchor, anchor.snapshot);
+                }
+                log::info!(
+                    "notes_index: loaded persisted cache anchors={}",
+                    cache.anchor_count()
+                );
+                Some(cache)
+            }
+            Ok(parsed) => {
+                log::warn!(
+                    "notes_index: ignoring {:?} — version {} is not {NOTES_INDEX_VERSION}",
+                    path,
+                    parsed.version
+                );
+                None
+            }
+            Err(err) => {
+                log::warn!("notes_index: failed to parse {path:?}: {err}");
+                None
+            }
+        }
+    }
+}
+
+const NOTES_INDEX_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct PersistedNotesIndex {
+    version: u32,
+    anchors: Vec<PersistedAnchor>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedAnchor {
+    anchor: PathBuf,
+    snapshot: NotesIndexSnapshot,
+}
+
+/// Profile file holding the last notes-picker index. `None` in a test that
+/// has not installed an isolated profile — those tests must not touch a real
+/// channel directory.
+pub(crate) fn notes_index_cache_path() -> Option<PathBuf> {
+    profile_dir_for_notes_index().map(|dir| dir.join("notes-picker-index.json"))
+}
+
+fn profile_dir_for_notes_index() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        crate::config::test_profile_dir_override()
+    }
+    #[cfg(not(test))]
+    {
+        Some(crate::config::config_dir())
+    }
+}
+
+/// Build the picker corpus. Walks the filesystem — call it off the UI thread.
+pub(crate) fn build_notes_index(query: &NotesDiscovery) -> NotesIndexSnapshot {
+    let started = Instant::now();
+    reset_walk_stats();
+    let scopes = discover_notes_scopes(query);
+    let mut entries = Vec::new();
+    for scope in &scopes {
+        entries.extend(
+            scan_tier(&scope.dir)
+                .iter()
+                .filter_map(|path| NotePickerEntry::load(path))
+                .map(|entry| entry.with_tier_label(scope.label.clone())),
+        );
+    }
+    let stats = walk_stats();
+    log::info!(
+        "notes_index: built notes={} tiers={} walk_dirs={} budget_hit={} build_ms={:.1}",
+        entries.len(),
+        scopes.len(),
+        stats.visited,
+        stats.budget_hit,
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    NotesIndexSnapshot { scopes, entries }
+}
+
+fn discover_notes_scopes(query: &NotesDiscovery) -> Vec<NotesScope> {
+    let mut scopes: Vec<NotesScope> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |dir: PathBuf, label: Option<String>| {
+        if seen.insert(comparable_scope_path(&dir)) {
+            scopes.push(NotesScope { dir, label });
+        }
+    };
+
+    if let Some(root) = query.active_root.as_deref() {
+        push(context_notes_dir(root), None);
+
+        // Known roots first, git repos before the rest, so a budget-truncated
+        // walk cannot hide a project Plexi already has open.
+        let mut known = prefer_known_roots(&query.known_roots);
+        known.retain(|candidate| root_visible(root, candidate, query.home.as_deref()));
+        for extra in &known {
+            if paths_equal(extra, root) {
+                continue;
+            }
+            let tier = context_notes_dir(extra);
+            if tier.is_dir() {
+                let label = label_for_tier(root, &tier);
+                push(tier, label);
+            }
+        }
+
+        for nested in nested_tiers_below(root) {
+            let label = label_for_tier(root, &nested);
+            push(nested, label);
+        }
+
+        for extra in &known {
+            if paths_equal(extra, root) || lexical_is_descendant(root, extra) {
+                continue;
+            }
+            if path_name_is_pruned(extra) {
+                continue;
+            }
+            for nested in nested_tiers_below(extra) {
+                let label = label_for_tier(root, &nested);
+                push(nested, label);
+            }
+        }
+
+        for tier in &query.cached_tiers {
+            if !tier.is_dir() || !is_tier_dir(tier, &query.global_notes) {
+                continue;
+            }
+            // The trailing push is what labels the global tier. Inserting it
+            // here would win the dedupe and drop the "global" chip.
+            if paths_equal(tier, &query.global_notes) {
+                continue;
+            }
+            let project = tier_project_root(tier);
+            let visible = project
+                .is_some_and(|project| root_visible(root, project, query.home.as_deref()))
+                || lexical_is_descendant(root, tier);
+            if visible {
+                let label = label_for_tier(root, tier);
+                push(tier.clone(), label);
+            }
+        }
+    }
+
+    push(query.global_notes.clone(), Some("global".to_string()));
+    scopes
+}
+
+/// Git repos Plexi already knows are checked before other roots. A root with a
+/// `.git` directory or a gitlink file is a repository; everything else still
+/// counts (a notes tier does not require git) but sorts after.
+fn prefer_known_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut repos = Vec::new();
+    let mut rest = Vec::new();
+    for root in roots {
+        let git = root.join(".git");
+        if git.is_dir() || git.is_file() {
+            repos.push(root.clone());
+        } else {
+            rest.push(root.clone());
+        }
+    }
+    repos.sort();
+    rest.sort();
+    repos.extend(rest);
+    repos
+}
+
+fn root_visible(active: &Path, candidate: &Path, home: Option<&Path>) -> bool {
+    if paths_equal(active, candidate) || lexical_is_descendant(active, candidate) {
+        return true;
+    }
+    home.is_some_and(|home| paths_equal(active, home))
+}
+
+fn label_for_tier(anchor: &Path, tier: &Path) -> Option<String> {
+    tier.strip_prefix(anchor)
+        .ok()
+        .and_then(|rel| rel.parent().and_then(Path::parent))
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .filter(|rel| !rel.is_empty())
+}
+
+fn tier_project_root(tier: &Path) -> Option<&Path> {
+    tier.parent()?.parent()
+}
+
+fn is_tier_dir(dir: &Path, global_notes: &Path) -> bool {
+    if comparable_scope_path(dir) == comparable_scope_path(global_notes) {
+        return true;
+    }
+    dir.file_name().is_some_and(|name| name == TIER_DIR)
+        && dir
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == PLEXI_DIR)
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    anchor_key(left) == anchor_key(right)
+}
+
+fn lexical_is_descendant(root: &Path, candidate: &Path) -> bool {
+    let root = anchor_key(root);
+    let candidate = anchor_key(candidate);
+    candidate.starts_with(&root) && candidate != root
+}
+
+fn anchor_key(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Every note in one tier, newest first. Recursive within the tier (a tier may
@@ -364,6 +826,7 @@ pub(crate) fn scan_tier(dir: &Path) -> Vec<PathBuf> {
     let mut with_mtime: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     let mut queue = std::collections::VecDeque::from([dir.to_path_buf()]);
     while let Some(current) = queue.pop_front() {
+        record_dir_visit();
         let Ok(entries) = std::fs::read_dir(&current) else {
             continue;
         };
@@ -1445,5 +1908,254 @@ mod tests {
             env.legacy.join("inbox").join("draft.md.save").exists(),
             "a stray file must survive, and keep its directory"
         );
+    }
+
+    fn discovery_for(env: &TierEnv) -> NotesDiscovery {
+        NotesDiscovery {
+            active_root: Some(env.root.clone()),
+            known_roots: vec![env.root.clone()],
+            global_notes: env.global.clone(),
+            home: Some(env.base.clone()),
+            cached_tiers: Vec::new(),
+        }
+    }
+
+    /// A warm index answers from memory. The walk counter is the proof: the
+    /// hit path must not enter another directory.
+    #[test]
+    fn notes_index_cache_hit_does_not_walk() {
+        let env = tier_env("cache-hit");
+        seed(
+            &context_notes_dir(&env.root).join("one.md"),
+            "---\ntitle: \"One\"\n---\nbody\n",
+        );
+        let query = discovery_for(&env);
+        let first = build_notes_index(&query);
+        assert!(
+            first.entries.iter().any(|entry| entry.title == "One"),
+            "the build must see the seeded note: {:?}",
+            first
+                .entries
+                .iter()
+                .map(|entry| &entry.title)
+                .collect::<Vec<_>>()
+        );
+        let walked = notes_walk_dirs();
+        assert!(walked > 0, "building the index has to walk");
+
+        let mut cache = NotesIndexCache::default();
+        let generation = cache.generation();
+        assert!(cache.store(&env.root, first, generation));
+        let hit = cache.cached_entries(&env.root).expect("warm cache");
+        assert_eq!(
+            notes_walk_dirs(),
+            walked,
+            "a cache hit must not visit any directory"
+        );
+        assert!(hit.iter().any(|entry| entry.title == "One"));
+    }
+
+    /// Invalidation does not rescan by itself. The next build — what the
+    /// background refresh runs after `invalidate` — is what surfaces the note.
+    #[test]
+    fn notes_index_invalidation_surfaces_a_new_note() {
+        let env = tier_env("cache-invalidate");
+        seed(
+            &context_notes_dir(&env.root).join("one.md"),
+            "---\ntitle: \"One\"\n---\nbody\n",
+        );
+        let query = discovery_for(&env);
+        let mut cache = NotesIndexCache::default();
+        let generation = cache.generation();
+        assert!(cache.store(&env.root, build_notes_index(&query), generation));
+
+        seed(
+            &context_notes_dir(&env.root).join("two.md"),
+            "---\ntitle: \"Two\"\n---\nnew body\n",
+        );
+        let stale = cache.cached_entries(&env.root).expect("stale rows");
+        assert!(
+            !stale.iter().any(|entry| entry.title == "Two"),
+            "the cached index must not notice a note written after it was built"
+        );
+
+        cache.invalidate();
+        let fresh = build_notes_index(&query);
+        let generation = cache.generation();
+        assert!(
+            cache.store(&env.root, fresh, generation),
+            "the post-invalidation build is the current generation"
+        );
+        let fresh_rows = cache.cached_entries(&env.root).expect("fresh rows");
+        let titles: Vec<&str> = fresh_rows
+            .iter()
+            .map(|entry| entry.title.as_str())
+            .collect();
+        assert!(
+            titles.contains(&"Two"),
+            "the new note must appear after invalidation: {titles:?}"
+        );
+        assert!(titles.contains(&"One"), "{titles:?}");
+    }
+
+    /// Home discovery must not enter `~/Library`, hidden directories, or the
+    /// heavy-dir list. A project Plexi already knows is still listed even when
+    /// it sits inside a pruned tree, because that path is stated directly
+    /// instead of found by walking.
+    #[test]
+    fn notes_index_prune_list_skips_heavy_dirs_and_keeps_known_roots() {
+        for required in ["Library", "node_modules", "target", ".git"] {
+            assert!(
+                NOTES_WALK_PRUNE.contains(&required),
+                "{required} must stay on the prune list"
+            );
+        }
+
+        let env = tier_env("prune-home");
+        let home = env.base.clone();
+        let project = home.join("Documents").join("GitHub").join("proj");
+        seed(
+            &context_notes_dir(&project).join("yes.md"),
+            "---\ntitle: \"Visible\"\n---\nyes\n",
+        );
+        seed(
+            &context_notes_dir(&home.join(".hidden").join("secret")).join("no.md"),
+            "hidden",
+        );
+        seed(
+            &context_notes_dir(&project.join(".git").join("objects")).join("no.md"),
+            "git",
+        );
+
+        let mut padded = 0usize;
+        for name in NOTES_WALK_PRUNE {
+            let buried = home.join(name).join("pkg");
+            seed(&context_notes_dir(&buried).join("no.md"), "pruned");
+            // A wide `Library/Containers` is what exhausted the 20000-dir budget
+            // under a real home. The pruned walk must not enter it.
+            if *name == "Library" {
+                for index in 0..1500 {
+                    std::fs::create_dir_all(
+                        home.join("Library")
+                            .join("Containers")
+                            .join(format!("app{index}")),
+                    )
+                    .expect("pad Library");
+                    padded += 1;
+                }
+            }
+        }
+        assert!(padded >= 1500);
+
+        let known_app = home.join("Library").join("Containers").join("KnownApp");
+        seed(
+            &context_notes_dir(&known_app).join("kept.md"),
+            "---\ntitle: \"Known\"\n---\nkept\n",
+        );
+        let unknown_app = home.join("Library").join("Containers").join("UnknownApp");
+        seed(
+            &context_notes_dir(&unknown_app).join("lost.md"),
+            "---\ntitle: \"Lost\"\n---\nlost\n",
+        );
+
+        let unpruned_started = std::time::Instant::now();
+        let (unpruned_dirs, _) = count_dirs_unpruned(&home);
+        let unpruned_ms = unpruned_started.elapsed().as_secs_f64() * 1000.0;
+
+        let pruned_started = std::time::Instant::now();
+        let snapshot = build_notes_index(&NotesDiscovery {
+            active_root: Some(home.clone()),
+            known_roots: vec![home.clone(), project.clone(), known_app.clone()],
+            global_notes: env.global.clone(),
+            home: Some(home.clone()),
+            cached_tiers: Vec::new(),
+        });
+        let pruned_ms = pruned_started.elapsed().as_secs_f64() * 1000.0;
+        let titles: Vec<&str> = snapshot
+            .entries
+            .iter()
+            .map(|entry| entry.title.as_str())
+            .collect();
+
+        assert!(
+            titles.contains(&"Visible"),
+            "a project under Documents must still be found: {titles:?}"
+        );
+        assert!(
+            titles.contains(&"Known"),
+            "a known root inside Library is stated directly, not walked: {titles:?}"
+        );
+        assert!(
+            !titles.contains(&"Lost"),
+            "an unknown tier inside Library must not be walked: {titles:?}"
+        );
+        assert!(
+            !titles
+                .iter()
+                .any(|title| *title == "hidden" || *title == "git" || *title == "pruned"),
+            "hidden dirs and the prune list must not contribute notes: {titles:?}"
+        );
+        assert!(
+            !notes_walk_budget_hit(),
+            "a normal home-shaped tree must not trip the {WALK_DIR_BUDGET}-dir budget"
+        );
+        assert!(
+            notes_walk_dirs() < padded as u64,
+            "visited {} dirs but Library alone contains {padded} — the walk entered it",
+            notes_walk_dirs()
+        );
+        eprintln!(
+            "notes_walk before_dirs={unpruned_dirs} before_ms={unpruned_ms:.1} after_dirs={} after_ms={pruned_ms:.1} budget_hit={}",
+            notes_walk_dirs(),
+            notes_walk_budget_hit()
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Persist under the isolated profile and read it back without walking.
+    #[test]
+    fn notes_index_roundtrips_through_the_profile_cache() {
+        let env = tier_env("persist");
+        seed(
+            &context_notes_dir(&env.root).join("saved.md"),
+            "---\ntitle: \"Saved\"\n---\nbody\n",
+        );
+        let mut cache = NotesIndexCache::default();
+        let generation = cache.generation();
+        assert!(cache.store(
+            &env.root,
+            build_notes_index(&discovery_for(&env)),
+            generation
+        ));
+        let path = notes_index_cache_path().expect("isolated profile");
+        cache.save(&path).expect("persist");
+
+        reset_notes_walk_dirs_for_test();
+        let loaded = NotesIndexCache::load(&path).expect("load");
+        assert_eq!(notes_walk_dirs(), 0, "loading the cache file is not a walk");
+        let loaded_rows = loaded.cached_entries(&env.root).expect("anchor");
+        let titles: Vec<&str> = loaded_rows
+            .iter()
+            .map(|entry| entry.title.as_str())
+            .collect();
+        assert!(titles.contains(&"Saved"), "{titles:?}");
+    }
+
+    fn count_dirs_unpruned(root: &Path) -> (usize, std::time::Duration) {
+        let started = std::time::Instant::now();
+        let mut count = 0usize;
+        let mut queue = vec![root.to_path_buf()];
+        while let Some(dir) = queue.pop() {
+            count += 1;
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    queue.push(entry.path());
+                }
+            }
+        }
+        (count, started.elapsed())
     }
 }

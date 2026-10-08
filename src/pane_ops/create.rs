@@ -2311,6 +2311,7 @@ impl PlexiApp {
             log::warn!("scratchpad: failed to create scratch note in {:?}", dir);
             return;
         };
+        self.invalidate_notes_index();
 
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
@@ -2383,7 +2384,12 @@ impl PlexiApp {
             dir.display(),
             self.quick_note_attachments.len()
         );
-        Self::write_note(text, "quick-note", &dir, &ctx, &self.quick_note_attachments).is_some()
+        let wrote = Self::write_note(text, "quick-note", &dir, &ctx, &self.quick_note_attachments)
+            .is_some();
+        if wrote {
+            self.invalidate_notes_index();
+        }
+        wrote
     }
 
     /// Validate and stage one local image for the open QuickNote modal. The
