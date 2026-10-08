@@ -97,6 +97,8 @@ pub(crate) fn release_notify_socket() -> SocketRelease {
 
 /// Tear the host down and end the process. Never returns.
 pub(crate) fn exit_host(reason: &str) -> ! {
+    // A kill skips this, so the next start can tell a clean quit from a death.
+    crate::broker::integrity::mark_clean_shutdown(&crate::config::config_dir());
     let socket = release_notify_socket();
     log::info!("quit_phase: process exit — reason={reason} notify_socket={socket:?}");
     // The log file is the only record of a quit; flush before the fd dies.

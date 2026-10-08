@@ -339,6 +339,9 @@ impl PermissionMonitor {
     }
 
     fn open(dir: &Path) -> Self {
+        // Inspect before load. Migration can rewrite grants.toml, which would
+        // hide an edit made while the host was down.
+        let finding = super::integrity::inspect(dir);
         if let Err(error) = super::seal::existing_mac_key() {
             if super::host_key::is_key_unreadable(&error) {
                 log::info!(
@@ -348,6 +351,8 @@ impl PermissionMonitor {
                 let audit = dir.join("permission-audit.jsonl");
                 let monitor = Self::new(store, Some(audit));
                 monitor.file_keychain_needs_you();
+                monitor.file_integrity_finding(finding);
+                super::integrity::mark_running(dir);
                 return monitor;
             }
         }
@@ -402,7 +407,26 @@ impl PermissionMonitor {
         for fault in &faults {
             monitor.raise_integrity(fault);
         }
+        monitor.file_integrity_finding(finding);
+        // A kill skips exit_host, so the next start sees clean_shutdown = false.
+        super::integrity::mark_running(dir);
         monitor
+    }
+
+    fn file_integrity_finding(&self, finding: Option<super::integrity::IntegrityFinding>) {
+        let Some(finding) = finding else {
+            return;
+        };
+        if let Err(error) = self.file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::Integrity,
+            actor: "host".to_string(),
+            resource: "permission-profile".to_string(),
+            summary: finding.summary,
+            expires_at: None,
+            run_tag: Some("permission-integrity".to_string()),
+        }) {
+            log::error!("integrity: could not file needs-you item: {error}");
+        }
     }
 
     fn file_keychain_needs_you(&self) {
@@ -513,6 +537,7 @@ impl PermissionMonitor {
         if let Some(path) = &self.audit_path {
             match super::seal::append_audit(path, &fact) {
                 Ok(()) => {
+                    super::integrity::note_saved_file(path);
                     self.audit_mem
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
@@ -2212,7 +2237,7 @@ impl PermissionMonitor {
             .push(fact.clone());
         if let Some(path) = &self.audit_path {
             match super::seal::append_audit(path, fact) {
-                Ok(()) => {}
+                Ok(()) => super::integrity::note_saved_file(path),
                 Err(super::seal::SealError::Untrusted(reason)) => {
                     self.raise_integrity(&super::seal::IntegrityFault {
                         file: "permission-audit.jsonl".to_string(),

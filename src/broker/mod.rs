@@ -11,6 +11,7 @@
 
 pub mod gate;
 pub(crate) mod host_key;
+pub mod integrity;
 mod needs_you_store;
 pub(crate) mod seal;
 
@@ -1007,6 +1008,8 @@ impl GrantStore {
         let label = self.file.label();
         if let Err(error) = self.try_save() {
             log::error!("{label}: failed to save {}: {error}", self.file.path.display());
+        } else {
+            crate::broker::integrity::note_saved_file(&self.file.path);
         }
     }
 
