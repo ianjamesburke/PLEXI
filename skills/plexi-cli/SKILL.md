@@ -76,6 +76,14 @@ plexi skill install --agent codex
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
+- **Assistant send** — submit a turn through the same composer and permission
+  sheet as the desktop Assistant: `plexi assistant send --text "..."`. Omit
+  `--conversation` to start a new conversation that is not the desktop
+  transcript. `--conversation <id>` continues one caller-owned conversation
+  (the phone relay uses this). `--desktop` appends to the desktop transcript
+  and conflicts with `--conversation`. `--status-for <turn-id>` reads a turn
+  that already returned `waiting_for_permission` and does not submit a prompt.
+  A phone turn has no approval, grant, or permission field.
 - **Assistant permission** — list or show a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id
@@ -113,6 +121,12 @@ plexi skill install --agent codex
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
   can never supply argv. `plexi app open --mcp` is a different thing: it wraps a
   server in a viewer pane and exposes nothing to the assistant.
+- **Phone relay** — pair a phone to this desktop: `plexi relay enable --url <wss-or-loopback-ws>`,
+  then `plexi relay confirm` after comparing the fingerprint the phone shows.
+  `relay pair` adds another phone. `relay revoke <device-id>` drops one phone.
+  `relay status` prints the desktop session. `relay connect` attaches to the
+  host's socket. `relay disable` stops the host from connecting on startup.
+  Message bodies are sealed; the relay stores no plaintext.
 - **Notifications** — show scoped information to the person using the host:
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
@@ -162,6 +176,23 @@ pane
 pane slot
 context
 app
+assistant
+assistant send
+assistant permission
+assistant permission list
+assistant permission show
+assistant permission resolve
+needs-you
+needs-you list
+needs-you resolve
+relay
+relay connect
+relay confirm
+relay revoke
+relay pair
+relay enable
+relay disable
+relay status
 notify
 workspace
 run

@@ -1,4 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// `delete_context` drops windows on a worker thread. Proving `Window: Send`
+// walks the wgpu resource graph, and the combined phone + ledger assistant
+// state overflows rustc's default recursion limit in test builds.
+#![recursion_limit = "256"]
 // Ship-time panic-path protection. `todo!()` / `unimplemented!()` compile clean
 // but panic at runtime — e.g. 2026-04-18, the audio capture entry point was
 // `todo!()` and froze the GUI when a recorder app sent AudioCapture without
@@ -292,7 +296,7 @@ fn main() -> eframe::Result {
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd, HookAction,
         HostCmd, LedgerCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, PermissionsCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
+        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -305,8 +309,20 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, client, kind, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, client.as_deref(), kind.as_deref()))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(
+                                text.as_deref(),
+                                request_id.as_deref(),
+                                pane_id,
+                                context_id,
+                                cli::app::AssistantSendRoute {
+                                    conversation: conversation.as_deref(),
+                                    join_desktop: desktop,
+                                    status_for: status_for.as_deref(),
+                                    client: client.as_deref(),
+                                    kind: kind.as_deref(),
+                                },
+                            ))
                         }
                         AssistantCmd::Tool { name, input } => {
                             std::process::exit(cli::assistant_tool_cli(&name, &input))
@@ -331,9 +347,14 @@ fn main() -> eframe::Result {
                         NeedsYouCmd::List { json: _ } => {
                             std::process::exit(cli::needs_you_cli("list", None, None))
                         }
-                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
-                            // A terminal cannot grant. The desktop banner and the
-                            // phone page are the resolve paths.
+                        NeedsYouCmd::Resolve {
+                            id,
+                            approve: _,
+                            deny,
+                            from_phone: _,
+                        } => {
+                            // A terminal or phone flag cannot grant. The desktop
+                            // Allow once click is the grant.
                             let choice = if deny { "deny" } else { "once" };
                             std::process::exit(cli::assistant_permission_cli(
                                 "resolve",
@@ -360,6 +381,23 @@ fn main() -> eframe::Result {
                         PermissionsCmd::Allow { id } => {
                             std::process::exit(cli::permissions_cli("allow", Some(&id), true))
                         }
+                    },
+                    Commands::Relay { cmd } => match cmd {
+                        RelayCmd::Connect { url } => {
+                            std::process::exit(cli::relay::relay_connect_cli(url))
+                        }
+                        RelayCmd::Confirm { pairing_id } => {
+                            std::process::exit(cli::relay::relay_confirm_cli(pairing_id))
+                        }
+                        RelayCmd::Revoke { device_id } => {
+                            std::process::exit(cli::relay::relay_revoke_cli(&device_id))
+                        }
+                        RelayCmd::Pair => std::process::exit(cli::relay::relay_pair_cli()),
+                        RelayCmd::Enable { url } => {
+                            std::process::exit(cli::relay::relay_enable_cli(url))
+                        }
+                        RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
+                        RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::Run {
                         command,

@@ -1211,11 +1211,26 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("spawn through symlink");
-        let name = get_pid_name(child.id());
+        let name = pid_name_once_execd(child.id(), "codex");
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(name.as_deref(), Some("codex"));
+    }
+
+    /// Linux copies the spawning thread's `comm` across `fork` and replaces it
+    /// only at `exec`. libtest names that thread after the test, truncated to
+    /// 15 bytes (`host::shell::te`), so a `/proc/<pid>/comm` read in the same
+    /// instant as `spawn` still sees the parent. Poll until exec lands.
+    fn pid_name_once_execd(pid: u32, expected: &str) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let last = get_pid_name(pid);
+            if last.as_deref() == Some(expected) || std::time::Instant::now() >= deadline {
+                return last;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

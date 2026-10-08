@@ -38,17 +38,14 @@ impl PlexiApp {
             "list" => {
                 let pending = monitor.list_pending();
                 log::info!("permission_monitor: list pending count={}", pending.len());
-                let buttons: Vec<serde_json::Value> = self
-                    .approval_buttons
-                    .iter()
-                    .map(|button| {
-                        serde_json::json!({
-                            "label": button.label,
-                            "bounds": button.bounds,
-                            "pending_request_id": button.pending_request_id,
-                        })
+                let mut buttons: Vec<serde_json::Value> = monitor.sheet_buttons_json();
+                buttons.extend(self.approval_buttons.iter().map(|button| {
+                    serde_json::json!({
+                        "label": button.label,
+                        "bounds": button.bounds,
+                        "pending_request_id": button.pending_request_id,
                     })
-                    .collect();
+                }));
                 let mut panes = Vec::new();
                 for window in &self.windows {
                     for (pane_id, pane) in &window.panes {
@@ -88,8 +85,8 @@ impl PlexiApp {
                 }
             }
             "resolve" => {
-                // No CLI or socket path resolves. The desktop banner and a
-                // paired device are the only principals that call approve_pending.
+                // No CLI, socket, or phone path resolves. A real pointer click
+                // on the desktop banner or the pairing sheet is what grants.
                 let id = pending_id.map(String::as_str).unwrap_or("");
                 let _choice = choice.map(String::as_str).unwrap_or("");
                 monitor.refuse_client_resolve(id);
@@ -164,25 +161,47 @@ impl PlexiApp {
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         let body = match op {
             "list" => {
-                let items = monitor.list_needs_you();
+                let items = crate::broker::gate::needs_you_phone_items(&monitor.list_needs_you());
                 log::info!("needs_you: host list count={}", items.len());
                 serde_json::json!({"ok": true, "items": items})
             }
             "resolve" => {
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
-                log::info!("needs_you: host resolve {id} approve={approve}");
-                match monitor.resolve_needs_you(id, approve) {
-                    Ok(receipt) => serde_json::json!({
-                        "ok": !receipt.already,
-                        "id": receipt.id,
-                        "resolution": receipt.resolution.as_str(),
-                        "already": receipt.already,
-                    }),
-                    Err(error) => serde_json::json!({
+                let grants = monitor.list_needs_you().iter().any(|row| {
+                    row.id == id
+                        && matches!(
+                            row.kind,
+                            crate::broker::gate::NeedsYouKind::ApprovalClick
+                                | crate::broker::gate::NeedsYouKind::PermissionChange
+                        )
+                }) || monitor.show_pending(id).is_some();
+                if grants && approve {
+                    // Socket, terminal, and phone resolves never mint a grant.
+                    // The desktop banner calls approve_pending, and the pairing
+                    // sheet calls confirm, only from a real pointer click.
+                    log::info!("needs_you: refused socket resolve {id} approve={approve}");
+                    monitor.refuse_client_resolve(id);
+                    serde_json::json!({
                         "ok": false,
-                        "error": error,
-                    }),
+                        "error_code": "permission_denied",
+                        "error": "only the person at the desktop can resolve a permission",
+                        "id": id,
+                    })
+                } else {
+                    log::info!("needs_you: host resolve {id} approve={approve}");
+                    match monitor.resolve_needs_you(id, approve) {
+                        Ok(receipt) => serde_json::json!({
+                            "ok": !receipt.already,
+                            "id": receipt.id,
+                            "resolution": receipt.resolution.as_str(),
+                            "already": receipt.already,
+                        }),
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                        }),
+                    }
                 }
             }
             _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),
@@ -492,7 +511,16 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::caller_identity;
+    use super::{caller_identity, phone_may_answer};
+    use crate::broker::gate::NeedsYouKind;
+
+    #[test]
+    fn phone_approve_answers_only_a_visible_non_click() {
+        assert!(phone_may_answer(Some(NeedsYouKind::Question)));
+        assert!(phone_may_answer(Some(NeedsYouKind::BlockedRun)));
+        assert!(!phone_may_answer(Some(NeedsYouKind::ApprovalClick)));
+        assert!(!phone_may_answer(None));
+    }
 
     #[test]
     fn socket_caller_identity_is_never_the_human() {

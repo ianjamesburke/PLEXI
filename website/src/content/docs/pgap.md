@@ -66,10 +66,13 @@ Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an
 |-------|------|----------|
 | `client` | `string?` | no |
 | `context_id` | `integer?` | no |
+| `conversation_id` | `string?` | no |
+| `join_desktop` | `boolean` | no |
 | `kind` | `string?` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
+| `status_for` | `string?` | no |
 | `text` | `string` | yes |
 
 ### `assistant_host_tool`

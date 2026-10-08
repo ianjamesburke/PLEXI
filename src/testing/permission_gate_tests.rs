@@ -158,6 +158,13 @@ fn assistant_begin(h: &mut HostHarness, assistant: u64, input: &serde_json::Valu
         "play the move".to_string(),
         format!("req-{}", uuid::Uuid::new_v4()),
         reply.display().to_string(),
+        crate::app::app_trait::ExternalTurnOpts {
+            conversation_id: None,
+            join_desktop: true,
+            status_for: None,
+            client: None,
+            kind: None,
+        },
     )
     .unwrap();
     reply
@@ -181,10 +188,20 @@ fn assistant_pending(h: &mut HostHarness, assistant: u64) -> String {
 
 fn assistant_resolve(h: &mut HostHarness, assistant: u64, reply: &Path, choice: crate::assistant::model::PermissionChoice) -> serde_json::Value {
     h.assistant_mut(assistant).resolve_permission(choice);
-    pump_until(h, |_| {
-        std::fs::metadata(reply).map(|meta| meta.len() > 0).unwrap_or(false)
-    });
+    pump_until(h, |_| reply_is_terminal(reply));
     serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap()
+}
+
+/// The phone ack writes `waiting_for_permission` as soon as the sheet opens.
+/// The same file is replaced when the turn finishes.
+fn reply_is_terminal(reply: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(reply) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value.get("state").and_then(|state| state.as_str()) != Some("waiting_for_permission")
 }
 
 fn human_e7e5(h: &mut HostHarness, pane: u64) {

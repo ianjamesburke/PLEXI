@@ -216,7 +216,7 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, conversation_id, join_desktop, status_for, client, kind } => {
                 if pane_id.is_none() {
                     let _ = self.ensure_headless_assistant(*context_id);
                 }
@@ -229,7 +229,7 @@ impl PlexiApp {
                         let Some(app) = pane.as_app_mut() else { continue; };
                         if app.runtime.type_id() != "assistant" { continue; }
                         submitted = true;
-                        if let Err(error) = app.runtime.submit_tagged_turn(text.clone(), request_id.clone(), response_file.clone(), client.clone(), kind.clone()) { failure = Some(error); }
+                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone(), crate::app::app_trait::ExternalTurnOpts { conversation_id: conversation_id.clone(), join_desktop: *join_desktop, status_for: status_for.clone(), client: client.clone(), kind: kind.clone() }) { failure = Some(error); }
                         break;
                     }
                     if submitted { break; }

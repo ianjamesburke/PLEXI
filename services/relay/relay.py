@@ -1,7 +1,8 @@
 """Plexi phone relay.
 
 The desktop host connects outbound (WebSocket). The phone uses HTTPS on the
-same origin. Message bodies live only in memory: they are dropped when the
+same origin. Message bodies are sealed envelopes. This process forwards them
+and cannot read them. They live only in memory: they are dropped when the
 desktop acknowledges delivery, and any still-undelivered body is purged after
 two minutes. Logs record ids, sizes, and outcomes — never message text, pairing
 codes, or session tokens.
@@ -29,6 +30,7 @@ import queue
 import secrets
 import select
 import socket
+import socketserver
 import sqlite3
 import struct
 import threading
@@ -51,6 +53,10 @@ DEVICE_IDLE_SECONDS = 30 * 24 * 3600
 PROTOCOL_VERSION = 1
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8000
+# A sealed body is the plaintext cap plus the handshake header, tag, and
+# base64url expansion. Truncating it would break the authenticator, so an
+# oversize seal is rejected whole.
+MAX_SEALED_CHARS = 12000
 MAX_INFLIGHT_PER_DEVICE = 8
 MAX_DESKTOP_SOCKETS = 64
 HELLO_DEADLINE_SECONDS = 10.0
@@ -559,6 +565,9 @@ class Relay:
         self.by_request: dict[tuple[str, str], str] = {}  # (device_id, request_id) -> delivery_id
         self.events: dict[str, list[PhoneEvent]] = {}
         self.cursors: dict[str, int] = {}
+        # request_id -> {"event": Event, "body": dict | None}. Phone needs-you
+        # waits here until the desktop answers on its socket.
+        self.asks: dict[str, dict] = {}
         self.registry: PairingRegistry | None = None
         path = (state_path or "").strip()
         if path:
@@ -717,8 +726,9 @@ class Relay:
             return
         state = message.get("state") if isinstance(message.get("state"), str) else "failed"
         reply_text = message.get("reply") if isinstance(message.get("reply"), str) else None
-        if reply_text is not None and len(reply_text) > MAX_TEXT_CHARS:
-            reply_text = reply_text[:MAX_TEXT_CHARS]
+        if reply_text is not None and len(reply_text) > MAX_SEALED_CHARS:
+            trace("reply_ignored", host_id=host_id, outcome="reply_too_long")
+            reply_text = None
         error = message.get("error") if isinstance(message.get("error"), str) else None
         if error is not None and len(error) > 240:
             error = error[:240]
@@ -1032,7 +1042,7 @@ class Relay:
         if problem:
             trace("turn_rejected", device_id=device.device_id, outcome=problem if problem.isidentifier() or "_" in problem else "invalid")
             return 400, {"error": problem}
-        text = envelope["content"][0]["text"]
+        text = envelope["content"][0]["body"]
         request_id = envelope["request_id"]
         canonical = json.dumps(envelope, sort_keys=True)
         body_hash = _hash(canonical)
@@ -1137,6 +1147,103 @@ class Relay:
         trace("approval_refused", device_id=device.device_id, host_id=device.host_id, outcome="waiting_on_desktop")
         return 403, {"error": "waiting_on_desktop", "message": "waiting on desktop"}
 
+    def ask_desktop(self, host_id: str, message: dict, timeout: float = 8.0) -> dict | None:
+        """Push one request to the desktop socket and wait for needs_you_result."""
+        request_id = secrets.token_hex(8)
+        event = threading.Event()
+        with self.lock:
+            link = self.links.get(host_id)
+            if link is None or not link.alive:
+                trace("needs_you", host_id=host_id, outcome="desktop_offline")
+                return None
+            self.asks[request_id] = {"event": event, "body": None}
+            payload = dict(message)
+            payload["request_id"] = request_id
+            link.push(payload)
+        if not event.wait(timeout):
+            with self.lock:
+                self.asks.pop(request_id, None)
+            trace("needs_you", host_id=host_id, outcome="timeout")
+            return None
+        with self.lock:
+            slot = self.asks.pop(request_id, None)
+        body = slot.get("body") if isinstance(slot, dict) else None
+        return body if isinstance(body, dict) else None
+
+    def complete_ask(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self.lock:
+            slot = self.asks.get(request_id)
+            if slot is None:
+                return
+            slot["body"] = message
+            slot["event"].set()
+
+    def needs_you_list(self, device: Device) -> tuple[int, dict]:
+        body = self.ask_desktop(device.host_id, {"type": "needs_you_list"})
+        if body is None:
+            return 503, {"ok": False, "error": "desktop_offline"}
+        items = body.get("items") if isinstance(body.get("items"), list) else []
+        trace("needs_you", host_id=device.host_id, device_id=device.device_id, outcome="listed", status=str(len(items)))
+        return 200, {"ok": True, "items": items}
+
+    def needs_you_resolve(self, device: Device, item_id: str, decision: str) -> tuple[int, dict]:
+        if decision not in {"approve", "deny"}:
+            return 400, {"ok": False, "error": "invalid_decision"}
+        if decision == "approve":
+            status, listed = self.needs_you_list(device)
+            if status != 200:
+                return status, listed
+            items = listed.get("items") if isinstance(listed.get("items"), list) else []
+            match = next(
+                (
+                    item
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("id", "")) == item_id
+                ),
+                None,
+            )
+            # An answer is a question or a blocked run the desktop marked
+            # phone_can_approve. Anything else, including a missing id, must
+            # not be forwarded as approve or a stale desktop can grant it.
+            if not phone_may_answer(match):
+                trace(
+                    "needs_you",
+                    host_id=device.host_id,
+                    device_id=device.device_id,
+                    outcome="waiting_on_desktop",
+                )
+                return 403, {
+                    "ok": False,
+                    "error": "waiting_on_desktop",
+                    "message": "waiting on desktop",
+                }
+        body = self.ask_desktop(
+            device.host_id,
+            {"type": "needs_you_resolve", "id": item_id, "approve": decision == "approve"},
+        )
+        if body is None:
+            return 503, {"ok": False, "error": "desktop_offline"}
+        error = body.get("error")
+        if error in {"waiting on desktop", "irreversible"}:
+            trace(
+                "needs_you",
+                host_id=device.host_id,
+                device_id=device.device_id,
+                outcome="waiting_on_desktop",
+            )
+            return 403, {"ok": False, "error": "waiting_on_desktop", "message": "waiting on desktop"}
+        if body.get("ok") is False:
+            trace("needs_you", host_id=device.host_id, device_id=device.device_id, outcome="refused")
+            return 409, {"ok": False, "error": error or "not_resolved"}
+        trace("needs_you", host_id=device.host_id, device_id=device.device_id, outcome=decision)
+        return 200, {
+            "ok": True,
+            "id": body.get("id", item_id),
+            "resolution": body.get("resolution"),
+            "already": bool(body.get("already")),
+        }
+
     def _append(self, device_id: str, event: PhoneEvent) -> None:
         cursor = self.cursors.get(device_id, 0) + 1
         self.cursors[device_id] = cursor
@@ -1159,6 +1266,15 @@ class Relay:
         return "\n".join(chunks)
 
 
+def phone_may_answer(item: object) -> bool:
+    """True only for a non-click item the desktop explicitly allows."""
+    if not isinstance(item, dict):
+        return False
+    if item.get("kind") == "approval_click":
+        return False
+    return item.get("phone_can_approve") is True
+
+
 def validate_envelope(body: object) -> str | None:
     if not isinstance(body, dict):
         return "body_must_be_object"
@@ -1169,13 +1285,17 @@ def validate_envelope(body: object) -> str | None:
         return "invalid_request_id"
     content = body.get("content")
     if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
-        return "content_must_be_one_text_part"
+        return "content_must_be_one_sealed_part"
     part = content[0]
-    if part.get("type") != "text" or not isinstance(part.get("text"), str):
-        return "content_must_be_one_text_part"
-    text = part["text"]
-    if not text.strip() or len(text) > MAX_TEXT_CHARS:
-        return "invalid_text"
+    if part.get("type") == "text":
+        return "plaintext_rejected"
+    if part.get("type") != "sealed" or not isinstance(part.get("body"), str):
+        return "content_must_be_one_sealed_part"
+    sealed = part["body"]
+    if not sealed or len(sealed) > MAX_SEALED_CHARS:
+        return "invalid_sealed"
+    if any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=" for ch in sealed):
+        return "invalid_sealed"
     return None
 
 
@@ -1199,27 +1319,34 @@ PAIR_PAGE = """<!doctype html>
       <input id="label" name="label" maxlength="40" placeholder="phone" value="phone">
       <button type="submit">Pair</button>
     </form>
+    <p id="key-fingerprint"></p>
     <p id="fingerprint"></p>
     <p>The desktop must confirm this phone. A code alone does not pair it.</p>
-    <p>Messages pass through this relay in the clear on the server. Transport is protected by TLS. This is not end-to-end encryption.</p>
+    <p>Message bodies are sealed. This relay only routes the envelope. Compare the key fingerprint with the desktop. It comes from the QR fragment, which this server never receives.</p>
   </main>
-  <script>
+  <script type="module">
+    import { keyFingerprint, rememberDesktopKey } from "/e2e.js";
     const status = document.getElementById("pair-status");
     const fingerprint = document.getElementById("fingerprint");
+    const keyLine = document.getElementById("key-fingerprint");
+    const desktopKey = rememberDesktopKey();
+    if (desktopKey) keyLine.textContent = "Key fingerprint " + keyFingerprint(desktopKey);
+    else keyLine.textContent = "Open the QR from the desktop. This page has no key, so it will not send messages.";
     document.getElementById("pair-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (!desktopKey) { status.textContent = "Open the QR from the desktop first"; return; }
       const code = document.getElementById("code").value.trim();
       const label = document.getElementById("label").value.trim() || "phone";
       status.textContent = "Waiting for the desktop to confirm…";
       const redeem = await fetch("/api/pair", {method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body: JSON.stringify({code, label})});
       const body = await redeem.json();
       if (!redeem.ok) { status.textContent = body.message || body.error || "Pairing failed"; return; }
-      fingerprint.textContent = "Fingerprint " + (body.fingerprint || "");
+      fingerprint.textContent = "Device fingerprint " + (body.fingerprint || "");
       const id = body.pairing_id;
       const timer = setInterval(async () => {
         const res = await fetch("/api/pair/" + encodeURIComponent(id), {credentials:"same-origin"});
         const poll = await res.json();
-        if (poll.status === "confirmed") { clearInterval(timer); location.replace("/"); }
+        if (poll.status === "confirmed") { clearInterval(timer); location.replace("/" + location.hash); }
         else if (poll.status === "denied" || poll.status === "expired") { clearInterval(timer); status.textContent = poll.status === "denied" ? "Desktop denied this phone" : "Code expired"; }
       }, 1000);
     });
@@ -1320,6 +1447,13 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
                     return
                 self._json(200, relay.status_for(device))
                 return
+            if url.path == "/api/needs-you":
+                device = self._device()
+                if device is None:
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                self._json(*relay.needs_you_list(device))
+                return
             if url.path == "/api/conversation":
                 device = self._device()
                 if device is None:
@@ -1383,6 +1517,18 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
             device = self._device()
             if device is None:
                 self._json(401, {"error": "unauthorized"})
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "needs-you"] and parts[3] == "resolve":
+                try:
+                    body = json.loads(raw or b"null")
+                except json.JSONDecodeError:
+                    self._json(400, {"error": "invalid_json"})
+                    return
+                decision = body.get("decision") if isinstance(body, dict) else None
+                if decision not in {"approve", "deny"}:
+                    self._json(400, {"error": "invalid_decision"})
+                    return
+                self._json(*relay.needs_you_resolve(device, parts[2], str(decision)))
                 return
             if parts == ["api", "turns"]:
                 try:
@@ -1661,6 +1807,9 @@ def handle_desktop_message(relay: Relay, host_id: str, message: dict) -> dict | 
     if kind == "reply":
         relay.reply(host_id, message)
         return None
+    if kind == "needs_you_result":
+        relay.complete_ask(message)
+        return None
     trace("desktop_frame_ignored", host_id=host_id, outcome="unknown_type")
     return {"type": "error", "error": "unknown_type"}
 
@@ -1668,6 +1817,15 @@ def handle_desktop_message(relay: Relay, host_id: str, message: dict) -> dict | 
 class RelayServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind calls socket.getfqdn. A runner whose
+        # hostname does not resolve stalls that lookup, so /healthz never
+        # answers inside the desktop's health wait. Keep the bind address.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 def build_server(host: str, port: int, relay: Relay, static_dir: Path, secure_cookie: bool = False) -> RelayServer:

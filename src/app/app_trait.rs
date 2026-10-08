@@ -218,6 +218,19 @@ pub enum AppCommand {
 /// The trait all Plexi apps implement.
 ///
 /// Apps live inside `Pane::App` runtimes.
+/// Routing and ledger tags for one external Assistant turn.
+///
+/// `conversation_id` keeps a phone turn off the desktop transcript.
+/// `join_desktop` opts into that transcript. `client` and `kind` are the
+/// ledger tags from `assistant send --client/--kind`.
+pub struct ExternalTurnOpts {
+    pub conversation_id: Option<String>,
+    pub join_desktop: bool,
+    pub status_for: Option<String>,
+    pub client: Option<String>,
+    pub kind: Option<String>,
+}
+
 pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
@@ -335,6 +348,16 @@ pub trait App: Send {
         None
     }
 
+    /// Show the desktop sheet that confirms a phone pairing code.
+    /// Returns true only when this call newly opened the sheet.
+    /// A tool sheet that is already open is left alone.
+    fn offer_relay_pairing(&mut self, _code: &str, _fingerprint: &str) -> bool {
+        false
+    }
+
+    /// Drop a pairing sheet once the code is no longer waiting.
+    fn clear_relay_pairing_sheet(&mut self) {}
+
     /// Submit a text turn through a builtin app's normal interactive path.
     /// Only the host Assistant implements this; the response path is owned by
     /// the app so callers cannot bypass its model or permission loop.
@@ -343,22 +366,9 @@ pub trait App: Send {
         _text: String,
         _request_id: String,
         _response_file: String,
+        _opts: ExternalTurnOpts,
     ) -> Result<(), String> {
         Err("this app does not accept external turns".to_string())
-    }
-
-    /// Same as [`submit_external_turn`] with optional ledger `client` and `kind`
-    /// overrides. Apps that ignore tags keep the untagged path.
-    fn submit_tagged_turn(
-        &mut self,
-        text: String,
-        request_id: String,
-        response_file: String,
-        client: Option<String>,
-        kind: Option<String>,
-    ) -> Result<(), String> {
-        let _ = (client, kind);
-        self.submit_external_turn(text, request_id, response_file)
     }
 
     /// Deliver a host file/URL drop through the app's production handler.

@@ -71,6 +71,13 @@ impl NeedsYouKind {
     fn is_approval(self) -> bool {
         matches!(self, Self::ApprovalClick)
     }
+
+    /// A paired phone may answer a question or a blocked run.
+    /// An approval click, a permission change, and an integrity alert
+    /// stay on the desktop. Approving one of those is not a grant.
+    pub fn phone_may_approve(self) -> bool {
+        matches!(self, Self::Question | Self::BlockedRun)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -166,6 +173,29 @@ pub enum PermissionMutation {
     Rejected { entry_id: String, error: String },
 }
 
+pub fn needs_you_phone_items(items: &[NeedsYouRecord]) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| {
+            let mut value = serde_json::to_value(item).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "phone_can_approve".to_string(),
+                    serde_json::Value::Bool(item.kind.phone_may_approve()),
+                );
+            }
+            value
+        })
+        .collect()
+}
+
+/// One painted permission-sheet button, in window points.
+#[derive(Debug, Clone)]
+struct SheetButton {
+    label: String,
+    bounds: [f64; 4],
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingView {
     pub pending_request_id: String,
@@ -217,6 +247,15 @@ pub struct PermissionMonitor {
     widens: Mutex<BTreeMap<String, PendingWiden>>,
     /// Serializes list, expiry, and resolve so one terminal receipt wins.
     needs_resolve: Mutex<()>,
+    /// Pairing codes waiting for a desktop click. Not tool grants.
+    pairing_codes: Mutex<Vec<String>>,
+    /// Painted permission-sheet buttons, so a real pointer click can find
+    /// "Allow once" when the accesskit tree has not published that label.
+    sheet_buttons: Mutex<Vec<SheetButton>>,
+    /// Frame currently painting. `sheet_published_epoch` matches it only
+    /// after this frame drew the sheet.
+    sheet_open_epoch: AtomicU64,
+    sheet_published_epoch: AtomicU64,
     #[cfg(test)]
     now_override: AtomicI64,
 }
@@ -415,6 +454,10 @@ impl PermissionMonitor {
             needs_you: Mutex::new(BTreeMap::new()),
             widens: Mutex::new(BTreeMap::new()),
             needs_resolve: Mutex::new(()),
+            pairing_codes: Mutex::new(Vec::new()),
+            sheet_buttons: Mutex::new(Vec::new()),
+            sheet_open_epoch: AtomicU64::new(0),
+            sheet_published_epoch: AtomicU64::new(0),
             #[cfg(test)]
             now_override: AtomicI64::new(0),
         }
@@ -1590,15 +1633,34 @@ impl PermissionMonitor {
     }
 
     pub fn list_pending(&self) -> Vec<PendingView> {
-        self.pending
+        let mut rows: Vec<PendingView> = self
+            .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .map(pending_view)
-            .collect()
+            .collect();
+        for code in self
+            .pairing_codes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            rows.push(pairing_view(code));
+        }
+        rows
     }
 
     pub fn show_pending(&self, id: &str) -> Option<PendingView> {
+        if self
+            .pairing_codes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|code| code == id)
+        {
+            return Some(pairing_view(id));
+        }
         self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1631,6 +1693,91 @@ impl PermissionMonitor {
             revision_after: String::new(),
         });
         log::info!("permission_monitor: refused resolve pending={pending_id}");
+    }
+
+    /// Remember a pairing code until the person clicks the desktop sheet.
+    /// The code is not logged and the click is not a tool grant.
+    pub fn track_pairing_code(&self, code: &str) {
+        if code.is_empty() {
+            return;
+        }
+        let mut codes = self
+            .pairing_codes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if codes.len() == 1 && codes[0] == code {
+            return;
+        }
+        codes.clear();
+        codes.push(code.to_string());
+        log::info!("permission_monitor: pairing confirmation waiting for a click");
+    }
+
+    pub fn clear_pairing_code(&self, code: &str) {
+        self.pairing_codes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|item| item != code);
+    }
+
+    /// Start one paint. Buttons published earlier belong to the previous frame.
+    pub fn begin_sheet_frame(&self) {
+        let _ = self.sheet_open_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record the buttons this frame actually drew.
+    pub fn publish_sheet_buttons(&self, buttons: &[(&str, [f64; 4])]) {
+        let next: Vec<SheetButton> = buttons
+            .iter()
+            .map(|(label, bounds)| SheetButton {
+                label: (*label).to_string(),
+                bounds: *bounds,
+            })
+            .collect();
+        let mut guard = self
+            .sheet_buttons
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let labels_changed = guard.len() != next.len()
+            || guard
+                .iter()
+                .zip(next.iter())
+                .any(|(old, new)| old.label != new.label);
+        if labels_changed {
+            log::info!(
+                "permission_monitor: sheet buttons published count={}",
+                next.len()
+            );
+        }
+        *guard = next;
+        self.sheet_published_epoch
+            .store(self.sheet_open_epoch.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+
+    /// Drop buttons when this frame did not draw the sheet.
+    pub fn finish_sheet_frame(&self) {
+        if self.sheet_published_epoch.load(Ordering::Relaxed)
+            != self.sheet_open_epoch.load(Ordering::Relaxed)
+        {
+            self.sheet_buttons
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+        }
+    }
+
+    pub fn sheet_buttons_json(&self) -> Vec<serde_json::Value> {
+        self.sheet_buttons
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|button| {
+                serde_json::json!({
+                    "label": button.label,
+                    "bounds": button.bounds,
+                })
+            })
+            .collect()
     }
 
     pub fn issue_credential(
@@ -2039,6 +2186,17 @@ impl serde::Serialize for AuditFact {
     }
 }
 
+fn pairing_view(code: &str) -> PendingView {
+    PendingView {
+        pending_request_id: code.to_string(),
+        actor_id: "phone".to_string(),
+        tool: "relay.pair".to_string(),
+        resource_id: None,
+        args_fingerprint: String::new(),
+        input_summary: "confirm this phone".to_string(),
+    }
+}
+
 fn pending_view(row: &Pending) -> PendingView {
     PendingView {
         pending_request_id: row.id.clone(),
@@ -2431,6 +2589,41 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn pairing_code_is_listed_until_the_click_clears_it() {
+        let monitor = PermissionMonitor::ephemeral();
+        assert!(monitor.list_pending().is_empty());
+        monitor.track_pairing_code("481516");
+        monitor.track_pairing_code("481516");
+        let listed = monitor.list_pending();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].pending_request_id, "481516");
+        assert_eq!(listed[0].tool, "relay.pair");
+        assert!(monitor.approve_pending("481516", ApprovalChoice::Once).is_err());
+        assert_eq!(monitor.list_pending().len(), 1);
+        monitor.clear_pairing_code("481516");
+        assert!(monitor.list_pending().is_empty());
+    }
+
+    #[test]
+    fn phone_may_approve_questions_and_blocked_runs_only() {
+        assert!(!NeedsYouKind::ApprovalClick.phone_may_approve());
+        assert!(NeedsYouKind::Question.phone_may_approve());
+        assert!(NeedsYouKind::BlockedRun.phone_may_approve());
+        let items = needs_you_phone_items(&[NeedsYouRecord {
+            id: "ny-1".to_string(),
+            kind: NeedsYouKind::ApprovalClick,
+            actor: "agent:chess".to_string(),
+            resource: "chess.play".to_string(),
+            summary: "play e2e4".to_string(),
+            created_at: 0,
+            expires_at: None,
+            run_tag: None,
+            resolution: None,
+        }]);
+        assert_eq!(items[0]["phone_can_approve"], serde_json::json!(false));
+    }
 
     fn binding(fingerprint: &str) -> ExactBinding {
         ExactBinding {

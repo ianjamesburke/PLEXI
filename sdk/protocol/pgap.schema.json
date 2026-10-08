@@ -417,6 +417,18 @@
                 "null"
               ]
             },
+            "conversation_id": {
+              "description": "Caller-owned conversation. Absent means the host mints one.\nIgnored when `join_desktop` is true.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "join_desktop": {
+              "default": false,
+              "description": "Opt in to the desktop Assistant transcript. Default is a separate conversation.",
+              "type": "boolean"
+            },
             "kind": {
               "description": "Ledger run kind: `system` or `output`. Absent means `output`.",
               "type": [
@@ -437,6 +449,13 @@
             },
             "response_file": {
               "type": "string"
+            },
+            "status_for": {
+              "description": "Read the finished status of a turn that already returned\n`waiting_for_permission`. Does not submit a new prompt.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "text": {
               "type": "string"

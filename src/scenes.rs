@@ -2869,12 +2869,18 @@ impl HeadlessBackend {
                         .downcast_mut::<crate::assistant::AssistantApp>()
                         .expect("assistant app");
                     assistant_app.queue_scripted_tool("chess.play", &input.to_string());
-                    assistant_app
-                        .submit_external_turn(
-                            format!("play {mv}"),
-                            format!("scene-{revision}-{mv}"),
-                            reply.display().to_string(),
-                        )
+                    assistant_app.submit_external_turn(
+                        format!("play {mv}"),
+                        format!("scene-{revision}-{mv}"),
+                        reply.display().to_string(),
+                        crate::app::app_trait::ExternalTurnOpts {
+                            conversation_id: None,
+                            join_desktop: true,
+                            status_for: None,
+                            client: None,
+                            kind: None,
+                        },
+                    )
                         .expect("assistant accepts the scripted turn");
                 });
                 let started = Instant::now();
