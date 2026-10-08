@@ -281,17 +281,10 @@ reap_item_xvfb() {
       continue
     fi
     holder="$(tr -dc '0-9' <"$lock" 2>/dev/null || true)"
+    # The pid in a lock can be a recycled non-Xvfb process. Only the pgrep
+    # loop above stops X servers. A live holder keeps its lock.
     if proc_alive "$holder"; then
-      if xvfb_is_baseline "$holder"; then
-        continue
-      fi
-      echo "$(date -u +%H:%M:%S) reaped X lock holder pid=$holder display=:$display" >>"$EVID/xvfb-reap.log"
-      kill "$holder" >/dev/null 2>&1 || true
-      sleep 0.1
-      kill -9 "$holder" >/dev/null 2>&1 || true
-      if proc_alive "$holder"; then
-        continue
-      fi
+      continue
     fi
     rm -f "$lock" "/tmp/.X11-unix/X${display}"
     echo "$(date -u +%H:%M:%S) removed stale X lock :$display" >>"$EVID/xvfb-reap.log"
