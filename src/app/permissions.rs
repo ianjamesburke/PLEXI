@@ -567,6 +567,16 @@ impl PermissionStore {
             return store;
         }
         let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(&path);
+        if loaded.key_unreadable {
+            log::info!(
+                "permission_store: mac key unreadable; left {} in place and loaded no entries",
+                path.display()
+            );
+            return Self {
+                file: TomlStore::at(path, STORE_LABEL, PermissionStoreData::default()),
+                untrusted: None,
+            };
+        }
         if loaded.trusted {
             log::info!(
                 "permission_store: loaded {} entries from {}",

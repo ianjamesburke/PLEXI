@@ -55,7 +55,14 @@ pub enum NeedsYouKind {
     /// A grant, deny, or audit file failed its integrity check.
     /// Resolving it does not mint a grant.
     Integrity,
+    /// The permission MAC key could not be read. Approving retries that read
+    /// with keychain interaction allowed. It does not mint a grant.
+    Keychain,
 }
+
+/// Shown when saved permissions cannot load because the seal key is unreadable.
+pub(crate) const KEYCHAIN_ACCESS_SUMMARY: &str =
+    "Plexi needs Keychain access to load your saved permissions.";
 
 impl NeedsYouKind {
     pub fn as_str(self) -> &'static str {
@@ -65,6 +72,7 @@ impl NeedsYouKind {
             Self::BlockedRun => "blocked_run",
             Self::PermissionChange => "permission_change",
             Self::Integrity => "integrity",
+            Self::Keychain => "keychain",
         }
     }
 
@@ -301,6 +309,18 @@ impl PermissionMonitor {
     }
 
     fn open(dir: &Path) -> Self {
+        if let Err(error) = super::seal::existing_mac_key() {
+            if super::host_key::is_key_unreadable(&error) {
+                log::info!(
+                    "permission_monitor: mac key unreadable; grants unloaded ({error})"
+                );
+                let store = GrantStore::load_or_default(dir);
+                let audit = dir.join("permission-audit.jsonl");
+                let monitor = Self::new(store, Some(audit));
+                monitor.file_keychain_needs_you();
+                return monitor;
+            }
+        }
         // Snapshot before the grant load. Adopting a legacy file creates the
         // MAC key, and a later check would then look sealed.
         let never_sealed = super::seal::profile_never_sealed(dir);
@@ -346,6 +366,84 @@ impl PermissionMonitor {
             monitor.raise_integrity(fault);
         }
         monitor
+    }
+
+    fn file_keychain_needs_you(&self) {
+        if let Err(error) = self.file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::Keychain,
+            actor: "host".to_string(),
+            resource: "permission-mac".to_string(),
+            summary: KEYCHAIN_ACCESS_SUMMARY.to_string(),
+            expires_at: None,
+            run_tag: Some("keychain:permission-mac".to_string()),
+        }) {
+            log::error!("permission_seal: could not file keychain access alert: {error}");
+            return;
+        }
+        log::info!(
+            "permission_seal: filed keychain access needs-you; grants left unloaded"
+        );
+    }
+
+    /// Read the MAC key with prompts allowed, then load grants and check the seal.
+    ///
+    /// A still-unreadable key leaves the files alone and keeps this item open.
+    /// A readable key with a bad MAC quarantines, the same as startup.
+    fn reload_after_keychain_prompt(&self) -> Result<(), String> {
+        let Some(dir) = self
+            .audit_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|path| path.to_path_buf())
+        else {
+            return Err("permission profile directory is unknown".to_string());
+        };
+        super::host_key::with_keychain_interaction(|| {
+            match super::seal::existing_mac_key() {
+                Err(error) => return Err(error),
+                Ok(None) => return Err("permission mac key is missing".to_string()),
+                Ok(Some(_)) => {}
+            }
+            log::info!("permission_seal: interactive mac key read succeeded");
+            let loaded = GrantStore::load_or_default(&dir);
+            let mut faults = loaded.integrity_faults().to_vec();
+            for fault in super::seal::take_integrity_faults(&dir) {
+                if !faults
+                    .iter()
+                    .any(|have| have.file == fault.file && have.reason == fault.reason)
+                {
+                    faults.push(fault);
+                }
+            }
+            *self.store() = loaded;
+            for fault in &faults {
+                self.raise_integrity(fault);
+            }
+            let audit = dir.join("permission-audit.jsonl");
+            if let Err(reason) = super::seal::verify_audit(&audit) {
+                if super::host_key::is_key_unreadable(&reason) {
+                    return Err(reason);
+                }
+                super::seal::reject_untrusted_audit(&audit, &reason);
+                self.raise_integrity(&super::seal::IntegrityFault {
+                    file: "permission-audit.jsonl".to_string(),
+                    reason,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    fn dismiss_without_audit(&self, id: &str, resolution: NeedsYouResolution) {
+        if let Some(row) = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(id)
+        {
+            row.resolution = Some(resolution);
+        }
+        log::info!("needs_you: dismissed {id} without an audit row");
     }
 
     fn raise_integrity(&self, fault: &super::seal::IntegrityFault) {
@@ -888,6 +986,34 @@ impl PermissionMonitor {
                 };
                 let decision = if approve { "approved" } else { "denied" };
                 if !self.close_needs_you(id, resolution, decision, "") {
+                    if let Some(existing) = self.resolved_receipt(id, true) {
+                        return Ok(existing);
+                    }
+                    return Err(format!("needs-you item {id} could not be audited"));
+                }
+            }
+            NeedsYouKind::Keychain => {
+                if approve {
+                    if let Err(error) = self.reload_after_keychain_prompt() {
+                        log::error!(
+                            "permission_seal: keychain prompt did not unlock the mac key: {error}"
+                        );
+                        return Err(error);
+                    }
+                }
+                let resolution = if approve {
+                    NeedsYouResolution::Approved
+                } else {
+                    NeedsYouResolution::Denied
+                };
+                let decision = if approve { "approved" } else { "denied" };
+                let key_still_unreadable = !approve
+                    && super::seal::existing_mac_key().err().is_some_and(|error| {
+                        super::host_key::is_key_unreadable(&error)
+                    });
+                if key_still_unreadable {
+                    self.dismiss_without_audit(id, resolution);
+                } else if !self.close_needs_you(id, resolution, decision, "") {
                     if let Some(existing) = self.resolved_receipt(id, true) {
                         return Ok(existing);
                     }
@@ -3080,6 +3206,187 @@ mod tests {
             );
             assert_grants_quarantined(dir.path(), &monitor);
         });
+    }
+
+    #[test]
+    fn unreadable_mac_key_leaves_grants_and_audit_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(
+            _denied.interactive_reads(),
+            0,
+            "startup must not prompt for the keychain"
+        );
+        assert!(
+            dir.path().join("grants.toml").is_file(),
+            "an unreadable key must not quarantine grants.toml: {:?}",
+            dir_names(dir.path())
+        );
+        assert!(
+            dir.path().join("permission-audit.jsonl").is_file(),
+            "an unreadable key must not quarantine the audit log: {:?}",
+            dir_names(dir.path())
+        );
+        assert_no_untrusted(dir.path());
+        assert!(monitor.store().records().is_empty(), "grants stay unloaded");
+        let req = PermissionRequest::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+        );
+        assert_eq!(monitor.store().evaluate(&req, None), Decision::Ask);
+        let open = monitor.open_needs_you();
+        assert_eq!(open.len(), 1, "one needs-you item: {open:?}");
+        assert_eq!(open[0].kind, NeedsYouKind::Keychain);
+        assert_eq!(open[0].summary, KEYCHAIN_ACCESS_SUMMARY);
+        assert!(
+            open.iter().all(|row| row.kind != NeedsYouKind::Integrity),
+            "an unreadable key is not a tamper banner: {open:?}"
+        );
+    }
+
+    #[test]
+    fn keychain_needs_you_click_rereads_with_interaction_and_loads_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let denied = crate::broker::host_key::UnreadableMacKey::acquire();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        let id = monitor.open_needs_you()[0].id.clone();
+        assert_eq!(denied.interactive_reads(), 0);
+        monitor.resolve_needs_you(&id, true).expect("click unlocks");
+        assert_eq!(
+            denied.interactive_reads(),
+            1,
+            "the click reads the key with interaction allowed"
+        );
+        assert!(
+            monitor.open_needs_you().is_empty(),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+        assert!(dir.path().join("grants.toml").is_file());
+        assert_no_untrusted(dir.path());
+        let req = PermissionRequest::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+        );
+        assert_eq!(monitor.store().evaluate(&req, None), Decision::Allow);
+        crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
+            .expect("audit still verifies after the key is readable");
+    }
+
+    #[test]
+    fn denying_keychain_needs_you_does_not_prompt_or_load_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let denied = crate::broker::host_key::UnreadableMacKey::acquire();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        let id = monitor.open_needs_you()[0].id.clone();
+        monitor
+            .resolve_needs_you(&id, false)
+            .expect("deny dismisses");
+        assert_eq!(denied.interactive_reads(), 0);
+        assert!(monitor.store().records().is_empty());
+        assert!(
+            monitor.open_needs_you().is_empty(),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+        assert!(dir.path().join("grants.toml").is_file());
+        assert_no_untrusted(dir.path());
+    }
+
+    #[test]
+    fn unreadable_key_then_bad_mac_quarantines_only_after_the_key_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert!(dir.path().join("grants.toml").is_file());
+        corrupt_mac(&dir.path().join("grants.toml"));
+        let id = monitor.open_needs_you()[0].id.clone();
+        monitor
+            .resolve_needs_you(&id, true)
+            .expect("click reads the key");
+        assert_grants_quarantined(dir.path(), &monitor);
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .all(|row| row.kind != NeedsYouKind::Keychain),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+    }
+
+    #[test]
+    fn legacy_unsealed_file_is_not_adopted_or_quarantined_when_the_mac_key_is_unreadable() {
+        let donor = tempfile::tempdir().unwrap();
+        GrantStore::load_or_default(donor.path()).save();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        write_legacy_grants(
+            dir.path(),
+            vec![GrantRecord::app_capability(
+                "assistant",
+                ws.path(),
+                crate::app::permissions::Capability::FsRead,
+                Decision::Allow,
+            )],
+            "",
+        );
+        std::fs::write(
+            dir.path().join("permission-audit.jsonl"),
+            "{\"kind\":\"grant\",\"decision\":\"allow\"}\n",
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(dir.path().join("grants.toml")).unwrap();
+        let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("grants.toml")).unwrap(),
+            before,
+            "legacy adopt must not rewrite the file while the key is unreadable"
+        );
+        assert!(
+            dir.path().join("permission-audit.jsonl").is_file(),
+            "{:?}",
+            dir_names(dir.path())
+        );
+        assert_no_untrusted(dir.path());
+        assert!(monitor.store().records().is_empty());
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .all(|row| row.kind != NeedsYouKind::Integrity),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+        assert_eq!(monitor.open_needs_you().len(), 1);
+        assert_eq!(monitor.open_needs_you()[0].kind, NeedsYouKind::Keychain);
+    }
+
+    fn seal_profile_grant(dir: &Path, workspace: &Path) {
+        let monitor = PermissionMonitor::open_profile(dir);
+        {
+            let mut store = monitor.store();
+            store.record(GrantRecord::app_capability(
+                "my-app",
+                workspace,
+                crate::app::permissions::Capability::NetHttp,
+                Decision::Allow,
+            ));
+            store.save();
+        }
+        monitor.note_denial("actor", "c1", "res", "op", "denied");
     }
 
     fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>, extra: &str) {

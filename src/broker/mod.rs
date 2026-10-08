@@ -722,9 +722,11 @@ impl Default for GrantStore {
 
 impl GrantStore {
     /// Load `grants.toml` from the channel config dir. A missing file is an
-    /// empty store. A missing or bad MAC quarantines the file and returns an
-    /// empty store; [`Self::integrity_faults`] names it, and the legacy file
-    /// is left in place. A signed file that does not parse is backed up and
+    /// empty store. A missing or bad MAC, after the key was read, quarantines
+    /// the file and returns an empty store; [`Self::integrity_faults`] names
+    /// it, and the legacy file is left in place. When the key itself cannot
+    /// be read, the file stays put and this returns an empty store with no
+    /// integrity fault. A signed file that does not parse is backed up and
     /// also returns empty. A trusted or absent grants file imports
     /// `permissions.toml` once, seals the result, and retires the legacy file.
     ///
@@ -734,6 +736,22 @@ impl GrantStore {
     /// authenticated tip. That path does not quarantine and does not record
     /// an integrity fault.
     pub fn load_or_default(config_dir: &Path) -> Self {
+        if let Err(error) = seal::existing_mac_key() {
+            if host_key::is_key_unreadable(&error) {
+                log::info!(
+                    "grant_store: mac key unreadable; left {} in place and loaded no grants",
+                    config_dir.join("grants.toml").display()
+                );
+                return Self {
+                    file: TomlStore::at(
+                        config_dir.join("grants.toml"),
+                        STORE_LABEL,
+                        GrantStoreData::default(),
+                    ),
+                    untrusted: Vec::new(),
+                };
+            }
+        }
         if let Some(store) = Self::adopt_legacy_unsealed(config_dir) {
             return store;
         }

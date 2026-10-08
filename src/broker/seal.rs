@@ -22,6 +22,10 @@
 //! on that store. Deleting the key is not enough on its own; the marker and
 //! the tip still mean "sealed". A keychain or Secret Service read error
 //! refuses adopt as well.
+//!
+//! That read error is not a bad MAC. When the key cannot be read, the grant
+//! file and the audit log stay where they are and no integrity alert is filed.
+//! Only a key that was actually read, and whose MAC does not match, is tampering.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -60,7 +64,8 @@ pub(crate) fn note_integrity_fault(dir: &Path, fault: IntegrityFault) {
     let key = crate::platform::path::canonical_or_self(dir);
     log::info!(
         "permission_seal: noted integrity fault {} ({})",
-        fault.file, fault.reason
+        fault.file,
+        fault.reason
     );
     noted_faults()
         .lock()
@@ -92,7 +97,9 @@ pub enum SealStatus {
     Absent,
     /// MAC matched. `body` is the exact bytes the MAC covers.
     Trusted(String),
-    /// Missing or bad MAC, or the key could not be read. Fail closed.
+    /// The MAC key could not be read. The file stays. This is not tampering.
+    KeyUnreadable(String),
+    /// Missing or bad MAC. Fail closed and quarantine.
     Rejected(String),
 }
 
@@ -115,6 +122,8 @@ pub struct LoadedToml<T> {
     pub fault: Option<IntegrityFault>,
     /// True when a signed file parsed. Absent and rejected files are false.
     pub trusted: bool,
+    /// The MAC key could not be read. The file was not moved.
+    pub key_unreadable: bool,
 }
 
 /// Read a sealed TOML file. Does not move it; the caller quarantines.
@@ -132,6 +141,11 @@ pub fn read_sealed(path: &Path) -> SealStatus {
         Err(_) => return SealStatus::Rejected("not utf-8".to_string()),
     };
     let Some(idx) = text.rfind(MAC_PREFIX) else {
+        if let Err(error) = existing_mac_key() {
+            if super::host_key::is_key_unreadable(&error) {
+                return SealStatus::KeyUnreadable(error);
+            }
+        }
         return SealStatus::Rejected("missing mac".to_string());
     };
     if idx > 0 && text.as_bytes()[idx - 1] != b'\n' {
@@ -142,6 +156,9 @@ pub fn read_sealed(path: &Path) -> SealStatus {
     let body = &text[..idx];
     let key = match key_bytes() {
         Ok(key) => key,
+        Err(error) if super::host_key::is_key_unreadable(&error) => {
+            return SealStatus::KeyUnreadable(error);
+        }
         Err(error) => return SealStatus::Rejected(error),
     };
     let expected = hmac_sha256(key.as_slice(), body.as_bytes());
@@ -164,7 +181,17 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
             data: T::default(),
             fault: None,
             trusted: false,
+            key_unreadable: false,
         },
+        SealStatus::KeyUnreadable(reason) => {
+            log::info!("permission_seal: key unreadable; left {file_name} in place ({reason})");
+            LoadedToml {
+                data: T::default(),
+                fault: None,
+                trusted: false,
+                key_unreadable: true,
+            }
+        }
         SealStatus::Trusted(body) => {
             if let Some(dir) = path.parent() {
                 mark_profile_sealed(dir);
@@ -174,6 +201,7 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
                     data,
                     fault: None,
                     trusted: true,
+                    key_unreadable: false,
                 },
                 Err(error) => {
                     backup_corrupt(path, &error.to_string());
@@ -181,6 +209,7 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
                         data: T::default(),
                         fault: None,
                         trusted: false,
+                        key_unreadable: false,
                     }
                 }
             }
@@ -195,6 +224,7 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
                     reason,
                 }),
                 trusted: false,
+                key_unreadable: false,
             }
         }
     }
@@ -229,6 +259,9 @@ pub fn write_sealed(path: &Path, body: &[u8]) -> Result<(), String> {
 /// the tip is cleared before this returns [`SealError::Untrusted`].
 pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError> {
     if let Err(reason) = verify_audit(path) {
+        if super::host_key::is_key_unreadable(&reason) {
+            return Err(SealError::Io(reason));
+        }
         reject_untrusted_audit(path, &reason);
         return Err(SealError::Untrusted(reason));
     }
@@ -269,7 +302,15 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(path: &Path) -> Result<(), String> {
-    let tip = read_tip(path);
+    existing_mac_key()?;
+    let tip = match tip_lookup(path) {
+        Ok(value) => value,
+        Err(error) if super::host_key::is_key_unreadable(&error) => return Err(error),
+        Err(error) => {
+            log::error!("permission_seal: could not read audit tip: {error}");
+            None
+        }
+    };
     if !path.exists() {
         return if tip.is_some() {
             Err("audit log deleted".to_string())
@@ -549,16 +590,6 @@ fn marker_account(dir: &Path) -> String {
 
 fn tip_lookup(path: &Path) -> Result<Option<String>, String> {
     super::host_key::get(&tip_account(path)).map(|tip| tip.map(|value| value.to_string()))
-}
-
-fn read_tip(path: &Path) -> Option<String> {
-    match tip_lookup(path) {
-        Ok(value) => value,
-        Err(error) => {
-            log::error!("permission_seal: could not read audit tip: {error}");
-            None
-        }
-    }
 }
 
 fn mark_profile_sealed(dir: &Path) {
