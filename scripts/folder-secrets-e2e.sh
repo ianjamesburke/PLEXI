@@ -474,10 +474,44 @@ audit="$PROFILE/permission-audit.jsonl"
 audit_pat="$(mktemp)"
 chmod 600 "$audit_pat"
 printf '%s\n%s\n' "$SECRET" "$SECRET_B" >"$audit_pat"
-if [[ -f "$audit" ]] \
-  && grep -q 'FOLDER_E2E_SECRET' "$audit" \
-  && grep -q '"kind":"ask"' "$audit" \
-  && ! grep -q -F -f "$audit_pat" "$audit"; then
+# The host seal stores each fact as a JSON string inside an envelope, so a
+# raw `"kind":"ask"` grep misses the row. Parse the fact and still reject a
+# line that contains the value.
+if [[ -f "$audit" ]] && python3 - "$audit" "$audit_pat" <<'PY'
+import json, pathlib, sys
+audit = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+secrets = [line for line in pathlib.Path(sys.argv[2]).read_text().splitlines() if line]
+named = False
+asked = False
+for line in audit.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    facts = []
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        row = None
+    if isinstance(row, dict) and "fact" in row:
+        fact = row["fact"]
+        if isinstance(fact, str):
+            try:
+                fact = json.loads(fact)
+            except json.JSONDecodeError:
+                fact = None
+        if isinstance(fact, dict):
+            facts.append(fact)
+    elif isinstance(row, dict) and row.get("kind"):
+        facts.append(row)
+    for fact in facts:
+        if fact.get("kind") == "ask":
+            asked = True
+        if "FOLDER_E2E_SECRET" in json.dumps(fact):
+            named = True
+leaked = any(secret in audit for secret in secrets)
+raise SystemExit(0 if named and asked and not leaked else 1)
+PY
+then
   pass "audit row names the secret and does not contain the value"
 else
   fail "audit row names the secret and does not contain the value"
