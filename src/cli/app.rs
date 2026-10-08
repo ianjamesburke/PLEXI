@@ -1296,6 +1296,30 @@ fn persist_wasm_install_review(
         &selected,
     );
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(config_dir);
+    for capability_id in &report.wasm_required_capabilities {
+        monitor.grant_capability_id(
+            &report.id,
+            workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
+    for capability_id in &report.wasm_optional_capabilities {
+        let decision = if selected.contains(capability_id) {
+            crate::broker::Decision::Allow
+        } else {
+            crate::broker::Decision::Ask
+        };
+        monitor.grant_capability_id(
+            &report.id,
+            workspace_root,
+            capability_id,
+            decision,
+            crate::broker::GrantSource::User,
+        );
+    }
     Some(summary)
 }
 
@@ -1466,6 +1490,11 @@ pub fn app_info(id: &str) -> i32 {
         eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;
     };
+    let app_dir = installed
+        .bin_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| installed.bin_path.clone());
     let m = &installed.manifest;
     println!("id:          {}", m.id);
     println!("name:        {}", m.name);
@@ -1480,6 +1509,16 @@ pub fn app_info(id: &str) -> i32 {
     if let Some(ref repo) = m.repo {
         println!("repo:        {repo}");
     }
+    let tools = crate::cli::introspect::declared_tools(&app_dir);
+    println!("tools:");
+    if tools.is_empty() {
+        println!("  (none declared)");
+    } else {
+        for (name, description) in &tools {
+            println!("  {name}  {description}");
+        }
+    }
+    log::info!("app_info: id={id} tools={}", tools.len());
     0
 }
 
@@ -1677,6 +1716,24 @@ pub fn app_render(
         &capabilities,
         &allowed_hosts,
     );
+    let seed_state = if seed_state.is_none() && app_id == "permissions" {
+        let entries = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        )
+        .list_entries();
+        log::info!(
+            "app_render: seeding permissions inventory count={}",
+            entries.len()
+        );
+        Some(serde_json::json!({
+            "entries": entries,
+            "selected": 0,
+            "mode": "list",
+            "notice": "",
+        }))
+    } else {
+        seed_state
+    };
     let tree = match crate::host::wasm_python::run_headless_frame(
         &launch_config,
         (width as f32, height as f32),
@@ -1947,6 +2004,40 @@ pub fn app_call_cli(
     }
 }
 
+/// `plexi needs-you list --json` and `plexi needs-you resolve <id> --approve|--deny`.
+pub fn needs_you_cli(op: &str, id: Option<&str>, approve: Option<bool>) -> i32 {
+    let response_file = crate::rpc::response_file("needs-you", "json");
+    let payload = match op {
+        "list" => serde_json::json!({"type":"list_needs_you","response_file":response_file}),
+        "resolve" => serde_json::json!({
+            "type": "resolve_needs_you",
+            "id": id.unwrap_or(""),
+            "approve": approve.unwrap_or(false),
+            "response_file": response_file,
+        }),
+        _ => {
+            eprintln!("error: unknown needs-you operation");
+            return 1;
+        }
+    };
+    log::info!("needs_you:cli: op={op} id={id:?} approve={approve:?}");
+    let content = match super::request_with(
+        payload,
+        "needs-you",
+        "needs-you",
+        std::time::Duration::from_secs(15),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(_) => 1,
+        Err(_) => 1,
+    }
+}
+
 /// `plexi assistant permission list|show|resolve` — observation seam for pending grants.
 pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>) -> i32 {
     let response_file = crate::rpc::response_file("assistant-permission", "json");
@@ -2131,7 +2222,6 @@ mod install_confirm_tests {
         trust_sheet_lines, InstallConfirm,
     };
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
-    use crate::app::permissions::{PermissionState, PermissionStore};
     use std::io::Cursor;
 
     fn report() -> PackageReport {
@@ -2352,28 +2442,33 @@ mod install_confirm_tests {
         assert_eq!(summary.optional_granted, 1);
         assert_eq!(summary.optional_deferred, 1);
 
-        let store = PermissionStore::load_or_default(config.path());
+        let stored = |capability: &str, root: &std::path::Path| {
+            let monitor = crate::broker::gate::PermissionMonitor::open_profile(config.path());
+            let workspace_root = crate::platform::path::canonical_or_self(root);
+            let store = monitor.store();
+            store.records().iter().find_map(|record| {
+                (record.actor_id == "wasm-install-review"
+                    && record.target_id == capability
+                    && record.workspace_root.as_deref() == Some(workspace_root.as_path()))
+                .then_some(record.decision)
+            })
+        };
         assert_eq!(
-            store.get_wasm("wasm-install-review", workspace.path(), "state:read-write"),
-            Some(PermissionState::Green)
+            stored("state:read-write", workspace.path()),
+            Some(crate::broker::Decision::Allow)
         );
         assert_eq!(
-            store.get_wasm("wasm-install-review", workspace.path(), "ai.query"),
-            Some(PermissionState::Yellow)
+            stored("ai.query", workspace.path()),
+            Some(crate::broker::Decision::Ask)
         );
         assert_eq!(
-            store.get_wasm(
-                "wasm-install-review",
-                workspace.path(),
-                "net:fetch:api.example.com"
-            ),
-            Some(PermissionState::Green)
+            stored("net:fetch:api.example.com", workspace.path()),
+            Some(crate::broker::Decision::Allow)
         );
         assert_eq!(
-            store.get_wasm(
-                "wasm-install-review",
-                tempfile::tempdir().unwrap().path(),
-                "net:fetch:api.example.com"
+            stored(
+                "net:fetch:api.example.com",
+                tempfile::tempdir().unwrap().path()
             ),
             None,
             "raw WASM install grants must remain workspace-scoped"

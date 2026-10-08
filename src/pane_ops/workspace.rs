@@ -831,7 +831,7 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, &context_env, cwd.clone(), None, false)
+            .seed_window_root_pane(new_idx, &context_env, cwd.clone(), None, false, false, true)
             .is_none()
         {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
@@ -937,7 +937,7 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, &context_env, path.clone(), None, false)
+            .seed_window_root_pane(new_idx, &context_env, path.clone(), None, false, false, true)
             .is_none()
         {
             log::error!(
@@ -980,11 +980,13 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(new_x, active_y, ws_id, None, false, None);
+        self.create_page_at(new_x, active_y, ws_id, None, false, None, false, true);
     }
 
     /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
     /// `context_id` and make it the active window.
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_page_at(
         &mut self,
         grid_x: u32,
@@ -993,6 +995,8 @@ impl PlexiApp {
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
+        agent_pane: bool,
+        inject_folder_secrets: bool,
     ) {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
@@ -1011,6 +1015,8 @@ impl PlexiApp {
             Some(cwd.clone()),
             initial_cmd,
             close_on_exit,
+            agent_pane,
+            inject_folder_secrets,
         ) else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
@@ -1054,6 +1060,8 @@ impl PlexiApp {
     ///
     /// Returns `(pane_id, root_tile)`, or `None` if the PTY-backed terminal
     /// failed to spawn — the caller decides how to degrade.
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn seed_window_root_pane(
         &mut self,
         win_idx: usize,
@@ -1061,9 +1069,17 @@ impl PlexiApp {
         cwd: PathBuf,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
+        agent_pane: bool,
+        inject_folder_secrets: bool,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
-        let (tree, panes, root_tile) =
-            self.create_single_pane_tree(context, Some(cwd), initial_cmd, close_on_exit)?;
+        let (tree, panes, root_tile) = self.create_single_pane_tree(
+            context,
+            Some(cwd),
+            initial_cmd,
+            close_on_exit,
+            agent_pane,
+            inject_folder_secrets,
+        )?;
         let pane_id = *panes
             .keys()
             .next()
@@ -1090,6 +1106,8 @@ impl PlexiApp {
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
+        agent_pane: bool,
+        inject_folder_secrets: bool,
     ) -> Option<crate::spatial::tiling::PaneId> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
@@ -1098,15 +1116,21 @@ impl PlexiApp {
             .unwrap_or(home);
         let active = self.active_window;
         let context = self.pane_context_env_for_window(active);
-        let Some((pane_id, _root_tile)) =
-            self.seed_window_root_pane(active, &context, cwd, initial_cmd, close_on_exit)
-        else {
+        let Some((pane_id, _root_tile)) = self.seed_window_root_pane(
+            active,
+            &context,
+            cwd,
+            initial_cmd,
+            close_on_exit,
+            agent_pane,
+            inject_folder_secrets,
+        ) else {
             log::error!("seed_root_pane: failed to create terminal for empty active window");
             return None;
         };
+        let window_id = self.windows[active].window_id;
         log::info!(
-            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
-            self.windows[active].window_id
+            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
         );
         Some(pane_id)
     }
@@ -1120,7 +1144,7 @@ impl PlexiApp {
         );
         let context = self.pane_context_env_for_window(self.active_window);
         let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(&context, Some(cwd), None, false)
+            self.create_single_pane_tree(&context, Some(cwd), None, false, false, true)
         else {
             log::error!("Failed to create terminal for reset context");
             return;

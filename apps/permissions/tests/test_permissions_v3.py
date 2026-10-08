@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import plexi_sdk as sdk
 from plexi_sdk import _v3_state
-from plexi_sdk.effects import SetState
-from plexi_sdk.events import CapabilityGranted, KeyEvent, UiAction
+from plexi_sdk.effects import PermissionDecision, ReadPermissionDecisions, SetState
+from plexi_sdk.events import KeyEvent, PermissionInventory, UiAction
 
 import main as permissions
 
@@ -22,32 +22,58 @@ def _state_effect(effects: list) -> dict:
 def _sample_state() -> dict:
     return {
         **permissions.DEFAULT_STATE,
-        "path": "/workspace",
-        "can_manage": True,
-        "grants": [
+        "entries": [
             {
-                "app_id": "todo",
-                "capability": "fs.read",
-                "state": "green",
+                "id": "grant-allow",
+                "kind": "allow",
+                "duration": "until",
+                "actor_id": "pane:1",
+                "tool": "chess.state",
+                "resource_id": "game-1",
+                "when": "2026-10-06 00:00:00 UTC",
+                "source": "user",
                 "workspace": "/workspace",
-                "description": "Read files",
-                "sensitive": False,
-                "stored": True,
             },
             {
-                "app_id": "kraken",
-                "capability": "net.http",
-                "state": "yellow",
+                "id": "grant-deny",
+                "kind": "deny",
+                "duration": "always",
+                "actor_id": "agent:assistant:2",
+                "tool": "chess.legal_moves",
+                "resource_id": "game-1",
+                "when": "2026-10-06 00:01:00 UTC",
+                "source": "user",
                 "workspace": "/workspace",
-                "description": "Fetch prices",
-                "sensitive": True,
-                "stored": False,
             },
         ],
     }
 
 
-def test_selection_detail_and_revoke_are_state_effects() -> None:
+def test_inventory_replaces_entries() -> None:
+    _set_state(dict(permissions.DEFAULT_STATE))
+
+    effects = permissions.update(
+        PermissionInventory(
+            entries=[
+                {
+                    "id": "grant-deny",
+                    "kind": "deny",
+                    "actor_id": "pane:4",
+                    "tool": "chess.state",
+                    "when": "2026-10-06 01:00:00 UTC",
+                }
+            ],
+            notice="",
+            status="list",
+        )
+    )
+    data = _state_effect(effects)
+    assert data["entries"][0]["id"] == "grant-deny"
+    assert data["entries"][0]["kind"] == "deny"
+    assert data["entries"][0]["tool"] == "chess.state"
+
+
+def test_revoke_reset_and_allow_ask_the_host() -> None:
     _set_state(_sample_state())
 
     effects = permissions.update(KeyEvent("down"))
@@ -55,22 +81,73 @@ def test_selection_detail_and_revoke_are_state_effects() -> None:
     assert data["selected"] == 1
 
     _set_state(data)
-    effects = permissions.update(KeyEvent("enter"))
-    data = _state_effect(effects)
-    assert data["mode"] == "detail"
+    effects = permissions.update(UiAction("permissions:reset"))
+    decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
+    assert decision.action == "reset"
+    assert decision.id == "grant-deny"
+
+    _set_state(_sample_state())
+    effects = permissions.update(UiAction("permissions:revoke"))
+    decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
+    assert decision.action == "revoke"
+    assert decision.id == "grant-allow"
 
     _set_state(data)
-    effects = permissions.update(UiAction("permissions:revoke"))
-    data = _state_effect(effects)
-    assert data["grants"][1]["state"] == "revoked"
-    assert "host revoke effect is not available" in data["notice"]
+    effects = permissions.update(UiAction("permissions:allow"))
+    decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
+    assert decision.action == "allow"
+    assert decision.id == "grant-deny"
 
 
-def test_capability_granted_updates_manage_state() -> None:
+def test_init_reads_the_monitor() -> None:
+    _set_state(_sample_state())
+    effects = permissions.init((800, 600), [])
+    assert any(isinstance(effect, ReadPermissionDecisions) for effect in effects)
+
+
+def _texts(node) -> list[str]:
+    raw = node.to_node() if hasattr(node, "to_node") else node
+    found: list[str] = []
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "text" and isinstance(value.get("text"), str):
+                found.append(value["text"])
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(raw)
+    return found
+
+
+def test_unchanged_inventory_does_not_repaint() -> None:
     _set_state(dict(permissions.DEFAULT_STATE))
+    event = PermissionInventory(entries=[], notice="", status="list")
+    first = permissions.update(event)
+    assert any(isinstance(effect, SetState) for effect in first)
+    _set_state(_state_effect(first))
+    second = permissions.update(PermissionInventory(entries=[], notice="", status="list"))
+    assert second == []
 
-    effects = permissions.update(CapabilityGranted("permissions.manage"))
-    data = _state_effect(effects)
 
-    assert data["can_manage"] is True
-    assert "granted" in data["notice"]
+def test_empty_inventory_is_honest() -> None:
+    _set_state(dict(permissions.DEFAULT_STATE))
+    waiting = _texts(permissions.view())
+    assert "Waiting for permission decisions…" in waiting
+    assert "No permission decisions." not in waiting
+
+    effects = permissions.update(PermissionInventory(entries=[], notice="", status="list"))
+    _set_state(_state_effect(effects))
+    empty = _texts(permissions.view())
+    assert "No permission decisions." in empty
+    assert "Waiting for permission decisions…" not in empty
+
+
+def test_seeded_entries_show_before_inventory() -> None:
+    _set_state(_sample_state())
+    texts = _texts(permissions.view())
+    assert "Waiting for permission decisions…" not in texts
+    assert "No permission decisions." not in texts

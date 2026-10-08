@@ -413,6 +413,12 @@ pub enum AppRequest {
         /// answering with a typed timeout. Requires `agent_cmd`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         boot_timeout_secs: Option<f64>,
+        /// Host-stamped ancestor pids of the socket peer. The client cannot
+        /// set this: `handle_socket_line` overwrites it from the kernel
+        /// credential captured at accept. `None` means the request did not
+        /// arrive on the command socket (spawn queue, in-process).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_ancestry: Option<Vec<u32>>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -759,6 +765,37 @@ pub enum AppRequest {
         pending_request_id: String,
         /// `once`, `session`, `always`, or `deny`.
         choice: String,
+        response_file: String,
+    },
+    /// Read or change the permission monitor. `op` is `list`, `reset`,
+    /// `revoke`, or `allow`. A pane id or a call credential marks an agent.
+    /// Agents may revoke. Reset and allow from an agent file Needs you.
+    Permissions {
+        op: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<String>,
+        response_file: String,
+    },
+    /// List items waiting on the human. The host expires due items first.
+    ListNeedsYou { response_file: String },
+    /// Resolve one needs-you item exactly once. `approve` false denies it.
+    ResolveNeedsYou {
+        id: String,
+        approve: bool,
+        response_file: String,
+    },
+    /// Agents API: heads, runs, delegation, and gated tool calls.
+    /// `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,
+    /// `show_run`, `finish_run`, or `delegate`. `payload` carries the
+    /// workspace path and the op's fields. The host writes the JSON result
+    /// to `response_file`.
+    AgentsApi {
+        op: String,
+        payload: serde_json::Value,
         response_file: String,
     },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by

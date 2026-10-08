@@ -189,6 +189,79 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
     crate::plexi_ai::tool_dispatch::unregister(provider_pane_id);
 }
 
+/// Two harnesses in one process must not collapse `chess.play` into one
+/// namespace. The registry is process-global; isolation is the context id
+/// assigned in `HostHarness::new`.
+#[test]
+fn two_harnesses_do_not_share_a_chess_tool_namespace() {
+    fn register_play(h: &mut HostHarness) -> u64 {
+        let (_, pane_id) = h.app.add_app_pane_in_window(0, "chess");
+        let origin = h
+            .app
+            .origin_for_pane(pane_id)
+            .expect("origin_for_pane must resolve");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        crate::plexi_ai::tool_dispatch::register(
+            pane_id,
+            "chess".to_string(),
+            vec![crate::protocol::AiTool {
+                name: "chess.play".to_string(),
+                description: "play".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: serde_json::json!({"type": "object"}),
+                timeout_ms: Some(1_000),
+                read_only: false,
+            }],
+            crate::plexi_ai::tool_dispatch::AppEventSender::Channel(tx),
+            origin,
+        );
+        pane_id
+    }
+
+    fn visible_play_names(h: &HostHarness) -> Vec<String> {
+        let ctx = h.app.windows[0].context_id;
+        let scope = crate::plexi_ai::tool_dispatch::DispatchScope::new(
+            0,
+            "probe",
+            h.workspace_root(),
+            ctx,
+        );
+        let mut names: Vec<String> = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
+            scope,
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+        )
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .filter(|name| name.contains("chess.play"))
+        .collect();
+        names.sort();
+        names
+    }
+
+    let mut a = HostHarness::new();
+    let mut b = HostHarness::new();
+    assert_ne!(a.app.windows[0].context_id, b.app.windows[0].context_id);
+    assert_eq!(
+        a.app.windows[0].context_id,
+        a.app.router.active().context_id
+    );
+    let pane_a = register_play(&mut a);
+    let pane_b = register_play(&mut b);
+    assert_eq!(
+        visible_play_names(&a),
+        vec!["chess__chess.play".to_string()],
+        "harness A must see one bare chess.play"
+    );
+    assert_eq!(
+        visible_play_names(&b),
+        vec!["chess__chess.play".to_string()],
+        "harness B must see one bare chess.play"
+    );
+    crate::plexi_ai::tool_dispatch::unregister(pane_a);
+    crate::plexi_ai::tool_dispatch::unregister(pane_b);
+}
+
 // -- DrawCommand routing --------------------------------------------------
 
 /// Regression guard for PR #536: `AiQuery` was silently dropped into
@@ -3987,6 +4060,50 @@ fn frame_with_events(h: &mut HostHarness, events: Vec<egui::Event>) {
     });
 }
 
+/// Host focus can move before the frame's egui pass (keyboard pane nav,
+/// `focus_pane`). The editor used to insert `Event::Text` whenever its
+/// widget id still held egui focus, which the reconciler only updates at
+/// the end of the frame. Keystrokes on that switch frame landed in the
+/// editor the user had just left.
+#[test]
+fn text_on_the_pane_switch_frame_does_not_reach_the_editor() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let editor = open_focused_note(&mut h, tmp.path(), "keep");
+    let other = h.add_test_pane();
+    h.focus_pane(other);
+    frame_with_events(&mut h, vec![egui::Event::Text("and now?".to_string())]);
+    assert_eq!(
+        note_semantics(&h, editor)["source_text"], "keep",
+        "text on the frame host focus leaves the editor must not change the document"
+    );
+}
+
+/// After the switch frame has settled, typed text goes to the assistant
+/// composer and the unfocused editor stays unchanged. The 2s gap in the
+/// 2026-10-08 dogfood (file mtime vs assistant send) matches the editor's
+/// autosave debounce, not a multi-frame leak after focus has moved.
+#[test]
+fn typing_in_assistant_leaves_unfocused_text_editor_unchanged() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let editor = open_focused_note(&mut h, tmp.path(), "keep");
+    let assistant = h.add_assistant_pane();
+    h.focus_pane(assistant);
+    h.run_frames(2);
+
+    frame_with_events(&mut h, vec![egui::Event::Text("and now?".to_string())]);
+
+    assert_eq!(
+        note_semantics(&h, editor)["source_text"], "keep",
+        "an unfocused editor must not receive keystrokes addressed to the assistant"
+    );
+    assert_eq!(
+        h.assistant_mut(assistant).model.composer, "and now?",
+        "the focused assistant composer still receives the typed text"
+    );
+}
+
 /// Typing while pane A is active must leave pane B's assistant composer
 /// unchanged. Before stint 0429 the composer claimed egui focus when active
 /// and nothing surrendered it on deactivation, so the stale focus kept
@@ -4305,7 +4422,7 @@ fn first_boot_seam_seeds_base_root_pane() {
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
     if h.app
-        .seed_window_root_pane(0, &context, cwd, None, false)
+        .seed_window_root_pane(0, &context, cwd, None, false, false, true)
         .is_none()
     {
         // No PTY in this env — the installer degrades to the welcome screen,
@@ -4335,7 +4452,7 @@ fn first_boot_shape_matches_new_context() {
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
     if h.app
-        .seed_window_root_pane(0, &context, cwd, None, false)
+        .seed_window_root_pane(0, &context, cwd, None, false, false, true)
         .is_none()
     {
         return; // no PTY in this env
@@ -5585,6 +5702,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         name: None,
         agent_cmd: None,
         boot_timeout_secs: None,
+        peer_ancestry: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -5740,6 +5858,150 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
         .and_then(Pane::as_app)
         .expect("a new app pane");
     assert_eq!(opened.manifest_id, "text-editor");
+}
+
+/// Opening a file from the File Explorer must split the editor next to the
+/// explorer that requested it. The explorer emits `sender_pane_id: 0`; the
+/// drain has to stamp the real pane id. Without that stamp the host logs
+/// "anchor pane 0 not found" and splits whichever pane happens to be focused.
+#[test]
+fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let doc = tmp.path().join("readme.md");
+    std::fs::write(&doc, "# hello").expect("seed doc");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(
+            tmp.path().to_path_buf(),
+        )),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let browser = h.state().open_panes[0];
+    let before: std::collections::HashSet<PaneId> =
+        h.app.windows[0].panes.keys().copied().collect();
+    // A second pane, focused, so a missing anchor would split THIS pane
+    // rather than the explorer.
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(
+            tmp.path().to_path_buf(),
+        )),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let decoy = *h.app.windows[0]
+        .panes
+        .keys()
+        .find(|id| !before.contains(id))
+        .expect("decoy pane");
+    h.focus_pane(decoy);
+    h.run_frames(1);
+
+    {
+        let pane = h
+            .app
+            .windows[0]
+            .panes
+            .get_mut(&browser)
+            .and_then(Pane::as_app_mut)
+            .expect("file browser pane");
+        let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.runtime else {
+            panic!("file browser is a builtin");
+        };
+        app.as_any_mut()
+            .downcast_mut::<crate::file_browser::FileBrowserApp>()
+            .expect("file browser")
+            .request_open_for_test(&doc);
+    }
+    h.run_frames(2);
+
+    let editor = h.app.windows[0]
+        .panes
+        .iter()
+        .find(|(id, pane)| {
+            **id != browser
+                && **id != decoy
+                && pane
+                    .as_app()
+                    .is_some_and(|app| app.manifest_id == "text-editor")
+        })
+        .map(|(id, _)| *id)
+        .expect("text-editor pane opened from the explorer");
+    let order = split_row_panes(&h.app.windows[0], editor);
+    let browser_at = order
+        .iter()
+        .position(|id| *id == browser)
+        .unwrap_or_else(|| panic!("browser missing from the editor's split row, order={order:?}"));
+    let editor_at = order
+        .iter()
+        .position(|id| *id == editor)
+        .expect("editor in its own split row");
+    assert_eq!(
+        editor_at,
+        browser_at + 1,
+        "the editor must be the pane immediately to the right of the file browser \
+         that opened it, order={order:?} decoy={decoy}"
+    );
+    assert_ne!(
+        order.get(editor_at.wrapping_sub(1)).copied(),
+        Some(decoy),
+        "the editor must not split the focused decoy, order={order:?}"
+    );
+}
+
+/// Panes in the editor's split row, left to right.
+///
+/// A frame can wrap each pane in a single-child container, so the editor's
+/// immediate parent is not the row. Walk up to the first container with more
+/// than one child and read one pane from each child, in order.
+fn split_row_panes(window: &crate::host::context::Window, pane_id: PaneId) -> Vec<PaneId> {
+    use egui_tiles::Tile;
+    let mut current = window
+        .tree
+        .tiles
+        .find_pane(&pane_id)
+        .expect("editor tile");
+    let row = loop {
+        let parent = window
+            .tree
+            .tiles
+            .parent_of(current)
+            .expect("editor split parent");
+        let Tile::Container(container) = window.tree.tiles.get(parent).expect("parent tile")
+        else {
+            panic!("editor parent is not a container");
+        };
+        if container.children().count() > 1 {
+            break parent;
+        }
+        current = parent;
+    };
+    let Tile::Container(container) = window.tree.tiles.get(row).expect("split row") else {
+        panic!("split row is not a container");
+    };
+    container
+        .children()
+        .filter_map(|child| first_pane_in_tile(window, *child))
+        .collect()
+}
+
+fn first_pane_in_tile(
+    window: &crate::host::context::Window,
+    tile_id: egui_tiles::TileId,
+) -> Option<PaneId> {
+    use egui_tiles::Tile;
+    match window.tree.tiles.get(tile_id)? {
+        Tile::Pane(id) => Some(*id),
+        Tile::Container(container) => container
+            .children()
+            .find_map(|child| first_pane_in_tile(window, *child)),
+    }
 }
 
 // -- Hidden-window IPC servicing (stint 0505 fix round 3) -----------------
@@ -6918,6 +7180,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
 
         let reply = read_json_response(&response);
@@ -6965,6 +7228,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
 
         let reply = read_json_response(&response);
@@ -7390,6 +7654,7 @@ mod agent_boot {
             name: Some("agent".to_string()),
             agent_cmd: Some(agent_cmd.to_string()),
             boot_timeout_secs,
+            peer_ancestry: None,
         });
         response
     }
@@ -7600,6 +7865,7 @@ mod agent_boot {
             name: None,
             agent_cmd: Some("c-large".to_string()),
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
         h.run_frames(1);
 

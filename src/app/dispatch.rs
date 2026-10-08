@@ -986,6 +986,8 @@ impl PlexiApp {
                             close_on_exit,
                             None,
                             true,
+                            false,
+                            true,
                         );
                     } else {
                         if let Some(from_id) = from_pane_id {
@@ -1669,8 +1671,19 @@ impl PlexiApp {
                     | AppCommand::DeliverRunUpdate { .. }
                     | AppCommand::InsertPathToken { .. }
                     | AppCommand::RequestCommandPreview { .. }
-                    | AppCommand::OpenArtifact { .. }
                     | AppCommand::QueryContextState { .. } => deferred.push(cmd),
+                    // The file browser (and every other builtin) emits
+                    // `sender_pane_id: 0` because it does not know its pane id.
+                    // Stamp the real id here so `open_text_file_in_split` anchors
+                    // the editor on the requesting pane instead of logging
+                    // "anchor pane 0 not found".
+                    AppCommand::OpenArtifact { path, mode, .. } => {
+                        deferred.push(AppCommand::OpenArtifact {
+                            sender_pane_id: pane_id,
+                            path,
+                            mode,
+                        });
+                    }
                     // Every SDK bridge that constructs these emits a
                     // placeholder sender_pane_id=0 (it doesn't know its own
                     // pane id); rewrite to the real pane_id here, where it's

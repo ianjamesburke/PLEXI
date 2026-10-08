@@ -119,11 +119,57 @@ def clusters(values: list[float], gap: float) -> list[float]:
     return [sum(group) / len(group) for group in groups]
 
 
+def evenly_anchored(start: float, end: float) -> list[float]:
+    """Eight centers from the board's outer bounds, one cell apart."""
+    step = (end - start) / 7.0
+    return [start + index * step for index in range(8)]
+
+
+def best_eight(axis: list[float], cell: float) -> list[float]:
+    """The eight centers that bound one board.
+
+    A highlight, label, or clipped chrome square can add a ninth cluster.
+    Keep the subset whose span is one board (seven cells) and whose gaps
+    match the square size, then place the clicks on those outer bounds.
+    """
+    from itertools import combinations
+
+    target = 7.0 * cell
+    pool = axis
+    if len(pool) > 12:
+        narrowed: list[float] | None = None
+        for start in range(len(pool)):
+            for end in range(start + 7, len(pool)):
+                span = pool[end] - pool[start]
+                if span > target * 1.35:
+                    break
+                if span < target * 0.65:
+                    continue
+                group = pool[start : end + 1]
+                if narrowed is None or len(group) < len(narrowed):
+                    narrowed = group
+        pool = narrowed or pool[:12]
+    best_score: float | None = None
+    best_window: list[float] | None = None
+    for indexes in combinations(range(len(pool)), 8):
+        window = [pool[index] for index in indexes]
+        span = window[-1] - window[0]
+        gaps = [window[index + 1] - window[index] for index in range(7)]
+        deviation = sum(abs(gap - cell) for gap in gaps) / 7.0
+        score = abs(span - target) + deviation * 2.0
+        if best_score is None or score < best_score:
+            best_score = score
+            best_window = window
+    if best_window is None:
+        raise SystemExit(f"board axis has {len(axis)} clusters")
+    return evenly_anchored(best_window[0], best_window[-1])
+
+
 def complete_axis(centers: list[float], cell: float) -> list[float]:
     """Eight file or rank centers. Insert a missing edge from the cell size."""
     axis = clusters(centers, cell * 0.45)
     if len(axis) > 8:
-        raise SystemExit(f"board axis has {len(axis)} clusters")
+        return best_eight(axis, cell)
     while len(axis) < 8:
         gaps = [axis[i + 1] - axis[i] for i in range(len(axis) - 1)]
         if gaps and max(gaps) > cell * 1.5:

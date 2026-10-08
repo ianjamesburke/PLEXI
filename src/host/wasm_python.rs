@@ -1257,6 +1257,13 @@ pub struct LivePythonPane {
     /// Lives on the pane because a traceback spans several `drain_stderr`
     /// calls and its state must survive between them.
     stderr_classifier: GuestStderrClassifier,
+    /// Last warn time per unrecognized guest message type. A 1 Hz poll must
+    /// not fill the channel log — and the Logs app that tails it — with the
+    /// same line.
+    unhandled_warned_at: HashMap<String, std::time::Instant>,
+    /// One info line the first time this pane serves
+    /// `read_permission_decisions`. Later polls stay quiet at info.
+    announced_permission_read: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2291,6 +2298,53 @@ fn drop_undeliverable_mcp_backlog(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionBridgeKind {
+    Read,
+    Decide,
+}
+
+/// How long to suppress a repeat of the same unrecognized guest message type.
+const UNHANDLED_WARN_REPEAT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn bridge_message_type(message: &Value) -> Option<&str> {
+    let raw = message.get("type").and_then(Value::as_str)?;
+    let trimmed = raw.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn permission_bridge_kind(message_type: Option<&str>) -> Option<PermissionBridgeKind> {
+    match message_type {
+        Some("read_permission_decisions") => Some(PermissionBridgeKind::Read),
+        Some("permission_decision") => Some(PermissionBridgeKind::Decide),
+        _ => None,
+    }
+}
+
+fn guest_log_level(raw: Option<&str>) -> log::Level {
+    match raw.map(str::trim) {
+        Some("debug") => log::Level::Debug,
+        Some("warn" | "warning") => log::Level::Warn,
+        Some("error") => log::Level::Error,
+        Some("trace") => log::Level::Trace,
+        _ => log::Level::Info,
+    }
+}
+
+fn unhandled_warn_is_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(at) => match now.checked_duration_since(at) {
+            Some(elapsed) => elapsed >= UNHANDLED_WARN_REPEAT,
+            None => true,
+        },
+    }
+}
+
 impl LivePythonPane {
     /// Send an event to the CPython guest. Failure means the message was
     /// dropped: malformed JSON, closed stdin, or the guest-stdin hard cap.
@@ -2383,6 +2437,8 @@ impl LivePythonPane {
             pending_commands: Vec::new(),
             pending_click_carry: None,
             stderr_classifier: GuestStderrClassifier::new(),
+            unhandled_warned_at: HashMap::new(),
+            announced_permission_read: false,
         })
     }
 
@@ -2622,7 +2678,10 @@ impl LivePythonPane {
                     .unwrap_or_else(|e| e.into_inner())
                     .suppressed,
             );
-            log::info!(
+            // Debug, not info. The Logs app tails this same channel log and
+            // re-renders whenever the tail changes, so an info sample every
+            // window becomes a permanent row of this pane's own telemetry.
+            log::debug!(
                 "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
                 self.app_id,
                 self.perf_json_decode.as_secs_f64() * 1000.0,
@@ -2858,12 +2917,22 @@ impl LivePythonPane {
     /// Handle one non-tree bridge message. Tree framing (`component_tree` /
     /// `tree_delta`) is resolved on the decoder thread and never reaches here.
     fn handle_message(&mut self, message: Value) {
-        let message_type = message.get("type").and_then(Value::as_str);
+        let message_type = bridge_message_type(&message);
         log::debug!(
             "app::{}: CPython WASM message type={}",
             self.app_id,
             message_type.unwrap_or("<missing>")
         );
+        // Permission polls arrive every second from the Permissions app.
+        // Handle them before the generic match so a miss cannot fall through
+        // to the unhandled warning and leave the list blank.
+        if let Some(kind) = permission_bridge_kind(message_type) {
+            match kind {
+                PermissionBridgeKind::Read => self.handle_read_permission_decisions(),
+                PermissionBridgeKind::Decide => self.handle_permission_decision(&message),
+            }
+            return;
+        }
         match message_type {
             Some("ready") => {
                 self.ready = true;
@@ -2954,14 +3023,14 @@ impl LivePythonPane {
             Some("mcp_send") => self.handle_mcp_send(&message),
             Some("mcp_disconnect") => self.handle_mcp_disconnect(&message),
             Some("capability_request") => self.handle_capability_request(&message),
-            Some("log") => log::info!(
-                "app::{}: {}",
-                self.app_id,
-                message
+            Some("log") => {
+                let level = guest_log_level(message.get("level").and_then(Value::as_str));
+                let text = message
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-            ),
+                    .unwrap_or_default();
+                log::log!(level, "app::{}: {}", self.app_id, text);
+            }
             Some("status_summary") => {}
             _ => {
                 match app_command_from_python_message(&message) {
@@ -2978,12 +3047,7 @@ impl LivePythonPane {
                     }
                     self.pending_commands.push(command);
                     }
-                    Ok(None) => {
-                    log::warn!(
-                        "app::{}: unhandled CPython WASM message: {message}",
-                        self.app_id
-                    );
-                    }
+                    Ok(None) => self.warn_unhandled_cpython_message(&message),
                     Err(error) => log::warn!(
                         "app::{}: rejected CPython WASM message: {error}",
                         self.app_id
@@ -3221,6 +3285,99 @@ impl LivePythonPane {
         if let Err(error) = self.runtime.send(&response) {
             log::error!("app::{}: send host_log_result: {error}", self.app_id);
         }
+    }
+
+    fn permission_entries() -> Vec<crate::broker::gate::PermissionEntry> {
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .list_entries()
+    }
+
+    fn send_permission_inventory(&mut self, notice: &str, status: &str) {
+        let entries = Self::permission_entries();
+        log::debug!(
+            "app::{}: permission inventory count={} status={status}",
+            self.app_id,
+            entries.len()
+        );
+        if let Err(error) = self.runtime.send(&json!({
+            "type": "permission_inventory",
+            "entries": entries,
+            "notice": notice,
+            "status": status,
+        })) {
+            log::error!("app::{}: send permission_inventory: {error}", self.app_id);
+        }
+    }
+
+    fn handle_read_permission_decisions(&mut self) {
+        if !self.announced_permission_read {
+            self.announced_permission_read = true;
+            log::info!(
+                "app::{}: serving read_permission_decisions",
+                self.app_id
+            );
+        }
+        self.send_permission_inventory("", "list");
+    }
+
+    /// Warn once per message type per window. Repeats stay at debug so a
+    /// guest that polls an unrecognized effect cannot flood the Logs tail.
+    fn warn_unhandled_cpython_message(&mut self, message: &Value) {
+        let key = bridge_message_type(message)
+            .unwrap_or("<missing>")
+            .to_string();
+        let now = std::time::Instant::now();
+        let due = unhandled_warn_is_due(self.unhandled_warned_at.get(&key).copied(), now);
+        if !due {
+            log::debug!(
+                "app::{}: repeated unhandled CPython WASM message: {message}",
+                self.app_id
+            );
+            return;
+        }
+        self.unhandled_warned_at.insert(key, now);
+        log::warn!(
+            "app::{}: unhandled CPython WASM message: {message}",
+            self.app_id
+        );
+    }
+
+    fn handle_permission_decision(&mut self, message: &Value) {
+        let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+        let action = message
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let outcome = monitor.mutate_entry(
+            id,
+            action,
+            &crate::broker::gate::PermissionCaller {
+                human: true,
+                actor_id: format!("app:{}", self.app_id),
+            },
+        );
+        log::info!(
+            "app::{}: permission {action} id={id} human=true",
+            self.app_id
+        );
+        let (notice, status) = match &outcome {
+            crate::broker::gate::PermissionMutation::Applied { entry_id } => {
+                (format!("{action} applied for {entry_id}"), "applied".to_string())
+            }
+            crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
+                format!("filed Needs you {needs_you_id}"),
+                "needs_you".to_string(),
+            ),
+            crate::broker::gate::PermissionMutation::Missing { entry_id } => {
+                (format!("missing {entry_id}"), "missing".to_string())
+            }
+            crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
+                (error.clone(), "rejected".to_string())
+            }
+        };
+        self.send_permission_inventory(&notice, &status);
     }
 
     fn handle_http_request(&mut self, message: &Value) {
@@ -3493,7 +3650,7 @@ impl LivePythonPane {
     }
 
     fn states_json(&self) -> Value {
-        Value::Object(
+        let mut states = Value::Object(
             self.config
                 .state_scopes
                 .iter()
@@ -3509,7 +3666,25 @@ impl LivePythonPane {
                     )
                 })
                 .collect(),
-        )
+        );
+        if self.app_id == "permissions" {
+            let entries = Self::permission_entries();
+            log::info!(
+                "app::{}: seeded permission inventory count={}",
+                self.app_id,
+                entries.len()
+            );
+            if let Some(scope) = states
+                .get_mut(self.default_scope().as_str())
+                .and_then(Value::as_object_mut)
+            {
+                scope.insert(
+                    "entries".to_string(),
+                    serde_json::to_value(&entries).unwrap_or(json!([])),
+                );
+            }
+        }
+        states
     }
 
     /// Send the guest's `init` handshake exactly once. `size` is the pane's
@@ -4128,6 +4303,8 @@ impl LivePythonPane {
         // half-line or traceback state into it would misclassify the new
         // guest's first lines.
         self.stderr_classifier = GuestStderrClassifier::new();
+        self.unhandled_warned_at.clear();
+        self.announced_permission_read = false;
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
             // resolved against — that tree is gone after relaunch, so
@@ -9467,6 +9644,50 @@ execution = "cloud"
 
         assert!(matches!(err, WasmPythonError::RawModuleAbiMismatch { .. }));
         assert!(err.to_string().contains("lifecycle"));
+    }
+
+    #[test]
+    fn read_permission_decisions_is_a_permission_bridge_message() {
+        let read = json!({"type": "read_permission_decisions"});
+        assert_eq!(
+            permission_bridge_kind(bridge_message_type(&read)),
+            Some(PermissionBridgeKind::Read)
+        );
+        let padded = json!({"type": " permission_decision "});
+        assert_eq!(
+            permission_bridge_kind(bridge_message_type(&padded)),
+            Some(PermissionBridgeKind::Decide)
+        );
+        let bom = json!({"type": "\u{feff}read_permission_decisions"});
+        assert_eq!(
+            permission_bridge_kind(bridge_message_type(&bom)),
+            Some(PermissionBridgeKind::Read)
+        );
+        let typo = json!({"type": "read_permission_decision"});
+        assert_eq!(permission_bridge_kind(bridge_message_type(&typo)), None);
+    }
+
+    #[test]
+    fn guest_log_level_honors_sdk_levels() {
+        assert_eq!(guest_log_level(Some("debug")), log::Level::Debug);
+        assert_eq!(guest_log_level(Some(" warn ")), log::Level::Warn);
+        assert_eq!(guest_log_level(Some("warning")), log::Level::Warn);
+        assert_eq!(guest_log_level(Some("error")), log::Level::Error);
+        assert_eq!(guest_log_level(Some("trace")), log::Level::Trace);
+        assert_eq!(guest_log_level(Some("info")), log::Level::Info);
+        assert_eq!(guest_log_level(Some("nope")), log::Level::Info);
+        assert_eq!(guest_log_level(None), log::Level::Info);
+    }
+
+    #[test]
+    fn unhandled_warn_repeats_are_suppressed_for_thirty_seconds() {
+        let now = std::time::Instant::now();
+        assert!(unhandled_warn_is_due(None, now));
+        assert!(!unhandled_warn_is_due(
+            Some(now),
+            now + std::time::Duration::from_secs(1)
+        ));
+        assert!(unhandled_warn_is_due(Some(now), now + UNHANDLED_WARN_REPEAT));
     }
 
     #[test]

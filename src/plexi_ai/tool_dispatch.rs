@@ -359,6 +359,37 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// Tools currently exposed by live app panes: app id, pane id, tool name, description.
+pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
+    let registry = global_registry().lock().unwrap_or_else(|error| error.into_inner());
+    let mut tools = Vec::new();
+    for (pane_id, entry) in &registry.entries {
+        for tool in &entry.tools {
+            tools.push((
+                entry.app_id.clone(),
+                *pane_id,
+                tool.name.clone(),
+                tool.description.clone(),
+            ));
+        }
+    }
+    tools.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
+    tools
+}
+
+/// Whether `pane_id` currently has tools in the process-global registry.
+/// Harnesses wait on this after the first render: `ExposeTools` can land a
+/// frame later when several guests start at once, and a call before that
+/// answers `tool_not_found`.
+#[cfg(test)]
+pub(crate) fn pane_has_registered_tools(pane_id: u64) -> bool {
+    global_registry()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .entries
+        .contains_key(&pane_id)
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.
@@ -715,12 +746,17 @@ impl ToolDispatcher {
                     &self.scope.caller_app_id,
                     resource_id.as_deref().unwrap_or(""),
                 );
-                if choice == crate::broker::gate::ApprovalChoice::Deny {
-                    let _ = self.monitor.approve_pending(
-                        pending_request_id,
-                        crate::broker::gate::ApprovalChoice::Deny,
+                if matches!(
+                    choice,
+                    crate::broker::gate::ApprovalChoice::Deny
+                        | crate::broker::gate::ApprovalChoice::DenyAlways
+                ) {
+                    let _ = self.monitor.approve_pending(pending_request_id, choice);
+                    return ToolCallResult::coded(
+                        "permission_denied",
+                        &call_id,
+                        Some(pending_request_id),
                     );
-                    return ToolCallResult::coded("permission_denied", &call_id, Some(pending_request_id));
                 }
                 if self
                     .monitor

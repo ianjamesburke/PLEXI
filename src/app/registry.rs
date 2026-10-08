@@ -418,16 +418,6 @@ pub const VALID_PLACEMENTS: &[&str] = &[
     "new_window",
 ];
 
-impl AppCapabilities {
-    /// Convert manifest-declared capabilities to runtime permissions.
-    pub fn to_permissions(&self) -> crate::app::permissions::AppPermissions {
-        let mut perms =
-            crate::app::permissions::AppPermissions::from_capability_strings(&self.capabilities);
-        perms.allowed_hosts = self.allowed_hosts.clone();
-        perms
-    }
-}
-
 /// Where a discovered registry entry came from. Used for shadow-logging at
 /// `info` level so users can trace which copy of an id won discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -922,9 +912,10 @@ fn registry_config_dir() -> String {
 /// for the alpha build, `.plexi/` for stable). Returns that ancestor (the
 /// workspace root), or `None` if no matching directory is found before root.
 ///
-/// The home directory is **not** treated as a workspace root unless it
-/// contains the channel dir itself — `~/.plexi-<channel>/` is the global
-/// config dir, which lives next to `~`, not inside it.
+/// The home directory is **not** treated as a workspace root. Both `$HOME`
+/// and the login home from the passwd database are stops: `~/.plexi-<channel>/`
+/// is the global config dir, which lives next to `~`, not inside it. A
+/// private `$HOME` does not make the real login home a workspace.
 pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
     resolve_workspace_root_with_channel(start, &registry_config_dir())
 }
@@ -947,7 +938,91 @@ pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
 }
 
 fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir();
+    resolve_workspace_root_stopping_at(start, channel_dir, &workspace_walk_stops())
+}
+
+/// Directories that are never a workspace root.
+///
+/// `$HOME` (`dirs::home_dir`) is one. The login home from the passwd database
+/// is the other: a folder-secrets check exports a private `HOME`, and the
+/// real login home still contains `~/.plexi-<channel>` from the installed
+/// binary. That profile directory is not a workspace. Stopping only at the
+/// overridden `$HOME` made the login home look like one.
+fn workspace_walk_stops() -> Vec<PathBuf> {
+    let mut stops = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        stops.push(home);
+    }
+    if let Some(login) = login_home_dir() {
+        if !stops.iter().any(|have| paths_same(have, &login)) {
+            stops.push(login);
+        }
+    }
+    stops
+}
+
+fn is_walk_stop(path: &Path, stops: &[PathBuf]) -> bool {
+    stops.iter().any(|stop| paths_same(path, stop))
+}
+
+fn paths_same(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Login directory from the passwd database, ignoring `$HOME`.
+///
+/// `dirs::home_dir` returns `$HOME` when that variable is set. The e2e and
+/// any other private-HOME run therefore need this second stop so the real
+/// login home is not walked as a workspace.
+#[cfg(unix)]
+fn login_home_dir() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStringExt;
+
+    // SAFETY: getpwuid_r writes into `pwd` and `buf`, which outlive the
+    // pointer read. The directory bytes are copied before either is dropped.
+    unsafe {
+        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::zeroed();
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut result = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(
+            libc::getuid(),
+            pwd.as_mut_ptr(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &mut result,
+        );
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        let pwd = pwd.assume_init();
+        if pwd.pw_dir.is_null() {
+            return None;
+        }
+        let bytes = CStr::from_ptr(pwd.pw_dir).to_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
+    }
+}
+
+#[cfg(not(unix))]
+fn login_home_dir() -> Option<PathBuf> {
+    None
+}
+
+fn resolve_workspace_root_stopping_at(
+    start: &Path,
+    channel_dir: &str,
+    stops: &[PathBuf],
+) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
     loop {
         // Home dir is never a workspace root. Check this BEFORE the channel dir so that
@@ -955,10 +1030,8 @@ fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Optio
         // when the focused pane is at ~/. Without this guard ordering, PR/alpha builds
         // would silently load stable app code from ~/.plexi/apps/ instead of their own
         // channel's apps whenever the terminal cwd is ~/. (issue #1064)
-        if let Some(ref h) = home {
-            if current == *h {
-                return None;
-            }
+        if is_walk_stop(&current, stops) {
+            return None;
         }
         if current.join(channel_dir).is_dir() {
             return Some(current);
@@ -1001,13 +1074,11 @@ pub(crate) fn resolve_entry(
 /// to turn a bare "no WASM runtime" miss into an actionable message pointing
 /// the developer at the path-open form.
 pub(crate) fn find_dev_pack_app(id: &str, start: &Path) -> Option<PathBuf> {
-    let home = dirs::home_dir();
+    let stops = workspace_walk_stops();
     let mut current = start.to_path_buf();
     loop {
-        if let Some(ref h) = home {
-            if current == *h {
-                return None;
-            }
+        if is_walk_stop(&current, &stops) {
+            return None;
         }
         let dev_dir = current.join("apps").join("dev");
         if dev_dir.is_dir() {
@@ -1184,6 +1255,29 @@ mod tests {
             result.is_none(),
             "home dir must not be a workspace root even when .plexi exists"
         );
+    }
+
+    #[test]
+    fn channel_profile_in_a_stopped_home_is_not_a_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let login = root.path().join("login-home");
+        let channel = "channel-dir-for-test";
+        fs::create_dir_all(login.join(channel)).unwrap();
+        let nested = login.join("Documents").join("proj");
+        fs::create_dir_all(&nested).unwrap();
+        let stops = vec![login.clone()];
+        assert!(resolve_workspace_root_stopping_at(&login, channel, &stops).is_none());
+        assert!(
+            resolve_workspace_root_stopping_at(&nested, channel, &stops).is_none(),
+            "walking up through a stopped home must not treat its channel profile as a workspace"
+        );
+        let project = root.path().join("project");
+        let inside = project.join("src");
+        fs::create_dir_all(project.join(channel)).unwrap();
+        fs::create_dir_all(&inside).unwrap();
+        let found = resolve_workspace_root_stopping_at(&inside, channel, &stops)
+            .expect("a channel dir outside the stopped homes is a workspace");
+        assert_eq!(found, project);
     }
 
     #[test]

@@ -118,15 +118,28 @@ impl PlexiApp {
             return;
         }
 
-        if let Err(e) = std::fs::remove_file(&entry.path) {
-            log::warn!("notes_picker: failed to delete {:?}: {e}", entry.path);
-        } else {
-            log::info!("notes_picker: deleted {:?}", entry.path);
-        }
+        let deleted = match std::fs::remove_file(&entry.path) {
+            Ok(()) => {
+                log::info!("notes_picker: deleted {:?}", entry.path);
+                true
+            }
+            Err(e) => {
+                log::warn!("notes_picker: failed to delete {:?}: {e}", entry.path);
+                false
+            }
+        };
         self.notes_picker_entries.remove(entry_idx);
         let visible = self.notes_picker_filtered().len();
         if self.notes_picker_selected >= visible {
             self.notes_picker_selected = visible.saturating_sub(1);
+        }
+        if deleted {
+            self.notes_picker_shown_paths = self
+                .notes_picker_entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect();
+            self.invalidate_notes_index();
         }
     }
 
@@ -611,6 +624,7 @@ mod tests {
 
         app.router.set_active(parent_idx);
         app.open_notes_picker();
+        app.finish_notes_index_refresh_for_test();
         let from_parent = titles(&app);
         assert!(
             from_parent.contains(&"body of parent-note".to_string()),
@@ -639,6 +653,7 @@ mod tests {
 
         app.router.set_active(child_idx);
         app.open_notes_picker();
+        app.finish_notes_index_refresh_for_test();
         let from_child = titles(&app);
         assert!(from_child.contains(&"body of child-note".to_string()));
         assert!(
@@ -650,6 +665,73 @@ mod tests {
             "the global tier is still visible: {from_child:?}"
         );
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Cmd+O with a warm index returns before any directory walk. The refresh
+    /// still runs, on another thread; this thread's walk counter stays put.
+    #[test]
+    fn notes_picker_open_with_warm_cache_does_not_walk() {
+        let ctx = egui::Context::default();
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+        let base = std::env::temp_dir().join(format!(
+            "plexi-notes-open-cache-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let profile = base.join("profile");
+        let shared = base.join("shared");
+        std::fs::create_dir_all(&profile).expect("profile");
+        std::fs::create_dir_all(&shared).expect("shared");
+        let _profile_guard = crate::config::set_test_profile_dir(profile);
+        let _shared_guard = crate::config::set_test_shared_dir(shared.clone());
+
+        let root = base.join("proj");
+        std::fs::create_dir_all(&root).expect("root");
+        let tier = crate::notes::context_notes_dir(&root);
+        std::fs::create_dir_all(&tier).expect("tier");
+        std::fs::write(
+            tier.join("cached.md"),
+            "---\ntitle: \"Cached\"\n---\nbody\n",
+        )
+        .expect("seed");
+        std::fs::create_dir_all(shared.join("notes")).expect("global tier");
+
+        let active_idx = app.router.active_idx();
+        app.router.get_mut(active_idx).root = root.clone();
+        let query = crate::notes::NotesDiscovery {
+            active_root: Some(root.clone()),
+            known_roots: vec![root.clone()],
+            global_notes: crate::notes::global_notes_dir(),
+            home: Some(base.clone()),
+            cached_tiers: Vec::new(),
+        };
+        let snapshot = crate::notes::build_notes_index(&query);
+        let generation = app.notes_index.generation();
+        assert!(app.notes_index.store(&root, snapshot, generation));
+        app.notes_index_loaded = true;
+
+        crate::notes::reset_notes_walk_dirs_for_test();
+        let started = std::time::Instant::now();
+        app.open_notes_picker();
+        let open_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(
+            crate::notes::notes_walk_dirs(),
+            0,
+            "Cmd+O must publish the cache without walking"
+        );
+        assert!(
+            app.notes_picker_entries
+                .iter()
+                .any(|entry| entry.title == "Cached"),
+            "the warm cache is what the picker shows"
+        );
+        eprintln!("picker_open_ms={open_ms:.3} walk_dirs=0");
+
+        app.finish_notes_index_refresh_for_test();
         let _ = std::fs::remove_dir_all(&base);
     }
 

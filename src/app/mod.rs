@@ -150,7 +150,9 @@ pub(crate) struct PaneHeartbeat {
     pub next_fire: std::time::Instant,
 }
 
-/// Host-chrome approval button, in window points, for a real pointer click.
+/// A host-chrome approval button, in window points, for the human-intent
+/// driver. The floating Allow once control publishes its bounds on
+/// `assistant permission list` so a real pointer click can find it.
 #[derive(Clone, Debug)]
 pub(crate) struct ApprovalButton {
     pub label: String,
@@ -205,9 +207,10 @@ pub struct PlexiApp {
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `AppRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
-    /// Banner buttons from the last painted frame. `assistant permission list`
-    /// publishes them so a pointer click can approve a pending gate ask.
+    /// Banner buttons drawn last frame. `assistant permission list` publishes them.
     pub(crate) approval_buttons: Vec<ApprovalButton>,
+    /// This frame's raw input includes socket-injected pane events.
+    pub(crate) synthetic_input_frame: bool,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -323,6 +326,20 @@ pub struct PlexiApp {
     pub(crate) notes_picker_selected: usize,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
+    /// In-memory notes index. Cmd+O paints this and does not walk.
+    pub(crate) notes_index: crate::notes::NotesIndexCache,
+    /// Background refresh of `notes_index`. Drained from `App::logic`.
+    pub(crate) notes_index_rx: Option<std::sync::mpsc::Receiver<crate::notes::NotesIndexBuild>>,
+    /// Anchor the in-flight refresh was started for.
+    pub(crate) notes_index_inflight_anchor: Option<std::path::PathBuf>,
+    /// A note mutation landed while a refresh was already running.
+    pub(crate) notes_index_rerun: bool,
+    /// Paths last published into the open picker. A refresh replaces the rows
+    /// only while they still match, so a caller that seeded different rows
+    /// (screenshot harnesses) is left alone.
+    pub(crate) notes_picker_shown_paths: Vec<std::path::PathBuf>,
+    /// Persisted index loaded at most once per process.
+    pub(crate) notes_index_loaded: bool,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -556,6 +573,9 @@ pub struct PlexiApp {
     /// positions.
     pub(crate) pending_pane_pointer_frames:
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
+    /// Last pending id the banner logged, so a painted sheet is one info
+    /// line rather than one per frame.
+    approval_banner_logged: Option<String>,
 }
 
 struct PendingAppSubscriptionReply {
@@ -616,6 +636,16 @@ pub(crate) fn handle_socket_line(
                     log::info!(
                         "pane_ipc: stamped CallAppTool peer ancestry ({} pid(s))",
                         p.len()
+                    );
+                }
+                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. } => {
+                    // Same rule as CallAppTool: the wire value is never the
+                    // caller's identity. None when this process has no peer
+                    // capture (tests that enqueue the request directly).
+                    *p = peer_ancestry.map(<[u32]>::to_vec);
+                    log::info!(
+                        "pane_ipc: stamped SpawnPane peer ancestry ({} pid(s))",
+                        p.as_ref().map(|pids| pids.len()).unwrap_or(0)
                     );
                 }
                 _ => {}
@@ -1545,6 +1575,7 @@ impl PlexiApp {
                             &ctx_desc,
                             ctx_root,
                             ctx_depth,
+                            false,
                         );
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
@@ -1657,6 +1688,7 @@ impl PlexiApp {
                     drag_window_last_seen: None,
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
+                    synthetic_input_frame: false,
                     pending_slot_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1699,6 +1731,12 @@ impl PlexiApp {
             notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
                     notes_picker_query: String::new(),
+                    notes_index: crate::notes::NotesIndexCache::default(),
+                    notes_index_rx: None,
+                    notes_index_inflight_anchor: None,
+                    notes_index_rerun: false,
+                    notes_picker_shown_paths: Vec::new(),
+                    notes_index_loaded: false,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -1759,6 +1797,7 @@ impl PlexiApp {
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
+                    approval_banner_logged: None,
                 };
                 // Reconstruct depth_stack so Cmd+Escape works immediately when
                 // the workspace was saved while viewing a subcontext. The stack
@@ -1934,6 +1973,7 @@ impl PlexiApp {
             drag_window_last_seen: None,
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
+            synthetic_input_frame: false,
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -1976,6 +2016,12 @@ impl PlexiApp {
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
             notes_picker_query: String::new(),
+            notes_index: crate::notes::NotesIndexCache::default(),
+            notes_index_rx: None,
+            notes_index_inflight_anchor: None,
+            notes_index_rerun: false,
+            notes_picker_shown_paths: Vec::new(),
+            notes_index_loaded: false,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -2036,6 +2082,7 @@ impl PlexiApp {
             pending_pane_inputs: HashMap::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
+            approval_banner_logged: None,
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -2046,7 +2093,7 @@ impl PlexiApp {
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
         if app
-            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false)
+            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false, false, true)
             .is_some()
         {
             log::info!("first boot: seeded base root pane in context 1");
@@ -2525,6 +2572,20 @@ impl PlexiApp {
         self.windows[win_idx].focused_pane = saved;
     }
 
+    /// Move the empty window `new_for_test` builds off context 1 onto
+    /// `context_id`. Harnesses call this before any pane exists so the
+    /// process-global tool registry keeps each test in its own namespace.
+    #[cfg(test)]
+    pub(crate) fn set_initial_context_id_for_test(&mut self, context_id: u64) {
+        assert!(
+            self.windows.len() == 1 && self.windows[0].panes.is_empty(),
+            "set_initial_context_id_for_test runs before panes exist"
+        );
+        self.windows[0].context_id = context_id;
+        self.router.get_mut(0).context_id = context_id;
+        log::info!("test harness: isolated tool namespace context_id={context_id}");
+    }
+
     /// Create a `PlexiApp` for headless tests. No workspace restore, no macOS
     /// menu setup, no PTY or audio hardware. Initialises a single empty window
     /// so `state().open_panes` is empty and the harness can add panes via
@@ -2650,6 +2711,7 @@ impl PlexiApp {
                 drag_window_last_seen: None,
                 pending_screenshots: Vec::new(),
                 approval_buttons: Vec::new(),
+                synthetic_input_frame: false,
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
@@ -2701,6 +2763,12 @@ impl PlexiApp {
             notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
                 notes_picker_query: String::new(),
+                notes_index: crate::notes::NotesIndexCache::default(),
+                notes_index_rx: None,
+                notes_index_inflight_anchor: None,
+                notes_index_rerun: false,
+                notes_picker_shown_paths: Vec::new(),
+                notes_index_loaded: false,
                 modal_state_notify_id: String::new(),
                 notification_images: HashMap::new(),
                 notifications_enabled: false,
@@ -2762,6 +2830,7 @@ impl PlexiApp {
                 pending_pane_inputs: HashMap::new(),
                 pending_pane_drags: HashMap::new(),
                 pending_pane_pointer_frames: HashMap::new(),
+                approval_banner_logged: None,
             };
         // Launch paths allocate through HostModel, which otherwise starts at 1
         // in every test process. Seed a private block so a pane drop in one
@@ -2888,10 +2957,12 @@ impl PlexiApp {
         context_description: &str,
         context_root: Option<&PathBuf>,
         context_depth: u32,
+        agent_pane: bool,
     ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
         log::info!(
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
-             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
+             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
+             agent_pane={agent_pane}"
         );
         let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
@@ -2931,6 +3002,7 @@ impl PlexiApp {
             );
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
+        crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
         (
             BackendSettings {
                 shell: shell::detect_shell(),
@@ -3052,7 +3124,10 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
         AppCommand::AssistantHostTool { name, .. } => {
-            !matches!(name.as_str(), "host.panes.list" | "host.panes.state")
+            !matches!(
+                name.as_str(),
+                "host.panes.list" | "host.panes.state" | "host.introspect"
+            )
         }
         AppCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()
@@ -3080,6 +3155,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
@@ -3119,6 +3195,9 @@ impl eframe::App for PlexiApp {
                     "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
                 );
             } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
+                if !batches.is_empty() {
+                    self.synthetic_input_frame = true;
+                }
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
                     raw_input.events.extend(batch.events);
@@ -3129,6 +3208,7 @@ impl eframe::App for PlexiApp {
             // multi-frame trajectory instead of a same-frame click.
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
+                    self.synthetic_input_frame = true;
                     raw_input.events.extend(batch.events);
                 }
                 if frames.is_empty() {
@@ -3181,6 +3261,21 @@ impl eframe::App for PlexiApp {
             if report.moved > 0 || report.failed > 0 || !report.left_behind.is_empty() {
                 log::info!("notes_migration: {report:?}");
             }
+        }
+
+        // Notes picker index: load the persisted snapshot once, then apply any
+        // background refresh. Both are filesystem work that must not live in
+        // `ui` — an occluded host still has to finish a refresh it already
+        // started, and the open path only reads the in-memory cache.
+        self.ensure_notes_index_loaded();
+        self.drain_notes_index_refresh();
+
+        // Expired needs-you items auto-deny even while the window is hidden.
+        // Only an already-open monitor is touched, so a frame never creates a profile.
+        if let Some(monitor) =
+            crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+        {
+            monitor.expire_needs_you();
         }
 
         // Screenshot capture is an external-client request path, not UI: the
@@ -3731,7 +3826,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab(self.active_window, None, false, None);
+                    self.new_tab(self.active_window, None, false, None, false, true);
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {
@@ -4187,6 +4282,11 @@ impl eframe::App for PlexiApp {
         // above already claimed global hotkeys from the same buffer, so the
         // terminal only ever sees what the global allowlist left behind.
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
+        // Host focus (keyboard nav, a click handled before this pass) is
+        // already current. egui focus still belongs to last frame until
+        // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
+        // an editor that just lost the pane cannot insert this frame's text.
+        crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
         self.render_panels(ui, focused_terminal_input);
         self.draw_approval_banner(ctx);
 
@@ -4248,48 +4348,280 @@ impl PlexiApp {
         )
     }
 
-    /// Build the Cmd+O picker corpus from every tier visible to the active
-    /// context, then open the overlay.
+    /// Open the Cmd+O picker from the in-memory index and refresh it off the
+    /// UI thread.
     ///
-    /// Tier resolution and rollup come from `crate::notes::notes_scopes_for_root`
-    /// — the same function `plexi notes list` calls — so the two surfaces list
-    /// the same notes by construction rather than by two implementations that
-    /// can drift apart.
+    /// Tier discovery shares `discover_notes_scopes` with `plexi notes list`
+    /// (`notes_scopes_for_root`). The picker also passes context roots it
+    /// already knows so a home-rooted context does not have to walk `~/Library`
+    /// to find them. That walk never runs on this thread: a cache hit paints
+    /// immediately, and a miss paints an empty list until the refresh lands.
     pub(crate) fn open_notes_picker(&mut self) {
-        let active_root = self.router.active().root.clone();
-        let scopes = crate::notes::notes_scopes_for_root(Some(&active_root));
+        let started = std::time::Instant::now();
+        log::info!("notes_picker: Cmd+O — opening picker");
+        self.ensure_notes_index_loaded();
 
-        let mut entries: Vec<crate::notes::NotePickerEntry> = Vec::new();
-        for scope in &scopes {
-            entries.extend(
-                crate::notes::scan_tier(&scope.dir)
-                    .iter()
-                    .filter_map(|path| crate::notes::NotePickerEntry::load(path))
-                    .map(|entry| entry.with_tier_label(scope.label.clone())),
+        let active_root = self.router.active().root.clone();
+        let cached = self.notes_index.cached_entries(&active_root);
+        let tier_count = self.notes_index.cached_tier_count(&active_root);
+        let tier_dirs = self.notes_index.cached_tier_dirs(&active_root);
+        let note_count = cached.as_ref().map(|entries| entries.len()).unwrap_or(0);
+        if let Some(entries) = cached {
+            log::info!(
+                "notes_picker: {note_count} note(s) across {tier_count} tier(s) ({tier_dirs:?}) cache=hit"
             );
+            self.publish_notes_picker_entries(entries, true);
+        } else {
+            log::info!(
+                "notes_picker: 0 note(s) across 0 tier(s) cache=miss — refresh in background"
+            );
+            self.publish_notes_picker_entries(Vec::new(), true);
         }
 
-        log::info!(
-            "notes_picker: {} note(s) across {} tier(s) ({:?})",
-            entries.len(),
-            scopes.len(),
-            scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
-        );
-        // Aggregates notes across every tier in `scopes` — no single context
-        // owns this event, so it stays global-only (no per-root attribution is
-        // correct here, not merely unresolved).
+        // Aggregates notes across every visible tier — no single context owns
+        // this event, so it stays global-only.
         crate::host::event_log::emit_scoped(
             crate::host::event_log::HostEvent::NotesPickerOpened {
-                tier_count: scopes.len(),
-                note_count: entries.len(),
+                tier_count,
+                note_count,
                 timestamp: crate::host::event_log::now_timestamp(),
             },
             None,
         );
-        self.notes_picker_entries = entries;
-        self.notes_picker_selected = 0;
-        self.notes_picker_query.clear();
         self.push_focus_layer(FocusKind::NotesPicker);
+        self.kick_notes_index_refresh();
+        log::info!(
+            "notes_picker: picker_open_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
+    /// Mark the index stale and refresh. Note create, delete, and rename call
+    /// this so the next paint is not stuck on the pre-mutation snapshot.
+    pub(crate) fn invalidate_notes_index(&mut self) {
+        self.notes_index.invalidate();
+        if self.notes_index_rx.is_some() {
+            self.notes_index_rerun = true;
+            return;
+        }
+        self.kick_notes_index_refresh();
+    }
+
+    fn ensure_notes_index_loaded(&mut self) {
+        if self.notes_index_loaded {
+            return;
+        }
+        self.notes_index_loaded = true;
+        let Some(path) = crate::notes::notes_index_cache_path() else {
+            return;
+        };
+        if let Some(loaded) = crate::notes::NotesIndexCache::load(&path) {
+            self.notes_index = loaded;
+        }
+    }
+
+    fn notes_discovery_query(&self) -> crate::notes::NotesDiscovery {
+        let active = self.router.active().root.clone();
+        let mut known_roots: Vec<std::path::PathBuf> = self
+            .router
+            .as_slice()
+            .iter()
+            .map(|ctx| ctx.root.clone())
+            .collect();
+        if let Some(adopted) = crate::config::adopted_workspace_root() {
+            known_roots.push(adopted);
+        }
+        crate::notes::NotesDiscovery {
+            active_root: Some(active.clone()),
+            known_roots,
+            global_notes: crate::notes::global_notes_dir(),
+            home: dirs::home_dir(),
+            cached_tiers: self.notes_index.cached_tier_dirs(&active),
+        }
+    }
+
+    fn kick_notes_index_refresh(&mut self) {
+        let active = self.router.active().root.clone();
+        if self.notes_index_rx.is_some() {
+            if self
+                .notes_index_inflight_anchor
+                .as_ref()
+                .is_some_and(|anchor| anchor != &active)
+            {
+                self.notes_index_rerun = true;
+            }
+            return;
+        }
+        let generation = self.notes_index.generation();
+        let query = self.notes_discovery_query();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.notes_index_rx = Some(rx);
+        self.notes_index_inflight_anchor = Some(active.clone());
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        let spawned = std::thread::Builder::new()
+            .name("notes-index".to_string())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let snapshot = crate::notes::build_notes_index(&query);
+                let (walk_dirs, budget_hit) = crate::notes::notes_walk_result();
+                let stats_elapsed = started.elapsed();
+                let _ = tx.send(crate::notes::NotesIndexBuild {
+                    anchor: active,
+                    snapshot,
+                    generation,
+                    walk_dirs,
+                    budget_hit,
+                    elapsed: stats_elapsed,
+                });
+                wake.wake("notes_index");
+            });
+        if let Err(err) = spawned {
+            log::warn!("notes_index: failed to spawn refresh: {err}");
+            self.notes_index_rx = None;
+            self.notes_index_inflight_anchor = None;
+        }
+    }
+
+    fn drain_notes_index_refresh(&mut self) {
+        // `try_recv` borrows the receiver. End that borrow before clearing the
+        // slot — assigning `notes_index_rx = None` while it is borrowed does
+        // not compile.
+        let recv_result = {
+            let Some(rx) = self.notes_index_rx.as_ref() else {
+                return;
+            };
+            rx.try_recv()
+        };
+        let built = match recv_result {
+            Ok(built) => built,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.notes_index_rx = None;
+                self.notes_index_inflight_anchor = None;
+                if self.notes_index_rerun {
+                    self.notes_index_rerun = false;
+                    self.kick_notes_index_refresh();
+                }
+                return;
+            }
+        };
+        self.notes_index_rx = None;
+        self.notes_index_inflight_anchor = None;
+
+        let anchor = built.anchor.clone();
+        let elapsed_ms = built.elapsed.as_secs_f64() * 1000.0;
+        let note_count = built.snapshot.entries.len();
+        let tier_count = built.snapshot.scopes.len();
+        let tier_dirs: Vec<&std::path::Path> = built
+            .snapshot
+            .scopes
+            .iter()
+            .map(|scope| scope.dir.as_path())
+            .collect();
+        let walk_dirs = built.walk_dirs;
+        let budget_hit = built.budget_hit;
+        let generation = built.generation;
+        log::info!(
+            "notes_index: refresh notes={note_count} tiers={tier_count} ({tier_dirs:?}) \
+             walk_dirs={walk_dirs} budget_hit={budget_hit} refresh_ms={elapsed_ms:.1} \
+             generation={generation}"
+        );
+
+        let stored = self
+            .notes_index
+            .store(&anchor, built.snapshot.clone(), built.generation);
+        if stored {
+            if let Some(path) = crate::notes::notes_index_cache_path() {
+                if let Err(err) = self.notes_index.save(&path) {
+                    log::warn!("notes_index: failed to persist cache: {err}");
+                }
+            }
+        }
+
+        let picker_open = self.focus_stack.contains(&FocusKind::NotesPicker);
+        let same_anchor = self.router.active().root == anchor;
+        if stored && picker_open && same_anchor && self.notes_picker_rows_match_shown() {
+            let entries = built.snapshot.entries;
+            log::info!(
+                "notes_picker: refresh applied {note_count} note(s) across {tier_count} tier(s)"
+            );
+            self.publish_notes_picker_entries(entries, false);
+        }
+
+        // Store fails when `invalidate` bumped the generation after this build
+        // started. Also rebuild when the active context moved mid-walk.
+        let anchor_moved = self.router.active().root != anchor;
+        let needs_refresh = !stored || anchor_moved;
+        if needs_refresh || self.notes_index_rerun {
+            self.notes_index_rerun = false;
+            if needs_refresh {
+                self.kick_notes_index_refresh();
+            }
+        }
+    }
+
+    fn notes_picker_rows_match_shown(&self) -> bool {
+        self.notes_picker_entries
+            .iter()
+            .map(|entry| entry.path.as_path())
+            .eq(self.notes_picker_shown_paths.iter().map(std::path::PathBuf::as_path))
+    }
+
+    fn publish_notes_picker_entries(
+        &mut self,
+        entries: Vec<crate::notes::NotePickerEntry>,
+        reset_query: bool,
+    ) {
+        let selected_path = if reset_query {
+            None
+        } else {
+            self.notes_picker_filtered()
+                .get(self.notes_picker_selected)
+                .and_then(|&idx| self.notes_picker_entries.get(idx))
+                .map(|entry| entry.path.clone())
+        };
+        self.notes_picker_shown_paths = entries.iter().map(|entry| entry.path.clone()).collect();
+        self.notes_picker_entries = entries;
+        if reset_query {
+            self.notes_picker_selected = 0;
+            self.notes_picker_query.clear();
+            return;
+        }
+        let filtered = self.notes_picker_filtered();
+        if filtered.is_empty() {
+            self.notes_picker_selected = 0;
+            return;
+        }
+        if let Some(path) = selected_path {
+            if let Some(pos) = filtered
+                .iter()
+                .position(|&idx| self.notes_picker_entries[idx].path == path)
+            {
+                self.notes_picker_selected = pos;
+                return;
+            }
+        }
+        if self.notes_picker_selected >= filtered.len() {
+            self.notes_picker_selected = filtered.len() - 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_notes_index_refresh_for_test(&mut self) {
+        let Some(rx) = self.notes_index_rx.take() else {
+            return;
+        };
+        self.notes_index_inflight_anchor = None;
+        let built = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("notes index refresh");
+        let anchor = built.anchor.clone();
+        let stored = self
+            .notes_index
+            .store(&anchor, built.snapshot.clone(), built.generation);
+        if stored && self.router.active().root == anchor {
+            self.publish_notes_picker_entries(built.snapshot.entries, false);
+        }
     }
 }
 

@@ -291,8 +291,8 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd, HookAction,
-        HostCmd, LedgerCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd,
-        SecretCmd, WorkspaceCmd,
+        HostCmd, LedgerCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, PermissionsCmd,
+        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -326,6 +326,35 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::List { json: _ } => {
+                            std::process::exit(cli::needs_you_cli("list", None, None))
+                        }
+                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
+                            // A terminal cannot grant. The desktop banner and the
+                            // phone page are the resolve paths.
+                            let choice = if deny { "deny" } else { "once" };
+                            std::process::exit(cli::assistant_permission_cli(
+                                "resolve",
+                                Some(&id),
+                                Some(choice),
+                            ))
+                        }
+                    },
+                    Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::List { json } => {
+                            std::process::exit(cli::permissions_cli("list", None, json))
+                        }
+                        PermissionsCmd::Reset { id } => {
+                            std::process::exit(cli::permissions_cli("reset", Some(&id), true))
+                        }
+                        PermissionsCmd::Revoke { id } => {
+                            std::process::exit(cli::permissions_cli("revoke", Some(&id), true))
+                        }
+                        PermissionsCmd::Allow { id } => {
+                            std::process::exit(cli::permissions_cli("allow", Some(&id), true))
+                        }
                     },
                     Commands::Run {
                         command,
@@ -398,6 +427,19 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
+                        AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
+                        AgentCmd::Delegate {
+                            parent_run,
+                            name,
+                            grant,
+                            json,
+                        } => std::process::exit(cli::agent_delegate_cli(
+                            &parent_run,
+                            &name,
+                            &grant,
+                            json,
+                        )),
                         AgentCmd::Hook { action } => match action {
                             HookAction::Install {
                                 claude_code,
@@ -444,12 +486,24 @@ fn main() -> eframe::Result {
                             from_env,
                             global,
                             alias,
-                        } => std::process::exit(cli::workspace_secret_set(
-                            &friendly_name,
-                            from_env,
-                            global,
-                            alias.as_deref(),
-                        )),
+                            folder,
+                        } => {
+                            if let Some(folder) = folder.as_deref() {
+                                std::process::exit(cli::folder_secret_set(
+                                    &friendly_name,
+                                    from_env,
+                                    global,
+                                    alias.as_deref(),
+                                    folder,
+                                ))
+                            }
+                            std::process::exit(cli::workspace_secret_set(
+                                &friendly_name,
+                                from_env,
+                                global,
+                                alias.as_deref(),
+                            ))
+                        }
                         SecretCmd::Get {
                             friendly_name,
                             global,
@@ -462,6 +516,34 @@ fn main() -> eframe::Result {
                             global,
                         } => {
                             std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
+                        }
+                        SecretCmd::Rm { name, folder } => {
+                            std::process::exit(cli::folder_secret_rm(&name, &folder))
+                        }
+                        SecretCmd::Grant {
+                            name,
+                            agent,
+                            app,
+                            folder,
+                        } => std::process::exit(cli::folder_secret_grant(
+                            &name,
+                            agent.as_deref(),
+                            app.as_deref(),
+                            folder.as_deref(),
+                        )),
+                        SecretCmd::Read {
+                            name,
+                            agent,
+                            app,
+                            folder,
+                        } => std::process::exit(cli::folder_secret_read(
+                            &name,
+                            agent.as_deref(),
+                            app.as_deref(),
+                            folder.as_deref(),
+                        )),
+                        SecretCmd::Exec { cwd, command } => {
+                            std::process::exit(cli::folder_secret_exec(&cwd, &command))
                         }
                     },
                     Commands::App { cmd } => {
@@ -1370,11 +1452,17 @@ fn main() -> eframe::Result {
                     Commands::Note { text } => {
                         std::process::exit(cli::notes::note_capture_cli(&text))
                     }
-                    Commands::Ledger { cmd } => match cmd {
-                        LedgerCmd::Summary { by, since, json } => std::process::exit(
-                            cli::ledger_summary_cli(by.as_deref(), since.as_deref(), json),
-                        ),
-                    },
+                    Commands::Ledger { cmd } => {
+                        let (by, since, json) = match cmd {
+                            Some(LedgerCmd::Summary { by, since, json }) => (by, since, json),
+                            None => (None, None, false),
+                        };
+                        std::process::exit(cli::ledger_summary_cli(
+                            by.as_deref(),
+                            since.as_deref(),
+                            json,
+                        ));
+                    }
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
@@ -1518,7 +1606,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
     // Skip argv[0] (binary name).
     let _ = iter.next();
     while let Some((_, a)) = iter.next() {
-        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" {
+        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" || a == "--socket" {
             // Skip the value paired with this flag.
             let _ = iter.next();
             continue;
@@ -1726,6 +1814,23 @@ mod cli_tests {
         let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
             .expect("flag-only argv should resolve");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_socket_flag_value() {
+        let sock = std::env::temp_dir().join(format!("plexi-sock-{}", std::process::id()));
+        fs::write(&sock, b"").unwrap();
+        let path = sock.to_string_lossy().to_string();
+        let resolved = parse_workspace_path_arg(&argv(&[
+            "--socket",
+            &path,
+            "assistant",
+            "permission",
+            "list",
+        ]))
+        .expect("a --socket path is not a workspace");
+        assert!(resolved.is_none());
+        let _ = fs::remove_file(&sock);
     }
 
     #[test]

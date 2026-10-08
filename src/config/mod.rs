@@ -1113,6 +1113,16 @@ pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
     TestProfileDirGuard
 }
 
+/// The isolated profile directory installed by [`set_test_profile_dir`], if any.
+///
+/// Notes-index persistence consults this instead of `config_dir()` so a test
+/// that never installed an override cannot read or write a real channel profile
+/// (`config_dir()` asserts when the channel dir is a real profile name).
+#[cfg(test)]
+pub(crate) fn test_profile_dir_override() -> Option<std::path::PathBuf> {
+    TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().clone())
+}
+
 /// Returns the workspace channel directory name for the current binary.
 /// This is the dot-prefixed dir used inside workspace roots to scope
 /// workspace state per channel: `.plexi` (main), `.plexi-alpha`, `.plexi-beta`,

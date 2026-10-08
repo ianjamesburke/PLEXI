@@ -39,12 +39,15 @@ pub(super) fn restore_overlay_replacement(
     match pane {
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
-                let type_id = app.runtime.type_id().to_string();
+                let (app_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
+                log::info!(
+                    "app_closed: app_id={app_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
+                );
                 // Free function — no `PlexiApp`/router access, so no origin is
                 // resolvable here without a new ambient lookup. Global-only.
                 crate::host::event_log::emit_scoped(
                     crate::host::event_log::HostEvent::AppClosed {
-                        app_id: type_id.clone(),
+                        app_id,
                         type_id,
                         pane_id,
                         reason: Some("overlay_restored".to_string()),
@@ -64,6 +67,16 @@ pub(super) fn restore_overlay_replacement(
             false
         }
     }
+}
+
+/// Catalog id vs runtime kind for an overlay close.
+///
+/// Spawn events already split these: `app_id` is the manifest (`balls`) and
+/// `type_id` is the runtime (`python-wasm`). Copying `runtime.type_id()` into
+/// both fields made `plexi demo` wait forever for Balls to close. Builtins
+/// often use the same string for both, so the split is a no-op for them.
+fn overlay_close_ids(manifest_id: &str, runtime_type_id: &str) -> (String, String) {
+    (manifest_id.to_string(), runtime_type_id.to_string())
 }
 
 /// Build a fresh tile tree holding `pane_ids` arranged per `layout`.
@@ -240,7 +253,7 @@ impl PlexiApp {
             if self.windows[active].panes.is_empty() {
                 let context = self.pane_context_env_for_window(active);
                 if let Some((tree, panes, root_tile)) =
-                    self.create_single_pane_tree(&context, None, None, false)
+                    self.create_single_pane_tree(&context, None, None, false, false, true)
                 {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
@@ -372,6 +385,7 @@ impl PlexiApp {
             &ctx_desc,
             ctx_root.as_ref(),
             ctx_depth,
+            false,
         );
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
@@ -466,6 +480,8 @@ impl PlexiApp {
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
+        agent_pane: bool,
+        inject_folder_secrets: bool,
     ) {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[target_win_idx].panes.is_empty() {
@@ -498,6 +514,7 @@ impl PlexiApp {
                 &ctx_desc,
                 ctx_root.as_ref(),
                 ctx_depth,
+                agent_pane,
             );
             if let Some(cmd) = initial_cmd {
                 log::info!(
@@ -505,6 +522,11 @@ impl PlexiApp {
                 );
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
             }
+            crate::host::shell::apply_folder_secret_injection(
+                &mut settings.env,
+                settings.working_directory.as_deref(),
+                inject_folder_secrets,
+            );
             let Some(mut pane) = TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
@@ -563,11 +585,17 @@ impl PlexiApp {
             &ctx_desc,
             ctx_root.as_ref(),
             ctx_depth,
+            agent_pane,
         );
         if let Some(cmd) = initial_cmd {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
+        crate::host::shell::apply_folder_secret_injection(
+            &mut settings.env,
+            settings.working_directory.as_deref(),
+            inject_folder_secrets,
+        );
         let Some(mut pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
@@ -2000,5 +2028,17 @@ mod squad_tree_tests {
             tree.tiles.get(first),
             Some(egui_tiles::Tile::Pane(42))
         ));
+    }
+}
+
+#[cfg(test)]
+mod overlay_close_ids_tests {
+    use super::overlay_close_ids;
+
+    #[test]
+    fn wasm_close_keeps_catalog_id_distinct_from_runtime() {
+        let (app_id, type_id) = overlay_close_ids("balls", "python-wasm");
+        assert_eq!(app_id, "balls");
+        assert_eq!(type_id, "python-wasm");
     }
 }

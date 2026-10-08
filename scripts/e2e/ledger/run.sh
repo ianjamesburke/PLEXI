@@ -160,7 +160,7 @@ expected = [
     ("narrative", "output", 194, 12),
     ("narrative", "output", 10, 4),
     ("narrative", "system", 80, 15),
-    ("narrative", "output", None, None),
+    ("narrative", "output", "unknown", "unknown"),
     ("du", "output", 50, 7),
 ]
 if len(rows) != len(expected):
@@ -168,12 +168,14 @@ if len(rows) != len(expected):
 for row, (client, kind, inp, out) in zip(rows, expected):
     if row.get("client") != client or row.get("kind") != kind:
         sys.exit(f"FAIL: tags {row.get('client')}/{row.get('kind')} != {client}/{kind}")
+    if row.get("input_tokens") == 0 or row.get("output_tokens") == 0:
+        sys.exit(f"FAIL: token count is 0: {row}")
+    if row.get("input_tokens") is None or row.get("output_tokens") is None:
+        sys.exit(f"FAIL: token count is null: {row}")
     if row.get("input_tokens") != inp or row.get("output_tokens") != out:
         sys.exit(
             f"FAIL: tokens {row.get('input_tokens')}/{row.get('output_tokens')} != {inp}/{out}"
         )
-    if inp is None and (row.get("input_tokens") == 0 or row.get("output_tokens") == 0):
-        sys.exit("FAIL: missing usage was recorded as 0")
 print("LEDGER_ROWS_OK")
 PY
 
@@ -181,6 +183,8 @@ echo "summary by client"
 "$BIN" ledger summary --by client --json | tee "${PROFILE}/e2e-summary-client.json"
 echo "summary by kind"
 "$BIN" ledger summary --by kind --json | tee "${PROFILE}/e2e-summary-kind.json"
+echo "bare ledger (per-client totals)"
+"$BIN" ledger | tee "${PROFILE}/e2e-ledger-human.txt"
 
 export PROFILE
 python3 - <<'PY'
@@ -199,7 +203,7 @@ if by_client.get("by") != "client":
     sys.exit(f"FAIL: summary --by client reported {by_client.get('by')}")
 narrative = group(by_client, "client", "narrative")
 du = group(by_client, "client", "du")
-# narrative: 194+10+80 prompt, 12+4+15 completion; the null row adds a run only.
+# narrative: 194+10+80 prompt, 12+4+15 completion; the unknown row adds a run only.
 if narrative["runs"] != 4 or narrative["input_tokens"] != 284 or narrative["output_tokens"] != 31:
     sys.exit(f"FAIL: narrative aggregate {narrative}")
 if du["runs"] != 1 or du["input_tokens"] != 50 or du["output_tokens"] != 7:
@@ -209,12 +213,30 @@ if by_kind.get("by") != "kind":
     sys.exit(f"FAIL: summary --by kind reported {by_kind.get('by')}")
 output = group(by_kind, "kind", "output")
 system = group(by_kind, "kind", "system")
-# output: stream A, stream B, null, json → 194+10+50 / 12+4+7
+# output: stream A, stream B, unknown, json → 194+10+50 / 12+4+7
 if output["runs"] != 4 or output["input_tokens"] != 254 or output["output_tokens"] != 23:
     sys.exit(f"FAIL: output aggregate {output}")
 if system["runs"] != 1 or system["input_tokens"] != 80 or system["output_tokens"] != 15:
     sys.exit(f"FAIL: system aggregate {system}")
 print("SUMMARY_OK")
+
+human = open(f"{profile}/e2e-ledger-human.txt").read()
+if "by: client" not in human:
+    sys.exit(f"FAIL: bare ledger is not a per-client summary:\n{human}")
+
+def client_line(name):
+    for line in human.splitlines():
+        if line.startswith(name):
+            return line
+    sys.exit(f"FAIL: bare ledger has no {name} total:\n{human}")
+
+narrative_line = client_line("narrative")
+du_line = client_line("du")
+if "284" not in narrative_line or "31" not in narrative_line:
+    sys.exit(f"FAIL: narrative total {narrative_line}")
+if "50" not in du_line or "7" not in du_line:
+    sys.exit(f"FAIL: du total {du_line}")
+print("HUMAN_OK")
 PY
 
 echo "PASS"

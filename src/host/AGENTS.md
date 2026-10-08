@@ -79,6 +79,9 @@ same reason.
   pane monochrome despite `COLORTERM=truecolor`, because color libraries check
   those first. `scrub_launcher_color_overrides` clears them at host startup, before
   the login-shell probes (which would otherwise re-adopt the inherited value).
+- **Agent pane env is scrubbed in `make_backend_settings`.** `scrub_pane_env`
+  runs for every pane. Pass `agent_pane: true` from `PaneLaunchSpec.agent` or
+  the profile path stays in the environment. The contract is in `src/cli/AGENTS.md`.
 - **`shared_dir()`, never `home_dir().join(".plexi")`.** `crate::config::shared_dir()`
   carries a thread-local test override; re-deriving the path by hand produces a
   tier no test can isolate, so unit tests write into the developer's real
@@ -111,3 +114,10 @@ same reason.
   roughly 4x slower (`PLEXI_SCENE_TIMEOUT_SCALE: '4'` in
   `.github/workflows/roadmap-evidence.yml` is the standing measurement) and 2000+
   tests compete for cores.
+- **CPython-WASM perf samples stay at debug.** `record_render_perf` writes one
+  line per painted Python pane per sample window. The Logs app tails the same
+  channel log and re-renders when the tail changes, so an info sample becomes a
+  permanent self-refreshing row of that pane's own telemetry. Guest `log` lines
+  must honor the SDK `level` field for the same reason: a debug inventory poll
+  that the host rewrites as info refills the tail. Unrecognized guest message
+  types warn once per type per window; repeats stay at debug.

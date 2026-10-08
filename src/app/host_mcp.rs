@@ -45,6 +45,11 @@ fn discovery() -> Option<u16> {
     DISCOVERY.get().copied()
 }
 
+/// Port the host MCP listener bound, when the server is up.
+pub(crate) fn bound_port() -> Option<u16> {
+    discovery()
+}
+
 #[derive(Clone)]
 struct McpCaller {
     pane_id: u64,
@@ -53,6 +58,9 @@ struct McpCaller {
     /// this, never from `workspace_root` path-equality.
     context_id: u64,
     workspace_root: PathBuf,
+    /// Set when the bearer is an agent run token rather than a pane credential.
+    run_id: Option<String>,
+    actor_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -79,6 +87,8 @@ fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathB
                 pane_id,
                 context_id,
                 workspace_root,
+                run_id: None,
+                actor_id: None,
             },
         );
         return token;
@@ -91,6 +101,8 @@ fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathB
             pane_id,
             context_id,
             workspace_root: workspace_root.clone(),
+            run_id: None,
+            actor_id: None,
         },
     );
     log::info!(
@@ -170,6 +182,8 @@ pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
             pane_id,
             context_id,
             workspace_root: workspace_root.clone(),
+            run_id: None,
+            actor_id: None,
         },
     );
     log::info!(
@@ -179,7 +193,22 @@ pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
 }
 
 fn authenticate(token: &str) -> Option<McpCaller> {
-    credentials().lock().unwrap().by_token.get(token).cloned()
+    if let Some(caller) = credentials().lock().unwrap().by_token.get(token).cloned() {
+        return Some(caller);
+    }
+    let auth = crate::agent::heads::authenticate_run_token(token)?;
+    log::info!(
+        "host_mcp: authenticated agent run {} actor={}",
+        auth.run_id,
+        auth.actor_id
+    );
+    Some(McpCaller {
+        pane_id: 0,
+        context_id: 0,
+        workspace_root: auth.workspace,
+        run_id: Some(auth.run_id),
+        actor_id: Some(auth.actor_id),
+    })
 }
 
 #[cfg(test)]
@@ -303,6 +332,41 @@ pub fn start_host_mcp_server(
 fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> serde_json::Value {
     let mut tools = vec![
         serde_json::json!({
+            "name": "permissions_list",
+            "description": "List live permission decisions from the permission monitor. Same rows as `plexi permissions list`.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        serde_json::json!({
+            "name": "permissions_revoke",
+            "description": "Remove an allow or refuse a pending ask. Narrows authority.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_reset",
+            "description": "Ask to clear a stored denial. An MCP caller files Needs you and does not clear it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_allow",
+            "description": "Ask to allow a denial or a pending ask. An MCP caller files Needs you and does not grant it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
             "name": "list_event_streams",
             "description": "List the event streams currently declared by running Plexi apps. Returns an array of {app_id, stream} pairs.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -334,6 +398,7 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
             "outputSchema": tool.output_schema,
         })
     }));
+    tools.extend(crate::agent::heads::mcp_tool_defs());
     serde_json::Value::Array(tools)
 }
 
@@ -392,23 +457,47 @@ fn handle_connection(
                 caller.pane_id,
                 caller.workspace_root.display()
             );
-            let result = match tool_name {
-                "list_event_streams" => tool_list_event_streams(&caller),
-                "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, &caller),
-                other => {
-                    let input_json = serde_json::to_string(&arguments)
-                        .map_err(|error| format!("serialize tool arguments: {error}"));
-                    match input_json {
-                        Ok(input_json) => {
-                            let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
-                            let result = dispatcher.dispatch_call(call_id, other, input_json);
-                            match (result.output_json, result.error) {
-                                (_, Some(error)) => Err(error),
-                                (Some(output), None) => Ok(output),
-                                (None, None) => Ok("null".to_string()),
+            let result = if tool_name.starts_with("agents.") {
+                match serde_json::to_string(&arguments) {
+                    Ok(input_json) => {
+                        let auth = crate::agent::heads::McpAuth {
+                            workspace: caller.workspace_root.clone(),
+                            run_id: caller.run_id.clone(),
+                            actor_id: caller.actor_id.clone(),
+                            pane_id: caller.pane_id,
+                            context_id: caller.context_id,
+                        };
+                        crate::agent::heads::mcp_call(&auth, tool_name, &input_json)
+                    }
+                    Err(error) => Err(format!("serialize tool arguments: {error}")),
+                }
+            } else {
+                match tool_name {
+                    "permissions_list" => tool_permissions("list", &arguments, profile, &caller),
+                    "permissions_revoke" => {
+                        tool_permissions("revoke", &arguments, profile, &caller)
+                    }
+                    "permissions_reset" => tool_permissions("reset", &arguments, profile, &caller),
+                    "permissions_allow" => tool_permissions("allow", &arguments, profile, &caller),
+                    "list_event_streams" => tool_list_event_streams(&caller),
+                    "subscribe_and_wait" => {
+                        tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
+                    }
+                    other => {
+                        let input_json = serde_json::to_string(&arguments)
+                            .map_err(|error| format!("serialize tool arguments: {error}"));
+                        match input_json {
+                            Ok(input_json) => {
+                                let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
+                                let result = dispatcher.dispatch_call(call_id, other, input_json);
+                                match (result.output_json, result.error) {
+                                    (_, Some(error)) => Err(error),
+                                    (Some(output), None) => Ok(output),
+                                    (None, None) => Ok("null".to_string()),
+                                }
                             }
+                            Err(error) => Err(error),
                         }
-                        Err(error) => Err(error),
                     }
                 }
             };
@@ -431,6 +520,50 @@ fn handle_connection(
 
     let body_bytes = serde_json::to_vec(&response_body).unwrap_or_else(|_| b"{}".to_vec());
     write_http_response(&mut write_stream, 200, &body_bytes)
+}
+
+/// Permission-monitor tools. MCP callers are agents: revoke narrows, reset and
+/// allow file Needs you and change nothing.
+fn tool_permissions(
+    op: &str,
+    arguments: &serde_json::Value,
+    profile: &std::path::Path,
+    caller: &McpCaller,
+) -> Result<String, String> {
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile);
+    if op == "list" {
+        let entries = monitor.list_entries();
+        log::info!(
+            "host_mcp: permissions_list count={} pane={}",
+            entries.len(),
+            caller.pane_id
+        );
+        return serde_json::to_string(&serde_json::json!({"ok": true, "entries": entries}))
+            .map_err(|error| error.to_string());
+    }
+    let id = arguments
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let outcome = monitor.mutate_entry(
+        id,
+        op,
+        &crate::broker::gate::PermissionCaller {
+            human: false,
+            actor_id: format!("mcp:pane:{}", caller.pane_id),
+        },
+    );
+    log::info!("host_mcp: permissions_{op} id={id} pane={}", caller.pane_id);
+    let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+    let ok = matches!(
+        outcome,
+        crate::broker::gate::PermissionMutation::Applied { .. }
+    );
+    if let Some(map) = body.as_object_mut() {
+        map.insert("ok".to_string(), serde_json::json!(ok));
+    }
+    let text = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+    if ok { Ok(text) } else { Err(text) }
 }
 
 /// `list_event_streams` — read declared streams from the global timeline,

@@ -978,6 +978,13 @@ impl AppRuntime {
     }
 
     /// Deliver the CLI/host semantic action contract to every app runtime.
+    pub fn approval_request_id(&self) -> Option<String> {
+        match self {
+            AppRuntime::Builtin(app) => app.approval_request_id(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
     pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
             AppRuntime::Wasm(app) => {

@@ -274,6 +274,31 @@ pub(crate) fn pane_receives_ipc_text(ctx: &egui::Context, pane_id: PaneId) -> bo
 
 const PREVIOUS_SURFACES_ID: &str = "plexi_text_surfaces_previous_frame";
 const PREVIOUS_OWNER_ID: &str = "plexi_input_owner_previous_frame";
+const FRAME_INPUT_OWNER_ID: &str = "plexi_frame_input_owner";
+
+/// Publish the host input owner for the frame that is about to render.
+/// egui widget focus is only reconciled at the end of the frame, so a pane
+/// that just lost host focus can still `has_focus` its text widget while
+/// `ui()` runs. Editors must consult this value before inserting keystrokes.
+pub(crate) fn publish_frame_input_owner(ctx: &egui::Context, owner: InputOwner) {
+    ctx.memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(Id::new(FRAME_INPUT_OWNER_ID), owner);
+    });
+}
+
+/// `Some(true)` when this frame's published owner is `pane_id`, `Some(false)`
+/// when another owner was published, `None` when nothing was published
+/// (isolated widget renders that are not a host frame).
+pub(crate) fn published_frame_owner_is_pane(ctx: &egui::Context, pane_id: PaneId) -> Option<bool> {
+    ctx.memory(|memory| {
+        memory
+            .data
+            .get_temp::<InputOwner>(Id::new(FRAME_INPUT_OWNER_ID))
+            .map(|owner| matches!(owner, InputOwner::Pane(id) if id == pane_id))
+    })
+}
 
 fn store_previous_owner(ctx: &egui::Context, owner: InputOwner) {
     ctx.memory_mut(|memory| {

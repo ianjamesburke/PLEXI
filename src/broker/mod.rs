@@ -10,6 +10,8 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 pub mod gate;
+pub(crate) mod host_key;
+pub(crate) mod seal;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
@@ -180,6 +182,23 @@ pub struct GrantRecord {
     /// Operation id that consumed a one-shot, for receipt recovery only.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
+    /// Actor + tool + resource, ignoring the argument fingerprint.
+    ///
+    /// Exact one-shot and session grants stay fingerprint-bound. An explicit
+    /// Always deny, and an allow created from the Permissions app, set this so
+    /// the next call of that tool is answered without a matching payload.
+    /// A `tool_scoped` row matches its resource id when one is set, and any
+    /// resource when it is not. It does not also require package, instance,
+    /// context, or session equality.
+    #[serde(default)]
+    pub tool_scoped: bool,
+    /// Tool scope for an agent head: actor, tool, and resource still have to
+    /// match, but argument bytes do not. Exact call grants leave this false.
+    /// A scope grant is still one `GrantRecord` in this store, evaluated by
+    /// `matches`. The Permissions app does not use this flag; it uses
+    /// `tool_scoped`.
+    #[serde(default)]
+    pub args_unbound: bool,
 }
 
 impl GrantRecord {
@@ -205,6 +224,35 @@ impl GrantRecord {
             source: GrantSource::User,
             created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
+            grant_id: format!("cap:{app_id}:{}", cap.as_str()),
+            ..Self::unbound()
+        }
+    }
+
+    /// A capability row addressed by its wire id. `grant_id` is stable so
+    /// `plexi permissions list` and the Permissions app show the same row.
+    pub fn capability_id(
+        app_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+        decision: Decision,
+        source: GrantSource,
+    ) -> Self {
+        Self {
+            actor_type: ActorType::App,
+            actor_id: app_id.to_string(),
+            actor_scope: ActorScope::User,
+            workspace_root: Some(crate::platform::path::canonical_or_self(workspace_root)),
+            target_type: TargetType::Capability,
+            target_id: capability_id.to_string(),
+            resource_scope: ResourceScope::Workspace,
+            resource_id: None,
+            decision,
+            duration: GrantDuration::Always,
+            source,
+            created_at: crate::platform::clock::now_secs() as i64,
+            expires_at: None,
+            grant_id: format!("cap:{app_id}:{capability_id}"),
             ..Self::unbound()
         }
     }
@@ -237,6 +285,8 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            tool_scoped: false,
+            args_unbound: false,
         }
     }
 
@@ -275,6 +325,8 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            tool_scoped: false,
+            args_unbound: false,
         }
     }
 
@@ -323,7 +375,15 @@ impl GrantRecord {
                 && self.target_type == TargetType::Capability
                 && req.target_type == TargetType::Capability;
         }
-        if self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint {
+        if self.tool_scoped {
+            return match &self.resource_id {
+                Some(id) => req.resource_id.as_deref() == Some(id.as_str()),
+                None => true,
+            };
+        }
+        if !self.args_unbound
+            && (self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint)
+        {
             return false;
         }
         if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
@@ -638,55 +698,144 @@ struct GrantStoreData {
 }
 
 /// Loads, evaluates, and persists generalized grants in
-/// `<config_dir>/grants.toml`. Legacy `permissions.toml` entries are migrated
-/// in on load (loss-free, idempotent); the legacy store keeps working in
-/// parallel until every call site is switched.
+/// `<config_dir>/grants.toml`. A still-present `permissions.toml` is imported
+/// once into this file and then retired. Enforcement reads this store only.
 ///
-/// File handling (load-or-default, corrupt backup, atomic save) lives in
-/// [`TomlStore`]; this type owns only the grant evaluation rules.
+/// The file is HMAC-sealed. A missing or bad MAC drops every record and does
+/// not import the legacy file, unless this profile has never been sealed.
+/// That one-time adopt keeps readable records, skips malformed ones, and
+/// seals the file. See `seal::profile_never_sealed`.
 #[derive(Debug)]
 pub struct GrantStore {
     file: TomlStore<GrantStoreData>,
+    untrusted: Vec<seal::IntegrityFault>,
 }
 
 impl Default for GrantStore {
     fn default() -> Self {
         Self {
             file: TomlStore::detached(STORE_LABEL),
+            untrusted: Vec::new(),
         }
     }
 }
 
 impl GrantStore {
-    /// Load `grants.toml` from the channel config dir and migrate any legacy
-    /// `permissions.toml` entries not yet represented. On parse failure the
-    /// corrupt file is backed up and an empty store returned (fail open to
-    /// empty, never crash the host).
+    /// Load `grants.toml` from the channel config dir. A missing file is an
+    /// empty store. A missing or bad MAC quarantines the file and returns an
+    /// empty store; [`Self::integrity_faults`] names it, and the legacy file
+    /// is left in place. A signed file that does not parse is backed up and
+    /// also returns empty. A trusted or absent grants file imports
+    /// `permissions.toml` once, seals the result, and retires the legacy file.
+    ///
+    /// A pre-seal `grants.toml` (no MAC line, and [`seal::profile_never_sealed`])
+    /// is adopted instead: readable records are kept, malformed ones are
+    /// skipped, the file is sealed, and a legacy audit log is given an
+    /// authenticated tip. That path does not quarantine and does not record
+    /// an integrity fault.
     pub fn load_or_default(config_dir: &Path) -> Self {
-        let file = TomlStore::load_or_default(
-            config_dir,
-            "grants.toml",
-            STORE_LABEL,
-            |data: &GrantStoreData, path| {
-                log::info!(
-                    "grant_store: loaded {} records from {}",
-                    data.records.len(),
-                    path.display()
-                );
-            },
-        );
-        let mut store = Self { file };
+        if let Some(store) = Self::adopt_legacy_unsealed(config_dir) {
+            return store;
+        }
+        let path = config_dir.join("grants.toml");
+        let existed = path.is_file();
+        let loaded = seal::load_toml::<GrantStoreData>(&path);
+        if loaded.trusted {
+            log::info!(
+                "grant_store: loaded {} records from {}",
+                loaded.data.records.len(),
+                path.display()
+            );
+        }
+        let rejected = loaded.fault.is_some() || (existed && !loaded.trusted);
+        let mut data = loaded.data;
+        fill_capability_grant_ids(&mut data.records);
+        let mut untrusted = Vec::new();
+        if let Some(fault) = loaded.fault {
+            seal::note_integrity_fault(config_dir, fault.clone());
+            untrusted.push(fault);
+        }
+        let mut store = Self {
+            file: TomlStore::at(path, STORE_LABEL, data),
+            untrusted,
+        };
+        if rejected {
+            log::info!(
+                "grant_store: grants.toml was rejected; permissions.toml was not imported"
+            );
+            return store;
+        }
+        store.import_and_retire_legacy(config_dir, loaded.trusted);
+        store
+    }
 
+    /// One-time adopt of a pre-seal `grants.toml`. `None` leaves the caller
+    /// on the fail-closed path.
+    fn adopt_legacy_unsealed(config_dir: &Path) -> Option<Self> {
+        let path = config_dir.join("grants.toml");
+        let body = seal::legacy_unsealed_body(&path)?;
+        if !seal::profile_never_sealed(config_dir) {
+            return None;
+        }
+        let mut data = parse_legacy_grant_store(&body).ok()?;
+        fill_capability_grant_ids(&mut data.records);
+        log::info!(
+            "grant_store: migrated legacy unsealed grants.toml records={}",
+            data.records.len()
+        );
+        let mut store = Self {
+            file: TomlStore::at(path, STORE_LABEL, data),
+            untrusted: Vec::new(),
+        };
+        store.import_and_retire_legacy(config_dir, true);
+        if let Err(error) = store.try_save() {
+            log::error!("grant_store: legacy grants.toml could not be sealed: {error}");
+            return Some(store);
+        }
+        let audit = config_dir.join("permission-audit.jsonl");
+        if let Err(error) = seal::adopt_legacy_audit(&audit) {
+            log::error!("grant_store: legacy permission-audit.jsonl was not sealed: {error}");
+        }
+        Some(store)
+    }
+
+    fn import_and_retire_legacy(&mut self, config_dir: &Path, grants_trusted: bool) {
+        let legacy_path = config_dir.join("permissions.toml");
+        if !legacy_path.is_file() {
+            return;
+        }
         let legacy = PermissionStore::load_or_default(config_dir);
-        let migrated = store.migrate_legacy(&legacy);
+        if let Some(fault) = legacy.integrity_fault().cloned() {
+            log::info!(
+                "grant_store: skipped legacy migration; permissions.toml failed integrity ({})",
+                fault.reason
+            );
+            seal::note_integrity_fault(config_dir, fault.clone());
+            self.untrusted.push(fault);
+            return;
+        }
+        let migrated = self.migrate_legacy(&legacy);
         if migrated > 0 {
             log::info!(
                 "grant_store: migrated {migrated} legacy permissions.toml entries into {}",
-                store.file.path.display()
+                self.file.path.display()
             );
-            store.save();
         }
-        store
+        if migrated == 0 && !grants_trusted {
+            retire_legacy_permissions(config_dir);
+            return;
+        }
+        match self.try_save() {
+            Ok(()) => retire_legacy_permissions(config_dir),
+            Err(error) => log::error!(
+                "grant_store: kept permissions.toml because grants.toml could not be sealed: {error}"
+            ),
+        }
+    }
+
+    /// Files the host refused while loading. Empty when the store is trusted.
+    pub fn integrity_faults(&self) -> &[seal::IntegrityFault] {
+        &self.untrusted
     }
 
     /// Import legacy `app_id::workspace::capability → state` entries as
@@ -708,6 +857,27 @@ impl GrantStore {
                     && r.target_type == record.target_type
                     && r.target_id == record.target_id
                     && r.workspace_root == record.workspace_root
+            });
+            if !exists {
+                self.file.data.records.push(record);
+                added += 1;
+            }
+        }
+        for (app_id, workspace, capability_id, state) in legacy.iter_wasm_entries() {
+            let decision = Decision::from_permission_state(state);
+            let record = GrantRecord::capability_id(
+                app_id,
+                Path::new(workspace),
+                capability_id,
+                decision,
+                GrantSource::User,
+            );
+            let exists = self.file.data.records.iter().any(|existing| {
+                existing.actor_type == record.actor_type
+                    && existing.actor_id == record.actor_id
+                    && existing.target_type == record.target_type
+                    && existing.target_id == record.target_id
+                    && existing.workspace_root == record.workspace_root
             });
             if !exists {
                 self.file.data.records.push(record);
@@ -749,21 +919,35 @@ impl GrantStore {
         self.file.data.records.push(record);
     }
 
-    /// Convenience: persist an app capability decision (the prompt-modal and
-    /// SetPermission write path).
-    pub fn record_app_capability(
+    /// Replace every capability row for this app, workspace, and id, whatever
+    /// its source. A human click and an auto-grant are one row.
+    pub fn upsert_capability(
         &mut self,
         app_id: &str,
         workspace_root: &Path,
-        cap: Capability,
+        capability_id: &str,
         decision: Decision,
+        source: GrantSource,
     ) {
-        self.record(GrantRecord::app_capability(
-            app_id,
-            workspace_root,
-            cap,
-            decision,
-        ));
+        let ws = crate::platform::path::canonical_or_self(workspace_root);
+        self.file.data.records.retain(|record| {
+            !(record.actor_type == ActorType::App
+                && record.actor_id == app_id
+                && record.target_type == TargetType::Capability
+                && record.target_id == capability_id
+                && record.workspace_root.as_deref() == Some(ws.as_path()))
+        });
+        let record =
+            GrantRecord::capability_id(app_id, workspace_root, capability_id, decision, source);
+        log::info!(
+            "grant_store: upserted {} {} -> {} = {} ({:?})",
+            record.actor_id,
+            record.grant_id,
+            record.target_id,
+            record.decision.as_str(),
+            record.source,
+        );
+        self.file.data.records.push(record);
     }
 
     /// Remove every grant for `(actor_type, actor_id, target_id)` regardless
@@ -792,9 +976,18 @@ impl GrantStore {
         &mut self.file.data.records
     }
 
-    /// Atomically write to disk. No-op for path-less test stores.
+    /// Atomically write a sealed file. No-op for path-less test stores.
+    pub fn try_save(&self) -> Result<(), String> {
+        let label = self.file.label();
+        seal::write_toml(&self.file.path, label, &self.file.data)
+    }
+
+    /// Atomically write a sealed file. No-op for path-less test stores.
     pub fn save(&self) {
-        self.file.save();
+        let label = self.file.label();
+        if let Err(error) = self.try_save() {
+            log::error!("{label}: failed to save {}: {error}", self.file.path.display());
+        }
     }
 
     /// Evaluate a request through the spec's ordered tiers:
@@ -920,6 +1113,78 @@ impl GrantStore {
         // A deny record always wins over an allow record for the same cap.
         allowed.retain(|c| !denied.contains(c));
         (allowed, denied)
+    }
+}
+
+fn parse_legacy_grant_store(raw: &str) -> Result<GrantStoreData, String> {
+    let value: toml::Value = toml::from_str(raw).map_err(|error| error.to_string())?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| "legacy grants.toml is not a table".to_string())?;
+    let Some(records_value) = table.get("records") else {
+        return Err("legacy grants.toml has no records array".to_string());
+    };
+    let records = records_value
+        .as_array()
+        .ok_or_else(|| "legacy grants.toml records is not an array".to_string())?;
+    let mut kept = Vec::new();
+    let mut skipped = 0usize;
+    for (idx, item) in records.iter().enumerate() {
+        let raw_record = match toml::to_string(item) {
+            Ok(raw_record) => raw_record,
+            Err(error) => {
+                skipped += 1;
+                log::info!("grant_store: skipped malformed legacy grant record {idx}: {error}");
+                continue;
+            }
+        };
+        match toml::from_str::<GrantRecord>(&raw_record) {
+            Ok(record) => kept.push(record),
+            Err(error) => {
+                skipped += 1;
+                log::info!("grant_store: skipped malformed legacy grant record {idx}: {error}");
+            }
+        }
+    }
+    if skipped > 0 && kept.is_empty() {
+        return Err("legacy grants.toml had no readable records".to_string());
+    }
+    Ok(GrantStoreData { records: kept })
+}
+
+fn fill_capability_grant_ids(records: &mut [GrantRecord]) {
+    for record in records {
+        if record.target_type == TargetType::Capability
+            && record.grant_id.is_empty()
+            && !record.actor_id.is_empty()
+            && !record.target_id.is_empty()
+        {
+            record.grant_id = format!("cap:{}:{}", record.actor_id, record.target_id);
+        }
+    }
+}
+
+fn retire_legacy_permissions(config_dir: &Path) {
+    let legacy = config_dir.join("permissions.toml");
+    if !legacy.is_file() {
+        return;
+    }
+    let stamp = crate::platform::clock::now_secs();
+    let mut dest = config_dir.join(format!("permissions.toml.imported-{stamp}"));
+    if dest.exists() {
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        dest = config_dir.join(format!("permissions.toml.imported-{stamp}-{suffix}"));
+    }
+    match std::fs::rename(&legacy, &dest) {
+        Ok(()) => log::info!(
+            "grant_store: retired {} to {}",
+            legacy.display(),
+            dest.display()
+        ),
+        Err(error) => log::error!(
+            "grant_store: could not retire {}: {error}",
+            legacy.display()
+        ),
     }
 }
 
@@ -1162,9 +1427,13 @@ mod tests {
             e.unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with("grants.toml.corrupt-")
+                .starts_with("grants.toml.untrusted-")
         });
         assert!(backup_exists);
+        assert!(
+            store.integrity_faults().iter().any(|fault| fault.file == "grants.toml"),
+            "an unsigned grants file is an integrity fault"
+        );
     }
 
     #[test]
@@ -1216,22 +1485,105 @@ mod tests {
             assert_eq!(r.workspace_root.as_deref(), Some(ws_canon.as_path()));
         }
 
-        // Second load must not duplicate (idempotent), and legacy store must
-        // be untouched.
+        assert!(store.records().iter().all(|record| !record.grant_id.is_empty()));
+        assert!(
+            !tmp.path().join("permissions.toml").exists(),
+            "a successful import retires permissions.toml"
+        );
+
+        // Second load must not duplicate. The retired file is not enforcement.
         let store2 = GrantStore::load_or_default(tmp.path());
         assert_eq!(store2.records().len(), 3, "migration must be idempotent");
-        let legacy2 = PermissionStore::load_or_default(tmp.path());
-        assert_eq!(
-            legacy2.iter_entries().count(),
-            3,
-            "legacy store must keep working untouched"
-        );
+        std::fs::remove_file(tmp.path().join("grants.toml")).unwrap();
+        // Re-seed happens only from a live permissions.toml. With both gone,
+        // a fresh load is empty — the retired copy is not read back.
+        let retired = std::fs::read_dir(tmp.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("permissions.toml.imported-")
+        });
+        assert!(retired, "import leaves a retired copy");
 
         // Migrated records evaluate correctly.
         let req = PermissionRequest::app_capability("my-app", ws.path(), Capability::FsWrite);
         assert_eq!(store2.evaluate(&req, None), Decision::Allow);
         let req = PermissionRequest::app_capability("my-app", ws.path(), Capability::NetHttp);
         assert_eq!(store2.evaluate(&req, None), Decision::Deny);
+    }
+
+    #[test]
+    fn rejected_grants_do_not_import_legacy_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let mut legacy = PermissionStore::load_or_default(tmp.path());
+        legacy.set(
+            "my-app",
+            ws.path(),
+            Capability::FsRead,
+            PermissionState::Green,
+        );
+        legacy.save();
+        std::fs::write(
+            tmp.path().join("grants.toml"),
+            b"[[records]]\nactor_id = \"forged\"\n# plexi-mac:00\n",
+        )
+        .unwrap();
+        let store = GrantStore::load_or_default(tmp.path());
+        assert!(store.records().is_empty());
+        assert!(tmp.path().join("permissions.toml").is_file());
+        assert!(!store.integrity_faults().is_empty());
+    }
+
+    #[test]
+    fn declared_non_sensitive_caps_are_listed_and_sensitive_caps_wait() {
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let monitor = gate::PermissionMonitor::open_profile(profile.path());
+        let declared = std::collections::HashSet::from([
+            Capability::Timer,
+            Capability::PermissionsManage,
+        ]);
+        let perms =
+            monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
+        assert!(perms.capabilities.contains(&Capability::Timer));
+        assert!(!perms.capabilities.contains(&Capability::PermissionsManage));
+        let listed = monitor.list_entries();
+        assert!(listed.iter().any(|entry| entry.id == "cap:sample:timer"));
+        assert!(listed.iter().all(|entry| entry.id != "cap:sample:permissions.manage"));
+        let again =
+            monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
+        assert_eq!(again.capabilities, perms.capabilities);
+        assert_eq!(
+            monitor
+                .store()
+                .records()
+                .iter()
+                .filter(|record| record.target_id == "timer")
+                .count(),
+            1
+        );
+        std::fs::remove_file(profile.path().join("permissions.toml")).ok();
+        let reopened = gate::PermissionMonitor::open_profile(profile.path());
+        assert_eq!(
+            reopened.store().evaluate(
+                &PermissionRequest::app_capability("sample", ws.path(), Capability::Timer),
+                None,
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            reopened.store().evaluate(
+                &PermissionRequest::app_capability(
+                    "sample",
+                    ws.path(),
+                    Capability::PermissionsManage
+                ),
+                None,
+            ),
+            Decision::Ask
+        );
     }
 
     #[test]

@@ -92,7 +92,11 @@ if [[ -z "${VK_DRIVER_FILES:-}" && -f /usr/share/vulkan/icd.d/lvp_icd.json ]]; t
 fi
 # Never the caller's runtime dir. Its bus socket is shared with earlier items,
 # and a socket that accepts without a handshake blocks seal startup.
-export XDG_RUNTIME_DIR="$WORK/runtime"
+# Inside dbus-run-session the private runtime already holds that bus. Replacing
+# it leaves Secret Service activation on a directory with no daemon.
+if [[ -z "${CHANGE_SETS_E2E_INNER:-}" ]]; then
+  export XDG_RUNTIME_DIR="$WORK/runtime"
+fi
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
@@ -170,6 +174,16 @@ run_tool() {
   fi
   printf '%s\n' "$out"
 }
+
+if [[ "$(uname -s)" == "Linux" ]] && command -v gnome-keyring-daemon >/dev/null 2>&1; then
+  # Claim org.freedesktop.secrets on this bus before the host reads the seal
+  # key. Activation from inside PlexiApp::new can sit until host start's
+  # deadline when the daemon never takes the name.
+  if ! printf '\n' | gnome-keyring-daemon --unlock --components=secrets --daemonize >"$WORK/keyring.out" 2>"$WORK/keyring.err"; then
+    echo "note: gnome-keyring unlock failed; the host will refuse a plaintext seal key" >&2
+    cat "$WORK/keyring.err" >&2 || true
+  fi
+fi
 
 echo "starting host $BIN"
 "$BIN" host start --ephemeral --background --timeout-secs 90

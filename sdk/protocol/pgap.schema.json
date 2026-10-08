@@ -1117,6 +1117,18 @@
                 "null"
               ]
             },
+            "peer_ancestry": {
+              "description": "Host-stamped ancestor pids of the socket peer. The client cannot\nset this: `handle_socket_line` overwrites it from the kernel\ncredential captured at accept. `None` means the request did not\narrive on the command socket (spawn queue, in-process).",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "request_id": {
               "type": [
                 "string",
@@ -2105,6 +2117,116 @@
             "type",
             "pending_request_id",
             "choice",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "properties": {
+            "credential": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permissions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "List items waiting on the human. The host expires due items first.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve one needs-you item exactly once. `approve` false denies it.",
+          "properties": {
+            "approve": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "resolve_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "approve",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agents API: heads, runs, delegation, and gated tool calls.\n`op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,\n`show_run`, `finish_run`, or `delegate`. `payload` carries the\nworkspace path and the op's fields. The host writes the JSON result\nto `response_file`.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": true,
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agents_api",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "payload",
             "response_file"
           ],
           "type": "object"

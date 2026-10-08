@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.8"
+skill_version: "5.0.13"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-07"
 ---
 
 # Plexi CLI
@@ -52,7 +52,8 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
-  `plexi app --help`.
+  `plexi app --help`. `plexi app info <id>` prints the manifest and the tools
+  declared in that app's source.
 - **App state** — read or replace a file-backed app's state document, so a human
   and an agent can drive the same app: `plexi app state --help`. Only apps that
   declare a `[state]` section are addressable; the path is resolved from the
@@ -65,11 +66,38 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
-- **Assistant permission** — list, show, or resolve a pending grant:
-  `plexi assistant permission list`, `plexi assistant permission show <id>`,
-  `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
-  `always`, `deny`, and `revoke` are the choices. This is the observation
-  seam for the desktop permission sheet.
+- **Assistant permission** — list or show a pending grant:
+  `plexi assistant permission list`, `plexi assistant permission show <id>`.
+  When a tool call returns permission_required, print the pending_request_id
+  and wait for the person at the desktop. Do not approve, deny, or widen a
+  grant from the terminal. `assistant permission resolve` and `needs-you resolve`
+  are refused and do not grant.
+- **Permissions** — the live permission monitor, the same rows as the Permissions app:
+
+  ```bash
+  plexi permissions list --json
+  plexi permissions reset <id>
+  plexi permissions revoke <id>
+  plexi permissions allow <id>  # agents do not grant
+  ```
+
+  Reset clears a stored denial. Revoke removes an allow. Allow turns a denial
+  into an allow for a human terminal. From a pane, a child of that pane, or
+  with `PLEXI_CALL_CREDENTIAL`, reset and allow file a Needs you item and do
+  not grant. Revoke runs from either caller. Open the app with
+  `plexi app open permissions`. Editing `grants.toml` or
+  `permission-audit.jsonl` does not grant a permission. The host ignores a
+  file whose signature does not match, asks again, and files Needs you. A
+  declared non-sensitive capability is auto-granted as one of these rows. A
+  sensitive capability is absent from the list until a person grants it.
+  `permissions.toml` is not a second store: deleting it leaves the list and the
+  gate unchanged. `plexi secret get` cannot read `plexi:host:*`; a workspace id
+  of `host` is reserved.
+- **Needs you** — `plexi needs-you list --json` prints everything waiting on
+  the human. Click approvals, agent questions, and blocked runs share that
+  record. Expired items are auto-denied. Do not resolve from the terminal:
+  `needs-you resolve` is refused and does not grant. The person at the desktop
+  decides.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
@@ -80,13 +108,22 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
   project secrets and routines: `plexi workspace --help`, `plexi run --help`,
   `plexi secret --help`, and `plexi routine --help`.
-- **Agents** — install workspace definitions and report or inspect agent state:
-  `plexi agent --help`. `agent report --event` preserves a provider lifecycle
-  event separately from its UI state; `--blocked-reason` supplies a typed reason.
-  Read `agent report --help` before using these optional fields.
-- **AI ledger** — totals for tokens, cost, runs, and wall time from this
-  channel's ledger, grouped by client or kind: `plexi ledger summary --help`.
-  The command reads the local ledger file and does not need a running host.
+- **Agents** — install workspace definitions, report or inspect agent state,
+  and operate agent heads: `plexi agent --help`. `agent head create` stores a
+  named head under `.plexi/agents` with `--grant tool=allow|ask|deny`. `AGENT.md`
+  is guidance and grants nothing. `agent run spawn` starts a run; repeat the
+  same `--admission` to get that run back, and a second admission while it is
+  active returns `assignment_conflict`. `agent run finish` stops it. `agent delegate`
+  starts a temporary child with a subset of the parent run's grants. Ask-tier
+  calls wait on `plexi assistant permission list`. `agent report --event` preserves
+  a provider lifecycle event separately from its UI state; `--blocked-reason`
+  supplies a typed reason. Read `agent report --help` before using these optional
+  fields.
+- **AI ledger** — `plexi ledger` prints per-client totals for tokens, cost,
+  runs, and wall time from this channel's ledger. `plexi ledger summary --help`
+  groups by client or kind. A token count is a positive number or the word
+  `unknown`. The command reads the local ledger file and does not need a
+  running host.
   `assistant send --client` and `--kind` override the tags for one run;
   omitted, the client comes from `[ai] client` and the kind is `output`.
   Send does not require `app open assistant` first: with no pane named, the
@@ -131,6 +168,29 @@ account
 registry
 note
 notes
+```
+
+### Bind a secret to a folder
+
+`plexi secret set NAME --folder <path>` reads the value from stdin (or a hidden
+prompt) and stores it in the OS keychain, or in the labeled encrypted-file
+fallback when Secret Service is unavailable. `list` prints names and folders.
+A new pane a person starts inside that folder receives the name as an
+environment variable. Same-user native processes are not isolated from each
+other: a process running as this user can still read a value a pane already
+holds. Folder secrets stop accidental injection into the wrong directory.
+
+From a pane, `secret exec` and `secret grant` return `permission_denied`.
+They do not start a command, record an allow, or print the value. `secret
+read --agent <id>` returns `permission_required` until a person records an
+allow. A pane cannot spawn another pane that receives a folder secret.
+`list`, a refusal, and the audit log never print the value.
+
+```bash
+plexi secret set FOLDER_TOKEN --folder /path/to/project
+plexi secret list
+plexi secret read FOLDER_TOKEN --agent reader --folder /path/to/project
+plexi secret rm FOLDER_TOKEN --folder /path/to/project
 ```
 
 ## Worked examples
@@ -242,14 +302,31 @@ plexi notify dismiss "$NOTICE"
 
 ### Summarize AI ledger usage
 
-Group this channel's ledger by client. `--since` keeps rows at or after a
-date. Each group reports runs, input and output tokens, cost, and wall time
-(`null` when that field was not recorded). A client or kind that was never
-tagged is the null group.
+`plexi ledger` prints this channel's per-client totals. `ledger summary`
+groups by client or kind. `--since` keeps rows at or after a date. Each group
+reports runs, input and output tokens, cost, and wall time. A token count that
+was not measured is the word `unknown`. Wall time is null in JSON when it was
+not recorded. A client or kind that was never tagged is the null group.
 
 ```bash
+plexi ledger
 plexi ledger summary --by client --since 2026-01-01 --json
 plexi assistant send --text "hello" --client narrative --kind output
+```
+
+### Create an agent head and claim a run
+
+Heads live in the workspace `.plexi/agents` directory. Grants are the permission
+gate's authority. The same admission id returns the original run.
+
+```bash
+plexi agent head create lead --display-name Lead --description 'Lead agent' --grant agents.ping=allow --grant agents.review=ask --json
+plexi agent head list --all --json
+plexi agent run spawn --head lead --admission adm-1 --client-ref acme --kind output --input-tokens 11 --output-tokens 4 --json
+plexi agent run list --json
+plexi agent run show run_example --json
+plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+plexi agent run finish run_example --json
 ```
 
 ## Installation health

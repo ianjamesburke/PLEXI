@@ -53,7 +53,7 @@ Observe and resolve pending permission requests. This is not `plexi agent reques
 |---|---|
 | `list` | List pending permission requests as JSON |
 | `show` | Show one pending permission request as JSON |
-| `resolve` | Resolve one pending request: once, session, always, or deny |
+| `resolve` | Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal |
 
 #### `plexi assistant permission list`
 
@@ -69,7 +69,7 @@ Show one pending permission request as JSON
 
 #### `plexi assistant permission resolve`
 
-Resolve one pending request: once, session, always, or deny
+Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -192,9 +192,11 @@ Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`). Scripts sho
 
 ## `plexi secret`
 
-Store and retrieve secrets (API keys, passwords, tokens) for your project.
+Store and retrieve secrets (API keys, passwords, tokens).
 
-On macOS, secrets are saved to the system keychain. On Linux, they are saved in a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as environment variables when you run commands. Use `plexi workspace init` first to scope secrets to a project.
+Workspace secrets (`secret set` without `--folder`) are saved to the system keychain on macOS. On Linux those workspace entries are a mode-`0600` profile file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`) are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file fallback. Their values are never written in plaintext under `.plexi`. A new terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
+
+Same-user native processes are not isolated from each other. A process running as this user can still read a value that a pane already holds. Folder secrets stop accidental injection into the wrong directory.
 
 | Subcommand | Description |
 |---|---|
@@ -202,6 +204,10 @@ On macOS, secrets are saved to the system keychain. On Linux, they are saved in 
 | `get` | Print a stored secret's value to stdout |
 | `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
+| `rm` | Remove a folder-scoped secret |
+| `grant` | Ask for an allow on a folder secret. This command does not record one |
+| `read` | Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
+| `exec` | Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory |
 
 ### `plexi secret set`
 
@@ -217,6 +223,7 @@ Use --from-env to read the value from an existing environment variable instead o
 | `--from-env` | flag | no | Read the value from the environment variable named FRIENDLY_NAME instead of prompting |
 | `--global` | flag | no | Store this secret globally so it's available in all projects, not just this one |
 | `--alias` | string | no | Use a different platform-store entry name than the canonical env var name. On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
+| `--folder` | string | no | Bind the secret to this directory. The value is stored in the OS keychain (or the labeled encrypted-file fallback) and injected into panes whose cwd is this directory or a subdirectory |
 
 ### `plexi secret get`
 
@@ -249,6 +256,50 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
 | `--global` | flag | no | Delete from the global store instead of the project-scoped store |
+
+### `plexi secret rm`
+
+Remove a folder-scoped secret
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--folder` | string | yes | Directory the secret was bound to |
+
+### `plexi secret grant`
+
+Ask for an allow on a folder secret. This command does not record one.
+
+Returns `permission_denied` and writes an audit row with the secret name and folder, never the value. This process does not record an allow. An agent pane cannot grant itself a secret, including a secret bound to another folder.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
+| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+
+### `plexi secret read`
+
+Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
+| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+
+### `plexi secret exec`
+
+Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory.
+
+Refused with `permission_denied` when the caller is a pane agent, including a child of that pane that cleared `PLEXI_PANE_ID`. The command is not started and no secret value is printed. Same-user native processes are not isolated from each other.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--cwd` | string | yes | Working directory of the spawned command, and the pane cwd used for injection |
+| `<command>` | string (repeatable) | no | Command and arguments |
 
 ## `plexi routine`
 
@@ -372,6 +423,9 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
 | `hook` | Install or uninstall agent hook integrations |
+| `head` | Create or list an agent head stored under `.plexi/agents` |
+| `run` | Spawn, list, or finish a run of an agent head |
+| `delegate` | Start a child run whose grants are a subset of the parent run |
 
 ### `plexi agent init`
 
@@ -479,6 +533,110 @@ Remove PLEXI agent-state hook integrations
 | `--claude-code` | flag | no | Remove Claude Code hooks |
 | `--codex` | flag | no | Remove Codex hooks |
 | `--pi` | flag | no | Remove Pi extension hooks |
+
+### `plexi agent head`
+
+Create or list an agent head stored under `.plexi/agents`.
+
+A head is a named definition. `AGENT.md` is guidance and grants nothing. `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+
+Example: plexi agent head create lead --grant agents.ping=allow --json
+
+| Subcommand | Description |
+|---|---|
+| `create` | Create a head in the current workspace |
+| `list` | List heads in the current workspace |
+
+#### `plexi agent head create`
+
+Create a head in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Head id (lowercase slug) |
+| `--display-name` | string | no | Display name. Defaults to the head id on the host when omitted |
+| `--description` | string | no | Short description stored on the head card |
+| `--grant` | string (repeatable) | no | Grant, as `tool=allow|ask|deny`. Repeatable |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent head list`
+
+List heads in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--all` | flag | no | Include temporary delegated children |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent run`
+
+Spawn, list, or finish a run of an agent head.
+
+The same `--admission` returns the original run. A different admission while that run is active is `assignment_conflict`.
+
+Example: plexi agent run spawn --head lead --admission adm-1 --json
+
+| Subcommand | Description |
+|---|---|
+| `spawn` | Claim a run of a head and append a ledger row |
+| `list` | List runs in the current workspace |
+| `show` | Show one run |
+| `finish` | Mark a run finished so another admission can claim the head |
+
+#### `plexi agent run spawn`
+
+Claim a run of a head and append a ledger row
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head id to run |
+| `--admission` | string | no | Admission id. The same id returns the existing run |
+| `--client-ref` | string | no | Client tag stored on the run and the ledger row |
+| `--kind` | string | no | `system` or `output` |
+| `--input-tokens` | string | no | Input tokens recorded on the ledger row |
+| `--output-tokens` | string | no | Output tokens recorded on the ledger row |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run list`
+
+List runs in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run show`
+
+Show one run
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run finish`
+
+Mark a run finished so another admission can claim the head
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent delegate`
+
+Start a child run whose grants are a subset of the parent run.
+
+A grant the parent does not hold is refused and audited. The child is temporary and does not appear in `agent head list` unless `--all`.
+
+Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--parent-run` | string | yes | Active parent run id |
+| `--name` | string | yes | Child head name |
+| `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow|ask|deny`. Repeatable |
+| `--json` | flag | no | Print the host JSON reply |
 
 ## `plexi context`
 
@@ -1364,6 +1522,80 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
+## `plexi needs-you`
+
+List everything waiting on you. The terminal cannot resolve it.
+
+One host record covers click approvals, agent questions, and blocked runs. The desktop badge and the phone page resolve an id everywhere, exactly once. `resolve` from the terminal is refused.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List open items waiting on you as JSON |
+| `resolve` | Ask the host to resolve an item. The host refuses |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi needs-you resolve`
+
+Ask the host to resolve an item. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Request approval. The host still refuses |
+| `--deny` | flag | no | Request denial. The host still refuses |
+
+## `plexi permissions`
+
+List and change decisions stored by the permission monitor.
+
+`list` prints the live rows. `reset` clears a stored denial so the next call asks again. `revoke` removes an allow. `allow` turns a denial into an allow. Reset and allow from a pane, a call credential, or an agent file a Needs you item and leave the decision unchanged.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List live permission decisions |
+| `reset` | Clear a stored denial so the next call asks again |
+| `revoke` | Remove an allow, or refuse a pending ask |
+| `allow` | Turn a denial or a pending ask into an allow |
+
+### `plexi permissions list`
+
+List live permission decisions
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi permissions reset`
+
+Clear a stored denial so the next call asks again
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
+### `plexi permissions revoke`
+
+Remove an allow, or refuse a pending ask
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
+### `plexi permissions allow`
+
+Turn a denial or a pending ask into an allow
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Decision id from `plexi permissions list` |
+
 ## `plexi notify`
 
 Send a notification to the Plexi UI
@@ -1422,7 +1654,7 @@ Example: plexi ai setup
 
 Summarize recorded AI usage from this channel's ledger.
 
-Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
 
 | Subcommand | Description |
 |---|---|

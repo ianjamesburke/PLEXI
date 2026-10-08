@@ -120,12 +120,7 @@ pub fn demo_cli() -> i32 {
         Err(e) => return watch_error(&events_path, e),
     };
     let after_balls = match poll_event(&events_path, after_app_split, |kind, obj| {
-        if kind != "app_spawned"
-            || !obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "balls")
-        {
+        if !matches_catalog_app(kind, obj, "app_spawned", "balls") {
             return false;
         }
         // Capture from app_spawned so the pane_id is always the pane Balls actually ran in,
@@ -146,15 +141,7 @@ pub fn demo_cli() -> i32 {
     ]);
     key("Esc", "exit the app");
     let after_balls_close = match poll_event(&events_path, after_balls, |kind, obj| {
-        kind == "app_closed"
-            && obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "balls")
-            && obj
-                .get("pane_id")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|id| id == balls_pane_id)
+        matches_catalog_app_on_pane(kind, obj, "app_closed", "balls", balls_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -191,11 +178,7 @@ pub fn demo_cli() -> i32 {
     ]);
     key(&format!("{CMD}E"), "open File Browser");
     let after_file = match poll_event(&events_path, after_app_rename, |kind, obj| {
-        kind == "app_spawned"
-            && obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "file_browser")
+        matches_catalog_app(kind, obj, "app_spawned", "file_browser")
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -406,6 +389,36 @@ fn file_offset(path: &std::path::Path) -> Option<u64> {
     std::fs::metadata(path).map(|m| m.len()).ok()
 }
 
+/// `app_id` is the catalog id (`balls`, `file_browser`). `type_id` is the
+/// runtime (`python-wasm`, `wasm`) or, for builtins, often the same catalog
+/// id. A `type_id == "balls"` check never sees a WASM spawn.
+fn matches_catalog_app(
+    kind: &str,
+    obj: &serde_json::Value,
+    expected_kind: &str,
+    app_id: &str,
+) -> bool {
+    kind == expected_kind
+        && obj
+            .get("app_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == app_id)
+}
+
+fn matches_catalog_app_on_pane(
+    kind: &str,
+    obj: &serde_json::Value,
+    expected_kind: &str,
+    app_id: &str,
+    pane_id: u64,
+) -> bool {
+    matches_catalog_app(kind, obj, expected_kind, app_id)
+        && obj
+            .get("pane_id")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|id| id == pane_id)
+}
+
 fn capture_pane_split(kind: &str, obj: &serde_json::Value, direction: &str, out: &mut u64) -> bool {
     if kind != "pane_split" {
         return false;
@@ -431,7 +444,7 @@ fn watch_error(path: &std::path::Path, error: std::io::Error) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::demo_supported_on;
+    use super::{demo_supported_on, matches_catalog_app, matches_catalog_app_on_pane};
     use crate::cli::install_hint::InstallPlatform;
 
     #[test]
@@ -440,6 +453,75 @@ mod tests {
         assert!(!demo_supported_on(InstallPlatform::Linux));
         assert!(!demo_supported_on(InstallPlatform::Windows));
         assert!(!demo_supported_on(InstallPlatform::Other));
+    }
+
+    /// Live Balls spawn from alpha 2026-10-06:
+    /// `{"kind":"app_spawned","app_id":"balls","type_id":"python-wasm","pane_id":178}`.
+    /// Matching `type_id == "balls"` never advances the demo.
+    #[test]
+    fn wasm_lifecycle_events_match_catalog_app_id() {
+        let spawned = serde_json::json!({
+            "kind": "app_spawned",
+            "app_id": "balls",
+            "type_id": "python-wasm",
+            "pane_id": 178
+        });
+        assert!(matches_catalog_app(
+            "app_spawned",
+            &spawned,
+            "app_spawned",
+            "balls"
+        ));
+        assert!(
+            !matches_catalog_app("app_spawned", &spawned, "app_spawned", "python-wasm"),
+            "the runtime kind is not the catalog id"
+        );
+        assert_ne!(
+            spawned.get("type_id").and_then(|v| v.as_str()),
+            Some("balls"),
+            "type_id is the runtime, so a type_id == balls check misses WASM apps"
+        );
+
+        let closed = serde_json::json!({
+            "kind": "app_closed",
+            "app_id": "balls",
+            "type_id": "python-wasm",
+            "pane_id": 178
+        });
+        assert!(matches_catalog_app_on_pane(
+            "app_closed",
+            &closed,
+            "app_closed",
+            "balls",
+            178
+        ));
+        assert!(!matches_catalog_app_on_pane(
+            "app_closed",
+            &closed,
+            "app_closed",
+            "balls",
+            99
+        ));
+        assert!(!matches_catalog_app_on_pane(
+            "app_closed",
+            &closed,
+            "app_closed",
+            "python-wasm",
+            178
+        ));
+
+        let file_browser = serde_json::json!({
+            "kind": "app_spawned",
+            "app_id": "file_browser",
+            "type_id": "file_browser",
+            "pane_id": 12
+        });
+        assert!(matches_catalog_app(
+            "app_spawned",
+            &file_browser,
+            "app_spawned",
+            "file_browser"
+        ));
     }
 }
 

@@ -193,7 +193,7 @@ pub fn agent_list() -> i32 {
 }
 
 /// Resolve the workspace root from the current directory.
-fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
+pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {

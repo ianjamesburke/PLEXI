@@ -21,6 +21,7 @@ SKIP=(
   "events"       # developer API, covered in sdk-emitter
   "lock"         # build-recipe primitive; generated CLI reference + plexi-cli skill are canonical
   "changes"      # text-editor change sets; generated CLI reference + scripts/change-sets-e2e.sh are canonical
+  "needs-you"    # waiting-on-you record; generated CLI reference + plexi-cli skill are canonical
   "note"         # alias for notes, covered in quick-note
   "notify"       # developer API, covered in sdk-emitter
   "registry"     # internal developer tool

@@ -266,6 +266,37 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
+            crate::protocol::AppRequest::Permissions {
+                op,
+                id,
+                pane_id,
+                credential,
+                response_file,
+            } => {
+                self.permissions_cli_request(
+                    op,
+                    id.as_deref(),
+                    *pane_id,
+                    credential.as_deref(),
+                    response_file,
+                );
+            }
+            crate::protocol::AppRequest::ListNeedsYou { response_file } => {
+                self.observe_needs_you("list", None, None, response_file);
+            }
+            crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
+                self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
+            }
+            crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=agents_api op={op}");
+                let mut value = crate::agent::heads::handle_request(op, payload);
+                if let Some(port) = crate::app::host_mcp::bound_port() {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("mcp_port".to_string(), serde_json::json!(port));
+                    }
+                }
+                crate::rpc::write_json_response(response_file, value);
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;
@@ -1078,6 +1109,17 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
+                let requester_is_pane = spec
+                    .peer_ancestry
+                    .as_deref()
+                    .filter(|pids| !pids.is_empty())
+                    .is_some_and(|pids| self.resolve_socket_peer_pane(pids).is_some());
+                let inject_folder_secrets = !requester_is_pane;
+                if requester_is_pane {
+                    log::info!(
+                        "pane_ipc: spawn_pane requester is a pane; withholding folder secrets"
+                    );
+                }
                 let mut response_pane_id = self.host.next_pane_id();
 
                 let active = self.active_window;
@@ -1144,6 +1186,8 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             spec.no_focus,
+                            spec.agent.is_some(),
+                            inject_folder_secrets,
                         );
                         if let Some(ref pane_name) = spec.name {
                             if !pane_name.is_empty() {
@@ -1180,6 +1224,8 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            spec.agent.is_some(),
+                            inject_folder_secrets,
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1202,6 +1248,8 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            spec.agent.is_some(),
+                            inject_folder_secrets,
                         );
                         if spec.no_focus {
                             self.restore_window_focused_pane(target_win_idx, original_focused);
@@ -1245,6 +1293,8 @@ impl PlexiApp {
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
                                             cwd_override,
+                                            spec.agent.is_some(),
+                                            inject_folder_secrets,
                                         ) {
                                             Some(seeded_id) => response_pane_id = seeded_id,
                                             None => {
@@ -1292,6 +1342,8 @@ impl PlexiApp {
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
                                 cwd_override,
+                                spec.agent.is_some(),
+                                inject_folder_secrets,
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,
                                 None => launch_result = Err("failed to seed root pane".into()),
@@ -1324,6 +1376,8 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             keep_focus,
+                            spec.agent.is_some(),
+                            inject_folder_secrets,
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1589,6 +1643,14 @@ impl PlexiApp {
                     "pane_ipc: kind=key_pane pane_id={pane_id} key_chars={}",
                     key.chars().count()
                 );
+                if self.refuse_synthetic_approval(
+                    *pane_id,
+                    Some(key),
+                    None,
+                    response_file.as_deref(),
+                ) {
+                    // Sheet keys from the socket never reach the approval widget.
+                } else {
                 let mut passthrough_raw = None;
                 // Mirror the live dispatch gate (stint 0456): while this
                 // pane's TextInput holds egui focus, keys belong to the
@@ -1703,6 +1765,7 @@ impl PlexiApp {
                     };
                     write_response(rf, json.as_bytes());
                 }
+                }
             }
             crate::protocol::AppRequest::DropFile {
                 pane_id,
@@ -1753,6 +1816,21 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=click_pane pane_id={pane_id} x={x} y={y} button={button:?}"
                 );
+                let click_abs = self.find_pane_in_any_window(*pane_id).and_then(|(win, tile)| {
+                    self.windows[win]
+                        .tree
+                        .tiles
+                        .rect(tile)
+                        .map(|rect| rect.min + egui::vec2(*x, *y))
+                });
+                if self.refuse_synthetic_approval(
+                    *pane_id,
+                    None,
+                    click_abs,
+                    response_file.as_deref(),
+                ) {
+                    // A socket click on an approval button or surface is not a grant.
+                } else {
                 let result: Result<serde_json::Value, String> = (|| {
                     let Some((win_idx, tile_id)) = self.find_pane_in_any_window(*pane_id) else {
                         return Err(format!("pane {pane_id} not found"));
@@ -1852,6 +1930,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
                 }
             }
             crate::protocol::AppRequest::ClickPaneNode {
@@ -2304,6 +2383,53 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}"
                 );
+                let approval_verb = {
+                    let name = action.to_ascii_lowercase();
+                    ["allow", "approve", "resolve", "grant", "deny", "revoke"]
+                        .iter()
+                        .any(|word| name == *word || name.contains(word))
+                };
+                if approval_verb
+                    && self.refuse_synthetic_approval(
+                        *pane_id,
+                        None,
+                        None,
+                        response_file.as_deref(),
+                    )
+                {
+                    // The surface itself refused.
+                } else if approval_verb {
+                    let pending_id = self
+                        .synthetic_approval_target(*pane_id, None, None)
+                        .or_else(|| {
+                            crate::broker::gate::PermissionMonitor::for_profile(
+                                &crate::config::config_dir(),
+                            )
+                            .list_pending()
+                            .into_iter()
+                            .next()
+                            .map(|row| row.pending_request_id)
+                        })
+                        .unwrap_or_else(|| "none".to_string());
+                    crate::broker::gate::PermissionMonitor::for_profile(
+                        &crate::config::config_dir(),
+                    )
+                    .refuse_client_resolve(&pending_id);
+                    log::info!(
+                        "permission_monitor: refused synthetic action pane={pane_id} action={action} pending={pending_id}"
+                    );
+                    if let Some(path) = response_file.as_deref() {
+                        crate::rpc::write_json_response(
+                            path,
+                            serde_json::json!({
+                                "ok": false,
+                                "error_code": "permission_denied",
+                                "error": "synthetic input cannot resolve a permission",
+                                "pending_request_id": pending_id,
+                            }),
+                        );
+                    }
+                } else {
                 let result = match self
                     .windows
                     .iter_mut()
@@ -2332,6 +2458,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
                 }
             }
             crate::protocol::AppRequest::CallAppTool {
@@ -2404,6 +2531,32 @@ impl PlexiApp {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
+                    if *state == crate::protocol::AgentState::Blocked
+                        && *blocked_reason != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
+                    {
+                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
+                            format!("{agent} is blocked")
+                        });
+                        let kind = if event.as_deref() == Some("AskQuestion") {
+                            crate::broker::gate::NeedsYouKind::Question
+                        } else {
+                            crate::broker::gate::NeedsYouKind::BlockedRun
+                        };
+                        let filed = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        )
+                        .file_needs_you(crate::broker::gate::NeedsYouFile {
+                            kind,
+                            actor: agent.clone(),
+                            resource: format!("pane:{pane_id}"),
+                            summary,
+                            expires_at: None,
+                            run_tag: session_id.clone().or_else(|| Some(format!("pane:{pane_id}"))),
+                        });
+                        if let Err(error) = filed {
+                            log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
+                        }
+                    }
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
                     // path is picked up by the level-triggered re-check in
@@ -2780,6 +2933,8 @@ impl PlexiApp {
                             Some(cmd.as_str()),
                             false,
                             None,
+                            false,
+                            true,
                         );
                     }
                 }
@@ -3192,17 +3347,13 @@ impl PlexiApp {
             store.set(app_id, &ws, cap, new_state);
             store.save();
 
-            // Dual-write the unified broker store so grants.toml stays in
-            // lockstep with the legacy permissions.toml until all call sites
-            // read through the broker (permissions-broker spec, Phase A).
-            let mut grants = crate::broker::GrantStore::load_or_default(&self.permission_store_dir);
-            grants.record_app_capability(
-                app_id,
-                &ws,
-                cap,
-                crate::broker::Decision::from_permission_state(new_state),
-            );
-            grants.save();
+            crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
+                .grant_app_capability(
+                    app_id,
+                    &ws,
+                    cap,
+                    crate::broker::Decision::from_permission_state(new_state),
+                );
 
             // Live-update every running instance of this app in this workspace.
             let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
@@ -3583,6 +3734,8 @@ impl PlexiApp {
                 ephemeral,
                 cwd,
                 false,
+                false,
+                true,
             )
         });
 
@@ -3651,6 +3804,7 @@ impl PlexiApp {
                 // `pane new --agent` requires PLEXI_SOCKET for this reason.
                 agent_cmd: None,
                 boot_timeout_secs: None,
+                peer_ancestry: None,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {

@@ -4,6 +4,13 @@
 # Port of the chess proof from verify/pr-2686-install, steps 1-7 only.
 # Approvals are HUMAN_APPROVE (real XTEST clicks). The script never asks
 # the host to approve from the terminal.
+#
+# Board clicks need Pillow (see human.sh). Linux writes the sealed permission
+# audit only when Secret Service is up; acceptance clears the session bus, so
+# start a private one before the desktop click records a grant.
+if [[ "$(uname -s)" == "Linux" && -z "${GATE_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env GATE_E2E_INNER=1 "$0" "$@"
+fi
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,6 +48,11 @@ record() {
 }
 
 cleanup() {
+  # The [ai] backend rewrite below is only for this run. Put the profile
+  # config back so a later ledger check still sees backend = "openrouter".
+  if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" && -n "${PROFILE:-}" ]]; then
+    cp -f "$CONFIG_BACKUP" "$PROFILE/config.toml" 2>/dev/null || true
+  fi
   if [[ -n "${BIN:-}" && -x "$BIN" ]]; then
     "$BIN" host stop >>"$EVID/log.txt" 2>&1 || true
   fi
@@ -59,10 +71,19 @@ if ! pgrep -f "Xvfb $DISPLAY_NUM" >/dev/null 2>&1; then
   sleep 0.4
 fi
 [[ -x "$BIN" ]] || { record FAIL preflight "missing $BIN"; exit 1; }
+if ! human__require_pillow; then
+  record FAIL preflight "Pillow is not importable by $(command -v python3 2>/dev/null || echo python3); board clicks cannot run"
+  exit 1
+fi
 
 note "binary: $BIN ($("$BIN" --version 2>&1 || true))"
 note "sha: $(git -C "$REPO" rev-parse HEAD)"
 
+CONFIG_BACKUP=""
+if [[ -f "$PROFILE/config.toml" ]]; then
+  CONFIG_BACKUP="$(mktemp)"
+  cp -f "$PROFILE/config.toml" "$CONFIG_BACKUP"
+fi
 python3 - "$PROFILE/config.toml" "$MOCK_PORT" <<'PY'
 import re, sys, tomllib
 from pathlib import Path
@@ -285,6 +306,58 @@ else
   record FAIL step3 "port=$MCP_PORT $STEP3"
 fi
 
+# `assistant send` on the combined tree writes waiting_for_permission as soon
+# as the sheet is up, then overwrites that outcome when the click finishes
+# the turn. The first body is not the result.
+await_assistant_outcome() {
+  local file="$1"
+  local pane="$2"
+  local state turn
+  state="$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+print(data.get("state") or "")
+PY
+)"
+  [[ "$state" == "waiting_for_permission" ]] || return 0
+  turn="$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+print(data.get("turn_id") or "")
+PY
+)"
+  [[ -n "$turn" ]] || return 0
+  if ! "$BIN" assistant send --help 2>&1 | grep -q -- '--status-for'; then
+    return 0
+  fi
+  local i
+  for i in $(seq 1 30); do
+    "$BIN" assistant send --pane-id "$pane" --status-for "$turn" --request-id "poll-${i}" --json >"$file" 2>"$file.poll.err" || true
+    state="$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+print(data.get("state") or "")
+PY
+)"
+    if [[ -n "$state" && "$state" != "waiting_for_permission" ]]; then
+      return 0
+    fi
+    sleep 0.4
+  done
+}
+
 # ── 4. Assistant proposes e7e5; a real click approves it ─────────────────────
 arm 1 assistant-e7e5 e7e5
 # Split beside the board so the sheet and the squares are both on screen.
@@ -329,6 +402,7 @@ PY
 done
 if [[ -n "$PENDING" ]] && HUMAN_APPROVE "$PENDING" once; then
   wait "$SEND_PID" || true
+  await_assistant_outcome "$EVID/logs/step4-send.json" "$ASSIST"
   SEND4="$(cat "$EVID/logs/step4-send.json" "$EVID/logs/step4-send.err" 2>/dev/null || true)"
   if python3 - "$EVID/logs/step4-send.json" <<'PY'
 import json, sys
@@ -400,6 +474,7 @@ PY
 done
 if [[ -n "$PENDING6" ]] && HUMAN_PLAY_UCI g1f3 && HUMAN_APPROVE "$PENDING6" once; then
   wait "$SEND6" || true
+  await_assistant_outcome "$EVID/logs/step6-send.json" "$ASSIST"
   SEND6_BODY="$(cat "$EVID/logs/step6-send.json" "$EVID/logs/step6-send.err" 2>/dev/null || true)"
   if printf '%s' "$SEND6_BODY" | grep -q 'stale_revision'; then
     record PASS step6 "human correction produced stale_revision"

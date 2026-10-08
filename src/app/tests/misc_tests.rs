@@ -571,6 +571,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         name: None,
         agent_cmd: None,
         boot_timeout_secs: None,
+        peer_ancestry: None,
     });
     app.drain_pane_cmd_channel();
 
@@ -654,6 +655,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         name: None,
         agent_cmd: None,
         boot_timeout_secs: None,
+        peer_ancestry: None,
     });
     app.drain_pane_cmd_channel();
 
@@ -745,6 +747,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
         name: Some("seeded".to_string()),
         agent_cmd: None,
         boot_timeout_secs: None,
+        peer_ancestry: None,
     });
     app.drain_pane_cmd_channel();
 
@@ -761,7 +764,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
         let ft = crate::platform::logging::new_frame_tick();
         let (mut probe, _tx) = PlexiApp::new_for_test(ctx, ft);
         let before = probe.windows.len();
-        probe.create_page_at(9, 9, 1, None, false, None);
+        probe.create_page_at(9, 9, 1, None, false, None, false, true);
         probe.windows.len() > before
     };
     if !pty_available {

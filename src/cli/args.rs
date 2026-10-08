@@ -78,12 +78,19 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ChangesCmd,
     },
-    /// Store and retrieve secrets (API keys, passwords, tokens) for your project.
+    /// Store and retrieve secrets (API keys, passwords, tokens).
     ///
-    /// On macOS, secrets are saved to the system keychain. On Linux, they are saved in
-    /// a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as
-    /// environment variables when you run commands. Use `plexi workspace init` first
-    /// to scope secrets to a project.
+    /// Workspace secrets (`secret set` without `--folder`) are saved to the system
+    /// keychain on macOS. On Linux those workspace entries are a mode-`0600` profile
+    /// file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`)
+    /// are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file
+    /// fallback. Their values are never written in plaintext under `.plexi`. A new
+    /// terminal pane whose working directory is inside that folder receives the name
+    /// as an environment variable. Agents and app tools read it only with a grant.
+    ///
+    /// Same-user native processes are not isolated from each other. A process
+    /// running as this user can still read a value that a pane already holds.
+    /// Folder secrets stop accidental injection into the wrong directory.
     #[command(alias = "secrets")]
     Secret {
         #[command(subcommand)]
@@ -158,6 +165,26 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: EventsCmd,
     },
+    /// List everything waiting on you. The terminal cannot resolve it.
+    ///
+    /// One host record covers click approvals, agent questions, and blocked
+    /// runs. The desktop badge and the phone page resolve an id everywhere,
+    /// exactly once. `resolve` from the terminal is refused.
+    #[command(name = "needs-you")]
+    NeedsYou {
+        #[command(subcommand)]
+        cmd: NeedsYouCmd,
+    },
+    /// List and change decisions stored by the permission monitor.
+    ///
+    /// `list` prints the live rows. `reset` clears a stored denial so the next
+    /// call asks again. `revoke` removes an allow. `allow` turns a denial into
+    /// an allow. Reset and allow from a pane, a call credential, or an agent
+    /// file a Needs you item and leave the decision unchanged.
+    Permissions {
+        #[command(subcommand)]
+        cmd: PermissionsCmd,
+    },
     /// Send a notification to the Plexi UI.
     Notify {
         #[command(subcommand)]
@@ -175,12 +202,14 @@ pub enum Commands {
     },
     /// Summarize recorded AI usage from this channel's ledger.
     ///
-    /// Reads `ai-ledger.jsonl` in the channel profile. Does not require a
-    /// running host. Rows written before run tags existed are migrated in
+    /// With no subcommand, prints per-client totals for tokens, cost, runs,
+    /// and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does
+    /// not require a running host. A token count is a positive number or the
+    /// word `unknown`. Rows written before run tags existed are migrated in
     /// place to explicit null `client` and `kind`.
     Ledger {
         #[command(subcommand)]
-        cmd: LedgerCmd,
+        cmd: Option<LedgerCmd>,
     },
 
     // ── System ────────────────────────────────────────────────────────────────
@@ -332,15 +361,61 @@ pub enum LedgerCmd {
 }
 
 #[derive(Subcommand)]
+pub enum NeedsYouCmd {
+    /// List open items waiting on you as JSON.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask the host to resolve an item. The host refuses.
+    Resolve {
+        id: String,
+        /// Request approval. The host still refuses.
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        approve: bool,
+        /// Request denial. The host still refuses.
+        #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
+        deny: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PermissionsCmd {
+    /// List live permission decisions.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear a stored denial so the next call asks again.
+    Reset {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Remove an allow, or refuse a pending ask.
+    Revoke {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Turn a denial or a pending ask into an allow.
+    Allow {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AssistantPermissionCmd {
     /// List pending permission requests as JSON.
     List,
     /// Show one pending permission request as JSON.
     Show { id: String },
     /// Resolve one pending request: once, session, always, or deny.
+    /// The host refuses every choice from the terminal.
     Resolve {
         id: String,
-        #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
+        #[arg(long, value_parser = ["once", "session", "always", "deny", "deny_always", "revoke"])]
         choice: String,
     },
 }
@@ -593,6 +668,11 @@ pub enum SecretCmd {
         /// On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal
         #[arg(long)]
         alias: Option<String>,
+        /// Bind the secret to this directory. The value is stored in the OS keychain
+        /// (or the labeled encrypted-file fallback) and injected into panes whose
+        /// cwd is this directory or a subdirectory.
+        #[arg(long, conflicts_with_all = ["global", "alias"])]
+        folder: Option<std::path::PathBuf>,
     },
     /// Print a stored secret's value to stdout.
     ///
@@ -624,6 +704,64 @@ pub enum SecretCmd {
         /// Delete from the global store instead of the project-scoped store
         #[arg(long)]
         global: bool,
+    },
+    /// Remove a folder-scoped secret.
+    Rm {
+        /// Environment variable name
+        name: String,
+        /// Directory the secret was bound to
+        #[arg(long)]
+        folder: std::path::PathBuf,
+    },
+    /// Ask for an allow on a folder secret. This command does not record one.
+    ///
+    /// Returns `permission_denied` and writes an audit row with the secret name
+    /// and folder, never the value. This process does not record an allow. An
+    /// agent pane cannot grant itself a secret, including a secret bound to
+    /// another folder.
+    Grant {
+        /// Environment variable name
+        name: String,
+        /// Agent id. Stored as `agent:<id>`.
+        #[arg(long, conflicts_with = "app")]
+        agent: Option<String>,
+        /// App id. Stored as `app:<id>`.
+        #[arg(long, conflicts_with = "agent")]
+        app: Option<String>,
+        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
+    /// Read a folder secret as an agent or app. Without a grant this prints
+    /// `permission_required` and writes an audit row that names the secret
+    /// but not its value.
+    Read {
+        /// Environment variable name
+        name: String,
+        /// Agent id. Stored as `agent:<id>`.
+        #[arg(long, conflicts_with = "app")]
+        agent: Option<String>,
+        /// App id. Stored as `app:<id>`.
+        #[arg(long, conflicts_with = "agent")]
+        app: Option<String>,
+        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
+    /// Run a command with the environment a new terminal pane in `--cwd` receives,
+    /// including folder secrets for that directory.
+    ///
+    /// Refused with `permission_denied` when the caller is a pane agent, including
+    /// a child of that pane that cleared `PLEXI_PANE_ID`. The command is not
+    /// started and no secret value is printed. Same-user native processes are
+    /// not isolated from each other.
+    Exec {
+        /// Working directory of the spawned command, and the pane cwd used for injection.
+        #[arg(long)]
+        cwd: std::path::PathBuf,
+        /// Command and arguments.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
 }
 
@@ -1901,6 +2039,126 @@ pub enum AgentCmd {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Create or list an agent head stored under `.plexi/agents`.
+    ///
+    /// A head is a named definition. `AGENT.md` is guidance and grants nothing.
+    /// `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+    ///
+    /// Example: plexi agent head create lead --grant agents.ping=allow --json
+    Head {
+        #[command(subcommand)]
+        cmd: AgentHeadCmd,
+    },
+    /// Spawn, list, or finish a run of an agent head.
+    ///
+    /// The same `--admission` returns the original run. A different admission
+    /// while that run is active is `assignment_conflict`.
+    ///
+    /// Example: plexi agent run spawn --head lead --admission adm-1 --json
+    Run {
+        #[command(subcommand)]
+        cmd: AgentRunCmd,
+    },
+    /// Start a child run whose grants are a subset of the parent run.
+    ///
+    /// A grant the parent does not hold is refused and audited. The child is
+    /// temporary and does not appear in `agent head list` unless `--all`.
+    ///
+    /// Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+    Delegate {
+        /// Active parent run id
+        #[arg(long)]
+        parent_run: String,
+        /// Child head name
+        #[arg(long)]
+        name: String,
+        /// Grant to copy, as `tool=allow|ask|deny`. Repeatable.
+        #[arg(long = "grant")]
+        grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentHeadCmd {
+    /// Create a head in the current workspace.
+    Create {
+        /// Head id (lowercase slug)
+        name: String,
+        /// Display name. Defaults to the head id on the host when omitted.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Short description stored on the head card
+        #[arg(long)]
+        description: Option<String>,
+        /// Grant, as `tool=allow|ask|deny`. Repeatable.
+        #[arg(long = "grant")]
+        grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// List heads in the current workspace.
+    List {
+        /// Include temporary delegated children
+        #[arg(long)]
+        all: bool,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentRunCmd {
+    /// Claim a run of a head and append a ledger row.
+    Spawn {
+        /// Head id to run
+        #[arg(long)]
+        head: String,
+        /// Admission id. The same id returns the existing run.
+        #[arg(long)]
+        admission: Option<String>,
+        /// Client tag stored on the run and the ledger row
+        #[arg(long)]
+        client_ref: Option<String>,
+        /// `system` or `output`
+        #[arg(long)]
+        kind: Option<String>,
+        /// Input tokens recorded on the ledger row
+        #[arg(long)]
+        input_tokens: Option<u32>,
+        /// Output tokens recorded on the ledger row
+        #[arg(long)]
+        output_tokens: Option<u32>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// List runs in the current workspace.
+    List {
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one run.
+    Show {
+        /// Run id
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark a run finished so another admission can claim the head.
+    Finish {
+        /// Run id
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2266,5 +2524,32 @@ mod tests {
         assert_eq!(name, None);
         assert_eq!(wasm.as_deref(), Some("counter"));
         assert_eq!(lang, "python");
+    }
+
+    #[test]
+    fn bare_ledger_is_the_per_client_summary() {
+        let cli = Cli::try_parse_from(["plexi", "ledger"]).expect("bare ledger parses");
+        assert!(matches!(cli.command, Some(Commands::Ledger { cmd: None })));
+
+        let summary = Cli::try_parse_from([
+            "plexi",
+            "ledger",
+            "summary",
+            "--by",
+            "kind",
+            "--since",
+            "2026-01-01",
+            "--json",
+        ])
+        .expect("ledger summary parses");
+        let Some(Commands::Ledger {
+            cmd: Some(super::LedgerCmd::Summary { by, since, json }),
+        }) = summary.command
+        else {
+            panic!("expected ledger summary");
+        };
+        assert_eq!(by.as_deref(), Some("kind"));
+        assert_eq!(since.as_deref(), Some("2026-01-01"));
+        assert!(json);
     }
 }

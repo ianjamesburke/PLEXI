@@ -8,8 +8,11 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -26,8 +29,26 @@ def digest(path):
 
 
 def download(url, target, expected):
-    with urllib.request.urlopen(url, timeout=120) as response, target.open("wb") as output:
-        shutil.copyfileobj(response, output)
+    # GitHub-hosted macOS runners sometimes fail the first lookup of
+    # www.python.org with a transient DNS error. One miss used to fail the
+    # whole package job.
+    delay = 2
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, target.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            break
+        except (urllib.error.URLError, TimeoutError) as error:
+            if target.exists():
+                target.unlink()
+            if attempt == 4:
+                raise
+            print(
+                f"package: download attempt {attempt + 1} failed for {url}: {error}",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            delay *= 2
     if digest(target) != expected:
         raise ValueError(f"SHA-256 mismatch: {url}")
 

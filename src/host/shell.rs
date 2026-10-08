@@ -314,9 +314,26 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        let workspace_root = working_directory
-            .and_then(crate::app::registry::resolve_workspace_root)
-            .or_else(crate::config::active_workspace_root);
+        // An explicit spawn cwd is the only directory this environment is
+        // about. Falling back to the process cwd (often the login home, which
+        // holds `~/.plexi-<channel>` and is not a workspace) injects that
+        // directory's terminal secrets into a pane that was not started there.
+        let workspace_root = match working_directory {
+            Some(dir) => {
+                log::info!("shell::build_env: spawn cwd {}", dir.display());
+                match crate::app::registry::resolve_workspace_root(dir) {
+                    Some(root) => Some(root),
+                    None => {
+                        log::info!(
+                            "shell::build_env: no workspace above spawn cwd {}; not using the process directory",
+                            dir.display()
+                        );
+                        None
+                    }
+                }
+            }
+            None => crate::config::active_workspace_root(),
+        };
         if let Some(root) = workspace_root {
             let store = crate::workspace::secrets::system_store();
             match crate::workspace::secrets::resolve_terminal_env(&root, store) {
@@ -352,6 +369,51 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    if let Some(dir) = working_directory {
+        match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store())
+        {
+            Ok(resolved) => {
+                if !resolved.is_empty() {
+                    log::info!(
+                        "shell::build_env: injecting {} folder secret(s) for {}",
+                        resolved.len(),
+                        dir.display()
+                    );
+                }
+                let mut names: Vec<String> = env
+                    .get(TERMINAL_ENV_NAMES_VAR)
+                    .map(|raw| {
+                        raw.split(':')
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for (key, value) in resolved {
+                    log::info!("shell::build_env: folder secret {key}");
+                    // One copy of the value, under its real name. The
+                    // PLEXI_TERMINAL_ENV_VALUE_* duplicate is readable in the
+                    // process environment for the whole life of a non-zsh pane.
+                    names.retain(|name| name != &key);
+                    env.remove(&preserved_terminal_env_name(&key));
+                    env.insert(key, value.to_string());
+                }
+                if names.is_empty() {
+                    env.remove(TERMINAL_ENV_NAMES_VAR);
+                } else {
+                    env.insert(TERMINAL_ENV_NAMES_VAR.into(), names.join(":"));
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "shell::build_env: folder secret injection skipped for {}: {err}",
+                    dir.display()
+                );
+            }
+        }
+    }
+
     // ZDOTDIR injection for zsh shell integration
     let shell = detect_shell();
     if shell.ends_with("/zsh") || shell.ends_with("/zsh-5") {
@@ -374,6 +436,84 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
 
 fn preserved_terminal_env_name(name: &str) -> String {
     format!("{TERMINAL_ENV_VALUE_PREFIX}{name}")
+}
+
+/// Drop folder secrets from a terminal spawn when `inject` is false.
+///
+/// A pane-requested `pane new` passes `inject = false`. A human shell and the
+/// scheduler pass `true` and keep the map `build_env` already filled. The
+/// values are not logged.
+pub(crate) fn apply_folder_secret_injection(
+    env: &mut HashMap<String, String>,
+    cwd: Option<&Path>,
+    inject: bool,
+) {
+    if inject {
+        return;
+    }
+    log::info!(
+        "folder_secrets: withholding folder secrets from spawned pane cwd={}",
+        cwd.map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string())
+    );
+    withhold_folder_secrets(env, cwd);
+}
+
+/// Remove folder-secret values from a spawn environment. Used when the
+/// requester is a live pane: that pane must not mint a terminal that receives
+/// another folder's secrets. Names and the `PLEXI_TERMINAL_ENV_VALUE_*`
+/// duplicates are removed. The values are not logged.
+pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Option<&Path>) {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    {
+        let Some(dir) = cwd else {
+            return;
+        };
+        let resolved = match crate::workspace::secrets::env_for_cwd(
+            dir,
+            crate::workspace::secrets::folder_store(),
+        ) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                log::warn!(
+                    "shell::withhold_folder_secrets: skipped for {}: {err}",
+                    dir.display()
+                );
+                return;
+            }
+        };
+        if resolved.is_empty() {
+            return;
+        }
+        log::info!(
+            "shell::withhold_folder_secrets: removing {} folder secret(s) for {}",
+            resolved.len(),
+            dir.display()
+        );
+        let mut names: Vec<String> = env
+            .get(TERMINAL_ENV_NAMES_VAR)
+            .map(|raw| {
+                raw.split(':')
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (key, _) in resolved {
+            names.retain(|name| name != &key);
+            env.remove(&preserved_terminal_env_name(&key));
+            env.remove(&key);
+        }
+        if names.is_empty() {
+            env.remove(TERMINAL_ENV_NAMES_VAR);
+        } else {
+            env.insert(TERMINAL_ENV_NAMES_VAR.into(), names.join(":"));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (env, cwd);
+    }
 }
 
 fn is_shell_env_name(name: &str) -> bool {
@@ -1038,7 +1178,17 @@ mod tests {
             .arg("5")
             .spawn()
             .expect("spawn sleep");
-        let name = get_pid_name(child.id());
+        // `comm` is inherited across fork and only changes at exec. Under a
+        // loaded CI runner the read can land in that window and see this
+        // test's truncated thread name instead of `sleep`.
+        let mut name = None;
+        for _ in 0..50 {
+            name = get_pid_name(child.id());
+            if name.as_deref() == Some("sleep") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(name.as_deref(), Some("sleep"));

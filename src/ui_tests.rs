@@ -58,11 +58,12 @@ pub(crate) enum HarnessOpenTarget<'a> {
     },
 }
 
-type HarnessBuiltinFactory = fn(&Path, &[String]) -> Box<dyn crate::app::app_trait::App>;
+type HarnessBuiltinFactory = fn(&Path, &[String], u64) -> Box<dyn crate::app::app_trait::App>;
 
 fn assistant_harness_factory(
     workspace_root: &Path,
     _args: &[String],
+    context_id: u64,
 ) -> Box<dyn crate::app::app_trait::App> {
     let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
         std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
@@ -70,7 +71,7 @@ fn assistant_harness_factory(
         workspace_root.to_path_buf(),
         broker,
         workspace_root,
-        1,
+        context_id,
     ))
 }
 
@@ -81,11 +82,12 @@ fn harness_builtin_factory(
     id: &str,
     cwd: &Path,
     args: &[String],
+    context_id: u64,
 ) -> Option<Box<dyn crate::app::app_trait::App>> {
     HARNESS_BUILTIN_FACTORIES
         .iter()
         .find(|(candidate, _)| *candidate == id)
-        .map(|(_, factory)| factory(cwd, args))
+        .map(|(_, factory)| factory(cwd, args, context_id))
 }
 
 /// Semantic UI test harness. Wraps egui_kittest's `Harness<PlexiApp>` using the
@@ -108,8 +110,12 @@ impl PlexiUiHarness {
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
         let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let frame_tick = Arc::new(AtomicU64::new(0));
+        let context_id = crate::testing::reserve_test_context_id();
+        let pane_block = crate::testing::reserve_pane_id_block();
         let harness = egui_kittest::Harness::new_eframe(move |cc| {
-            let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+            let (mut app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+            app.set_initial_context_id_for_test(context_id);
+            app.host.seed_next_pane_id(pane_block);
             app
         });
         Self {
@@ -136,11 +142,15 @@ impl PlexiUiHarness {
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
         let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let frame_tick = Arc::new(AtomicU64::new(0));
+        let context_id = crate::testing::reserve_test_context_id();
+        let pane_block = crate::testing::reserve_pane_id_block();
         let harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(width, height))
             .with_pixels_per_point(ppp)
             .build_eframe(move |cc| {
-                let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+                let (mut app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+                app.set_initial_context_id_for_test(context_id);
+                app.host.seed_next_pane_id(pane_block);
                 app
             });
         Self {
@@ -233,7 +243,8 @@ impl PlexiUiHarness {
                 .copied()
                 .collect()
         });
-        if let Some(app) = harness_builtin_factory(id, cwd, args) {
+        let context_id = self.with_app(|app| app.windows[app.active_window].context_id);
+        if let Some(app) = harness_builtin_factory(id, cwd, args, context_id) {
             self.with_app_mut(|host| {
                 host.open_builtin_app_pane(
                     app,
@@ -1050,9 +1061,65 @@ mod tests {
 
         // Title row is a real ui.label; the YAML block lives only in
         // `note_header` and never reaches the TextEdit buffer (unit-tested
-        // via `split_note` in text_editor_app.rs).
+        // via `split_note` in text_editor_app.rs). The file name and save
+        // indicator share that header with a file opened from the browser.
+        let file_name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         h.harness().get_by_label("Groceries");
+        h.harness().get_by_label(&file_name);
+        h.harness().get_by_label("Saved");
         h.save_screenshot(&evidence_png!()).expect("render failed");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A markdown file opened outside the notes tier (the file-browser path)
+    /// uses the same header as a note: the file name and the save indicator.
+    #[test]
+    fn text_editor_file_header_shows_file_name_and_save_indicator() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        let path =
+            std::env::temp_dir().join(format!("plexi-ui-file-header-{}.md", std::process::id()));
+        std::fs::write(&path, "# hello\n").expect("seed file");
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                )),
+                workspace_root: crate::testing::scratch_context_root("ui"),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: file_name.clone(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        h.run_steps(2);
+
+        h.harness().get_by_label(&file_name);
+        h.harness().get_by_label("Saved");
 
         let _ = std::fs::remove_file(&path);
     }
