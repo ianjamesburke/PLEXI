@@ -414,9 +414,8 @@ mod linux {
         let spawned = std::thread::Builder::new()
             .name("seal-bus".to_string())
             .spawn(move || {
-                let built = zbus::blocking::connection::Builder::session().and_then(|builder| {
-                    builder.method_timeout(STARTUP_DEADLINE).build()
-                });
+                let built = zbus::blocking::connection::Builder::session()
+                    .and_then(|builder| builder.method_timeout(STARTUP_DEADLINE).build());
                 let _ = tx.send(built.map_err(|error| error.to_string()));
             });
         if let Err(error) = spawned {
