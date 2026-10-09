@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.14"
+skill_version: "5.0.15"
 plexi_version: "0.3.5"
 last_verified: "2026-10-08"
 ---
@@ -117,7 +117,7 @@ plexi skill install --agent codex
   record. Expired items are auto-denied. Open rows are sealed under the
   profile `host` directory and listed again after a restart. Questions and
   blocked runs settle from the terminal. A click approval does not:
-  `needs-you resolve --approve` leaves that row open and records a refusal.
+  `needs-you resolve --approve` is refused (permission_denied): the row stays open and a refusal is recorded.
   The grant is a click on Allow once in the host window. `--deny` still
   denies. A phone may deny or answer a question. A phone approve never grants
   a permission.
