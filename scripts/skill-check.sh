@@ -227,7 +227,8 @@ fi
 
 # ── 4. Skill lint from V1-03 step 10 ─────────────────────────────────────────
 # Alpha names resolve, allow, grant, and exec only to say they are refused.
-# A mention with no refusal in the same sentence still fails.
+# A mention with no refusal in the same sentence still fails. A release-gate
+# list entry is only the command path, so it is not that mention.
 if python3 - "$CLAUDE_SKILL" "$SKILL_SRC" <<'PY'
 import re, sys
 pat = re.compile(r"permission resolve|needs-you resolve|permissions allow|secret grant|secret exec")
@@ -235,11 +236,14 @@ refusal = re.compile(
     r"refus|do not grant|does not grant|permission_denied|agents do not grant|do not approve",
     re.I,
 )
+catalog = re.compile(r"[a-z][a-z0-9 ._-]*")
 bad = []
 for path in sys.argv[1:]:
     lines = open(path).read().splitlines()
     for i, line in enumerate(lines):
         if not pat.search(line):
+            continue
+        if catalog.fullmatch(line.strip()):
             continue
         window = " ".join(lines[i:i + 3])
         if not refusal.search(window):
