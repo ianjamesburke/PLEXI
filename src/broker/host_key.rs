@@ -1547,7 +1547,8 @@ mod mac {
         // Plain add. The default ACL trusts the creating app and nobody else,
         // including `security`. Do not change that ACL here: an access edit
         // calls up an authorization dialog even when prompts are disabled,
-        // and this function runs on the host startup path.
+        // and this function runs on the host startup path. A rebuild that
+        // cannot read the item rotates instead.
         chain
             .add_generic_password(HOST_SERVICE, account, value.as_bytes())
             .map_err(|error| map_keychain_error(account, error))?;
@@ -1558,6 +1559,8 @@ mod mac {
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
+        // Password update only. Replacing the item with a custom ACL is an
+        // access edit, and that dialog blocked host startup.
         chain
             .set_generic_password(HOST_SERVICE, account, value.as_bytes())
             .map_err(|error| map_keychain_error(account, error))?;
