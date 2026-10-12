@@ -268,8 +268,10 @@ impl<'a> ListRow<'a> {
         // The gap is part of the slot so every list (palette, slash menu,
         // model picker) gets the same air without each caller remembering.
         let slot_h = row_h + style::LIST_ROW_GAP_V;
-        let (slot, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), slot_h), egui::Sense::click());
+        let (slot, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), slot_h),
+            egui::Sense::click(),
+        );
         let rect = egui::Rect::from_min_size(slot.min, Vec2::new(slot.width(), row_h));
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -314,16 +316,6 @@ impl<'a> ListRow<'a> {
                 StrokeKind::Inside,
             );
         }
-        // Resting divider in the gap under the row. `text_dim` stays visible
-        // on both the palette surface and the picker fill.
-        let sep_y = rect.bottom() + style::LIST_ROW_GAP_V * 0.5;
-        let x0 = rect.left() + style::SPACE_SM;
-        let x1 = (rect.right() - style::SPACE_SM).max(x0);
-        ui.painter().hline(
-            x0..=x1,
-            sep_y,
-            Stroke::new(1.0_f32, colors.text_dim.gamma_multiply(0.35)),
-        );
 
         let x = rect.left() + style::LIST_ROW_PAD_H;
 
@@ -985,11 +977,11 @@ mod tests {
         }
     }
 
-    /// Stacked rows keep air between them, a resting divider in that air, and
-    /// an accent stroke on hover so the row still reads when the parent fill
-    /// matches `bg_hover`.
+    /// Stacked rows keep air between them and an accent stroke on hover so
+    /// the row still reads when the parent fill matches `bg_hover`. The gap
+    /// stays empty — a hairline there reads as a divider.
     #[test]
-    fn stacked_list_rows_keep_a_gap_divider_and_hover_stroke() {
+    fn stacked_list_rows_keep_a_gap_without_a_divider() {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = crate::ui::theme::Colors::from_config(
@@ -1044,8 +1036,8 @@ mod tests {
             "row stride {stride} must include the list-row gap"
         );
         assert!(
-            lines.iter().any(|y| *y > alpha && *y < beta),
-            "a divider should sit in the gap between rows ({lines:?})"
+            lines.iter().all(|y| !(*y > alpha && *y < beta)),
+            "the gap between rows should stay empty ({lines:?})"
         );
 
         let hover = paint(Some(egui::pos2(80.0, alpha + 4.0)));

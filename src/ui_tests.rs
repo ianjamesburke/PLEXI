@@ -1339,6 +1339,11 @@ mod tests {
 
     #[test]
     fn parked_sidebar_dropdown_uses_shared_list_header() {
+        // A sibling test can leave an open needs-you on the process-cached
+        // profile monitor. That banner sits above the context row and slides
+        // the parked header off this click.
+        let profile = tempfile::tempdir().expect("isolated profile");
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         h.with_app_mut(|app| {
             app.sidebar_visible = true;

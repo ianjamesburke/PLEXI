@@ -8,6 +8,8 @@ The hint bar and composer are placed from the pane floor using heights measured 
 
 Before: the composer, permission sheet, and hint bar shared a content-sized bottom panel. That panel clips to last frame's height, so Shift+Enter hid the hint bar for one frame, and the composer's own scroll viewport lagged the same way. After: the hint slot's height ignores the composer, the composer grows upward, and the text viewport is pinned to the height measured before it is shown.
 
+A single line of composer text, including the placeholder, is centered in the rounded field. The left inset is `LIST_ROW_PAD_H`, the same clearance list rows use against a rounded outline, and it is the same on the right. A second line grows the field upward from that inset.
+
 ## Transcript
 
 A fresh conversation, a sent message, and a streaming reply stay pinned to the latest line. A wheel toward older messages, or a scrollbar drag that leaves the bottom, releases the pin and shows a Latest control. Choosing it pins again. Sending a message pins again even if the reader had scrolled up.
@@ -24,7 +26,7 @@ A finished tool call is a collapsing row. The header is the status mark, the too
 
 `/model` labels each tier with the configured model id for the active backend, for example `Medium — xiaomi/mimo-v2.5-pro`. The id is view data filled when the picker opens. A tier with no id stays `Low`, `Medium`, or `High`.
 
-`ListRow` now reserves a few pixels under every row, paints a hairline in that gap, and strokes the row with the accent color on hover. The command palette, the slash menu, and the model picker share that row, so the separation shows up in all three. The hover stroke matters on the assistant popup, whose fill matches the row's hover fill.
+`ListRow` reserves a few pixels under every row and strokes the row with the accent color on hover. The command palette, the slash menu, and the model picker share that row. The hover stroke matters on the assistant popup, whose fill matches the row's hover fill.
 
 ## Next
 

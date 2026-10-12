@@ -127,6 +127,25 @@ pub(crate) fn draw_text_caret(
     }
 }
 
+/// Placeholder for a one-line editor. egui's own hint is pinned to the
+/// top-left, which leaves a caption-sized string high in the row.
+fn paint_centered_hint(
+    ui: &egui::Ui,
+    hint: egui::WidgetText,
+    output: &egui::widgets::text_edit::TextEditOutput,
+) {
+    let width = output.response.rect.width().max(1.0);
+    let galley = hint.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        width,
+        egui::FontId::proportional(crate::ui::style::TEXT_CAPTION),
+    );
+    let rect = output.response.rect;
+    let pos = egui::pos2(output.galley_pos.x, rect.center().y - galley.size().y * 0.5);
+    ui.painter().galley(pos, galley, egui::Color32::PLACEHOLDER);
+}
+
 /// Focus-gain edge detection that survives the reconciler (stint 0545).
 ///
 /// Two egui conveniences are unusable here, proven against the real build:
@@ -287,12 +306,10 @@ impl<'a> TextArea<'a> {
         Self::multiline(id, hint)
             .rows(1)
             .frame(false)
-            .margin(egui::Margin {
-                left: 6,
-                right: 4,
-                top: 2,
-                bottom: 2,
-            })
+            // The assistant frame owns the rounded inset. A margin here used
+            // to be dropped by `Frame::NONE`, which left the caret high and
+            // against the left edge while `content_height` still reserved it.
+            .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center)
             .lock_focus(true)
             .return_key(egui::KeyboardShortcut::new(
@@ -458,7 +475,11 @@ impl<'a> TextArea<'a> {
             ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
 
             let row_height = ui.fonts_mut(|f| f.row_height(&self.font_id));
-            let edit = egui::TextEdit::multiline(buf)
+            // egui pins hint text to the top-left of a multiline editor, so a
+            // shorter placeholder sits high in a one-line field. Paint that
+            // hint ourselves, centered on the caret's row.
+            let center_hint = self.vertical_align == egui::Align::Center && buf.is_empty();
+            let mut edit = egui::TextEdit::multiline(buf)
                 .id(self.id)
                 .font(self.font_id.clone())
                 .text_color(self.text_color.unwrap_or(colors.text_primary))
@@ -467,14 +488,19 @@ impl<'a> TextArea<'a> {
                 .margin(self.margin)
                 .vertical_align(self.vertical_align)
                 .lock_focus(self.lock_focus)
-                .return_key(self.return_key)
-                .hint_text(hint);
-            let edit = if self.frame {
-                edit
+                .return_key(self.return_key);
+            // `Frame::NONE` drops `TextEdit::margin`. Keep the inset and let
+            // the parent own the stroke.
+            if !self.frame {
+                edit = edit.frame(egui::Frame::new().inner_margin(self.margin));
+            }
+            let output = if center_hint {
+                let output = edit.show(ui);
+                paint_centered_hint(ui, hint, &output);
+                output
             } else {
-                edit.frame(egui::Frame::NONE)
+                edit.hint_text(hint).show(ui)
             };
-            let output = edit.show(ui);
             draw_text_caret(
                 ui,
                 &output,
@@ -505,6 +531,70 @@ mod tests {
                 egui::Key::Enter,
             ))
         );
+    }
+
+    /// A frameless editor still insets its placeholder. `Frame::NONE` used
+    /// to drop `TextEdit::margin`, so the caret sat on the left edge.
+    #[test]
+    fn frameless_text_area_keeps_its_margin() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let mut buf = String::new();
+        let margin = 18_i8;
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(360.0, 120.0),
+        ));
+        let output = ctx.run_ui(raw, |ui| {
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 80.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                TextArea::multiline(egui::Id::new("pad"), "Message the assistant —")
+                    .rows(1)
+                    .frame(false)
+                    .margin(egui::Margin {
+                        left: margin,
+                        right: margin,
+                        top: 8,
+                        bottom: 8,
+                    })
+                    .show(ui, &mut buf, &colors);
+            });
+        });
+        let mut found = None;
+        for clipped in &output.shapes {
+            walk_text(&clipped.shape, &mut |text| {
+                if text.galley.text().contains("Message the assistant") {
+                    found = Some(egui::Rect::from_min_size(text.pos, text.galley.size()));
+                }
+            });
+        }
+        let text = found.expect("placeholder");
+        assert!(
+            (text.left() - margin as f32).abs() < 1.5,
+            "placeholder left {:.1} should be the margin {margin}",
+            text.left()
+        );
+        assert!(
+            text.top() >= 6.0,
+            "placeholder top {:.1} should include the vertical margin",
+            text.top()
+        );
+    }
+
+    fn walk_text(shape: &egui::Shape, visit: &mut dyn FnMut(&egui::epaint::TextShape)) {
+        match shape {
+            egui::Shape::Text(text) => visit(text),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    walk_text(shape, visit);
+                }
+            }
+            _ => {}
+        }
     }
 
     #[test]

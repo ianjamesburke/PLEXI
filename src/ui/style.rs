@@ -74,8 +74,8 @@ pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 // the selection highlight; 14 horizontal padding keeps the title clear of
 // the highlight's left edge — 10 read as cramped against the outline.
 pub const LIST_ROW_H: f32 = 48.0;
-/// Air between stacked `ListRow`s. Painted as part of the row slot so the
-/// command palette and the assistant menus share one separator rhythm.
+/// Air between stacked `ListRow`s. Part of the row slot so the command
+/// palette and the assistant menus share one rhythm.
 pub const LIST_ROW_GAP_V: f32 = 4.0;
 // Dense single-line variant for data-dense listings (file browser rows).
 // 30 fits one 12pt medium line with ~7px of air — the file-explorer PRD's

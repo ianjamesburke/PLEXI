@@ -115,7 +115,7 @@ fn composer_text_height(ui: &mut egui::Ui, text: &str, width: f32, cap: f32) -> 
 }
 
 fn composer_outer_height(text_h: f32) -> f32 {
-    (text_h + style::SPACE_XS * 2.0 + COMPOSER_STROKE * 2.0).ceil()
+    (text_h + COMPOSER_PAD_V * 2.0 + COMPOSER_STROKE * 2.0).ceil()
 }
 
 /// The lead title row above the transcript. Matches a padded button so the
@@ -238,6 +238,12 @@ fn decision_label(decision: Decision) -> &'static str {
 
 /// Composer frame stroke, matched by the footer height reservation.
 const COMPOSER_STROKE: f32 = 1.0;
+/// Inset of composer text from the rounded stroke. `LIST_ROW_PAD_H` is the
+/// clearance that keeps a label off a rounded outline; both sides use it.
+const COMPOSER_PAD_H: f32 = style::LIST_ROW_PAD_H;
+/// Vertical inset inside the composer stroke. Symmetric, so one line sits
+/// in the middle of the field.
+const COMPOSER_PAD_V: f32 = style::SPACE_XS;
 
 /// How close to the bottom (px) still counts as pinned.
 const SCROLL_BOTTOM_SLACK: f32 = 24.0;
@@ -379,8 +385,7 @@ impl AssistantRenderer {
         let hints = footer_hints(model);
         let gap = style::SPACE_XS;
         let hint_h = HintBar::new(&hints).height(ui, content.width());
-        let text_w =
-            (content.width() - style::SPACE_SM * 2.0 - COMPOSER_STROKE * 2.0).max(1.0);
+        let text_w = (content.width() - COMPOSER_PAD_H * 2.0 - COMPOSER_STROKE * 2.0).max(1.0);
         let cap = (total_h * Self::COMPOSER_MAX_FRACTION).max(style::TEXT_BODY);
         let text_h = composer_text_height(ui, &model.composer, text_w, cap);
         let composer_h = composer_outer_height(text_h);
@@ -439,10 +444,8 @@ impl AssistantRenderer {
         };
         let header_h = lead_header_height(ui);
         let header_bottom = (content.top() + header_h).min(transcript_bottom);
-        let header_rect = egui::Rect::from_min_max(
-            content.min,
-            egui::pos2(content.right(), header_bottom),
-        );
+        let header_rect =
+            egui::Rect::from_min_max(content.min, egui::pos2(content.right(), header_bottom));
         let transcript_rect = egui::Rect::from_min_max(
             egui::pos2(content.left(), header_rect.bottom()),
             egui::pos2(content.right(), transcript_bottom),
@@ -1828,8 +1831,8 @@ impl AssistantRenderer {
             .stroke(egui::Stroke::new(COMPOSER_STROKE, stroke_color))
             .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::symmetric(
-                style::SPACE_SM as i8,
-                style::SPACE_XS as i8,
+                COMPOSER_PAD_H as i8,
+                COMPOSER_PAD_V as i8,
             ))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -2235,6 +2238,112 @@ mod tests {
             size.y - grown_bottom < 64.0,
             "hint bar bottom {grown_bottom} should stay in the footer, pane is {}",
             size.y
+        );
+    }
+
+    fn filled_rects(output: &egui::FullOutput) -> Vec<(egui::Color32, egui::Rect)> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(egui::Color32, egui::Rect)>) {
+            match shape {
+                egui::Shape::Rect(rect) => out.push((rect.fill, rect.rect)),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut rects = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut rects);
+        }
+        rects
+    }
+
+    /// The composer is the lowest wide `bg_active` field. Bubbles use the
+    /// same fill but sit higher in the transcript.
+    fn composer_frame(output: &egui::FullOutput, fill: egui::Color32) -> egui::Rect {
+        filled_rects(output)
+            .into_iter()
+            .filter(|(color, rect)| *color == fill && rect.width() > 120.0 && rect.height() > 8.0)
+            .map(|(_, rect)| rect)
+            .max_by(|a, b| a.bottom().total_cmp(&b.bottom()))
+            .expect("composer frame")
+    }
+
+    /// The placeholder and a typed line sit in the middle of the rounded
+    /// field, inset from the stroke. A second line grows the field and
+    /// keeps the first line at the top inset.
+    #[test]
+    fn composer_text_is_centered_and_inset_from_the_border() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let mut model = AssistantModel::fresh();
+        let size = egui::vec2(480.0, 640.0);
+        let output = paint_assistant(&ctx, &mut model, size);
+        let placeholder = text_clips(&output, "Message the assistant");
+        assert_eq!(placeholder.len(), 1, "placeholder should paint once");
+        let (_, text) = placeholder[0];
+        let frame = composer_frame(&output, colors.bg_active);
+        assert!(
+            frame.contains_rect(text.shrink(0.5)),
+            "placeholder {text:?} must sit inside the composer {frame:?}"
+        );
+        let dy = (text.center().y - frame.center().y).abs();
+        assert!(
+            dy < 2.0,
+            "placeholder center {:.1} should match the field center {:.1}",
+            text.center().y,
+            frame.center().y
+        );
+        let inset = text.left() - frame.left();
+        let expected = COMPOSER_STROKE + COMPOSER_PAD_H;
+        assert!(
+            (inset - expected).abs() < 2.0,
+            "left inset {inset:.1} should be {expected:.1}"
+        );
+        assert!(
+            inset + 0.5 >= f32::from(style::RADIUS_MD.nw),
+            "left inset {inset:.1} must clear the corner"
+        );
+
+        model.composer = "Hi".to_string();
+        let typed = paint_assistant(&ctx, &mut model, size);
+        let hi = text_clips(&typed, "Hi");
+        assert!(!hi.is_empty(), "typed text must paint");
+        let (_, hi_rect) = hi[0];
+        let typed_frame = composer_frame(&typed, colors.bg_active);
+        let typed_dy = (hi_rect.center().y - typed_frame.center().y).abs();
+        assert!(
+            typed_dy < 2.0,
+            "single-line caret row is off-center by {typed_dy:.1}"
+        );
+        let typed_inset = hi_rect.left() - typed_frame.left();
+        assert!(
+            (typed_inset - expected).abs() < 2.0,
+            "typed text left inset {typed_inset:.1} should be {expected:.1}"
+        );
+
+        model.composer = "hello\nworld".to_string();
+        let grown = paint_assistant(&ctx, &mut model, size);
+        let grown_frame = composer_frame(&grown, colors.bg_active);
+        assert!(
+            grown_frame.height() > typed_frame.height() + 8.0,
+            "a second line should grow the field ({:.1} -> {:.1})",
+            typed_frame.height(),
+            grown_frame.height()
+        );
+        let hello = text_clips(&grown, "hello");
+        assert!(!hello.is_empty(), "the first line of a draft must paint");
+        let (_, hello_rect) = hello[0];
+        let top_inset = hello_rect.top() - grown_frame.top();
+        let top_expected = COMPOSER_STROKE + COMPOSER_PAD_V;
+        assert!(
+            (top_inset - top_expected).abs() < 4.0,
+            "multi-line text should start at the top inset ({top_expected:.1}), got {top_inset:.1}"
         );
     }
 
