@@ -18,9 +18,12 @@ curl -fsSL https://plexiapp.com/install | bash
 irm https://plexiapp.com/install.ps1 | iex
 ```
 
-The bootstrap resolves the latest stable release once and pins its installer
-and checksum downloads to that tag. `PLEXI_BOOTSTRAP_TAG` can pin a particular
-released installer. Neither public entrypoint downloads executable code from
+The bootstrap pins the installer and its checksum to one released tag.
+`PLEXI_BOOTSTRAP_TAG` overrides selection. Otherwise `--channel` / `-Channel`
+`alpha` and `beta` follow `release::select` (`crates/distribution/src/release.rs`):
+alpha prefers the newest alpha tag, then beta, then stable, and beta takes the
+greatest SemVer among beta and stable. The default and `stable` use the latest
+stable release. Neither public entrypoint downloads executable code from
 a development branch. Deploy these website entrypoints only after the first
 package-based release has passed publication gates and contains the installer
 assets; a code merge alone does not publish those assets.
@@ -146,7 +149,8 @@ responsibilities; fixture tests do not establish those results.
 
 `test-distribution.py` uses tiny host fixtures to exercise ownership, recovery,
 rollback, simultaneous installs, PATH integration, checksums and bootstrap HTTP
-failures. `test-package.py` runs the real packaged WASI guest and optionally
+failures. `test-install-bootstrap.sh` checks the public bootstrap's resolved tag
+for each channel against a fake release API (`PLEXI_RELEASES_URL`). `test-package.py` runs the real packaged WASI guest and optionally
 launches a native host, drives terminal I/O and Calculator, captures through
 `host screenshot`, restarts and removes the channel. Inspect the resulting PNG.
 `PLEXI_DISTRIBUTION_HOME` isolates the installation registry for disposable test
