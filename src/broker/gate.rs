@@ -4273,6 +4273,152 @@ mod tests {
         );
     }
 
+    /// A keychain that blocks in SetAccess, or in every call, must not keep
+    /// host startup from answering. Startup also must not call an ACL edit.
+    #[test]
+    fn blocking_keychain_still_lets_host_startup_become_ready() {
+        use crate::broker::host_key::{
+            acl_mutations, keychain_block_expired, BlockingKeychain, STARTUP_KEYCHAIN_DEADLINE,
+        };
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let bound = crate::testing::load_aware_timeout(STARTUP_KEYCHAIN_DEADLINE + Duration::from_secs(2));
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = tempfile::tempdir().unwrap();
+            seal_profile_grant(dir.path(), ws.path());
+            let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
+            let _block = BlockingKeychain::set_access();
+            let started = std::time::Instant::now();
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < bound,
+                "set-access block held startup for {elapsed:?}; budget {bound:?}"
+            );
+            assert!(
+                !keychain_block_expired(),
+                "startup waited out the mock instead of returning on the keychain deadline"
+            );
+            assert_eq!(
+                acl_mutations(),
+                0,
+                "startup called an ACL-mutating API"
+            );
+            assert!(
+                monitor
+                    .open_needs_you()
+                    .iter()
+                    .all(|row| row.kind != NeedsYouKind::Keychain),
+                "a plain add rotates without a keychain prompt: {:?}",
+                monitor.open_needs_you()
+            );
+            command_socket_answers_ready(dir.path());
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = tempfile::tempdir().unwrap();
+            seal_profile_grant(dir.path(), ws.path());
+            let before = std::fs::read(dir.path().join("grants.toml")).unwrap();
+            let block = BlockingKeychain::any_call();
+            let started = std::time::Instant::now();
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < bound,
+                "a blocking keychain call held startup for {elapsed:?}; budget {bound:?}"
+            );
+            assert!(
+                !keychain_block_expired(),
+                "startup waited out the mock instead of returning on the keychain deadline"
+            );
+            assert_eq!(
+                acl_mutations(),
+                0,
+                "startup called an ACL-mutating API"
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("grants.toml")).unwrap(),
+                before,
+                "a timed-out keychain read must leave the grant file in place"
+            );
+            assert!(
+                monitor.store().records().is_empty(),
+                "grants stay unloaded when the keychain does not answer"
+            );
+            let open = monitor.open_needs_you();
+            assert_eq!(open.len(), 1, "{open:?}");
+            assert_eq!(open[0].kind, NeedsYouKind::Keychain);
+            assert_eq!(open[0].summary, KEYCHAIN_ACCESS_SUMMARY);
+            let id = open[0].id.clone();
+            command_socket_answers_ready(dir.path());
+            drop(block);
+            monitor
+                .resolve_needs_you(&id, true)
+                .expect("the keychain needs-you item is resolvable once the call returns");
+            assert!(
+                monitor.open_needs_you().is_empty(),
+                "{:?}",
+                monitor.open_needs_you()
+            );
+            let req = PermissionRequest::app_capability(
+                "my-app",
+                ws.path(),
+                crate::app::permissions::Capability::NetHttp,
+            );
+            assert_eq!(monitor.store().evaluate(&req, None), Decision::Allow);
+        }
+    }
+
+    fn command_socket_answers_ready(profile: &Path) {
+        use std::io::{BufRead, BufReader, Write};
+        let endpoint = {
+            #[cfg(unix)]
+            {
+                profile.join("notify.sock")
+            }
+            #[cfg(windows)]
+            {
+                let _ = profile;
+                std::path::PathBuf::from(format!(
+                    r"\\.\pipe\plexi-ready-{}",
+                    uuid::Uuid::new_v4()
+                ))
+            }
+        };
+        let listener = crate::platform::ipc::IpcListener::bind(&endpoint).expect("bind command socket");
+        let server = thread::spawn(move || {
+            let stream = listener.incoming().next().unwrap().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let response = request["response_file"].as_str().unwrap();
+            assert!(crate::rpc::write_json_response(
+                response,
+                serde_json::json!([])
+            ));
+        });
+        let response_file = crate::rpc::response_file_in(profile, "host-status", "json");
+        let request = crate::protocol::AppRequest::ListPanes {
+            response_file: response_file.clone(),
+            context_id: None,
+        };
+        let mut payload = serde_json::to_string(&request).unwrap();
+        payload.push('\n');
+        #[cfg(unix)]
+        let mut stream = crate::platform::ipc::IpcStream::connect(&endpoint).unwrap();
+        #[cfg(windows)]
+        let mut stream =
+            crate::platform::ipc::connect_timeout(&endpoint, Duration::from_secs(2)).unwrap();
+        stream.write_all(payload.as_bytes()).unwrap();
+        let body = crate::rpc::poll_string(&response_file, Some(Duration::from_secs(2)))
+            .unwrap_or_else(|error| panic!("host startup reached ready: {error}"));
+        let panes: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert!(panes.is_empty(), "{panes:?}");
+        server.join().unwrap();
+    }
+
     fn seal_profile_grant(dir: &Path, workspace: &Path) {
         let monitor = PermissionMonitor::open_profile(dir);
         {

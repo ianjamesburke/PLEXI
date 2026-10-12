@@ -20,23 +20,61 @@
 //!   `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file and never falls
 //!   back to the login keychain. The `security` tool is not the creating
 //!   binary, so a direct keychain read does not yield the key. Startup
-//!   disables keychain prompts so `host start` cannot block on Allow. A
-//!   read that fails with an auth or ACL status (`errSecAuthFailed` -25293
-//!   and the same class) is rotated: the old item is deleted without reading
-//!   its secret, and a new key is created. New items trust this app's
-//!   designated requirement so a same-signer rebuild keeps access when that
-//!   requirement is stable. An ad-hoc signature changes every build, so the
-//!   next launch rotates again instead of leaving grants unloaded. An
-//!   any-application ACL is never installed. If the old item cannot be
-//!   deleted while prompts are off, a Needs you approval turns prompts on
-//!   and either retries the read or finishes the rotation.
+//!   disables keychain prompts. A new item is a plain add with the keychain
+//!   default ACL, which trusts the creating app. Startup does not edit that
+//!   ACL. Changing an item ACL raises an auth dialog even when prompts are
+//!   off, and that dialog used to freeze `host start` on the UI thread. A
+//!   rebuild that cannot read the item rotates. Rotation is cheap and resets
+//!   grants that cannot be verified. Every silent keychain call runs off the
+//!   UI thread and stops after three seconds. Past that deadline
+//!   the host continues with grants unloaded and one resolvable keychain
+//!   Needs you item. A read that fails with an auth or ACL status
+//!   (`errSecAuthFailed` -25293 and the same class) is rotated: the old item
+//!   is deleted without reading its secret. An any-application ACL is never
+//!   installed. If the old item cannot be deleted while prompts are off, a
+//!   Needs you approval turns prompts on and either retries the read or
+//!   finishes the rotation.
 //! - Windows stores it in Credential Manager under `plexi-host-seal/`, which
 //!   `plexi secret get` does not read.
 
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+#[cfg(any(test, target_os = "macos"))]
+use std::time::Duration;
 use zeroize::Zeroizing;
+
+/// Silent keychain work during startup stops here.
+///
+/// `plexi host start` gives up at 90s. A keychain call that outlives this
+/// deadline must not be what consumes that budget: the host continues with
+/// grants unloaded and a keychain Needs you item.
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) const STARTUP_KEYCHAIN_DEADLINE: Duration = Duration::from_secs(3);
+
+#[cfg(any(test, target_os = "macos"))]
+fn keychain_gave_up() -> &'static std::sync::atomic::AtomicBool {
+    static GAVE_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &GAVE_UP
+}
+
+#[cfg(test)]
+fn abandoned_keychain_calls() -> &'static Mutex<Vec<std::thread::JoinHandle<()>>> {
+    static ABANDONED: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+    &ABANDONED
+}
+
+#[cfg(test)]
+fn join_abandoned_keychain_calls() {
+    let handles = std::mem::take(
+        &mut *abandoned_keychain_calls()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    );
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
 
 use crate::workspace::secrets::system_store;
 
@@ -111,6 +149,16 @@ pub(crate) fn scrub_user_secret_host_namespace() {
 }
 
 pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
+    if account == MAC_ITEM {
+        if let Some(cached) = session_mac() {
+            return Ok(Some(cached));
+        }
+    }
+    let account = account.to_string();
+    dispatch_keychain(move || get_direct(&account))
+}
+
+fn get_direct(account: &str) -> Result<Option<Zeroizing<String>>, String> {
     with_backend(|| {
         if account == MAC_ITEM {
             if let Some(cached) = session_mac() {
@@ -178,33 +226,160 @@ fn clear_session_mac() {
 }
 
 pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
-    with_backend(|| backend().add_new(account, value))?;
-    with_backend(|| backend().note_rebuild_stable_access(account));
-    Ok(())
+    let account = account.to_string();
+    let value = value.to_string();
+    // Plain add. The keychain default ACL trusts the creating app. Editing
+    // that ACL is what blocks startup on an authorization dialog.
+    dispatch_keychain(move || add_new_direct(&account, &value))
+}
+
+fn add_new_direct(account: &str, value: &str) -> Result<(), String> {
+    with_backend(|| backend().add_new(account, value))
 }
 
 pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
+    let account = account.to_string();
+    let value = value.to_string();
+    dispatch_keychain(move || set_direct(&account, &value))
+}
+
+fn set_direct(account: &str, value: &str) -> Result<(), String> {
     match with_backend(|| backend().set(account, value)) {
-        Ok(()) => {
-            with_backend(|| backend().note_rebuild_stable_access(account));
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(error) if is_key_unreadable(&error) => {
             log::info!("permission_seal: replacing unreadable host item {account}");
-            delete(account)?;
-            add_new(account, value)
+            delete_direct(account)?;
+            add_new_direct(account, value)
         }
         Err(error) => Err(error),
     }
 }
 
 pub(crate) fn delete(account: &str) -> Result<(), String> {
+    let account = account.to_string();
+    dispatch_keychain(move || delete_direct(&account))
+}
+
+fn delete_direct(account: &str) -> Result<(), String> {
     with_backend(|| {
         if account == MAC_ITEM {
             clear_session_mac();
         }
         backend().delete(account)
     })
+}
+
+fn dispatch_keychain<T>(
+    op: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    #[cfg(any(test, target_os = "macos"))]
+    {
+        bounded_keychain_call(op)
+    }
+    #[cfg(not(any(test, target_os = "macos")))]
+    {
+        op()
+    }
+}
+
+/// Run one silent keychain call off the caller and stop waiting at
+/// [`STARTUP_KEYCHAIN_DEADLINE`].
+///
+/// The UI thread is the caller during `PlexiApp::new`. A keychain dialog
+/// must not freeze that thread, and `host start` must be able to bind its
+/// command socket. After one deadline, later silent calls fail immediately.
+/// A Needs you approval (`interaction_allowed`) still runs inline so the
+/// person can answer the dialog.
+#[cfg(any(test, target_os = "macos"))]
+fn bounded_keychain_call<T>(
+    op: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    if interaction_allowed() {
+        return op();
+    }
+    if keychain_gave_up().load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(key_unreadable(
+            "keychain did not answer before the startup deadline; host startup will not wait again",
+        ));
+    }
+    if !keychain_call_is_bounded() {
+        return op();
+    }
+    #[cfg(test)]
+    let parent_holds = HOST_KEY_HELD.with(|held| held.get());
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let spawned = std::thread::Builder::new()
+        .name("seal-keychain".to_string())
+        .spawn(move || {
+            #[cfg(test)]
+            if parent_holds {
+                HOST_KEY_HELD.with(|held| held.set(true));
+            }
+            let result = op();
+            #[cfg(test)]
+            if parent_holds {
+                HOST_KEY_HELD.with(|held| held.set(false));
+            }
+            let _ = tx.send(result);
+        });
+    let handle = match spawned {
+        Ok(handle) => handle,
+        Err(error) => {
+            return Err(key_unreadable(&format!(
+                "could not start the keychain call: {error}"
+            )));
+        }
+    };
+    match rx.recv_timeout(STARTUP_KEYCHAIN_DEADLINE) {
+        Ok(result) => {
+            let _ = handle.join();
+            result
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            if let Ok(result) = rx.try_recv() {
+                let _ = handle.join();
+                return result;
+            }
+            keychain_gave_up().store(true, std::sync::atomic::Ordering::Relaxed);
+            log::info!(
+                "permission_seal: keychain call exceeded the {}s startup deadline; grants stay unloaded so the host can become ready",
+                STARTUP_KEYCHAIN_DEADLINE.as_secs()
+            );
+            #[cfg(test)]
+            remember_abandoned(handle);
+            #[cfg(not(test))]
+            drop(handle);
+            Err(key_unreadable("keychain call exceeded the startup deadline"))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
+            Ok(()) => Err(key_unreadable("keychain call ended without a result")),
+            Err(panic) => std::panic::resume_unwind(panic),
+        },
+    }
+}
+
+#[cfg(test)]
+fn keychain_call_is_bounded() -> bool {
+    lock_fault().block != KeychainBlock::None
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn keychain_call_is_bounded() -> bool {
+    true
+}
+
+#[cfg(test)]
+fn remember_abandoned(handle: std::thread::JoinHandle<()>) {
+    abandoned_keychain_calls()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push(handle);
 }
 
 fn with_backend<T>(body: impl FnOnce() -> T) -> T {
@@ -272,6 +447,7 @@ struct MacProcessSnapshot {
     item: Option<StoredItem>,
     fault: MacFault,
     session: Option<Zeroizing<String>>,
+    gave_up: bool,
 }
 
 #[cfg(test)]
@@ -288,6 +464,7 @@ fn snapshot_mac_process() -> MacProcessSnapshot {
         item,
         fault: lock_fault().clone(),
         session: session_mac(),
+        gave_up: keychain_gave_up().load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
@@ -311,6 +488,7 @@ fn restore_mac_process(snapshot: &MacProcessSnapshot) {
     *session_mac_slot()
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = snapshot.session.clone();
+    keychain_gave_up().store(snapshot.gave_up, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Run `body` with the permission MAC absent, then put the previous key back.
@@ -356,6 +534,23 @@ struct StoredItem {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeychainBlock {
+    None,
+    /// `SecKeychainItemSetAccess` and any other ACL edit.
+    SetAccess,
+    /// Every keychain call, including an ACL edit.
+    AnyCall,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockKind {
+    Call,
+    SetAccess,
+}
+
+#[cfg(test)]
 #[derive(Clone)]
 struct MacFault {
     generation: u64,
@@ -365,6 +560,11 @@ struct MacFault {
     /// Deleting an unreadable item would raise a keychain prompt.
     delete_unreadable_needs_prompt: bool,
     interactive_reads: u32,
+    block: KeychainBlock,
+    /// Times startup entered an ACL-mutating API (`note_rebuild_stable_access`).
+    acl_mutations: u32,
+    /// The mock stopped blocking on its own because startup never timed out.
+    block_expired: bool,
 }
 
 #[cfg(test)]
@@ -374,6 +574,9 @@ fn mac_fault() -> &'static Mutex<MacFault> {
         stable_feasible: true,
         delete_unreadable_needs_prompt: false,
         interactive_reads: 0,
+        block: KeychainBlock::None,
+        acl_mutations: 0,
+        block_expired: false,
     });
     &FAULT
 }
@@ -383,6 +586,106 @@ fn lock_fault() -> std::sync::MutexGuard<'static, MacFault> {
     mac_fault()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
+}
+
+#[cfg(test)]
+fn block_var() -> &'static std::sync::Condvar {
+    static VAR: std::sync::Condvar = std::sync::Condvar::new();
+    &VAR
+}
+
+/// Park while the mock keychain is blocking `kind`.
+///
+/// The wait is longer than [`STARTUP_KEYCHAIN_DEADLINE`]. Startup has to
+/// return on its own deadline; this bound only keeps a missing deadline from
+/// hanging the suite.
+#[cfg(test)]
+fn wait_out_keychain_block(kind: BlockKind) {
+    let mut fault = lock_fault();
+    let give_up_at = std::time::Instant::now() + STARTUP_KEYCHAIN_DEADLINE + Duration::from_secs(3);
+    while fault.blocks(kind) {
+        if fault.block_expired {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if now >= give_up_at {
+            fault.block_expired = true;
+            return;
+        }
+        let (guard, status) = block_var()
+            .wait_timeout(fault, give_up_at.saturating_duration_since(now))
+            .unwrap_or_else(|error| error.into_inner());
+        fault = guard;
+        if status.timed_out() && fault.blocks(kind) {
+            fault.block_expired = true;
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+impl MacFault {
+    fn blocks(&self, kind: BlockKind) -> bool {
+        match self.block {
+            KeychainBlock::None => false,
+            KeychainBlock::AnyCall => true,
+            KeychainBlock::SetAccess => kind == BlockKind::SetAccess,
+        }
+    }
+}
+
+/// Mock keychain that blocks in `SecKeychainItemSetAccess` or in every call.
+///
+/// Drop releases the wait, joins any startup call the deadline abandoned, and
+/// clears the gave-up flag so the next test can read the key.
+#[cfg(test)]
+pub(crate) struct BlockingKeychain {
+    previous: KeychainBlock,
+}
+
+#[cfg(test)]
+impl BlockingKeychain {
+    pub(crate) fn set_access() -> Self {
+        Self::arm(KeychainBlock::SetAccess)
+    }
+
+    pub(crate) fn any_call() -> Self {
+        Self::arm(KeychainBlock::AnyCall)
+    }
+
+    fn arm(block: KeychainBlock) -> Self {
+        let mut fault = lock_fault();
+        let previous = fault.block;
+        fault.block = block;
+        fault.acl_mutations = 0;
+        fault.block_expired = false;
+        drop(fault);
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockingKeychain {
+    fn drop(&mut self) {
+        {
+            let mut fault = lock_fault();
+            fault.block = self.previous;
+            fault.block_expired = false;
+        }
+        block_var().notify_all();
+        keychain_gave_up().store(false, std::sync::atomic::Ordering::Relaxed);
+        join_abandoned_keychain_calls();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn acl_mutations() -> u32 {
+    lock_fault().acl_mutations
+}
+
+#[cfg(test)]
+pub(crate) fn keychain_block_expired() -> bool {
+    lock_fault().block_expired
 }
 
 #[cfg(test)]
@@ -597,9 +900,9 @@ trait HostKeyBackend: Sync + Send {
     /// Remove the item without reading its secret. An ACL that blocks the
     /// password must not, by itself, block deletion.
     fn delete(&self, account: &str) -> Result<(), String>;
-    /// Ask the store to keep this item readable after a same-signer rebuild.
-    /// Ad-hoc signatures have no stable requirement, so this is best-effort
-    /// and must not fail the write.
+    /// Test stand-in for an ACL edit. Startup must not call it: the real
+    /// keychain call blocks on an authorization dialog with prompts disabled.
+    #[cfg(test)]
     fn note_rebuild_stable_access(&self, _account: &str) {}
 }
 
@@ -634,6 +937,7 @@ impl MemoryBackend {
 #[cfg(test)]
 impl HostKeyBackend for MemoryBackend {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
             .lock()
@@ -655,6 +959,7 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), String> {
+        wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
             .lock()
@@ -667,6 +972,7 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn set(&self, account: &str, value: &str) -> Result<(), String> {
+        wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
             .lock()
@@ -682,6 +988,7 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn delete(&self, account: &str) -> Result<(), String> {
+        wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
             .lock()
@@ -702,6 +1009,11 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn note_rebuild_stable_access(&self, account: &str) {
+        {
+            let mut fault = lock_fault();
+            fault.acl_mutations += 1;
+        }
+        wait_out_keychain_block(BlockKind::SetAccess);
         let fault = lock_fault();
         if !fault.stable_feasible {
             return;
@@ -1110,39 +1422,14 @@ mod linux {
 #[cfg(all(target_os = "macos", not(test)))]
 mod mac {
     use super::HOST_SERVICE;
-    use core_foundation::array::CFArray;
-    use core_foundation::base::{CFType, CFTypeRef, TCFType};
-    use core_foundation::string::CFString;
     use security_framework::base::Error;
-    use security_framework::os::macos::access::SecAccess;
     use security_framework::os::macos::keychain::SecKeychain;
-    use security_framework::os::macos::keychain_item::SecKeychainItem;
-    use security_framework_sys::base::{errSecSuccess, SecAccessRef};
+    use security_framework_sys::base::errSecSuccess;
     use security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed;
     use zeroize::Zeroizing;
 
     // errSecItemNotFound. A missing host item is an empty store, not a failure.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-
-    // Not in security-framework-sys. A null path is the calling app's designated
-    // requirement. A null trusted list would trust every app, so this code never
-    // passes one.
-    #[link(name = "Security", kind = "framework")]
-    extern "C" {
-        fn SecTrustedApplicationCreateFromPath(
-            path: *const std::ffi::c_char,
-            app: *mut *mut std::ffi::c_void,
-        ) -> i32;
-        fn SecAccessCreate(
-            descriptor: *const std::ffi::c_void,
-            trusted_list: *const std::ffi::c_void,
-            access: *mut SecAccessRef,
-        ) -> i32;
-        fn SecKeychainItemSetAccess(
-            item: security_framework_sys::base::SecKeychainItemRef,
-            access: SecAccessRef,
-        ) -> i32;
-    }
 
     /// Disable keychain dialogs once and leak the guard.
     ///
@@ -1240,10 +1527,7 @@ mod mac {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
-            Ok((password, item)) => {
-                if super::interaction_allowed() {
-                    trust_designated_requirement(account, &item);
-                }
+            Ok((password, _item)) => {
                 let bytes = password.as_ref();
                 let text = String::from_utf8(bytes.to_vec())
                     .map_err(|_| "host seal item is not utf-8".to_string())?;
@@ -1260,10 +1544,14 @@ mod mac {
             return Err(format!("host key already exists: {account}"));
         }
         let chain = keychain()?;
-        // The creating binary is the trusted application. `security` is not,
-        // so a direct keychain read does not return the secret. The ACL is
-        // then widened to this app's designated requirement, never to any app.
-        create_with_access(&chain, account, value)?;
+        // Plain add. The default ACL trusts the creating app and nobody else,
+        // including `security`. Do not change that ACL here: an access edit
+        // calls up an authorization dialog even when prompts are disabled,
+        // and this function runs on the host startup path. A rebuild that
+        // cannot read the item rotates instead.
+        chain
+            .add_generic_password(HOST_SERVICE, account, value.as_bytes())
+            .map_err(|error| map_keychain_error(account, error))?;
         log::info!("permission_seal: stored host item {account} in the macOS keychain");
         Ok(())
     }
@@ -1271,11 +1559,11 @@ mod mac {
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
-        // Editing an existing item's ACL asks securityd for the keychain
-        // password, which blocked host startup on a SecurityAgent dialog.
-        // Replace the item instead: the creator sets the ACL with no prompt.
-        delete_without_reading_secret(&chain, account)?;
-        create_with_access(&chain, account, value)?;
+        // Password update only. Replacing the item with a custom ACL is an
+        // access edit, and that dialog blocked host startup.
+        chain
+            .set_generic_password(HOST_SERVICE, account, value.as_bytes())
+            .map_err(|error| map_keychain_error(account, error))?;
         log::info!("permission_seal: updated host item {account} in the macOS keychain");
         Ok(())
     }
@@ -1333,157 +1621,6 @@ mod mac {
             return Err(super::key_unreadable(&format!("{status}")));
         }
         Err(format!("SecItemDelete({account}) failed: {status}"))
-    }
-
-    #[repr(C)]
-    struct KcAttribute {
-        tag: u32,
-        length: u32,
-        data: *mut std::ffi::c_void,
-    }
-
-    #[repr(C)]
-    struct KcAttributeList {
-        count: u32,
-        attr: *mut KcAttribute,
-    }
-
-    #[link(name = "Security", kind = "framework")]
-    extern "C" {
-        fn SecKeychainItemCreateFromContent(
-            item_class: u32,
-            attr_list: *mut KcAttributeList,
-            length: u32,
-            data: *const std::ffi::c_void,
-            keychain: security_framework_sys::base::SecKeychainRef,
-            initial_access: SecAccessRef,
-            item: *mut security_framework_sys::base::SecKeychainItemRef,
-        ) -> i32;
-    }
-
-    const fn four_cc(code: &[u8; 4]) -> u32 {
-        u32::from_be_bytes(*code)
-    }
-
-    /// Create the item with its ACL already attached. The creating process may
-    /// set the initial access without authorization, so no SecurityAgent
-    /// dialog can block `host start`. Editing the ACL afterwards
-    /// (`SecKeychainItemSetAccess`) needs the keychain password and hung
-    /// v0.3.5-alpha.5 on startup.
-    fn create_with_access(chain: &SecKeychain, account: &str, value: &str) -> Result<(), String> {
-        let access = unsafe { designated_requirement_access() };
-        let access_ref = match &access {
-            Ok(access) => access.as_concrete_TypeRef(),
-            Err(status) => {
-                log::error!(
-                    "permission_seal: could not build a designated-requirement ACL for {account}: {status}; using the default creator ACL"
-                );
-                std::ptr::null_mut()
-            }
-        };
-        let mut service = HOST_SERVICE.as_bytes().to_vec();
-        let mut account_bytes = account.as_bytes().to_vec();
-        let mut attrs = [
-            KcAttribute {
-                tag: four_cc(b"svce"),
-                length: service.len() as u32,
-                data: service.as_mut_ptr().cast(),
-            },
-            KcAttribute {
-                tag: four_cc(b"acct"),
-                length: account_bytes.len() as u32,
-                data: account_bytes.as_mut_ptr().cast(),
-            },
-        ];
-        let mut list = KcAttributeList {
-            count: attrs.len() as u32,
-            attr: attrs.as_mut_ptr(),
-        };
-        let mut item: security_framework_sys::base::SecKeychainItemRef = std::ptr::null_mut();
-        let status = unsafe {
-            SecKeychainItemCreateFromContent(
-                four_cc(b"genp"),
-                &mut list,
-                value.len() as u32,
-                value.as_ptr().cast(),
-                chain.as_concrete_TypeRef(),
-                access_ref,
-                &mut item,
-            )
-        };
-        if !item.is_null() {
-            drop(unsafe { SecKeychainItem::wrap_under_create_rule(item) });
-        }
-        if status != errSecSuccess {
-            return Err(map_keychain_error(account, Error::from_code(status)));
-        }
-        if access.is_ok() && account == super::MAC_ITEM {
-            log::info!(
-                "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
-            );
-        }
-        Ok(())
-    }
-
-    /// Trust this app's designated requirement. Failure leaves the cdhash ACL
-    /// the keychain already wrote. It does not fail the key write or the read.
-    fn trust_designated_requirement(account: &str, item: &SecKeychainItem) {
-        let status = unsafe { set_designated_requirement_acl(item) };
-        if status == errSecSuccess {
-            if account == super::MAC_ITEM {
-                log::info!(
-                    "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
-                );
-            }
-        } else {
-            log::error!(
-                "permission_seal: could not set keychain ACL for {account} to the designated requirement: {status}"
-            );
-        }
-    }
-
-    unsafe fn designated_requirement_access() -> Result<SecAccess, i32> {
-        let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
-        let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
-        if status != errSecSuccess || app.is_null() {
-            return Err(if status == errSecSuccess { -1 } else { status });
-        }
-        let app = CFType::wrap_under_create_rule(app as CFTypeRef);
-        let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
-        let label = CFString::new("Plexi permission seal");
-        let mut access: SecAccessRef = std::ptr::null_mut();
-        let status = SecAccessCreate(
-            label.as_concrete_TypeRef().cast(),
-            trusted.as_concrete_TypeRef().cast(),
-            &mut access,
-        );
-        if status != errSecSuccess || access.is_null() {
-            return Err(if status == errSecSuccess { -1 } else { status });
-        }
-        Ok(SecAccess::wrap_under_create_rule(access))
-    }
-
-    unsafe fn set_designated_requirement_acl(item: &SecKeychainItem) -> i32 {
-        let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
-        let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
-        if status != errSecSuccess || app.is_null() {
-            return if status == errSecSuccess { -1 } else { status };
-        }
-        let app = CFType::wrap_under_create_rule(app as CFTypeRef);
-        // One trusted application. A null list would allow any process.
-        let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
-        let label = CFString::new("Plexi permission seal");
-        let mut access: SecAccessRef = std::ptr::null_mut();
-        let status = SecAccessCreate(
-            label.as_concrete_TypeRef().cast(),
-            trusted.as_concrete_TypeRef().cast(),
-            &mut access,
-        );
-        if status != errSecSuccess || access.is_null() {
-            return if status == errSecSuccess { -1 } else { status };
-        }
-        let access = SecAccess::wrap_under_create_rule(access);
-        SecKeychainItemSetAccess(item.as_concrete_TypeRef(), access.as_concrete_TypeRef())
     }
 }
 
@@ -1691,13 +1828,25 @@ mod tests {
     }
 
     #[test]
-    fn stable_signer_keeps_the_key_across_a_new_code_identity() {
+    fn new_code_identity_cannot_read_a_key_whose_acl_was_not_edited() {
         let _guard = ExclusiveHostKey::acquire();
         let _restore = RestoreMacItem::take();
         let _stable = RebuildStableAccess::set(true);
+        let before = acl_mutations();
         add_new(MAC_ITEM, "stable-key").unwrap();
+        assert_eq!(acl_mutations(), before, "creating a key must not edit its ACL");
         simulate_new_code_identity();
-        assert_eq!(get(MAC_ITEM).unwrap().unwrap().as_str(), "stable-key");
+        let error = get(MAC_ITEM).expect_err("the default acl is the creating binary");
+        assert!(is_key_unreadable(&error), "{error}");
+        assert!(error.contains("-25293"), "{error}");
+    }
+
+    #[test]
+    fn acl_mutation_is_counted_when_invoked_directly() {
+        let _guard = ExclusiveHostKey::acquire();
+        let before = acl_mutations();
+        super::backend().note_rebuild_stable_access("acl-probe");
+        assert_eq!(acl_mutations(), before + 1);
     }
 
     #[test]
