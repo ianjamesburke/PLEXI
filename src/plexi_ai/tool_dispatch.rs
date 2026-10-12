@@ -540,7 +540,7 @@ pub trait PermissionPresenter: Send + Sync {
         summary: &str,
         actor: &str,
         resource: &str,
-    ) -> crate::broker::gate::ApprovalChoice;
+    ) -> Result<crate::broker::gate::ApprovalChoice, String>;
 }
 
 pub struct ToolDispatcher {
@@ -739,31 +739,42 @@ impl ToolDispatcher {
         if let crate::broker::gate::Admission::Required { pending_request_id } = &admission {
             if let Some(presenter) = &self.presenter {
                 let (_, resource_id) = crate::broker::gate::resource_of(name, &input_json);
-                let choice = presenter.present(
+                let choice = match presenter.present(
                     pending_request_id,
                     name,
                     &input_json,
                     &self.scope.caller_app_id,
                     resource_id.as_deref().unwrap_or(""),
-                );
+                ) {
+                    Ok(choice) => choice,
+                    Err(message) => {
+                        log::error!(
+                            "tool_dispatch: permission was not saved caller={} tool={name} call_id={call_id}: {message}",
+                            self.caller_app_id
+                        );
+                        return ToolCallResult::err(message);
+                    }
+                };
                 if matches!(
                     choice,
                     crate::broker::gate::ApprovalChoice::Deny
                         | crate::broker::gate::ApprovalChoice::DenyAlways
                 ) {
-                    let _ = self.monitor.approve_pending(pending_request_id, choice);
-                    return ToolCallResult::coded(
-                        "permission_denied",
-                        &call_id,
-                        Some(pending_request_id),
-                    );
+                    return match self.monitor.approve_pending(pending_request_id, choice) {
+                        Ok(()) => ToolCallResult::coded(
+                            "permission_denied",
+                            &call_id,
+                            Some(pending_request_id),
+                        ),
+                        Err(error) => {
+                            log::error!("tool_dispatch: {error}");
+                            ToolCallResult::err(error)
+                        }
+                    };
                 }
-                if self
-                    .monitor
-                    .approve_pending(pending_request_id, choice)
-                    .is_err()
-                {
-                    return ToolCallResult::coded("permission_denied", &call_id, Some(pending_request_id));
+                if let Err(error) = self.monitor.approve_pending(pending_request_id, choice) {
+                    log::error!("tool_dispatch: {error}");
+                    return ToolCallResult::err(error);
                 }
                 admission = self.monitor.admit(crate::broker::gate::AdmitRequest {
                     call_id: &call_id,

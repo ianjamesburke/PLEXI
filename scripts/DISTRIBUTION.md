@@ -71,7 +71,9 @@ copy of the host binary.
 records the active and previous generations, canonical destinations and owned
 integrations. The per-user installation registry locates custom destinations.
 The active package owns executable identity; a profile `installed_tag` marker
-cannot identify an executable. SDK and core-app refresh stamps use the compiled
+cannot identify an executable. After a successful install the installer writes
+that marker in the channel profile directory. The file contains the package
+tag, or the build id when the tag is empty. SDK and core-app refresh stamps use the compiled
 build identity, including source changes between prerelease builds.
 
 Bare `plexi` delegates to the pane's named channel only when `PLEXI_RUNNING=1`.
