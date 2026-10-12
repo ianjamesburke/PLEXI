@@ -10,6 +10,10 @@ RUN npm ci
 
 COPY website/ .
 
+# The install routes import these bootstraps from outside website/.
+COPY install.sh /install.sh
+COPY scripts/install-windows.ps1 /scripts/install-windows.ps1
+
 RUN npm run build
 
 # Drop dev deps for a lean runtime copy.
