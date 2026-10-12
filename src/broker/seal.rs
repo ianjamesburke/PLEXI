@@ -23,9 +23,13 @@
 //! the tip still mean "sealed". A keychain or Secret Service read error
 //! refuses adopt as well.
 //!
-//! That read error is not a bad MAC. When the key cannot be read, the grant
-//! file and the audit log stay where they are and no integrity alert is filed.
+//! That read error is not a bad MAC. The host deletes the unreadable seal item,
+//! creates a new key, and reseals the profile. Grants and audit lines that
+//! cannot be checked under the new key are reset and loaded empty; they are
+//! not quarantined as tampering and startup does not leave them unloaded.
 //! Only a key that was actually read, and whose MAC does not match, is tampering.
+//! If the old item cannot be removed without a keychain prompt, the files stay
+//! where they are and no integrity alert is filed.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -689,6 +693,109 @@ pub(crate) fn existing_mac_key() -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     match super::host_key::get(super::host_key::MAC_ITEM)? {
         Some(existing) => Ok(Some(Zeroizing::new(decode_hex(existing.trim())?))),
         None => Ok(None),
+    }
+}
+
+/// What startup did with an unreadable permission MAC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MacRecovery {
+    /// The key was readable, or there was no key yet.
+    Ready,
+    /// The old item could not be read. It was deleted and a new key was stored.
+    Rotated,
+}
+
+/// Delete an unreadable permission MAC and store a new one.
+///
+/// A readable key is left in place. A missing key is not created here.
+/// Deletion does not read the secret. When that delete needs a keychain
+/// prompt, this returns the unreadable error and the caller files Needs you.
+pub(crate) fn rotate_unreadable_mac_key() -> Result<MacRecovery, String> {
+    match existing_mac_key() {
+        Ok(Some(_)) => return Ok(MacRecovery::Ready),
+        Ok(None) => return Ok(MacRecovery::Ready),
+        Err(error) if !super::host_key::is_key_unreadable(&error) => return Err(error),
+        Err(_) => {}
+    }
+    super::host_key::delete(super::host_key::MAC_ITEM)?;
+    let hex = fresh_key_hex();
+    super::host_key::add_new(super::host_key::MAC_ITEM, &hex)?;
+    log::info!("permission_seal: rotated unreadable permission mac key");
+    Ok(MacRecovery::Rotated)
+}
+
+/// Make the permission MAC readable for `dir`.
+///
+/// An auth failure rotates the key and resets grants that cannot be verified.
+/// A delete that still needs a prompt returns that error so startup can file
+/// Needs you without blocking on a dialog.
+pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
+    match existing_mac_key() {
+        Ok(_) => Ok(MacRecovery::Ready),
+        Err(error) if super::host_key::is_key_unreadable(&error) => {
+            let recovery = rotate_unreadable_mac_key()?;
+            if recovery == MacRecovery::Rotated {
+                reset_unverified_profile(dir)?;
+                log::info!(
+                    "permission_seal: seal key rotated for {}; unverified grants were reset and loaded",
+                    dir.display()
+                );
+            }
+            Ok(recovery)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Replace grant and audit files that were sealed with a key we could not read.
+///
+/// The previous bytes are copied aside. The new files are sealed with the
+/// current key and are not an integrity failure.
+pub(crate) fn reset_unverified_profile(dir: &Path) -> Result<(), String> {
+    let grants = dir.join("grants.toml");
+    if grants.is_file() {
+        copy_aside(&grants, "grants.toml.before-key-rotation");
+    }
+    write_sealed(&grants, b"records = []\n")?;
+    let audit = dir.join("permission-audit.jsonl");
+    if audit.is_file() {
+        copy_aside(&audit, "permission-audit.jsonl.before-key-rotation");
+        std::fs::remove_file(&audit).map_err(|error| error.to_string())?;
+    }
+    clear_audit_tip(&audit);
+    let fact = serde_json::json!({
+        "kind": "key_rotation",
+        "actor": "host",
+        "decision": "grants_reset",
+        "summary": "previous grants could not be verified after the seal key was rotated",
+    });
+    match append_audit(&audit, &fact) {
+        Ok(()) => {}
+        Err(error) => {
+            log::error!(
+                "permission_seal: rotated the seal key but could not start a new audit in {}: {error}",
+                dir.display()
+            );
+            return Err(error.to_string());
+        }
+    }
+    crate::broker::integrity::note_saved_file(&grants);
+    crate::broker::integrity::note_saved_file(&audit);
+    log::info!(
+        "permission_seal: reset unverified grants in {} after seal-key rotation",
+        dir.display()
+    );
+    Ok(())
+}
+
+fn copy_aside(path: &Path, name: &str) {
+    let dest = path.with_file_name(name);
+    if let Err(error) = std::fs::copy(path, &dest) {
+        log::error!(
+            "permission_seal: could not copy {} to {} before key rotation: {error}",
+            path.display(),
+            dest.display()
+        );
     }
 }
 

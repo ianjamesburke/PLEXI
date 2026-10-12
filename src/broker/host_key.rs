@@ -21,10 +21,15 @@
 //!   back to the login keychain. The `security` tool is not the creating
 //!   binary, so a direct keychain read does not yield the key. Startup
 //!   disables keychain prompts so `host start` cannot block on Allow. A
-//!   Needs you approval is the only path that turns prompts on, for that
-//!   one read, and then turns them off again. New and interactively read
-//!   items trust this app's designated requirement so a same-signer rebuild
-//!   keeps access. An any-application ACL is never installed.
+//!   read that fails with an auth or ACL status (`errSecAuthFailed` -25293
+//!   and the same class) is rotated: the old item is deleted without reading
+//!   its secret, and a new key is created. New items trust this app's
+//!   designated requirement so a same-signer rebuild keeps access when that
+//!   requirement is stable. An ad-hoc signature changes every build, so the
+//!   next launch rotates again instead of leaving grants unloaded. An
+//!   any-application ACL is never installed. If the old item cannot be
+//!   deleted while prompts are off, a Needs you approval turns prompts on
+//!   and either retries the read or finishes the rotation.
 //! - Windows stores it in Credential Manager under `plexi-host-seal/`, which
 //!   `plexi secret get` does not read.
 
@@ -106,22 +111,24 @@ pub(crate) fn scrub_user_secret_host_namespace() {
 }
 
 pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-    if account == MAC_ITEM {
-        if let Some(cached) = session_mac() {
-            return Ok(Some(cached));
-        }
-    }
-    match with_backend(|| backend().get(account)) {
-        Ok(value) => {
-            if account == MAC_ITEM && interaction_allowed() {
-                if let Some(value) = &value {
-                    remember_session_mac(value);
-                }
+    with_backend(|| {
+        if account == MAC_ITEM {
+            if let Some(cached) = session_mac() {
+                return Ok(Some(cached));
             }
-            Ok(value)
         }
-        Err(error) => Err(error),
-    }
+        match backend().get(account) {
+            Ok(value) => {
+                if account == MAC_ITEM && interaction_allowed() {
+                    if let Some(value) = &value {
+                        remember_session_mac(value);
+                    }
+                }
+                Ok(value)
+            }
+            Err(error) => Err(error),
+        }
+    })
 }
 
 /// Read `body` while keychain prompts are allowed.
@@ -171,18 +178,33 @@ fn clear_session_mac() {
 }
 
 pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
-    with_backend(|| backend().add_new(account, value))
+    with_backend(|| backend().add_new(account, value))?;
+    with_backend(|| backend().note_rebuild_stable_access(account));
+    Ok(())
 }
 
 pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
-    with_backend(|| backend().set(account, value))
+    match with_backend(|| backend().set(account, value)) {
+        Ok(()) => {
+            with_backend(|| backend().note_rebuild_stable_access(account));
+            Ok(())
+        }
+        Err(error) if is_key_unreadable(&error) => {
+            log::info!("permission_seal: replacing unreadable host item {account}");
+            delete(account)?;
+            add_new(account, value)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn delete(account: &str) -> Result<(), String> {
-    if account == MAC_ITEM {
-        clear_session_mac();
-    }
-    with_backend(|| backend().delete(account))
+    with_backend(|| {
+        if account == MAC_ITEM {
+            clear_session_mac();
+        }
+        backend().delete(account)
+    })
 }
 
 fn with_backend<T>(body: impl FnOnce() -> T) -> T {
@@ -199,27 +221,96 @@ fn with_backend<T>(body: impl FnOnce() -> T) -> T {
 
 /// Holds the process-local host-key map so a test can remove `permission-mac`
 /// without a parallel test observing that gap.
+///
+/// The outer guard snapshots the permission MAC and the code-identity fault,
+/// then puts them back on drop. A rotation inside the guard must not leave
+/// the next test sealing with a different key.
 #[cfg(test)]
 pub(crate) struct ExclusiveHostKey {
-    _guard: std::sync::MutexGuard<'static, ()>,
+    release: bool,
+    restore: Option<MacProcessSnapshot>,
+    _guard: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 #[cfg(test)]
 impl ExclusiveHostKey {
     pub(crate) fn acquire() -> Self {
+        if HOST_KEY_HELD.with(|held| held.get()) {
+            return Self {
+                release: false,
+                restore: None,
+                _guard: None,
+            };
+        }
         let guard = host_key_test_lock()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         HOST_KEY_HELD.with(|held| held.set(true));
-        Self { _guard: guard }
+        let restore = Some(snapshot_mac_process());
+        Self {
+            release: true,
+            restore,
+            _guard: Some(guard),
+        }
     }
 }
 
 #[cfg(test)]
 impl Drop for ExclusiveHostKey {
     fn drop(&mut self) {
-        HOST_KEY_HELD.with(|held| held.set(false));
+        if self.release {
+            if let Some(snapshot) = self.restore.take() {
+                restore_mac_process(&snapshot);
+            }
+            HOST_KEY_HELD.with(|held| held.set(false));
+        }
     }
+}
+
+#[cfg(test)]
+struct MacProcessSnapshot {
+    item: Option<StoredItem>,
+    fault: MacFault,
+    session: Option<Zeroizing<String>>,
+}
+
+#[cfg(test)]
+fn snapshot_mac_process() -> MacProcessSnapshot {
+    let item = memory_backend().and_then(|memory| {
+        memory
+            .values
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(MAC_ITEM)
+            .cloned()
+    });
+    MacProcessSnapshot {
+        item,
+        fault: lock_fault().clone(),
+        session: session_mac(),
+    }
+}
+
+#[cfg(test)]
+fn restore_mac_process(snapshot: &MacProcessSnapshot) {
+    if let Some(memory) = memory_backend() {
+        let mut map = memory
+            .values
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match &snapshot.item {
+            Some(item) => {
+                map.insert(MAC_ITEM.to_string(), item.clone());
+            }
+            None => {
+                map.remove(MAC_ITEM);
+            }
+        }
+    }
+    *lock_fault() = snapshot.fault.clone();
+    *session_mac_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = snapshot.session.clone();
 }
 
 /// Run `body` with the permission MAC absent, then put the previous key back.
@@ -251,43 +342,76 @@ thread_local! {
 }
 
 #[cfg(test)]
-struct MacReadFault {
-    denied: bool,
+#[derive(Clone)]
+struct StoredItem {
+    value: String,
+    /// Code identity that wrote this item. A later identity cannot read it
+    /// unless `stable` was recorded while stable access was feasible.
+    generation: u64,
+    stable: bool,
+    /// Silent reads fail with `errSecAuthFailed` (-25293).
+    silent_unreadable: bool,
+    /// Prompts are allowed and the read still fails. Rotation is the only way in.
+    interactive_unreadable: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct MacFault {
+    generation: u64,
+    /// Designated-requirement ACLs survive a rebuild only for a stable signer.
+    /// Ad-hoc builds leave this false: the next identity cannot read the item.
+    stable_feasible: bool,
+    /// Deleting an unreadable item would raise a keychain prompt.
+    delete_unreadable_needs_prompt: bool,
     interactive_reads: u32,
 }
 
 #[cfg(test)]
-fn mac_read_fault() -> &'static Mutex<MacReadFault> {
-    static FAULT: Mutex<MacReadFault> = Mutex::new(MacReadFault {
-        denied: false,
+fn mac_fault() -> &'static Mutex<MacFault> {
+    static FAULT: Mutex<MacFault> = Mutex::new(MacFault {
+        generation: 0,
+        stable_feasible: true,
+        delete_unreadable_needs_prompt: false,
         interactive_reads: 0,
     });
     &FAULT
 }
 
 #[cfg(test)]
-fn mac_read_denied() -> bool {
-    mac_read_fault()
+fn lock_fault() -> std::sync::MutexGuard<'static, MacFault> {
+    mac_fault()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .denied
 }
 
 #[cfg(test)]
-fn note_interactive_mac_read() {
-    let mut fault = mac_read_fault()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    fault.interactive_reads += 1;
-    fault.denied = false;
+fn item_data_readable(item: &StoredItem, fault: &MacFault, interaction: bool) -> bool {
+    if item.generation != fault.generation && !(item.stable && fault.stable_feasible) {
+        return false;
+    }
+    if item.silent_unreadable && !interaction {
+        return false;
+    }
+    if item.interactive_unreadable && interaction {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+fn auth_failed() -> String {
+    key_unreadable("-25293 errSecAuthFailed")
 }
 
 /// The permission MAC exists, but silent reads fail the way a rebuilt binary
 /// fails with `errSecAuthFailed` while prompts are off.
 ///
 /// An interactive read counts once and then succeeds, which is the Always Allow
-/// / designated-requirement outcome. The guard holds the process-wide host-key
-/// lock so other tests do not observe the denial.
+/// outcome, unless [`UnreadableMacKey::interactive_also_denied`] is set. Delete
+/// of that unreadable item succeeds without a prompt unless
+/// [`UnreadableMacKey::delete_needs_prompt`] is set. The guard holds the
+/// process-wide host-key lock so other tests do not observe the denial.
 #[cfg(test)]
 pub(crate) struct UnreadableMacKey {
     _exclusive: ExclusiveHostKey,
@@ -298,33 +422,96 @@ impl UnreadableMacKey {
     pub(crate) fn acquire() -> Self {
         let exclusive = ExclusiveHostKey::acquire();
         clear_session_mac();
-        let mut fault = mac_read_fault()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        fault.denied = true;
-        fault.interactive_reads = 0;
+        {
+            let mut fault = lock_fault();
+            fault.interactive_reads = 0;
+            fault.delete_unreadable_needs_prompt = false;
+        }
+        mark_mac_item(|item| {
+            item.silent_unreadable = true;
+            item.interactive_unreadable = false;
+        });
         Self {
             _exclusive: exclusive,
         }
     }
 
+    /// Silent delete of the unreadable item fails until prompts are allowed.
+    pub(crate) fn delete_needs_prompt(self) -> Self {
+        lock_fault().delete_unreadable_needs_prompt = true;
+        self
+    }
+
+    /// An Allow click still cannot read the old secret. The click must rotate.
+    pub(crate) fn interactive_also_denied(self) -> Self {
+        mark_mac_item(|item| item.interactive_unreadable = true);
+        self
+    }
+
     pub(crate) fn interactive_reads(&self) -> u32 {
-        mac_read_fault()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .interactive_reads
+        lock_fault().interactive_reads
     }
 }
 
 #[cfg(test)]
 impl Drop for UnreadableMacKey {
     fn drop(&mut self) {
-        let mut fault = mac_read_fault()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        fault.denied = false;
+        mark_mac_item(|item| {
+            item.silent_unreadable = false;
+            item.interactive_unreadable = false;
+        });
+        let mut fault = lock_fault();
+        fault.delete_unreadable_needs_prompt = false;
         fault.interactive_reads = 0;
+        drop(fault);
         clear_session_mac();
+    }
+}
+
+/// Same-signer rebuilds can keep keychain access. Ad-hoc tests turn this off
+/// before the key is written. Restores the previous value on drop.
+#[cfg(test)]
+pub(crate) struct RebuildStableAccess {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl RebuildStableAccess {
+    pub(crate) fn set(feasible: bool) -> Self {
+        let mut fault = lock_fault();
+        let previous = fault.stable_feasible;
+        fault.stable_feasible = feasible;
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for RebuildStableAccess {
+    fn drop(&mut self) {
+        lock_fault().stable_feasible = self.previous;
+    }
+}
+
+/// The next host-key read is a new ad-hoc code identity.
+#[cfg(test)]
+pub(crate) fn simulate_new_code_identity() {
+    let mut fault = lock_fault();
+    fault.generation = fault.generation.wrapping_add(1);
+    drop(fault);
+    clear_session_mac();
+}
+
+#[cfg(test)]
+fn mark_mac_item(update: impl FnOnce(&mut StoredItem)) {
+    let Some(memory) = memory_backend() else {
+        return;
+    };
+    let mut map = memory
+        .values
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(item) = map.get_mut(MAC_ITEM) {
+        update(item);
     }
 }
 
@@ -369,12 +556,17 @@ impl Drop for TestBackendGuard {
     }
 }
 
+#[cfg(test)]
+fn memory_backend() -> Option<&'static MemoryBackend> {
+    use std::sync::OnceLock;
+    static MEMORY: OnceLock<MemoryBackend> = OnceLock::new();
+    Some(MEMORY.get_or_init(MemoryBackend::default))
+}
+
 fn backend() -> &'static dyn HostKeyBackend {
     #[cfg(test)]
     {
-        use std::sync::OnceLock;
-        static MEMORY: OnceLock<MemoryBackend> = OnceLock::new();
-        MEMORY.get_or_init(MemoryBackend::default)
+        memory_backend().expect("test host-key backend")
     }
     #[cfg(all(target_os = "linux", not(test)))]
     {
@@ -402,38 +594,64 @@ trait HostKeyBackend: Sync + Send {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String>;
     fn add_new(&self, account: &str, value: &str) -> Result<(), String>;
     fn set(&self, account: &str, value: &str) -> Result<(), String>;
+    /// Remove the item without reading its secret. An ACL that blocks the
+    /// password must not, by itself, block deletion.
     fn delete(&self, account: &str) -> Result<(), String>;
+    /// Ask the store to keep this item readable after a same-signer rebuild.
+    /// Ad-hoc signatures have no stable requirement, so this is best-effort
+    /// and must not fail the write.
+    fn note_rebuild_stable_access(&self, _account: &str) {}
 }
 
 #[cfg(test)]
-#[derive(Default)]
 struct MemoryBackend {
-    values: Mutex<BTreeMap<String, String>>,
+    values: Mutex<BTreeMap<String, StoredItem>>,
+}
+
+#[cfg(test)]
+impl Default for MemoryBackend {
+    fn default() -> Self {
+        Self {
+            values: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl MemoryBackend {
+    fn fresh_item(&self, value: &str) -> StoredItem {
+        let fault = lock_fault();
+        StoredItem {
+            value: value.to_string(),
+            generation: fault.generation,
+            stable: false,
+            silent_unreadable: false,
+            interactive_unreadable: false,
+        }
+    }
 }
 
 #[cfg(test)]
 impl HostKeyBackend for MemoryBackend {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
-        if account == MAC_ITEM && mac_read_denied() {
-            let exists = self
-                .values
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .contains_key(account);
-            if exists {
-                if !interaction_allowed() {
-                    return Err(key_unreadable("errSecAuthFailed"));
-                }
-                note_interactive_mac_read();
-            }
-        }
-        Ok(self
+        let mut map = self
             .values
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(account)
-            .cloned()
-            .map(Zeroizing::new))
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(item) = map.get_mut(account) else {
+            return Ok(None);
+        };
+        let interaction = interaction_allowed();
+        let fault = lock_fault();
+        if !item_data_readable(item, &fault, interaction) {
+            return Err(auth_failed());
+        }
+        drop(fault);
+        if interaction && item.silent_unreadable && !item.interactive_unreadable {
+            item.silent_unreadable = false;
+            lock_fault().interactive_reads += 1;
+        }
+        Ok(Some(Zeroizing::new(item.value.clone())))
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), String> {
@@ -444,24 +662,59 @@ impl HostKeyBackend for MemoryBackend {
         if map.contains_key(account) {
             return Err(format!("host key already exists: {account}"));
         }
-        map.insert(account.to_string(), value.to_string());
+        map.insert(account.to_string(), self.fresh_item(value));
         Ok(())
     }
 
     fn set(&self, account: &str, value: &str) -> Result<(), String> {
-        self.values
+        let mut map = self
+            .values
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(account.to_string(), value.to_string());
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(existing) = map.get(account) {
+            let fault = lock_fault();
+            if !item_data_readable(existing, &fault, interaction_allowed()) {
+                return Err(auth_failed());
+            }
+        }
+        map.insert(account.to_string(), self.fresh_item(value));
         Ok(())
     }
 
     fn delete(&self, account: &str) -> Result<(), String> {
-        self.values
+        let mut map = self
+            .values
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(existing) = map.get(account) else {
+            return Ok(());
+        };
+        let fault = lock_fault();
+        let blocked = !item_data_readable(existing, &fault, interaction_allowed())
+            && fault.delete_unreadable_needs_prompt
+            && !interaction_allowed();
+        drop(fault);
+        if blocked {
+            return Err(auth_failed());
+        }
+        map.remove(account);
+        Ok(())
+    }
+
+    fn note_rebuild_stable_access(&self, account: &str) {
+        let fault = lock_fault();
+        if !fault.stable_feasible {
+            return;
+        }
+        drop(fault);
+        if let Some(item) = self
+            .values
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .remove(account);
-        Ok(())
+            .get_mut(account)
+        {
+            item.stable = true;
+        }
     }
 }
 
@@ -1032,16 +1285,56 @@ mod mac {
     pub(super) fn delete(account: &str) -> Result<(), String> {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
-        match chain.find_generic_password(HOST_SERVICE, account) {
-            // security-framework 3.7 `SecKeychainItem::delete` returns `()`
-            // and discards the OSStatus. Lookup failures stay mapped below.
-            Ok((_password, item)) => {
-                item.delete();
+        // Attribute delete does not read the secret. `find_generic_password`
+        // returns -25293 when a previous build's ACL rejects this binary, which
+        // used to make rotation unable to remove the item it cannot read.
+        match delete_without_reading_secret(&chain, account) {
+            Ok(()) => {
+                log::info!("permission_seal: deleted host item {account} from the macOS keychain");
                 Ok(())
             }
-            Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
-            Err(error) => Err(map_keychain_error(account, error)),
+            Err(error) => Err(error),
         }
+    }
+
+    fn delete_without_reading_secret(chain: &SecKeychain, account: &str) -> Result<(), String> {
+        use core_foundation::base::{CFType, TCFType};
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::string::{CFString, CFStringRef};
+        use security_framework_sys::base::errSecSuccess;
+
+        #[link(name = "Security", kind = "framework")]
+        extern "C" {
+            static kSecClass: CFStringRef;
+            static kSecClassGenericPassword: CFStringRef;
+            static kSecAttrService: CFStringRef;
+            static kSecAttrAccount: CFStringRef;
+            static kSecUseKeychain: CFStringRef;
+            fn SecItemDelete(query: core_foundation::dictionary::CFDictionaryRef) -> i32;
+        }
+
+        let class_key = unsafe { CFString::wrap_under_get_rule(kSecClass) };
+        let class_val = unsafe { CFString::wrap_under_get_rule(kSecClassGenericPassword) };
+        let service_key = unsafe { CFString::wrap_under_get_rule(kSecAttrService) };
+        let account_key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) };
+        let keychain_key = unsafe { CFString::wrap_under_get_rule(kSecUseKeychain) };
+        let service_val = CFString::new(HOST_SERVICE);
+        let account_val = CFString::new(account);
+        let pairs = [
+            (class_key.as_CFType(), class_val.as_CFType()),
+            (service_key.as_CFType(), service_val.as_CFType()),
+            (account_key.as_CFType(), account_val.as_CFType()),
+            (keychain_key.as_CFType(), chain.as_CFType()),
+        ];
+        let query: CFDictionary<CFType, CFType> = CFDictionary::from_CFType_pairs(&pairs);
+        let status = unsafe { SecItemDelete(query.as_concrete_TypeRef()) };
+        if status == errSecSuccess || status == ERR_SEC_ITEM_NOT_FOUND {
+            return Ok(());
+        }
+        if super::keychain_status_is_unreadable(status) {
+            return Err(super::key_unreadable(&format!("{status}")));
+        }
+        Err(format!("SecItemDelete({account}) failed: {status}"))
     }
 
     fn trust_item_in(account: &str, chain: &SecKeychain) {
@@ -1189,6 +1482,35 @@ mod windows {
 }
 
 #[cfg(test)]
+struct RestoreMacItem {
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+impl RestoreMacItem {
+    fn take() -> Self {
+        let previous = get(MAC_ITEM)
+            .ok()
+            .flatten()
+            .map(|value| value.to_string());
+        let _ = delete(MAC_ITEM);
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for RestoreMacItem {
+    fn drop(&mut self) {
+        let _ = delete(MAC_ITEM);
+        if let Some(value) = self.previous.take() {
+            if let Err(error) = set(MAC_ITEM, &value) {
+                log::error!("permission_seal: test could not restore permission mac: {error}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1252,5 +1574,44 @@ mod tests {
         delete(account).unwrap();
         assert!(get(account).unwrap().is_none());
         assert!(system_store().get(account).is_none());
+    }
+
+    #[test]
+    fn unreadable_item_can_be_deleted_without_reading_it() {
+        let _guard = ExclusiveHostKey::acquire();
+        let _restore = RestoreMacItem::take();
+        add_new(MAC_ITEM, "previous-build-key").unwrap();
+        let denied = UnreadableMacKey::acquire();
+        let error = get(MAC_ITEM).expect_err("silent read fails");
+        assert!(is_key_unreadable(&error), "{error}");
+        assert!(error.contains("-25293"), "{error}");
+        assert_eq!(denied.interactive_reads(), 0);
+        delete(MAC_ITEM).expect("delete does not need the secret");
+        assert!(get(MAC_ITEM).unwrap().is_none());
+    }
+
+    #[test]
+    fn stable_signer_keeps_the_key_across_a_new_code_identity() {
+        let _guard = ExclusiveHostKey::acquire();
+        let _restore = RestoreMacItem::take();
+        let _stable = RebuildStableAccess::set(true);
+        add_new(MAC_ITEM, "stable-key").unwrap();
+        simulate_new_code_identity();
+        assert_eq!(get(MAC_ITEM).unwrap().unwrap().as_str(), "stable-key");
+    }
+
+    #[test]
+    fn ad_hoc_identity_cannot_read_the_previous_key() {
+        let _guard = ExclusiveHostKey::acquire();
+        let _restore = RestoreMacItem::take();
+        let _adhoc = RebuildStableAccess::set(false);
+        add_new(MAC_ITEM, "ad-hoc-key").unwrap();
+        simulate_new_code_identity();
+        let error = get(MAC_ITEM).expect_err("ad-hoc rebuild loses the acl");
+        assert!(is_key_unreadable(&error), "{error}");
+        assert!(error.contains("-25293"), "{error}");
+        delete(MAC_ITEM).expect("rotation can remove the old item");
+        add_new(MAC_ITEM, "rotated-key").unwrap();
+        assert_eq!(get(MAC_ITEM).unwrap().unwrap().as_str(), "rotated-key");
     }
 }

@@ -838,7 +838,47 @@ fn install_checked(
         receipt.active.build_id,
         root.display()
     );
+    let tag = installed_tag_text(&receipt.active.tag, &receipt.active.build_id);
+    match dirs::home_dir() {
+        Some(home) => write_installed_tag(&home, &receipt.channel, &tag)?,
+        None => log::error!(
+            "distribution: installed channel={} build={} but the home directory is unavailable; installed_tag was not written",
+            receipt.channel,
+            receipt.active.build_id
+        ),
+    }
     Ok(receipt)
+}
+
+/// Profile directory name for a release channel. Stable and main use
+/// `.plexi`; every other channel uses `.plexi-<channel>`, the same names as
+/// `channel_suffix_from_basename` in the host config.
+fn channel_profile_dir_name(channel: &str) -> String {
+    match channel {
+        "stable" | "main" => ".plexi".to_string(),
+        other => format!(".plexi-{other}"),
+    }
+}
+
+fn installed_tag_text(tag: &str, build_id: &str) -> String {
+    if tag.is_empty() {
+        build_id.to_string()
+    } else {
+        tag.to_string()
+    }
+}
+
+/// Record the package that just activated. This marker is not executable identity.
+fn write_installed_tag(home: &Path, channel: &str, tag: &str) -> Result<()> {
+    let path = home
+        .join(channel_profile_dir_name(channel))
+        .join("installed_tag");
+    atomic_write(&path, tag.as_bytes())?;
+    log::info!(
+        "distribution: wrote installed_tag {tag} for channel {channel} at {}",
+        path.display()
+    );
+    Ok(())
 }
 
 fn check_update_base(receipt: Option<&Receipt>, expected: &str) -> Result<()> {
@@ -1435,6 +1475,24 @@ mod tests {
         ] {
             assert_eq!(windows_shell_path(Path::new(input)), Path::new(expected));
         }
+    }
+
+    #[test]
+    fn alpha_install_records_profile_installed_tag() {
+        let home = tempfile::tempdir().unwrap();
+        write_installed_tag(home.path(), "alpha", "v1.2.3-alpha.4").unwrap();
+        let path = home.path().join(".plexi-alpha/installed_tag");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v1.2.3-alpha.4");
+        write_installed_tag(home.path(), "stable", "build-no-tag").unwrap();
+        assert_eq!(
+            fs::read_to_string(home.path().join(".plexi/installed_tag")).unwrap(),
+            "build-no-tag"
+        );
+        assert_eq!(installed_tag_text("", "build-9"), "build-9");
+        assert_eq!(installed_tag_text("v0.1.0-alpha.2", "build-9"), "v0.1.0-alpha.2");
+        assert_eq!(channel_profile_dir_name("beta"), ".plexi-beta");
+        assert_eq!(channel_profile_dir_name("main"), ".plexi");
+        assert_eq!(channel_profile_dir_name("pr-12"), ".plexi-pr-12");
     }
 
     #[test]

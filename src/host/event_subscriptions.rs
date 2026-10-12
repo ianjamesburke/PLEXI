@@ -707,14 +707,24 @@ impl HostSubscriptionService {
                 ConsentAction::Subscribe { .. } => subscription_targets(&app_id, &event_names),
                 ConsentAction::Publish { .. } => publish_targets(&app_id, &event_names),
             };
-            self.persist_always_grants(
+            if let Err(message) = self.persist_always_grants(
                 subscriber_type,
                 &broker_actor_id,
                 &app_id,
                 &targets,
                 &workspace_root,
                 config_dir,
-            );
+            ) {
+                match action {
+                    ConsentAction::Subscribe { reply, .. } => {
+                        let _ = reply.send(HostSubscribeReply::Err { message });
+                    }
+                    ConsentAction::Publish { reply, .. } => {
+                        let _ = reply.send(HostPublishReply::Err { message });
+                    }
+                }
+                return;
+            }
         }
         let scope = if choice == ConsentChoice::AllowAlways {
             "always"
@@ -836,7 +846,13 @@ impl HostSubscriptionService {
         targets: &[String],
         workspace_root: &Path,
         config_dir: &Path,
-    ) {
+    ) -> Result<(), String> {
+        let before: Vec<String> = self
+            .grant_store
+            .records()
+            .iter()
+            .map(|record| record.grant_id.clone())
+            .collect();
         for target in targets {
             self.grant_store.record(GrantRecord::event_stream_allow(
                 actor_type,
@@ -849,12 +865,20 @@ impl HostSubscriptionService {
                 None,
             ));
         }
-        self.grant_store.save();
+        if let Err(error) = self.grant_store.try_save() {
+            self.grant_store
+                .records_mut()
+                .retain(|record| before.iter().any(|id| id == &record.grant_id));
+            let message = crate::broker::gate::grant_not_saved(&error);
+            log::error!("event_subscriptions: {message}");
+            return Err(message);
+        }
         // Keep the in-memory store consistent with disk for later evals.
         self.reload(config_dir);
         log::info!(
             "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{app_id}'"
         );
+        Ok(())
     }
 
     /// Resolve host-stamped identity, (for emit) reject an undeclared stream,

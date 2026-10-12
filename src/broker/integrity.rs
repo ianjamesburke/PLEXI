@@ -170,6 +170,9 @@ pub fn note_profile_write(dir: &Path) {
 }
 
 /// `path` is a profile file the host just saved. Detached test stores no-op.
+///
+/// A profile that has never been stamped is still first boot. Creating a
+/// running stamp here would make the next open look like an unexpected death.
 pub fn note_saved_file(path: &Path) {
     if path.as_os_str().is_empty() {
         return;
@@ -183,7 +186,7 @@ pub fn note_saved_file(path: &Path) {
     let Some(dir) = path.parent() else {
         return;
     };
-    if dir.as_os_str().is_empty() {
+    if dir.as_os_str().is_empty() || !stamp_path(dir).is_file() {
         return;
     }
     note_profile_write(dir);
@@ -233,6 +236,15 @@ mod tests {
         assert!(finding.unexpected_death);
         assert!(finding.profile_changed);
         assert!(finding.summary.contains("permission profile changed"));
+    }
+
+    #[test]
+    fn a_save_before_the_first_stamp_stays_first_boot() {
+        let dir = dir();
+        std::fs::write(dir.path().join("grants.toml"), "records = []\n").unwrap();
+        note_saved_file(&dir.path().join("grants.toml"));
+        assert!(inspect(dir.path()).is_none());
+        assert!(!stamp_path(dir.path()).exists());
     }
 
     #[test]

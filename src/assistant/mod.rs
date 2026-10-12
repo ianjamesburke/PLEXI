@@ -211,6 +211,9 @@ enum PermissionReply {
         choice: model::PermissionChoice,
     },
     Deny,
+    /// A durable choice did not reach disk. The call does not run, and the
+    /// audit does not record an allow.
+    NotSaved { message: String },
 }
 
 /// Tool-flow notifications from the broker worker thread to the pane.
@@ -278,7 +281,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
         summary: &str,
         actor: &str,
         resource: &str,
-    ) -> crate::broker::gate::ApprovalChoice {
+    ) -> Result<crate::broker::gate::ApprovalChoice, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
         if self
             .flow_tx
@@ -293,19 +296,22 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
             })
             .is_err()
         {
-            return crate::broker::gate::ApprovalChoice::Deny;
+            return Ok(crate::broker::gate::ApprovalChoice::Deny);
         }
         match reply_rx.recv() {
-            Ok(PermissionReply::Allow { choice }) => match choice {
+            Ok(PermissionReply::Allow { choice }) => Ok(match choice {
                 model::PermissionChoice::AllowOnce => crate::broker::gate::ApprovalChoice::Once,
-                model::PermissionChoice::AllowSession => crate::broker::gate::ApprovalChoice::Session,
+                model::PermissionChoice::AllowSession => {
+                    crate::broker::gate::ApprovalChoice::Session
+                }
                 model::PermissionChoice::AllowAlways => crate::broker::gate::ApprovalChoice::Always,
                 model::PermissionChoice::Deny => crate::broker::gate::ApprovalChoice::Deny,
                 model::PermissionChoice::DenyAlways => {
                     crate::broker::gate::ApprovalChoice::DenyAlways
                 }
-            },
-            _ => crate::broker::gate::ApprovalChoice::Deny,
+            }),
+            Ok(PermissionReply::NotSaved { message }) => Err(message),
+            _ => Ok(crate::broker::gate::ApprovalChoice::Deny),
         }
     }
 }
@@ -2541,6 +2547,23 @@ impl AssistantApp {
         } else {
             Self::connector_target(&pending.tool)
         };
+        if matches!(
+            choice,
+            PermissionChoice::AllowAlways | PermissionChoice::DenyAlways
+        ) {
+            let approval = match choice {
+                PermissionChoice::AllowAlways => crate::broker::gate::ApprovalChoice::Always,
+                PermissionChoice::DenyAlways => crate::broker::gate::ApprovalChoice::DenyAlways,
+                _ => unreachable!("durable choices matched above"),
+            };
+            if let Err(error) = self
+                .monitor
+                .approve_pending(&pending.pending_request_id, approval)
+            {
+                self.fail_unpersisted_permission(&pending, error);
+                return;
+            }
+        }
         let (decision_str, reply) = match choice {
             PermissionChoice::Deny => ("deny", PermissionReply::Deny),
             PermissionChoice::DenyAlways => (
@@ -2570,6 +2593,34 @@ impl AssistantApp {
             "assistant: permission sheet decision for '{}' = {decision_str}",
             pending.tool
         );
+        let tool_input = self.pending_tool_input.clone();
+        if !matches!(
+            choice,
+            PermissionChoice::Deny | PermissionChoice::DenyAlways
+        ) && pending.tool == HOST_TOOL_SUBSCRIBE
+        {
+            match tool_input.as_deref() {
+                Some(input) => {
+                    let outcome = self.subscribe_approval_result(input, choice);
+                    if let Some(message) = outcome.error.clone() {
+                        self.prepared_host_calls
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .remove(input);
+                        self.fail_unpersisted_permission(&pending, message);
+                        return;
+                    }
+                    self.prepared_host_calls
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .insert(input.to_string(), outcome);
+                }
+                None => log::warn!(
+                    "assistant: subscribe approval for '{}' had no tool input",
+                    pending.tool
+                ),
+            }
+        }
         if self
             .audit
             .append(&AuditEvent::now(
@@ -2597,20 +2648,7 @@ impl AssistantApp {
             self.commit_permission_sheet(PermissionChoice::Deny, &pending.tool);
             return;
         }
-        let tool_input = self.pending_tool_input.take();
-        if !matches!(
-            choice,
-            PermissionChoice::Deny | PermissionChoice::DenyAlways
-        ) && pending.tool == HOST_TOOL_SUBSCRIBE
-        {
-            match tool_input.as_deref() {
-                Some(input) => self.arm_subscribe_from_approval(input, choice),
-                None => log::warn!(
-                    "assistant: subscribe approval for '{}' had no tool input",
-                    pending.tool
-                ),
-            }
-        }
+        self.pending_tool_input = None;
         match self.pending_reply.take() {
             Some(tx) => {
                 let _ = tx.send(reply);
@@ -2627,14 +2665,6 @@ impl AssistantApp {
     /// The dispatcher already admitted `host.events.subscribe`. Record the
     /// stream grant for that same choice and leave the tool result where the
     /// worker's host-tool handler will pick it up.
-    fn arm_subscribe_from_approval(&mut self, input_json: &str, choice: PermissionChoice) {
-        let outcome = self.subscribe_approval_result(input_json, choice);
-        self.prepared_host_calls
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(input_json.to_string(), outcome);
-    }
-
     fn subscribe_approval_result(
         &mut self,
         input_json: &str,
@@ -2674,6 +2704,7 @@ impl AssistantApp {
             PermissionChoice::AllowAlways => (GrantDuration::Always, GrantSource::User, "allow_always"),
             PermissionChoice::Deny | PermissionChoice::DenyAlways => {
                 if choice == PermissionChoice::DenyAlways {
+                    let before = self.durable_grant_ids();
                     self.record_grant_with_decision(
                         ASSISTANT_ACTOR_ID,
                         ActorScope::BuiltIn,
@@ -2683,7 +2714,9 @@ impl AssistantApp {
                         GrantSource::User,
                         Decision::Deny,
                     );
-                    self.grants().save();
+                    if let Err(error) = self.save_durable_grants(&before) {
+                        return ToolCallResult::err(error);
+                    }
                 }
                 let message = format!(
                     "permission_denied: the user denied the subscription to {target}. {}",
@@ -2693,9 +2726,12 @@ impl AssistantApp {
                 return ToolCallResult::err(message);
             }
         };
+        let before = self.durable_grant_ids();
         self.record_assistant_grant(TargetType::AppEventStream, &target, duration, source);
         if choice == PermissionChoice::AllowAlways {
-            self.grants().save();
+            if let Err(error) = self.save_durable_grants(&before) {
+                return ToolCallResult::err(error);
+            }
         }
         self.subscribe_stream(&app, &event);
         let _ = self.audit.append(&AuditEvent::now(
@@ -2727,6 +2763,30 @@ impl AssistantApp {
             target,
             reply,
         } = pending;
+        if matches!(
+            choice,
+            PermissionChoice::AllowAlways | PermissionChoice::DenyAlways
+        ) {
+            let before = self.durable_grant_ids();
+            let decision = if choice == PermissionChoice::AllowAlways {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            };
+            self.record_grant_with_decision(
+                ASSISTANT_ACTOR_ID,
+                ActorScope::BuiltIn,
+                TargetType::AppEventStream,
+                &target,
+                GrantDuration::Always,
+                GrantSource::User,
+                decision,
+            );
+            if let Err(error) = self.save_durable_grants(&before) {
+                self.fail_subscribe_save(reply, error);
+                return;
+            }
+        }
         let decision_str = match choice {
             PermissionChoice::Deny => "deny",
             PermissionChoice::DenyAlways => "deny_always",
@@ -2740,16 +2800,7 @@ impl AssistantApp {
                 );
                 "allow_session"
             }
-            PermissionChoice::AllowAlways => {
-                self.record_assistant_grant(
-                    TargetType::AppEventStream,
-                    &target,
-                    GrantDuration::Always,
-                    GrantSource::User,
-                );
-                self.grants().save();
-                "allow_always"
-            }
+            PermissionChoice::AllowAlways => "allow_always",
         };
         log::info!("assistant: permission sheet decision for stream '{target}' = {decision_str}");
         let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
@@ -2762,18 +2813,6 @@ impl AssistantApp {
             choice,
             PermissionChoice::Deny | PermissionChoice::DenyAlways
         ) {
-            if choice == PermissionChoice::DenyAlways {
-                self.record_grant_with_decision(
-                    ASSISTANT_ACTOR_ID,
-                    ActorScope::BuiltIn,
-                    TargetType::AppEventStream,
-                    &target,
-                    GrantDuration::Always,
-                    GrantSource::User,
-                    Decision::Deny,
-                );
-                self.grants().save();
-            }
             ToolCallResult::err(format!(
                 "permission_denied: the user denied the subscription to {target}. {}",
                 crate::cli::introspect::permission_undo_text()
@@ -2810,6 +2849,60 @@ impl AssistantApp {
             duration,
             source,
         );
+    }
+
+    fn durable_grant_ids(&self) -> Vec<String> {
+        self.grants()
+            .records()
+            .iter()
+            .map(|record| record.grant_id.clone())
+            .collect()
+    }
+
+    /// Seal the records added after `before`. A failed write drops those rows
+    /// so memory matches disk.
+    fn save_durable_grants(&mut self, before: &[String]) -> Result<(), String> {
+        let saved = self.grants().try_save();
+        match saved {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.grants()
+                    .records_mut()
+                    .retain(|record| before.iter().any(|id| id == &record.grant_id));
+                let message = crate::broker::gate::grant_not_saved(&error);
+                log::error!("assistant: {message}");
+                Err(message)
+            }
+        }
+    }
+
+    /// The sheet closed because the grant never reached disk. The pending ask
+    /// stays in the monitor so a later click can retry. The transcript shows
+    /// the error, and the worker is not told the user denied the call.
+    fn fail_unpersisted_permission(&mut self, pending: &model::PendingPermission, error: String) {
+        log::error!("assistant: {error}");
+        self.model.pending_permission = None;
+        let effects = self.model.push_error(error.clone());
+        self.execute_effects(effects);
+        self.pending_connector_actor = None;
+        self.pending_tool_input = None;
+        match self.pending_reply.take() {
+            Some(tx) => {
+                let _ = tx.send(PermissionReply::NotSaved { message: error });
+            }
+            None => log::warn!(
+                "assistant: unsaved permission for '{}' had no waiting worker",
+                pending.tool
+            ),
+        }
+    }
+
+    fn fail_subscribe_save(&mut self, reply: SyncSender<ToolCallResult>, error: String) {
+        log::error!("assistant: {error}");
+        let _ = reply.send(ToolCallResult::err(error.clone()));
+        let effects = self.model.push_error(error);
+        self.execute_effects(effects);
+        self.model.pending_permission = None;
     }
 
     /// Record an Allow grant for the shared Assistant event actor on `target`.
@@ -6007,6 +6100,58 @@ enabled = ["allowed.tool"]
         );
 
         tool_dispatch::unregister(9102);
+    }
+
+    #[test]
+    fn failed_allow_always_is_an_error_and_does_not_audit_allow_always() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app_with_context(ws.path(), 9190);
+        register_echo_provider(9190, &["gated.tool"], 9190);
+        {
+            let _hold = crate::broker::host_key::ExclusiveHostKey::acquire();
+            app.grants().try_save().expect("seed a readable seal key");
+        }
+        let grants_before = std::fs::read(ws.path().join("grants.toml")).unwrap();
+
+        let dispatcher = Arc::new(app.gated_dispatcher());
+        let result_rx = dispatch_on_worker(dispatcher, "gated.tool");
+        pump_until(&mut app, "permission sheet", |a| {
+            a.model.pending_permission.is_some()
+        });
+        let _unreadable = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        app.resolve_permission(PermissionChoice::AllowAlways);
+
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("unsaved allow must still return");
+        let error = result.error.as_deref().unwrap_or("");
+        assert!(
+            error.contains("grant was not saved") && error.contains("not denied"),
+            "{error}"
+        );
+        assert_ne!(result.error_code.as_deref(), Some("permission_denied"));
+        let audit = std::fs::read_to_string(ws.path().join("audit.jsonl")).unwrap_or_default();
+        assert!(
+            !audit.contains("allow_always"),
+            "a grant that was not saved must not be audited as allow_always: {audit}"
+        );
+        assert!(
+            app.model.turns.iter().any(|turn| {
+                turn.role == TurnRole::Error && turn.text.contains("grant was not saved")
+            }),
+            "the user must see the save error: {:?}",
+            app.model.turns
+        );
+        assert_eq!(
+            std::fs::read(ws.path().join("grants.toml")).unwrap(),
+            grants_before
+        );
+        assert!(
+            !app.monitor.list_pending().is_empty(),
+            "the ask stays open so the user can retry"
+        );
+
+        tool_dispatch::unregister(9190);
     }
 
     #[test]

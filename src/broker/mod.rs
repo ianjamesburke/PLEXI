@@ -727,9 +727,11 @@ impl GrantStore {
     /// Load `grants.toml` from the channel config dir. A missing file is an
     /// empty store. A missing or bad MAC, after the key was read, quarantines
     /// the file and returns an empty store; [`Self::integrity_faults`] names
-    /// it, and the legacy file is left in place. When the key itself cannot
-    /// be read, the file stays put and this returns an empty store with no
-    /// integrity fault. A signed file that does not parse is backed up and
+    /// it, and the legacy file is left in place. An unreadable seal key is
+    /// rotated and the profile is resealed empty before this load. When that
+    /// rotation still needs a keychain prompt, the files stay put and this
+    /// returns an empty store with no integrity fault. A signed file that
+    /// does not parse is backed up and
     /// also returns empty. A trusted or absent grants file imports
     /// `permissions.toml` once, seals the result, and retires the legacy file.
     ///
@@ -739,10 +741,10 @@ impl GrantStore {
     /// authenticated tip. That path does not quarantine and does not record
     /// an integrity fault.
     pub fn load_or_default(config_dir: &Path) -> Self {
-        if let Err(error) = seal::existing_mac_key() {
+        if let Err(error) = seal::ensure_readable_mac_key(config_dir) {
             if host_key::is_key_unreadable(&error) {
                 log::info!(
-                    "grant_store: mac key unreadable; left {} in place and loaded no grants",
+                    "grant_store: mac key unreadable and rotation needs keychain access; left {} in place and loaded no grants",
                     config_dir.join("grants.toml").display()
                 );
                 return Self {
@@ -754,6 +756,7 @@ impl GrantStore {
                     untrusted: Vec::new(),
                 };
             }
+            log::error!("grant_store: mac key recovery failed: {error}");
         }
         if let Some(store) = Self::adopt_legacy_unsealed(config_dir) {
             return store;
@@ -816,6 +819,8 @@ impl GrantStore {
         let audit = config_dir.join("permission-audit.jsonl");
         if let Err(error) = seal::adopt_legacy_audit(&audit) {
             log::error!("grant_store: legacy permission-audit.jsonl was not sealed: {error}");
+        } else {
+            crate::broker::integrity::note_saved_file(&audit);
         }
         Some(store)
     }
@@ -1000,7 +1005,9 @@ impl GrantStore {
     /// Atomically write a sealed file. No-op for path-less test stores.
     pub fn try_save(&self) -> Result<(), String> {
         let label = self.file.label();
-        seal::write_toml(&self.file.path, label, &self.file.data)
+        seal::write_toml(&self.file.path, label, &self.file.data)?;
+        crate::broker::integrity::note_saved_file(&self.file.path);
+        Ok(())
     }
 
     /// Atomically write a sealed file. No-op for path-less test stores.
@@ -1008,8 +1015,6 @@ impl GrantStore {
         let label = self.file.label();
         if let Err(error) = self.try_save() {
             log::error!("{label}: failed to save {}: {error}", self.file.path.display());
-        } else {
-            crate::broker::integrity::note_saved_file(&self.file.path);
         }
     }
 
