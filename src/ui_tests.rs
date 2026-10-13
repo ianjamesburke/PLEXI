@@ -1366,11 +1366,15 @@ mod tests {
         });
         h.save_screenshot(&evidence_png!()).expect("render failed");
 
-        // The parked header sits under the "Contexts" header and active row;
-        // click its shared fixed-height hit target near the chevron. The
-        // active row is two lines tall since stint 0651 (every context shows
-        // its root as a subtitle), which pushes the header down.
-        let click = egui::pos2(28.0, 147.0);
+        // Needs-you banners and context rows can move the header. Click its
+        // rendered hit target so those layout changes cannot miss the control.
+        let click = h
+            .harness()
+            .ctx
+            .read_response(egui::Id::new("parked_divider"))
+            .expect("parked dropdown header should be rendered")
+            .rect
+            .center();
         h.harness()
             .input_mut()
             .events
