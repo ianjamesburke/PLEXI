@@ -71,6 +71,8 @@ Release/binary CI for an OS must compile a tree that includes that OS bring-up, 
 
 `alpha` is the starting branch. Every feature branch, worktree, and PR originates from alpha. Never branch from `main` or `beta`. Feature branch naming: `feature/<issue-number>-short-description`.
 
+Three standing worktrees always exist: `alpha`, `beta`, `main`. `alpha` is the root: the primary checkout at the repo root. `beta` and `main` live under `worktrees/`. Never remove any of the three during cleanup.
+
 ## Git Rules
 
 Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` or `beta`. Never pass `--delete-branch` to `gh pr merge`.
