@@ -407,7 +407,7 @@ fn main() -> eframe::Result {
                         RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::CommandView { cmd, json, follow } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::CommandView);
                         if follow && cmd.is_some() {
                             eprintln!("error: --follow prints the live projection and takes no subcommand");
                             std::process::exit(2);

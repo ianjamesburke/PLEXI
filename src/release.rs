@@ -8,6 +8,7 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReleaseFeature {
     Assistant,
+    CommandView,
     AppWrappers,
     Marketplace,
     Daw,
@@ -21,6 +22,7 @@ impl ReleaseFeature {
     pub fn name(self) -> &'static str {
         match self {
             Self::Assistant => "assistant",
+            Self::CommandView => "command view",
             Self::AppWrappers => "app wrappers",
             Self::Marketplace => "marketplace",
             Self::Daw => "DAW",
@@ -35,6 +37,7 @@ impl ReleaseFeature {
         match self {
             Self::AppWrappers => ReleaseTier::Stable,
             Self::Assistant
+            | Self::CommandView
             | Self::Marketplace
             | Self::Daw
             | Self::MediaIo
@@ -125,6 +128,7 @@ mod tests {
         // Keep this list synchronized with every excluded runtime entry point.
         for feature in [
             ReleaseFeature::Assistant,
+            ReleaseFeature::CommandView,
             ReleaseFeature::Marketplace,
             ReleaseFeature::McpClient,
             ReleaseFeature::Routines,
@@ -152,6 +156,7 @@ mod tests {
     fn alpha_beta_and_pr_channels_enable_excluded_development_surfaces() {
         for feature in [
             ReleaseFeature::Assistant,
+            ReleaseFeature::CommandView,
             ReleaseFeature::Marketplace,
             ReleaseFeature::McpClient,
             ReleaseFeature::Routines,

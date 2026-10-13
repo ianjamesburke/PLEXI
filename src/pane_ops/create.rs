@@ -94,7 +94,7 @@ fn release_feature_for_app_id(id: &str) -> Option<crate::release::ReleaseFeature
     match id {
         "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
         "com.plexi.daw-engine-poc" => Some(crate::release::ReleaseFeature::Daw),
-        "command" | "command-view" => Some(crate::release::ReleaseFeature::Assistant),
+        "command" | "command-view" => Some(crate::release::ReleaseFeature::CommandView),
         _ => None,
     }
 }
@@ -2222,8 +2222,9 @@ impl PlexiApp {
 
     /// Open the command view pane for `workspace`. One pane per context.
     pub(crate) fn open_command_view(&mut self, workspace: &std::path::Path) -> Result<u64, String> {
-        if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
-            return Err("assistant is not enabled on this release channel".to_string());
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::CommandView) {
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::CommandView);
+            return Err("command view is not enabled on this release channel".to_string());
         }
         let context_id = self.windows[self.active_window].context_id;
         if let Some((win_idx, slot, depth)) = self.locate_app_instance("command-view", Some(context_id)) {
