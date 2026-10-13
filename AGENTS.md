@@ -6,11 +6,12 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 
 ## Source of Truth
 
+- **V1 plan + live state** → `TRUTH.md` (repo root, untracked, on the release owner's machine). When present it outranks `.stint/`, GitHub issues, beads, and external checklists. **Every interaction that changes repo state (commit, merge, PR open/close/park, stint change, ruling, finding) updates `TRUTH.md` in the same turn. No exceptions.**
 - **What shipped** → `git log --oneline -20`
 - **Product direction** → `NORTH_STAR.md`
 - **Feature specs** → `docs/*.md` (active PRMs; see `docs/AGENTS.md` for lifecycle rules)
 - **Task graph** → `.stint/` (`stint next`, `stint status`). Flat list, no sprints — ordering is `priority` plus `blocked_by`.
-- **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint is authoritative)
+- **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint outranks issues, `TRUTH.md` outranks stint)
 
 Do not track in-progress work or completion status in this file.
 
