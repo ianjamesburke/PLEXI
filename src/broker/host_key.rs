@@ -1606,43 +1606,52 @@ mod mac {
     }
 
     fn delete_without_reading_secret(chain: &SecKeychain, account: &str) -> Result<(), String> {
-        use core_foundation::base::{CFType, TCFType};
-        use core_foundation::dictionary::CFDictionary;
-        use core_foundation::string::{CFString, CFStringRef};
-        use security_framework_sys::base::errSecSuccess;
-
+        // Search attributes in the explicit keychain without reading password
+        // data. SecItemDelete's kSecUseKeychain query can silently search the
+        // login keychain instead of a private keychain supplied by the caller.
         #[link(name = "Security", kind = "framework")]
         extern "C" {
-            static kSecClass: CFStringRef;
-            static kSecClassGenericPassword: CFStringRef;
-            static kSecAttrService: CFStringRef;
-            static kSecAttrAccount: CFStringRef;
-            static kSecUseKeychain: CFStringRef;
-            fn SecItemDelete(query: core_foundation::dictionary::CFDictionaryRef) -> i32;
+            fn SecKeychainSearchCreateFromAttributes(
+                keychain: core_foundation::base::CFTypeRef,
+                item_class: u32,
+                attrs: *const KcAttributeList,
+                search: *mut core_foundation::base::CFTypeRef,
+            ) -> i32;
+            fn SecKeychainSearchCopyNext(
+                search: core_foundation::base::CFTypeRef,
+                item: *mut security_framework_sys::base::SecKeychainItemRef,
+            ) -> i32;
+            fn SecKeychainItemDelete(item: security_framework_sys::base::SecKeychainItemRef) -> i32;
         }
-
-        let class_key = unsafe { CFString::wrap_under_get_rule(kSecClass) };
-        let class_val = unsafe { CFString::wrap_under_get_rule(kSecClassGenericPassword) };
-        let service_key = unsafe { CFString::wrap_under_get_rule(kSecAttrService) };
-        let account_key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) };
-        let keychain_key = unsafe { CFString::wrap_under_get_rule(kSecUseKeychain) };
-        let service_val = CFString::new(HOST_SERVICE);
-        let account_val = CFString::new(account);
-        let pairs = [
-            (class_key.as_CFType(), class_val.as_CFType()),
-            (service_key.as_CFType(), service_val.as_CFType()),
-            (account_key.as_CFType(), account_val.as_CFType()),
-            (keychain_key.as_CFType(), chain.as_CFType()),
+        let mut service = HOST_SERVICE.as_bytes().to_vec();
+        let mut account_bytes = account.as_bytes().to_vec();
+        let mut attrs = [
+            KcAttribute { tag: four_cc(b"svce"), length: service.len() as u32, data: service.as_mut_ptr().cast() },
+            KcAttribute { tag: four_cc(b"acct"), length: account_bytes.len() as u32, data: account_bytes.as_mut_ptr().cast() },
         ];
-        let query: CFDictionary<CFType, CFType> = CFDictionary::from_CFType_pairs(&pairs);
-        let status = unsafe { SecItemDelete(query.as_concrete_TypeRef()) };
-        if status == errSecSuccess || status == ERR_SEC_ITEM_NOT_FOUND {
-            return Ok(());
+        let list = KcAttributeList { count: attrs.len() as u32, attr: attrs.as_mut_ptr() };
+        let mut search = std::ptr::null();
+        let status = unsafe {
+            SecKeychainSearchCreateFromAttributes(chain.as_CFTypeRef(), four_cc(b"genp"), &list, &mut search)
+        };
+        if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
+        if status != errSecSuccess {
+            return Err(map_keychain_error(account, Error::from_code(status)));
         }
-        if super::keychain_status_is_unreadable(status) {
-            return Err(super::key_unreadable(&format!("{status}")));
+        let search = unsafe { CFType::wrap_under_create_rule(search) };
+        loop {
+            let mut item = std::ptr::null_mut();
+            let status = unsafe { SecKeychainSearchCopyNext(search.as_CFTypeRef(), &mut item) };
+            if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
+            if status != errSecSuccess {
+                return Err(map_keychain_error(account, Error::from_code(status)));
+            }
+            let item = unsafe { SecKeychainItem::wrap_under_create_rule(item) };
+            let status = unsafe { SecKeychainItemDelete(item.as_concrete_TypeRef()) };
+            if status != errSecSuccess && status != ERR_SEC_ITEM_NOT_FOUND {
+                return Err(map_keychain_error(account, Error::from_code(status)));
+            }
         }
-        Err(format!("SecItemDelete({account}) failed: {status}"))
     }
 
     #[repr(C)]

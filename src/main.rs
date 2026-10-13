@@ -932,8 +932,8 @@ fn main() -> eframe::Result {
                             )),
                         }
                     }
-                    Commands::Uninstall { keep_data, yes } => {
-                        std::process::exit(cli::plexi_uninstall_cli(keep_data, yes))
+                    Commands::Uninstall { keep_data, delete_data, yes } => {
+                        std::process::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes))
                     }
                     Commands::Update { rollback } => std::process::exit(cli::self_update_cli(rollback)),
                     Commands::Host { cmd } => match cmd {

@@ -289,10 +289,17 @@ pub fn install_workspace_pack_cli() -> i32 {
     }
 }
 
-pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
+pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: bool) -> i32 {
     let result = (|| -> Result<(), String> {
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
-        println!("Remove Plexi channel {} from {}. User data will be retained.", receipt.channel, receipt.root.display());
+        if !assume_yes && !keep_data && !delete_data {
+            eprint!("Delete this channel's saved data and integrity credentials too? [y/N]: ");
+            io::stderr().flush().map_err(|e| format!("write data choice: {e}"))?;
+            let mut answer = String::new();
+            io::stdin().read_line(&mut answer).map_err(|e| format!("read data choice: {e}"))?;
+            delete_data = matches!(answer.trim(), "y" | "Y" | "yes");
+        }
+        println!("Remove Plexi channel {} from {}. User data will be {}.", receipt.channel, receipt.root.display(), if delete_data { "permanently deleted" } else { "retained" });
         if !assume_yes {
             eprint!("Continue? [y/N]: ");
             io::stderr().flush().map_err(|e| format!("write confirmation: {e}"))?;
@@ -300,8 +307,9 @@ pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
             io::stdin().read_line(&mut answer).map_err(|e| format!("read confirmation: {e}"))?;
             if !matches!(answer.trim(), "y" | "Y" | "yes") { return Err("Uninstall cancelled.".into()); }
         }
-        if super::host::running_build_info().is_some() && super::host::host_stop_cli() != 0 {
-            return Err("could not stop the channel host before uninstall".into());
+        super::host::stop_for_uninstall()?;
+        if delete_data {
+            remove_channel_data(&crate::config::config_dir())?;
         }
         #[cfg(not(windows))]
         plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
@@ -318,7 +326,30 @@ pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
         log::info!("uninstall: managed removal requested for {}", receipt.channel);
         Ok(())
     })();
-    match result { Ok(()) => { println!("User data retained."); 0 }, Err(error) => { eprintln!("error: {error}"); 1 } }
+    match result { Ok(()) => { println!("User data {}.", if delete_data { "deleted" } else { "retained" }); 0 }, Err(error) => { log::error!("uninstall: {error}"); eprintln!("error: {error}"); 1 } }
+}
+
+fn remove_channel_data(profile: &Path) -> Result<(), String> {
+    // Never resolve an integrity account through a profile/host symlink into
+    // another channel. Interior data symlinks are unlinked by remove_dir_all.
+    for path in [profile.to_path_buf(), profile.join("host")] {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                return Err(format!("refusing data removal through non-directory {}", path.display()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+        }
+    }
+    crate::broker::seal::remove_profile_credentials(profile)?;
+    match std::fs::remove_dir_all(profile) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove profile {}: {error}", profile.display())),
+    }
+    log::info!("uninstall: deleted channel profile {}", profile.display());
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -568,5 +599,47 @@ pub fn self_update_cli(rollback: bool) -> i32 {
             eprintln!("{msg}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod uninstall_data_tests {
+    #[test]
+    fn uninstall_data_removes_only_selected_profile_and_is_repeatable() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("alpha");
+        let other = root.path().join("beta");
+        std::fs::create_dir_all(profile.join("host")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(profile.join("config.toml"), "fixture").unwrap();
+        std::fs::write(other.join("config.toml"), "keep").unwrap();
+        super::remove_channel_data(&profile).unwrap();
+        super::remove_channel_data(&profile).unwrap();
+        assert!(!profile.exists());
+        assert_eq!(std::fs::read_to_string(other.join("config.toml")).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_data_refuses_profile_and_host_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let other = root.path().join("beta");
+        std::fs::create_dir(&other).unwrap();
+        let profile = root.path().join("alpha");
+        std::os::unix::fs::symlink(&other, &profile).unwrap();
+        assert!(super::remove_channel_data(&profile).is_err());
+        std::fs::remove_file(&profile).unwrap();
+        std::fs::create_dir(&profile).unwrap();
+        std::os::unix::fs::symlink(&other, profile.join("host")).unwrap();
+        assert!(super::remove_channel_data(&profile).is_err());
+        assert!(other.exists());
+    }
+
+    #[test]
+    fn uninstall_data_flags_conflict_and_keep_is_default() {
+        use clap::Parser;
+        assert!(crate::cli::args::Cli::try_parse_from(["plexi", "uninstall", "--keep-data", "--delete-data"]).is_err());
+        let args = crate::cli::args::Cli::try_parse_from(["plexi", "uninstall", "--yes"]).unwrap();
+        assert!(matches!(args.command, Some(crate::cli::args::Commands::Uninstall { delete_data: false, .. })));
     }
 }

@@ -92,7 +92,14 @@ deletes only that channel's registration and files. PR installs skip completions
 doctor compares them by equality, including rollback divergence.
 
 Removal deletes recorded integrations and validated package generations and
-retains user data. Changed files and unowned development commands cause an error
+retains user data by default. Interactive uninstall offers a data-deletion choice;
+`uninstall --delete-data --yes` explicitly deletes the selected channel's profile
+and its permission seal, audit tip and Needs you journal tip from the OS credential
+store. `--keep-data` skips that choice. The flags are mutually exclusive.
+Other channels, workspace files outside the profile, shared credentials and the
+shared host signing key remain intact. Credential cleanup runs before profile
+removal, and a cleanup failure is reported without removing the installation so
+it can be retried. Changed files and unowned development commands cause an error
 or remain outside the removal set. Legacy installations without receipts must
 be identified before adoption; discovery on PATH alone never establishes ownership.
 Shared WASI caches from older installations are retained. A legacy release's
@@ -161,6 +168,9 @@ failures. `test-install-bootstrap.sh` checks the public bootstrap's resolved tag
 for each channel against a fake release API (`PLEXI_RELEASES_URL`). `test-package.py` runs the real packaged WASI guest and optionally
 launches a native host, drives terminal I/O and Calculator, captures through
 `host screenshot`, restarts and removes the channel. Inspect the resulting PNG.
+`test-uninstall-data.py --package <alpha-package> --installer <native-installer>`
+checks macOS keep, cancel, delete and reinstall flows in a temporary home and
+private Keychain, including other-profile and shared-key preservation.
 `PLEXI_DISTRIBUTION_HOME` isolates the installation registry for disposable test
 runs; it is separate from the package's persisted installation root.
 Windows GUI tests require a disposable OS user, as Windows Known Folders and

@@ -676,11 +676,49 @@ fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
         // Confirm this process's exit without unlinking its replacement's socket.
         return !plexi_distribution::transaction::process_alive(pid);
     }
+    #[cfg(unix)]
+    if std::fs::symlink_metadata(socket_path)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        // An absent socket is stopped even when its path exceeds sockaddr_un's
+        // length limit (connect would report InvalidInput instead of NotFound).
+        return true;
+    }
     matches!(
         super::send_line_to_socket(socket_path, b"", Duration::from_millis(100)),
         Err(super::SocketTransportError::Connect(error))
             if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
     )
+}
+
+/// Uninstall must not delete a profile while a host can still write to it.
+pub(crate) fn stop_for_uninstall() -> Result<(), String> {
+    let channel = crate::config::build_channel();
+    let socket = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let pid = running_build_info().as_ref().and_then(reported_pid)
+        .or_else(|| detect_pid(&socket));
+    if shutdown_complete(pid, &socket) {
+        return Ok(());
+    }
+    if host_stop_cli() != 0 {
+        return Err("could not stop the channel host before uninstall".into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !shutdown_complete(pid, &socket) {
+        if Instant::now() >= deadline {
+            return Err("channel host has not exited; no uninstall data was removed".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn uninstall_accepts_absent_socket_beyond_unix_path_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("x".repeat(120)).join("notify.sock");
+    assert!(shutdown_complete(None, &socket));
 }
 
 pub fn host_stop_cli() -> i32 {

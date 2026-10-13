@@ -363,7 +363,7 @@ fn legacy_key_path(profile: &Path) -> PathBuf {
     host_private_dir(profile).join("seal.key")
 }
 
-fn tip_account(profile: &Path) -> String {
+pub(super) fn tip_account(profile: &Path) -> String {
     let host = host_private_dir(profile);
     let canon = if host.exists() {
         crate::platform::path::canonical_or_self(&host)

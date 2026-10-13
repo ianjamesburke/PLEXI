@@ -1155,6 +1155,15 @@ pub fn uninstall(root: &Path) -> Result<()> {
                 .context(format!("remove generation {}", package.root.display()))?;
         }
     }
+    // Activation backups can contain old shell configuration and receipts.
+    // They are installer-owned scratch, not retained user profile data.
+    match fs::remove_dir_all(root.join("transaction")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Error::Io {
+            action: "remove installer transaction scratch".into(), source,
+        }),
+    }
     remove_if_present(&root.join(RECEIPT))?;
     log::info!(
         "distribution: removed managed channel={} root={}; user data retained",

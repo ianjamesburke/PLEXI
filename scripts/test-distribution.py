@@ -236,6 +236,7 @@ def main(args):
         outsider.write_text('user-owned')
         run([installer, 'remove', '--receipt', receipt_path.parent], env)
         assert not receipt_path.exists()
+        assert not (receipt_path.parent / "transaction").exists()
         assert retained.read_text() == 'keep me'
         assert outsider.read_text() == 'user-owned'
         assert (root / 'custom install/alpha/installation.json').is_file()

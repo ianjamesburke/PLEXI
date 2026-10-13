@@ -303,14 +303,17 @@ pub enum Commands {
         #[arg(long)]
         rollback: bool,
     },
-    /// Remove this channel's recorded package and launchers. User data is retained.
+    /// Remove this channel's recorded package and launchers.
     ///
     /// Files outside the installation receipt, including development binaries
     /// and other channels, are preserved.
     Uninstall {
-        /// Retain user data (the default; accepted for compatibility)
-        #[arg(long = "keep-data")]
+        /// Retain user data and its credentials (the default)
+        #[arg(long = "keep-data", conflicts_with = "delete_data")]
         keep_data: bool,
+        /// Permanently delete this channel's profile and integrity credentials
+        #[arg(long, conflicts_with = "keep_data")]
+        delete_data: bool,
         /// Remove this channel without a confirmation prompt
         #[arg(long = "yes", short = 'y')]
         yes: bool,

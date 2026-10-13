@@ -578,6 +578,21 @@ fn next_link(path: &Path) -> Result<(u64, String), String> {
     Ok((envelope.seq + 1, sha256_hex(last.as_bytes())))
 }
 
+/// Delete only this profile's integrity anchors, never the shared signing key.
+/// Resolve the accounts before removing the profile directory.
+pub(crate) fn remove_profile_credentials(dir: &Path) -> Result<(), String> {
+    for account in [
+        marker_account(dir),
+        tip_account(&dir.join("permission-audit.jsonl")),
+        super::needs_you_store::tip_account(dir),
+    ] {
+        super::host_key::delete(&account)
+            .map_err(|error| format!("remove profile credential {account}: {error}"))?;
+    }
+    log::info!("uninstall: removed integrity credentials for {}", dir.display());
+    Ok(())
+}
+
 fn profile_dir_hash(dir: &Path) -> String {
     let canon = crate::platform::path::canonical_or_self(dir);
     sha256_hex(canon.to_string_lossy().as_bytes())
@@ -917,6 +932,33 @@ fn ct_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uninstall_credentials_preserves_other_profiles_and_shared_mac() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let root = tempfile::tempdir().unwrap();
+        let alpha = root.path().join("alpha");
+        let beta = root.path().join("beta");
+        let accounts = |dir: &std::path::Path| [
+            super::marker_account(dir),
+            super::tip_account(&dir.join("permission-audit.jsonl")),
+            crate::broker::needs_you_store::tip_account(dir),
+        ];
+        let shared = crate::broker::host_key::get("permission-mac").unwrap();
+        for account in accounts(&alpha).into_iter().chain(accounts(&beta)) {
+            crate::broker::host_key::set(&account, "fixture").unwrap();
+        }
+        super::remove_profile_credentials(&alpha).unwrap();
+        super::remove_profile_credentials(&alpha).unwrap();
+        for account in accounts(&alpha) {
+            assert!(crate::broker::host_key::get(&account).unwrap().is_none());
+        }
+        for account in accounts(&beta) {
+            assert_eq!(crate::broker::host_key::get(&account).unwrap().unwrap().as_str(), "fixture");
+            crate::broker::host_key::delete(&account).unwrap();
+        }
+        assert_eq!(crate::broker::host_key::get("permission-mac").unwrap(), shared);
+    }
+
     use super::*;
 
     #[test]
