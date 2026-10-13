@@ -204,6 +204,7 @@ pub mod setup;
 mod pane_caller;
 #[cfg(test)]
 mod skill_surface;
+pub mod experiments;
 pub mod skill_install;
 pub mod subprocess;
 #[cfg(test)]

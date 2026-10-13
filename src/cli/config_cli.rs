@@ -630,7 +630,7 @@ fn config_set_at_path(pairs: &[String], path: &std::path::Path) -> i32 {
         };
 
         let segments: Vec<&str> = key.split('.').collect();
-        if let Err(msg) = toml_edit_set(&mut doc, &segments, toml_val) {
+        if let Err(msg) = crate::config::edit::set_value(&mut doc, &segments, toml_val) {
             eprintln!("error: {key}: {msg}");
             return 1;
         }
@@ -705,31 +705,6 @@ fn parse_value_for_type(raw: &str, type_name: Option<&str>) -> Result<toml_edit:
         // string or unknown key: store as string
         _ => Ok(toml_edit::Value::from(raw)),
     }
-}
-
-/// Navigate/create nested tables in a toml_edit document and set the leaf value.
-fn toml_edit_set(
-    doc: &mut toml_edit::DocumentMut,
-    segments: &[&str],
-    value: toml_edit::Value,
-) -> Result<(), String> {
-    let (leaf, parents) = segments
-        .split_last()
-        .ok_or_else(|| "empty key".to_string())?;
-
-    // Walk/create nested [section] tables.
-    let mut table: &mut toml_edit::Table = doc.as_table_mut();
-    for seg in parents {
-        if !table.contains_key(seg) {
-            table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
-        }
-        table = table
-            .get_mut(seg)
-            .and_then(|i| i.as_table_mut())
-            .ok_or_else(|| format!("{seg} is not a table"))?;
-    }
-    table.insert(leaf, toml_edit::Item::Value(value));
-    Ok(())
 }
 
 #[cfg(test)]

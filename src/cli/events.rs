@@ -490,10 +490,11 @@ mod pane_consumer_output_tests {
 
     #[test]
     fn mcp_config_never_leaks_endpoint_or_token_off_channel() {
-        use crate::release::{feature_enabled_for_channel, ReleaseFeature};
         use super::mcp_config_output;
+        // McpClient is off by default on every channel.
         for channel in [None, Some("main"), Some("rc-010"), Some("client")] {
-            let enabled = feature_enabled_for_channel(ReleaseFeature::McpClient, channel);
+            let _channel = channel.map(crate::config::set_test_channel);
+            let enabled = crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient);
             let err = mcp_config_output(
                 enabled,
                 Some("54321".into()),
@@ -512,16 +513,18 @@ mod pane_consumer_output_tests {
         use super::mcp_config_output;
         // Missing env on a gated channel reports the gate, not "not set".
         let err = mcp_config_output(false, None, None).unwrap_err();
-        assert!(err.contains("MCP client"), "{err}");
+        assert!(err.contains("mcp_client is an experiment"), "{err}");
         assert!(!err.contains("PLEXI_HOST_MCP_PORT"), "{err}");
     }
 
     #[test]
-    fn mcp_config_prints_on_enabled_channels() {
-        use crate::release::{feature_enabled_for_channel, ReleaseFeature};
+    fn mcp_config_prints_when_the_experiment_is_on() {
+        use crate::release::ReleaseFeature;
         use super::mcp_config_output;
-        for channel in [Some("alpha"), Some("beta"), Some("pr-2259")] {
-            let enabled = feature_enabled_for_channel(ReleaseFeature::McpClient, channel);
+        let _on = crate::release::set_test_experiments(&[ReleaseFeature::McpClient]);
+        for channel in [Some("alpha"), Some("beta"), Some("pr-2259"), None] {
+            let _channel = channel.map(crate::config::set_test_channel);
+            let enabled = crate::release::feature_enabled(ReleaseFeature::McpClient);
             let out = mcp_config_output(enabled, Some("54321".into()), Some("tok".into()))
                 .expect("enabled channel prints config");
             assert!(out.contains("http://127.0.0.1:54321/mcp"));

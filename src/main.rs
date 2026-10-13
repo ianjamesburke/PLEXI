@@ -87,16 +87,26 @@ fn main() -> eframe::Result {
         .windows(2)
         .any(|args| args[0] == "app" && args[1] == "prune");
 
+    let profile = parse_profile_flag(&raw_args);
+    crate::config::set_profile(profile);
+
     // Top-level --help/-h: print grouped subcommand sections before any
-    // logging or config init, so no noise appears alongside help output.
-    // Subcommand help (e.g. `plexi app --help`) is handled by clap below.
+    // logging or profile init, so no noise appears alongside help output. It
+    // runs after set_profile because the help hides every experiment that is
+    // off in this profile's config. Subcommand help (e.g. `plexi app --help`)
+    // is handled by clap below.
     if top_level_help_flag(&raw_args) {
         cli::help::print_grouped_help();
         std::process::exit(0);
     }
-
-    let profile = parse_profile_flag(&raw_args);
-    crate::config::set_profile(profile);
+    // A bad [experiments] table fails every command except the ones needed to
+    // fix it, so the user is never locked out of repairing the config.
+    if let Some(error) = crate::release::experiments_error() {
+        if !experiments_repair_command(&raw_args) {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    }
     let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
         eprintln!("profile initialization: {error}");
         std::process::exit(1);
@@ -214,6 +224,14 @@ fn main() -> eframe::Result {
         .skip(1)
         .any(|a| !a.starts_with('-') && known_subcommands().contains(a.as_str()));
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    if !cli_mode {
+        let enabled: Vec<&str> = crate::release::ReleaseFeature::ALL
+            .iter()
+            .filter(|f| crate::release::feature_enabled(**f))
+            .map(|f| f.key())
+            .collect();
+        log::info!("experiments: enabled={enabled:?}");
+    }
     // Host startup only. A CLI invocation must not prune local history as a
     // side effect of printing JSON, and its stderr must stay a clean payload.
     if !cli_mode {
@@ -368,6 +386,17 @@ fn main() -> eframe::Result {
                                 Some(&id),
                                 Some(approve && !deny),
                             ))
+                        }
+                    },
+                    Commands::Experiments { cmd } => match cmd {
+                        cli::args::ExperimentsCmd::List { json } => {
+                            std::process::exit(cli::experiments::experiments_list(json))
+                        }
+                        cli::args::ExperimentsCmd::Enable { name } => {
+                            std::process::exit(cli::experiments::experiments_set(&name, true))
+                        }
+                        cli::args::ExperimentsCmd::Disable { name } => {
+                            std::process::exit(cli::experiments::experiments_set(&name, false))
                         }
                     },
                     Commands::Skill { cmd } => match cmd {
@@ -680,9 +709,6 @@ fn main() -> eframe::Result {
                                     // Prefix routing: cli:, mcp:, app:, or bare name
                                     match cli::parse_prefix(&tid) {
                                         cli::OpenPrefix::Cli(name) => {
-                                            exit_if_feature_disabled(
-                                                crate::release::ReleaseFeature::AppWrappers,
-                                            );
                                             log::info!("app_open:cli: prefix-routed cli:{name}");
                                             std::process::exit(cli::open_cli_by_name(
                                                 &name,
@@ -693,7 +719,7 @@ fn main() -> eframe::Result {
                                         }
                                         cli::OpenPrefix::Mcp(name) => {
                                             exit_if_feature_disabled(
-                                                crate::release::ReleaseFeature::AppWrappers,
+                                                crate::release::ReleaseFeature::McpClient,
                                             );
                                             log::info!("app_open:cli: prefix-routed mcp:{name}");
                                             std::process::exit(cli::open_mcp_by_name(
@@ -726,7 +752,7 @@ fn main() -> eframe::Result {
                                     }
                                 } else if !mcp.is_empty() {
                                     exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::AppWrappers,
+                                        crate::release::ReleaseFeature::McpClient,
                                     );
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
@@ -746,9 +772,6 @@ fn main() -> eframe::Result {
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
-                                    exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::AppWrappers,
-                                    );
                                     log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
                                     std::process::exit(cli::open_cli_by_name(
                                         &binary,
@@ -1735,6 +1758,17 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
 }
 
 /// Returns the set of known top-level subcommand names and aliases, cached after first call.
+/// Commands that must keep working when `[experiments]` is invalid: the ones
+/// that fix it, plus help.
+fn experiments_repair_command(args: &[String]) -> bool {
+    args.iter().skip(1).any(|a| matches!(a.as_str(), "--help" | "-h"))
+        || args
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-'))
+            .is_some_and(|a| matches!(a.as_str(), "experiments" | "config" | "doctor"))
+}
+
 fn known_subcommands() -> &'static std::collections::HashSet<String> {
     use clap::CommandFactory;
     use std::sync::OnceLock;

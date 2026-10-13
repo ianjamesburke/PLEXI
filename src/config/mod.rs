@@ -1,3 +1,4 @@
+pub mod edit;
 pub mod watcher;
 
 use crate::protocol::ModelTier;
@@ -83,6 +84,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "cli",
     "marketplace",
     "cloud",
+    "experiments",
     "pane_gap",
     "pane_title_font_size",
     "osc_pane_title",
@@ -238,6 +240,15 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
     if let Ok(value) = toml::from_str::<toml::Value>(&data) {
         if let Some(table) = value.as_table() {
             check_unknown_keys(table, "", KNOWN_TOP_LEVEL, &path_str, &mut diags);
+
+            if table.contains_key("experiments") {
+                if let Err(error) = experiments_from_path(path) {
+                    diags.push(ConfigDiagnostic::ParseError {
+                        path: path_str.clone(),
+                        error,
+                    });
+                }
+            }
 
             if let Some(toml::Value::Table(t)) = table.get("theme") {
                 check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
@@ -1161,6 +1172,46 @@ fn assert_test_profile_is_isolated(dir: &str) {
         !is_real_profile,
         "test resolved config/workspace state to real channel profile dir {dir:?}; use set_test_profile_dir for isolated test state"
     );
+}
+
+/// The enabled experiments from the global config, read-only (never writes the
+/// default template). A missing file means nothing is enabled; an unknown
+/// experiment name or a non-boolean value is an error.
+pub fn load_global_experiments(
+) -> Result<std::collections::BTreeSet<crate::release::ReleaseFeature>, String> {
+    let path = config_path();
+    experiments_from_path(&path)
+}
+
+pub fn experiments_from_path(
+    path: &Path,
+) -> Result<std::collections::BTreeSet<crate::release::ReleaseFeature>, String> {
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    // Parse as a bare value so an unrelated config error elsewhere in the file
+    // cannot silently drop the experiment switches.
+    let value: toml::Value = match toml::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "experiments: {} does not parse ({e}); all experiments stay off",
+                path.display()
+            );
+            return Ok(Default::default());
+        }
+    };
+    let Some(table) = value.get("experiments") else {
+        return Ok(Default::default());
+    };
+    let table: std::collections::BTreeMap<String, bool> = table
+        .clone()
+        .try_into()
+        .map_err(|e| format!("[experiments] in {} must map names to true/false: {e}", path.display()))?;
+    crate::release::parse_experiments(&table)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn config_path() -> PathBuf {

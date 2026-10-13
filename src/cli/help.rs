@@ -1,7 +1,7 @@
 use clap::CommandFactory;
 
 use crate::cli::args::Cli;
-use crate::release::ReleaseFeature;
+use crate::release::{GatePath, ReleaseFeature};
 
 const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
@@ -14,6 +14,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
         "System",
         &[
+            "experiments",
             "skill",
             "completions",
             "host",
@@ -38,46 +39,53 @@ pub fn gated_command() -> clap::Command {
     gate_command(Cli::command(), crate::release::feature_enabled)
 }
 
+/// Hide every path owned by an experiment that `enabled` reports off.
+///
+/// Driven entirely by `ReleaseFeature::owned_paths`, so help, completions and
+/// the `exit_if_feature_disabled` backstop cannot drift apart. A hidden
+/// top-level command keeps an `about` explaining why, so `plexi <cmd> --help`
+/// still says how to turn it on.
 pub fn gate_command(cmd: clap::Command, enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
     let mut cmd = cmd;
-    if !enabled(ReleaseFeature::Marketplace) {
-        let text = crate::release::feature_unavailable_text(ReleaseFeature::Marketplace);
-        cmd = cmd
-            .mut_subcommand("app", |app| {
-                app.mut_subcommand("publish", |c| c.hide(true))
-                    .mut_subcommand("browse", |c| c.hide(true))
-                    .mut_subcommand("search", |c| c.hide(true))
-            })
-            .mut_subcommand("account", |account| {
-                let names: Vec<String> = account
-                    .get_subcommands()
-                    .map(|c| c.get_name().to_string())
-                    .collect();
-                names
-                    .into_iter()
-                    .fold(account, |a, n| a.mut_subcommand(n, |c| c.hide(true)))
-                    .hide(true)
-                    .about(text)
-                    .long_about(None::<&str>)
-            });
-    }
-    if !enabled(ReleaseFeature::McpClient) {
-        cmd = cmd.mut_subcommand("events", |events| {
-            events.mut_subcommand("mcp-config", |c| c.hide(true))
-        });
-    }
-    if !enabled(ReleaseFeature::Routines) {
-        cmd = cmd.mut_subcommand("routine", |routine| routine.hide(true));
-    }
-    if !enabled(ReleaseFeature::AppWrappers) {
-        cmd = cmd.mut_subcommand("app", |app| {
-            app.mut_subcommand("open", |open| {
-                open.mut_arg("mcp", |a| a.hide(true))
-                    .mut_arg("cli", |a| a.hide(true))
-            })
-        });
+    for feature in ReleaseFeature::ALL.iter().copied().filter(|f| !enabled(*f)) {
+        let text = crate::release::feature_unavailable_text(feature);
+        for path in feature.owned_paths() {
+            cmd = match *path {
+                GatePath::Sub(path) => hide_subcommand(cmd, path, &text),
+                GatePath::Arg(path, id) => hide_arg(cmd, path, id),
+            };
+        }
     }
     cmd
+}
+
+fn hide_subcommand(cmd: clap::Command, path: &[&str], text: &str) -> clap::Command {
+    let Some((head, rest)) = path.split_first() else {
+        return cmd;
+    };
+    cmd.mut_subcommand(*head, |sub| {
+        if rest.is_empty() {
+            let names: Vec<String> = sub
+                .get_subcommands()
+                .map(|c| c.get_name().to_string())
+                .collect();
+            names
+                .into_iter()
+                .fold(sub, |s, n| s.mut_subcommand(n, |c| c.hide(true)))
+                .hide(true)
+                .about(text.to_string())
+                .long_about(None::<&str>)
+        } else {
+            hide_subcommand(sub, rest, text)
+        }
+    })
+}
+
+fn hide_arg(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
+    let Some((head, rest)) = path.split_first() else {
+        return cmd.mut_arg(id.to_string(), |a| a.hide(true));
+    };
+    cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id))
 }
 
 pub fn print_grouped_help() {
@@ -177,10 +185,17 @@ pub fn print_grouped_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::release::feature_enabled_for_channel;
 
-    fn gated_for(channel: Option<&str>) -> clap::Command {
-        gate_command(Cli::command(), |f| feature_enabled_for_channel(f, channel))
+    fn all_off() -> clap::Command {
+        gate_command(Cli::command(), |_| false)
+    }
+
+    fn all_on() -> clap::Command {
+        gate_command(Cli::command(), |_| true)
+    }
+
+    fn only(feature: ReleaseFeature) -> clap::Command {
+        gate_command(Cli::command(), |f| f == feature)
     }
 
     fn visible_subs(cmd: &clap::Command) -> Vec<String> {
@@ -190,109 +205,117 @@ mod tests {
             .collect()
     }
 
+    fn sub_at<'a>(cmd: &'a clap::Command, path: &[&str]) -> &'a clap::Command {
+        path.iter().fold(cmd, |c, name| {
+            c.find_subcommand(name)
+                .unwrap_or_else(|| panic!("owned path {path:?} is not in the clap tree"))
+        })
+    }
+
+    fn path_hidden(cmd: &clap::Command, path: GatePath) -> bool {
+        match path {
+            GatePath::Sub(p) => sub_at(cmd, p).is_hide_set(),
+            GatePath::Arg(p, id) => sub_at(cmd, p)
+                .get_arguments()
+                .find(|a| a.get_id() == id)
+                .unwrap_or_else(|| panic!("owned arg {p:?} --{id} is not in the clap tree"))
+                .is_hide_set(),
+        }
+    }
+
+    /// Experiments with no clap path of their own: a runtime surface only.
+    const RUNTIME_ONLY: [ReleaseFeature; 5] = [
+        ReleaseFeature::WasmApps,
+        ReleaseFeature::PageGrid,
+        ReleaseFeature::Daw,
+        ReleaseFeature::MediaIo,
+        ReleaseFeature::Accessibility,
+    ];
+
     #[test]
-    fn stable_hides_marketplace_from_app_and_account_help() {
-        for channel in [None, Some("main"), Some("rc-010")] {
-            let cmd = gated_for(channel);
-            let app = visible_subs(cmd.find_subcommand("app").unwrap());
-            for gated in ["publish", "browse", "search"] {
-                assert!(!app.contains(&gated.to_string()), "{channel:?}: {app:?}");
+    fn every_variant_hides_at_least_one_path_when_off() {
+        let cmd = all_off();
+        for feature in ReleaseFeature::ALL {
+            let paths = feature.owned_paths();
+            if RUNTIME_ONLY.contains(feature) {
+                assert!(paths.is_empty(), "{} is runtime-only", feature.key());
+                continue;
             }
-            // App runtime stays v1-visible.
-            for runtime in [
-                "open",
-                "install",
-                "list",
-                "uninstall",
-                "render",
-                "test",
-                "check",
-                "init",
-                "trust",
-                "prune",
-            ] {
-                assert!(app.contains(&runtime.to_string()), "{channel:?}: {runtime}");
+            assert!(!paths.is_empty(), "{} owns no clap path", feature.key());
+            for path in paths {
+                assert!(path_hidden(&cmd, *path), "{}: {path:?}", feature.key());
             }
-            let account = cmd.find_subcommand("account").unwrap();
-            assert!(account.is_hide_set());
-            assert!(visible_subs(account).is_empty());
-            let mut account = account.clone();
-            let help = account.render_long_help().to_string();
-            assert!(!help.contains("login"), "{help}");
-            assert!(help.contains("marketplace requires the beta channel"), "{help}");
         }
     }
 
     #[test]
-    fn stable_hides_mcp_client_config_but_shows_app_wrapper_flags() {
-        for channel in [None, Some("main"), Some("rc-010")] {
-            let cmd = gated_for(channel);
-            let events = cmd.find_subcommand("events").unwrap();
-            assert!(!events.is_hide_set(), "{channel:?}");
-            let subs = visible_subs(events);
-            assert!(
-                !subs.contains(&"mcp-config".to_string()),
-                "{channel:?}: {subs:?}"
-            );
-            assert!(
-                subs.contains(&"subscribe".to_string()),
-                "{channel:?}: {subs:?}"
-            );
-            let open = cmd
-                .find_subcommand("app")
+    fn enabling_one_experiment_shows_only_its_own_paths() {
+        for feature in ReleaseFeature::ALL {
+            let cmd = only(*feature);
+            for path in feature.owned_paths() {
+                assert!(!path_hidden(&cmd, *path), "{}: {path:?}", feature.key());
+            }
+            for other in ReleaseFeature::ALL.iter().filter(|o| *o != feature) {
+                for path in other.owned_paths() {
+                    // A path is shared only if another enabled feature owns it too.
+                    if feature.owned_paths().contains(path) {
+                        continue;
+                    }
+                    assert!(
+                        path_hidden(&cmd, *path),
+                        "{} on must not reveal {}: {path:?}",
+                        feature.key(),
+                        other.key()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_help_lists_no_experiment_commands() {
+        let cmd = all_off();
+        let top = visible_subs(&cmd);
+        for name in ["assistant", "relay", "changes", "ledger", "command-view", "account", "routine"] {
+            assert!(!top.contains(&name.to_string()), "{top:?}");
+        }
+        assert!(top.contains(&"experiments".to_string()), "{top:?}");
+        let agent = visible_subs(cmd.find_subcommand("agent").unwrap());
+        assert_eq!(agent, ["report", "status", "hook"], "{agent:?}");
+        let app = visible_subs(cmd.find_subcommand("app").unwrap());
+        for gated in ["publish", "browse", "search"] {
+            assert!(!app.contains(&gated.to_string()), "{app:?}");
+        }
+        for core in ["open", "install", "list", "render", "check"] {
+            assert!(app.contains(&core.to_string()), "{app:?}");
+        }
+        let open = sub_at(&cmd, &["app", "open"]);
+        let hidden = |id: &str| {
+            open.get_arguments()
+                .find(|a| a.get_id() == id)
                 .unwrap()
-                .find_subcommand("open")
-                .unwrap();
-            for flag in ["mcp", "cli"] {
-                assert!(
-                    !open
-                        .get_arguments()
-                        .find(|a| a.get_id() == flag)
-                        .unwrap()
-                        .is_hide_set(),
-                    "{channel:?}: --{flag}"
-                );
-            }
-        }
+                .is_hide_set()
+        };
+        assert!(hidden("mcp"));
+        assert!(!hidden("cli"), "--cli is v1 core");
     }
 
     #[test]
-    fn stable_hides_routines_but_beta_and_alpha_keep_them() {
-        for channel in [None, Some("main"), Some("rc-010")] {
-            let cmd = gated_for(channel);
-            assert!(
-                cmd.find_subcommand("routine").unwrap().is_hide_set(),
-                "{channel:?}"
-            );
-        }
-        for channel in [Some("beta"), Some("alpha"), Some("pr-2259")] {
-            let cmd = gated_for(channel);
-            assert!(
-                !cmd.find_subcommand("routine").unwrap().is_hide_set(),
-                "{channel:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn beta_and_alpha_keep_marketplace_and_mcp_help() {
-        for channel in [Some("beta"), Some("alpha"), Some("pr-2259")] {
-            let cmd = gated_for(channel);
-            let app = visible_subs(cmd.find_subcommand("app").unwrap());
-            for shown in ["publish", "browse", "search", "open"] {
-                assert!(app.contains(&shown.to_string()), "{channel:?}: {app:?}");
-            }
-            assert!(!cmd.find_subcommand("account").unwrap().is_hide_set());
-            let events = visible_subs(cmd.find_subcommand("events").unwrap());
-            assert!(events.contains(&"mcp-config".to_string()));
-        }
+    fn a_hidden_command_explains_how_to_turn_it_on() {
+        let mut cmd = all_off();
+        let relay = cmd.find_subcommand_mut("relay").unwrap();
+        let help = relay.render_long_help().to_string();
+        assert!(
+            help.contains("relay is an experiment. Turn it on with: plexi experiments enable relay"),
+            "{help}"
+        );
+        assert!(!help.contains("pair"), "{help}");
     }
 
     #[test]
     fn gated_commands_still_parse_for_the_execution_backstop() {
         use clap::FromArgMatches;
-        let cmd = gated_for(None);
-        let mut m = cmd
+        let mut m = all_off()
             .try_get_matches_from(["plexi", "events", "mcp-config"])
             .expect("hidden command must still parse");
         assert!(Cli::from_arg_matches_mut(&mut m).is_ok());
@@ -300,14 +323,13 @@ mod tests {
 
     #[test]
     fn every_visible_top_level_command_is_in_exactly_one_help_group() {
-        for channel in [None, Some("alpha")] {
-            let cmd = gated_for(channel);
+        for cmd in [all_off(), all_on()] {
             for sub in cmd.get_subcommands().filter(|c| !c.is_hide_set()) {
                 let n = HELP_GROUPS
                     .iter()
                     .filter(|(_, names)| names.contains(&sub.get_name()))
                     .count();
-                assert_eq!(n, 1, "{channel:?}: `{}` in {n} HELP_GROUPS entries", sub.get_name());
+                assert_eq!(n, 1, "`{}` in {n} HELP_GROUPS entries", sub.get_name());
             }
         }
     }
