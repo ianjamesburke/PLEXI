@@ -8587,7 +8587,9 @@ mod pane_send_submit_tests {
         // plus several longer names sharing its prefix. Kept as short
         // individual lines — a long setup line wraps across terminal
         // columns, which corrupts the tail-scoping below.
-        type_only(&h, term, "alias cm='echo cm-ran'\n", None);
+        // Keep the execution marker out of the echoed alias definition so
+        // wait_for_output cannot mistake setup text for the alias running.
+        type_only(&h, term, "alias cm='echo cm-''ran'\n", None);
         type_only(&h, term, "alias cmp='echo cmp-ran'\n", None);
         type_only(&h, term, "cmpdylib() { :; }\n", None);
         type_only(&h, term, "cmuwmtopbm() { :; }\n", None);
