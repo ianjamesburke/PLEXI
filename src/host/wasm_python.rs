@@ -1186,7 +1186,7 @@ pub struct LivePythonPane {
     perf_ui_render: std::time::Duration,
     perf_canvas_render: std::time::Duration,
     /// Per-scope in-memory copy of persisted state, keyed by declared scope.
-    /// Each entry also caches the backing file's `(mtime, len)` from the last
+    /// Each entry also caches a content digest of the backing file from the last
     /// successful read/write so a persist can detect an external write that
     /// landed since (disk wins — see `save_state`).
     persisted_states: HashMap<crate::host::state_scope::StateScope, ScopeState>,
@@ -1825,16 +1825,19 @@ impl PythonFrameScheduler {
     }
 }
 
+/// SHA-256 of a state file's bytes: the identity foreign-write detection compares.
+type StateDigest = [u8; 32];
+
 /// One scope's in-memory state plus the file identity it was last synced
-/// against. `(mtime, len)` are `None` until the backing file has been seen on
-/// disk; `error` is set when the file exists but could not be decoded — the
+/// against. `digest` (SHA-256 of the file bytes) is `None` until the backing
+/// file has been seen on disk — content, not `(mtime, len)`, so a same-length
+/// write inside the filesystem's mtime granularity is still detected; `error` is set when the file exists but could not be decoded — the
 /// scope then refuses to persist until an external read clears it, so a
 /// corrupt file is never silently reset to `{}`.
 #[derive(Debug, Clone, Default)]
 struct ScopeState {
     values: serde_json::Map<String, Value>,
-    mtime: Option<std::time::SystemTime>,
-    len: Option<u64>,
+    digest: Option<StateDigest>,
     error: Option<String>,
 }
 
@@ -1926,13 +1929,13 @@ fn read_python_state_file(
     path: &Path,
     format: crate::host::state_scope::StateFormat,
 ) -> ScopeState {
-    let (mtime, len) = stat_state_file(path);
-    match std::fs::read(path) {
+    let read = std::fs::read(path);
+    let digest = read.as_ref().ok().map(|bytes| Sha256::digest(bytes).into());
+    match read {
         Ok(bytes) => match decode_state_file(&bytes, format) {
             Ok(values) => ScopeState {
                 values,
-                mtime,
-                len,
+                digest,
                 error: None,
             },
             Err(error) => {
@@ -1943,8 +1946,7 @@ fn read_python_state_file(
                 );
                 ScopeState {
                     values: serde_json::Map::new(),
-                    mtime,
-                    len,
+                    digest,
                     error: Some(error),
                 }
             }
@@ -1955,21 +1957,19 @@ fn read_python_state_file(
             log::error!("app::{app_id}: {message} — state is NOT reset");
             ScopeState {
                 values: serde_json::Map::new(),
-                mtime,
-                len,
+                digest,
                 error: Some(message),
             }
         }
     }
 }
 
-/// Stat a state file's `(mtime, len)` identity pair. `(None, None)` when the
-/// file does not exist (or cannot be statted).
-fn stat_state_file(path: &Path) -> (Option<std::time::SystemTime>, Option<u64>) {
-    match std::fs::metadata(path) {
-        Ok(meta) => (meta.modified().ok(), Some(meta.len())),
-        Err(_) => (None, None),
-    }
+/// Content digest of a state file's current bytes. `None` when the file does
+/// not exist (or cannot be read).
+fn state_file_digest(path: &Path) -> Option<StateDigest> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| Sha256::digest(bytes).into())
 }
 
 /// Test-only convenience wrapping `load_python_states` down to "the one
@@ -3780,7 +3780,7 @@ impl LivePythonPane {
 
     /// Re-read one scope's state file after an external change notification.
     ///
-    /// No-ops when the file's `(mtime, len)` identity matches the cached pair
+    /// No-ops when the file's content digest matches the cached digest
     /// — this is what suppresses watcher echoes of our own atomic writes. On
     /// a real change the on-disk values replace the scope's values wholesale
     /// (disk wins; deleted keys vanish) and the app is notified via
@@ -3812,10 +3812,10 @@ impl LivePythonPane {
                 return;
             }
         };
-        let (mtime, len) = stat_state_file(&path);
+        let digest = state_file_digest(&path);
         let cached = self.persisted_states.entry(scope).or_default();
-        let unchanged_existing = mtime.is_some() && mtime == cached.mtime && len == cached.len;
-        let still_absent = mtime.is_none() && cached.mtime.is_none() && cached.error.is_none();
+        let unchanged_existing = digest.is_some() && digest == cached.digest;
+        let still_absent = digest.is_none() && cached.digest.is_none() && cached.error.is_none();
         if unchanged_existing || still_absent {
             log::debug!(
                 "app::{}: external state notification for scope {} matches cached identity — \
@@ -3848,8 +3848,7 @@ impl LivePythonPane {
                     path.display()
                 );
                 cached.error = Some(error.clone());
-                cached.mtime = fresh.mtime;
-                cached.len = fresh.len;
+                cached.digest = fresh.digest;
                 let values = cached.values.clone();
                 let message = error.clone();
                 self.send_state_changed(scope, &values, Some(&message));
@@ -3919,16 +3918,12 @@ impl LivePythonPane {
         // last synced with it, an external writer got there first — drop
         // this persist, reload from disk, and tell the app so it can
         // re-apply its change on top of the fresh state.
-        let (disk_mtime, disk_len) = stat_state_file(&path);
-        let cached_identity = self
-            .persisted_states
-            .get(&scope)
-            .map(|state| (state.mtime, state.len))
-            .unwrap_or((None, None));
-        if disk_mtime.is_some() && (disk_mtime, disk_len) != cached_identity {
-            log::warn!(
-                "app::{}: state scope={} ({}) changed on disk since load — reloading instead \
-                 of overwriting; persist dropped",
+        let disk_digest = state_file_digest(&path);
+        let cached_digest = self.persisted_states.get(&scope).and_then(|state| state.digest);
+        if disk_digest.is_some() && disk_digest != cached_digest {
+            log::info!(
+                "app::{}: state scope={} ({}) changed on disk since this instance last synced \
+                 — reloading instead of overwriting; persist dropped, app notified",
                 self.app_id,
                 scope.as_str(),
                 path.display()
@@ -3977,16 +3972,13 @@ impl LivePythonPane {
         }
         match crate::platform::fs::atomic_write(&path, &bytes) {
             Ok(()) => {
-                // Re-stat AFTER the rename so the cached identity is the
-                // file we just produced — statting before the rename would
-                // make every self-write look external and loop reloads.
-                let (mtime, len) = stat_state_file(&path);
+                // Cache the digest of the bytes we just wrote so our own
+                // watcher echo reads as unchanged rather than external.
                 self.persisted_states.insert(
                     scope,
                     ScopeState {
                         values: payload.clone(),
-                        mtime,
-                        len,
+                        digest: Some(Sha256::digest(&bytes).into()),
                         error: None,
                     },
                 );
@@ -6454,64 +6446,6 @@ mod tests {
         assert_eq!(config.theme, colors);
     }
 
-    /// Stint 0678 audit evidence (Q2/Q5): two live instances of one app under
-    /// the same root address one file, and the loser is the instance that
-    /// persists *last* with the older in-memory map — not the one that wrote
-    /// the stale bytes first. Replays the exact host sequence: each instance
-    /// loads at launch (`load_python_state`), then persists its own map through
-    /// the same writer `save_state` uses (`write_python_state_atomic`).
-    ///
-    /// Assertion discipline for every `audit_0678_*` test: see the comment on
-    /// the `audit_0678` module below.
-    #[test]
-    fn audit_0678_second_instance_clobbers_the_first_instances_items() {
-        // Isolate `config_dir()` so the global-state fallback in
-        // `load_python_state` resolves inside a tempdir, never the real profile.
-        let profile = tempdir().expect("profile");
-        let _profile = crate::config::set_test_profile_dir(profile.path().join("profile"));
-        let workspace = tempdir().expect("workspace");
-        let first = state_test_config(workspace.path(), "todo");
-        let second = state_test_config(workspace.path(), "todo");
-        assert_eq!(
-            python_state_path_for_config(&first),
-            python_state_path_for_config(&second),
-            "instance identity does not enter the state path — only app_id and workspace_root do"
-        );
-
-        // Both instances launch against an empty store and hold their own copy.
-        let mut first_state = load_python_state(&first).expect("first launch load");
-        let second_state = load_python_state(&second).expect("second launch load");
-        assert!(first_state.is_empty() && second_state.is_empty());
-
-        // The user adds an item in the first instance; it persists.
-        first_state.insert("items".to_string(), json!(["buy milk"]));
-        let path = python_state_path_for_config(&first);
-        std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
-        crate::platform::fs::atomic_write(
-            &path,
-            &serde_json::to_vec_pretty(&first_state).expect("serialize"),
-        )
-        .expect("first persist");
-        assert_eq!(
-            load_python_state(&second).expect("readback")["items"],
-            json!(["buy milk"])
-        );
-
-        // The second instance persists anything at all — a draft keystroke is
-        // enough — and writes the empty item list it has held since launch.
-        crate::platform::fs::atomic_write(
-            &path,
-            &serde_json::to_vec_pretty(&second_state).expect("serialize"),
-        )
-        .expect("second persist");
-
-        let survivor = load_python_state(&first).expect("post-clobber load");
-        assert!(
-            survivor.get("items").is_none(),
-            "the second instance's launch-time map overwrote the item: {survivor:?}"
-        );
-    }
-
     /// Stint 0678 audit evidence (Q4/Q5): state is addressed by
     /// `workspace_root`, so the same app id launched under a different root
     /// reads a different file and sees nothing. Nothing merges the two, and
@@ -8959,8 +8893,7 @@ mod tests {
         );
         let mut pane = LivePythonPane::launch(config).expect("launch pane");
 
-        // External writer lands after load. Different byte length guarantees
-        // the (mtime, len) pair differs even at 1s mtime granularity.
+        // External writer lands after load.
         std::fs::write(
             &file,
             serde_json::to_vec_pretty(&json!({"external": "winner", "padding": 12345})).unwrap(),
@@ -8994,6 +8927,88 @@ mod tests {
         let retried: Value =
             serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
         assert_eq!(retried, json!({"app": "retry"}));
+    }
+
+    /// Stint 0681: two live panes of one app share one state file. The pane
+    /// that persists second must not erase the first pane's item — it is
+    /// dropped, reloaded from disk, and notified (disk wins).
+    #[test]
+    fn second_pane_persist_does_not_erase_the_first_panes_items() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let scope = crate::host::state_scope::StateScope::Context;
+        let config = || {
+            file_state_config(
+                app.path(),
+                "test.two-panes",
+                root.path(),
+                crate::host::state_scope::StateFormat::Json,
+            )
+        };
+        let mut first = LivePythonPane::launch(config()).expect("launch first");
+        let mut second = LivePythonPane::launch(config()).expect("launch second");
+
+        first.save_state(Some(&json!("context")), Some(&json!({"items": ["buy milk"]})));
+        // The second pane still holds its empty launch-time map and persists.
+        second.save_state(Some(&json!("context")), Some(&json!({"draft": "typing"})));
+
+        let file = context_state_file(root.path(), "test.two-panes", "json");
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(
+            on_disk,
+            json!({"items": ["buy milk"]}),
+            "the first pane's item must survive the second pane's persist"
+        );
+        let reloaded = second.persisted_states.get(&scope).expect("scope state");
+        assert_eq!(
+            Value::Object(reloaded.values.clone()),
+            json!({"items": ["buy milk"]}),
+            "the second pane must be reloaded from disk"
+        );
+
+        // Reloaded, the second pane can now persist on top of what it saw.
+        second.save_state(
+            Some(&json!("context")),
+            Some(&json!({"items": ["buy milk", "eggs"]})),
+        );
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(on_disk, json!({"items": ["buy milk", "eggs"]}));
+    }
+
+    /// Stint 0681: foreign-write detection is by content, not `(mtime, len)`.
+    /// A same-length write that restores the old mtime is the case a stat
+    /// identity cannot see.
+    #[test]
+    fn same_length_foreign_write_inside_the_mtime_window_is_detected() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let file = context_state_file(root.path(), "test.same-len", "json");
+        std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
+        std::fs::write(&file, br#"{"a":"1111"}"#).expect("seed state");
+        let config = file_state_config(
+            app.path(),
+            "test.same-len",
+            root.path(),
+            crate::host::state_scope::StateFormat::Json,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+
+        let mtime = std::fs::metadata(&file).and_then(|m| m.modified()).expect("mtime");
+        std::fs::write(&file, br#"{"a":"2222"}"#).expect("same-length foreign write");
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|f| f.set_modified(mtime))
+            .expect("restore mtime");
+
+        pane.save_state(Some(&json!("context")), Some(&json!({"app": "clobber"})));
+        assert_eq!(
+            std::fs::read(&file).expect("read state"),
+            br#"{"a":"2222"}"#,
+            "a same-length write with an unchanged mtime must still win over the persist"
+        );
     }
 
     #[test]
