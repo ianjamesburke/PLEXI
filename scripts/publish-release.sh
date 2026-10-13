@@ -5,11 +5,20 @@ tag="${1:?release tag required}"
 dist="${2:?artifact directory required}"
 assets=()
 platforms=(macos-arm64 linux-x64 windows-x64)
-[[ ! -f "$dist/plexi-macos-x64.tar.gz" ]] || platforms+=(macos-x64)
+alpha_only=false
+if [[ "$tag" == *-alpha.* ]]; then
+  alpha_only=true
+  platforms=(macos-arm64)
+else
+  [[ ! -f "$dist/plexi-macos-x64.tar.gz" ]] || platforms+=(macos-x64)
+fi
 for platform in "${platforms[@]}"; do
   ext=tar.gz; exe=''
   if [[ "$platform" == windows-* ]]; then ext=zip; exe=.exe; fi
   names=("plexi-$platform.$ext" "plexi-$platform-alpha.$ext" "plexi-$platform-beta.$ext" "plexi-installer-$platform$exe")
+  if [[ "$alpha_only" == true ]]; then
+    names=("plexi-$platform-alpha.$ext" "plexi-installer-$platform$exe")
+  fi
   for name in "${names[@]}"; do
     [[ -s "$dist/$name" && -s "$dist/$name.sha256" ]] || { echo "Required artifact missing: $name or checksum" >&2; exit 1; }
     if command -v sha256sum >/dev/null 2>&1; then

@@ -129,14 +129,20 @@ An explicit tag remains exact. Selection paginates releases, orders candidates
 semantically within that policy, excludes drafts, and requires both the correct
 channel/platform archive and checksum. The installation channel stays fixed.
 
-Required platforms are macOS Apple Silicon, Linux x64 and Windows x64. macOS
-Intel is optional; publication waits for its job and includes its complete
-result if successful. Archive names come from `release::archive_name` and
+Alpha releases (`vX.Y.Z-alpha.N`) support only macOS Apple Silicon (ARM64).
+They build and validate only that platform's Alpha package and native installer.
+This keeps the daily dogfood release loop focused on the platform in active use,
+without waiting for builds and failures on platforms that are not actively used.
+
+Beta and stable releases require macOS Apple Silicon, Linux x64 and Windows x64.
+macOS Intel is optional for those releases; publication waits for its job and
+includes its complete result if successful. Archive names come from `release::archive_name` and
 include a channel suffix for alpha and beta. Each archive and native installer
 has a matching `.sha256` sidecar.
 
 `distribution.yml` runs host tests, lint/build gates, native transaction fixtures
-and real package installation/GUI checks for each consumer channel. Publication
+and real package installation/GUI checks for Alpha only on Alpha releases, and
+for every consumer channel on Beta/stable releases and pull requests. Publication
 requires that workflow, checks the exact required artifact set, creates a draft,
 attaches verified assets and only then publishes. Published tags and assets are
 immutable. Retry a failed draft only after inspecting its existing assets;

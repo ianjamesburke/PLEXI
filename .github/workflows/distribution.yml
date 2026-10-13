@@ -26,12 +26,8 @@ jobs:
     name: ${{ matrix.platform }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { os: macos-14, platform: macos-arm64, optional: false }
-          - { os: ubuntu-22.04, platform: linux-x64, optional: false }
-          - { os: windows-latest, platform: windows-x64, optional: false }
-          - { os: macos-15-intel, platform: macos-x64, optional: true }
+      # Alpha dogfood targets the actively used Apple Silicon platform.
+      matrix: ${{ fromJSON(contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false}]}' || '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":false},{"os":"windows-latest","platform":"windows-x64","optional":false},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}') }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
     env:
@@ -89,12 +85,14 @@ jobs:
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb xauth
-      - name: Assemble and exercise every consumer channel
+      - name: Assemble and exercise supported consumer channels
+        env:
+          PACKAGE_CHANNELS: ${{ contains(inputs.tag, '-alpha.') && 'alpha' || 'stable beta alpha' }}
         shell: bash
         run: |
           set -euo pipefail
           suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
-          for channel in stable beta alpha; do
+          for channel in $PACKAGE_CHANNELS; do
             uv run --no-project python scripts/package.py --binary "target/release/plexi$suffix" --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}' --channel "$channel" --output dist
             command=(uv run --no-project python scripts/test-package.py --package "dist/package-${{ matrix.platform }}-$channel" --output "evidence/$channel" --gui)
             if [[ '${{ runner.os }}' == Linux ]]; then xvfb-run -a "${command[@]}"; else "${command[@]}"; fi
