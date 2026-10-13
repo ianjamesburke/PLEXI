@@ -20,20 +20,20 @@
 //!   `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file and never falls
 //!   back to the login keychain. The `security` tool is not the creating
 //!   binary, so a direct keychain read does not yield the key. Startup
-//!   disables keychain prompts. A new item is a plain add with the keychain
-//!   default ACL, which trusts the creating app. Startup does not edit that
-//!   ACL. Changing an item ACL raises an auth dialog even when prompts are
-//!   off, and that dialog used to freeze `host start` on the UI thread. A
-//!   rebuild that cannot read the item rotates. Rotation is cheap and resets
-//!   grants that cannot be verified. Every silent keychain call runs off the
-//!   UI thread and stops after three seconds. Past that deadline
-//!   the host continues with grants unloaded and one resolvable keychain
-//!   Needs you item. A read that fails with an auth or ACL status
-//!   (`errSecAuthFailed` -25293 and the same class) is rotated: the old item
-//!   is deleted without reading its secret. An any-application ACL is never
-//!   installed. If the old item cannot be deleted while prompts are off, a
-//!   Needs you approval turns prompts on and either retries the read or
-//!   finishes the rotation.
+//!   disables keychain prompts so `host start` cannot block on Allow. A
+//!   read that fails with an auth or ACL status (`errSecAuthFailed` -25293
+//!   and the same class) is rotated: the old item is deleted without reading
+//!   its secret, and a new key is created. New items trust this app's
+//!   designated requirement, attached when the item is created, so a
+//!   same-signer rebuild keeps access when that requirement is stable. An
+//!   ad-hoc signature changes every build, so the next launch rotates again.
+//!   Startup does not call `SecKeychainItemSetAccess`. Every silent keychain
+//!   call runs off the UI thread and stops after three seconds. Past that
+//!   deadline the host continues with grants unloaded and one resolvable
+//!   keychain Needs you item. An any-application ACL is never installed. If
+//!   the old item cannot be deleted while prompts are off, a Needs you
+//!   approval turns prompts on and either retries the read or finishes the
+//!   rotation.
 //! - Windows stores it in Credential Manager under `plexi-host-seal/`, which
 //!   `plexi secret get` does not read.
 
@@ -228,8 +228,6 @@ fn clear_session_mac() {
 pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
     let account = account.to_string();
     let value = value.to_string();
-    // Plain add. The keychain default ACL trusts the creating app. Editing
-    // that ACL is what blocks startup on an authorization dialog.
     dispatch_keychain(move || add_new_direct(&account, &value))
 }
 
@@ -1422,14 +1420,39 @@ mod linux {
 #[cfg(all(target_os = "macos", not(test)))]
 mod mac {
     use super::HOST_SERVICE;
+    use core_foundation::array::CFArray;
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::string::CFString;
     use security_framework::base::Error;
+    use security_framework::os::macos::access::SecAccess;
     use security_framework::os::macos::keychain::SecKeychain;
-    use security_framework_sys::base::errSecSuccess;
+    use security_framework::os::macos::keychain_item::SecKeychainItem;
+    use security_framework_sys::base::{errSecSuccess, SecAccessRef};
     use security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed;
     use zeroize::Zeroizing;
 
     // errSecItemNotFound. A missing host item is an empty store, not a failure.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+    // Not in security-framework-sys. A null path is the calling app's designated
+    // requirement. A null trusted list would trust every app, so this code never
+    // passes one.
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecTrustedApplicationCreateFromPath(
+            path: *const std::ffi::c_char,
+            app: *mut *mut std::ffi::c_void,
+        ) -> i32;
+        fn SecAccessCreate(
+            descriptor: *const std::ffi::c_void,
+            trusted_list: *const std::ffi::c_void,
+            access: *mut SecAccessRef,
+        ) -> i32;
+        fn SecKeychainItemSetAccess(
+            item: security_framework_sys::base::SecKeychainItemRef,
+            access: SecAccessRef,
+        ) -> i32;
+    }
 
     /// Disable keychain dialogs once and leak the guard.
     ///
@@ -1527,7 +1550,10 @@ mod mac {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
-            Ok((password, _item)) => {
+            Ok((password, item)) => {
+                if super::interaction_allowed() {
+                    trust_designated_requirement(account, &item);
+                }
                 let bytes = password.as_ref();
                 let text = String::from_utf8(bytes.to_vec())
                     .map_err(|_| "host seal item is not utf-8".to_string())?;
@@ -1544,14 +1570,10 @@ mod mac {
             return Err(format!("host key already exists: {account}"));
         }
         let chain = keychain()?;
-        // Plain add. The default ACL trusts the creating app and nobody else,
-        // including `security`. Do not change that ACL here: an access edit
-        // calls up an authorization dialog even when prompts are disabled,
-        // and this function runs on the host startup path. A rebuild that
-        // cannot read the item rotates instead.
-        chain
-            .add_generic_password(HOST_SERVICE, account, value.as_bytes())
-            .map_err(|error| map_keychain_error(account, error))?;
+        // The creating binary is the trusted application. `security` is not,
+        // so a direct keychain read does not return the secret. The ACL is
+        // then widened to this app's designated requirement, never to any app.
+        create_with_access(&chain, account, value)?;
         log::info!("permission_seal: stored host item {account} in the macOS keychain");
         Ok(())
     }
@@ -1559,11 +1581,11 @@ mod mac {
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
-        // Password update only. Replacing the item with a custom ACL is an
-        // access edit, and that dialog blocked host startup.
-        chain
-            .set_generic_password(HOST_SERVICE, account, value.as_bytes())
-            .map_err(|error| map_keychain_error(account, error))?;
+        // Editing an existing item's ACL asks securityd for the keychain
+        // password, which blocked host startup on a SecurityAgent dialog.
+        // Replace the item instead: the creator sets the ACL with no prompt.
+        delete_without_reading_secret(&chain, account)?;
+        create_with_access(&chain, account, value)?;
         log::info!("permission_seal: updated host item {account} in the macOS keychain");
         Ok(())
     }
@@ -1621,6 +1643,157 @@ mod mac {
             return Err(super::key_unreadable(&format!("{status}")));
         }
         Err(format!("SecItemDelete({account}) failed: {status}"))
+    }
+
+    #[repr(C)]
+    struct KcAttribute {
+        tag: u32,
+        length: u32,
+        data: *mut std::ffi::c_void,
+    }
+
+    #[repr(C)]
+    struct KcAttributeList {
+        count: u32,
+        attr: *mut KcAttribute,
+    }
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecKeychainItemCreateFromContent(
+            item_class: u32,
+            attr_list: *mut KcAttributeList,
+            length: u32,
+            data: *const std::ffi::c_void,
+            keychain: security_framework_sys::base::SecKeychainRef,
+            initial_access: SecAccessRef,
+            item: *mut security_framework_sys::base::SecKeychainItemRef,
+        ) -> i32;
+    }
+
+    const fn four_cc(code: &[u8; 4]) -> u32 {
+        u32::from_be_bytes(*code)
+    }
+
+    /// Create the item with its ACL already attached. The creating process may
+    /// set the initial access without authorization, so no SecurityAgent
+    /// dialog can block `host start`. Editing the ACL afterwards
+    /// (`SecKeychainItemSetAccess`) needs the keychain password and hung
+    /// v0.3.5-alpha.5 on startup.
+    fn create_with_access(chain: &SecKeychain, account: &str, value: &str) -> Result<(), String> {
+        let access = unsafe { designated_requirement_access() };
+        let access_ref = match &access {
+            Ok(access) => access.as_concrete_TypeRef(),
+            Err(status) => {
+                log::error!(
+                    "permission_seal: could not build a designated-requirement ACL for {account}: {status}; using the default creator ACL"
+                );
+                std::ptr::null_mut()
+            }
+        };
+        let mut service = HOST_SERVICE.as_bytes().to_vec();
+        let mut account_bytes = account.as_bytes().to_vec();
+        let mut attrs = [
+            KcAttribute {
+                tag: four_cc(b"svce"),
+                length: service.len() as u32,
+                data: service.as_mut_ptr().cast(),
+            },
+            KcAttribute {
+                tag: four_cc(b"acct"),
+                length: account_bytes.len() as u32,
+                data: account_bytes.as_mut_ptr().cast(),
+            },
+        ];
+        let mut list = KcAttributeList {
+            count: attrs.len() as u32,
+            attr: attrs.as_mut_ptr(),
+        };
+        let mut item: security_framework_sys::base::SecKeychainItemRef = std::ptr::null_mut();
+        let status = unsafe {
+            SecKeychainItemCreateFromContent(
+                four_cc(b"genp"),
+                &mut list,
+                value.len() as u32,
+                value.as_ptr().cast(),
+                chain.as_concrete_TypeRef(),
+                access_ref,
+                &mut item,
+            )
+        };
+        if !item.is_null() {
+            drop(unsafe { SecKeychainItem::wrap_under_create_rule(item) });
+        }
+        if status != errSecSuccess {
+            return Err(map_keychain_error(account, Error::from_code(status)));
+        }
+        if access.is_ok() && account == super::MAC_ITEM {
+            log::info!(
+                "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
+            );
+        }
+        Ok(())
+    }
+
+    /// Trust this app's designated requirement. Failure leaves the cdhash ACL
+    /// the keychain already wrote. It does not fail the key write or the read.
+    fn trust_designated_requirement(account: &str, item: &SecKeychainItem) {
+        let status = unsafe { set_designated_requirement_acl(item) };
+        if status == errSecSuccess {
+            if account == super::MAC_ITEM {
+                log::info!(
+                    "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
+                );
+            }
+        } else {
+            log::error!(
+                "permission_seal: could not set keychain ACL for {account} to the designated requirement: {status}"
+            );
+        }
+    }
+
+    unsafe fn designated_requirement_access() -> Result<SecAccess, i32> {
+        let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
+        let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
+        if status != errSecSuccess || app.is_null() {
+            return Err(if status == errSecSuccess { -1 } else { status });
+        }
+        let app = CFType::wrap_under_create_rule(app as CFTypeRef);
+        let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
+        let label = CFString::new("Plexi permission seal");
+        let mut access: SecAccessRef = std::ptr::null_mut();
+        let status = SecAccessCreate(
+            label.as_concrete_TypeRef().cast(),
+            trusted.as_concrete_TypeRef().cast(),
+            &mut access,
+        );
+        if status != errSecSuccess || access.is_null() {
+            return Err(if status == errSecSuccess { -1 } else { status });
+        }
+        Ok(SecAccess::wrap_under_create_rule(access))
+    }
+
+    unsafe fn set_designated_requirement_acl(item: &SecKeychainItem) -> i32 {
+        let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
+        let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
+        if status != errSecSuccess || app.is_null() {
+            return if status == errSecSuccess { -1 } else { status };
+        }
+        let app = CFType::wrap_under_create_rule(app as CFTypeRef);
+        // One trusted application. A null list would allow any process.
+        let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
+        let label = CFString::new("Plexi permission seal");
+        let mut access: SecAccessRef = std::ptr::null_mut();
+        let status = SecAccessCreate(
+            label.as_concrete_TypeRef().cast(),
+            trusted.as_concrete_TypeRef().cast(),
+            &mut access,
+        );
+        if status != errSecSuccess || access.is_null() {
+            return if status == errSecSuccess { -1 } else { status };
+        }
+        let access = SecAccess::wrap_under_create_rule(access);
+        SecKeychainItemSetAccess(item.as_concrete_TypeRef(), access.as_concrete_TypeRef())
     }
 }
 
@@ -1834,9 +2007,13 @@ mod tests {
         let _stable = RebuildStableAccess::set(true);
         let before = acl_mutations();
         add_new(MAC_ITEM, "stable-key").unwrap();
-        assert_eq!(acl_mutations(), before, "creating a key must not edit its ACL");
+        assert_eq!(
+            acl_mutations(),
+            before,
+            "startup must not call an ACL-mutating API"
+        );
         simulate_new_code_identity();
-        let error = get(MAC_ITEM).expect_err("the default acl is the creating binary");
+        let error = get(MAC_ITEM).expect_err("the mock ACL was not widened");
         assert!(is_key_unreadable(&error), "{error}");
         assert!(error.contains("-25293"), "{error}");
     }

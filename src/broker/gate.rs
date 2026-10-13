@@ -4310,7 +4310,7 @@ mod tests {
                     .open_needs_you()
                     .iter()
                     .all(|row| row.kind != NeedsYouKind::Keychain),
-                "a plain add rotates without a keychain prompt: {:?}",
+                "startup rotated without calling an ACL-mutating API: {:?}",
                 monitor.open_needs_you()
             );
             command_socket_answers_ready(dir.path());
