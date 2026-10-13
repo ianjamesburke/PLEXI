@@ -2021,13 +2021,14 @@ Update this channel's managed package, or restore its previous generation
 
 ## `plexi uninstall`
 
-Remove this channel's recorded package and launchers. User data is retained.
+Remove this channel's recorded package and launchers.
 
 Files outside the installation receipt, including development binaries and other channels, are preserved.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--keep-data` | flag | no | Retain user data (the default; accepted for compatibility) |
+| `--keep-data` | flag | no | Retain user data and its credentials (the default) |
+| `--delete-data` | flag | no | Permanently delete this channel's profile and integrity credentials |
 | `--yes` / `-y` | flag | no | Remove this channel without a confirmation prompt |
 
 ## `plexi host`
