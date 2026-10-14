@@ -159,24 +159,22 @@ pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
 }
 
 fn get_direct(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-    with_backend(|| {
-        if account == MAC_ITEM {
-            if let Some(cached) = session_mac() {
-                return Ok(Some(cached));
-            }
+    if account == MAC_ITEM {
+        if let Some(cached) = session_mac() {
+            return Ok(Some(cached));
         }
-        match backend().get(account) {
-            Ok(value) => {
-                if account == MAC_ITEM && interaction_allowed() {
-                    if let Some(value) = &value {
-                        remember_session_mac(value);
-                    }
+    }
+    match backend().get(account) {
+        Ok(value) => {
+            if account == MAC_ITEM && interaction_allowed() {
+                if let Some(value) = &value {
+                    remember_session_mac(value);
                 }
-                Ok(value)
             }
-            Err(error) => Err(error),
+            Ok(value)
         }
-    })
+        Err(error) => Err(error),
+    }
 }
 
 /// Read `body` while keychain prompts are allowed.
@@ -232,7 +230,7 @@ pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
 }
 
 fn add_new_direct(account: &str, value: &str) -> Result<(), String> {
-    with_backend(|| backend().add_new(account, value))
+    backend().add_new(account, value)
 }
 
 pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
@@ -242,7 +240,7 @@ pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
 }
 
 fn set_direct(account: &str, value: &str) -> Result<(), String> {
-    match with_backend(|| backend().set(account, value)) {
+    match backend().set(account, value) {
         Ok(()) => Ok(()),
         Err(error) if is_key_unreadable(&error) => {
             log::info!("permission_seal: replacing unreadable host item {account}");
@@ -259,12 +257,10 @@ pub(crate) fn delete(account: &str) -> Result<(), String> {
 }
 
 fn delete_direct(account: &str) -> Result<(), String> {
-    with_backend(|| {
-        if account == MAC_ITEM {
-            clear_session_mac();
-        }
-        backend().delete(account)
-    })
+    if account == MAC_ITEM {
+        clear_session_mac();
+    }
+    backend().delete(account)
 }
 
 fn dispatch_keychain<T>(
@@ -273,6 +269,13 @@ fn dispatch_keychain<T>(
 where
     T: Send + 'static,
 {
+    // A test caller takes the host-key lock before the bounded call reads the
+    // mock's block and gave-up state. Reading them unlocked lets a caller see
+    // another test's armed block, abandon a call that then waits on the lock,
+    // and deadlock that test's `BlockingKeychain` teardown, which joins
+    // abandoned calls while it still holds the lock.
+    #[cfg(test)]
+    let _guard = TestBackendGuard::acquire_if_needed();
     #[cfg(any(test, target_os = "macos"))]
     {
         bounded_keychain_call(op)
@@ -309,22 +312,14 @@ where
     if !keychain_call_is_bounded() {
         return op();
     }
-    #[cfg(test)]
-    let parent_holds = HOST_KEY_HELD.with(|held| held.get());
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let spawned = std::thread::Builder::new()
         .name("seal-keychain".to_string())
         .spawn(move || {
+            // The caller holds the host-key lock on this call's behalf.
             #[cfg(test)]
-            if parent_holds {
-                HOST_KEY_HELD.with(|held| held.set(true));
-            }
-            let result = op();
-            #[cfg(test)]
-            if parent_holds {
-                HOST_KEY_HELD.with(|held| held.set(false));
-            }
-            let _ = tx.send(result);
+            HOST_KEY_HELD.with(|held| held.set(true));
+            let _ = tx.send(op());
         });
     let handle = match spawned {
         Ok(handle) => handle,
@@ -378,18 +373,6 @@ fn remember_abandoned(handle: std::thread::JoinHandle<()>) {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .push(handle);
-}
-
-fn with_backend<T>(body: impl FnOnce() -> T) -> T {
-    #[cfg(test)]
-    {
-        let _guard = TestBackendGuard::acquire_if_needed();
-        body()
-    }
-    #[cfg(not(test))]
-    {
-        body()
-    }
 }
 
 /// Holds the process-local host-key map so a test can remove `permission-mac`
@@ -635,10 +618,12 @@ impl MacFault {
 /// Mock keychain that blocks in `SecKeychainItemSetAccess` or in every call.
 ///
 /// Drop releases the wait, joins any startup call the deadline abandoned, and
-/// clears the gave-up flag so the next test can read the key.
+/// clears the gave-up flag so the next test can read the key. The guard holds
+/// the process-wide host-key lock, so no other test observes the block.
 #[cfg(test)]
 pub(crate) struct BlockingKeychain {
     previous: KeychainBlock,
+    _exclusive: ExclusiveHostKey,
 }
 
 #[cfg(test)]
@@ -652,13 +637,17 @@ impl BlockingKeychain {
     }
 
     fn arm(block: KeychainBlock) -> Self {
+        let exclusive = ExclusiveHostKey::acquire();
         let mut fault = lock_fault();
         let previous = fault.block;
         fault.block = block;
         fault.acl_mutations = 0;
         fault.block_expired = false;
         drop(fault);
-        Self { previous }
+        Self {
+            previous,
+            _exclusive: exclusive,
+        }
     }
 }
 
@@ -1993,6 +1982,39 @@ mod tests {
         delete(account).unwrap();
         assert!(get(account).unwrap().is_none());
         assert!(system_store().get(account).is_none());
+    }
+
+    /// A test that never took the host-key lock calls the keychain while
+    /// another test holds it with a blocking mock armed. The caller must wait
+    /// for the lock, not see the armed block, time out, and leave an
+    /// abandoned call that the blocking test's teardown joins while it still
+    /// holds the lock that call is waiting for.
+    #[test]
+    fn unlocked_caller_waits_out_a_blocking_test_instead_of_deadlocking_it() {
+        let account = "plexi:host:blocking-neighbour-probe";
+        let (armed_tx, armed_rx) = std::sync::mpsc::channel();
+        let (torn_down_tx, torn_down_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _exclusive = ExclusiveHostKey::acquire();
+            let block = BlockingKeychain::any_call();
+            armed_tx.send(()).unwrap();
+            std::thread::sleep(STARTUP_KEYCHAIN_DEADLINE + Duration::from_secs(1));
+            drop(block);
+            let _ = torn_down_tx.send(());
+        });
+        std::thread::spawn(move || {
+            armed_rx.recv().unwrap();
+            let _ = done_tx.send(get(account));
+        });
+        let bound = Duration::from_secs(30);
+        torn_down_rx
+            .recv_timeout(bound)
+            .expect("the blocking test's teardown deadlocked joining the unlocked call");
+        let result = done_rx
+            .recv_timeout(bound)
+            .expect("the unlocked keychain call never returned");
+        assert_eq!(result, Ok(None), "the unlocked caller observed another test's block");
     }
 
     #[test]
