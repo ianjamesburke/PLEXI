@@ -3351,6 +3351,12 @@ impl eframe::App for PlexiApp {
             ctx.request_repaint();
         }
 
+        // File watching/reload is core app servicing, including for an
+        // occluded host. Keep it independent of change-set preview.
+        if self.service_pane_external_io() {
+            ctx.request_repaint();
+        }
+
         // Change-set preview is host state the editor and `plexi changes`
         // both read. It has to run off the paint path so an occluded window
         // still publishes open buffers and a pending diff.

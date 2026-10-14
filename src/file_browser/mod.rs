@@ -3105,6 +3105,59 @@ mod tests {
     }
 
     #[test]
+    fn host_external_io_refreshes_browser_with_experiments_off() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (mut app, dir) = make_three_file_app();
+        app.select_path(&dir.path().join("bravo.txt"));
+        let before = app.entries.len();
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_app_pane(
+            Box::new(app),
+            crate::app::permissions::AppPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserApp {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                })
+                .unwrap()
+        }
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+        fs::write(dir.path().join("0-from-agent.txt"), "hi").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            if browser(&mut harness).entries.len() != before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), before + 1);
+        assert!(app.entries.iter().any(|e| e.name == "0-from-agent.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+    }
+
+    #[test]
     fn listing_picks_up_files_created_externally() {
         let (mut app, dir) = make_three_file_app();
         let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
