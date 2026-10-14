@@ -291,9 +291,32 @@ pub struct FileBrowserApp {
     search_query: String,
     search_indices: Vec<usize>, // indices into `entries` that match the query
     should_close: bool,
+    /// Watch on `cwd`, armed lazily from `service_external` and re-armed when
+    /// `cwd` moves, so files an agent creates, deletes or renames show up.
+    watch: Option<(PathBuf, crate::host::path_watch::PathWatch)>,
     /// In tests: collects paths passed to open_file instead of spawning the system opener.
     #[cfg(test)]
     pub(crate) opened_files: Vec<PathBuf>,
+}
+
+/// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
+/// Trash see them. `NSFileManager` is chosen over the crate's Finder default
+/// because it needs no Automation permission prompt.
+fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let context = {
+        let mut context = trash::TrashContext::default();
+        trash::macos::TrashContextExtMacos::set_delete_method(
+            &mut context,
+            trash::macos::DeleteMethod::NsFileManager,
+        );
+        context
+    };
+    #[cfg(not(target_os = "macos"))]
+    let context = trash::TrashContext::default();
+    context
+        .delete_all(paths)
+        .map_err(|err| format!("Unable to move {} item(s) to the Trash: {err}", paths.len()))
 }
 
 impl FileBrowserApp {
@@ -329,6 +352,7 @@ impl FileBrowserApp {
             search_query: String::new(),
             search_indices: Vec::new(),
             should_close: false,
+            watch: None,
             #[cfg(test)]
             opened_files: Vec::new(),
         };
@@ -415,6 +439,24 @@ impl FileBrowserApp {
         if self.in_search {
             self.refilter();
         }
+    }
+
+    /// Refresh after an external change, keeping the selected path selected
+    /// (the index alone would drift when a file lands above it) and the filter
+    /// intact. Does not scroll: the user may be looking elsewhere.
+    fn refresh_after_external_change(&mut self) {
+        let selected_path = self.selected_entry().map(|entry| entry.path.clone());
+        let scroll = self.pending_scroll;
+        self.refresh_preserving_filter();
+        if let Some(path) = selected_path {
+            self.select_path(&path);
+        }
+        self.pending_scroll = scroll;
+        log::info!(
+            "file_browser: listing refreshed after external change cwd={} entries={}",
+            self.cwd.display(),
+            self.entries.len()
+        );
     }
 
     fn navigate_into(&mut self, path: PathBuf) {
@@ -978,29 +1020,11 @@ impl FileBrowserApp {
         };
         match operation {
             PendingFileOperation::MoveToTrash { paths } => {
-                let trash_dir = self.cwd.join(".Trash");
-                fs::create_dir_all(&trash_dir).map_err(|err| {
-                    format!(
-                        "Unable to create trash folder '{}': {err}",
-                        trash_dir.display()
-                    )
-                })?;
-                for source in paths {
-                    let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
-                        continue;
-                    };
-                    let target = Self::unique_child_path(&trash_dir, file_name, None);
-                    fs::rename(&source, &target).map_err(|err| {
-                        format!(
-                            "Unable to move '{}' to trash '{}': {err}",
-                            source.display(),
-                            target.display()
-                        )
-                    })?;
+                move_to_system_trash(&paths)?;
+                for source in &paths {
                     log::info!(
-                        "file_browser: moved '{}' to trash '{}'",
-                        source.display(),
-                        target.display()
+                        "file_browser: moved '{}' to the system Trash",
+                        source.display()
                     );
                 }
             }
@@ -1659,7 +1683,7 @@ impl FileBrowserApp {
             .show(ctx, colors, |ui| {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Move {count} selected item{} to this folder's .Trash?",
+                        "Move {count} selected item{} to the Trash?",
                         if count == 1 { "" } else { "s" }
                     ))
                     .size(style::TEXT_BODY)
@@ -2115,6 +2139,35 @@ impl FileBrowserApp {
 }
 
 impl App for FileBrowserApp {
+    fn service_external(
+        &mut self,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+    ) -> bool {
+        if self.watch.as_ref().map(|(dir, _)| dir) != Some(&self.cwd) {
+            self.watch = None;
+            match crate::host::path_watch::PathWatch::new(
+                &self.cwd,
+                None,
+                std::sync::Arc::clone(wake),
+                "file_browser",
+            ) {
+                Ok(watch) => self.watch = Some((self.cwd.clone(), watch)),
+                Err(e) => {
+                    log::warn!("file_browser: cannot watch {}: {e}", self.cwd.display());
+                    return false;
+                }
+            }
+            return false;
+        }
+        match &self.watch {
+            Some((_, watch)) if watch.take_changed() => {
+                self.refresh_after_external_change();
+                true
+            }
+            _ => false,
+        }
+    }
+
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -3026,16 +3079,55 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_trash_moves_selected_file_into_local_trash() {
-        let (mut app, dir) = make_three_file_app();
+    fn confirmed_trash_moves_selected_file_to_the_system_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unique name so a leftover in the real Trash can never be mistaken
+        // for this run, and so it can be cleared afterwards.
+        let name = format!("plexi-0786-trash-{}.txt", crate::platform::clock::now_nanos());
+        fs::write(dir.path().join(&name), "x").unwrap();
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        app.select_path(&dir.path().join(&name));
 
         app.request_move_selected_to_trash();
         assert!(app.pending_operation.is_some());
         app.confirm_pending_operation().expect("confirm trash");
 
-        assert!(!dir.path().join("alpha.txt").exists());
-        assert!(dir.path().join(".Trash").join("alpha.txt").exists());
+        assert!(!dir.path().join(&name).exists(), "the item left the directory");
+        assert!(
+            !dir.path().join(".Trash").exists(),
+            "no in-project .Trash folder is created"
+        );
         assert!(app.pending_operation.is_none());
+        #[cfg(target_os = "macos")]
+        if let Some(home) = dirs::home_dir() {
+            let _ = fs::remove_file(home.join(".Trash").join(&name));
+        }
+    }
+
+    #[test]
+    fn listing_picks_up_files_created_externally() {
+        let (mut app, dir) = make_three_file_app();
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        assert!(!app.service_external(&wake), "arming changes nothing");
+        std::thread::sleep(crate::testing::load_aware_timeout(std::time::Duration::from_millis(300)));
+        let before = app.entries.len();
+        app.select_path(&dir.path().join("bravo.txt"));
+        fs::write(dir.path().join("0-from-agent.txt"), "hi").unwrap();
+
+        let deadline =
+            std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline && app.entries.len() == before {
+            app.service_external(&wake);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.entries.len(), before + 1);
+        assert!(app.entries.iter().any(|e| e.name == "0-from-agent.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt"),
+            "selection follows the path, not the index"
+        );
     }
 
     #[test]
