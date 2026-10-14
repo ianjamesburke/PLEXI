@@ -464,64 +464,71 @@ fn ollama_setup_model(rec: &ModelRecommendation) -> &'static str {
 
 // ── Setup wizard ─────────────────────────────────────────────────────────────
 
-/// Write or update the `[ai]` + `[ai.ollama]` section in config.toml.
+/// Write or update the `[ai.ollama]` table in config.toml.
 ///
-/// Strategy: read the existing file as raw text, then:
-/// - If an `[ai]` block already exists, replace it.
-/// - Otherwise, append the block at the end.
-///
-/// This preserves all other sections and comments.
-fn write_ollama_config(model: &str) -> std::io::Result<()> {
+/// Edits through `toml_edit`, so every key, table, and comment the wizard does
+/// not own survives byte-for-byte. Returns whether `ai.backend` now selects
+/// Ollama.
+fn write_ollama_config(model: &str) -> std::io::Result<bool> {
     let path = crate::config::config_path();
 
-    // Ensure parent dir exists.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let snippet = format!(
-        "\n[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\nhost         = \"http://localhost:11434\"\nmodel_low    = \"{model}\"\nmodel_medium = \"{model}\"\nmodel_high   = \"{model}\"\n"
-    );
-
-    if path.exists() {
-        let existing = std::fs::read_to_string(&path)?;
-
-        // Check if [ai] block already present — strip it out, then append.
-        let stripped = strip_ai_section(&existing);
-        let new_content = format!("{}\n{}", stripped.trim_end(), snippet);
-        std::fs::write(&path, new_content)?;
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path)?
     } else {
-        // Config doesn't exist — seed from template, then append.
-        let mut content = crate::config::CONFIG_TEMPLATE.to_string();
-        content.push_str(&snippet);
-        std::fs::write(&path, content)?;
-    }
-
-    Ok(())
+        crate::config::CONFIG_TEMPLATE.to_string()
+    };
+    let (updated, backend_selected) = apply_ollama_config(&existing, model).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("cannot edit {}: {e}", path.display()),
+        )
+    })?;
+    std::fs::write(&path, updated)?;
+    log::info!(
+        "cli:ai:setup: wrote [ai.ollama] model={model} to {} (backend_selected={backend_selected})",
+        path.display()
+    );
+    Ok(backend_selected)
 }
 
-/// Remove any existing `[ai]` and `[ai.*]` sections from raw TOML text.
-/// Returns the text with those sections stripped so we can append fresh ones.
-fn strip_ai_section(text: &str) -> String {
-    let mut result = Vec::new();
-    let mut skipping = false;
+/// Owned keys: `ai.ollama.{model_low,model_medium,model_high}`, `ai.ollama.host`
+/// when absent, and `ai.backend` only when unset or already `"ollama"`.
+/// Everything else, including `[ai.local]`, budget caps, and comments, is untouched.
+fn apply_ollama_config(existing: &str, model: &str) -> Result<(String, bool), String> {
+    let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|e| format!("{e}"))?;
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[ai]" || trimmed.starts_with("[ai.") {
-            skipping = true;
-            continue;
+    let ai = doc
+        .entry("ai")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .ok_or("`ai` is not a table")?;
+    ai.set_implicit(false);
+
+    let backend_selected = match ai.get("backend").and_then(|b| b.as_str()) {
+        None | Some("ollama") => {
+            ai.insert("backend", toml_edit::value("ollama"));
+            true
         }
-        // A new top-level section (not ai) ends the skip.
-        if skipping && trimmed.starts_with('[') && !trimmed.starts_with("[ai") {
-            skipping = false;
-        }
-        if !skipping {
-            result.push(line);
-        }
+        Some(_) => false,
+    };
+
+    let ollama = ai
+        .entry("ollama")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .ok_or("`ai.ollama` is not a table")?;
+    if !ollama.contains_key("host") {
+        ollama.insert("host", toml_edit::value("http://localhost:11434"));
+    }
+    for key in ["model_low", "model_medium", "model_high"] {
+        ollama.insert(key, toml_edit::value(model));
     }
 
-    result.join("\n")
+    Ok((doc.to_string(), backend_selected))
 }
 
 pub fn ai_setup_cli() -> i32 {
@@ -683,12 +690,13 @@ pub fn ai_setup_cli() -> i32 {
         config_path.display()
     );
 
-    match write_ollama_config(recommended_model) {
-        Ok(()) => {
+    let backend_selected = match write_ollama_config(recommended_model) {
+        Ok(backend_selected) => {
             println!(
                 "{green}\u{2713}{reset} Config updated: {}",
                 config_path.display()
             );
+            backend_selected
         }
         Err(e) => {
             log::warn!("cli:ai:setup: failed to write config: {e}");
@@ -711,11 +719,16 @@ pub fn ai_setup_cli() -> i32 {
             eprintln!("model_high   = \"{recommended_model}\"");
             return 1;
         }
-    }
+    };
 
     println!();
     println!("{bold}Setup complete!{reset}");
-    println!("  Plexi apps using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+    if backend_selected {
+        println!("  Plexi apps using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+    } else {
+        println!("  [ai.ollama] is configured with {green}{recommended_model}{reset}; your existing `ai.backend` was left unchanged.");
+        println!("  Set `backend = \"ollama\"` under [ai] to switch to it.");
+    }
     println!();
     println!("Next steps:");
     println!("  {dim}plexi ai doctor{reset}    — verify your full AI configuration");
@@ -888,5 +901,83 @@ mod tests {
 
         assert!(guide.contains("ollama pull llama3.2:3b"));
         assert!(!guide.contains("ollama pull openrouter/"));
+    }
+
+    const SEEDED: &str = r#"# top comment
+[general]
+theme = "dark" # inline
+
+[ai]
+# which provider answers ai.query
+backend = "local"
+# budget caps
+per_app_daily_usd = 0.50
+global_daily_usd = 5.00
+
+[ai.local]
+# Meridian proxy
+base_url = "http://127.0.0.1:3456"
+model_low = "haiku"
+model_medium = "sonnet"
+model_high = "opus"
+
+[marketplace]
+submit_url = "https://example.test"
+"#;
+
+    #[test]
+    fn setup_preserves_unowned_ai_config_and_comments() {
+        let (out, selected) = super::apply_ollama_config(SEEDED, "llama3.2:3b").unwrap();
+        assert!(!selected, "explicit backend = local must not be switched");
+        let before: toml::Table = SEEDED.parse().unwrap();
+        let after: toml::Table = out.parse().expect("output must stay valid TOML");
+
+        let mut expected = before.clone();
+        let ai = expected["ai"].as_table_mut().unwrap();
+        ai.insert(
+            "ollama".into(),
+            toml::Value::Table(
+                [
+                    ("host", "http://localhost:11434"),
+                    ("model_low", "llama3.2:3b"),
+                    ("model_medium", "llama3.2:3b"),
+                    ("model_high", "llama3.2:3b"),
+                ]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), toml::Value::String(v.to_string())))
+                .collect(),
+            ),
+        );
+        assert_eq!(after, expected, "only [ai.ollama] may be added");
+        for comment in [
+            "# top comment",
+            "# inline",
+            "# which provider answers ai.query",
+            "# budget caps",
+            "# Meridian proxy",
+        ] {
+            assert!(out.contains(comment), "lost comment {comment:?}");
+        }
+        assert!(out.contains("[ai.local]\n# Meridian proxy"));
+    }
+
+    #[test]
+    fn setup_activates_ollama_when_no_backend_chosen() {
+        let out = super::apply_ollama_config("[general]\ntheme = \"dark\"\n", "m")
+            .unwrap()
+            .0;
+        let t: toml::Table = out.parse().unwrap();
+        assert_eq!(t["ai"]["backend"].as_str(), Some("ollama"));
+        assert_eq!(t["ai"]["ollama"]["model_low"].as_str(), Some("m"));
+    }
+
+    #[test]
+    fn setup_rewrites_existing_ollama_table_in_place() {
+        let src = "[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\n# mine\nhost = \"http://x:1\"\nmodel_low = \"old\"\n";
+        let out = super::apply_ollama_config(src, "new").unwrap().0;
+        let t: toml::Table = out.parse().unwrap();
+        assert_eq!(t["ai"]["ollama"]["model_low"].as_str(), Some("new"));
+        assert_eq!(t["ai"]["ollama"]["model_high"].as_str(), Some("new"));
+        assert!(out.contains("# mine"));
     }
 }
