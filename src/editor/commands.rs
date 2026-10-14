@@ -133,6 +133,15 @@ impl Document {
         }
     }
 
+    /// Marks this document as the successor of one whose revision was
+    /// `previous`, so revision-keyed caches (highlighting, Live Preview layout)
+    /// see the replaced text as new instead of matching a stale revision 0.
+    #[must_use]
+    pub fn succeeding(mut self, previous: u64) -> Self {
+        self.revision = previous + 1;
+        self
+    }
+
     /// Monotonic revision counter: bumped on every buffer mutation.
     #[must_use]
     pub fn revision(&self) -> u64 {

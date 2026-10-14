@@ -3352,7 +3352,9 @@ impl eframe::App for PlexiApp {
         // Change-set preview is host state the editor and `plexi changes`
         // both read. It has to run off the paint path so an occluded window
         // still publishes open buffers and a pending diff.
-        self.sync_editor_change_sets();
+        if self.sync_editor_change_sets() {
+            ctx.request_repaint();
+        }
 
         // Hot reload (#83): drain any pending file-watcher reload requests.
         // Each `ReloadRequest` causes the matching pane's WASM runtime to be
@@ -3932,7 +3934,7 @@ impl eframe::App for PlexiApp {
                     // If the focused app pane has a non-empty nav stack
                     // (via PushNav), Escape routes NavBack to the app
                     // instead of closing the pane.
-                    if !self.try_nav_back_focused() {
+                    if !self.try_nav_back_focused() && !self.focused_app_vetoes_close() {
                         if let Some(child_ctx_id) = self.get_focused_portal_context_id() {
                             let state = self.build_context_close_state(child_ctx_id);
                             if state.items.is_empty() {

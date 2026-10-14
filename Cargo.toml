@@ -26,6 +26,7 @@ path = "src/main.rs"
 
 [dependencies]
 tempfile = "3"
+trash = "5"
 plexi-distribution = { path = "crates/distribution" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

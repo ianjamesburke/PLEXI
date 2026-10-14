@@ -1126,6 +1126,100 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Stint 0786: a plain file shows the dirty dot, the close prompt and the
+    /// conflict state in the header/prompt row; closing a dirty file through
+    /// the host close path is vetoed until the user answers.
+    #[test]
+    fn text_editor_file_dirty_close_and_conflict_surfaces() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 320.0);
+        h.step();
+        let path = std::env::temp_dir().join(format!("plexi-ui-0786-{}.txt", std::process::id()));
+        std::fs::write(&path, "fn main() {}\n").expect("seed file");
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+
+        let pane_id = h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                )),
+                workspace_root: crate::testing::scratch_context_root("ui"),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: file_name.clone(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+            pane_id
+        });
+        let with_editor = |h: &mut PlexiUiHarness,
+                           f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorApp)| {
+            h.with_app_mut(|app| {
+                let win = &mut app.windows[app.active_window];
+                if let Some(Pane::App(a)) = win.panes.get_mut(&pane_id) {
+                    if let AppRuntime::Builtin(b) = &mut a.runtime {
+                        let ed = b
+                            .as_any_mut()
+                            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+                            .expect("text editor");
+                        f(ed);
+                    }
+                }
+            });
+        };
+        h.run_steps(2);
+        h.harness().get_by_label("Saved");
+
+        // Dirty: the dot and the Unsaved label, and no autosave to disk.
+        with_editor(&mut h, &mut |ed| {
+            ed.test_set_unsaved("fn main() { println!(\"edited\"); }\n")
+        });
+        h.run_steps(2);
+        h.harness().get_by_label("Unsaved");
+        h.harness().get_by_label("\u{25CF}");
+        h.save_screenshot(&evidence_png!("_dirty")).expect("render dirty");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
+
+        // Host close path: vetoed, prompt shown, pane still there.
+        h.with_app_mut(|app| {
+            assert!(app.focused_app_vetoes_close(), "dirty plain file vetoes close");
+            assert!(app.windows[app.active_window].panes.contains_key(&pane_id));
+        });
+        h.run_steps(2);
+        h.harness().get_by_label("Unsaved changes.");
+        h.save_screenshot(&evidence_png!("_close_prompt")).expect("render close prompt");
+
+        // Cancel, then an agent writes the file: conflict state.
+        with_editor(&mut h, &mut |ed| {
+            use crate::app::app_trait::App as _;
+            assert!(!ed.request_close());
+        });
+        std::fs::write(&path, "agent version\n").expect("external write");
+        with_editor(&mut h, &mut |ed| {
+            assert!(ed.test_check_disk());
+        });
+        h.run_steps(2);
+        h.harness().get_by_label("Changed on disk");
+        h.save_screenshot(&evidence_png!("_conflict")).expect("render conflict");
+
+        with_editor(&mut h, &mut |ed| ed.test_discard_unsaved());
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Find/replace bar: opening it (Cmd+F) renders the Replace/All buttons
     /// through the embedded-bar primitive, whose safe insets keep the button
     /// bottoms off the pane's clip edge (stint 0506 — the bar used to clip).

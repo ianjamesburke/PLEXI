@@ -32,6 +32,7 @@ pub mod scope;
 pub mod services;
 pub mod shell;
 pub mod state_scope;
+pub(crate) mod path_watch;
 pub mod state_watch;
 pub mod typed_pipes;
 pub mod wasm_app;

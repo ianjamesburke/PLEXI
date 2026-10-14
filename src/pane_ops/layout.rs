@@ -1574,8 +1574,32 @@ impl PlexiApp {
         }
     }
 
+    /// Asks the focused app whether a user-initiated close may proceed. An app
+    /// with unsaved work vetoes and shows its own prompt.
+    pub(crate) fn focused_app_vetoes_close(&mut self) -> bool {
+        let active = self.active_window;
+        let Some(Tile::Pane(pane_id)) = self.windows[active]
+            .focused_pane
+            .and_then(|tile| self.windows[active].tree.tiles.get(tile))
+        else {
+            return false;
+        };
+        let pane_id = *pane_id;
+        let Some(app) = self.windows[active]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|pane| pane.as_app_mut())
+        else {
+            return false;
+        };
+        !app.runtime.request_close()
+    }
+
     /// Close the focused app pane.
     pub(crate) fn close_focused_app(&mut self) {
+        if self.focused_app_vetoes_close() {
+            return;
+        }
         let active = self.active_window;
         let Some(focused_tile) = self.windows[active].focused_pane else {
             return;

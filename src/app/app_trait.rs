@@ -307,6 +307,23 @@ pub trait App: Send {
         false
     }
 
+    /// A user-initiated close asks the app first. Returning false vetoes the
+    /// close: the app shows its own prompt (unsaved buffer) and sets
+    /// `wants_close` once the user decides. Programmatic closes (CLI, context
+    /// close, quit) do not ask.
+    fn request_close(&mut self) -> bool {
+        true
+    }
+
+    /// Off-paint servicing of external state the app mirrors (files on disk).
+    /// Runs from `App::logic` every pass for every pane, including panes in
+    /// hidden windows and inactive contexts, so it must be cheap when idle.
+    /// Apps arm their own watcher lazily with `wake`. Returns true when
+    /// visible state changed.
+    fn service_external(&mut self, _wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>) -> bool {
+        false
+    }
+
     /// Called when the linked terminal's CWD changes.
     /// Apps that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}

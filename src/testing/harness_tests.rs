@@ -5119,7 +5119,17 @@ fn editor_gate_host_surfaces() {
     let state = gate_note_semantics(&h, pane_id);
     assert_eq!(state["preview_mode"].as_str(), Some("source"));
 
-    // Cmd+S saves and reports ok.
+    // Cmd+S on a dirty buffer saves and reports ok (on a clean one it is a
+    // no-op, so dirty the buffer first).
+    let response = temp_response(tmp.path(), "gate-save-text");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id,
+        text: "!".to_string(),
+        submit: false,
+        response_file: Some(response.clone()),
+    });
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
     let response = temp_response(tmp.path(), "gate-save");
     h.inject_ipc(AppRequest::KeyPane {
         pane_id,

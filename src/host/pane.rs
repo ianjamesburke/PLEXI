@@ -1046,6 +1046,23 @@ impl AppRuntime {
         }
     }
 
+    pub(crate) fn request_close(&mut self) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.request_close(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => true,
+        }
+    }
+
+    pub(crate) fn service_external(
+        &mut self,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+    ) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.service_external(wake),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+        }
+    }
+
     pub(crate) fn sync_change_set(&mut self) -> bool {
         match self {
             AppRuntime::Builtin(app) => app.sync_change_set(),
