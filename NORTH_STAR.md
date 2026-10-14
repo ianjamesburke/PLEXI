@@ -48,21 +48,24 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 **Product over primitive:** when a Plexi feature overlaps a UNIX primitive (PATH, make, env), the overlap validates the abstraction. The product layer — discoverability, scope labeling, secret injection, agent indexing — is the value. Never decline to build a feature because a power user could assemble it from parts; the target user can't, and the power user benefits from the structured version anyway.
 
+**Small core, everything else an experiment:** stable ships a small core. Every other capability lives behind a per-feature experiment flag, off by default on every channel, and graduates to stable only once Ian uses it every day. Experiments own their data and never get migration code; graduation freezes the format.
+
 **Grown, not universal:** no universal UI. Plexi grows to fit the individual, shaped by use, with the assistant as workspace operator and third-party AI apps as ordinary capability-gated apps — never ambient controllers.
 
 ---
 
 ## Who This Is For
 
-Primary: non-technical people who know AI power users have caught on to the terminal and want that leverage without the priesthood. Plexi wraps the whole experience in a CLI an agent can drive and a person can learn. Secondary: power users and agent builders who need a programmable, auditable environment — and a deployment model of "install Plexi, install the app, connect a key. Done."
+Now (v1): developers running several CLI coding agents (Claude Code, Codex) on a Mac, who want the best host for the agents they already pay for. Destination: non-technical people who know AI power users have caught on to the terminal and want that leverage without the priesthood. Plexi wraps the whole experience in a CLI an agent can drive and a person can learn. Secondary: power users and agent builders who need a programmable, auditable environment — and a deployment model of "install Plexi, install the app, connect a key. Done."
 
 ---
 
 ## The Progression
 
 - **Foundation** *(shipped)* — tiling layout, terminal + app panes, PGAP v3 + Python SDK, typed pipes, contexts, capability system with audit trail, CLI, core apps.
-- **Phase 2 — The Protocol** *(now)* — declarative host-rendered UI; a polished app in under 100 lines of Python; v1 security = consent + audit + review (true sandboxing arrives with WASM — acknowledged gap, not oversight).
-- **Phase 3 — Intelligence** — the host Assistant becomes a full workspace operator: typed host tools behind the permission broker, named agent personas, skills, app connectors, AI onboarding for non-technical users.
+- **Phase 2 — The Protocol** — declarative host-rendered UI; a polished app in under 100 lines of Python.
+- **v1** *(now)* — stable host + CLI agents driving Plexi through the `plexi` CLI and skill, building Python apps; Apple Silicon Mac. Security: Plexi guards what it owns (secrets stay out of agent panes, approvals only by a click in the Plexi window) and switches on each agent vendor's own sandbox; it builds no sandbox of its own.
+- **Phase 3 — Intelligence** — ships only once it replaces Ian's own agent setup day to day. The host Assistant, an ordinary boxed agent with no private back door, becomes a full workspace operator: typed host tools behind the permission broker, named agent personas, skills, app connectors, AI onboarding for non-technical users.
 - **Phase 4 — The Platform** — WASM runtime (same app contract, true sandboxing, mobile-viable), marketplace with review flow and revenue sharing.
 - **Phase 5 — The Portable Instance** — your environment runs as a server, local or cloud, same architecture; thin clients attach from anywhere; SpacetimeDB persistence/sync.
 - **Phase 6 — Ubiquity** — Linux, Windows, any device that can run a process and render a frame. Same config, same keybindings, for life.
