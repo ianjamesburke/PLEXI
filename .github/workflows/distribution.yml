@@ -65,7 +65,10 @@ jobs:
         run: |
           suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
           uv run --no-project python scripts/test-distribution.py --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}'
+      # Release tags only: on PRs and alpha pushes the Rust host workflow already
+      # runs this exact test + clippy, so repeating it here just doubles the wait.
       - name: Test and lint the host
+        if: inputs.tag != ''
         shell: bash
         run: |
           if [[ '${{ runner.os }}' == Windows ]]; then

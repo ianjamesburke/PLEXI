@@ -144,6 +144,8 @@ without waiting for builds and failures on platforms that are not actively used.
 The same rule applies to pull-request and alpha-push CI: `distribution.yml` runs only the
 Apple Silicon job unless the `tag` input is a stable or beta release tag, and `build-windows.yml`
 runs only on `feature/windows-**` pushes and on demand, not on every PR.
+The package job's host test + clippy step runs only for release tags; on PRs and alpha pushes
+`rust-host.yml` already runs it.
 
 Beta and stable releases require macOS Apple Silicon, Linux x64 and Windows x64.
 macOS Intel is optional for those releases; publication waits for its job and
