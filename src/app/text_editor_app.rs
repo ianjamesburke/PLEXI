@@ -147,6 +147,36 @@ pub struct TextEditorApp {
     change_view: Option<ChangeView>,
     /// `(id, status)` of the committed or reverted set already applied here.
     applied_change: Option<(String, String)>,
+    /// FNV-1a of the bytes last known to be on disk (loaded, saved or
+    /// reloaded). `None` while the file is absent. Content, not mtime, decides
+    /// whether a watcher event is an external change or our own write echo.
+    disk_hash: Option<u64>,
+    /// How the file on disk now disagrees with the buffer, shown in the header.
+    external: Option<ExternalChange>,
+    /// Inline modal question awaiting a keypress.
+    prompt: Option<Prompt>,
+    /// Armed lazily from `service_external`; re-armed when `path` moves.
+    watch: Option<(PathBuf, crate::host::path_watch::PathWatch)>,
+}
+
+/// The file changed on disk while the buffer held unsaved edits, or vanished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalChange {
+    /// Disk content differs from what this buffer was based on, and the buffer
+    /// is dirty. Neither side wins until the user chooses.
+    Modified,
+    /// The file was deleted or renamed away. The buffer is kept as is.
+    Deleted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Prompt {
+    /// Cmd+S on a conflicted buffer: reload / overwrite / cancel.
+    Overwrite,
+    /// Close on a dirty, non-autosaved buffer: save / discard / cancel.
+    /// `conflicted` swaps Save for Overwrite so a close never clobbers an
+    /// external write unasked.
+    Close { conflicted: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,6 +231,7 @@ impl TextEditorApp {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "untitled".to_string()),
         );
+        let disk_hash = (load_error.is_none() && path.exists()).then(|| fnv1a64(raw.as_bytes()));
         let (note_header, content, note_title) = split_note(is_note, raw);
         let mode = detect_mode(&path, is_note);
         log::info!(
@@ -240,6 +271,10 @@ impl TextEditorApp {
             host_pane_id: None,
             change_view: None,
             applied_change: None,
+            disk_hash,
+            external: None,
+            prompt: None,
+            watch: None,
         }
     }
 
@@ -683,6 +718,181 @@ impl TextEditorApp {
         }
     }
 
+    /// Re-reads the file after a watcher event. Equal content is our own write
+    /// echo. A clean buffer follows the disk; a dirty one never silently picks
+    /// a winner.
+    fn check_disk(&mut self) -> bool {
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if self.disk_hash.is_some() && self.external != Some(ExternalChange::Deleted) {
+                    log::info!("notes_editor: file deleted on disk path={:?}", self.path);
+                    self.external = Some(ExternalChange::Deleted);
+                    return true;
+                }
+                return false;
+            }
+            Err(e) => {
+                log::warn!(
+                    "notes_editor: cannot re-read {:?} after external change: {e}",
+                    self.path
+                );
+                return false;
+            }
+        };
+        let hash = fnv1a64(raw.as_bytes());
+        if self.disk_hash == Some(hash) && self.external != Some(ExternalChange::Deleted) {
+            return false;
+        }
+        if self.last_edit.is_none() {
+            log::info!(
+                "notes_editor: reloading clean buffer after external change path={:?} bytes={}",
+                self.path,
+                raw.len()
+            );
+            self.reload_from(raw, hash);
+            return true;
+        }
+        // Dirty: if the disk now equals what we hold, there is nothing to resolve.
+        if self.composed() == raw {
+            self.last_edit = None;
+            self.disk_hash = Some(hash);
+            self.external = None;
+            return true;
+        }
+        if self.external == Some(ExternalChange::Modified) && self.disk_hash == Some(hash) {
+            return false;
+        }
+        log::info!(
+            "notes_editor: external change conflicts with unsaved edits path={:?}",
+            self.path
+        );
+        self.disk_hash = Some(hash);
+        self.external = Some(ExternalChange::Modified);
+        true
+    }
+
+    /// Replaces the buffer with `raw` from disk, keeping the caret byte offset
+    /// and scroll position as close as the new text allows.
+    fn reload_from(&mut self, raw: String, hash: u64) {
+        let caret = self.caret_byte();
+        let scroll = self.view.scroll_y;
+        let (note_header, content, note_title) = split_note(self.is_note, raw);
+        self.note_header = note_header;
+        self.note_title = note_title;
+        self.doc = Document::new(&content);
+        let mut at = caret.min(content.len());
+        while !content.is_char_boundary(at) {
+            at -= 1;
+        }
+        self.select_byte_range(&(at..at));
+        let line_count = self.doc.buffer().line_count();
+        self.view.set_scroll_y(scroll, line_count);
+        self.last_edit = None;
+        self.disk_hash = Some(hash);
+        self.external = None;
+        if let Some(bar) = &mut self.find_bar {
+            bar.recompute(&content);
+        }
+    }
+
+    /// Prompt answer. Returns true when `key` was one of the prompt's keys.
+    fn apply_prompt_key(&mut self, key: egui::Key) -> bool {
+        let Some(prompt) = self.prompt else {
+            return false;
+        };
+        use egui::Key;
+        match (prompt, key) {
+            (_, Key::Escape) => {
+                log::info!("notes_editor: prompt cancelled path={:?}", self.path);
+                self.prompt = None;
+            }
+            (Prompt::Overwrite, Key::R) => {
+                self.prompt = None;
+                self.reload_from_disk();
+            }
+            (Prompt::Overwrite, Key::O) | (Prompt::Close { conflicted: true }, Key::O) => {
+                self.prompt = None;
+                log::info!("notes_editor: overwriting external change path={:?}", self.path);
+                self.write_buffer(Durability::Fsync);
+                if matches!(prompt, Prompt::Close { .. }) && self.last_edit.is_none() {
+                    self.wants_close = true;
+                }
+            }
+            (Prompt::Close { conflicted: false }, Key::S) => {
+                self.prompt = None;
+                self.flush();
+                if self.last_edit.is_none() {
+                    self.wants_close = true;
+                }
+            }
+            (Prompt::Close { .. }, Key::D) => {
+                log::info!("notes_editor: discarding unsaved edits on close path={:?}", self.path);
+                self.prompt = None;
+                self.last_edit = None;
+                self.wants_close = true;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn reload_from_disk(&mut self) {
+        match std::fs::read_to_string(&self.path) {
+            Ok(raw) => {
+                let hash = fnv1a64(raw.as_bytes());
+                log::info!("notes_editor: reload chosen over unsaved edits path={:?}", self.path);
+                self.reload_from(raw, hash);
+            }
+            Err(e) => {
+                log::warn!("notes_editor: reload failed path={:?}: {e}", self.path);
+                self.last_save_result = Some(format!("error: {e}"));
+            }
+        }
+    }
+
+    fn prompt_keys(&self) -> &'static [egui::Key] {
+        &[egui::Key::R, egui::Key::O, egui::Key::S, egui::Key::D, egui::Key::Escape]
+    }
+
+    /// Inline prompt row under the header.
+    fn show_prompt(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+        let Some(prompt) = self.prompt else {
+            return;
+        };
+        let (question, choices): (&str, &[(&str, egui::Key)]) = match prompt {
+            Prompt::Overwrite => (
+                "File changed on disk. Your edits conflict.",
+                &[("[R] Reload", egui::Key::R), ("[O] Overwrite", egui::Key::O), ("[Esc] Cancel", egui::Key::Escape)],
+            ),
+            Prompt::Close { conflicted: false } => (
+                "Unsaved changes.",
+                &[("[S] Save", egui::Key::S), ("[D] Discard", egui::Key::D), ("[Esc] Cancel", egui::Key::Escape)],
+            ),
+            Prompt::Close { conflicted: true } => (
+                "Unsaved changes, and the file changed on disk.",
+                &[("[O] Overwrite", egui::Key::O), ("[D] Discard", egui::Key::D), ("[Esc] Cancel", egui::Key::Escape)],
+            ),
+        };
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            ui.add_space(crate::ui::style::SPACE_SM);
+            ui.label(
+                egui::RichText::new(question)
+                    .size(crate::ui::style::TEXT_BODY)
+                    .color(colors.warning),
+            );
+            for (label, key) in choices {
+                if ui.button(*label).clicked_by(egui::PointerButton::Primary) {
+                    chosen = Some(*key);
+                }
+            }
+        });
+        if let Some(key) = chosen {
+            self.apply_prompt_key(key);
+        }
+    }
+
     fn is_effectively_empty(&self) -> bool {
         content_is_effectively_empty(&self.path, &self.composed())
     }
@@ -705,6 +915,10 @@ impl TextEditorApp {
     /// Runs the debounced autosave when the last edit is old enough. Called
     /// every rendered frame; extracted so tests can drive the race directly.
     fn maybe_autosave(&mut self) {
+        // Only notes autosave. A file opened by path is written by Cmd+S.
+        if !self.is_note || self.external == Some(ExternalChange::Modified) {
+            return;
+        }
         if let Some(t) = self.last_edit {
             if t.elapsed() >= DEBOUNCE {
                 self.autosave();
@@ -712,7 +926,34 @@ impl TextEditorApp {
         }
     }
 
+    /// Cmd+S. A clean buffer is a no-op, a conflicted one asks first.
+    fn explicit_save(&mut self) {
+        if self.last_edit.is_none() {
+            log::info!("notes_editor: save on clean buffer is a no-op path={:?}", self.path);
+            return;
+        }
+        if self.external == Some(ExternalChange::Modified) {
+            log::info!("notes_editor: save blocked by external change path={:?}", self.path);
+            self.prompt = Some(Prompt::Overwrite);
+            return;
+        }
+        self.flush();
+    }
+
     fn flush_with(&mut self, durability: Durability) {
+        if self.external == Some(ExternalChange::Modified) {
+            log::warn!(
+                "notes_editor: write refused, disk changed under unsaved edits path={:?}",
+                self.path
+            );
+            return;
+        }
+        self.write_buffer(durability);
+    }
+
+    /// Writes the buffer unconditionally (the conflict check lives in
+    /// `flush_with`). Empty notes inside a tier are deleted instead.
+    fn write_buffer(&mut self, durability: Durability) {
         // Empty content → delete the file rather than writing an empty document.
         if self.is_effectively_empty() {
             if self.path.exists() {
@@ -727,6 +968,8 @@ impl TextEditorApp {
                 } else {
                     log::info!("notes_editor: deleted empty note {:?}", self.path);
                     self.last_edit = None;
+                    self.disk_hash = None;
+                    self.external = None;
                 }
             } else {
                 self.last_edit = None;
@@ -742,6 +985,8 @@ impl TextEditorApp {
         match write_note_atomically(&self.path, document.as_bytes(), durability) {
             Ok(()) => {
                 self.last_edit = None;
+                self.disk_hash = Some(fnv1a64(document.as_bytes()));
+                self.external = None;
                 self.last_save_result = Some("ok".to_string());
                 log::info!(
                     "notes_editor: semantic save completed path={:?} bytes={} result=ok",
@@ -1194,11 +1439,10 @@ fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
 /// auto-deleted on close). Applies to notes in a tier only — an arbitrary
 /// Markdown file the user opened is never deleted for looking empty.
 fn content_is_effectively_empty(path: &Path, content: &str) -> bool {
-    if content.is_empty() {
-        return true;
-    }
+    // Only notes inside a tier are auto-cleaned. An empty file anywhere else
+    // is the user's file (`__init__.py`, `.gitkeep`) and must survive.
     crate::notes::tier_root_for_note(path).is_some()
-        && crate::notes::parse_note(content).1.trim().is_empty()
+        && (content.is_empty() || crate::notes::parse_note(content).1.trim().is_empty())
 }
 
 /// Every `<name>.md` inside one tier, searched recursively but never across a
@@ -1359,6 +1603,7 @@ struct EditorChrome {
     title: Option<String>,
     file_name: String,
     save_indicator: &'static str,
+    dirty: bool,
 }
 
 impl TextEditorApp {
@@ -1380,15 +1625,25 @@ impl TextEditorApp {
             save_indicator: editor_save_indicator(
                 self.last_edit.is_some(),
                 self.last_save_result.as_deref(),
+                self.external,
             ),
+            dirty: self.last_edit.is_some(),
         }
     }
 }
 
 /// `"Save failed"` while a write error is still dirty, `"Unsaved"` while edits
 /// are waiting on the debounce, `"Saved"` once the buffer matches disk.
-fn editor_save_indicator(dirty: bool, last_save_result: Option<&str>) -> &'static str {
-    if dirty && last_save_result.is_some_and(|result| result.starts_with("error")) {
+fn editor_save_indicator(
+    dirty: bool,
+    last_save_result: Option<&str>,
+    external: Option<ExternalChange>,
+) -> &'static str {
+    if external == Some(ExternalChange::Modified) {
+        "Changed on disk"
+    } else if external == Some(ExternalChange::Deleted) {
+        "Deleted on disk"
+    } else if dirty && last_save_result.is_some_and(|result| result.starts_with("error")) {
         "Save failed"
     } else if dirty {
         "Unsaved"
@@ -1414,8 +1669,8 @@ fn paint_editor_header(
     let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
     let name_color = colors.text_secondary(colors.pane_header_bg());
     let save_color = match chrome.save_indicator {
-        "Save failed" => colors.danger,
-        "Unsaved" => colors.warning,
+        "Save failed" | "Deleted on disk" => colors.danger,
+        "Unsaved" | "Changed on disk" => colors.warning,
         _ => colors.text_dim,
     };
     bar_ui.horizontal_centered(|ui| {
@@ -1431,6 +1686,13 @@ fn paint_editor_header(
                 egui::RichText::new("·")
                     .size(crate::ui::style::TEXT_HINT)
                     .color(colors.text_dim),
+            );
+        }
+        if chrome.dirty {
+            ui.label(
+                egui::RichText::new("\u{25CF}")
+                    .size(crate::ui::style::TEXT_HINT)
+                    .color(colors.warning),
             );
         }
         ui.label(
@@ -1484,12 +1746,22 @@ impl App for TextEditorApp {
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
+        if self.prompt.is_some() {
+            for key in self.prompt_keys() {
+                if input.key_pressed(*key) && input.modifiers().matches_logically(egui::Modifiers::NONE) {
+                    self.apply_prompt_key(*key);
+                    break;
+                }
+            }
+            // Nothing reaches the buffer while a question is open.
+            return KeyDisposition::Consumed;
+        }
         if input.key_pressed(egui::Key::S)
             && input
                 .modifiers()
                 .matches_logically(egui::Modifiers::COMMAND)
         {
-            self.flush();
+            self.explicit_save();
             return KeyDisposition::Consumed;
         }
         // Cmd+G: toggle Live Preview / source. (Obsidian uses Cmd+E, but the
@@ -1660,13 +1932,35 @@ impl App for TextEditorApp {
                 memory.has_focus(find_input_id) || memory.has_focus(replace_input_id)
             });
 
+        if self.prompt.is_some() && owns_input {
+            for key in self.prompt_keys() {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, *key)) {
+                    self.apply_prompt_key(*key);
+                    break;
+                }
+            }
+            if self.prompt.is_some() {
+                ui.input_mut(|i| {
+                    i.events.retain(|e| {
+                        !matches!(
+                            e,
+                            egui::Event::Key { .. }
+                                | egui::Event::Text(_)
+                                | egui::Event::Paste(_)
+                                | egui::Event::Cut
+                        )
+                    })
+                });
+            }
+        }
+
         // App-level shortcuts, consumed out of the frame's event queue before
         // the editor widget (which reads the same queue) can see them. Gated
         // on this pane's surfaces owning input so an unfocused notes pane
         // never steals another pane's keys.
         if editor_focused || find_focused {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-                self.flush();
+                self.explicit_save();
             }
             if self.mode.is_markdown()
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::G))
@@ -1721,6 +2015,7 @@ impl App for TextEditorApp {
         }
 
         self.show_change_banner(ui, colors);
+        self.show_prompt(ui, colors);
 
         // When the find bar is open, reserve its height at the bottom before
         // laying out the editor so it doesn't overlap the bar.
@@ -1967,6 +2262,58 @@ impl App for TextEditorApp {
         self.wants_close
     }
 
+    fn request_close(&mut self) -> bool {
+        // Notes autosave, so closing flushes them silently. A file opened by
+        // path is not autosaved, and a conflicted buffer must not be flushed.
+        let conflicted = self.external == Some(ExternalChange::Modified);
+        let needs_prompt = self.last_edit.is_some() && (!self.is_note || conflicted);
+        if self.wants_close || !needs_prompt {
+            return true;
+        }
+        log::info!("notes_editor: close asked about unsaved buffer path={:?}", self.path);
+        self.prompt = Some(Prompt::Close { conflicted });
+        false
+    }
+
+    fn service_external(
+        &mut self,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+    ) -> bool {
+        if self.load_error.is_some() {
+            return false;
+        }
+        let armed_for_path = self.watch.as_ref().map(|(path, _)| path == &self.path);
+        if armed_for_path != Some(true) {
+            self.watch = None;
+            let (Some(parent), Some(name)) = (self.path.parent(), self.path.file_name()) else {
+                return false;
+            };
+            if !parent.is_dir() {
+                return false;
+            }
+            match crate::host::path_watch::PathWatch::new(
+                parent,
+                Some(name.to_os_string()),
+                std::sync::Arc::clone(wake),
+                "editor_file",
+            ) {
+                Ok(watch) => {
+                    self.watch = Some((self.path.clone(), watch));
+                    // Anything that landed between load and arm.
+                    return self.check_disk();
+                }
+                Err(e) => {
+                    log::warn!("notes_editor: cannot watch {:?}: {e}", self.path);
+                    return false;
+                }
+            }
+        }
+        match &self.watch {
+            Some((_, watch)) if watch.take_changed() => self.check_disk(),
+            _ => false,
+        }
+    }
+
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_commands)
     }
@@ -1998,6 +2345,10 @@ impl App for TextEditorApp {
                     Err(e) => (String::new(), Some(e.to_string())),
                 };
                 self.is_note = crate::notes::tier_root_for_note(&new_path).is_some();
+                self.disk_hash = (load_error.is_none() && new_path.exists())
+                    .then(|| fnv1a64(raw.as_bytes()));
+                self.external = None;
+                self.prompt = None;
                 let (note_header, content, note_title) = split_note(self.is_note, raw);
                 self.mode = detect_mode(&new_path, self.is_note);
                 log::info!(
@@ -2117,6 +2468,8 @@ impl App for TextEditorApp {
             "caret": caret_char,
             "scroll": {"y": sem.scroll_y},
             "dirty": self.last_edit.is_some(),
+            "external_change": self.external.map(|e| format!("{e:?}")),
+            "prompt": self.prompt.map(|p| format!("{p:?}")),
             "last_save_result": self.last_save_result,
             "file_name": chrome.file_name,
             "header_title": chrome.title,
@@ -2345,6 +2698,8 @@ impl Drop for TextEditorApp {
         if self.last_edit.is_some() || self.is_effectively_empty() {
             self.flush();
         }
+        // Unprompted close paths (CLI, quit) save a dirty file like they always
+        // did; `flush_with` refuses when that would clobber an external write.
     }
 }
 
@@ -2364,6 +2719,7 @@ impl super::PlexiApp {
                     continue;
                 };
                 changed |= app.runtime.sync_change_set();
+                changed |= app.runtime.service_external(&self.ui_wake);
                 if let Some(buffer) = app.runtime.editor_buffer() {
                     buffers.push(buffer);
                 }
@@ -2501,7 +2857,45 @@ mod tests {
 
         // A real body is never empty; zero bytes always is.
         assert!(!content_is_effectively_empty(&note, with_body));
-        assert!(content_is_effectively_empty(&outside, ""));
+        assert!(content_is_effectively_empty(&note, ""));
+        assert!(
+            !content_is_effectively_empty(&outside, ""),
+            "an empty file outside the notes tiers is a real file, not litter"
+        );
+    }
+
+    #[test]
+    fn closing_an_existing_empty_file_outside_the_tiers_keeps_it() {
+        let dir = unique_temp_dir("editor-empty-file-kept");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("__init__.py");
+        std::fs::write(&path, "").unwrap();
+        let app = TextEditorApp::new(path.clone());
+        drop(app);
+        assert!(path.exists(), "opening and closing must not delete the file");
+
+        let mut app = TextEditorApp::new(path.clone());
+        app.doc.apply(EditorCommand::InsertText("x".into()));
+        app.doc.apply(EditorCommand::Undo);
+        app.last_edit = Some(Instant::now());
+        app.flush();
+        assert!(path.exists(), "saving an emptied file writes it empty");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_note_inside_a_tier_is_still_cleaned_up() {
+        let dir = unique_temp_dir("editor-empty-note-cleaned");
+        let tier = dir.join(".plexi").join("notes");
+        std::fs::create_dir_all(&tier).unwrap();
+        let path = tier.join("scratch.md");
+        std::fs::write(&path, "---\nsource: \"scratchpad\"\n---\n\n").unwrap();
+        let app = TextEditorApp::new(path.clone());
+        drop(app);
+        assert!(!path.exists(), "an empty tier note is deleted on close");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2811,8 +3205,8 @@ mod tests {
         let path = blocker.join("child.md");
         let mut app = TextEditorApp::new(path);
         app.doc.apply(EditorCommand::InsertText("content".into()));
-        app.last_edit = Some(Instant::now() - DEBOUNCE);
-        app.maybe_autosave();
+        app.last_edit = Some(Instant::now());
+        app.explicit_save();
         assert!(
             app.last_save_result
                 .as_deref()
@@ -3471,5 +3865,199 @@ mod tests {
         assert_eq!(app.font_size, FONT_SIZE_DEFAULT);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod data_safety_tests {
+    use super::*;
+    use crate::app::app_trait::App;
+
+    fn plain_file(name: &str, body: &str) -> (PathBuf, TextEditorApp) {
+        let dir = std::env::temp_dir().join(format!(
+            "editor-safety-{name}-{}-{}",
+            std::process::id(),
+            crate::platform::clock::now_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("file.txt");
+        std::fs::write(&path, body).unwrap();
+        let app = TextEditorApp::new(path.clone());
+        (path, app)
+    }
+
+    fn type_text(app: &mut TextEditorApp, text: &str) {
+        app.doc.apply(EditorCommand::Move {
+            movement: crate::editor::commands::Movement::DocEnd,
+            extend: false,
+        });
+        app.doc.apply(EditorCommand::InsertText(text.into()));
+        app.last_edit = Some(Instant::now());
+    }
+
+    #[test]
+    fn plain_file_is_not_autosaved_and_cmd_s_writes() {
+        let (path, mut app) = plain_file("explicit", "seed");
+        type_text(&mut app, " more");
+        app.last_edit = Some(Instant::now() - DEBOUNCE * 5);
+        app.maybe_autosave();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed");
+        assert!(app.editor_chrome().dirty);
+        assert_eq!(app.editor_chrome().save_indicator, "Unsaved");
+
+        app.explicit_save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed more");
+        assert!(!app.editor_chrome().dirty);
+    }
+
+    #[test]
+    fn cmd_s_on_a_clean_buffer_writes_nothing() {
+        let (path, mut app) = plain_file("clean-save", "seed");
+        std::fs::write(&path, "seed").unwrap();
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        app.explicit_save();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn external_write_reloads_a_clean_buffer_and_keeps_the_caret() {
+        let (path, mut app) = plain_file("reload", "hello world");
+        app.select_byte_range(&(5..5));
+        std::fs::write(&path, "hello brave new world").unwrap();
+        assert!(app.check_disk());
+        assert_eq!(app.doc.text(), "hello brave new world");
+        assert_eq!(app.caret_byte(), 5);
+        assert!(app.last_edit.is_none());
+        assert!(app.external.is_none());
+    }
+
+    #[test]
+    fn our_own_write_echo_is_not_a_change() {
+        let (_path, mut app) = plain_file("echo", "seed");
+        type_text(&mut app, "!");
+        app.explicit_save();
+        assert!(!app.check_disk());
+        assert!(app.external.is_none());
+    }
+
+    #[test]
+    fn external_write_to_a_dirty_buffer_is_a_conflict_that_loses_nothing() {
+        let (path, mut app) = plain_file("conflict", "seed");
+        type_text(&mut app, " mine");
+        std::fs::write(&path, "agent wrote this").unwrap();
+        assert!(app.check_disk());
+        assert_eq!(app.external, Some(ExternalChange::Modified));
+        assert_eq!(app.editor_chrome().save_indicator, "Changed on disk");
+        assert_eq!(app.doc.text(), "seed mine", "buffer kept");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent wrote this", "disk kept");
+
+        // Neither autosave nor an unprompted flush may pick a winner.
+        app.flush();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent wrote this");
+
+        app.explicit_save();
+        assert_eq!(app.prompt, Some(Prompt::Overwrite));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent wrote this");
+
+        assert!(app.apply_prompt_key(egui::Key::O));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed mine");
+        assert!(app.external.is_none());
+        assert!(app.last_edit.is_none());
+    }
+
+    #[test]
+    fn conflict_reload_takes_the_disk_version() {
+        let (path, mut app) = plain_file("conflict-reload", "seed");
+        type_text(&mut app, " mine");
+        std::fs::write(&path, "agent wrote this").unwrap();
+        app.check_disk();
+        app.explicit_save();
+        assert!(app.apply_prompt_key(egui::Key::R));
+        assert_eq!(app.doc.text(), "agent wrote this");
+        assert!(app.last_edit.is_none());
+        assert!(app.external.is_none());
+    }
+
+    #[test]
+    fn conflict_cancel_keeps_everything() {
+        let (path, mut app) = plain_file("conflict-cancel", "seed");
+        type_text(&mut app, " mine");
+        std::fs::write(&path, "agent").unwrap();
+        app.check_disk();
+        app.explicit_save();
+        assert!(app.apply_prompt_key(egui::Key::Escape));
+        assert!(app.prompt.is_none());
+        assert_eq!(app.doc.text(), "seed mine");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent");
+    }
+
+    #[test]
+    fn deleting_the_file_is_shown_and_the_buffer_survives() {
+        let (path, mut app) = plain_file("deleted", "seed");
+        std::fs::remove_file(&path).unwrap();
+        assert!(app.check_disk());
+        assert_eq!(app.external, Some(ExternalChange::Deleted));
+        assert_eq!(app.editor_chrome().save_indicator, "Deleted on disk");
+        assert_eq!(app.doc.text(), "seed");
+        type_text(&mut app, "!");
+        app.explicit_save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed!", "save recreates it");
+        assert!(app.external.is_none());
+    }
+
+    #[test]
+    fn close_on_a_dirty_plain_file_prompts_and_discard_leaves_disk_alone() {
+        let (path, mut app) = plain_file("close-discard", "seed");
+        assert!(app.request_close(), "clean buffer closes without a prompt");
+        type_text(&mut app, " mine");
+        assert!(!app.request_close());
+        assert_eq!(app.prompt, Some(Prompt::Close { conflicted: false }));
+        assert!(!app.wants_close());
+        assert!(app.apply_prompt_key(egui::Key::D));
+        assert!(app.wants_close());
+        drop(app);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed");
+    }
+
+    #[test]
+    fn close_prompt_save_writes_then_closes_and_cancel_stays() {
+        let (path, mut app) = plain_file("close-save", "seed");
+        type_text(&mut app, " mine");
+        assert!(!app.request_close());
+        assert!(app.apply_prompt_key(egui::Key::Escape));
+        assert!(!app.wants_close());
+        assert!(!app.request_close());
+        assert!(app.apply_prompt_key(egui::Key::S));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed mine");
+        assert!(app.wants_close());
+    }
+
+    #[test]
+    fn close_prompt_on_a_conflict_offers_overwrite_not_save() {
+        let (path, mut app) = plain_file("close-conflict", "seed");
+        type_text(&mut app, " mine");
+        std::fs::write(&path, "agent").unwrap();
+        app.check_disk();
+        assert!(!app.request_close());
+        assert_eq!(app.prompt, Some(Prompt::Close { conflicted: true }));
+        assert!(!app.apply_prompt_key(egui::Key::S), "save is not offered");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent");
+    }
+
+    #[test]
+    fn watcher_delivers_an_external_write_through_service_external() {
+        let (path, mut app) = plain_file("watch", "seed");
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        assert!(!app.service_external(&wake), "arming alone changes nothing");
+        std::thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(300)));
+        std::fs::write(&path, "from an agent").unwrap();
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
+        while Instant::now() < deadline && app.doc.text() != "from an agent" {
+            app.service_external(&wake);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(app.doc.text(), "from an agent");
     }
 }
