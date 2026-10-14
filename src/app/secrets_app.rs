@@ -240,19 +240,6 @@ impl SecretsApp {
                                 log::warn!("secrets_manager: failed to write default route: {e}")
                             }
                         }
-                        match crate::workspace::secrets::write_terminal_env_inject(
-                            root, &name, true,
-                        ) {
-                            Ok(()) => {
-                                self.terminal_inject.insert(name.clone());
-                                log::info!(
-                                    "secrets_manager: enabled terminal env injection for '{name}'"
-                                );
-                            }
-                            Err(e) => log::warn!(
-                                "secrets_manager: failed to enable terminal env injection: {e}"
-                            ),
-                        }
                     }
                     self.selected = self.entries.len().saturating_sub(1);
                     self.mode = Mode::List;

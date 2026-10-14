@@ -30,6 +30,7 @@
 //! - [`reconcile`] — index ↔ keychain reconciliation and canonical spellings.
 //! - [`resolver`] — the workspace TOML model and the canonical-name resolver.
 //! - [`file`] — `workspace init` scaffolding and `secrets.toml` upserts.
+//! - [`pane_read`] — a pane's `plexi secret get`, admitted by the host gate.
 //!
 //! This file is the module's public surface: the keychain account naming
 //! helpers, [`system_store`], and the re-exports every caller reaches through.
@@ -38,6 +39,7 @@ mod file;
 mod folder;
 mod folder_store;
 mod migrate;
+mod pane_read;
 mod reconcile;
 mod resolver;
 mod store;
@@ -73,6 +75,9 @@ pub use folder::{
     ReadResult, SecretActor, SECRET_READ_TOOL,
 };
 pub use folder_store::backend_label;
+pub use pane_read::{read_pane_secret, SecretScope};
+#[cfg(test)]
+pub use pane_read::SECRET_GET_TOOL;
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,

@@ -839,6 +839,8 @@ mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
 #[cfg(test)]
+mod agent_security_tests;
+#[cfg(test)]
 mod permission_gate_tests;
 
 #[cfg(test)]

@@ -2315,6 +2315,48 @@
         },
         {
           "additionalProperties": false,
+          "description": "`plexi secret get` from a terminal pane. The host admits `secret.get`\nfor the pane named by `peer_ancestry` and answers `status` `value`,\n`permission_required` (with `pending_request_id`), `denied`, or\n`not_found`. Without a grant no value is read; the desktop Allow once\nclick is what grants. A caller that resolves to no pane is denied.",
+          "properties": {
+            "global": {
+              "default": false,
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "peer_ancestry": {
+              "description": "Host-captured peer ancestry. Socket clients cannot set this; the\nlistener overwrites it before the read is admitted.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_secret_get",
+              "type": "string"
+            },
+            "workspace_root": {
+              "description": "Workspace `plexi secret get` resolved from the caller's cwd.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Agents API: heads, runs, delegation, and gated tool calls.\n`op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,\n`show_run`, `finish_run`, or `delegate`. `payload` carries the\nworkspace path and the op's fields. The host writes the JSON result\nto `response_file`.",
           "properties": {
             "op": {

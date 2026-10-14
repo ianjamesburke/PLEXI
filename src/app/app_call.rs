@@ -377,7 +377,10 @@ impl PlexiApp {
             );
             self.approval_banner_logged = Some(pending_id.clone());
         }
-        let caption = format!("{} wants {}", pending[0].actor_id, pending[0].tool);
+        let caption = match pending[0].resource_id.as_deref() {
+            Some(resource) => format!("{} wants {} {resource}", pending[0].actor_id, pending[0].tool),
+            None => format!("{} wants {}", pending[0].actor_id, pending[0].tool),
+        };
         let synthetic = self.synthetic_input_frame;
         let choices = [
             ("Allow once", crate::broker::gate::ApprovalChoice::Once),

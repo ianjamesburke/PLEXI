@@ -827,6 +827,24 @@ pub enum AppRequest {
         approve: bool,
         response_file: String,
     },
+    /// `plexi secret get` from a terminal pane. The host admits `secret.get`
+    /// for the pane named by `peer_ancestry` and answers `status` `value`,
+    /// `permission_required` (with `pending_request_id`), `denied`, or
+    /// `not_found`. Without a grant no value is read; the desktop Allow once
+    /// click is what grants. A caller that resolves to no pane is denied.
+    PaneSecretGet {
+        name: String,
+        #[serde(default)]
+        global: bool,
+        /// Workspace `plexi secret get` resolved from the caller's cwd.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_root: Option<std::path::PathBuf>,
+        /// Host-captured peer ancestry. Socket clients cannot set this; the
+        /// listener overwrites it before the read is admitted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        peer_ancestry: Vec<u32>,
+        response_file: String,
+    },
     /// Agents API: heads, runs, delegation, and gated tool calls.
     /// `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,
     /// `show_run`, `finish_run`, or `delegate`. `payload` carries the

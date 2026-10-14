@@ -250,16 +250,40 @@ pub fn read_folder_secret(
     let folder = canonical_folder(folder)?;
     let folder_str = folder.to_string_lossy().into_owned();
     let input = read_input_json(name, &folder_str);
+    let account = account_name(&folder, name);
+    Ok(admitted_read(
+        monitor,
+        actor,
+        SECRET_READ_TOOL,
+        &input,
+        &folder,
+        &format!("name={name} folder={folder_str}"),
+        || store.get(&account),
+    ))
+}
+
+/// Admit `tool` for `actor`, then call `fetch` only when a grant covers this
+/// exact read. An Allow once grant is spent here. `label` names the secret in
+/// logs; it never carries the value.
+pub(super) fn admitted_read(
+    monitor: &PermissionMonitor,
+    actor: &SecretActor,
+    tool: &str,
+    input: &str,
+    workspace_root: &Path,
+    label: &str,
+    fetch: impl FnOnce() -> Option<Zeroizing<String>>,
+) -> ReadResult {
     let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
     let admission = monitor.admit(AdmitRequest {
         call_id: &call_id,
-        tool: SECRET_READ_TOOL,
-        input_json: &input,
+        tool,
+        input_json: input,
         actor_type: actor.kind,
         actor_id: &actor.id,
         actor_scope: ActorScope::User,
         trust_origin: TRUST_ORIGIN,
-        workspace_root: &folder,
+        workspace_root,
         context_id: 0,
         package_id: "",
         instance_id: 0,
@@ -268,19 +292,16 @@ pub fn read_folder_secret(
     match admission {
         Admission::Required { pending_request_id } => {
             log::info!(
-                "folder_secrets: read permission_required name={name} folder={folder_str} actor={} pending={pending_request_id}",
+                "secrets: {tool} permission_required {label} actor={} pending={pending_request_id}",
                 actor.id
             );
-            Ok(ReadResult::PermissionRequired {
+            ReadResult::PermissionRequired {
                 pending_id: pending_request_id,
-            })
+            }
         }
         Admission::Denied { code } => {
-            log::info!(
-                "folder_secrets: read denied name={name} folder={folder_str} actor={} code={code}",
-                actor.id
-            );
-            Ok(ReadResult::Denied)
+            log::info!("secrets: {tool} denied {label} actor={} code={code}", actor.id);
+            ReadResult::Denied
         }
         Admission::Proceed {
             grant_id,
@@ -290,24 +311,13 @@ pub fn read_folder_secret(
         } => {
             let resource = resource_id.unwrap_or_default();
             if monitor
-                .note_use(
-                    &actor.id,
-                    &call_id,
-                    &grant_id,
-                    &fingerprint,
-                    &resource,
-                    "",
-                )
+                .note_use(&actor.id, &call_id, &grant_id, &fingerprint, &resource, "")
                 .is_err()
             {
-                log::info!(
-                    "folder_secrets: read blocked before fetch name={name} folder={folder_str} actor={}",
-                    actor.id
-                );
-                return Ok(ReadResult::Denied);
+                log::info!("secrets: {tool} blocked before fetch {label} actor={}", actor.id);
+                return ReadResult::Denied;
             }
-            let account = account_name(&folder, name);
-            let value = store.get(&account);
+            let value = fetch();
             let outcome = if value.is_some() { "ok" } else { "missing" };
             if monitor
                 .note_outcome(
@@ -323,22 +333,20 @@ pub fn read_folder_secret(
                 )
                 .is_err()
             {
-                log::info!(
-                    "folder_secrets: audit failed after fetch; withholding name={name} folder={folder_str}",
-                );
-                return Ok(ReadResult::Denied);
+                log::info!("secrets: {tool} audit failed after fetch; withholding {label}");
+                return ReadResult::Denied;
             }
             // A human "Allow once" is GrantDuration::Once. Spending it here
             // is what makes the next read ask again. Always grants are left
             // in place; consume_once ignores them.
             monitor.consume_once(&grant_id, None);
             log::info!(
-                "folder_secrets: read allowed name={name} folder={folder_str} actor={} grant={grant_id} outcome={outcome}",
+                "secrets: {tool} allowed {label} actor={} grant={grant_id} outcome={outcome}",
                 actor.id
             );
             match value {
-                Some(value) => Ok(ReadResult::Value(value)),
-                None => Ok(ReadResult::NotFound),
+                Some(value) => ReadResult::Value(value),
+                None => ReadResult::NotFound,
             }
         }
     }

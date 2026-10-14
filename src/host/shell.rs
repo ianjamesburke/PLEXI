@@ -516,6 +516,28 @@ pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Op
     }
 }
 
+/// Remove every secret `build_env` placed: the workspace `[terminal.env]`
+/// names, their `PLEXI_TERMINAL_ENV_VALUE_*` copies, and folder secrets. An
+/// agent pane gets none of them, because any process can read the
+/// environment of a same-user parent (stint 0788 verified this from inside
+/// Claude Code's sandbox). Values are not logged.
+pub(crate) fn withhold_terminal_secrets(env: &mut HashMap<String, String>, cwd: Option<&Path>) {
+    withhold_folder_secrets(env, cwd);
+    let Some(names) = env.remove(TERMINAL_ENV_NAMES_VAR) else {
+        return;
+    };
+    let names: Vec<&str> = names.split(':').filter(|name| !name.is_empty()).collect();
+    for name in &names {
+        env.remove(*name);
+        env.remove(&preserved_terminal_env_name(name));
+    }
+    log::info!(
+        "shell::withhold_terminal_secrets: removed {} workspace terminal secret(s) from an agent pane: {}",
+        names.len(),
+        names.join(",")
+    );
+}
+
 fn is_shell_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
