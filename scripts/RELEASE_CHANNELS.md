@@ -124,3 +124,7 @@ just promote main install
 
 Release selection, channel acceptance, immutable identity and rollback are
 defined in [Distribution contract](DISTRIBUTION.md).
+
+## Round-trip acceptance
+
+The bump, promote and release flow above is exercised end to end, without publishing, by `scripts/release-round-trip-e2e.sh` (CI: `release-round-trip.yml`). Contract: `scripts/AGENTS.md`.
