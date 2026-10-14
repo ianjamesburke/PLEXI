@@ -141,6 +141,10 @@ They build and validate only that platform's Alpha package and native installer.
 This keeps the daily dogfood release loop focused on the platform in active use,
 without waiting for builds and failures on platforms that are not actively used.
 
+The same rule applies to pull-request and alpha-push CI: `distribution.yml` runs only the
+Apple Silicon job unless the `tag` input is a stable or beta release tag, and `build-windows.yml`
+runs only on `feature/windows-**` pushes and on demand, not on every PR.
+
 Beta and stable releases require macOS Apple Silicon, Linux x64 and Windows x64.
 macOS Intel is optional for those releases; publication waits for its job and
 includes its complete result if successful. Archive names come from `release::archive_name` and
