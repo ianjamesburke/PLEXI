@@ -675,6 +675,18 @@ Resolve one needs-you item. Approving a click approval is refused: the row stays
 | `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `pane_secret_get`
+
+`plexi secret get` from a terminal pane. The host admits `secret.get` for the pane named by `peer_ancestry` and answe...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `global` | `boolean` | no |
+| `name` | `string` | yes |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string` | yes |
+| `workspace_root` | `string?` | no |
+
 ### `agents_api`
 
 Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_ru...
