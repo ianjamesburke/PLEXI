@@ -355,6 +355,21 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
                 self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
             }
+            crate::protocol::AppRequest::PaneSecretGet {
+                name,
+                global,
+                workspace_root,
+                peer_ancestry,
+                response_file,
+            } => {
+                self.serve_secret_get(
+                    name,
+                    *global,
+                    workspace_root.as_deref(),
+                    peer_ancestry,
+                    response_file,
+                );
+            }
             crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
                 let mut payload = payload.clone();

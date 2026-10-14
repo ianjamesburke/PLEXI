@@ -200,9 +200,9 @@ pub fn write_default_route(
 
 /// Update `[terminal.env] inject = [...]` in workspace `secrets.toml`.
 ///
-/// Workspace-scoped secrets default to terminal injection on when created by
-/// the native Secrets app or CLI. This helper is also used by the native app
-/// toggle so the TOML file remains the durable source of policy.
+/// Injection is off for a new secret. The Secrets manager toggle is the only
+/// caller that turns it on, so the TOML file stays the durable source of
+/// policy. Agent panes never receive these names (`withhold_terminal_secrets`).
 pub fn write_terminal_env_inject(
     workspace_root: &Path,
     canonical: &str,

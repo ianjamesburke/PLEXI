@@ -738,6 +738,46 @@ mod tests {
             .expect("render rename modal");
     }
 
+    /// Stint 0788: a pane's `plexi secret get` shows on the desktop banner
+    /// with the secret and its workspace, so the person knows what Allow once
+    /// releases.
+    #[test]
+    fn screenshot_secret_get_banner_names_the_secret() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let root = tempfile::tempdir().expect("workspace");
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let scope = crate::workspace::secrets::SecretScope::Workspace {
+            id: "ws-banner".to_string(),
+            root: root.path().to_path_buf(),
+        };
+        let actor = crate::workspace::secrets::SecretActor {
+            kind: crate::broker::ActorType::Agent,
+            id: "pane:4".to_string(),
+        };
+        let store = crate::workspace::secrets::InMemoryKeychain::new();
+        let read = crate::workspace::secrets::read_pane_secret(
+            &monitor,
+            &store,
+            &actor,
+            "OPENAI_API_KEY",
+            &scope,
+            profile.path(),
+        )
+        .expect("read admits");
+        assert!(matches!(read, crate::workspace::secrets::ReadResult::PermissionRequired { .. }));
+
+        let mut h = PlexiUiHarness::new_sized(1100.0, 300.0);
+        h.run_steps(2);
+        let caption = format!(
+            "pane:4 wants secret.get OPENAI_API_KEY@{}",
+            root.path().display()
+        );
+        h.harness().get_by_label(&caption);
+        h.save_screenshot(&evidence_png!()).expect("render banner");
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]

@@ -22,6 +22,11 @@ Plexi prompts you to type the value (hidden). To read the value from an existing
 plexi secret set MY_API_KEY --from-env
 ```
 
+A stored secret is not added to terminal environments. To give one to the
+terminals you open in this workspace, turn on terminal injection for it in
+Secrets (Cmd+Shift+S). Panes Plexi opens for an agent never receive workspace or
+folder secrets in their environment.
+
 To make a secret available across all projects (not just the current workspace):
 
 ```sh
@@ -36,13 +41,19 @@ plexi secret get MY_API_KEY
 
 Looks up the secret for the current project first, then falls back to the global store.
 
+Inside a Plexi pane, any process could be an agent, so the host asks you first.
+The Plexi window shows an approval, and the command prints `permission_required`
+until you click **Allow once**. Run it again after the click. Allow once covers
+one read.
+
 ## List Secrets
 
 ```sh
 plexi secret list
 ```
 
-Lists all stored secret keys. Values are not shown.
+Lists all stored secret keys. Values are not shown. Names injected into
+terminals are marked.
 
 ## Delete a Secret
 

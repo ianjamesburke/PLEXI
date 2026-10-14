@@ -35,6 +35,7 @@ pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
 pub mod secrets_app;
+mod secret_get;
 mod sync;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
@@ -657,14 +658,12 @@ pub(crate) fn handle_socket_line(
                 | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                 }
-                crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. } => {
+                crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::PaneSecretGet { peer_ancestry: p, .. } => {
                     // Overwrite any client-supplied ancestry. A missing capture
                     // leaves the vector empty so the call cannot pretend to be a pane.
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
-                    log::info!(
-                        "pane_ipc: stamped CallAppTool peer ancestry ({} pid(s))",
-                        p.len()
-                    );
+                    log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
                 crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. } => {
                     // Same rule as CallAppTool: the wire value is never the
@@ -3059,6 +3058,9 @@ impl PlexiApp {
             );
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
+        if agent_pane {
+            shell::withhold_terminal_secrets(&mut env, working_directory.as_deref());
+        }
         crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
         (
             BackendSettings {
