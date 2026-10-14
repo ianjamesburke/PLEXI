@@ -3304,6 +3304,8 @@ fn write_registry_wasm_app(root: &std::path::Path, id: &str) {
 /// of transition history.
 #[test]
 fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);

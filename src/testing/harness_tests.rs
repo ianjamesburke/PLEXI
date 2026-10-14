@@ -46,6 +46,7 @@ fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path
 #[test]
 fn assistant_send_without_a_pane_creates_a_hidden_one() {
     let _channel = crate::config::set_test_channel("alpha");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
     let focused_before = h.app.windows[0].focused_pane;
     let missing = crate::config::config_dir().join("assistant-missing-pane.json");
@@ -6122,6 +6123,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
     // isolated profile dir keeps its `mcp_servers.toml` from colliding with
     // the beta-tier sibling tests below (all writing `config_dir()`).
     let _channel = crate::config::set_test_channel("beta");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::McpClient]);
     let profile_dir = tempfile::tempdir().expect("profile dir");
     let _profile = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -6427,7 +6429,7 @@ fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
 /// assertion — no OS process inspection needed.
 #[cfg(unix)]
 #[test]
-fn stable_tier_blocks_mcp_client_and_spawns_no_server_process() {
+fn experiment_off_blocks_mcp_client_and_spawns_no_server_process() {
     let _channel = crate::config::set_test_channel("main");
     let profile_dir = tempfile::tempdir().expect("profile dir");
     let _profile = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
@@ -6480,7 +6482,7 @@ fn stable_tier_blocks_mcp_client_and_spawns_no_server_process() {
         {
             let title = title.expect("checked above");
             assert!(
-                title.contains("beta channel"),
+                title.contains("mcp_client is an experiment"),
                 "the gate error must name the required tier and reach the guest: {title}"
             );
             break;
@@ -6498,13 +6500,14 @@ fn stable_tier_blocks_mcp_client_and_spawns_no_server_process() {
     );
 }
 
-/// Beta-tier sibling of `stable_tier_blocks_mcp_client_and_spawns_no_server_process`:
+/// Beta-tier sibling of `experiment_off_blocks_mcp_client_and_spawns_no_server_process`:
 /// the same manifest and server, on a channel where `ReleaseFeature::McpClient`
 /// is enabled, must still reach a real spawn.
 #[cfg(unix)]
 #[test]
-fn beta_tier_allows_mcp_client_and_spawns_the_server_process() {
+fn experiment_on_allows_mcp_client_and_spawns_the_server_process() {
     let _channel = crate::config::set_test_channel("beta");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::McpClient]);
     let profile_dir = tempfile::tempdir().expect("profile dir");
     let _profile = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
     let tmp = tempfile::tempdir().expect("tempdir");

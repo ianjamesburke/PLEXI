@@ -2930,6 +2930,8 @@ mod tests {
     #[test]
     fn raw_wasm_launch_uses_registered_manifest_identity_for_release_gate() {
         let _channel = crate::config::set_test_channel("main");
+        // WasmApps on so the launch reaches the manifest-identity gate; DAW stays off.
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let global_apps = tempfile::tempdir().expect("global apps");
         let app_dir = global_apps.path().join("daw");
         std::fs::create_dir_all(&app_dir).expect("create app dir");
@@ -2969,7 +2971,7 @@ mod tests {
             .expect_err("stable must reject a raw path to the registered DAW component");
 
         assert!(
-            error.contains("DAW requires the beta channel"),
+            error.contains("daw is an experiment"),
             "raw launch must use the manifest identity, not the unrelated file name: {error}"
         );
     }

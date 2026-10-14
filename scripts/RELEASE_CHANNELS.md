@@ -22,17 +22,15 @@ when they are built from the same release commit.
 
 ## Feature Gates
 
-Release-gated features are centralized in `src/release.rs`.
+Experiments are centralized in `src/release.rs`. Channels do not decide
+features: every experiment is off by default on every channel, including alpha,
+and is turned on per user with `plexi experiments enable <name>` (see
+`docs/CONFIG.md`). Channels still decide update cadence and profile directory.
 
-- `main` and `rc-*` are stable tier.
-- `beta` is beta tier.
-- `alpha` and `pr-*` are alpha tier.
-- Unknown named channels disable release-gated features.
-
-Use release gates for product surface that is not part of stable v1, such as
-the experimental DAW, media I/O, accessibility, Assistant, and
-marketplace/account flows. CLI and MCP app wrappers are part of stable v1. Use config sections for
-stable user preferences, such as `[effects]`.
+Use an experiment for product surface that is not part of stable v1. Use config
+sections for stable user preferences, such as `[effects]`. CLI app wrappers
+(`app open --cli`) are part of stable v1; `--mcp` wrappers are the `mcp_client`
+experiment.
 
 ## Local RC Flow
 

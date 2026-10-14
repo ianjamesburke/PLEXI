@@ -7,6 +7,10 @@ vocabulary an agent needs to drive a running Plexi host. Repo-internal workflow
 skills (ship pipeline, babysitter, and friends) live under `.claude/skills/` and
 `.agents/skills/` and are **never** published from here.
 
+## Experiment Sections
+
+Wrap any section that documents an experiment in `<!-- experiment: key -->` ... `<!-- /experiment -->` (keys from `ReleaseFeature::key`; several keys mean all must be on; markers nest and may sit inside fences). `plexi skill install` strips sections whose experiment is off. `skill_surface` checks the default render against the default help and each single-experiment render against its help.
+
 ## What the Skill Is Verified Against
 
 **The skill documents the CLI built from the same tree it lives in.** Not "the

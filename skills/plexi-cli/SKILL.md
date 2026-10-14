@@ -424,9 +424,9 @@ plexi assistant send --text "hello" --client narrative --kind output
 <!-- /experiment -->
 ```
 
-<!-- experiment: leads -->
 <!-- /experiment -->
 
+<!-- experiment: leads -->
 ### Create an agent head and claim a run
 
 Heads live in the workspace `.plexi/agents` directory. Grants are the permission

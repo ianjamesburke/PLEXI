@@ -10,6 +10,21 @@ Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by a
 
 PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
 
+## Experiments
+
+Features outside the stable v1 surface are experiments. Every experiment is off by default on every channel, including alpha. Channels decide update cadence and profile directory, never features.
+
+```toml
+[experiments]
+assistant = true
+```
+
+Manage the table with `plexi experiments list`, `plexi experiments enable <name>`, and `plexi experiments disable <name>`. Those edit config.toml in place and keep your comments and other keys. When the host reads an experiment at runtime, enabling it prints `restart required: run `plexi host restart``. An unknown name is a config error that lists the valid names; `plexi experiments`, `plexi config`, and `--help` still run so you can fix it.
+
+Experiments are read from the global config only. A workspace `.plexi` config that sets `[experiments]` has no effect, so a cloned repository can never switch on the relay, cloud, or agent surfaces for you.
+
+`plexi skill install` and `plexi completions` snapshot the enabled set when they run; rerun them after changing an experiment.
+
 ## Commands
 
 ```
