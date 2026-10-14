@@ -67,6 +67,13 @@ pub fn run(input: &RetentionInput<'_>) -> Result<RetentionReport, String> {
     Ok(report)
 }
 
+/// Whether ledger and conversation pruning may run: the user opted in under
+/// `[cloud]` and the `cloud_account` experiment is on. Log archives are pruned
+/// either way.
+pub fn history_pruning_enabled(cloud_opt_in: bool) -> bool {
+    cloud_opt_in && crate::release::feature_enabled(crate::release::ReleaseFeature::CloudAccount)
+}
+
 /// Host-startup entry. Skips assistant dirs when no workspace is open.
 pub fn run_at_startup(
     now: DateTime<Utc>,

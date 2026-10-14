@@ -172,17 +172,33 @@ pub fn relay_disable_cli() -> i32 {
     0
 }
 
-pub fn start_host_relay() {
+/// What `start_host_relay` did, so a test can tell "off" from "connecting".
+#[derive(Debug, PartialEq, Eq)]
+pub enum HostRelayStart {
+    /// The `relay` experiment is off. Nothing was read or opened.
+    ExperimentOff,
+    /// `relay.toml` has the relay disabled.
+    Disabled,
+    NoUrl,
+    AlreadyConnected,
+    Connecting,
+}
+
+pub fn start_host_relay() -> HostRelayStart {
+    if !crate::release::feature_enabled(crate::release::ReleaseFeature::Relay) {
+        log::info!("relay: not starting; the relay experiment is off");
+        return HostRelayStart::ExperimentOff;
+    }
     if !relay_enabled() {
-        return;
+        return HostRelayStart::Disabled;
     }
     let Some(url) = configured_url() else {
         log::warn!("relay: enabled but no url is configured");
-        return;
+        return HostRelayStart::NoUrl;
     };
     if live_connection().is_some() {
         log::info!("relay: host left the existing connection in place");
-        return;
+        return HostRelayStart::AlreadyConnected;
     }
     log::info!("relay: host connecting");
     thread::spawn(move || {
@@ -194,6 +210,7 @@ pub fn start_host_relay() {
             }
         }
     });
+    HostRelayStart::Connecting
 }
 
 pub fn relay_confirm_cli(pairing_id: Option<String>) -> i32 {
@@ -1719,6 +1736,27 @@ fn hostname_from_os() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn start_host_relay_is_a_noop_while_the_experiment_is_off() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(
+            profile.path().join("relay.toml"),
+            "enabled = true\nurl = \"wss://relay.example.test\"\n",
+        )
+        .unwrap();
+        assert_eq!(super::start_host_relay(), super::HostRelayStart::ExperimentOff);
+        assert!(super::live_connection().is_none());
+    }
+
+    #[test]
+    fn start_host_relay_stays_quiet_when_on_but_not_configured() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let _on = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Relay]);
+        assert_eq!(super::start_host_relay(), super::HostRelayStart::Disabled);
+    }
+
     use super::*;
     use std::process::{Command, Stdio};
     use std::sync::Mutex;

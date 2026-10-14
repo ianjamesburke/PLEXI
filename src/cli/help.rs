@@ -88,6 +88,41 @@ fn hide_arg(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
     cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id))
 }
 
+/// The first experiment that `matches` invokes while `enabled` reports it off.
+///
+/// Walks the matched subcommand chain against `ReleaseFeature::owned_paths`,
+/// the same table `gate_command` hides, so the execution backstop cannot drift
+/// from help and completions.
+pub fn blocked_feature(
+    matches: &clap::ArgMatches,
+    enabled: impl Fn(ReleaseFeature) -> bool,
+) -> Option<ReleaseFeature> {
+    let mut chain: Vec<(&str, &clap::ArgMatches)> = Vec::new();
+    let mut current = matches;
+    while let Some((name, sub)) = current.subcommand() {
+        chain.push((name, sub));
+        current = sub;
+    }
+    ReleaseFeature::ALL
+        .iter()
+        .copied()
+        .filter(|f| !enabled(*f))
+        .find(|f| {
+            f.owned_paths().iter().any(|path| match *path {
+                GatePath::Sub(p) => {
+                    chain.len() >= p.len() && chain.iter().zip(p).all(|((n, _), want)| n == want)
+                }
+                GatePath::Arg(p, id) => {
+                    chain.len() == p.len()
+                        && chain.iter().zip(p).all(|((n, _), want)| n == want)
+                        && chain.last().is_some_and(|(_, m)| {
+                            m.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
+                        })
+                }
+            })
+        })
+}
+
 pub fn print_grouped_help() {
     let cmd = gated_command();
     let no_color = std::env::var_os("NO_COLOR").is_some();
@@ -298,6 +333,54 @@ mod tests {
         };
         assert!(hidden("mcp"));
         assert!(!hidden("cli"), "--cli is v1 core");
+    }
+
+    fn blocked(args: &[&str], on: &[ReleaseFeature]) -> Option<ReleaseFeature> {
+        let m = Cli::command()
+            .try_get_matches_from(args)
+            .unwrap_or_else(|e| panic!("{args:?} must parse: {e}"));
+        blocked_feature(&m, |f| on.contains(&f))
+    }
+
+    #[test]
+    fn execution_backstop_blocks_every_owned_surface_when_off() {
+        let cases: &[(&[&str], ReleaseFeature)] = &[
+            (&["plexi", "assistant", "tool", "x"], ReleaseFeature::Assistant),
+            (&["plexi", "assistant", "permission", "list"], ReleaseFeature::Assistant),
+            (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
+            (&["plexi", "agent", "run", "list"], ReleaseFeature::Leads),
+            (&["plexi", "agent", "list"], ReleaseFeature::Leads),
+            (&["plexi", "command-view", "--json"], ReleaseFeature::CommandView),
+            (&["plexi", "changes", "refresh"], ReleaseFeature::ChangeSets),
+            (&["plexi", "ledger"], ReleaseFeature::Ledger),
+            (&["plexi", "relay", "status"], ReleaseFeature::Relay),
+            (&["plexi", "account", "status"], ReleaseFeature::CloudAccount),
+            (&["plexi", "secret", "rm", "A", "--folder", "/tmp"], ReleaseFeature::FolderSecrets),
+            (&["plexi", "secret", "set", "A", "--folder", "/tmp"], ReleaseFeature::FolderSecrets),
+            (&["plexi", "app", "open", "--mcp", "x"], ReleaseFeature::McpClient),
+            (&["plexi", "app", "search", "x"], ReleaseFeature::Marketplace),
+            (&["plexi", "routine", "list"], ReleaseFeature::Routines),
+        ];
+        for (args, feature) in cases {
+            assert_eq!(blocked(args, &[]), Some(*feature), "{args:?}");
+            assert_eq!(blocked(args, &[*feature]), None, "{args:?} with it on");
+        }
+    }
+
+    #[test]
+    fn execution_backstop_leaves_v1_surfaces_alone() {
+        for args in [
+            &["plexi", "agent", "report", "x"][..],
+            &["plexi", "agent", "status"],
+            &["plexi", "ai", "doctor"],
+            &["plexi", "app", "open", "--cli", "htop"],
+            &["plexi", "secret", "set", "A"],
+            &["plexi", "secret", "get", "A"],
+            &["plexi", "needs-you", "list"],
+            &["plexi", "experiments", "list"],
+        ] {
+            assert_eq!(blocked(args, &[]), None, "{args:?}");
+        }
     }
 
     #[test]

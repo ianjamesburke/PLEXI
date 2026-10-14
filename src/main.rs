@@ -213,10 +213,14 @@ fn main() -> eframe::Result {
     let merged_config =
         crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
     let log_config = merged_config.log.clone().unwrap_or_default();
-    let retain_local_history = merged_config
-        .cloud
-        .as_ref()
-        .is_some_and(|cloud| cloud.retain_local_history());
+    // Local history pruning belongs to the cloud experiment. Log archives are
+    // always pruned.
+    let retain_local_history = crate::cloud::retention::history_pruning_enabled(
+        merged_config
+            .cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.retain_local_history()),
+    );
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = raw_args
@@ -316,11 +320,24 @@ fn main() -> eframe::Result {
         HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
-    use clap::Parser;
+    use clap::FromArgMatches;
     let args = cli::args::normalize_config_scope_aliases(args);
 
-    match Cli::try_parse_from(&args) {
-        Ok(cli) => {
+    // Parse through the gated tree so help and completions agree with the
+    // execution backstop below; hidden commands still parse.
+    let parsed = cli::help::gated_command()
+        .try_get_matches_from(&args)
+        .and_then(|mut matches| {
+            let cli = Cli::from_arg_matches_mut(&mut matches)?;
+            Ok((cli, matches))
+        });
+    match parsed {
+        Ok((cli, matches)) => {
+            if let Some(feature) = cli::help::blocked_feature(&matches, |f| {
+                crate::release::feature_enabled(f)
+            }) {
+                exit_if_feature_disabled(feature);
+            }
             if let Some(socket) = cli.socket {
                 cli::set_command_socket_override(socket);
             }
@@ -328,7 +345,6 @@ fn main() -> eframe::Result {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
                         AssistantCmd::Send { text, head, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind, json: _ } => {
-                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                             std::process::exit(cli::assistant_send_cli(
                                 text.as_deref(),
                                 request_id.as_deref(),
@@ -345,7 +361,6 @@ fn main() -> eframe::Result {
                             ))
                         }
                         AssistantCmd::Open { head } => {
-                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                             std::process::exit(cli::assistant_open_head_cli(&head))
                         }
                         AssistantCmd::Tool { name, input } => {
@@ -436,7 +451,6 @@ fn main() -> eframe::Result {
                         RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::CommandView { cmd, json, follow } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                         if follow && cmd.is_some() {
                             eprintln!("error: --follow prints the live projection and takes no subcommand");
                             std::process::exit(2);
@@ -477,7 +491,6 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Routine { cmd } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Routines);
                         match cmd {
                             RoutineCmd::List => std::process::exit(cli::routine_list()),
                             RoutineCmd::Run { name, force } => {
@@ -751,9 +764,6 @@ fn main() -> eframe::Result {
                                         }
                                     }
                                 } else if !mcp.is_empty() {
-                                    exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::McpClient,
-                                    );
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
                                     std::process::exit(cli::pane_new_cli(
@@ -915,21 +925,12 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::freeze_cli(&path));
                             }
                             AppCmd::Publish { path } => {
-                                exit_if_feature_disabled(
-                                    crate::release::ReleaseFeature::Marketplace,
-                                );
                                 std::process::exit(cli::app_publish_cli(&path));
                             }
                             AppCmd::Browse => {
-                                exit_if_feature_disabled(
-                                    crate::release::ReleaseFeature::Marketplace,
-                                );
                                 std::process::exit(cli::app_browse_cli());
                             }
                             AppCmd::Search { query } => {
-                                exit_if_feature_disabled(
-                                    crate::release::ReleaseFeature::Marketplace,
-                                );
                                 std::process::exit(cli::app_search_cli(&query));
                             }
                             AppCmd::Update { id } => {
@@ -1442,7 +1443,6 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Account { cmd } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Marketplace);
                         match cmd {
                             AccountCmd::Status => std::process::exit(cli::account_status_cli()),
                             AccountCmd::Login { email } => {
@@ -1593,8 +1593,7 @@ fn main() -> eframe::Result {
     // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
     // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        use clap::CommandFactory;
-        let _ = Cli::command().print_help();
+        let _ = cli::help::gated_command().print_help();
         println!();
         std::process::exit(0);
     }

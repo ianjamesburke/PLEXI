@@ -76,6 +76,7 @@ plexi skill install --agent codex
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
+<!-- experiment: assistant -->
 - **Assistant send** — submit a turn through the same composer and permission
   sheet as the desktop Assistant: `plexi assistant send --text "..."`. Omit
   `--conversation` to start a new conversation that is not the desktop
@@ -91,6 +92,7 @@ plexi skill install --agent codex
   grant from the terminal. `assistant permission resolve` is refused and does
   not grant. `needs-you resolve --approve` on a click approval is refused;
   `--deny` still denies.
+<!-- /experiment -->
 - **Permissions** — the live permission monitor, the same rows as the Permissions app:
 
   ```bash
@@ -121,67 +123,101 @@ plexi skill install --agent codex
   The grant is a click on Allow once in the host window. `--deny` still
   denies. A phone may deny or answer a question. A phone approve never grants
   a permission.
+<!-- experiment: mcp_client -->
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
   can never supply argv. `plexi app open --mcp` is a different thing: it wraps a
   server in a viewer pane and exposes nothing to the assistant.
+<!-- /experiment -->
+<!-- experiment: relay -->
 - **Phone relay** — pair a phone to this desktop: `plexi relay enable --url <wss-or-loopback-ws>`,
   then `plexi relay confirm` after comparing the fingerprint the phone shows.
   `relay pair` adds another phone. `relay revoke <device-id>` drops one phone.
   `relay status` prints the desktop session. `relay connect` attaches to the
   host's socket. `relay disable` stops the host from connecting on startup.
   Message bodies are sealed; the relay stores no plaintext.
+<!-- /experiment -->
 - **Notifications** — show scoped information to the person using the host:
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
-  project secrets and routines: `plexi workspace --help`, `plexi run --help`,
-  `plexi secret --help`, and `plexi routine --help`.
-- **Agents** — install workspace definitions, report or inspect agent state,
-  and operate agent heads: `plexi agent --help`. `agent head create` stores a
+  project secrets: `plexi workspace --help`, `plexi run --help`, and
+  `plexi secret --help`.
+<!-- experiment: routines -->
+  Scheduled commands: `plexi routine --help`.
+<!-- /experiment -->
+- **Agents** — install workspace definitions and report or inspect agent state:
+  `plexi agent --help`. `agent report --event` preserves
+  a provider lifecycle event separately from its UI state; `--blocked-reason`
+  supplies a typed reason. Read `agent report --help` before using these optional
+  fields.
+<!-- experiment: leads -->
+  Agent heads and runs: `agent head create` stores a
   named head under `.plexi/agents` with `--grant tool=allow|ask|deny`. `AGENT.md`
   is guidance and grants nothing. `agent run spawn` starts a run; repeat the
   same `--admission` to get that run back, and a second admission while it is
   active returns `assignment_conflict`. `agent run finish` stops it. `agent delegate`
-  starts a temporary child with a subset of the parent run's grants. Ask-tier
-  calls wait on `plexi assistant permission list`. Do not resolve those
+  starts a temporary child with a subset of the parent run's grants.
+  `agent conversation --head <id> --as <other>` is refused when the ids differ.
+  `agent assign --head <id> --input task.json` queues work with no pane open.
+  `agent cancel --id <task>` stops it before the next tool. A lead cannot read,
+  write, or message another lead.
+<!-- /experiment -->
+<!-- experiment: leads, assistant -->
+  Ask-tier calls wait on `plexi assistant permission list`. Do not resolve those
   requests from an agent pane. `assistant send --head <id>` runs one model turn
   in that head's conversation. `assistant open --head <id>` opens an Assistant
-  pane bound to that head. `agent conversation --head <id> --as <other>` is
-  refused when the ids differ.   `command-view` lists heads, runs, and queued tasks from the agents API.
+  pane bound to that head.
+<!-- /experiment -->
+<!-- experiment: command_view -->
+  `command-view` lists heads, runs, and queued tasks from the agents API.
   `command-view open` shows the same rows in a pane. `command-view send <lead> <text>`
   runs a real turn in that head's conversation. `command-view cancel <run>` stops
   that run before the next tool. `command-view resolve` and `command-view allow`
-  do not grant, and both are refused when `PLEXI_PANE_ID` is set. `agent assign --head <id> --input task.json` queues work with no pane open. `agent cancel --id <task>` stops it before the next tool. A lead cannot read, write,
-  or message another lead. `agent report --event` preserves
-  a provider lifecycle event separately from its UI state; `--blocked-reason`
-  supplies a typed reason. Read `agent report --help` before using these optional
-  fields.
+  do not grant, and both are refused when `PLEXI_PANE_ID` is set.
+<!-- /experiment -->
+<!-- experiment: ledger -->
 - **AI ledger** — `plexi ledger` prints per-client totals for tokens, cost,
   runs, and wall time from this channel's ledger. `plexi ledger summary --help`
   groups by client or kind. A token count is a positive number or the word
   `unknown`. The command reads the local ledger file and does not need a
   running host.
+<!-- /experiment -->
+<!-- experiment: assistant, ledger -->
   `assistant send --client` and `--kind` override the tags for one run;
   omitted, the client comes from `[ai] client` and the kind is `output`.
+<!-- /experiment -->
+<!-- experiment: assistant -->
   Send does not require `app open assistant` first: with no pane named, the
   host reuses an Assistant in the context or creates a hidden one. A pane id
   that does not exist still fails.
+<!-- /experiment -->
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
   Every `config` verb defaults to the workspace config when run in a workspace,
   otherwise the channel-global config; `--global` selects only the latter.
-- **Marketplace and tool registry** — search and publish apps, manage an account,
-  and refresh CLI-tool knowledge: `plexi account --help`, `plexi registry --help`.
+- **Tool registry** — refresh CLI-tool knowledge: `plexi registry --help`.
+<!-- experiment: marketplace -->
+- **Marketplace** — search, browse, and publish apps: `plexi app search`,
+  `plexi app browse`, `plexi app publish`.
+<!-- /experiment -->
+<!-- experiment: cloud_account -->
+- **Account** — optional cloud account: `plexi account --help`.
+<!-- /experiment -->
+
 - **Notes** — capture and browse notes across their two storage tiers
   (`~/.plexi/notes/` and `<context-root>/.plexi/notes/`): `plexi note --help` and
   `plexi notes --help`. `note` writes into the tier the working directory belongs
   to; `notes list` also rolls up any tier nested below it plus the global tier.
-- **Events** — subscribe to an app's event stream, declare/emit events, and print
-  the singleton host MCP config for this pane's scoped credential (exposes event
-  tools and `<app_id>__<tool>` for live apps in the pane's workspace):
+- **Events** — subscribe to an app's event stream and declare/emit events:
   `plexi events --help`.
+<!-- experiment: mcp_client -->
+  `plexi events mcp-config` prints the singleton host MCP config for this pane's
+  scoped credential (exposes event tools and `<app_id>__<tool>` for live apps in
+  the pane's workspace).
+<!-- /experiment -->
+
 
 The release gate verifies these feature-map entry points:
 
@@ -190,15 +226,18 @@ pane
 pane slot
 context
 app
+<!-- experiment: assistant -->
 assistant
 assistant send
 assistant permission
 assistant permission list
 assistant permission show
 assistant permission resolve
+<!-- /experiment -->
 needs-you
 needs-you list
 needs-you resolve
+<!-- experiment: relay -->
 relay
 relay connect
 relay confirm
@@ -207,24 +246,32 @@ relay pair
 relay enable
 relay disable
 relay status
+<!-- /experiment -->
 notify
 workspace
 run
 secret
+<!-- experiment: routines -->
 routine
+<!-- /experiment -->
 events
 agent
 config
 ai
+<!-- experiment: ledger -->
 ledger
+<!-- /experiment -->
 doctor
 update
+<!-- experiment: cloud_account -->
 account
+<!-- /experiment -->
 registry
 note
 notes
 ```
 
+<!-- experiment: folder_secrets -->
 ### Bind a secret to a folder
 
 `plexi secret set NAME --folder <path>` reads the value from stdin (or a hidden
@@ -247,6 +294,8 @@ plexi secret list
 plexi secret read FOLDER_TOKEN --agent reader --folder /path/to/project
 plexi secret rm FOLDER_TOKEN --folder /path/to/project
 ```
+
+<!-- /experiment -->
 
 ## Worked examples
 
@@ -323,6 +372,7 @@ plexi workspace clean --dry-run
 plexi workspace clean
 ```
 
+<!-- experiment: mcp_client -->
 ### Bridge an MCP server's tools to the assistant
 
 Declare the server in the channel profile's `mcp_servers.toml` (next to
@@ -342,6 +392,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 plexi app open <mcp-bridge-app-id> -- filesystem
 ```
 
+<!-- /experiment -->
+
 ### Post and dismiss a scoped notification
 
 Use a notification for information intended for the person using the host, not
@@ -355,6 +407,7 @@ NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to insp
 plexi notify dismiss "$NOTICE"
 ```
 
+<!-- experiment: ledger -->
 ### Summarize AI ledger usage
 
 `plexi ledger` prints this channel's per-client totals. `ledger summary`
@@ -366,8 +419,13 @@ not recorded. A client or kind that was never tagged is the null group.
 ```bash
 plexi ledger
 plexi ledger summary --by client --since 2026-01-01 --json
+<!-- experiment: ledger, assistant -->
 plexi assistant send --text "hello" --client narrative --kind output
+<!-- /experiment -->
 ```
+
+<!-- experiment: leads -->
+<!-- /experiment -->
 
 ### Create an agent head and claim a run
 
@@ -382,17 +440,23 @@ plexi agent run list --json
 plexi agent run show run_example --json
 plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
 plexi agent run finish run_example --json
+<!-- experiment: leads, assistant -->
 plexi assistant open --head lead
 plexi assistant send --head lead --text 'status?'
+<!-- /experiment -->
 plexi agent conversation --head lead --json
+<!-- experiment: leads, command_view -->
 plexi command-view --json
 plexi command-view send lead-a "status?"
 plexi command-view cancel run_example
 plexi command-view resolve pending_example
 plexi command-view allow --tool assistant.turn
+<!-- /experiment -->
 plexi agent assign --head lead --input task.json --json
 plexi agent cancel --id task_example --json
 ```
+
+<!-- /experiment -->
 
 ## Installation health
 
