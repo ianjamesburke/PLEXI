@@ -11,6 +11,7 @@
 # output dir, so the writes/reads land in a real temp bundle.
 size = [1280.0, 800.0]
 suite = true
+experiments = ["wasm_apps", "daw"]
 
 picker_script = [
   { paths = ["{out}/song"] },       # F2 save-as -> bundle dir

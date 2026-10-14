@@ -7,6 +7,7 @@
 //! beta→main, so a release cannot ship a skill documenting commands its binary
 //! does not have.
 
+use crate::release::ReleaseFeature;
 use clap::CommandFactory;
 use std::path::PathBuf;
 
@@ -16,12 +17,19 @@ fn skill_path() -> PathBuf {
 
 fn skill_text() -> String {
     let path = skill_path();
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
-fn built_cli() -> clap::Command {
-    let mut cmd = super::args::Cli::command();
+/// The skill as installed with the experiments that `enabled` reports on.
+fn rendered_skill(enabled: impl Fn(ReleaseFeature) -> bool) -> String {
+    super::skill_install::render_skill(&skill_text(), enabled)
+        .unwrap_or_else(|e| panic!("skill experiment markers are invalid: {e}"))
+}
+
+/// The gated clap tree for the same `enabled` set, so the skill is checked
+/// against exactly what help shows. Hidden commands do not count as present.
+fn built_cli(enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
+    let mut cmd = super::help::gate_command(super::args::Cli::command(), enabled);
     cmd.build(); // propagate global args into subcommands
     cmd
 }
@@ -37,15 +45,16 @@ fn is_command_word(tok: &str) -> bool {
 
 fn find_subcommand<'a>(cmd: &'a clap::Command, tok: &str) -> Option<&'a clap::Command> {
     cmd.get_subcommands()
+        .filter(|s| !s.is_hide_set())
         .find(|s| s.get_name() == tok || s.get_all_aliases().any(|a| a == tok))
 }
 
 fn has_long_flag(cmd: &clap::Command, flag: &str) -> bool {
     flag == "help"
         || flag == "version"
-        || cmd
-            .get_arguments()
-            .any(|a| a.get_long() == Some(flag) || a.get_all_aliases().iter().flatten().any(|al| *al == flag))
+        || cmd.get_arguments().filter(|a| !a.is_hide_set()).any(|a| {
+            a.get_long() == Some(flag) || a.get_all_aliases().iter().flatten().any(|al| *al == flag)
+        })
 }
 
 /// Extract every `--long-flag` name mentioned in a token, stripping the
@@ -140,6 +149,9 @@ const INERT_FENCE_LANGS: &[&str] = &["json", "toml", "rust"];
 /// host verification of every published recipe is the separate guarantee.
 const MIN_COMMANDS_RESOLVED: usize = 30;
 const MIN_FLAGS_CHECKED: usize = 12;
+/// Floor for the default (all experiments off) skill: well under the full
+/// skill's count, above an extraction collapse.
+const MIN_DEFAULT_COMMANDS_RESOLVED: usize = 10;
 
 #[derive(Default)]
 struct Report {
@@ -264,15 +276,13 @@ fn check_bash_block(root: &clap::Command, block: &Block, report: &mut Report) {
     }
 }
 
-#[test]
-fn skill_surface_matches_cli() {
-    let text = skill_text();
-    let root = built_cli();
+/// Check `text` against `root`, returning the report.
+fn surface_report(text: &str, root: &clap::Command) -> Report {
     let mut report = Report::default();
-    for block in fenced_blocks(&text) {
+    for block in fenced_blocks(text) {
         match block.lang.as_str() {
-            "" => check_reference_block(&root, &block, &mut report),
-            "bash" | "sh" => check_bash_block(&root, &block, &mut report),
+            "" => check_reference_block(root, &block, &mut report),
+            "bash" | "sh" => check_bash_block(root, &block, &mut report),
             lang if INERT_FENCE_LANGS.contains(&lang) => {}
             lang => report.errors.push(format!(
                 "fence language `{lang}` is not checkable by this gate — CLI-bearing blocks \
@@ -281,6 +291,14 @@ fn skill_surface_matches_cli() {
             )),
         }
     }
+    report
+}
+
+#[test]
+fn skill_surface_matches_cli() {
+    // The full skill documents every experiment, so it is checked against the
+    // tree with every experiment on and carries the coverage floors.
+    let report = surface_report(&rendered_skill(|_| true), &built_cli(|_| true));
     println!(
         "skill_surface: commands_resolved={} flags_checked={} errors={}",
         report.commands_resolved,
@@ -305,6 +323,40 @@ fn skill_surface_matches_cli() {
          the extractor is no longer seeing the skill's code blocks",
         report.flags_checked,
     );
+}
+
+/// What a default install ships: every experiment off. Every command it
+/// documents must exist in the help a default install shows.
+#[test]
+fn default_skill_matches_the_default_help() {
+    let report = surface_report(&rendered_skill(|_| false), &built_cli(|_| false));
+    assert!(
+        report.errors.is_empty(),
+        "the default skill documents commands the default help hides.\n\
+         Tag the section with <!-- experiment: key --> in skills/plexi-cli/SKILL.md.\n\n{}",
+        report.errors.join("\n"),
+    );
+    assert!(
+        report.commands_resolved >= MIN_DEFAULT_COMMANDS_RESOLVED,
+        "extraction collapse in the default skill: only {} command paths resolved",
+        report.commands_resolved,
+    );
+}
+
+/// Turning on any one experiment must still leave a skill that matches that
+/// tree, so a partly-enabled install never documents a hidden command.
+#[test]
+fn every_single_experiment_skill_matches_its_help() {
+    for feature in ReleaseFeature::ALL.iter().copied() {
+        let on = move |f: ReleaseFeature| f == feature;
+        let report = surface_report(&rendered_skill(on), &built_cli(on));
+        assert!(
+            report.errors.is_empty(),
+            "with only `{}` on, the skill documents commands help hides.\n\n{}",
+            feature.key(),
+            report.errors.join("\n"),
+        );
+    }
 }
 
 #[test]

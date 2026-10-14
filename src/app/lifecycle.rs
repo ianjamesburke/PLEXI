@@ -1197,7 +1197,8 @@ impl PlexiApp {
                     .as_deref()
                     .filter(|pids| !pids.is_empty())
                     .is_some_and(|pids| self.resolve_socket_peer_pane(pids).is_some());
-                let inject_folder_secrets = !requester_is_pane;
+                let inject_folder_secrets = !requester_is_pane
+                    && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
                 if requester_is_pane {
                     log::info!(
                         "pane_ipc: spawn_pane requester is a pane; withholding folder secrets"

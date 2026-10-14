@@ -71,6 +71,10 @@ answer to stint 0745's open question — that split is correct, not a missing
 migration. `ScopeOrigin`'s module doc bans env vars as authority inputs for the
 same reason.
 
+## Experiment data
+
+An experiment owns its storage in its own versioned location and never writes core state (config, layout, grants). There is no migration code for experiments: on a format change, move the old data aside and start fresh with a notice. Graduation to stable freezes the format. See `src/release.rs`.
+
 ## Traps
 
 - **The host's launch env leaks into every pane.** Anything not overridden in

@@ -968,6 +968,10 @@ impl PlexiApp {
     /// Create a new page immediately to the right of the active page on the
     /// same grid row, then switch to it.
     pub(crate) fn new_page_right(&mut self) {
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::PageGrid) {
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::PageGrid);
+            return;
+        }
         let ws_id = self.router.active().context_id;
         let active_y = self.windows[self.active_window].grid_y;
         let max_x = self

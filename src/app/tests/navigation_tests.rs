@@ -864,6 +864,7 @@ fn assistant_pane_count(app: &PlexiApp) -> usize {
 fn assistant_open_focuses_existing_in_same_window() {
     // Alpha-tier channel so the assistant feature gate passes.
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane(); // window 0, context 1
     let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
@@ -894,6 +895,7 @@ fn assistant_open_focuses_existing_in_same_window() {
 #[test]
 fn assistant_open_focuses_existing_across_windows_of_same_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
@@ -927,6 +929,7 @@ fn assistant_open_focuses_existing_across_windows_of_same_context() {
 #[test]
 fn assistant_open_uses_caller_context_root_as_workspace() {
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let root = tempfile::tempdir().expect("context root");
     let expected = root.path().to_path_buf();
     let mut h = HostHarness::new();
@@ -954,6 +957,7 @@ fn assistant_open_uses_caller_context_root_as_workspace() {
 #[test]
 fn assistant_open_spawns_second_instance_in_other_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     // Pin the workspace root to this repo checkout by planting the channel
     // marker dir the workspace resolver walks up to. The channel is unique to
     // this test and the dir is git-ignored (`.plexi-pr-*/`); nothing here may

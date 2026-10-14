@@ -1675,7 +1675,7 @@ impl PlexiApp {
                 if crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
                     self.open_assistant_pane();
                 } else {
-                    log::info!("assistant: palette launch blocked by stable release gate");
+                    log::info!("assistant: palette launch blocked; the assistant experiment is off");
                 }
             }
             other => log::warn!("palette: unknown builtin app id '{other}'"),

@@ -87,16 +87,26 @@ fn main() -> eframe::Result {
         .windows(2)
         .any(|args| args[0] == "app" && args[1] == "prune");
 
+    let profile = parse_profile_flag(&raw_args);
+    crate::config::set_profile(profile);
+
     // Top-level --help/-h: print grouped subcommand sections before any
-    // logging or config init, so no noise appears alongside help output.
-    // Subcommand help (e.g. `plexi app --help`) is handled by clap below.
+    // logging or profile init, so no noise appears alongside help output. It
+    // runs after set_profile because the help hides every experiment that is
+    // off in this profile's config. Subcommand help (e.g. `plexi app --help`)
+    // is handled by clap below.
     if top_level_help_flag(&raw_args) {
         cli::help::print_grouped_help();
         std::process::exit(0);
     }
-
-    let profile = parse_profile_flag(&raw_args);
-    crate::config::set_profile(profile);
+    // A bad [experiments] table fails every command except the ones needed to
+    // fix it, so the user is never locked out of repairing the config.
+    if let Some(error) = crate::release::experiments_error() {
+        if !experiments_repair_command(&raw_args) {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    }
     let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
         eprintln!("profile initialization: {error}");
         std::process::exit(1);
@@ -203,10 +213,14 @@ fn main() -> eframe::Result {
     let merged_config =
         crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
     let log_config = merged_config.log.clone().unwrap_or_default();
-    let retain_local_history = merged_config
-        .cloud
-        .as_ref()
-        .is_some_and(|cloud| cloud.retain_local_history());
+    // Local history pruning belongs to the cloud experiment. Log archives are
+    // always pruned.
+    let retain_local_history = crate::cloud::retention::history_pruning_enabled(
+        merged_config
+            .cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.retain_local_history()),
+    );
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = raw_args
@@ -214,6 +228,14 @@ fn main() -> eframe::Result {
         .skip(1)
         .any(|a| !a.starts_with('-') && known_subcommands().contains(a.as_str()));
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    if !cli_mode {
+        let enabled: Vec<&str> = crate::release::ReleaseFeature::ALL
+            .iter()
+            .filter(|f| crate::release::feature_enabled(**f))
+            .map(|f| f.key())
+            .collect();
+        log::info!("experiments: enabled={enabled:?}");
+    }
     // Host startup only. A CLI invocation must not prune local history as a
     // side effect of printing JSON, and its stderr must stay a clean payload.
     if !cli_mode {
@@ -298,11 +320,24 @@ fn main() -> eframe::Result {
         HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
-    use clap::Parser;
+    use clap::FromArgMatches;
     let args = cli::args::normalize_config_scope_aliases(args);
 
-    match Cli::try_parse_from(&args) {
-        Ok(cli) => {
+    // Parse through the gated tree so help and completions agree with the
+    // execution backstop below; hidden commands still parse.
+    let parsed = cli::help::gated_command()
+        .try_get_matches_from(&args)
+        .and_then(|mut matches| {
+            let cli = Cli::from_arg_matches_mut(&mut matches)?;
+            Ok((cli, matches))
+        });
+    match parsed {
+        Ok((cli, matches)) => {
+            if let Some(feature) = cli::help::blocked_feature(&matches, |f| {
+                crate::release::feature_enabled(f)
+            }) {
+                exit_if_feature_disabled(feature);
+            }
             if let Some(socket) = cli.socket {
                 cli::set_command_socket_override(socket);
             }
@@ -310,7 +345,6 @@ fn main() -> eframe::Result {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
                         AssistantCmd::Send { text, head, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind, json: _ } => {
-                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                             std::process::exit(cli::assistant_send_cli(
                                 text.as_deref(),
                                 request_id.as_deref(),
@@ -327,7 +361,6 @@ fn main() -> eframe::Result {
                             ))
                         }
                         AssistantCmd::Open { head } => {
-                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                             std::process::exit(cli::assistant_open_head_cli(&head))
                         }
                         AssistantCmd::Tool { name, input } => {
@@ -370,6 +403,17 @@ fn main() -> eframe::Result {
                             ))
                         }
                     },
+                    Commands::Experiments { cmd } => match cmd {
+                        cli::args::ExperimentsCmd::List { json } => {
+                            std::process::exit(cli::experiments::experiments_list(json))
+                        }
+                        cli::args::ExperimentsCmd::Enable { name } => {
+                            std::process::exit(cli::experiments::experiments_set(&name, true))
+                        }
+                        cli::args::ExperimentsCmd::Disable { name } => {
+                            std::process::exit(cli::experiments::experiments_set(&name, false))
+                        }
+                    },
                     Commands::Skill { cmd } => match cmd {
                         SkillCmd::Install { agent } => {
                             std::process::exit(cli::skill_install::skill_install_cli(&agent))
@@ -407,7 +451,6 @@ fn main() -> eframe::Result {
                         RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::CommandView { cmd, json, follow } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                         if follow && cmd.is_some() {
                             eprintln!("error: --follow prints the live projection and takes no subcommand");
                             std::process::exit(2);
@@ -448,7 +491,6 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Routine { cmd } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Routines);
                         match cmd {
                             RoutineCmd::List => std::process::exit(cli::routine_list()),
                             RoutineCmd::Run { name, force } => {
@@ -680,9 +722,6 @@ fn main() -> eframe::Result {
                                     // Prefix routing: cli:, mcp:, app:, or bare name
                                     match cli::parse_prefix(&tid) {
                                         cli::OpenPrefix::Cli(name) => {
-                                            exit_if_feature_disabled(
-                                                crate::release::ReleaseFeature::AppWrappers,
-                                            );
                                             log::info!("app_open:cli: prefix-routed cli:{name}");
                                             std::process::exit(cli::open_cli_by_name(
                                                 &name,
@@ -693,7 +732,7 @@ fn main() -> eframe::Result {
                                         }
                                         cli::OpenPrefix::Mcp(name) => {
                                             exit_if_feature_disabled(
-                                                crate::release::ReleaseFeature::AppWrappers,
+                                                crate::release::ReleaseFeature::McpClient,
                                             );
                                             log::info!("app_open:cli: prefix-routed mcp:{name}");
                                             std::process::exit(cli::open_mcp_by_name(
@@ -725,9 +764,6 @@ fn main() -> eframe::Result {
                                         }
                                     }
                                 } else if !mcp.is_empty() {
-                                    exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::AppWrappers,
-                                    );
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
                                     std::process::exit(cli::pane_new_cli(
@@ -746,9 +782,6 @@ fn main() -> eframe::Result {
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
-                                    exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::AppWrappers,
-                                    );
                                     log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
                                     std::process::exit(cli::open_cli_by_name(
                                         &binary,
@@ -892,21 +925,12 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::freeze_cli(&path));
                             }
                             AppCmd::Publish { path } => {
-                                exit_if_feature_disabled(
-                                    crate::release::ReleaseFeature::Marketplace,
-                                );
                                 std::process::exit(cli::app_publish_cli(&path));
                             }
                             AppCmd::Browse => {
-                                exit_if_feature_disabled(
-                                    crate::release::ReleaseFeature::Marketplace,
-                                );
                                 std::process::exit(cli::app_browse_cli());
                             }
                             AppCmd::Search { query } => {
-                                exit_if_feature_disabled(
-                                    crate::release::ReleaseFeature::Marketplace,
-                                );
                                 std::process::exit(cli::app_search_cli(&query));
                             }
                             AppCmd::Update { id } => {
@@ -1419,7 +1443,6 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Account { cmd } => {
-                        exit_if_feature_disabled(crate::release::ReleaseFeature::Marketplace);
                         match cmd {
                             AccountCmd::Status => std::process::exit(cli::account_status_cli()),
                             AccountCmd::Login { email } => {
@@ -1570,8 +1593,7 @@ fn main() -> eframe::Result {
     // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
     // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        use clap::CommandFactory;
-        let _ = Cli::command().print_help();
+        let _ = cli::help::gated_command().print_help();
         println!();
         std::process::exit(0);
     }
@@ -1735,6 +1757,17 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
 }
 
 /// Returns the set of known top-level subcommand names and aliases, cached after first call.
+/// Commands that must keep working when `[experiments]` is invalid: the ones
+/// that fix it, plus help.
+fn experiments_repair_command(args: &[String]) -> bool {
+    args.iter().skip(1).any(|a| matches!(a.as_str(), "--help" | "-h"))
+        || args
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-'))
+            .is_some_and(|a| matches!(a.as_str(), "experiments" | "config" | "doctor"))
+}
+
 fn known_subcommands() -> &'static std::collections::HashSet<String> {
     use clap::CommandFactory;
     use std::sync::OnceLock;

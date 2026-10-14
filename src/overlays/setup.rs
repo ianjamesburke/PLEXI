@@ -4,7 +4,9 @@ impl PlexiApp {
     /// Render the spatial-grid minimap in the top-right corner of the work
     /// area. Uses an `egui::Area` so it floats above all content.
     pub(crate) fn draw_minimap_overlay(&mut self, ctx: &egui::Context) {
-        if !self.minimap.visible {
+        if !self.minimap.visible
+            || !crate::release::feature_enabled(crate::release::ReleaseFeature::PageGrid)
+        {
             return;
         }
 

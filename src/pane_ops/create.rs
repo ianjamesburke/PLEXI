@@ -94,8 +94,21 @@ fn release_feature_for_app_id(id: &str) -> Option<crate::release::ReleaseFeature
     match id {
         "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
         "com.plexi.daw-engine-poc" => Some(crate::release::ReleaseFeature::Daw),
-        "command" | "command-view" => Some(crate::release::ReleaseFeature::Assistant),
+        "command" | "command-view" => Some(crate::release::ReleaseFeature::CommandView),
+        "mcp-renderer" => Some(crate::release::ReleaseFeature::McpClient),
         _ => None,
+    }
+}
+
+/// Native WASM component apps (`AppRuntime::Wasm`) are an experiment. The
+/// Python runtime also runs in Wasmtime but is core, so it never calls this.
+fn require_wasm_experiment() -> Result<(), String> {
+    if crate::release::feature_enabled(crate::release::ReleaseFeature::WasmApps) {
+        Ok(())
+    } else {
+        Err(crate::release::feature_unavailable_message(
+            crate::release::ReleaseFeature::WasmApps,
+        ))
     }
 }
 
@@ -337,6 +350,7 @@ pub(crate) fn restore_app_pane(
             use crate::host::wasm_app::{StateStore, WasmApp};
             use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
+            require_wasm_experiment()?;
             if let Some(feature) = release_feature_for_app_id(manifest_id) {
                 if !crate::release::feature_enabled(feature) {
                     return Err(crate::release::feature_unavailable_message(feature));
@@ -713,6 +727,7 @@ impl PlexiApp {
     ) -> Result<PaneId, String> {
         use crate::host::wasm_app::{StateStore, WasmApp};
 
+        require_wasm_experiment()?;
         if let Some(feature) = release_feature_for_app_id(app_id) {
             if !crate::release::feature_enabled(feature) {
                 return Err(crate::release::feature_unavailable_message(feature));
@@ -987,6 +1002,7 @@ impl PlexiApp {
 
         let app_id = installed.manifest.id.clone();
 
+        require_wasm_experiment()?;
         if let Some(feature) = release_feature_for_app_id(&app_id) {
             if !crate::release::feature_enabled(feature) {
                 return Err(crate::release::feature_unavailable_message(feature));
@@ -1722,11 +1738,13 @@ impl PlexiApp {
         if id == "assistant" {
             if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
                 crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
-                return Err("assistant is not enabled on this release channel".to_string());
+                return Err(crate::release::feature_unavailable_text(
+                    crate::release::ReleaseFeature::Assistant,
+                ));
             }
             let pane_id = self
                 .open_assistant_pane_with_hint(layout.as_deref().unwrap_or("overlay"))
-                .ok_or_else(|| "assistant is not enabled on this release channel".to_string())?;
+                .ok_or_else(|| "assistant pane could not be opened".to_string())?;
             log::info!(
                 "launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}"
             );
@@ -2003,6 +2021,7 @@ impl PlexiApp {
         // A `.wasm` file is a sandboxed component app (the run primitive, G6),
         // not a manifest-backed process app. Route it to the wasmtime path.
         if app_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            require_wasm_experiment()?;
             let app_id = self
                 .registries
                 .view_for_context(context_id, &self.router)
@@ -2151,7 +2170,9 @@ impl PlexiApp {
     ) -> Result<u64, String> {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
-            return Err("assistant is not enabled on this release channel".to_string());
+            return Err(crate::release::feature_unavailable_text(
+                    crate::release::ReleaseFeature::Assistant,
+                ));
         }
         let win = self.active_window;
         let caller_context_id = self.windows[win].context_id;
@@ -2223,7 +2244,9 @@ impl PlexiApp {
     /// Open the command view pane for `workspace`. One pane per context.
     pub(crate) fn open_command_view(&mut self, workspace: &std::path::Path) -> Result<u64, String> {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
-            return Err("assistant is not enabled on this release channel".to_string());
+            return Err(crate::release::feature_unavailable_text(
+                    crate::release::ReleaseFeature::Assistant,
+                ));
         }
         let context_id = self.windows[self.active_window].context_id;
         if let Some((win_idx, slot, depth)) = self.locate_app_instance("command-view", Some(context_id)) {
@@ -2907,6 +2930,8 @@ mod tests {
     #[test]
     fn raw_wasm_launch_uses_registered_manifest_identity_for_release_gate() {
         let _channel = crate::config::set_test_channel("main");
+        // WasmApps on so the launch reaches the manifest-identity gate; DAW stays off.
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let global_apps = tempfile::tempdir().expect("global apps");
         let app_dir = global_apps.path().join("daw");
         std::fs::create_dir_all(&app_dir).expect("create app dir");
@@ -2946,7 +2971,7 @@ mod tests {
             .expect_err("stable must reject a raw path to the registered DAW component");
 
         assert!(
-            error.contains("DAW requires the beta channel"),
+            error.contains("daw is an experiment"),
             "raw launch must use the manifest identity, not the unrelated file name: {error}"
         );
     }

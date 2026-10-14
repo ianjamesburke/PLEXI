@@ -17,6 +17,7 @@
 # `just scene tests/scenes/daw-timeline.toml`.
 size = [1280.0, 800.0]
 suite = true
+experiments = ["wasm_apps", "daw"]
 
 [[steps]]
 open = { kind = "wasm", path = "tests/wasm-fixtures/daw-engine.wasm", as = "daw" }

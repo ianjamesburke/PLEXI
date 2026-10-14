@@ -241,6 +241,18 @@ pub enum Commands {
     },
 
     // ── System ────────────────────────────────────────────────────────────────
+    /// List, enable, or disable experiments (features outside the stable v1 surface).
+    ///
+    /// Every experiment is off by default on every channel. Switches live in the
+    /// `[experiments]` table of the global config.toml.
+    ///
+    /// Example: plexi experiments list
+    /// Example: plexi experiments enable assistant
+    #[command(next_help_heading = "System")]
+    Experiments {
+        #[command(subcommand)]
+        cmd: ExperimentsCmd,
+    },
     /// Install the agent skill compiled into this binary.
     ///
     /// Writes `SKILL.md` where Claude Code (`~/.claude/skills`) and Codex
@@ -491,6 +503,26 @@ pub enum LedgerCmd {
         /// Print one JSON object on stdout.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ExperimentsCmd {
+    /// Show every experiment: name, on/off, whether a host restart is needed.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn an experiment on in the global config.toml.
+    Enable {
+        /// Experiment name; see `plexi experiments list`.
+        name: String,
+    },
+    /// Turn an experiment off by removing its switch from the global config.toml.
+    Disable {
+        /// Experiment name; see `plexi experiments list`.
+        name: String,
     },
 }
 

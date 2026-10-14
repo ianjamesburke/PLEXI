@@ -2352,6 +2352,9 @@ impl super::PlexiApp {
     /// Show change-set previews on open text editors and publish their buffers
     /// so a later accept can refuse an unsaved conflict.
     pub(super) fn sync_editor_change_sets(&mut self) -> bool {
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::ChangeSets) {
+            return false;
+        }
         let started = std::time::Instant::now();
         let mut changed = false;
         let mut buffers = Vec::new();

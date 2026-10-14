@@ -2541,6 +2541,9 @@ mod tests {
 
     #[test]
     fn assistant_proposes_change_set_for_open_editor_outside_workspace() {
+        let _experiments = crate::release::set_test_experiments(&[
+            crate::release::ReleaseFeature::ChangeSets,
+        ]);
         let workspace = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let file = outside.path().join("temp.md");

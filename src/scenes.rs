@@ -249,6 +249,11 @@ pub struct Scene {
     /// scripts its picker through `PLEXI_PICKER_SCRIPT` at host launch.
     #[serde(default)]
     pub picker_script: Option<Vec<PickerScriptEntry>>,
+    /// Experiments (`ReleaseFeature` keys) switched on for this scene. Every
+    /// experiment is off by default, so a scene that drives one lists it here.
+    /// Headless-only: a live host reads its own `[experiments]` config.
+    #[serde(default)]
+    pub experiments: Vec<String>,
     pub steps: Vec<Step>,
 }
 
@@ -936,6 +941,23 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             );
         }
     };
+
+    let mut enabled = Vec::new();
+    for key in &scene.experiments {
+        match crate::release::ReleaseFeature::from_key(key) {
+            Some(feature) => enabled.push(feature),
+            None => {
+                return failed_report(
+                    scene_name,
+                    SceneError::new(
+                        "scene_experiment",
+                        format!("scene names unknown experiment `{key}`"),
+                    ),
+                )
+            }
+        }
+    }
+    let _experiments_guard = crate::release::set_test_experiments(&enabled);
 
     let size_matrix = match scene.size_matrix() {
         Ok(sizes) => sizes,

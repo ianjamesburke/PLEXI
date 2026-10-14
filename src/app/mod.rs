@@ -1393,7 +1393,8 @@ impl PlexiApp {
             event_subscribe_mailbox.clone(),
             event_publish_mailbox,
         );
-        crate::cli::relay::start_host_relay();
+        let relay_start = crate::cli::relay::start_host_relay();
+        log::info!("relay: host start outcome={relay_start:?}");
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
             crate::host::app_timeline::global(),
@@ -4269,7 +4270,13 @@ impl eframe::App for PlexiApp {
                     self.toggle_park_active_context();
                 }
                 Action::ToggleMinimap => {
-                    self.minimap.toggle();
+                    if crate::release::feature_enabled(crate::release::ReleaseFeature::PageGrid) {
+                        self.minimap.toggle();
+                    } else {
+                        crate::release::log_feature_blocked(
+                            crate::release::ReleaseFeature::PageGrid,
+                        );
+                    }
                 }
                 Action::OpenScratchpad => {
                     log::info!("scratchpad: Cmd+Shift+Space — opening");
