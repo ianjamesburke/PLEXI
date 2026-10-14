@@ -223,10 +223,7 @@ fn main() -> eframe::Result {
     );
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = raw_args
-        .iter()
-        .skip(1)
-        .any(|a| !a.starts_with('-') && known_subcommands().contains(a.as_str()));
+    let cli_mode = !is_host_startup(&raw_args);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
     if !cli_mode {
         let enabled: Vec<&str> = crate::release::ReleaseFeature::ALL
@@ -238,7 +235,9 @@ fn main() -> eframe::Result {
     }
     // Host startup only. A CLI invocation must not prune local history as a
     // side effect of printing JSON, and its stderr must stay a clean payload.
-    if !cli_mode {
+    if cli_mode {
+        log::info!("retention: skipped, argv does not start a host");
+    } else {
         if let Err(error) = crate::cloud::retention::run_at_startup(
             chrono::Utc::now(),
             chrono::Local::now().date_naive(),
@@ -300,20 +299,7 @@ fn main() -> eframe::Result {
     }
 
     // Handle CLI subcommands before launching the GUI.
-    let args: Vec<String> = raw_args
-        .iter()
-        .enumerate()
-        .filter_map(|(i, a)| {
-            // strip --profile and its value from downstream arg parsing
-            if a == "--profile" {
-                return None;
-            }
-            if i > 0 && raw_args.get(i - 1).map(|x| x.as_str()) == Some("--profile") {
-                return None;
-            }
-            Some(a.clone())
-        })
-        .collect();
+    let args = strip_profile_args(&raw_args);
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd,
@@ -1783,6 +1769,36 @@ fn known_subcommands() -> &'static std::collections::HashSet<String> {
     })
 }
 
+/// Drops `--profile` and its value so clap sees only the arguments it models.
+fn strip_profile_args(raw_args: &[String]) -> Vec<String> {
+    raw_args
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            if a == "--profile" {
+                return None;
+            }
+            if i > 0 && raw_args.get(i - 1).map(|x| x.as_str()) == Some("--profile") {
+                return None;
+            }
+            Some(a.clone())
+        })
+        .collect()
+}
+
+/// True only when argv resolves to launching the GUI host: it parses cleanly
+/// and names no subcommand. `--version`, `--help`, parse errors and every CLI
+/// subcommand are not host startup, so host-only side effects (history
+/// retention, keychain migration) never run for them.
+fn is_host_startup(raw_args: &[String]) -> bool {
+    use clap::Parser;
+    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
+    matches!(
+        cli::args::Cli::try_parse_from(&args),
+        Ok(parsed) if parsed.command.is_none()
+    )
+}
+
 /// Scan argv for `--profile <name>`. Returns the name if present.
 /// Returns true when the only meaningful argument (ignoring `--profile <value>`) is `--help`/`-h`.
 fn top_level_help_flag(args: &[String]) -> bool {
@@ -1912,6 +1928,26 @@ mod cli_tests {
             ctx_path.is_some(),
             "adopted context path should be set for non-workspace dir"
         );
+    }
+
+    #[test]
+    fn host_startup_is_positive_intent_only() {
+        use super::is_host_startup;
+        for host in [&[][..], &["--profile", "alpha"], &["--socket", "/tmp/s.sock"], &["/tmp"]] {
+            assert!(is_host_startup(&argv(host)), "{host:?} starts a host");
+        }
+        for cli in [
+            &["--version"][..],
+            &["-V"],
+            &["--help"],
+            &["-h"],
+            &["--profile", "alpha", "--version"],
+            &["--bogus-flag"],
+            &["app", "list"],
+            &["help"],
+        ] {
+            assert!(!is_host_startup(&argv(cli)), "{cli:?} must not start a host");
+        }
     }
 
     #[test]

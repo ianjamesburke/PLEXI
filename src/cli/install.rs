@@ -308,9 +308,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
             if !matches!(answer.trim(), "y" | "Y" | "yes") { return Err("Uninstall cancelled.".into()); }
         }
         super::host::stop_for_uninstall()?;
-        if delete_data {
-            remove_channel_data(&crate::config::config_dir())?;
-        }
+        remove_then_delete_data(&crate::config::config_dir(), delete_data, || {
         #[cfg(not(windows))]
         plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
         #[cfg(windows)]
@@ -323,10 +321,23 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
                 .stdin(std::process::Stdio::null()).stdout(log).stderr(stderr).spawn().map_err(|e| format!("schedule uninstall: {e}"))?;
             println!("Removal will finish after this command exits; details: {}", receipt.root.join("uninstall.log").display());
         }
+        Ok(())
+        })?;
         log::info!("uninstall: managed removal requested for {}", receipt.channel);
         Ok(())
     })();
     match result { Ok(()) => { println!("User data {}.", if delete_data { "deleted" } else { "retained" }); 0 }, Err(error) => { log::error!("uninstall: {error}"); eprintln!("error: {error}"); 1 } }
+}
+
+/// Runs the uninstall step, then deletes channel data only if it succeeded, so
+/// a failed uninstall never leaves an install with its data already gone.
+fn remove_then_delete_data(profile: &Path, delete_data: bool, uninstall: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    uninstall()?;
+    if delete_data {
+        remove_channel_data(profile)?;
+        log::info!("uninstall: channel data removed after uninstall step succeeded: {}", profile.display());
+    }
+    Ok(())
 }
 
 fn remove_channel_data(profile: &Path) -> Result<(), String> {
@@ -633,6 +644,42 @@ mod uninstall_data_tests {
         std::os::unix::fs::symlink(&other, profile.join("host")).unwrap();
         assert!(super::remove_channel_data(&profile).is_err());
         assert!(other.exists());
+    }
+
+    #[test]
+    fn uninstall_data_survives_failed_transaction() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("alpha");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("config.toml"), "fixture").unwrap();
+        let err = super::remove_then_delete_data(&profile, true, || Err("boom".to_string())).unwrap_err();
+        assert_eq!(err, "boom");
+        assert!(profile.join("config.toml").exists(), "data must survive a failed uninstall");
+    }
+
+    #[test]
+    fn uninstall_data_removed_after_successful_transaction() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("alpha");
+        std::fs::create_dir_all(&profile).unwrap();
+        let ran = std::cell::Cell::new(false);
+        super::remove_then_delete_data(&profile, true, || {
+            assert!(profile.exists(), "transaction runs before data removal");
+            ran.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(ran.get());
+        assert!(!profile.exists());
+    }
+
+    #[test]
+    fn uninstall_keep_data_never_deletes() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("alpha");
+        std::fs::create_dir_all(&profile).unwrap();
+        super::remove_then_delete_data(&profile, false, || Ok(())).unwrap();
+        assert!(profile.exists());
     }
 
     #[test]
