@@ -10,7 +10,19 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
-    ("AI", &["assistant", "ai", "changes", "command-view", "ledger", "needs-you", "permissions", "relay"]),
+    (
+        "AI",
+        &[
+            "assistant",
+            "ai",
+            "changes",
+            "command-view",
+            "ledger",
+            "needs-you",
+            "permissions",
+            "relay",
+        ],
+    ),
     (
         "System",
         &[
@@ -311,7 +323,15 @@ mod tests {
     fn default_help_lists_no_experiment_commands() {
         let cmd = all_off();
         let top = visible_subs(&cmd);
-        for name in ["assistant", "relay", "changes", "ledger", "command-view", "account", "routine"] {
+        for name in [
+            "assistant",
+            "relay",
+            "changes",
+            "ledger",
+            "command-view",
+            "account",
+            "routine",
+        ] {
             assert!(!top.contains(&name.to_string()), "{top:?}");
         }
         assert!(top.contains(&"experiments".to_string()), "{top:?}");
@@ -345,20 +365,44 @@ mod tests {
     #[test]
     fn execution_backstop_blocks_every_owned_surface_when_off() {
         let cases: &[(&[&str], ReleaseFeature)] = &[
-            (&["plexi", "assistant", "tool", "x"], ReleaseFeature::Assistant),
-            (&["plexi", "assistant", "permission", "list"], ReleaseFeature::Assistant),
+            (
+                &["plexi", "assistant", "tool", "x", "--input", "{}"],
+                ReleaseFeature::Assistant,
+            ),
+            (
+                &["plexi", "assistant", "permission", "list"],
+                ReleaseFeature::Assistant,
+            ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
             (&["plexi", "agent", "run", "list"], ReleaseFeature::Leads),
             (&["plexi", "agent", "list"], ReleaseFeature::Leads),
-            (&["plexi", "command-view", "--json"], ReleaseFeature::CommandView),
-            (&["plexi", "changes", "refresh"], ReleaseFeature::ChangeSets),
+            (
+                &["plexi", "command-view", "--json"],
+                ReleaseFeature::CommandView,
+            ),
+            (&["plexi", "changes", "refresh", "x"], ReleaseFeature::ChangeSets),
             (&["plexi", "ledger"], ReleaseFeature::Ledger),
             (&["plexi", "relay", "status"], ReleaseFeature::Relay),
-            (&["plexi", "account", "status"], ReleaseFeature::CloudAccount),
-            (&["plexi", "secret", "rm", "A", "--folder", "/tmp"], ReleaseFeature::FolderSecrets),
-            (&["plexi", "secret", "set", "A", "--folder", "/tmp"], ReleaseFeature::FolderSecrets),
-            (&["plexi", "app", "open", "--mcp", "x"], ReleaseFeature::McpClient),
-            (&["plexi", "app", "search", "x"], ReleaseFeature::Marketplace),
+            (
+                &["plexi", "account", "status"],
+                ReleaseFeature::CloudAccount,
+            ),
+            (
+                &["plexi", "secret", "rm", "A", "--folder", "/tmp"],
+                ReleaseFeature::FolderSecrets,
+            ),
+            (
+                &["plexi", "secret", "set", "A", "--folder", "/tmp"],
+                ReleaseFeature::FolderSecrets,
+            ),
+            (
+                &["plexi", "app", "open", "--mcp", "x"],
+                ReleaseFeature::McpClient,
+            ),
+            (
+                &["plexi", "app", "search", "x"],
+                ReleaseFeature::Marketplace,
+            ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
         ];
         for (args, feature) in cases {
@@ -370,7 +414,7 @@ mod tests {
     #[test]
     fn execution_backstop_leaves_v1_surfaces_alone() {
         for args in [
-            &["plexi", "agent", "report", "x"][..],
+            &["plexi", "agent", "report", "--state", "idle"][..],
             &["plexi", "agent", "status"],
             &["plexi", "ai", "doctor"],
             &["plexi", "app", "open", "--cli", "htop"],
@@ -389,7 +433,9 @@ mod tests {
         let relay = cmd.find_subcommand_mut("relay").unwrap();
         let help = relay.render_long_help().to_string();
         assert!(
-            help.contains("relay is an experiment. Turn it on with: plexi experiments enable relay"),
+            help.contains(
+                "relay is an experiment. Turn it on with: plexi experiments enable relay"
+            ),
             "{help}"
         );
         assert!(!help.contains("pair"), "{help}");

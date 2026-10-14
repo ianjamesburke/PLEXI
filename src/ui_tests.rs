@@ -753,6 +753,7 @@ mod tests {
     /// required link-time import grants.
     #[test]
     fn wasm_path_launch_queues_review_before_spawning() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
@@ -807,6 +808,7 @@ mod tests {
     /// pane rather than attempting a manifest/process launch.
     #[test]
     fn wasm_path_launch_opens_wasm_pane_after_review() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
@@ -4438,6 +4440,7 @@ mod tests {
 
         #[test]
         fn gate_render_wasm_text_ppp_1_and_2() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
             for ppp in GATE_PPP {
                 let profile = tempfile::tempdir().expect("profile dir");
                 let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());

@@ -3211,8 +3211,8 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn beta_scaffolds_keep_marketplace_placeholder() {
-        let _channel = crate::config::set_test_channel("beta");
+    fn scaffolds_keep_marketplace_placeholder_when_the_experiment_is_on() {
+        let _on = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
         assert_placeholder(&manifest_for(scaffold_python_app));
         assert_placeholder(&manifest_for(scaffold_agent_python_app));
     }
