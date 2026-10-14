@@ -451,6 +451,35 @@ mod tests {
         assert!(slot.is_some(), "a rejected handshake must not burn the desktop key");
     }
 
+    /// Base64url values may start with `-`; argparse reads a space-separated
+    /// `-x` as an option, so every value goes in the `--flag=value` form.
+    fn python_open_reply(
+        desktop_pub: &str,
+        phone_priv: &str,
+        request_id: &str,
+        body: &str,
+    ) -> std::process::Output {
+        std::process::Command::new("python3")
+            .arg(crypto_script())
+            .arg("open-reply")
+            .arg(format!("--desktop-pub={desktop_pub}"))
+            .arg(format!("--phone-priv={phone_priv}"))
+            .arg(format!("--request-id={request_id}"))
+            .arg(format!("--body={body}"))
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn open_reply_arguments_may_start_with_a_dash() {
+        let output = python_open_reply("-AAAA", "-BBBB", "-req", "-CCCC");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("expected one argument"),
+            "argparse read a dash-led value as an option: {stderr}"
+        );
+    }
+
     #[test]
     fn reply_seal_opens_in_python_and_the_fragment_is_not_a_query() {
         let pending = generate_desktop_key().unwrap();
@@ -467,21 +496,12 @@ mod tests {
                 .unwrap(),
         );
         let sealed = seal_reply(&mut session, "mock-reply", None, "req-vector").unwrap();
-        let opened = std::process::Command::new("python3")
-            .arg(crypto_script())
-            .args([
-                "open-reply",
-                "--desktop-pub",
-                &public,
-                "--phone-priv",
-                value["phone_priv"].as_str().unwrap(),
-                "--request-id",
-                "req-vector",
-                "--body",
-                &sealed,
-            ])
-            .output()
-            .unwrap();
+        let opened = python_open_reply(
+            &public,
+            value["phone_priv"].as_str().unwrap(),
+            "req-vector",
+            &sealed,
+        );
         assert!(opened.status.success(), "{}", String::from_utf8_lossy(&opened.stderr));
         let body: Value = serde_json::from_slice(&opened.stdout).unwrap();
         assert_eq!(body["text"], "mock-reply");
