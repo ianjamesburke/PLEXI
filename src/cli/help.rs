@@ -95,7 +95,7 @@ fn hide_subcommand(cmd: clap::Command, path: &[&str], text: &str) -> clap::Comma
 
 fn hide_arg(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
     let Some((head, rest)) = path.split_first() else {
-        return cmd.mut_arg(id.to_string(), |a| a.hide(true));
+        return cmd.mut_arg(id, |a| a.hide(true));
     };
     cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id))
 }
