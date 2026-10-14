@@ -1975,8 +1975,7 @@ mod tests {
             relay_connect_cli(Some("ws://127.0.0.1:1/v1/desktop".to_string())),
             1
         );
-        assert_eq!(control_roundtrip(json!({"type": "stop"})), 0);
-        worker.join().unwrap().unwrap();
+        stop_and_join(worker).unwrap().unwrap();
     }
 
     #[test]
@@ -1986,19 +1985,21 @@ mod tests {
         let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         STOP.store(false, Ordering::SeqCst);
         let port = free_port();
-        let mut child = Command::new("python3")
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/relay.py"))
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--public-origin")
-            .arg(format!("http://127.0.0.1:{port}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("python3");
-        wait_for_relay(&mut child, port);
+        let mut child = RelayProcess(
+            Command::new("python3")
+                .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/relay.py"))
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg(port.to_string())
+                .arg("--public-origin")
+                .arg(format!("http://127.0.0.1:{port}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("python3"),
+        );
+        wait_for_relay(&mut child.0, port);
         let profile_path = profile.path().to_path_buf();
         let url = format!("ws://127.0.0.1:{port}/v1/desktop");
         let worker = thread::spawn(move || {
@@ -2057,10 +2058,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         assert!(saw, "phone did not see the correlated echo");
-        let _ = control_roundtrip(json!({"type": "stop"}));
-        let _ = worker.join();
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = stop_and_join(worker);
     }
 
     #[test]
@@ -2070,17 +2068,19 @@ mod tests {
         let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         STOP.store(false, Ordering::SeqCst);
         let port = free_port();
-        let mut child = Command::new("python3")
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/relay.py"))
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("python3");
-        wait_for_relay(&mut child, port);
+        let mut child = RelayProcess(
+            Command::new("python3")
+                .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/relay.py"))
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg(port.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("python3"),
+        );
+        wait_for_relay(&mut child.0, port);
         let url = format!("ws://127.0.0.1:{port}/v1/desktop");
         let profile_path = profile.path().to_path_buf();
         let worker = thread::spawn({
@@ -2157,8 +2157,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         let second_cookie = second_cookie.expect("second cookie");
-        assert_eq!(control_roundtrip(json!({"type": "stop"})), 0);
-        worker.join().unwrap();
+        stop_and_join(worker).expect("first session");
         STOP.store(false, Ordering::SeqCst);
         let worker = thread::spawn(move || {
             let _guard = crate::config::set_test_profile_dir(profile_path);
@@ -2214,10 +2213,37 @@ mod tests {
             Some(&second_cookie),
         );
         assert_eq!(kept_status, 202);
-        let _ = control_roundtrip(json!({"type": "stop"}));
-        let _ = worker.join();
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = stop_and_join(worker);
+    }
+
+    /// Kills and reaps the Python relay on every exit path, so a failed
+    /// assertion cannot leave an orphan holding the runner.
+    struct RelayProcess(std::process::Child);
+
+    impl Drop for RelayProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Ask the session to stop until its thread finishes. A single `stop`
+    /// can miss (the status file is rewritten under it), and an unchecked
+    /// miss makes a bare `join` wait forever. Fail with a name instead.
+    fn stop_and_join<T>(worker: thread::JoinHandle<T>) -> thread::Result<T> {
+        let budget = crate::testing::load_aware_timeout(Duration::from_secs(15));
+        let start = Instant::now();
+        while !worker.is_finished() {
+            if start.elapsed() >= budget {
+                panic!(
+                    "relay session thread did not stop within {}s of repeated stop commands",
+                    budget.as_secs()
+                );
+            }
+            let _ = control_roundtrip(json!({"type": "stop"}));
+            thread::sleep(Duration::from_millis(50));
+        }
+        worker.join()
     }
 
     fn seal_turn(profile: &Path, state: &Path, request_id: &str, text: &str) -> Value {
@@ -2363,9 +2389,13 @@ mod tests {
         body: Option<Value>,
         cookie: Option<&str>,
     ) -> (u16, Value, Option<String>) {
+        // ureq has no default timeout; a stalled relay would block forever.
+        let agent = ureq::AgentBuilder::new()
+            .timeout(crate::testing::load_aware_timeout(Duration::from_secs(15)))
+            .build();
         let mut request = match method {
-            "POST" => ureq::post(url),
-            _ => ureq::get(url),
+            "POST" => agent.post(url),
+            _ => agent.get(url),
         };
         if let Some(cookie) = cookie {
             request = request.set("Cookie", &format!("plexi_phone={cookie}"));
