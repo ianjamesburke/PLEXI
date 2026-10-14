@@ -509,9 +509,9 @@ impl TextEditorApp {
             let (header, content, title) = split_note(true, full_text.to_string());
             self.note_header = header;
             self.note_title = title;
-            self.doc = Document::new(&content);
+            self.doc = Document::new(&content).succeeding(self.doc.revision());
         } else {
-            self.doc = Document::new(full_text);
+            self.doc = Document::new(full_text).succeeding(self.doc.revision());
         }
         self.view = ViewState::default();
         self.last_edit = None;
@@ -519,8 +519,18 @@ impl TextEditorApp {
 
     #[cfg(test)]
     pub(crate) fn test_set_unsaved(&mut self, text: &str) {
-        self.doc = Document::new(text);
+        self.doc = Document::new(text).succeeding(self.doc.revision());
         self.last_edit = Some(Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_discard_unsaved(&mut self) {
+        self.last_edit = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_check_disk(&mut self) -> bool {
+        self.check_disk()
     }
 
     #[cfg(test)]
@@ -769,6 +779,9 @@ impl TextEditorApp {
         );
         self.disk_hash = Some(hash);
         self.external = Some(ExternalChange::Modified);
+        if matches!(self.prompt, Some(Prompt::Close { .. })) {
+            self.prompt = Some(Prompt::Close { conflicted: true });
+        }
         true
     }
 
@@ -780,7 +793,7 @@ impl TextEditorApp {
         let (note_header, content, note_title) = split_note(self.is_note, raw);
         self.note_header = note_header;
         self.note_title = note_title;
-        self.doc = Document::new(&content);
+        self.doc = Document::new(&content).succeeding(self.doc.revision());
         let mut at = caret.min(content.len());
         while !content.is_char_boundary(at) {
             at -= 1;
@@ -3928,6 +3941,7 @@ mod data_safety_tests {
         assert!(app.check_disk());
         assert_eq!(app.doc.text(), "hello brave new world");
         assert_eq!(app.caret_byte(), 5);
+        assert!(app.doc.revision() > 0, "a reload must not reuse revision 0 for new text");
         assert!(app.last_edit.is_none());
         assert!(app.external.is_none());
     }
