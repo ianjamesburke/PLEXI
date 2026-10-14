@@ -1848,6 +1848,44 @@ Totals for tokens, cost, run count, and wall time
 | `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
 | `--json` | flag | no | Print one JSON object on stdout |
 
+## `plexi experiments`
+
+List, enable, or disable experiments (features outside the stable v1 surface).
+
+Every experiment is off by default on every channel. Switches live in the `[experiments]` table of the global config.toml.
+
+Example: plexi experiments list Example: plexi experiments enable assistant
+
+| Subcommand | Description |
+|---|---|
+| `list` | Show every experiment: name, on/off, whether a host restart is needed |
+| `enable` | Turn an experiment on in the global config.toml |
+| `disable` | Turn an experiment off by removing its switch from the global config.toml |
+
+### `plexi experiments list`
+
+Show every experiment: name, on/off, whether a host restart is needed
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi experiments enable`
+
+Turn an experiment on in the global config.toml
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Experiment name; see `plexi experiments list` |
+
+### `plexi experiments disable`
+
+Turn an experiment off by removing its switch from the global config.toml
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Experiment name; see `plexi experiments list` |
+
 ## `plexi skill`
 
 Install the agent skill compiled into this binary.
