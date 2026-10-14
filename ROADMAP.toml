@@ -217,11 +217,13 @@ note = "Primary enforcement is the check-cli-docs / check-config-docs workflows,
 [[node]]
 id = "release-pipeline"
 title = "just bump / promote / release — versioning and channel promotion"
-status = "yellow"
+status = "green"
 deps = ["release-channels"]
-evidence = []
+evidence = [
+  "release_round_trip_tag_lane_policy",
+]
 stints = ["0329"]
-note = "Four tests in release.rs; the end-to-end bump→release round trip is verified by hand, not in CI."
+note = "The bump→promote→release round trip runs in CI against a temp origin (scripts/release-round-trip-e2e.sh, release-round-trip.yml); the tag-triggered publication in release.yml is outside it and still verified by hand."
 
 # ---------------------------------------------------------------------------
 # App platform
