@@ -125,6 +125,9 @@ mod tests {
         let wake = Arc::new(RecordingWake::new());
         let watch = PathWatch::new(dir.path(), Some("a.txt".into()), wake.clone(), "test").unwrap();
         arm();
+        // FSEvents can replay the seed write after the watch arms; settle it.
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(500)));
+        let _ = watch.take_changed();
 
         std::fs::write(dir.path().join("other.txt"), "x").unwrap();
         thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(500)));
