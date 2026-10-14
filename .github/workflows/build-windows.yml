@@ -7,6 +7,9 @@
 #
 # The isolated launch regression needs no desktop/GPU. The GUI and ConPTY
 # lifecycle still require the interactive Windows diagnostic.
+#
+# Windows is parked until Mac alpha is stable (v1 ruling, 2026-10-14), so this no
+# longer runs on every PR. It runs on `feature/windows-**` pushes and on demand.
 name: Build (Windows)
 
 on:
@@ -14,16 +17,6 @@ on:
   push:
     branches:
       - 'feature/windows-**'
-  pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'build.rs'
-      - 'src/**'
-      - 'deps/**'
-      - 'tests/windows_host_launch.rs'
-      - 'tests/fixtures/host_detached_probe.rs'
-      - '.github/workflows/build-windows.yml'
 
 # A second push to the same branch supersedes the first; these builds are long
 # and the runner minutes are not worth spending on a stale commit.
