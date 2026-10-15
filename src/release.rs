@@ -16,8 +16,10 @@
 //! and start fresh with a notice. Graduation to stable freezes the format.
 //!
 //! Experiment gate rule: a gate guards only the experiment's own surface,
-//! never a shared servicing path that also does core work. Core app I/O must
-//! run with every experiment off, including during hidden-window logic passes.
+//! never a shared servicing path that also does core work. An off experiment
+//! preserves the established contract of every core command; it must not turn
+//! that command into a different fallback behavior. Core app I/O must run with
+//! every experiment off, including during hidden-window logic passes.
 //!
 //! The enabled set is read from the *global* config only. A workspace config
 //! must not be able to turn an experiment on, or a cloned repository could
@@ -116,7 +118,7 @@ impl ReleaseFeature {
             Self::CloudAccount => "Optional cloud account and history retention",
             Self::FolderSecrets => "Secrets injected per folder, with grants",
             Self::WasmApps => "Native Rust/WASM apps and the GPU canvas",
-            Self::PageGrid => "2D page grid per context and the minimap",
+            Self::PageGrid => "2D page-grid minimap",
             Self::Marketplace => "App marketplace: browse, search, publish",
             Self::Daw => "DAW engine proof of concept",
             Self::MediaIo => "Audio and video player panes",
