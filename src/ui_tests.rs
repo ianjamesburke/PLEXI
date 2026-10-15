@@ -96,6 +96,8 @@ fn harness_builtin_factory(
 pub struct PlexiUiHarness {
     inner: egui_kittest::Harness<'static, PlexiApp>,
     workspace: tempfile::TempDir,
+    _profile_guard: Option<crate::config::TestProfileDirGuard>,
+    _profile_dir: tempfile::TempDir,
     /// Isolates the channel-neutral shared dir (`~/.plexi`) for the harness
     /// lifetime, so a test that renders the notes picker reads a tempdir rather
     /// than the developer's real global notes tier.
@@ -106,6 +108,9 @@ pub struct PlexiUiHarness {
 impl PlexiUiHarness {
     /// Create a harness with a fresh, isolated PlexiApp.
     pub fn new() -> Self {
+        let profile_dir = tempfile::tempdir().expect("create UI harness profile");
+        let profile_guard = crate::config::test_profile_dir_override().is_none()
+            .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
         let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
@@ -121,6 +126,8 @@ impl PlexiUiHarness {
         Self {
             inner: harness,
             workspace,
+            _profile_guard: profile_guard,
+            _profile_dir: profile_dir,
             _shared_guard,
             _shared_dir: shared_dir,
         }
@@ -138,6 +145,9 @@ impl PlexiUiHarness {
     /// (half-resolution surfaces, off-grid galley origins) are invisible at
     /// the default ppp of 1.0.
     pub fn new_sized_ppp(width: f32, height: f32, ppp: f32) -> Self {
+        let profile_dir = tempfile::tempdir().expect("create UI harness profile");
+        let profile_guard = crate::config::test_profile_dir_override().is_none()
+            .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
         let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
@@ -156,6 +166,8 @@ impl PlexiUiHarness {
         Self {
             inner: harness,
             workspace,
+            _profile_guard: profile_guard,
+            _profile_dir: profile_dir,
             _shared_guard,
             _shared_dir: shared_dir,
         }
@@ -770,8 +782,9 @@ mod tests {
 
         let mut h = PlexiUiHarness::new_sized(1100.0, 300.0);
         h.run_steps(2);
+        h.harness().get_by_label("Terminal pane 4 wants to use secret.get");
         let caption = format!(
-            "pane:4 wants secret.get OPENAI_API_KEY@{}",
+            "Resource: OPENAI_API_KEY@{}",
             root.path().display()
         );
         h.harness().get_by_label(&caption);

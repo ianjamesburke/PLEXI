@@ -356,9 +356,8 @@ impl PlexiApp {
         }
     }
 
-    /// Floating choices for a pending app call. A real pointer click is the
-    /// desktop decision: Allow once, Always deny, or Deny. Socket-injected
-    /// input is ignored for the frame.
+    /// A framed, nonmodal permission surface. Only real pointer decisions
+    /// grant authority; ordinary typing continues in the active pane.
     pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
@@ -377,39 +376,65 @@ impl PlexiApp {
             );
             self.approval_banner_logged = Some(pending_id.clone());
         }
-        let caption = match pending[0].resource_id.as_deref() {
-            Some(resource) => format!("{} wants {} {resource}", pending[0].actor_id, pending[0].tool),
-            None => format!("{} wants {}", pending[0].actor_id, pending[0].tool),
-        };
+        let request = &pending[0];
+        let actor = request.actor_id.strip_prefix("pane:")
+            .map(|id| format!("Terminal pane {id}"))
+            .or_else(|| request.actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
+            .unwrap_or_else(|| request.actor_id.clone());
+        let tool = request.tool.replace("__", " / ");
+        let caption = format!("{actor} wants to use {tool}");
         let synthetic = self.synthetic_input_frame;
-        let choices = [
+        let mut choices = vec![
             ("Allow once", crate::broker::gate::ApprovalChoice::Once),
-            (
-                "Always deny",
-                crate::broker::gate::ApprovalChoice::DenyAlways,
-            ),
-            ("Deny", crate::broker::gate::ApprovalChoice::Deny),
         ];
+        if request.allow_tool {
+            choices.push(("Allow for this session", crate::broker::gate::ApprovalChoice::AllowTool));
+        }
+        choices.push(("Deny", crate::broker::gate::ApprovalChoice::Deny));
+        choices.push(("Always deny", crate::broker::gate::ApprovalChoice::DenyAlways));
         let mut chosen = None;
-        egui::Area::new(egui::Id::new("approval_banner"))
-            .fixed_pos(egui::pos2(12.0, 8.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(caption);
-                    for (label, choice) in choices {
-                        let response = ui.add(egui::Button::new(label));
+        crate::ui::overlay::ModalShell::centered("approval_banner")
+            .title("Permission requested")
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
+            .scrim(false)
+            .click_away(false)
+            .show(ctx, &self.colors, |ui| {
+                crate::ui::typography::body_strong(ui, caption, &self.colors);
+                if let Some(resource) = &request.resource_id {
+                    crate::ui::typography::body(ui, format!("Resource: {resource}"), &self.colors);
+                }
+                if request.input_summary != "{}" && !request.input_summary.is_empty() {
+                    ui.collapsing("Request details", |ui| {
+                        crate::ui::typography::body(ui, &request.input_summary, &self.colors);
+                    });
+                }
+                if request.allow_tool {
+                    crate::ui::typography::caption(ui,
+                        "Session approval covers different arguments for this tool and caller, in this app instance and workspace only. The resource stays the same. Ends when Plexi quits; revoke in Permissions.", &self.colors);
+                }
+                ui.add_space(crate::ui::style::SPACE_MD);
+                ui.horizontal_wrapped(|ui| {
+                    for &(label, choice) in &choices {
+                        let kind = if choice == crate::broker::gate::ApprovalChoice::Once {
+                            crate::ui::button::ButtonKind::Accent
+                        } else {
+                            crate::ui::button::ButtonKind::Primary
+                        };
+                        let response = crate::ui::button::chrome_button(ui, label, kind, &self.colors, 0.0);
                         let rect = response.rect;
                         self.approval_buttons.push(ApprovalButton {
                             label: label.to_string(),
                             bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
                             pending_request_id: pending_id.clone(),
                         });
-                        if response.clicked() {
+                        if response.clicked_by(egui::PointerButton::Primary) {
                             chosen = Some((label, choice));
                         }
                     }
                 });
+                if pending.len() > 1 {
+                    crate::ui::typography::caption(ui, format!("{} more requests waiting", pending.len() - 1), &self.colors);
+                }
             });
         if let Some((label, choice)) = chosen {
             if synthetic {
