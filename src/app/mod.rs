@@ -622,6 +622,14 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
+pub(crate) fn configure_native_semantics(ctx: &egui::Context) {
+    if crate::release::feature_enabled(crate::release::ReleaseFeature::Accessibility) {
+        ctx.enable_accesskit();
+    } else {
+        crate::release::log_feature_blocked(crate::release::ReleaseFeature::Accessibility);
+    }
+}
+
 /// Single-byte sentinel written back to the socket peer once the host has
 /// captured its ancestry (`capture_peer_ancestry`) for a `Notify`/
 /// `DismissNotification` request. `notify_cli`/`dismiss_notify_cli` block
@@ -1269,11 +1277,7 @@ impl PlexiApp {
         }
 
         theme::setup_fonts(&cc.egui_ctx);
-        if crate::release::feature_enabled(crate::release::ReleaseFeature::Accessibility) {
-            cc.egui_ctx.enable_accesskit();
-        } else {
-            crate::release::log_feature_blocked(crate::release::ReleaseFeature::Accessibility);
-        }
+        configure_native_semantics(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 

@@ -2433,6 +2433,13 @@ impl PlexiApp {
                     Some(pane) => {
                         let liveness = crate::host::pane_liveness::compute(pane, *stale_after_secs);
                         let mut response = if let Some(app_pane) = pane.as_app() {
+                            if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {
+                                // Core pane inspection needs the rendered tree even when
+                                // experimental eager accessibility capture is off. This
+                                // enables internal capture, not the native OS adapter.
+                                self.ctx.enable_accesskit();
+                                self.ctx.request_repaint();
+                            }
                             let frame = app_pane
                                 .runtime
                                 .frame_json()

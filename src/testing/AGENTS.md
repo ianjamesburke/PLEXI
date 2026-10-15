@@ -21,6 +21,8 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 
 ## Traps
 
+- **Harness AccessKit defaults can hide broken installed pane semantics.** The harness eagerly captures semantic trees; native startup uses `configure_native_semantics`, whose eager capture is experimental. Core `GetPaneState` must activate internal tree capture independently, without enabling the experiment or activating the OS adapter. Startup regressions must disable the harness's eager capture and call the production initializer before querying and rendering.
+
 - **PTY completion waits must distinguish command echo from executed output.** A substring in an echoed setup command can satisfy `wait_for_output` before the shell runs the command under test. See `pane_command_enter_runs_ambiguous_prefix_alias_instead_of_completing` for a result marker split across shell literals so only execution prints the complete marker.
 
 - **`plexi pane key` must exercise real key handlers, never a parallel resolver path.** The host `KeyPane` handler routes by pane type: terminals get PTY bytes, Python (PGAP) apps get `PlexiEvent::Key`, and native (builtin/WASM) apps first get a synthesized `egui::InputState` through `App::handle_key` (`drive_native_pane_key` in `src/app/mod.rs`) — the same handler a physical keystroke reaches. `Consumed` stops there; `Passthrough` focuses the real pane and replays the synthesized events into the current production egui pass so widgets such as `TextEdit` can consume Enter/Tab during rendering. When adding pane-driving capabilities, extend these paths; never add a hidden CLI that bypasses an app's own keyboard flow. Native panes report `disposition` in the response file so drive-host validation can distinguish both paths.

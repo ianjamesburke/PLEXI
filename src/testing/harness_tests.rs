@@ -5004,6 +5004,41 @@ fn editor_gate_paste_preserves_literal_text_and_is_one_undo_step() {
     assert_eq!(gate_note_semantics(&h, pane_id)["source_text"], "");
 }
 
+#[test]
+fn editor_gate_pane_state_captures_rendered_text_with_experiments_off() {
+    let mut h = HostHarness::new();
+    let _experiments = crate::release::set_test_experiments(&[]);
+    // Recreate native startup, removing the harness's eager semantic capture.
+    h.app.ctx.disable_accesskit();
+    crate::app::configure_native_semantics(&h.app.ctx);
+    let tmp = tempfile::tempdir().unwrap();
+    let pane_id = open_gate_note(&mut h, tmp.path(), "Core semantic paragraph");
+    let response = temp_response(tmp.path(), "core-semantic");
+    let query = || AppRequest::GetPaneState {
+        pane_id,
+        response_file: response.clone(),
+        stale_after_secs: None,
+    };
+    h.inject_ipc(query());
+    h.run_frames(3);
+    h.inject_ipc(query());
+    h.run_frames(1);
+    let state = read_json_response(&response);
+    assert!(
+        state["semantic"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| {
+                node["role"] == "paragraph" && node["value"] == "Core semantic paragraph"
+            }),
+        "missing rendered paragraph: {state}"
+    );
+    assert!(!crate::release::feature_enabled(
+        crate::release::ReleaseFeature::Accessibility
+    ));
+}
+
 /// Char offset of `cursor` within `text` (the notes semantic `caret` unit).
 fn gate_char_offset(text: &str, cursor: crate::editor::Cursor) -> usize {
     let mut offset = 0;
