@@ -322,10 +322,6 @@ impl ToolRegistry {
         by_app.into_iter().collect()
     }
 
-    /// Get the `AppEventSender` for a pane without moving it.
-    fn sender_for(&self, pane_id: u64) -> Option<&AppEventSender> {
-        self.entries.get(&pane_id).map(|e| &e.sender)
-    }
 }
 
 static GLOBAL_REGISTRY: OnceLock<Arc<Mutex<ToolRegistry>>> = OnceLock::new();
@@ -547,6 +543,8 @@ pub struct ToolDispatcher {
     /// Snapshot: exposed_name → (provider_pane_id, provider_tool_name, AiTool).
     /// Already filtered to the caller's context.
     tools: HashMap<String, (u64, String, AiTool)>,
+    /// Host-established package identity at snapshot time, not inferred from tool names.
+    provider_apps: HashMap<u64, String>,
     /// Caller-local host tools. Dispatched through `host_handler`, never sent
     /// to a pane. Still admitted by the permission monitor.
     host_tools: HashMap<String, AiTool>,
@@ -594,7 +592,7 @@ impl ToolDispatcher {
             scope.context_id,
             tools.len(),
         );
-        Self::from_parts(scope, monitor, tools)
+        Self::from_parts(scope, monitor, tools, &registry)
     }
 
     /// Build the context-scoped snapshot exposed by the singleton host MCP
@@ -621,18 +619,26 @@ impl ToolDispatcher {
             scope.context_id,
             tools.len(),
         );
-        Self::from_parts(scope, monitor, tools)
+        Self::from_parts(scope, monitor, tools, &registry)
     }
 
     fn from_parts(
         scope: DispatchScope,
         monitor: Arc<crate::broker::gate::PermissionMonitor>,
         tools: HashMap<String, (u64, String, AiTool)>,
+        registry: &ToolRegistry,
     ) -> Self {
         let caller_app_id = scope.caller_app_id.clone();
         let caller_pane_id = scope.caller_pane_id;
+        let provider_apps = tools
+            .values()
+            .filter_map(|(pane, _, _)| {
+                registry.entries.get(pane).map(|entry| (*pane, entry.app_id.clone()))
+            })
+            .collect();
         Self {
             tools,
+            provider_apps,
             host_tools: HashMap::new(),
             host_handler: None,
             caller_app_id,
@@ -1014,8 +1020,22 @@ impl ToolDispatcher {
         // Send ToolCall to the owning pane.
         let sent = {
             let registry = global_registry().lock().unwrap();
-            if let Some(sender) = registry.sender_for(*pane_id) {
-                sender
+            if let Some(entry) = registry.entries.get(pane_id) {
+                // A pane may be replaced or moved while a human considers the
+                // request. Recheck the snapshot under the same lock as send.
+                if self.provider_apps.get(pane_id) != Some(&entry.app_id)
+                    || entry.origin.context_id != self.scope.context_id
+                    || !entry.tools.iter().any(|current| current.name == *provider_tool_name)
+                {
+                    pending_calls().lock().unwrap().remove(&call_id);
+                    log::info!("tool_dispatch: target changed before send pane={pane_id} tool={name} call_id={call_id}");
+                    return ToolCallResult::coded(
+                        "tool_target_changed",
+                        &call_id,
+                        None,
+                    );
+                }
+                entry.sender
                     .send_event(&PlexiEvent::ToolCall {
                         call_id: call_id.clone(),
                         name: provider_tool_name.clone(),
@@ -1295,6 +1315,34 @@ mod tests {
 
         // Clean up global registry.
         unregister(999);
+    }
+
+    #[test]
+    fn dispatch_rejects_provider_replaced_after_snapshot() {
+        let pane = 9792;
+        for (app, context, tool) in [
+            ("replacement", 9792, "todo.list"),
+            ("todo", 9793, "todo.list"),
+            ("todo", 9792, "todo.other"),
+        ] {
+            let (original, _original_rx) = std::sync::mpsc::channel();
+            register(pane, "todo".into(), vec![make_tool("todo.list")],
+                AppEventSender::Channel(original), origin(9792, pane));
+            let dispatcher = ToolDispatcher::namespaced_for(
+                DispatchScope::new(9791, "pane:9791", "/ws", 9792),
+                crate::broker::gate::PermissionMonitor::ephemeral(),
+            );
+            let (replacement, replacement_rx) = std::sync::mpsc::channel();
+            register(pane, app.into(), vec![make_tool(tool)],
+                AppEventSender::Channel(replacement), origin(context, pane));
+            let result = dispatcher.dispatch_inner(
+                format!("stale-{app}-{context}-{tool}"), "todo__todo.list", "{}".into(), None,
+            );
+            unregister(pane);
+            assert!(replacement_rx.try_recv().is_err(), "stale call reached replacement provider");
+            assert!(result.error.as_deref().unwrap_or_default().contains("tool_target_changed"),
+                "unexpected result: {:?}", result.error);
+        }
     }
 
     /// Two panes exposing the same tool name stay addressable by pane id.
