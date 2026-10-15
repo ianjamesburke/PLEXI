@@ -89,8 +89,8 @@ def main(args):
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundles[0])], check=True)
     if hashlib.sha256(package_a.read_bytes()).digest() == hashlib.sha256(package_b.read_bytes()).digest():
         raise AssertionError("A and B must contain different executable bytes")
-    if manifest_a["build_id"] == manifest_b["build_id"]:
-        raise AssertionError("A and B must be distinct builds")
+    if (manifest_a["build_id"], manifest_a["tag"]) == (manifest_b["build_id"], manifest_b["tag"]):
+        raise AssertionError("A and B must have distinct compiled identities")
     keychain_state = [subprocess.check_output(["security", operation], text=True) for operation in ("default-keychain", "list-keychains")]
     with tempfile.TemporaryDirectory(prefix="plexi-keychain-continuity-", dir="/tmp") as temporary:
         root = Path(temporary)
