@@ -18,6 +18,27 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+impl super::PlexiApp {
+    /// Normal desktop quit shares pane-close protection. Forced IPC stop and
+    /// process termination cannot present an interactive unsaved-work prompt.
+    pub(crate) fn prepare_user_quit(&mut self) -> bool {
+        let veto = self.windows.iter_mut().find_map(|window| {
+            window.panes.iter_mut().find_map(|(id, pane)| {
+                pane.as_app_mut().and_then(|app| (!app.runtime.request_close()).then_some(*id))
+            })
+        });
+        if let Some(pane) = veto {
+            self.quitting = false;
+            self.quit_press_count = 0;
+            self.quit_last_press = None;
+            self.pane_navigate(pane);
+            log::info!("quit: unsaved work vetoed desktop quit pane={pane}");
+            return false;
+        }
+        true
+    }
+}
+
 /// The notify socket this process bound, with the identity it had at bind
 /// time. Written once by the socket listener, read only by teardown.
 static BOUND_NOTIFY_SOCKET: OnceLock<BoundSocket> = OnceLock::new();

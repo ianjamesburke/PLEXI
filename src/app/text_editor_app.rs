@@ -864,10 +864,6 @@ impl TextEditorApp {
         }
     }
 
-    fn prompt_keys(&self) -> &'static [egui::Key] {
-        &[egui::Key::R, egui::Key::O, egui::Key::S, egui::Key::D, egui::Key::Escape]
-    }
-
     /// Inline prompt row under the header.
     fn show_prompt(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         let Some(prompt) = self.prompt else {
@@ -876,19 +872,19 @@ impl TextEditorApp {
         let (question, choices): (&str, &[(&str, egui::Key)]) = match prompt {
             Prompt::Overwrite => (
                 "File changed on disk. Your edits conflict.",
-                &[("[R] Reload", egui::Key::R), ("[O] Overwrite", egui::Key::O), ("[Esc] Cancel", egui::Key::Escape)],
+                &[("Reload from disk", egui::Key::R), ("Overwrite disk", egui::Key::O), ("Cancel (Esc)", egui::Key::Escape)],
             ),
             Prompt::Close { conflicted: false } => (
                 "Unsaved changes.",
-                &[("[S] Save", egui::Key::S), ("[D] Discard", egui::Key::D), ("[Esc] Cancel", egui::Key::Escape)],
+                &[("Save", egui::Key::S), ("Discard edits", egui::Key::D), ("Cancel (Esc)", egui::Key::Escape)],
             ),
             Prompt::Close { conflicted: true } => (
                 "Unsaved changes, and the file changed on disk.",
-                &[("[O] Overwrite", egui::Key::O), ("[D] Discard", egui::Key::D), ("[Esc] Cancel", egui::Key::Escape)],
+                &[("Overwrite disk", egui::Key::O), ("Discard edits", egui::Key::D), ("Cancel (Esc)", egui::Key::Escape)],
             ),
         };
         let mut chosen = None;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add_space(crate::ui::style::SPACE_SM);
             ui.label(
                 egui::RichText::new(question)
@@ -1760,14 +1756,17 @@ impl App for TextEditorApp {
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         if self.prompt.is_some() {
-            for key in self.prompt_keys() {
-                if input.key_pressed(*key) && input.modifiers().matches_logically(egui::Modifiers::NONE) {
-                    self.apply_prompt_key(*key);
-                    break;
-                }
+            if input.key_pressed(egui::Key::Escape) {
+                self.apply_prompt_key(egui::Key::Escape);
+                return KeyDisposition::Consumed;
             }
-            // Nothing reaches the buffer while a question is open.
-            return KeyDisposition::Consumed;
+            if input.events().iter().any(|event| matches!(event,
+                egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)
+                | egui::Event::Paste(_) | egui::Event::Cut)) {
+                // A prompt may appear while the person is writing. Continuing
+                // to type cancels the question, never their buffer or input.
+                self.apply_prompt_key(egui::Key::Escape);
+            }
         }
         if input.key_pressed(egui::Key::S)
             && input
@@ -1946,24 +1945,12 @@ impl App for TextEditorApp {
             });
 
         if self.prompt.is_some() && owns_input {
-            for key in self.prompt_keys() {
-                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, *key)) {
-                    self.apply_prompt_key(*key);
-                    break;
-                }
-            }
-            if self.prompt.is_some() {
-                ui.input_mut(|i| {
-                    i.events.retain(|e| {
-                        !matches!(
-                            e,
-                            egui::Event::Key { .. }
-                                | egui::Event::Text(_)
-                                | egui::Event::Paste(_)
-                                | egui::Event::Cut
-                        )
-                    })
-                });
+            let escape = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            let editing = ui.input(|i| i.events.iter().any(|event| matches!(event,
+                egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)
+                | egui::Event::Paste(_) | egui::Event::Cut)));
+            if escape || editing {
+                self.apply_prompt_key(egui::Key::Escape);
             }
         }
 
@@ -2279,6 +2266,14 @@ impl App for TextEditorApp {
         // Notes autosave, so closing flushes them silently. A file opened by
         // path is not autosaved, and a conflicted buffer must not be flushed.
         let conflicted = self.external == Some(ExternalChange::Modified);
+        if !self.wants_close && self.is_note && !conflicted && self.last_edit.is_some() {
+            self.flush();
+            if self.last_edit.is_some() {
+                log::info!("notes_editor: close vetoed after failed save path={:?}", self.path);
+                self.prompt = Some(Prompt::Close { conflicted: false });
+                return false;
+            }
+        }
         let needs_prompt = self.last_edit.is_some() && (!self.is_note || conflicted);
         if self.wants_close || !needs_prompt {
             return true;
@@ -2352,6 +2347,13 @@ impl App for TextEditorApp {
                     new_path
                 );
                 self.flush();
+                if self.last_edit.is_some() {
+                    log::info!("notes_editor: document switch refused while unsaved path={:?}", self.path);
+                    if self.external == Some(ExternalChange::Modified) {
+                        self.prompt = Some(Prompt::Overwrite);
+                    }
+                    return;
+                }
                 let (raw, load_error) = match std::fs::read_to_string(&new_path) {
                     Ok(s) => (s, None),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
@@ -3926,6 +3928,34 @@ mod data_safety_tests {
         });
         app.doc.apply(EditorCommand::InsertText(text.into()));
         app.last_edit = Some(Instant::now());
+    }
+
+    #[test]
+    fn failed_flush_cannot_switch_away_from_unsaved_document() {
+        let (path, mut app) = plain_file("switch-conflict", "seed");
+        type_text(&mut app, " mine");
+        std::fs::write(&path, "agent version").unwrap();
+        app.check_disk();
+        let next = path.with_file_name("next.txt");
+        std::fs::write(&next, "next").unwrap();
+        app.restore_state(&serde_json::json!({"path":next}));
+        assert_eq!(app.path, path);
+        assert_eq!(app.doc.text(), "seed mine");
+        assert!(app.last_edit.is_some());
+    }
+
+    #[test]
+    fn note_close_flushes_before_process_exit_and_vetoes_failed_write() {
+        let (path, mut app) = plain_file("close-flush", "seed");
+        app.is_note = true;
+        type_text(&mut app, " mine");
+        assert!(app.request_close());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed mine");
+        type_text(&mut app, " unsaved");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(!app.request_close(), "failed save must veto close");
+        assert!(app.last_edit.is_some());
     }
 
     #[test]

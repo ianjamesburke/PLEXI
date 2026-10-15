@@ -309,8 +309,8 @@ pub trait App: Send {
 
     /// A user-initiated close asks the app first. Returning false vetoes the
     /// close: the app shows its own prompt (unsaved buffer) and sets
-    /// `wants_close` once the user decides. Programmatic closes (CLI, context
-    /// close, quit) do not ask.
+    /// `wants_close` once the user decides. Normal desktop quit also asks;
+    /// programmatic closes (CLI, context close, forced host stop) do not.
     fn request_close(&mut self) -> bool {
         true
     }

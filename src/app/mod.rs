@@ -4041,7 +4041,9 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::Quit => {
-                    if !self.confirm_quit() {
+                    if !self.prepare_user_quit() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    } else if !self.confirm_quit() {
                         self.quitting = true;
                         // Closing the viewport is the last frame this host
                         // will run — a debounced `mark_workspace_dirty()`
@@ -4418,7 +4420,9 @@ impl eframe::App for PlexiApp {
                 self.quitting,
                 self.quit_press_count
             );
-            if self.quitting {
+            if !self.prepare_user_quit() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if self.quitting {
                 // Triple-tap already completed and the window is closing this
                 // frame — no later tick will run the debounce flush, so save
                 // synchronously (stint 0548).
