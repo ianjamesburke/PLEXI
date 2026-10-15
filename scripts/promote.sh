@@ -50,6 +50,25 @@ check_clean() {
         || die "$label has uncommitted changes — commit first"
 }
 
+ensure_worktree() {
+    local tree="$1" branch="$2" label="$3"
+
+    if [[ -d "$tree" ]]; then
+        git -C "$tree" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+            || die "$label path exists but is not a Git worktree: $tree"
+        [[ $(git -C "$tree" rev-parse --abbrev-ref HEAD) == "$branch" ]] \
+            || die "$label worktree is not on '$branch'"
+        return
+    fi
+
+    [[ ! -e "$tree" ]] \
+        || die "$label path exists but is not a directory: $tree"
+
+    echo "Creating missing $label worktree at $tree..."
+    git worktree add "$tree" "$branch" \
+        || die "failed to create the $label worktree"
+}
+
 check_cargo_config() {
     local tree="$1"
     local cfg="$tree/.cargo/config.toml"
@@ -106,6 +125,7 @@ promote_alpha_to_beta() {
     check_clean "$ALPHA_TREE" "alpha"
     check_cargo_config "$ALPHA_TREE"
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
+    ensure_worktree "$BETA_TREE" "beta" "beta"
     check_clean "$BETA_TREE" "beta"
 
     echo "Checking CLI docs are up to date..."
