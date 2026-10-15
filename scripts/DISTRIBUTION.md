@@ -53,10 +53,39 @@ commands may have their own system dependencies.
 The builder assembles channel-specific Mac bundle names, executable names and
 identifiers before signing. A stable release contains separate alpha and beta
 variants so those channels can consume it without changing a signed bundle.
-`PLEXI_SIGN_IDENTITY` selects an available signing identity; the default is
-ad-hoc signing. Public builds currently lack Developer ID notarization and
-Windows Authenticode signing. Broad nontechnical distribution still needs those
-credentials and clean-machine OS trust validation.
+`PLEXI_SIGN_IDENTITY` selects an available signing identity; local builds may
+fall back to ad-hoc signing. A public Alpha build may not: release CI imports
+the protected persistent `Plexi Dev` PKCS#12 identity and compares its leaf
+certificate SHA-1 against `PLEXI_ALPHA_SIGNING_CERT_SHA1`. Package assembly
+records the authority, certificate digest, and designated requirement; CI
+re-extracts the published archive and verifies those facts before publication.
+Replacing that identity is a security migration, not routine certificate
+rotation: it invalidates the Keychain ACL that protects sealed grants and
+Needs-you journals across updates.
+
+Public beta and stable builds are deliberately refused until a separate
+Developer ID plus notarization implementation supplies its own credentials and
+clean-machine acceptance. Windows Authenticode remains outside the Alpha
+contract. Broad nontechnical distribution still needs those credentials and OS
+trust validation.
+
+Release-owner setup: retain the existing `Plexi Dev` certificate and private
+key together in a password-protected PKCS#12 backup. Configure repository Actions
+secrets `PLEXI_ALPHA_SIGNING_P12_BASE64` (base64 of that backup),
+`PLEXI_ALPHA_SIGNING_P12_PASSWORD`, and `PLEXI_ALPHA_SIGNING_CERT_SHA1` (the
+certificate fingerprint, not its name). Never generate a replacement identity
+in CI. Missing credentials or a fingerprint mismatch stop publication. The
+imported key is kept in a temporary runner Keychain, selected explicitly for
+signing without replacing the default Keychain or its search list, and removed
+at job teardown. The runner trusts only the pinned certificate for code signing
+and removes that temporary trust setting at teardown.
+
+`scripts/test-macos-keychain-continuity.py` installs distinct A and B packages
+into temporary destinations, files a question under A, and requires the same
+sealed Needs-you record under B without key recreation, rotation, or recovery.
+It uses a disposable private Keychain and checks that the user's default
+Keychain and search list are unchanged. CI rebuilds B with a different compiled
+build tag; identical executable bytes are rejected as insufficient evidence.
 
 ## Layout and ownership
 

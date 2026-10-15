@@ -8,6 +8,13 @@ on:
       tag:
         type: string
         required: true
+    secrets:
+      PLEXI_ALPHA_SIGNING_P12_BASE64:
+        required: false
+      PLEXI_ALPHA_SIGNING_P12_PASSWORD:
+        required: false
+      PLEXI_ALPHA_SIGNING_CERT_SHA1:
+        required: false
   pull_request:
     paths:
       - 'crates/distribution/**'
@@ -15,6 +22,8 @@ on:
       - 'scripts/*install*'
       - 'scripts/*package*'
       - 'scripts/test-distribution.py'
+      - 'scripts/*signing*'
+      - 'scripts/test-macos-keychain-continuity.py'
       - 'Cargo.*'
       - 'build.rs'
       - 'install.sh'
@@ -86,6 +95,18 @@ jobs:
         shell: bash
         run: |
           RUSTFLAGS="-D warnings" cargo build --release --bin plexi
+      - name: Import the persistent public macOS signing identity
+        if: runner.os == 'macOS' && inputs.tag != ''
+        env:
+          PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+          PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+          PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+        shell: bash
+        run: |
+          case '${{ inputs.tag }}' in
+            *-alpha.*) bash scripts/setup-alpha-release-signing.sh ;;
+            *) echo 'error: public beta/stable macOS releases require Developer ID signing and notarization; this Alpha-only identity may not be used' >&2; exit 1 ;;
+          esac
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb xauth
@@ -96,13 +117,35 @@ jobs:
         run: |
           set -euo pipefail
           suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
+          signing_args=()
+          if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' != '' ]]; then
+            signing_args=(--require-macos-signing --macos-signing-authority 'Plexi Dev' --macos-signing-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1")
+          fi
           for channel in $PACKAGE_CHANNELS; do
-            uv run --no-project python scripts/package.py --binary "target/release/plexi$suffix" --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}' --channel "$channel" --output dist
+            uv run --no-project python scripts/package.py --binary "target/release/plexi$suffix" --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}' --channel "$channel" --output dist "${signing_args[@]}"
             command=(uv run --no-project python scripts/test-package.py --package "dist/package-${{ matrix.platform }}-$channel" --output "evidence/$channel" --gui)
             if [[ '${{ runner.os }}' == Linux ]]; then xvfb-run -a "${command[@]}"; else "${command[@]}"; fi
+            if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' != '' ]]; then
+              uv run --no-project python scripts/test-macos-signing.py --archive "dist/plexi-${{ matrix.platform }}${channel:+-$channel}.tar.gz" --expected-authority 'Plexi Dev' --expected-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1"
+            fi
           done
+          if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' == *-alpha.* ]]; then
+            # Change compiled build identity so B has a different code hash.
+            # Packaging identical bytes twice would not test an actual upgrade.
+            PLEXI_BUILD_TAG="${PLEXI_BUILD_TAG}-continuity-b" RUSTFLAGS="-D warnings" cargo build --release --bin plexi
+            uv run --no-project python scripts/package.py --binary "target/release/plexi" --installer "target/release/plexi-installer" --platform '${{ matrix.platform }}' --channel alpha --output continuity-b "${signing_args[@]}"
+            uv run --no-project python scripts/test-macos-keychain-continuity.py --package-a "dist/package-${{ matrix.platform }}-alpha" --package-b "continuity-b/package-${{ matrix.platform }}-alpha"
+          fi
           cp "target/release/plexi-installer$suffix" "dist/plexi-installer-${{ matrix.platform }}$suffix"
           uv run --no-project python -c 'from pathlib import Path; from scripts.package import digest; [p.with_name(p.name+".sha256").write_text(digest(p)+"  "+p.name+"\n") for p in Path("dist").glob("plexi-installer-*") if not p.name.endswith(".sha256")]'
+      - name: Remove the temporary signing keychain
+        if: always() && runner.os == 'macOS' && inputs.tag != ''
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/plexi-alpha-release-signing.keychain-db"
+          certificate="$RUNNER_TEMP/plexi-alpha-release-signing.pem"
+          if [[ -f "$certificate" ]]; then security remove-trusted-cert "$certificate"; fi
+          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

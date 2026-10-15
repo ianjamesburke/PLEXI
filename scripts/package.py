@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -93,6 +94,33 @@ def display_name(channel):
     return "Plexi " + channel.capitalize()
 
 
+def macos_signature(bundle):
+    """Return the public signing facts the package contract preserves."""
+    details = subprocess.run(
+        ["codesign", "-dvv", str(bundle)], check=True, capture_output=True, text=True
+    ).stderr
+    authorities = re.findall(r"^Authority=(.+)$", details, flags=re.MULTILINE)
+    requirement_process = subprocess.run(
+        ["codesign", "-d", "-r-", str(bundle)], check=True, capture_output=True, text=True
+    )
+    requirement_output = requirement_process.stdout + requirement_process.stderr
+    designated = next(
+        (line.removeprefix("designated => ") for line in requirement_output.splitlines()
+         if line.startswith("designated => ")),
+        None,
+    )
+    if not authorities or not designated:
+        raise ValueError("codesign did not report signing authority and designated requirement")
+    match = re.search(r'certificate leaf = H"([0-9a-f]+)"', designated, flags=re.IGNORECASE)
+    if not match:
+        raise ValueError("designated requirement does not bind a leaf signing certificate")
+    return {
+        "authorities": authorities,
+        "designated_requirement": designated,
+        "certificate_sha1": match.group(1).upper(),
+    }
+
+
 def assemble(args):
     channel = "stable" if args.channel == "main" else args.channel
     if not channel or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in channel):
@@ -146,15 +174,39 @@ def assemble(args):
         for manifest in (REPO / "apps").glob("*/manifest.toml"):
             shutil.copytree(manifest.parent, resources / "maintained-apps" / manifest.parent.name, ignore=ignore)
 
+    signing = None
     if args.platform.startswith("macos-"):
         # All channel mutations precede signing. Stable archives consumed by
         # alpha/beta carry separately assembled variants; installers never patch them.
         identity_name = os.environ.get("PLEXI_SIGN_IDENTITY", "-")
-        subprocess.run(["codesign", "--force", "--deep", "--sign", identity_name, str(bundle)], check=True)
+        if args.require_macos_signing and identity_name == "-":
+            raise ValueError("public macOS package requires PLEXI_SIGN_IDENTITY; ad-hoc signing is forbidden")
+        signing_command = ["codesign", "--force", "--deep", "--sign", identity_name]
+        if os.environ.get("PLEXI_SIGNING_KEYCHAIN"):
+            signing_command.extend(["--keychain", os.environ["PLEXI_SIGNING_KEYCHAIN"]])
+        subprocess.run([*signing_command, str(bundle)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
+        # Local/source packages retain their supported ad-hoc signing path.
+        # Only a certificate-backed signature has an authority/leaf requirement.
+        signing = macos_signature(bundle) if identity_name != "-" else None
+        if signing is None and (args.macos_signing_authority or args.macos_signing_certificate_sha1):
+            raise ValueError("expected macOS signing identity cannot be satisfied by ad-hoc signing")
+        if args.macos_signing_authority and args.macos_signing_authority != signing["authorities"][0]:
+            raise ValueError(
+                f"macOS signing authority {args.macos_signing_authority!r} was not present: {signing['authorities']}"
+            )
+        if args.macos_signing_certificate_sha1 and signing["certificate_sha1"] != args.macos_signing_certificate_sha1.upper().replace(":", ""):
+            raise ValueError("macOS signing certificate SHA-1 does not match the required release identity")
+        if signing:
+            print(
+                "package: macOS signer "
+                f"authority={signing['authorities'][0]!r} certificate_sha1={signing['certificate_sha1']}"
+            )
     manifest = dict(identity, schema=1, channel=channel, platform=args.platform,
                     executable=executable.relative_to(root).as_posix(), resources=resources.relative_to(root).as_posix(),
                     files={path.relative_to(root).as_posix(): digest(path) for path in sorted(root.rglob("*")) if path.is_file()})
+    if signing:
+        manifest["macos_signing"] = signing
     (root / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
     suffix = "" if channel == "stable" else "-" + channel
     archive = args.output / f"plexi-{args.platform}{suffix}.{'zip' if args.platform.startswith('windows-') else 'tar.gz'}"
@@ -180,4 +232,10 @@ if __name__ == "__main__":
     parser.add_argument("--tag")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--runtime-cache", type=Path, default=REPO / "target/distribution-runtime")
+    parser.add_argument("--require-macos-signing", action="store_true",
+                        help="refuse ad-hoc macOS signing (required for public macOS packages)")
+    parser.add_argument("--macos-signing-authority",
+                        help="required leaf authority name for a public macOS package")
+    parser.add_argument("--macos-signing-certificate-sha1",
+                        help="required SHA-1 fingerprint of the public macOS signing certificate")
     assemble(parser.parse_args())
