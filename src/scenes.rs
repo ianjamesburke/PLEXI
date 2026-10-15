@@ -305,7 +305,7 @@ pub enum Step {
     /// echoes, so multi-line content must arrive as `paste`.
     Text { text: TextSpec },
     /// Deliver text through egui's paste event path — the production route
-    /// for multi-line content. Headless-only.
+    /// for multi-line content (`pane send --paste` on the live backend).
     Paste { paste: TextSpec },
     /// Press a key combo against a pane handle or the whole host.
     Key { key: KeySpec },
@@ -1561,21 +1561,23 @@ impl LiveBackend {
                     pane_id,
                 }))
             }
-            Step::Text { text } => {
+            Step::Text { text } | Step::Paste { paste: text } => {
+                let paste = matches!(step, Step::Paste { .. });
                 let pane_id = resolve_live_pane_target(&self.handles, &text.target, "text input")?;
-                self.command(
-                    &[
-                        "pane".into(),
-                        "send".into(),
-                        pane_id.to_string(),
-                        text.value.clone(),
-                    ],
-                    true,
-                )?;
+                let mut args = vec![
+                    "pane".into(),
+                    "send".into(),
+                    pane_id.to_string(),
+                    text.value.clone(),
+                ];
+                if paste {
+                    args.push("--paste".into());
+                }
+                self.command(&args, true)?;
                 let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
                 let length = text.value.chars().count();
                 log::info!(
-                    "scene_live: step=text channel={} pane_id={pane_id} length={length}",
+                    "scene_live: step=text channel={} pane_id={pane_id} paste={paste} length={length}",
                     self.channel
                 );
                 Ok(Some(StepDetail::TextInput {
@@ -1584,13 +1586,6 @@ impl LiveBackend {
                     length,
                 }))
             }
-            Step::Paste { paste } => Err(SceneError::new(
-                "paste_unsupported",
-                format!(
-                    "paste step (target '{}') has no live transport; live scenes deliver text through `text`/`key`",
-                    paste.target
-                ),
-            )),
             Step::Key { key } => {
                 let pane_id = resolve_live_pane_target(&self.handles, &key.target, "key input")?;
                 self.command(

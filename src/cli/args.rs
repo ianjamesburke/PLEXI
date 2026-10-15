@@ -1541,6 +1541,10 @@ pub enum PaneCmd {
         /// and prints the observed input line to stderr. Terminal panes only.
         #[arg(long, short = 's')]
         submit: bool,
+        /// Paste literal text, including newlines, as one edit. App panes only;
+        /// does not read or change the system clipboard.
+        #[arg(long, conflicts_with = "submit")]
+        paste: bool,
     },
     /// Print the id of the pane you are currently in.
     ///
@@ -2526,6 +2530,22 @@ mod tests {
     }
 
     #[test]
+    fn pane_send_paste_is_explicit_and_conflicts_with_submit() {
+        for args in [
+            ["plexi", "pane", "send", "42", "hello\nworld", "--paste"],
+            ["plexi", "pane", "send", "42", "--paste", "hello\nworld"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.command,
+                Some(Commands::Pane { cmd: super::PaneCmd::Send { paste: true, submit: false, text, .. } })
+                    if text == "hello\nworld"));
+        }
+        assert!(Cli::try_parse_from([
+            "plexi", "pane", "send", "42", "hello", "--paste", "--submit",
+        ]).is_err());
+    }
+
+    #[test]
     fn pane_send_accepts_leading_hyphen_text() {
         // Markdown list markers ("- ") are routine `pane send` payloads;
         // without allow_hyphen_values clap rejects them as unknown flags.
@@ -2537,6 +2557,7 @@ mod tests {
             pane_id,
             text,
             submit,
+            paste,
         } = cmd
         else {
             panic!("expected pane send command");
@@ -2544,6 +2565,7 @@ mod tests {
         assert_eq!(pane_id, 42);
         assert_eq!(text, "- ");
         assert!(!submit, "plain `pane send` must stay type-only");
+        assert!(!paste, "plain `pane send` must stay text input");
     }
 
     /// `--submit` must parse on either side of the hyphen-tolerant text
@@ -2564,6 +2586,7 @@ mod tests {
                 pane_id,
                 text,
                 submit,
+                ..
             } = cmd
             else {
                 panic!("expected pane send command for {argv:?}");

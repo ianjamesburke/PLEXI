@@ -1336,6 +1336,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     let response_file = temp_response(tmp.path(), "send-text");
 
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        paste: false,
         pane_id,
         text: "/settings".to_string(),
         submit: false,
@@ -4977,6 +4978,32 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
         .expect("notes semantic details")
 }
 
+#[test]
+fn editor_gate_paste_preserves_literal_text_and_is_one_undo_step() {
+    let mut h = HostHarness::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let pane_id = open_gate_note(&mut h, tmp.path(), "");
+    let text = "# Heading\nline\\n literal\n\tindent";
+    let response = temp_response(tmp.path(), "paste");
+    h.inject_ipc(
+        serde_json::from_value(serde_json::json!({
+            "type": "send_to_pane", "pane_id": pane_id, "text": text,
+            "paste": true, "response_file": response,
+        }))
+        .unwrap(),
+    );
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+    assert_eq!(gate_note_semantics(&h, pane_id)["source_text"], text);
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "cmd+z".into(),
+        response_file: None,
+    });
+    h.run_frames(2);
+    assert_eq!(gate_note_semantics(&h, pane_id)["source_text"], "");
+}
+
 /// Char offset of `cursor` within `text` (the notes semantic `caret` unit).
 fn gate_char_offset(text: &str, cursor: crate::editor::Cursor) -> usize {
     let mut offset = 0;
@@ -5013,6 +5040,7 @@ fn editor_gate_harness_matrix() {
                 let response = temp_response(tmp.path(), &format!("gate-{name}-{index}-{sub}"));
                 match input {
                     GateHostInput::Text(text) => h.inject_ipc(AppRequest::SendToPane {
+                        paste: false,
                         pane_id,
                         text,
                         submit: false,
@@ -5123,6 +5151,7 @@ fn editor_gate_host_surfaces() {
     // no-op, so dirty the buffer first).
     let response = temp_response(tmp.path(), "gate-save-text");
     h.inject_ipc(AppRequest::SendToPane {
+        paste: false,
         pane_id,
         text: "!".to_string(),
         submit: false,
@@ -5204,6 +5233,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
 
     let response = temp_response(tmp.path(), "gate-save-fail-text");
     h.inject_ipc(AppRequest::SendToPane {
+        paste: false,
         pane_id,
         text: "unsaveable".to_string(),
         submit: false,
@@ -5738,6 +5768,7 @@ fn blank_text_editor_open_acquires_input_focus() {
 
     let text_response = temp_response(tmp.path(), "blank-editor-text");
     h.inject_ipc(AppRequest::SendToPane {
+        paste: false,
         pane_id,
         text: "hello".to_string(),
         submit: false,
@@ -6907,6 +6938,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     // selected prefill, and the rename must land in the source's own
     // directory (not the browse/host cwd).
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        paste: false,
         pane_id,
         text: "QQ".to_string(),
         submit: false,
@@ -6979,6 +7011,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
     // Queue text for B while A's raw widget still holds egui focus.
     let response_file = temp_response(tmp.path(), "send-text-b");
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        paste: false,
         pane_id: pane_b,
         text: "for-b-only".to_string(),
         submit: false,
@@ -8338,6 +8371,7 @@ mod pane_send_submit_tests {
 
     fn submit(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
         h.inject_ipc(AppRequest::SendToPane {
+            paste: false,
             pane_id: pane,
             text: text.to_string(),
             submit: true,
@@ -8347,6 +8381,7 @@ mod pane_send_submit_tests {
 
     fn type_only(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
         h.inject_ipc(AppRequest::SendToPane {
+            paste: false,
             pane_id: pane,
             text: text.to_string(),
             submit: false,

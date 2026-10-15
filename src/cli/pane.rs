@@ -533,9 +533,9 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 /// injects one egui text-input event through the production render path.
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
-pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
+pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32 {
     log::info!(
-        "pane_send:cli: pane_id={pane_id} len={} submit={submit}",
+        "pane_send:cli: pane_id={pane_id} len={} submit={submit} paste={paste}",
         text.len()
     );
     let payload = serde_json::json!({
@@ -543,6 +543,7 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
         "pane_id": pane_id,
         "text": text,
         "submit": submit,
+        "paste": paste,
     });
     if submit {
         // The host settles, presses Enter and confirms before answering, all
@@ -1485,7 +1486,7 @@ mod submit_tests {
     /// the absence of it — the host branches on this field alone.
     #[test]
     fn submit_flag_lands_in_the_host_payload() {
-        for submit in [true, false] {
+        for (submit, paste) in [(true, false), (false, false), (false, true)] {
             let env = socket_env_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let socket_path = dir.path().join("notify.sock");
@@ -1509,7 +1510,7 @@ mod submit_tests {
                 tx.send(payload).ok();
             });
 
-            let code = pane_send_cli(42, "hello", submit);
+            let code = pane_send_cli(42, "hello", submit, paste);
             let payload = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("host listener never received the send payload");
@@ -1518,6 +1519,7 @@ mod submit_tests {
             assert_eq!(code, 0, "submit={submit}");
             assert_eq!(payload["type"], "send_to_pane");
             assert_eq!(payload["submit"], submit, "payload was {payload}");
+            assert_eq!(payload["paste"], paste, "payload was {payload}");
         }
     }
 }

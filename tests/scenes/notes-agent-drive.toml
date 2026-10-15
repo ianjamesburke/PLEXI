@@ -14,7 +14,7 @@ expect = { target = "notes", focused = true }
 key = { target = "notes", value = "cmd+a" }
 
 [[steps]]
-text = { target = "notes", value = "# Agent-driven Notes\nfirst draft" }
+paste = { target = "notes", value = "# Agent-driven Notes\nfirst draft" }
 
 [[steps]]
 expect = { target = "notes", source_text_contains = "first draft", rendered_text_contains = "first draft", caret = 32, undo_available = true }
@@ -26,7 +26,7 @@ key = { target = "notes", value = "cmd+a" }
 expect = { target = "notes", selection = [0, 32] }
 
 [[steps]]
-text = { target = "notes", value = "# Agent-driven Notes\nrevised draft" }
+paste = { target = "notes", value = "# Agent-driven Notes\nrevised draft" }
 
 [[steps]]
 key = { target = "notes", value = "cmd+z" }

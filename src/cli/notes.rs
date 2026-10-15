@@ -158,7 +158,7 @@ pub fn notes_open_cli() -> i32 {
         .unwrap_or_else(|_| "plexi".to_string());
     let cmd = notes_open_command(&self_exe, editor);
     log::info!("notes_open: injecting fzf picker into pane {pane_id}");
-    pane_send_cli(pane_id, &cmd, false)
+    pane_send_cli(pane_id, &cmd, false, false)
 }
 
 fn missing_picker_error(platform: InstallPlatform) -> String {
