@@ -869,6 +869,9 @@ pub enum AppRequest {
     CallAppTool {
         app_id: String,
         tool: String,
+        /// Wait for a real desktop decision before dispatching this exact call.
+        #[serde(default)]
+        wait_approved: bool,
         /// Tool input, a JSON object serialized as a string.
         input_json: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

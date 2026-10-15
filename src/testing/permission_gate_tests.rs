@@ -131,6 +131,7 @@ fn socket_call_pane(
 ) -> serde_json::Value {
     let reply = h.workspace_root().join(format!("socket-{}.json", uuid::Uuid::new_v4()));
     let request = AppRequest::CallAppTool {
+        wait_approved: false,
         app_id: "chess".to_string(),
         tool: "chess.play".to_string(),
         input_json: input.to_string(),
@@ -591,6 +592,69 @@ fn mcp_call(
 }
 
 #[test]
+fn app_call_waits_for_human_then_dispatches_exactly_once() {
+    assert_waiting_app_call(ApprovalChoice::Once);
+}
+
+#[test]
+fn app_call_wait_ends_on_human_denial_without_execution() {
+    assert_waiting_app_call(ApprovalChoice::Deny);
+}
+
+fn assert_waiting_app_call(choice: ApprovalChoice) {
+    let mut h = HostHarness::new();
+    let caller = h.add_test_pane();
+    let target = h.add_test_pane();
+    let workspace = h.workspace_root();
+    let context_id = h.app.windows[h.app.active_window].context_id;
+    let mon = monitor();
+    let credential = mon.issue_credential(Some(caller), context_id, &workspace, &format!("pane:{caller}"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    tool_dispatch::register(target, "wait-probe".into(), vec![AiTool {
+        name: "probe.add".into(), description: "add".into(),
+        input_schema: serde_json::json!({"type":"object"}),
+        output_schema: serde_json::json!({"type":"object"}),
+        timeout_ms: Some(1000), read_only: false,
+    }], AppEventSender::Channel(tx), crate::host::scope::ScopeOrigin {
+        context_id, context_root: workspace.clone(), window_id: 1,
+        pane_id: target, app_id: Some("wait-probe".into()),
+    });
+    let reply = workspace.join("wait-reply.json");
+    let input = r#"{"text":"Buy groceries"}"#;
+    let request: AppRequest = serde_json::from_value(serde_json::json!({
+        "type":"call_app_tool", "app_id":"wait-probe", "tool":"probe.add",
+        "input_json":input, "caller_pane_id":caller, "call_credential":credential,
+        "peer_ancestry":[std::process::id()], "target_pane_id":target,
+        "wait_approved":true, "response_file":reply,
+    })).unwrap();
+    h.inject_ipc(request);
+    pump_until(&mut h, |_| !mon.list_pending().is_empty());
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!reply.exists(), "waiting call must not return permission_required");
+    assert!(rx.try_recv().is_err(), "no execution before human approval");
+    mon.approve_pending(&mon.list_pending()[0].pending_request_id, choice).unwrap();
+    if choice == ApprovalChoice::Deny {
+        pump_until(&mut h, |_| reply.is_file());
+        let body: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+        assert_eq!(body["error_code"], "permission_denied", "{body}");
+        assert!(rx.try_recv().is_err());
+        tool_dispatch::unregister(target);
+        return;
+    }
+    let event: crate::protocol::PlexiEvent = serde_json::from_str(&rx.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap();
+    let crate::protocol::PlexiEvent::ToolCall { call_id, input_json, .. } = event else {
+        panic!("expected tool call");
+    };
+    assert_eq!(input_json, input);
+    tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"added":true}"#));
+    pump_until(&mut h, |_| reply.is_file());
+    let body: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(body["ok"], true, "{body}");
+    assert!(rx.try_recv().is_err(), "exactly one execution");
+    tool_dispatch::unregister(target);
+}
+
+#[test]
 fn all_dispatchers_require_monitor() {
     let mut h = HostHarness::new();
     let workspace = h.workspace_root();
@@ -699,6 +763,7 @@ fn all_dispatchers_require_monitor() {
     let credential = monitor().issue_credential(Some(1), context_id, &workspace, "pane:1");
     let reply = h.workspace_root().join("app-call-blocked.json");
     h.inject_ipc(AppRequest::CallAppTool {
+        wait_approved: false,
         app_id: "probe".to_string(),
         tool: "probe.ping".to_string(),
         input_json: args.to_string(),

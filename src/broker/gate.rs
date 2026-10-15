@@ -840,6 +840,11 @@ impl PermissionMonitor {
         id
     }
 
+    /// Observe a recorded decision without consuming or recreating its grant.
+    pub(crate) fn approval_resolution(&self, pending_id: &str) -> Option<ApprovalChoice> {
+        self.resolutions.lock().unwrap_or_else(|e| e.into_inner()).get(pending_id).copied()
+    }
+
     /// True when a desktop click already allowed this pending id.
     pub fn approval_granted(&self, pending_id: &str) -> bool {
         matches!(

@@ -14,6 +14,40 @@
 
 use super::{ApprovalButton, PlexiApp};
 
+/// Observes a human decision; it never creates an allow grant. Dispatch then
+/// re-admits the captured request, so revocation before execution still wins.
+struct WaitingApproval {
+    monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+    peer_pid: u32,
+    timeout: std::time::Duration,
+}
+
+impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
+    fn present(&self, pending_id: &str, _tool: &str, _summary: &str, _actor: &str, _resource: &str)
+        -> Result<crate::broker::gate::ApprovalChoice, String>
+    {
+        let started = std::time::Instant::now();
+        log::info!("app_call: waiting for desktop approval pending={pending_id}");
+        loop {
+            let expired = started.elapsed() >= self.timeout;
+            if expired || !crate::host::pane_liveness::pid_is_alive(self.peer_pid) {
+                // Only cancel this request. A late click cannot restart this worker.
+                if let Err(error) = self.monitor.approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny) {
+                    log::info!("app_call: cancellation pending={pending_id}: {error}");
+                }
+                let reason = if expired { "approval_timeout" } else { "caller_exited" };
+                log::info!("app_call: {reason} pending={pending_id}");
+                return Err(format!("{reason}: request was not executed"));
+            }
+            if let Some(choice) = self.monitor.approval_resolution(pending_id) {
+                log::info!("app_call: desktop resolved pending={pending_id} choice={choice:?}");
+                return Ok(choice);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
 /// The identity an app sees for a verified socket caller. No pane is never
 /// the human `user`.
 pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option<&str>) -> String {
@@ -222,6 +256,7 @@ impl PlexiApp {
         peer_ancestry: Vec<u32>,
         target_pane_id: Option<u64>,
         response_file: Option<String>,
+        wait_approved: bool,
     ) {
         let reply = move |body: serde_json::Value| {
             if let Some(rf) = &response_file {
@@ -303,10 +338,21 @@ impl PlexiApp {
         );
         scope.actor_type = verified.actor_type;
         scope.actor_scope = verified.actor_scope;
-        let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
+        let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,
             std::sync::Arc::clone(&monitor),
         );
+        if wait_approved {
+            let Some(peer_pid) = peer_ancestry.first().copied() else {
+                reply(serde_json::json!({"ok":false, "error_code":"permission_denied",
+                    "error":"approval waiting requires a verified live socket peer"}));
+                return;
+            };
+            dispatcher.set_presenter(std::sync::Arc::new(WaitingApproval {
+                monitor: std::sync::Arc::clone(&monitor), peer_pid,
+                timeout: crate::cli::app::APP_CALL_APPROVAL_TIMEOUT,
+            }));
+        }
         let namespaced = match dispatcher.select_app_tool(&app_id, &tool, target_pane_id) {
             Ok(name) => name,
             Err(error) => {
@@ -543,6 +589,38 @@ impl PlexiApp {
 mod tests {
     use super::caller_identity;
     use crate::broker::gate::NeedsYouKind;
+
+    #[test]
+    fn waiting_approval_timeout_and_dead_caller_cancel_only_the_pending_call() {
+        use crate::broker::gate::{AdmitRequest, Admission, ApprovalChoice, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::plexi_ai::tool_dispatch::PermissionPresenter;
+        for (peer_pid, timeout, reason) in [
+            (std::process::id(), std::time::Duration::ZERO, "approval_timeout"),
+            (0, std::time::Duration::from_secs(1), "caller_exited"),
+        ] {
+            let monitor = PermissionMonitor::ephemeral();
+            let workspace = tempfile::tempdir().unwrap();
+            let ask = |call_id, input_json| match monitor.admit(AdmitRequest {
+                call_id, tool: "probe.add", input_json, actor_type: ActorType::Agent,
+                actor_id: "agent:waiter", actor_scope: ActorScope::User, trust_origin: "host",
+                workspace_root: workspace.path(), context_id: 1, package_id: "probe",
+                instance_id: 1, target_type: TargetType::AppConnector,
+            }) {
+                Admission::Required { pending_request_id } => pending_request_id,
+                _ => panic!("expected pending request"),
+            };
+            let pending = ask("waited", "{}");
+            let unrelated = ask("other", r#"{"other":true}"#);
+            let waiter = super::WaitingApproval { monitor: monitor.clone(), peer_pid, timeout };
+            let error = waiter.present(&pending, "probe.add", "{}", "agent:waiter", "").unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            assert_eq!(monitor.approval_resolution(&pending), Some(ApprovalChoice::Deny));
+            assert!(monitor.approve_pending(&pending, ApprovalChoice::Once).is_err(), "late approval must not resume cancelled work");
+            assert!(monitor.show_pending(&unrelated).is_some());
+            assert!(!monitor.approval_granted(&pending));
+        }
+    }
 
     fn phone_may_answer(kind: Option<NeedsYouKind>) -> bool {
         kind.is_some_and(|kind| kind.phone_may_approve())

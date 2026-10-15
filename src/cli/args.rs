@@ -1285,6 +1285,9 @@ pub enum AppCmd {
         /// Pane that owns the tool when more than one instance of the app is open.
         #[arg(long)]
         pane: Option<u64>,
+        /// Wait up to two minutes for desktop approval, then execute once.
+        #[arg(long)]
+        wait_approved: bool,
     },
 }
 

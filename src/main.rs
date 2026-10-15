@@ -937,8 +937,9 @@ fn main() -> eframe::Result {
                                 input,
                                 json,
                                 pane,
+                                wait_approved,
                             } => std::process::exit(cli::app_call_cli(
-                                &app_id, &tool, &input, json, pane,
+                                &app_id, &tool, &input, json, pane, wait_approved,
                             )),
                         }
                     }

@@ -295,7 +295,7 @@ fn probe_notify_socket(socket_path: &Path, timeout: Duration) -> RunningState {
     // An empty transport frame only probes the connection. It uses the same
     // bounded connect path as commands, including a saturated Unix backlog.
     match super::send_line_to_socket(socket_path, b"", timeout) {
-        Ok(()) | Err(super::SocketTransportError::ConnectTimeout) => RunningState::Running,
+        Ok(_) | Err(super::SocketTransportError::ConnectTimeout) => RunningState::Running,
         Err(super::SocketTransportError::Connect(e))
             if e.kind() == std::io::ErrorKind::ConnectionRefused => {
                 log::info!("host: removing stale endpoint {socket_path:?}");

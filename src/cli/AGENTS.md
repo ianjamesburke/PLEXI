@@ -85,6 +85,13 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 ## Documentation Rule for CLI Changes
 
+`app call --wait-approved` holds the exact request for a bounded desktop decision,
+then re-admits and executes it once. It observes consent; it cannot grant it.
+Denial, timeout, or caller exit ends the wait without execution. Without the flag,
+an ungranted call still returns `permission_required` immediately. Session approval
+may vary arguments only within the same caller, tool, app instance, workspace,
+context and resource; it ends when Plexi quits and is revocable in Permissions.
+
 Any change to a CLI verb, flag, or agent-facing behavior updates this file **and** `skills/plexi-cli/SKILL.md` in the same PR. Edit the skill through the real `skills/` path — `.agents/skills/plexi-cli` is a symlink and some editors do not write through it. Shell completions are generated from the clap tree (`completions_cli`), so a new flag needs no hand-written block; verify with `plexi completions zsh | grep <flag>`.
 
 ## Distribution commands
