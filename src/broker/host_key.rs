@@ -114,7 +114,7 @@ pub(crate) fn keychain_status_is_unreadable(code: i32) -> bool {
 
 /// Service name on macOS and the Credential Manager prefix on Windows.
 /// Distinct from the user-secret service `plexi`.
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(all(any(target_os = "macos", windows), not(test)))]
 const HOST_SERVICE: &str = "plexi-host-seal";
 
 /// Why Linux will not write a plaintext seal key.

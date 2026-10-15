@@ -15,6 +15,10 @@
 //! migration code for experiments: on a format change, move the old data aside
 //! and start fresh with a notice. Graduation to stable freezes the format.
 //!
+//! Experiment gate rule: a gate guards only the experiment's own surface,
+//! never a shared servicing path that also does core work. Core app I/O must
+//! run with every experiment off, including during hidden-window logic passes.
+//!
 //! The enabled set is read from the *global* config only. A workspace config
 //! must not be able to turn an experiment on, or a cloned repository could
 //! enable the relay by shipping a `.plexi/config.toml`.

@@ -592,8 +592,9 @@ pub enum AppRequest {
     /// Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.
     ClosePane { pane_id: u64 },
 
-    /// Write text to a running pane's PTY stdin. Sent by `plexi pane send`.
-    /// `\n` in text (literal backslash-n) is interpreted as Enter.
+    /// Write text to a terminal PTY or an app's input path (`plexi pane send`).
+    /// `\n` in text (literal backslash-n) is interpreted as Enter unless
+    /// `paste` requests a literal app paste event.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
     ///
     /// With `submit`, the host owns the whole type-and-enter sequence for a
@@ -606,6 +607,9 @@ pub enum AppRequest {
         text: String,
         #[serde(default)]
         submit: bool,
+        /// Deliver literal text as one paste event to an app pane.
+        #[serde(default)]
+        paste: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },

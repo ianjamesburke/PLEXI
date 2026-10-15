@@ -2717,6 +2717,27 @@ impl Drop for TextEditorApp {
 }
 
 impl super::PlexiApp {
+    /// Arm and drain app file watchers even when no experiment is enabled.
+    pub(super) fn service_pane_external_io(&mut self) -> bool {
+        let started = std::time::Instant::now();
+        let mut changed = false;
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                if let Some(app) = pane.as_app_mut() {
+                    changed |= app.runtime.service_external(&self.ui_wake);
+                }
+            }
+        }
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= 50 {
+            log::warn!(
+                "pane_external_io: servicing blocked the UI thread for {}ms",
+                elapsed.as_millis()
+            );
+        }
+        changed
+    }
+
     /// Show change-set previews on open text editors and publish their buffers
     /// so a later accept can refuse an unsaved conflict.
     pub(super) fn sync_editor_change_sets(&mut self) -> bool {
@@ -2732,7 +2753,6 @@ impl super::PlexiApp {
                     continue;
                 };
                 changed |= app.runtime.sync_change_set();
-                changed |= app.runtime.service_external(&self.ui_wake);
                 if let Some(buffer) = app.runtime.editor_buffer() {
                     buffers.push(buffer);
                 }
@@ -4057,6 +4077,76 @@ mod data_safety_tests {
         assert_eq!(app.prompt, Some(Prompt::Close { conflicted: true }));
         assert!(!app.apply_prompt_key(egui::Key::S), "save is not offered");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent");
+    }
+
+    #[test]
+    fn host_external_io_reloads_clean_editor_with_experiments_off() {
+        host_external_io_editor(false);
+    }
+
+    #[test]
+    fn host_external_io_preserves_dirty_editor_with_experiments_off() {
+        host_external_io_editor(true);
+    }
+
+    fn host_external_io_editor(dirty: bool) {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("note.md");
+        std::fs::write(&file, "seed").unwrap();
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_app_pane(
+            Box::new(TextEditorApp::new(file.clone())),
+            crate::app::permissions::AppPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        let pane_id = harness
+            .app
+            .windows
+            .iter()
+            .flat_map(|w| &w.panes)
+            .find_map(|(id, pane)| {
+                (pane.as_app()?.runtime.type_id() == "text-editor").then_some(*id)
+            })
+            .unwrap();
+        if dirty {
+            harness.text_editor_mut(pane_id).test_set_unsaved("my unsaved text");
+        }
+        // Only the production logic pass may arm and drain the watcher. A
+        // hidden pass also proves that paint and focus are not prerequisites.
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(300)));
+        std::fs::write(&file, "agent text").unwrap();
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
+        loop {
+            harness.hidden_frame();
+            let editor = harness.text_editor_mut(pane_id);
+            if (dirty && editor.external == Some(ExternalChange::Modified))
+                || (!dirty && editor.doc.text() == "agent text")
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let editor = harness.text_editor_mut(pane_id);
+        if dirty {
+            assert_eq!(editor.external, Some(ExternalChange::Modified));
+            assert_eq!(editor.doc.text(), "my unsaved text");
+            editor.flush();
+            editor.explicit_save();
+            assert_eq!(editor.prompt, Some(Prompt::Overwrite));
+        } else {
+            assert_eq!(editor.doc.text(), "agent text");
+            assert!(editor.external.is_none());
+            assert!(editor.last_edit.is_none());
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent text");
+        drop(harness);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent text");
     }
 
     #[test]

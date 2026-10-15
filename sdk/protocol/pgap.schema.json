@@ -1693,12 +1693,17 @@
         },
         {
           "additionalProperties": false,
-          "description": "Write text to a running pane's PTY stdin. Sent by `plexi pane send`.\n`\\n` in text (literal backslash-n) is interpreted as Enter.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on app panes.",
+          "description": "Write text to a terminal PTY or an app's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal app paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on app panes.",
           "properties": {
             "pane_id": {
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "paste": {
+              "default": false,
+              "description": "Deliver literal text as one paste event to an app pane.",
+              "type": "boolean"
             },
             "response_file": {
               "type": [

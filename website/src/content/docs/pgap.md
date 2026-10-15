@@ -486,11 +486,12 @@ Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.
 
 ### `send_to_pane`
 
-Write text to a running pane's PTY stdin. Sent by `plexi pane send`. `\n` in text (literal backslash-n) is interprete...
+Write text to a terminal PTY or an app's input path (`plexi pane send`). `\n` in text (literal backslash-n) is interp...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
+| `paste` | `boolean` | no |
 | `response_file` | `string?` | no |
 | `submit` | `boolean` | no |
 | `text` | `string` | yes |

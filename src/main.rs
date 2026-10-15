@@ -1139,7 +1139,8 @@ fn main() -> eframe::Result {
                             pane_id,
                             text,
                             submit,
-                        } => std::process::exit(cli::pane_send_cli(pane_id, &text, submit)),
+                            paste,
+                        } => std::process::exit(cli::pane_send_cli(pane_id, &text, submit, paste)),
                         PaneCmd::Command {
                             pane_id,
                             text,
@@ -1154,7 +1155,7 @@ fn main() -> eframe::Result {
                             // confirm) instead of racing a raw newline against
                             // the shell's line editor. Without `--enter` this
                             // stays the type-only verb, same as `pane send`.
-                            std::process::exit(cli::pane_send_cli(pane_id, &text, enter));
+                            std::process::exit(cli::pane_send_cli(pane_id, &text, enter, false));
                         }
                         PaneCmd::Key { pane_id, key } => {
                             std::process::exit(cli::pane_key_cli(pane_id, &key))

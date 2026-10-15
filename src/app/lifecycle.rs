@@ -1574,6 +1574,7 @@ impl PlexiApp {
                 pane_id,
                 text,
                 submit,
+                paste,
                 response_file,
             } => {
                 log::info!(
@@ -1581,7 +1582,11 @@ impl PlexiApp {
                     text.len(),
                     self.windows.len()
                 );
-                let text_with_newlines = text.replace("\\n", "\n");
+                let text_with_newlines = if *paste {
+                    text.clone()
+                } else {
+                    text.replace("\\n", "\n")
+                };
                 // Set when the reply is owed by `service_pending_submits`
                 // instead of by the write below.
                 let mut deferred = false;
@@ -1602,6 +1607,12 @@ impl PlexiApp {
                             "pane_ipc: send_to_pane: pane_id={pane_id} not found in any window"
                         );
                         Err(format!("pane {pane_id} not found"))
+                    }
+                    Some(_) if *paste && *submit => {
+                        Err("--paste and --submit cannot be combined".to_string())
+                    }
+                    Some("terminal") if *paste => {
+                        Err("--paste only applies to app panes".to_string())
                     }
                     Some("terminal") if *submit && self.submit_in_flight(*pane_id) => {
                         // Refuse before typing anything. Two submits racing on
@@ -1651,13 +1662,17 @@ impl PlexiApp {
                         } else {
                             self.pending_pane_inputs.entry(*pane_id).or_default().push(
                                 egui::RawInput {
-                                    events: vec![egui::Event::Text(text_with_newlines)],
+                                    events: vec![if *paste {
+                                        egui::Event::Paste(text_with_newlines)
+                                    } else {
+                                        egui::Event::Text(text_with_newlines)
+                                    }],
                                     ..Default::default()
                                 },
                             );
                             self.ctx.request_repaint();
                             log::info!(
-                                "pane_ipc: send_to_pane: app pane_id={pane_id} text_chars={}",
+                                "pane_ipc: send_to_pane: app pane_id={pane_id} paste={paste} text_chars={}",
                                 text.chars().count()
                             );
                             Ok(())
@@ -2418,6 +2433,13 @@ impl PlexiApp {
                     Some(pane) => {
                         let liveness = crate::host::pane_liveness::compute(pane, *stale_after_secs);
                         let mut response = if let Some(app_pane) = pane.as_app() {
+                            if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {
+                                // Core pane inspection needs the rendered tree even when
+                                // experimental eager accessibility capture is off. This
+                                // enables internal capture, not the native OS adapter.
+                                self.ctx.enable_accesskit();
+                                self.ctx.request_repaint();
+                            }
                             let frame = app_pane
                                 .runtime
                                 .frame_json()
