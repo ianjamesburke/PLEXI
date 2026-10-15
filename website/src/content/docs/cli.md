@@ -1415,6 +1415,7 @@ Example: plexi pane send 42 "git status\n"
 | `<pane_id>` | string | yes | Pane id to send text to (from `plexi pane list`) |
 | `<text>` | string | yes | Text to type into the pane (use `\n` for Enter) |
 | `--submit` / `-s` | flag | no | Press Enter for you and wait until the host confirms the prompt left the pane's input line.  The host settles the pane, submits, and re-sends Enter once if the text is still parked as a collapsed paste. Exits 0 only when the submission is confirmed; on an unconfirmed submit it exits non-zero and prints the observed input line to stderr. Terminal panes only. |
+| `--paste` | flag | no | Paste literal text, including newlines, as one edit. App panes only; does not read or change the system clipboard |
 
 ### `plexi pane self`
 
