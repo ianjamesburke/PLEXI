@@ -1,0 +1,24 @@
+# The host permission surface must remain readable on narrow windows.
+suite = false
+sizes = [[520.0, 700.0], [1280.0, 800.0]]
+
+[[steps]]
+open = { kind = "process", path = "apps/chess", as = "chess" }
+
+[[steps]]
+wait_app_frame = { target = "chess", timeout_s = 30.0 }
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "assistant" }
+
+[[steps]]
+chess_approval = { phase = "host_pending", chess = "chess", assistant = "assistant", move = "e2e4", revision = 0 }
+
+[[steps]]
+assert_label = { target = "host", label = "Allow for this session" }
+
+[[steps]]
+assert_label = { target = "host", label = "Permission requested" }
+
+[[steps]]
+shot = "permission-approval-panel.png"

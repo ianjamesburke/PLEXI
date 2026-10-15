@@ -14,6 +14,40 @@
 
 use super::{ApprovalButton, PlexiApp};
 
+/// Observes a human decision; it never creates an allow grant. Dispatch then
+/// re-admits the captured request, so revocation before execution still wins.
+struct WaitingApproval {
+    monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+    peer_pid: u32,
+    timeout: std::time::Duration,
+}
+
+impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
+    fn present(&self, pending_id: &str, _tool: &str, _summary: &str, _actor: &str, _resource: &str)
+        -> Result<crate::broker::gate::ApprovalChoice, String>
+    {
+        let started = std::time::Instant::now();
+        log::info!("app_call: waiting for desktop approval pending={pending_id}");
+        loop {
+            let expired = started.elapsed() >= self.timeout;
+            if expired || !crate::host::pane_liveness::pid_is_alive(self.peer_pid) {
+                // Only cancel this request. A late click cannot restart this worker.
+                if let Err(error) = self.monitor.approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny) {
+                    log::info!("app_call: cancellation pending={pending_id}: {error}");
+                }
+                let reason = if expired { "approval_timeout" } else { "caller_exited" };
+                log::info!("app_call: {reason} pending={pending_id}");
+                return Err(format!("{reason}: request was not executed"));
+            }
+            if let Some(choice) = self.monitor.approval_resolution(pending_id) {
+                log::info!("app_call: desktop resolved pending={pending_id} choice={choice:?}");
+                return Ok(choice);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
 /// The identity an app sees for a verified socket caller. No pane is never
 /// the human `user`.
 pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option<&str>) -> String {
@@ -222,6 +256,7 @@ impl PlexiApp {
         peer_ancestry: Vec<u32>,
         target_pane_id: Option<u64>,
         response_file: Option<String>,
+        wait_approved: bool,
     ) {
         let reply = move |body: serde_json::Value| {
             if let Some(rf) = &response_file {
@@ -303,10 +338,21 @@ impl PlexiApp {
         );
         scope.actor_type = verified.actor_type;
         scope.actor_scope = verified.actor_scope;
-        let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
+        let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,
             std::sync::Arc::clone(&monitor),
         );
+        if wait_approved {
+            let Some(peer_pid) = peer_ancestry.first().copied() else {
+                reply(serde_json::json!({"ok":false, "error_code":"permission_denied",
+                    "error":"approval waiting requires a verified live socket peer"}));
+                return;
+            };
+            dispatcher.set_presenter(std::sync::Arc::new(WaitingApproval {
+                monitor: std::sync::Arc::clone(&monitor), peer_pid,
+                timeout: crate::cli::app::APP_CALL_APPROVAL_TIMEOUT,
+            }));
+        }
         let namespaced = match dispatcher.select_app_tool(&app_id, &tool, target_pane_id) {
             Ok(name) => name,
             Err(error) => {
@@ -356,9 +402,8 @@ impl PlexiApp {
         }
     }
 
-    /// Floating choices for a pending app call. A real pointer click is the
-    /// desktop decision: Allow once, Always deny, or Deny. Socket-injected
-    /// input is ignored for the frame.
+    /// A framed, nonmodal permission surface. Only real pointer decisions
+    /// grant authority; ordinary typing continues in the active pane.
     pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
@@ -377,39 +422,65 @@ impl PlexiApp {
             );
             self.approval_banner_logged = Some(pending_id.clone());
         }
-        let caption = match pending[0].resource_id.as_deref() {
-            Some(resource) => format!("{} wants {} {resource}", pending[0].actor_id, pending[0].tool),
-            None => format!("{} wants {}", pending[0].actor_id, pending[0].tool),
-        };
+        let request = &pending[0];
+        let actor = request.actor_id.strip_prefix("pane:")
+            .map(|id| format!("Terminal pane {id}"))
+            .or_else(|| request.actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
+            .unwrap_or_else(|| request.actor_id.clone());
+        let tool = request.tool.replace("__", " / ");
+        let caption = format!("{actor} wants to use {tool}");
         let synthetic = self.synthetic_input_frame;
-        let choices = [
+        let mut choices = vec![
             ("Allow once", crate::broker::gate::ApprovalChoice::Once),
-            (
-                "Always deny",
-                crate::broker::gate::ApprovalChoice::DenyAlways,
-            ),
-            ("Deny", crate::broker::gate::ApprovalChoice::Deny),
         ];
+        if request.allow_tool {
+            choices.push(("Allow for this session", crate::broker::gate::ApprovalChoice::AllowTool));
+        }
+        choices.push(("Deny", crate::broker::gate::ApprovalChoice::Deny));
+        choices.push(("Always deny", crate::broker::gate::ApprovalChoice::DenyAlways));
         let mut chosen = None;
-        egui::Area::new(egui::Id::new("approval_banner"))
-            .fixed_pos(egui::pos2(12.0, 8.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(caption);
-                    for (label, choice) in choices {
-                        let response = ui.add(egui::Button::new(label));
+        crate::ui::overlay::ModalShell::centered("approval_banner")
+            .title("Permission requested")
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
+            .scrim(false)
+            .click_away(false)
+            .show(ctx, &self.colors, |ui| {
+                crate::ui::typography::body_strong(ui, caption, &self.colors);
+                if let Some(resource) = &request.resource_id {
+                    crate::ui::typography::body(ui, format!("Resource: {resource}"), &self.colors);
+                }
+                if request.input_summary != "{}" && !request.input_summary.is_empty() {
+                    ui.collapsing("Request details", |ui| {
+                        crate::ui::typography::body(ui, &request.input_summary, &self.colors);
+                    });
+                }
+                if request.allow_tool {
+                    crate::ui::typography::caption(ui,
+                        "Session approval covers different arguments for this tool and caller, in this app instance and workspace only. The resource stays the same. Ends when Plexi quits; revoke in Permissions.", &self.colors);
+                }
+                ui.add_space(crate::ui::style::SPACE_MD);
+                ui.horizontal_wrapped(|ui| {
+                    for &(label, choice) in &choices {
+                        let kind = if choice == crate::broker::gate::ApprovalChoice::Once {
+                            crate::ui::button::ButtonKind::Accent
+                        } else {
+                            crate::ui::button::ButtonKind::Primary
+                        };
+                        let response = crate::ui::button::chrome_button(ui, label, kind, &self.colors, 0.0);
                         let rect = response.rect;
                         self.approval_buttons.push(ApprovalButton {
                             label: label.to_string(),
                             bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
                             pending_request_id: pending_id.clone(),
                         });
-                        if response.clicked() {
+                        if response.clicked_by(egui::PointerButton::Primary) {
                             chosen = Some((label, choice));
                         }
                     }
                 });
+                if pending.len() > 1 {
+                    crate::ui::typography::caption(ui, format!("{} more requests waiting", pending.len() - 1), &self.colors);
+                }
             });
         if let Some((label, choice)) = chosen {
             if synthetic {
@@ -518,6 +589,38 @@ impl PlexiApp {
 mod tests {
     use super::caller_identity;
     use crate::broker::gate::NeedsYouKind;
+
+    #[test]
+    fn waiting_approval_timeout_and_dead_caller_cancel_only_the_pending_call() {
+        use crate::broker::gate::{AdmitRequest, Admission, ApprovalChoice, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::plexi_ai::tool_dispatch::PermissionPresenter;
+        for (peer_pid, timeout, reason) in [
+            (std::process::id(), std::time::Duration::ZERO, "approval_timeout"),
+            (0, std::time::Duration::from_secs(1), "caller_exited"),
+        ] {
+            let monitor = PermissionMonitor::ephemeral();
+            let workspace = tempfile::tempdir().unwrap();
+            let ask = |call_id, input_json| match monitor.admit(AdmitRequest {
+                call_id, tool: "probe.add", input_json, actor_type: ActorType::Agent,
+                actor_id: "agent:waiter", actor_scope: ActorScope::User, trust_origin: "host",
+                workspace_root: workspace.path(), context_id: 1, package_id: "probe",
+                instance_id: 1, target_type: TargetType::AppConnector,
+            }) {
+                Admission::Required { pending_request_id } => pending_request_id,
+                _ => panic!("expected pending request"),
+            };
+            let pending = ask("waited", "{}");
+            let unrelated = ask("other", r#"{"other":true}"#);
+            let waiter = super::WaitingApproval { monitor: monitor.clone(), peer_pid, timeout };
+            let error = waiter.present(&pending, "probe.add", "{}", "agent:waiter", "").unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            assert_eq!(monitor.approval_resolution(&pending), Some(ApprovalChoice::Deny));
+            assert!(monitor.approve_pending(&pending, ApprovalChoice::Once).is_err(), "late approval must not resume cancelled work");
+            assert!(monitor.show_pending(&unrelated).is_some());
+            assert!(!monitor.approval_granted(&pending));
+        }
+    }
 
     fn phone_may_answer(kind: Option<NeedsYouKind>) -> bool {
         kind.is_some_and(|kind| kind.phone_may_approve())

@@ -1,0 +1,25 @@
+size = [800.0, 600.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "draft", args = ["{tmp}/draft.txt"] }
+
+[[steps]]
+paste = { target = "draft", value = "By morning, the whole world knows who I am." }
+
+[[steps]]
+key = { target = "draft", value = "cmd+w" }
+
+[[steps]]
+expect = { target = "draft", source_text_contains = "the whole world knows who I am.", rendered_text_contains = "Unsaved changes." }
+
+[[steps]]
+shot = "notes-safe-close.png"
+
+[[steps]]
+key = { target = "draft", value = "d" }
+
+[[steps]]
+text = { target = "draft", value = "reaming" }
+
+[[steps]]
+expect = { target = "draft", source_text_contains = "the whole world knows who I am.dreaming", focused = true }

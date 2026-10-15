@@ -1222,6 +1222,7 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 | `--input` | string | no | Tool input as a JSON object Default: `{}`. |
 | `--json` | flag | no | Print the host reply, including structured permission errors |
 | `--pane` | string | no | Pane that owns the tool when more than one instance of the app is open |
+| `--wait-approved` | flag | no | Wait up to two minutes for desktop approval, then execute once |
 
 ## `plexi account`
 

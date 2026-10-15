@@ -348,7 +348,8 @@ pub enum Step {
 
 /// One phase of the chess approval scene. `pending` queues a scripted
 /// `chess.play` and waits for the sheet. `human` plays `move` from the
-/// board's keyboard path. `wait` pumps until the attributed or stale result
+/// board's keyboard path. `host_pending` seeds the host's permission panel.
+/// `wait` pumps until the attributed or stale result
 /// is on screen.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -2829,6 +2830,35 @@ impl HeadlessBackend {
         let chess = self.handles.resolve(&spec.chess)?;
         let assistant = self.handles.resolve(&spec.assistant)?;
         match spec.phase.as_str() {
+            "host_pending" => {
+                let workspace = self.h.workspace_root().to_path_buf();
+                let context_id = self.h.with_app(|app| app.windows[app.active_window].context_id);
+                let input = serde_json::json!({
+                    "game_id": "game-1",
+                    "move": spec.move_uci.as_deref().unwrap_or("e2e4"),
+                    "expected_revision": spec.revision.unwrap_or(0),
+                });
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+                let admission = monitor.admit(crate::broker::gate::AdmitRequest {
+                    call_id: "scene-host-permission",
+                    tool: "chess.play",
+                    input_json: &input.to_string(),
+                    actor_type: crate::broker::ActorType::Agent,
+                    actor_id: "agent:writing-helper",
+                    actor_scope: crate::broker::ActorScope::User,
+                    trust_origin: "host",
+                    workspace_root: &workspace,
+                    context_id,
+                    package_id: "chess",
+                    instance_id: chess,
+                    target_type: crate::broker::TargetType::AppConnector,
+                });
+                if !matches!(admission, crate::broker::gate::Admission::Required { .. }) {
+                    return Err(SceneError::new("permission_not_pending", "host permission fixture must ask"));
+                }
+                self.h.run_steps(3);
+                Ok(Some(StepDetail::Message { message: "host permission pending".into() }))
+            }
             "pending" => {
                 let workspace = self.h.workspace_root().to_path_buf();
                 let context_id = self

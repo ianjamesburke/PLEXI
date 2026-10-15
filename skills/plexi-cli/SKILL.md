@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.15"
+skill_version: "5.0.16"
 plexi_version: "0.3.5"
-last_verified: "2026-10-08"
+last_verified: "2026-10-15"
 ---
 
 # Plexi CLI
@@ -76,6 +76,12 @@ plexi skill install --agent codex
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
+  Add `--wait-approved` to wait up to two minutes for a real desktop decision,
+  then execute that exact request once. Denial, timeout or caller exit cancels
+  the wait; do not retry a waiting call in parallel. Without the flag, an ask
+  returns `permission_required` immediately. "Allow for this session" permits
+  different arguments only for the same caller, tool, app instance, workspace,
+  context and resource until Plexi quits; the person can revoke it in Permissions.
 <!-- experiment: assistant -->
 - **Assistant send** — submit a turn through the same composer and permission
   sheet as the desktop Assistant: `plexi assistant send --text "..."`. Omit

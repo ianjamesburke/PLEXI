@@ -965,11 +965,13 @@ impl PlexiApp {
         self.apply_context_transition_effects();
     }
 
-    /// Create a new page immediately to the right of the active page on the
-    /// same grid row, then switch to it.
+    /// Create a pane beside the current pane. With the page-grid experiment,
+    /// create a page on the same grid row instead.
     pub(crate) fn new_page_right(&mut self) {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::PageGrid) {
-            crate::release::log_feature_blocked(crate::release::ReleaseFeature::PageGrid);
+            log::info!("new_pane: splitting current pane with page grid disabled");
+            self.windows[self.active_window].clear_zoom();
+            self.split_focused(true, None, false, false, None);
             return;
         }
         let ws_id = self.router.active().context_id;

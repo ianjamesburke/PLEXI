@@ -34,6 +34,9 @@ pub enum ApprovalChoice {
     Once,
     Session,
     Always,
+    /// Different arguments for the same actor, context, app instance and resource,
+    /// until this host session ends.
+    AllowTool,
     /// Refuse this call only. The next call asks again.
     Deny,
     /// Store a tool-scoped deny until a person resets or allows it.
@@ -242,6 +245,9 @@ pub struct PendingView {
     pub resource_id: Option<String>,
     pub args_fingerprint: String,
     pub input_summary: String,
+    pub allow_tool: bool,
+    pub context_id: Option<u64>,
+    pub instance_id: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -834,6 +840,11 @@ impl PermissionMonitor {
         id
     }
 
+    /// Observe a recorded decision without consuming or recreating its grant.
+    pub(crate) fn approval_resolution(&self, pending_id: &str) -> Option<ApprovalChoice> {
+        self.resolutions.lock().unwrap_or_else(|e| e.into_inner()).get(pending_id).copied()
+    }
+
     /// True when a desktop click already allowed this pending id.
     pub fn approval_granted(&self, pending_id: &str) -> bool {
         matches!(
@@ -842,7 +853,7 @@ impl PermissionMonitor {
                 .unwrap_or_else(|e| e.into_inner())
                 .get(pending_id)
                 .copied(),
-            Some(ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always)
+            Some(ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always | ApprovalChoice::AllowTool)
         )
     }
 
@@ -873,6 +884,9 @@ impl PermissionMonitor {
         let Some(pending) = pending else {
             return Err(format!("unknown pending request {pending_id}"));
         };
+        if choice == ApprovalChoice::AllowTool && pending.binding.target_type != TargetType::AppConnector {
+            return Err("tool allowance is only available for app tools".to_string());
+        }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             self.pending
                 .lock()
@@ -920,7 +934,7 @@ impl PermissionMonitor {
         }
         let (duration, session_id, expires_at) = match choice {
             ApprovalChoice::Once => (GrantDuration::Once, None, None),
-            ApprovalChoice::Session => (
+            ApprovalChoice::Session | ApprovalChoice::AllowTool => (
                 GrantDuration::Session,
                 Some(self.session_id().to_string()),
                 None,
@@ -949,6 +963,7 @@ impl PermissionMonitor {
         );
         record.session_id = session_id;
         record.expires_at = expires_at;
+        record.args_unbound = choice == ApprovalChoice::AllowTool;
         self.store().record(record);
         if choice == ApprovalChoice::Always {
             // Drop the store guard before locking it again on failure. A
@@ -983,6 +998,7 @@ impl PermissionMonitor {
                 ApprovalChoice::Once => "allow_once",
                 ApprovalChoice::Session => "allow_session",
                 ApprovalChoice::Always => "allow_until",
+                ApprovalChoice::AllowTool => "allow_tool_session",
                 ApprovalChoice::Deny | ApprovalChoice::DenyAlways => "deny",
             }
             .to_string(),
@@ -1291,7 +1307,7 @@ impl PermissionMonitor {
                 .resource_id
                 .clone()
                 .unwrap_or_else(|| pending.tool.clone()),
-            summary: pending.input_summary.clone(),
+            summary: format!("Allow {}", pending.tool),
             created_at: self.now_secs(),
             expires_at: None,
             run_tag: Some(pending.binding.call_id.clone()),
@@ -2639,7 +2655,7 @@ fn mutation_label(outcome: &PermissionMutation) -> &'static str {
 fn resolution_for_choice(choice: ApprovalChoice) -> NeedsYouResolution {
     match choice {
         ApprovalChoice::Deny | ApprovalChoice::DenyAlways => NeedsYouResolution::Denied,
-        ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always => {
+        ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always | ApprovalChoice::AllowTool => {
             NeedsYouResolution::Approved
         }
     }
@@ -2650,6 +2666,7 @@ fn decision_for_choice(choice: ApprovalChoice) -> &'static str {
         ApprovalChoice::Once => "allow_once",
         ApprovalChoice::Session => "allow_session",
         ApprovalChoice::Always => "allow_until",
+        ApprovalChoice::AllowTool => "allow_tool_session",
         ApprovalChoice::Deny => "deny",
         ApprovalChoice::DenyAlways => "deny_always",
     }
@@ -2713,6 +2730,9 @@ fn pairing_view(code: &str) -> PendingView {
         resource_id: None,
         args_fingerprint: String::new(),
         input_summary: "confirm this phone".to_string(),
+        allow_tool: false,
+        context_id: None,
+        instance_id: None,
     }
 }
 
@@ -2724,6 +2744,9 @@ fn pending_view(row: &Pending) -> PendingView {
         resource_id: row.binding.resource_id.clone(),
         args_fingerprint: row.binding.args_fingerprint.clone(),
         input_summary: row.input_summary.clone(),
+        allow_tool: row.binding.target_type == TargetType::AppConnector,
+        context_id: row.binding.context_id,
+        instance_id: row.binding.instance_id,
     }
 }
 
@@ -3417,6 +3440,57 @@ mod tests {
         assert!(denied.already);
         assert_eq!(denied.resolution, NeedsYouResolution::Denied);
         assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
+    }
+
+    #[test]
+    fn allow_app_tool_keeps_identity_and_resource_boundaries() {
+        let monitor = PermissionMonitor::ephemeral();
+        let row = binding("ignored");
+        let first = r#"{"game_id":"game-1","move":"e2e4"}"#;
+        let next = r#"{"game_id":"game-1","move":"d2d4"}"#;
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, first) else {
+            panic!("first call must ask");
+        };
+        monitor.approve_pending(&pending_request_id, ApprovalChoice::AllowTool).unwrap();
+        assert!(matches!(admit_of(&monitor, &row, next), Admission::Proceed { .. }),
+            "explicit tool consent must cover changed arguments");
+        for changed in 0..5 {
+            let mut other = row.clone();
+            match changed {
+                0 => other.actor_id = "agent:other".into(),
+                1 => other.context_id = Some(10),
+                2 => other.instance_id = Some(5),
+                3 => other.package_id = "other-package".into(),
+                _ => other.workspace_root = PathBuf::from("/other"),
+            }
+            assert!(matches!(admit_of(&monitor, &other, next), Admission::Required { .. }));
+        }
+        assert!(matches!(admit_of(&monitor, &row,
+            r#"{"game_id":"game-2","move":"d2d4"}"#), Admission::Required { .. }));
+        let grant = monitor.store().records().iter().find(|r| r.decision == Decision::Allow).unwrap().clone();
+        assert!(!grant.tool_scoped, "legacy broad tool scope skips identity checks");
+        assert!(grant.args_unbound);
+        let mut next_binding = row.clone();
+        next_binding.args_fingerprint = fingerprint_args(next).unwrap();
+        next_binding.session_id = Some(monitor.session_id().to_string());
+        let request = PermissionRequest::exact(&next_binding);
+        assert!(grant.matches(&request, grant.created_at));
+        next_binding.session_id = Some("restarted-host".into());
+        assert!(!grant.matches(&PermissionRequest::exact(&next_binding), grant.created_at));
+        assert_eq!(grant.duration, GrantDuration::Session);
+        let caller = PermissionCaller { human: false, actor_id: row.actor_id.clone() };
+        assert!(matches!(monitor.mutate_entry(&grant.grant_id, "revoke", &caller), PermissionMutation::Applied { .. }));
+        assert!(matches!(admit_of(&monitor, &row, next), Admission::Required { .. }));
+    }
+
+    #[test]
+    fn approval_summary_names_action_for_empty_arguments() {
+        let monitor = PermissionMonitor::ephemeral();
+        let row = binding("ignored");
+        admit_of(&monitor, &row, "{}");
+        let entries = monitor.list_needs_you();
+        assert!(entries[0].summary.contains("chess.play"));
+        assert_ne!(entries[0].summary, "{}");
     }
 
     #[test]

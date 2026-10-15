@@ -1928,6 +1928,7 @@ pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
 /// Host deadline for a CLI tool call. Strictly below the CLI's poll window so
 /// the caller always sees the host's typed timeout, never a client timeout.
 pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const APP_CALL_APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// `plexi app call <app_id> <tool> [--input JSON]` — invoke an app tool through
 /// the host's tool dispatcher and print its JSON output on stdout.
@@ -1937,6 +1938,7 @@ pub fn app_call_cli(
     input: &str,
     json: bool,
     target_pane: Option<u64>,
+    wait_approved: bool,
 ) -> i32 {
     let input_value: serde_json::Value = match serde_json::from_str(input) {
         Ok(value @ serde_json::Value::Object(_)) => value,
@@ -1962,6 +1964,7 @@ pub fn app_call_cli(
         "app_id": app_id,
         "tool": tool,
         "input_json": input_value.to_string(),
+        "wait_approved": wait_approved,
     });
     if let Some(pane_id) = caller_pane_id {
         payload["caller_pane_id"] = serde_json::json!(pane_id);
@@ -1979,13 +1982,16 @@ pub fn app_call_cli(
         payload,
         "app-call-response",
         "app call",
-        APP_CALL_HOST_TIMEOUT + std::time::Duration::from_secs(5),
+        APP_CALL_HOST_TIMEOUT + std::time::Duration::from_secs(5)
+            + if wait_approved { APP_CALL_APPROVAL_TIMEOUT } else { std::time::Duration::ZERO },
     ) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
+    if !json {
+        if let Err(code) = super::check_reply_error(&content) {
+            return code;
+        }
     }
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {

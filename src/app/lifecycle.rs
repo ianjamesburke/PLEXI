@@ -2591,6 +2591,7 @@ impl PlexiApp {
                 peer_ancestry,
                 target_pane_id,
                 response_file,
+                wait_approved,
             } => {
                 self.call_app_tool(
                     app_id.clone(),
@@ -2601,6 +2602,7 @@ impl PlexiApp {
                     peer_ancestry.clone(),
                     *target_pane_id,
                     response_file.clone(),
+                    *wait_approved,
                 );
             }
             crate::protocol::AppRequest::SetAgentState {

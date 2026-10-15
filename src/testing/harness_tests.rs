@@ -4979,6 +4979,63 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
 }
 
 #[test]
+fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
+    let mut h = HostHarness::new();
+    h.app.config.confirm_quit = Some(false);
+    let tmp = tempfile::tempdir().unwrap();
+    let pane = open_gate_note(&mut h, tmp.path(), "seed");
+    h.text_editor_mut(pane).test_set_unsaved("my poem");
+    std::fs::write(tmp.path().join("gate-note.md"), "agent version").unwrap();
+    h.text_editor_mut(pane).test_check_disk();
+    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+    assert!(!h.app.quitting, "quit must ask before losing a conflicted buffer");
+    assert_eq!(h.app.quit_press_count, 0);
+    assert_eq!(gate_note_semantics(&h, pane)["source_text"], "my poem");
+    // A system/window close must also cancel even after an earlier quit flow
+    // marked itself complete; it must not bypass the unsaved-work veto.
+    h.app.quitting = true;
+    h.app.quit_press_count = 3;
+    let mut input = egui::RawInput::default();
+    input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    h.frame(input);
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 0);
+    h.text_editor_mut(pane).test_discard_unsaved();
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key { key: egui::Key::Q, physical_key: None,
+            pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND }],
+        ..Default::default()
+    });
+    // The veto navigates to the affected pane and reloads effective config.
+    h.app.config.confirm_quit = Some(false);
+    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+    assert!(h.app.quitting, "explicit resolution permits retry; count={} confirm={} state={}",
+        h.app.quit_press_count, h.app.confirm_quit(), gate_note_semantics(&h, pane));
+}
+
+#[test]
+fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
+    let mut h = HostHarness::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let pane = open_gate_note(&mut h, tmp.path(), "seed");
+    h.text_editor_mut(pane).test_set_unsaved("my whole poem");
+    let path = tmp.path().join("gate-note.md");
+    std::fs::write(&path, "agent version").unwrap();
+    h.text_editor_mut(pane).test_check_disk();
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key { key: egui::Key::R, physical_key: None,
+            pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            egui::Event::Text("r".into())],
+        ..Default::default()
+    });
+    let text = gate_note_semantics(&h, pane)["source_text"].as_str().unwrap().to_string();
+    assert!(text.contains("my whole poem"), "typing R must not reload: {text}");
+    assert_eq!(text.len(), "my whole poem".len() + 1, "typed character must survive");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "agent version");
+}
+
+#[test]
 fn editor_gate_paste_preserves_literal_text_and_is_one_undo_step() {
     let mut h = HostHarness::new();
     let tmp = tempfile::tempdir().unwrap();

@@ -542,10 +542,18 @@ pub(super) fn poll_rpc_with(
 /// non-standard poll (raw bytes, slot replies) sends here and polls itself;
 /// everything else uses [`request`].
 pub(super) fn send_request(
-    mut payload: serde_json::Value,
+    payload: serde_json::Value,
     prefix: &str,
     label: &str,
 ) -> Result<String, i32> {
+    send_request_connected(payload, prefix, label).map(|(path, _stream)| path)
+}
+
+fn send_request_connected(
+    mut payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+) -> Result<(String, crate::platform::ipc::IpcStream), i32> {
     let response_file = crate::rpc::response_file(prefix, "json");
     let Some(fields) = payload.as_object_mut() else {
         log::error!("{label}:cli: request payload is not a JSON object");
@@ -557,11 +565,8 @@ pub(super) fn send_request(
         serde_json::Value::String(response_file.clone()),
     );
     log::info!("{label}:cli: request response_file={response_file:?}");
-    let code = send_to_socket(payload);
-    if code != 0 {
-        return Err(code);
-    }
-    Ok(response_file)
+    let stream = send_to_socket_connected(payload)?;
+    Ok((response_file, stream))
 }
 
 /// Send a request and wait for the host's reply: the standard CLI round trip.
@@ -582,7 +587,9 @@ pub(super) fn request_with(
     label: &str,
     timeout: std::time::Duration,
 ) -> Result<String, i32> {
-    let response_file = send_request(payload, prefix, label)?;
+    // macOS cannot recover LOCAL_PEERPID after the client disconnects, even
+    // while this CLI process is alive. Hold the connection through the reply.
+    let (response_file, _stream) = send_request_connected(payload, prefix, label)?;
     poll_rpc_with(&response_file, label, timeout)
 }
 
@@ -891,7 +898,7 @@ fn send_line_to_socket(
     socket_path: &std::path::Path,
     line: &[u8],
     timeout: std::time::Duration,
-) -> Result<(), SocketTransportError> {
+) -> Result<crate::platform::ipc::IpcStream, SocketTransportError> {
     use std::os::fd::AsRawFd as _;
 
     let deadline = std::time::Instant::now() + timeout;
@@ -952,7 +959,7 @@ fn send_line_to_socket(
             bytes_written: written,
         });
     }
-    Ok(())
+    Ok(fd.into())
 }
 
 /// Windows counterpart of the raw-fd path above.
@@ -968,7 +975,7 @@ fn send_line_to_socket(
     socket_path: &std::path::Path,
     line: &[u8],
     timeout: std::time::Duration,
-) -> Result<(), SocketTransportError> {
+) -> Result<crate::platform::ipc::IpcStream, SocketTransportError> {
     use std::io::Write as _;
 
     let mut stream = crate::platform::ipc::connect_timeout(socket_path, timeout).map_err(|e| {
@@ -986,34 +993,42 @@ fn send_line_to_socket(
             // `write_all` does not report a partial count; the frame either
             // landed whole or the caller must retry the whole thing.
             bytes_written: 0,
-        })
+        })?;
+    Ok(stream)
 }
 
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
+    match send_to_socket_connected(payload) {
+        Ok(_) => 0,
+        Err(code) => code,
+    }
+}
+
+fn send_to_socket_connected(payload: serde_json::Value) -> Result<crate::platform::ipc::IpcStream, i32> {
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
         None => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
-            return 1;
+            return Err(1);
         }
     };
     let line = format!("{}\n", payload);
     let started = std::time::Instant::now();
     match send_line_to_socket(&socket_path, line.as_bytes(), SOCKET_TRANSPORT_DEADLINE) {
-        Ok(()) => {
+        Ok(stream) => {
             log::info!(
                 "cli: socket transport complete path={socket_path:?} bytes={} elapsed_ms={}",
                 line.len(),
                 started.elapsed().as_millis()
             );
-            0
+            Ok(stream)
         }
         Err(SocketTransportError::Connect(e))
             if e.kind() == std::io::ErrorKind::ConnectionRefused =>
         {
             crate::platform::ipc::remove_stale_endpoint(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
-            1
+            Err(1)
         }
         Err(SocketTransportError::ConnectTimeout) => {
             log::warn!(
@@ -1023,12 +1038,12 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
             eprintln!(
                 "error: timed out connecting to PLEXI_SOCKET {socket_path:?}; request was not delivered"
             );
-            1
+            Err(1)
         }
         Err(SocketTransportError::Connect(e)) => {
             log::warn!("cli: socket connect failed path={socket_path:?}: {e}");
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            1
+            Err(1)
         }
         #[cfg(unix)]
         Err(SocketTransportError::WriteTimeout { bytes_written }) => {
@@ -1047,7 +1062,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
                     line.len()
                 );
             }
-            1
+            Err(1)
         }
         Err(SocketTransportError::Write {
             source,
@@ -1065,7 +1080,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
                     line.len()
                 );
             }
-            1
+            Err(1)
         }
     }
 }
@@ -1177,6 +1192,26 @@ mod transport_deadline_tests {
             handle.join().expect("listener"),
             String::from_utf8_lossy(payload)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn connected_request_preserves_peer_pid_until_reply() {
+        use std::os::fd::AsRawFd;
+        let dir = unique_socket_dir("peer-pid");
+        let socket = dir.join("notify.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let client = send_line_to_socket(&socket, b"{}\n", Duration::from_secs(1)).unwrap();
+        // Deliberately accept after the complete frame has been sent: this was
+        // ENOTCONN when the sender dropped its descriptor before reply polling.
+        let (server, _) = listener.accept().unwrap();
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
+        let rc = unsafe { libc::getsockopt(server.as_raw_fd(), libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID, &mut pid as *mut _ as *mut libc::c_void, &mut len) };
+        assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(pid as u32, std::process::id());
+        drop(client);
     }
 }
 

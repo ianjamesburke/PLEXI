@@ -712,6 +712,7 @@ Call an app-exposed tool through the host tool dispatcher. Sent by `plexi app ca
 | `response_file` | `string?` | no |
 | `target_pane_id` | `integer?` | no |
 | `tool` | `string` | yes |
+| `wait_approved` | `boolean` | no |
 
 ### `create_context`
 
