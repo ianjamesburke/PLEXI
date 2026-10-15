@@ -1114,35 +1114,66 @@ fn apply_control(
 }
 
 fn read_control(mut stream: TcpStream) -> Option<Value> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut buf = String::new();
-    let mut byte = [0u8; 1];
-    loop {
-        match stream.read(&mut byte) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                if byte[0] == b'\n' {
-                    break;
-                }
-                buf.push(byte[0] as char);
-                if buf.len() > 4096 {
-                    break;
-                }
-            }
+    let value = match read_control_frame(&mut stream, Duration::from_secs(2)) {
+        Ok(value) if value.get("type").and_then(Value::as_str).is_some() => Some(value),
+        Ok(_) => None,
+        Err(error) => {
+            log::info!("relay: control request rejected outcome={error}");
+            None
         }
-    }
-    let value = serde_json::from_str::<Value>(&buf).unwrap_or(Value::Null);
-    let response = if value.get("type").and_then(|item| item.as_str()).is_some() {
+    };
+    let response = if value.is_some() {
         json!({"ok": true})
     } else {
         json!({"ok": false, "error": "invalid_control"})
     };
-    let _ = stream.write_all(format!("{response}\n").as_bytes());
-    let _ = stream.shutdown(std::net::Shutdown::Both);
-    if value.get("type").is_some() {
-        Some(value)
-    } else {
-        None
+    if let Err(error) = stream.write_all(format!("{response}\n").as_bytes()) {
+        log::warn!("relay: control acknowledgement failed outcome={error}");
+    }
+    value
+}
+
+fn read_control_frame(stream: &mut TcpStream, timeout: Duration) -> std::io::Result<Value> {
+    // Accepted sockets inherit O_NONBLOCK on macOS. A read timeout alone
+    // does not wait for the client to send its newline-framed request.
+    stream.set_nonblocking(false)?;
+    stream.set_write_timeout(Some(timeout))?;
+    let deadline = Instant::now() + timeout;
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "control frame deadline",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        match stream.read(&mut byte) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "incomplete control frame",
+                ))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    return serde_json::from_slice(&buf).map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                    });
+                }
+                buf.push(byte[0]);
+                if buf.len() > 4096 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "control frame exceeds 4096 bytes",
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -1195,11 +1226,22 @@ fn control_roundtrip_once(command: &Value) -> ControlOnce {
         eprintln!("error: could not reach relay connect");
         return ControlOnce::Done(1);
     }
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut buf = String::new();
-    let _ = stream.read_to_string(&mut buf);
-    println!("{buf}");
-    ControlOnce::Done(0)
+    match read_control_frame(&mut stream, Duration::from_secs(2)) {
+        Ok(reply) => {
+            println!("{reply}");
+            if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+                ControlOnce::Done(0)
+            } else {
+                log::warn!("relay: control command rejected reply={reply}");
+                ControlOnce::Done(1)
+            }
+        }
+        Err(error) => {
+            log::warn!("relay: control acknowledgement failed outcome={error}");
+            eprintln!("error: relay control acknowledgement: {error}");
+            ControlOnce::Done(1)
+        }
+    }
 }
 
 fn write_status(
@@ -1736,6 +1778,59 @@ fn hostname_from_os() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn control_read_waits_for_delayed_payload_on_nonblocking_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let reader = thread::spawn(move || read_control(server));
+        // Force the accepted socket to be read before the request arrives.
+        thread::sleep(Duration::from_millis(100));
+        let command = json!({"type": "confirm", "pairing_id": "café"});
+        let _ = client.write_all(format!("{command}\n").as_bytes());
+        assert_eq!(reader.join().unwrap(), Some(command));
+    }
+
+    #[test]
+    fn control_read_rejects_unterminated_or_invalid_frames() {
+        for payload in [r#"{"type":"stop"}"#, "{\"type\":42}\n", "{}\n"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            client.write_all(payload.as_bytes()).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            assert_eq!(read_control(server), None, "payload={payload:?}");
+        }
+    }
+
+    #[test]
+    fn control_roundtrip_reports_rejected_or_invalid_acknowledgements() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        for reply in [
+            "{\"ok\":false,\"error\":\"invalid_control\"}\n",
+            "",
+            "not-json\n",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            fs::write(
+                status_path(),
+                json!({"control": listener.local_addr().unwrap().to_string()}).to_string(),
+            )
+            .unwrap();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut byte = [0];
+                while socket.read_exact(&mut byte).is_ok() && byte[0] != b'\n' {}
+                socket.write_all(reply.as_bytes()).unwrap();
+            });
+            let result = control_roundtrip_once(&json!({"type": "pair"}));
+            server.join().unwrap();
+            assert!(matches!(result, ControlOnce::Done(1)), "reply={reply:?}");
+        }
+    }
+
     #[test]
     fn start_host_relay_is_a_noop_while_the_experiment_is_off() {
         let profile = tempfile::tempdir().unwrap();
