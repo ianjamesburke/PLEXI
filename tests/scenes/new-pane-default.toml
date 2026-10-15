@@ -1,0 +1,17 @@
+# Basic pane creation remains available with all experiments disabled.
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "initial" }
+
+[[steps]]
+assert = { pane_count = 1, window_count = 1 }
+
+[[steps]]
+key = { target = "host", value = "cmd+n" }
+
+[[steps]]
+assert = { pane_count = 2, window_count = 1 }
+
+[[steps]]
+shot = "new-pane-default.png"
