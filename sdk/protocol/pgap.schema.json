@@ -50,7 +50,7 @@
             },
             "output_schema": true,
             "read_only": {
-              "description": "When true, this tool only reads state and never mutates it. The\nassistant grants read-only tools automatically without a permission\nprompt; the broker still records every call in the audit trail.",
+              "description": "App-declared hint that the tool only reads state. This is not authority:\nthe host permission monitor still admits and audits every call.",
               "type": "boolean"
             },
             "timeout_ms": {
@@ -2440,6 +2440,11 @@
             "type": {
               "const": "call_app_tool",
               "type": "string"
+            },
+            "wait_approved": {
+              "default": false,
+              "description": "Wait for a real desktop decision before dispatching this exact call.",
+              "type": "boolean"
             }
           },
           "required": [
