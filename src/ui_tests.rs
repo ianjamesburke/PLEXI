@@ -791,6 +791,35 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render banner");
     }
 
+    /// An unreadable host seal key is recoverable from the desktop. The action
+    /// is not a tool grant: it is the existing keychain retry/rotation path.
+    #[test]
+    fn screenshot_keychain_recovery_banner_is_actionable() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Keychain,
+                actor: "host".to_string(),
+                resource: "permission-mac".to_string(),
+                summary: crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY.to_string(),
+                expires_at: None,
+                run_tag: Some("keychain:permission-mac".to_string()),
+            })
+            .expect("file keychain recovery");
+
+        let mut h = PlexiUiHarness::new_sized(1100.0, 360.0);
+        h.run_steps(2);
+        h.harness().get_by_label("Keychain access needed");
+        h.harness().get_by_label("Saved permissions are unavailable.");
+        h.harness().get_by_label("Continue");
+        h.harness().get_by_label("Not now");
+        h.save_screenshot(&evidence_png!())
+            .expect("render keychain recovery");
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]

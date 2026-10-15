@@ -4456,6 +4456,7 @@ impl eframe::App for PlexiApp {
         crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
         self.render_panels(ui, focused_terminal_input);
         self.draw_approval_banner(ctx);
+        self.draw_keychain_recovery_banner(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.

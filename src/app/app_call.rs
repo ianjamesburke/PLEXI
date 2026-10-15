@@ -191,8 +191,25 @@ impl PlexiApp {
         approve: Option<bool>,
         response_file: &str,
     ) {
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        // The host opens its monitor before accepting its command socket. Do
+        // not make an observation request open a profile or touch Keychain:
+        // callers need a bounded, typed answer while Keychain recovery is
+        // pending, not a second startup attempt on the command path.
+        let profile = crate::config::config_dir();
+        let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) else {
+            log::warn!("needs_you: host query arrived before the monitor was ready");
+            crate::rpc::write_response(
+                response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "host_not_ready",
+                    "error": "needs-you is not ready; retry after the host finishes starting",
+                })
+                .to_string()
+                .as_bytes(),
+            );
+            return;
+        };
         let body = match op {
             "list" => {
                 let items = crate::broker::gate::needs_you_phone_items(&monitor.list_needs_you());
@@ -499,6 +516,88 @@ impl PlexiApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Surface the one recovery action for a host seal key that startup could
+    /// not read without prompting. This is deliberately separate from a tool
+    /// approval: it reloads or rotates the host seal and never grants an app
+    /// capability.
+    pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let Some(item) = monitor
+            .open_needs_you()
+            .into_iter()
+            .find(|item| item.kind == crate::broker::gate::NeedsYouKind::Keychain)
+        else {
+            return;
+        };
+
+        let mut choice = None;
+        crate::ui::overlay::ModalShell::centered("keychain_recovery")
+            .title("Keychain access needed")
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
+            .scrim(false)
+            .click_away(false)
+            .show(ctx, &self.colors, |ui| {
+                crate::ui::typography::body_strong(
+                    ui,
+                    "Saved permissions are unavailable.",
+                    &self.colors,
+                );
+                crate::ui::typography::body(
+                    ui,
+                    "Continue lets macOS ask for access to Plexi’s saved permission key. If it remains unavailable, Plexi safely replaces that key and resets only permissions it can no longer verify.",
+                    &self.colors,
+                );
+                ui.add_space(crate::ui::style::SPACE_MD);
+                ui.horizontal_wrapped(|ui| {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Continue",
+                        crate::ui::button::ButtonKind::Accent,
+                        &self.colors,
+                        0.0,
+                    )
+                    .clicked_by(egui::PointerButton::Primary)
+                    {
+                        choice = Some(true);
+                    }
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Not now",
+                        crate::ui::button::ButtonKind::Secondary,
+                        &self.colors,
+                        0.0,
+                    )
+                    .clicked_by(egui::PointerButton::Primary)
+                    {
+                        choice = Some(false);
+                    }
+                });
+            });
+
+        let Some(approve) = choice else {
+            return;
+        };
+        if self.synthetic_input_frame {
+            log::info!(
+                "permission_seal: ignored synthetic keychain recovery click id={} approve={approve}",
+                item.id
+            );
+            return;
+        }
+        match monitor.resolve_needs_you(&item.id, approve) {
+            Ok(receipt) => log::info!(
+                "permission_seal: desktop keychain recovery resolved id={} resolution={}",
+                receipt.id,
+                receipt.resolution.as_str()
+            ),
+            Err(error) => log::error!(
+                "permission_seal: desktop keychain recovery failed id={}: {error}",
+                item.id
+            ),
         }
     }
 
