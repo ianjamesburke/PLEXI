@@ -3135,9 +3135,13 @@ impl PlexiApp {
                     return;
                 };
                 let parent_ctx_id = self.router.get(parent_idx).context_id;
+                let resolved_layout = layout.unwrap_or_else(|| {
+                    crate::pane_ops::default_squad_layout(panes.len())
+                });
                 log::info!(
                     "pane_ipc: kind=create_sub_context name={name:?} parent_ctx_id={parent_ctx_id} \
-                     panes={} layout={layout:?} focus={focus} root={} anchor_pane={anchor_pane:?}",
+                     panes={} requested_layout={layout:?} layout={resolved_layout:?} focus={focus} \
+                     root={} anchor_pane={anchor_pane:?}",
                     panes.len(),
                     root.display()
                 );
@@ -3154,7 +3158,7 @@ impl PlexiApp {
                     portal_first: false,
                     anchor_pane: *anchor_pane,
                     panes: panes.clone(),
-                    layout: *layout,
+                    layout: resolved_layout,
                 };
                 let child = match self.new_child_context(spec) {
                     Ok(child) => child,
@@ -3174,7 +3178,7 @@ impl PlexiApp {
                 let launched = launched_pairs(&child.pane_ids, panes);
                 log::info!(
                     "context_sub: parent_ctx_id={parent_ctx_id} child_ctx_id={} name={name:?} \
-                     pane_count={} layout={layout:?} root={} launched={launched:?}",
+                     pane_count={} layout={resolved_layout:?} root={} launched={launched:?}",
                     child.context_id,
                     child.pane_ids.len(),
                     root.display()

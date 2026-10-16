@@ -946,8 +946,9 @@ pub enum AppRequest {
         /// exactly the requested pane count before sending.
         panes: Vec<Option<String>>,
         /// How the panes are arranged inside the sub-context's single window.
-        #[serde(default)]
-        layout: SubContextLayout,
+        /// When omitted, the host picks the default layout from `panes.len()`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<SubContextLayout>,
         /// Zoom into the new sub-context after creation. Default false.
         #[serde(default)]
         focus: bool,

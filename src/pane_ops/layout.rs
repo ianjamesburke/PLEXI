@@ -79,6 +79,37 @@ fn overlay_close_ids(manifest_id: &str, runtime_type_id: &str) -> (String, Strin
     (manifest_id.to_string(), runtime_type_id.to_string())
 }
 
+/// Pick the default [`crate::protocol::SubContextLayout`] from `pane_count`
+/// when `--layout` is omitted in `plexi context sub`.
+///
+/// `egui_tiles::Grid` (and the portal minimap's `collect_tile_rects`) arranges
+/// tiles as a near-square grid (`ceil(sqrt(n)) × div_ceil(n, ceil(sqrt(n)))`),
+/// which only fills a multi-row rectangle without empty cells when `pane_count`
+/// is a perfect square (`4` → 2×2, `9` → 3×3, `16` → 4×4, …). Any non-square
+/// multi-pane count (`2`, `3`, `5`, `6`, `7`, `8`, …) would leave dead cells in
+/// a 2D grid, so it defaults to [`crate::protocol::SubContextLayout::Columns`]
+/// (N equal full-height columns, zero empty cells). A single pane has no
+/// container wrapper in [`build_squad_tree`] regardless of layout.
+pub(crate) fn default_squad_layout(pane_count: usize) -> crate::protocol::SubContextLayout {
+    if pane_count >= 4 {
+        let root = (pane_count as f64).sqrt() as usize;
+        if root * root == pane_count {
+            return crate::protocol::SubContextLayout::Tiled;
+        }
+    }
+    if pane_count <= 1 {
+        crate::protocol::SubContextLayout::Tiled
+    } else {
+        crate::protocol::SubContextLayout::Columns
+    }
+}
+
+/// Default display name for the `idx`-th (0-based) pane seeded into a
+/// sub-context named `context_name`: `<name>-1`, `<name>-2`, …
+pub(crate) fn default_squad_pane_name(context_name: &str, idx: usize) -> String {
+    format!("{context_name}-{}", idx + 1)
+}
+
 /// Build a fresh tile tree holding `pane_ids` arranged per `layout`.
 /// Pure tile manipulation — no PlexiApp state, no pane creation.
 ///
@@ -2069,6 +2100,39 @@ mod squad_tree_tests {
             tree.tiles.get(first),
             Some(egui_tiles::Tile::Pane(42))
         ));
+    }
+
+    /// Stint 0581: when `--layout` is omitted, counts that do not fill a square
+    /// grid cleanly (`3`, `5`, `6`, `7`) default to `Columns` so no quadrant is
+    /// left empty, while square counts (`4`, `9`, `16`) default to `Tiled`.
+    #[test]
+    fn default_squad_layout_picks_columns_for_non_square_counts_and_tiled_for_squares() {
+        use super::default_squad_layout;
+
+        assert_eq!(default_squad_layout(1), SubContextLayout::Tiled);
+        for count in [2, 3, 5, 6, 7, 8] {
+            assert_eq!(
+                default_squad_layout(count),
+                SubContextLayout::Columns,
+                "pane count {count} does not fill a multi-row grid cleanly and must default to Columns"
+            );
+        }
+        for count in [4, 9, 16, 25] {
+            assert_eq!(
+                default_squad_layout(count),
+                SubContextLayout::Tiled,
+                "perfect-square pane count {count} fills a square grid cleanly and must default to Tiled"
+            );
+        }
+    }
+
+    #[test]
+    fn default_squad_pane_name_formats_one_based_index() {
+        use super::default_squad_pane_name;
+
+        assert_eq!(default_squad_pane_name("agentsquad", 0), "agentsquad-1");
+        assert_eq!(default_squad_pane_name("agentsquad", 1), "agentsquad-2");
+        assert_eq!(default_squad_pane_name("agentsquad", 2), "agentsquad-3");
     }
 }
 

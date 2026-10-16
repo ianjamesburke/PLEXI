@@ -3137,6 +3137,151 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
     );
 }
 
+/// Stint 0581: when `layout` is omitted in `create_sub_context`, `--agents 3`
+/// (and 5, 6, 7) builds a horizontal `Linear` container (three full-height
+/// columns with no empty quadrant), while `--agents 4` builds a 2×2 `Grid`.
+#[test]
+fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent_id = h.app.router.active().context_id;
+    let root = tempfile::tempdir().expect("squad root");
+
+    for count in [3usize, 5, 6, 7] {
+        let name = format!("squad-{count}");
+        let panes = vec![serde_json::Value::Null; count];
+        let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+            "type": "create_sub_context",
+            "name": name,
+            "root": root.path(),
+            "parent_context_id": parent_id,
+            "panes": panes,
+        }))
+        .expect("payload must deserialize");
+        h.inject_ipc(req);
+        h.app.drain_pane_cmd_channel();
+
+        let child_ctx = h
+            .app
+            .router
+            .iter()
+            .find(|c| c.name == name.as_str())
+            .expect("sub-context must exist")
+            .context_id;
+        let win = h
+            .app
+            .windows
+            .iter()
+            .find(|w| w.context_id == child_ctx)
+            .expect("child window");
+        let root_tile = win.tree.root.expect("child tree must have a root");
+        match win.tree.tiles.get(root_tile) {
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) => {
+                assert_eq!(
+                    linear.dir,
+                    egui_tiles::LinearDir::Horizontal,
+                    "count={count} must default to horizontal columns"
+                );
+                assert_eq!(linear.children.len(), count);
+            }
+            other => panic!("count={count} must default to Linear(Horizontal), got {other:?}"),
+        }
+    }
+
+    let req4: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "squad-4",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": [null, null, null, null],
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req4);
+    h.app.drain_pane_cmd_channel();
+
+    let child4 = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.name == "squad-4")
+        .expect("4-pane sub-context must exist")
+        .context_id;
+    let win4 = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == child4)
+        .expect("4-pane child window");
+    let root4 = win4.tree.root.expect("4-pane child tree root");
+    assert!(
+        matches!(
+            win4.tree.tiles.get(root4),
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Grid(_)))
+        ),
+        "4 panes fill a 2×2 grid cleanly and must default to Grid"
+    );
+}
+
+/// Stint 0581: squad panes receive distinct locked default names derived from
+/// the sub-context name and 1-based index (`<name>-1`, `<name>-2`, …).
+#[test]
+fn context_sub_assigns_distinct_default_pane_names() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent_id = h.app.router.active().context_id;
+    let root = tempfile::tempdir().expect("squad root");
+    let resp_path = root.path().join("sub-resp.json");
+
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "agentsquad",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": [null, null, null],
+        "response_file": resp_path.to_string_lossy(),
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let resp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&resp_path).expect("response file"))
+            .expect("valid json");
+    let child_ctx_id = resp["context_id"].as_u64().expect("context_id");
+    let pane_ids: Vec<u64> = resp["panes"]
+        .as_array()
+        .expect("panes array")
+        .iter()
+        .map(|v| v.as_u64().expect("pane id"))
+        .collect();
+    assert_eq!(pane_ids.len(), 3);
+
+    let win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == child_ctx_id)
+        .expect("child window");
+    let names: Vec<(Option<String>, bool)> = pane_ids
+        .iter()
+        .map(|id| {
+            let term = win
+                .panes
+                .get(id)
+                .and_then(|p| p.as_terminal())
+                .expect("terminal pane");
+            (term.name.clone(), term.name_locked)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            (Some("agentsquad-1".to_string()), true),
+            (Some("agentsquad-2".to_string()), true),
+            (Some("agentsquad-3".to_string()), true),
+        ],
+        "squad panes must be named <name>-1, <name>-2, <name>-3 with name_locked=true"
+    );
+}
+
 // ── Stint 0678 audit evidence ────────────────────────────────────────────────
 // Part of the reproduction half of the context-scoped state persistence audit
 // (docs/context-state-persistence-audit.md). The rest of the audit's evidence

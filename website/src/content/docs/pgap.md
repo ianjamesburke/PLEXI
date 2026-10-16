@@ -738,7 +738,7 @@ Create a sub-context under the caller's context, pre-populated with a squad of t
 |-------|------|----------|
 | `anchor_pane` | `integer?` | no |
 | `focus` | `boolean` | no |
-| `layout` | `SubContextLayout` | no |
+| `layout` | `variant` | no |
 | `name` | `string` | yes |
 | `panes` | `string?[]` | yes |
 | `parent_context_id` | `integer?` | no |

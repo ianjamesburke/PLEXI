@@ -334,23 +334,16 @@ plexi pane state "$PANE_ID"
 plexi app check "$APP_DIR"
 ```
 
-### Create a named sub-context with a terminal grid
+### Create a named sub-context with an agent squad
 
-Create four terminal panes in one tiled sub-context. The context name is the
-argument to `context sub`; name the returned pane IDs directly.
+Create terminal panes in one sub-context window. Panes are named
+`<name>-1`, `<name>-2`, … by default, and the layout defaults from `--agents`
+(`tiled` when the count fills a square grid such as 4 or 9, `columns` otherwise
+so no grid cell is left empty).
 
 ```bash
-SQUAD=$(plexi context sub release-train --agents 4 --command 'exec zsh' --layout tiled)
+SQUAD=$(plexi context sub release-train --agents 3 --command 'exec zsh')
 CONTEXT_ID=$(printf '%s' "$SQUAD" | jq -r '.context_id')
-PLANNER=$(printf '%s' "$SQUAD" | jq -r '.panes[0]')
-IMPLEMENTER=$(printf '%s' "$SQUAD" | jq -r '.panes[1]')
-REVIEWER=$(printf '%s' "$SQUAD" | jq -r '.panes[2]')
-VERIFIER=$(printf '%s' "$SQUAD" | jq -r '.panes[3]')
-
-plexi pane name "$PLANNER" planner
-plexi pane name "$IMPLEMENTER" implementer
-plexi pane name "$REVIEWER" reviewer
-plexi pane name "$VERIFIER" verifier
 
 CONTEXTS=$(plexi context list)
 printf '%s' "$CONTEXTS" | jq --argjson id "$CONTEXT_ID" '.[] | select(.context_id == $id)'

@@ -865,7 +865,7 @@ Examples: plexi context sub agentsquad --agents 3 --command cm plexi context sub
 | `--path` | string | no | Root path for the sub-context. Defaults to the caller's cwd |
 | `--agents` | string | no | Number of panes to open inside the new sub-context Default: `1`. |
 | `--command` | string (repeatable) | no | Command to launch in each pane. Give it once to apply to every pane, or exactly --agents times to give each pane its own command |
-| `--layout` | string | no | How the panes are arranged inside the sub-context's window Default: `tiled`. |
+| `--layout` | string | no | How the panes are arranged inside the sub-context's window. Defaults to `tiled` when the pane count fills a square grid (4, 9, …) and `columns` otherwise so no grid cell is left empty |
 | `--focus` | flag | no | Zoom into the new sub-context after creation. Default: stay put |
 | `--from` | string | no | Pane to anchor the portal split at. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent's focused pane |
 

@@ -21,6 +21,7 @@ pub(crate) use create::{restore_app_pane, RestoreTarget, RestoredAppPane};
 pub(crate) use create::restore_assistant_pane;
 pub(crate) use create::restore_builtin_app_pane;
 pub(crate) use create::restore_launch_failed_pane;
+pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;
 pub(crate) use workspace::ChildContextSpec;
