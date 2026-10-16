@@ -444,8 +444,8 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
 
 /// Answer a paired phone's needs-you list or resolve.
 ///
-/// `id` is `None` for a list. A resolve always counts as from the phone:
-/// an approval click cannot be approved here.
+/// `id` is `None` for a list. A resolve always counts as from the phone, so
+/// the broker refuses every approve and any integrity or keychain decision.
 fn answer_needs_you(
     session: &Session,
     conn: &mut WsConn,
@@ -457,44 +457,33 @@ fn answer_needs_you(
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
     let body = if let Some(id) = id {
-        if approve
-            && monitor
-                .open_needs_you()
-                .iter()
-                .any(|row| row.id == id && !row.kind.phone_may_approve())
+        log::info!(
+            "relay: phone needs-you resolve host_id={} id={id} approve={approve}",
+            session.identity.host_id
+        );
+        match monitor.resolve_needs_you_from(&id, approve, crate::broker::gate::ResolveSurface::Phone)
         {
-            log::info!(
-                "relay: phone refused irreversible needs-you host_id={} id={id}",
-                session.identity.host_id
-            );
-            json!({
+            Ok(receipt) => json!({
+                "type": "needs_you_result",
+                "request_id": request_id,
+                "ok": !receipt.already,
+                "id": receipt.id,
+                "resolution": receipt.resolution.as_str(),
+                "already": receipt.already,
+            }),
+            Err(crate::broker::gate::NeedsYouResolveError::Refused) => json!({
                 "type": "needs_you_result",
                 "request_id": request_id,
                 "ok": false,
                 "error_code": "permission_denied",
                 "error": "waiting on desktop",
-            })
-        } else {
-            log::info!(
-                "relay: phone needs-you resolve host_id={} id={id} approve={approve}",
-                session.identity.host_id
-            );
-            match monitor.resolve_needs_you(&id, approve) {
-                Ok(receipt) => json!({
-                    "type": "needs_you_result",
-                    "request_id": request_id,
-                    "ok": !receipt.already,
-                    "id": receipt.id,
-                    "resolution": receipt.resolution.as_str(),
-                    "already": receipt.already,
-                }),
-                Err(error) => json!({
-                    "type": "needs_you_result",
-                    "request_id": request_id,
-                    "ok": false,
-                    "error": error,
-                }),
-            }
+            }),
+            Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => json!({
+                "type": "needs_you_result",
+                "request_id": request_id,
+                "ok": false,
+                "error": error,
+            }),
         }
     } else {
         let items = crate::broker::gate::needs_you_phone_items(&monitor.list_needs_you());

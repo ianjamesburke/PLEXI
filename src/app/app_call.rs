@@ -217,43 +217,34 @@ impl PlexiApp {
                 serde_json::json!({"ok": true, "items": items})
             }
             "resolve" => {
+                // The socket never approves and never settles an integrity or
+                // keychain item; the broker owns that rule. A real click in
+                // the host window is the only path that approves.
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
-                let grants = monitor.list_needs_you().iter().any(|row| {
-                    row.id == id
-                        && matches!(
-                            row.kind,
-                            crate::broker::gate::NeedsYouKind::ApprovalClick
-                                | crate::broker::gate::NeedsYouKind::PermissionChange
-                        )
-                }) || monitor.show_pending(id).is_some();
-                if grants && approve {
-                    // Socket and protocol resolves never mint a grant. The
-                    // desktop banner calls approve_pending directly, and only
-                    // when the click was not synthetic. Deny still settles.
-                    // A phone or terminal approve is permission_denied.
-                    log::info!("needs_you: refused socket resolve {id} approve={approve}");
-                    monitor.refuse_client_resolve(id);
-                    serde_json::json!({
+                match monitor.resolve_needs_you_from(
+                    id,
+                    approve,
+                    crate::broker::gate::ResolveSurface::Socket,
+                ) {
+                    Ok(receipt) => serde_json::json!({
+                        "ok": !receipt.already,
+                        "id": receipt.id,
+                        "resolution": receipt.resolution.as_str(),
+                        "already": receipt.already,
+                        "run_outcome": receipt.run_outcome.as_str(),
+                    }),
+                    Err(crate::broker::gate::NeedsYouResolveError::Refused) => serde_json::json!({
                         "ok": false,
                         "error_code": "permission_denied",
-                        "error": "only the person at the desktop can resolve a permission",
+                        "error": "only the person at the desktop can do this; decide in the Plexi window",
                         "id": id,
-                    })
-                } else {
-                    log::info!("needs_you: host resolve {id} approve={approve}");
-                    match monitor.resolve_needs_you(id, approve) {
-                        Ok(receipt) => serde_json::json!({
-                            "ok": !receipt.already,
-                            "id": receipt.id,
-                            "resolution": receipt.resolution.as_str(),
-                            "already": receipt.already,
-                            "run_outcome": receipt.run_outcome.as_str(),
-                        }),
-                        Err(error) => serde_json::json!({
+                    }),
+                    Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => {
+                        serde_json::json!({
                             "ok": false,
                             "error": error,
-                        }),
+                        })
                     }
                 }
             }
@@ -419,13 +410,71 @@ impl PlexiApp {
         }
     }
 
+    /// Approve/Dismiss on the sidebar Needs-you row for `item` (the oldest
+    /// open item that is not an approval click). Wired like
+    /// `draw_approval_banner`: the bounds are registered in
+    /// `approval_buttons`, so a synthetic `pane click` on them is refused
+    /// before injection, and `resolve_from_desktop` ignores a synthetic frame.
+    pub(crate) fn draw_sidebar_needs_you_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        item: &crate::broker::gate::NeedsYouRecord,
+    ) {
+        let view = crate::overlays::attention::attention_view(item);
+        let colors = self.colors;
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            let width = (ui.available_width() - 12.0).max(0.0);
+            ui.add_sized(
+                egui::vec2(width, crate::ui::style::TEXT_CAPTION + 6.0),
+                egui::Label::new(
+                    egui::RichText::new(format!("{} · {}", view.kind_label, view.title))
+                        .size(crate::ui::style::TEXT_CAPTION)
+                        .color(colors.text_dim),
+                )
+                .truncate(),
+            )
+            .on_hover_text(view.explanation.clone());
+        });
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            for (label, approve, kind) in [
+                ("Approve", true, crate::ui::button::ButtonKind::Accent),
+                ("Dismiss", false, crate::ui::button::ButtonKind::Secondary),
+            ] {
+                let response = crate::ui::button::chrome_button(ui, label, kind, &colors, 0.0)
+                    .on_hover_text(view.next_action.clone());
+                let rect = response.rect;
+                self.approval_buttons.push(ApprovalButton {
+                    label: label.to_string(),
+                    bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                    pending_request_id: item.id.clone(),
+                });
+                if response.clicked_by(egui::PointerButton::Primary) {
+                    chosen = Some((label, approve));
+                }
+            }
+        });
+        if let Some((label, approve)) = chosen {
+            log::info!(
+                "attention: sidebar {label} id={} kind={}",
+                item.id,
+                item.kind.as_str()
+            );
+            let _ = self.resolve_from_desktop(&item.id, approve, "sidebar needs-you");
+        }
+    }
+
     /// A framed, nonmodal permission surface. Only real pointer decisions
     /// grant authority; ordinary typing continues in the active pane.
     pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         let pending = monitor.list_pending();
-        self.approval_buttons.clear();
+        // `approval_buttons` is cleared once per frame before the panels
+        // paint, so the sidebar's Needs-you buttons registered earlier in
+        // this frame stay listed alongside the banner's.
         if pending.is_empty() {
             self.approval_banner_logged = None;
             return;
@@ -607,7 +656,7 @@ impl PlexiApp {
         }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        match monitor.resolve_needs_you(id, approve) {
+        match monitor.resolve_needs_you_from(id, approve, crate::broker::gate::ResolveSurface::Desktop) {
             Ok(receipt) => {
                 log::info!(
                     "permission_seal: desktop {label} resolved id={} resolution={}",
@@ -616,7 +665,11 @@ impl PlexiApp {
                 );
                 Ok(())
             }
-            Err(error) => {
+            Err(crate::broker::gate::NeedsYouResolveError::Refused) => {
+                log::error!("permission_seal: desktop {label} refused id={id}");
+                Err(format!("Could not complete {label}: refused"))
+            }
+            Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => {
                 log::error!("permission_seal: desktop {label} failed id={id}: {error}");
                 Err(format!("Could not complete {label}: {error}"))
             }
@@ -709,7 +762,6 @@ impl PlexiApp {
 #[cfg(test)]
 mod tests {
     use super::caller_identity;
-    use crate::broker::gate::NeedsYouKind;
 
     #[test]
     fn waiting_approval_timeout_and_dead_caller_cancel_only_the_pending_call() {
@@ -741,21 +793,6 @@ mod tests {
             assert!(monitor.show_pending(&unrelated).is_some());
             assert!(!monitor.approval_granted(&pending));
         }
-    }
-
-    fn phone_may_answer(kind: Option<NeedsYouKind>) -> bool {
-        kind.is_some_and(|kind| kind.phone_may_approve())
-    }
-
-    #[test]
-    fn phone_approve_answers_only_a_visible_non_click() {
-        assert!(phone_may_answer(Some(NeedsYouKind::Question)));
-        assert!(phone_may_answer(Some(NeedsYouKind::BlockedRun)));
-        assert!(!phone_may_answer(Some(NeedsYouKind::ApprovalClick)));
-        assert!(!phone_may_answer(Some(NeedsYouKind::PermissionChange)));
-        assert!(!phone_may_answer(Some(NeedsYouKind::Integrity)));
-        assert!(!phone_may_answer(Some(NeedsYouKind::Keychain)));
-        assert!(!phone_may_answer(None));
     }
 
     #[test]

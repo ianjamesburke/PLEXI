@@ -4464,6 +4464,9 @@ impl eframe::App for PlexiApp {
         // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
         // an editor that just lost the pane cannot insert this frame's text.
         crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
+        // Every surface that paints an approval-capable button (sidebar
+        // Needs-you row, approval banner) registers its bounds this frame.
+        self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
         self.draw_approval_banner(ctx);
         self.draw_keychain_recovery_banner(ctx);

@@ -96,7 +96,7 @@ plexi skill install --agent codex
   When a tool call returns permission_required, print the pending_request_id
   and wait for the person at the desktop. Do not approve, deny, or widen a
   grant from the terminal. `assistant permission resolve` is refused and does
-  not grant. `needs-you resolve --approve` on a click approval is refused;
+  not grant. `needs-you resolve --approve` is refused for every kind;
   `--deny` still denies.
 <!-- /experiment -->
 - **Permissions** — the live permission monitor, the same rows as the Permissions app:
@@ -121,14 +121,18 @@ plexi skill install --agent codex
   gate unchanged. `plexi secret get` cannot read `plexi:host:*`; a workspace id
   of `host` is reserved.
 - **Needs you** — `plexi needs-you list --json` prints everything waiting on
-  the human. Click approvals, agent questions, and blocked runs share that
-  record. Expired items are auto-denied. Open rows are sealed under the
-  profile `host` directory and listed again after a restart. Questions and
-  blocked runs settle from the terminal. A click approval does not:
-  `needs-you resolve --approve` is refused (permission_denied): the row stays open and a refusal is recorded.
-  The grant is a click on Allow once in the host window. `--deny` still
-  denies. A phone may deny or answer a question. A phone approve never grants
-  a permission.
+  the human. Click approvals, agent questions, blocked runs, permission-widen
+  requests, integrity alerts, and keychain prompts share that record. Expired
+  items are auto-denied. Open rows are sealed under the profile `host`
+  directory and listed again after a restart. From the terminal, command socket,
+  or phone, `needs-you resolve --approve` is refused (permission_denied) for
+  every kind: the row stays open and a refusal is recorded. Only a click in the
+  host window approves (Allow once on the approval banner for click approvals;
+  Approve on the sidebar Needs-you row or in Needs attention for the rest,
+  including Keychain recovery). `--deny` from the terminal or phone settles
+  questions, blocked runs, click approvals, and permission-widen requests; it
+  is refused for integrity and keychain items. A phone does not approve or
+  answer questions.
 <!-- experiment: mcp_client -->
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's

@@ -53,6 +53,16 @@ pub(crate) fn sidebar_label(count: usize) -> String {
     format!("Needs attention · {count}")
 }
 
+/// The item the sidebar's Approve/Dismiss buttons act on: the oldest one
+/// that is not an approval click. Approval clicks are decided on the approval
+/// banner, which has its own Allow/Deny choices.
+pub(crate) fn oldest_actionable(items: &[NeedsYouRecord]) -> Option<&NeedsYouRecord> {
+    items
+        .iter()
+        .filter(|item| item.kind != NeedsYouKind::ApprovalClick)
+        .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Severity {
     Critical,
