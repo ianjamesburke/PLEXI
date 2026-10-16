@@ -713,9 +713,13 @@ fn register_json_hook(
 
 fn install_pi_extension(script_str: &str) -> i32 {
     let extension_path = pi_extension_path();
+    install_pi_extension_at(&extension_path, script_str)
+}
+
+pub(crate) fn install_pi_extension_at(extension_path: &Path, script_str: &str) -> i32 {
     let content = pi_extension_script(script_str);
     if extension_path.exists() {
-        let existing = match std::fs::read_to_string(&extension_path) {
+        let existing = match std::fs::read_to_string(extension_path) {
             Ok(existing) => existing,
             Err(e) => {
                 eprintln!("error: could not read {}: {e}", extension_path.display());
@@ -736,11 +740,11 @@ fn install_pi_extension(script_str: &str) -> i32 {
             return 1;
         }
     }
-    if let Err(e) = backup_existing_file(&extension_path) {
+    if let Err(e) = backup_existing_file(extension_path) {
         eprintln!("error: {e}");
         return 1;
     }
-    if let Err(e) = std::fs::write(&extension_path, content) {
+    if let Err(e) = std::fs::write(extension_path, content) {
         eprintln!("error: could not write {}: {e}", extension_path.display());
         return 1;
     }
@@ -752,6 +756,32 @@ fn install_pi_extension(script_str: &str) -> i32 {
     0
 }
 
+/// Migrate a legacy Plexi-generated `~/.pi/agent/extensions/plexi-agent-state.ts`
+/// to `.plexi-hook.bak` and remove the active file so `pi-plexi` owns lifecycle
+/// reporting without duplicate state events. Refuses to touch unknown user-authored
+/// files.
+pub fn migrate_legacy_pi_extension_at(extension_path: &Path) -> Result<bool, String> {
+    if !extension_path.exists() {
+        return Ok(false);
+    }
+    let existing = std::fs::read_to_string(extension_path)
+        .map_err(|e| format!("could not read {}: {e}", extension_path.display()))?;
+    if !is_plexi_pi_extension(&existing) {
+        return Err(format!(
+            "refusing to migrate unknown Pi extension {}; move it aside manually",
+            extension_path.display()
+        ));
+    }
+    backup_existing_file(extension_path)?;
+    std::fs::remove_file(extension_path)
+        .map_err(|e| format!("could not remove {}: {e}", extension_path.display()))?;
+    log::info!(
+        "agent_hook: migrated legacy Pi extension {}",
+        extension_path.display()
+    );
+    Ok(true)
+}
+
 fn pi_extension_script(script_str: &str) -> String {
     format!(
         r#"// Plexi-managed agent state extension.
@@ -759,6 +789,12 @@ import {{ spawn }} from "node:child_process";
 import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
 
 const hookCommand = {script_json};
+const PLEXI_PI_PACKAGE_ACTIVE = "__PLEXI_PI_PACKAGE_ACTIVE__";
+
+function isPiPlexiPackageActive(): boolean {{
+  return Boolean((globalThis as Record<string, unknown>)[PLEXI_PI_PACKAGE_ACTIVE]) ||
+    process.env.PLEXI_PI_PACKAGE_ACTIVE === "1";
+}}
 
 function sessionId(ctx: any): string {{
   try {{
@@ -769,6 +805,7 @@ function sessionId(ctx: any): string {{
 }}
 
 function report(eventName: string, payload: Record<string, unknown>, ctx: any) {{
+  if (isPiPlexiPackageActive()) return;
   if (!process.env.PLEXI_SOCKET || !process.env.PLEXI_PANE_ID) return;
   try {{
     const child = spawn(hookCommand, [], {{
@@ -868,6 +905,10 @@ fn uninstall_json_hooks(path: &Path, events: &[&str], label: &str) -> i32 {
 
 fn uninstall_pi_extension() -> i32 {
     let extension_path = pi_extension_path();
+    uninstall_pi_extension_at(&extension_path)
+}
+
+pub(crate) fn uninstall_pi_extension_at(extension_path: &Path) -> i32 {
     if !extension_path.exists() {
         println!(
             "Nothing to uninstall - {} does not exist.",
@@ -875,30 +916,19 @@ fn uninstall_pi_extension() -> i32 {
         );
         return 0;
     }
-    let existing = match std::fs::read_to_string(&extension_path) {
-        Ok(existing) => existing,
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", extension_path.display());
-            return 1;
+    match migrate_legacy_pi_extension_at(extension_path) {
+        Ok(_) => {
+            println!("Removed Pi extension {}.", extension_path.display());
+            0
         }
-    };
-    if !is_plexi_pi_extension(&existing) {
-        eprintln!("error: refusing to remove unknown Pi extension {}; remove it manually if intended.", extension_path.display());
-        return 1;
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
     }
-    if let Err(e) = backup_existing_file(&extension_path) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    if let Err(e) = std::fs::remove_file(&extension_path) {
-        eprintln!("error: could not remove {}: {e}", extension_path.display());
-        return 1;
-    }
-    println!("Removed Pi extension {}.", extension_path.display());
-    0
 }
 
-fn is_plexi_pi_extension(content: &str) -> bool {
+pub fn is_plexi_pi_extension(content: &str) -> bool {
     content.contains("Plexi-managed agent state extension.")
         || (content.contains("const hookCommand =") && content.contains("PLEXI_AGENT_NAME: \"pi\""))
 }
@@ -1336,5 +1366,39 @@ mod agent_tests {
         let removed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(removed, original);
+    }
+
+    #[test]
+    fn pi_extension_migration_backs_up_legacy_hook_and_preserves_unknown_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext_path = dir.path().join("plexi-agent-state.ts");
+        let bak_path = dir.path().join("plexi-agent-state.ts.plexi-hook.bak");
+
+        // 1. Unknown user extension is preserved and never overwritten or removed.
+        let custom_content = "// User-authored custom extension\nexport default function() {}\n";
+        fs::write(&ext_path, custom_content).unwrap();
+        assert_eq!(
+            super::install_pi_extension_at(&ext_path, "/tmp/claude-code-agent-state.sh"),
+            1
+        );
+        assert!(super::migrate_legacy_pi_extension_at(&ext_path).is_err());
+        assert_eq!(fs::read_to_string(&ext_path).unwrap(), custom_content);
+        assert!(!bak_path.exists());
+
+        // 2. Legacy Plexi-generated extension is recognized, backed up to .plexi-hook.bak, and removed on migration.
+        fs::remove_file(&ext_path).unwrap();
+        assert_eq!(
+            super::install_pi_extension_at(&ext_path, "/tmp/claude-code-agent-state.sh"),
+            0
+        );
+        let generated = fs::read_to_string(&ext_path).unwrap();
+        assert!(super::is_plexi_pi_extension(&generated));
+        assert!(generated.contains("__PLEXI_PI_PACKAGE_ACTIVE__"));
+
+        let migrated = super::migrate_legacy_pi_extension_at(&ext_path).unwrap();
+        assert!(migrated);
+        assert!(!ext_path.exists());
+        assert!(bak_path.is_file());
+        assert_eq!(fs::read_to_string(&bak_path).unwrap(), generated);
     }
 }

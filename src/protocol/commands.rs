@@ -878,6 +878,16 @@ pub enum AppRequest {
         approve: bool,
         response_file: String,
     },
+    /// Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`,
+    /// `reconcile`, or `complete`. `peer_ancestry` is stamped by the socket
+    /// listener so the host knows whether the caller lives inside a terminal pane.
+    NeedsYouApi {
+        op: String,
+        payload: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        peer_ancestry: Vec<u32>,
+        response_file: String,
+    },
     /// `plexi secret get` from a terminal pane. The host admits `secret.get`
     /// for the pane named by `peer_ancestry` and answers `status` `value`,
     /// `permission_required` (with `pending_request_id`), `denied`, or

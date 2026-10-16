@@ -1781,6 +1781,11 @@ One host record covers click approvals, agent questions, and blocked runs. The d
 | Subcommand | Description |
 |---|---|
 | `list` | List open items waiting on you as JSON |
+| `show` | Show one needs-you item and its continuation record as JSON |
+| `ask` | File a creative or blocking question for the human and return its id + continuation record |
+| `answer` | Answer an open creative question (`Question` or `BlockedRun`). Never mints a permission grant |
+| `reconcile` | Reconcile open and resolved needs-you items and continuation records for a session, pane, or context |
+| `complete` | Mark a continuation record completed (or failed/canceled) with an execution receipt |
 | `resolve` | Resolve one item. Approving a click approval is refused; deny still denies it |
 
 ### `plexi needs-you list`
@@ -1790,6 +1795,63 @@ List open items waiting on you as JSON
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--json` | flag | no | Print JSON |
+
+### `plexi needs-you show`
+
+Show one needs-you item and its continuation record as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Needs-you item id or continuation id |
+
+### `plexi needs-you ask`
+
+File a creative or blocking question for the human and return its id + continuation record
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--summary` | string | yes | Question summary shown in Needs you and agent UI |
+| `--resource` | string | no | Target resource identifier (e.g. clip id or file path) Default: `workspace`. |
+| `--choice` | string (repeatable) | no | Allowed answer choices (repeat `--choice` for multiple options) |
+| `--allow-free-text` | flag | no | Allow free-text answers in addition to `--choice` options |
+| `--preview-ref` | string (repeatable) | no | Preview references (e.g. clip/frame/path references) |
+| `--correlation-id` | string | no | Correlation id joining the question to an operation or continuation |
+| `--operation-id` | string | no | Operation id for idempotent resume |
+| `--session-id` | string | no | Agent session id for reattachment across restarts |
+| `--expected-revision` | string | no | Expected resource revision when resuming after the human answers |
+| `--context-id` | string | no | Target context id (defaults to caller pane's context) |
+| `--pane-id` | string | no | Caller pane id (defaults to `$PLEXI_PANE_ID`) |
+
+### `plexi needs-you answer`
+
+Answer an open creative question (`Question` or `BlockedRun`). Never mints a permission grant
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Needs-you question id |
+| `--answer` | string | yes | Selected choice or free-text answer |
+| `--ui-token` | string | no | Interactive UI prompt token returned when the question was filed |
+
+### `plexi needs-you reconcile`
+
+Reconcile open and resolved needs-you items and continuation records for a session, pane, or context
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--session-id` | string | no | Filter by agent session id |
+| `--pane-id` | string | no | Filter by pane id |
+| `--context-id` | string | no | Filter by context id |
+| `--id` | string | no | Filter by specific item/run/operation/correlation id |
+
+### `plexi needs-you complete`
+
+Mark a continuation record completed (or failed/canceled) with an execution receipt
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Continuation run id, operation id, correlation id, or needs-you id |
+| `--state` | string | no | Terminal state (`completed`, `failed`, `canceled`, `outcome_unknown`) Default: `completed`. |
+| `--receipt` | string | no | Execution receipt JSON or summary string |
 
 ### `plexi needs-you resolve`
 

@@ -373,13 +373,94 @@ fn main() -> eframe::Result {
                         NeedsYouCmd::List { json: _ } => {
                             std::process::exit(cli::needs_you_cli("list", None, None))
                         }
+                        NeedsYouCmd::Show { id } => std::process::exit(cli::needs_you_api_cli(
+                            "show",
+                            serde_json::json!({ "id": id }),
+                        )),
+                        NeedsYouCmd::Ask {
+                            summary,
+                            resource,
+                            choices,
+                            allow_free_text,
+                            preview_refs,
+                            correlation_id,
+                            operation_id,
+                            session_id,
+                            expected_revision,
+                            context_id,
+                            pane_id,
+                        } => {
+                            let pane_id = pane_id.or_else(|| {
+                                std::env::var("PLEXI_PANE_ID")
+                                    .ok()
+                                    .and_then(|v| v.parse::<u64>().ok())
+                            });
+                            let context_id = context_id.or_else(|| {
+                                std::env::var("PLEXI_CONTEXT_ID")
+                                    .ok()
+                                    .and_then(|v| v.parse::<u64>().ok())
+                            });
+                            std::process::exit(cli::needs_you_api_cli(
+                                "ask",
+                                serde_json::json!({
+                                    "summary": summary,
+                                    "resource": resource,
+                                    "choices": choices,
+                                    "allow_free_text": allow_free_text,
+                                    "preview_refs": preview_refs,
+                                    "correlation_id": correlation_id,
+                                    "operation_id": operation_id,
+                                    "session_id": session_id,
+                                    "expected_revision": expected_revision,
+                                    "context_id": context_id,
+                                    "pane_id": pane_id,
+                                }),
+                            ))
+                        }
+                        NeedsYouCmd::Answer {
+                            id,
+                            answer,
+                            ui_token,
+                        } => std::process::exit(cli::needs_you_api_cli(
+                            "answer",
+                            serde_json::json!({
+                                "id": id,
+                                "answer": answer,
+                                "ui_token": ui_token,
+                                "caller_pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
+                            }),
+                        )),
+                        NeedsYouCmd::Reconcile {
+                            session_id,
+                            pane_id,
+                            context_id,
+                            id,
+                        } => std::process::exit(cli::needs_you_api_cli(
+                            "reconcile",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "pane_id": pane_id,
+                                "context_id": context_id,
+                                "id": id,
+                            }),
+                        )),
+                        NeedsYouCmd::Complete { id, state, receipt } => {
+                            std::process::exit(cli::needs_you_api_cli(
+                                "complete",
+                                serde_json::json!({
+                                    "id": id,
+                                    "state": state,
+                                    "receipt": receipt,
+                                }),
+                            ))
+                        }
                         NeedsYouCmd::Resolve {
                             id,
                             approve,
                             deny,
                             from_phone: _,
                         } => {
-                            // Approve of a click is refused in the host. Deny
+                            // Approve of a click approval is refused in the host. Deny
                             // still settles. Questions and blocked runs settle
                             // from here and do not mint a grant. The phone flag
                             // does not change that.

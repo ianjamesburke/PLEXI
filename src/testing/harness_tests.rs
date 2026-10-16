@@ -10069,6 +10069,128 @@ mod attention_review {
             assert!(open_items().iter().any(|row| &row.id == id), "{id} hidden");
         }
     }
+
+    #[test]
+    fn needs_you_api_ask_answer_reconcile_and_complete_round_trip_through_host() {
+        let mut h = HostHarness::new();
+        h.run_frames(2);
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let grants_before = monitor.store().records().len();
+
+        let ask_file = crate::rpc::response_file_in(
+            &crate::config::config_dir(),
+            "test-ny-ask",
+            "json",
+        );
+        h.app.handle_needs_you_api(
+            "ask",
+            &serde_json::json!({
+                "summary": "Pick crop preset for intro",
+                "resource": "intro",
+                "choices": ["16:9", "9:16", "1:1"],
+                "allow_free_text": false,
+                "preview_refs": ["clip:intro@0..3000ms"],
+                "correlation_id": "corr-host-1",
+                "operation_id": "op-host-1",
+                "session_id": "sess-pi-host",
+                "expected_revision": "rev-1",
+            }),
+            &[],
+            &ask_file,
+        );
+        let ask_val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ask_file).unwrap()).unwrap();
+        assert_eq!(ask_val["ok"], true, "{ask_val}");
+        let qid = ask_val["id"].as_str().unwrap().to_string();
+        let ui_token = ask_val["ui_token"].as_str().unwrap().to_string();
+
+        // Unauthenticated agent pane caller (`caller_pane_id` present, no `ui_token`) is refused
+        let forged_file = crate::rpc::response_file_in(
+            &crate::config::config_dir(),
+            "test-ny-forged",
+            "json",
+        );
+        h.app.handle_needs_you_api(
+            "answer",
+            &serde_json::json!({
+                "id": qid,
+                "answer": "9:16",
+                "caller_pane_id": 1,
+            }),
+            &[],
+            &forged_file,
+        );
+        let forged_val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&forged_file).unwrap()).unwrap();
+        assert_eq!(forged_val["ok"], false, "{forged_val}");
+        assert_eq!(forged_val["error_code"], "permission_denied");
+
+        // Authenticated answer settles the question without minting a grant
+        let ans_file = crate::rpc::response_file_in(
+            &crate::config::config_dir(),
+            "test-ny-ans",
+            "json",
+        );
+        h.app.handle_needs_you_api(
+            "answer",
+            &serde_json::json!({
+                "id": qid,
+                "answer": "9:16",
+                "ui_token": ui_token,
+                "caller_pane_id": 1,
+            }),
+            &[],
+            &ans_file,
+        );
+        let ans_val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ans_file).unwrap()).unwrap();
+        assert_eq!(ans_val["ok"], true, "{ans_val}");
+        assert_eq!(ans_val["answer"], "9:16");
+        assert_eq!(monitor.store().records().len(), grants_before);
+
+        // Complete continuation and reconcile by session_id
+        let comp_file = crate::rpc::response_file_in(
+            &crate::config::config_dir(),
+            "test-ny-comp",
+            "json",
+        );
+        h.app.handle_needs_you_api(
+            "complete",
+            &serde_json::json!({
+                "id": "corr-host-1",
+                "state": "completed",
+                "receipt": r#"{"ok":true,"clip_id":"intro","revision_after":"rev-2"}"#,
+            }),
+            &[],
+            &comp_file,
+        );
+        let comp_val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&comp_file).unwrap()).unwrap();
+        assert_eq!(comp_val["ok"], true, "{comp_val}");
+        assert_eq!(comp_val["continuation"]["state"], "completed");
+
+        let rec_file = crate::rpc::response_file_in(
+            &crate::config::config_dir(),
+            "test-ny-rec",
+            "json",
+        );
+        h.app.handle_needs_you_api(
+            "reconcile",
+            &serde_json::json!({
+                "session_id": "sess-pi-host",
+            }),
+            &[],
+            &rec_file,
+        );
+        let rec_val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&rec_file).unwrap()).unwrap();
+        assert_eq!(rec_val["ok"], true, "{rec_val}");
+        assert_eq!(rec_val["continuations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            rec_val["continuations"][0]["answer"],
+            serde_json::json!("9:16")
+        );
+    }
 }
 
 mod pane_worktree_tests {

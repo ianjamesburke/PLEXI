@@ -140,7 +140,7 @@ pub enum NeedsYouResolveError {
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NeedsYouResolution {
     Approved,
@@ -156,6 +156,27 @@ impl NeedsYouResolution {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeedsYouDetails {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_free_text: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NeedsYouRecord {
     pub id: String,
@@ -167,6 +188,10 @@ pub struct NeedsYouRecord {
     pub expires_at: Option<i64>,
     pub run_tag: Option<String>,
     pub resolution: Option<NeedsYouResolution>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub details: Option<NeedsYouDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 /// A question or a blocked run filed by the host. Approvals are filed by the gate.
@@ -178,6 +203,81 @@ pub struct NeedsYouFile {
     pub summary: String,
     pub expires_at: Option<i64>,
     pub run_tag: Option<String>,
+}
+
+/// Terminal or active state of a durable run / continuation record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationState {
+    Queued,
+    Running,
+    WaitingUser,
+    Paused,
+    Completed,
+    Failed,
+    Canceled,
+    OutcomeUnknown,
+}
+
+impl ContinuationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::WaitingUser => "waiting_user",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+            Self::OutcomeUnknown => "outcome_unknown",
+        }
+    }
+
+    pub fn is_in_flight(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Running | Self::WaitingUser | Self::Paused
+        )
+    }
+}
+
+/// Host-owned durable continuation record linking a waiting turn or app tool
+/// mutation to its session, pane/context, resource/revision, `Needs you` item,
+/// and terminal receipt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContinuationRecord {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<u64>,
+    pub actor: String,
+    pub target_resource: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_condition: Option<String>,
+    pub state: ContinuationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<NeedsYouResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<String>,
+    pub origin_session: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// What happened to the run that was waiting.
@@ -345,6 +445,11 @@ pub struct PermissionMonitor {
     origins: Mutex<BTreeMap<String, String>>,
     /// Outcome recorded for a resolved id, so a second resolve repeats it.
     run_outcomes: Mutex<BTreeMap<String, RunOutcome>>,
+    /// Durable run / continuation records keyed by `run_id`.
+    continuations: Mutex<BTreeMap<String, ContinuationRecord>>,
+    /// One-time UI answer tokens keyed by `needs_you_id` so interactive host/Pi UI
+    /// prompts can settle a question while unauthenticated pane tool calls cannot.
+    question_tokens: Mutex<BTreeMap<String, String>>,
     /// Serializes list, expiry, and resolve so one terminal receipt wins.
     needs_resolve: Mutex<()>,
     /// Pairing codes waiting for a desktop click. Not tool grants.
@@ -714,6 +819,8 @@ impl PermissionMonitor {
             widens: Mutex::new(BTreeMap::new()),
             origins: Mutex::new(BTreeMap::new()),
             run_outcomes: Mutex::new(BTreeMap::new()),
+            continuations: Mutex::new(BTreeMap::new()),
+            question_tokens: Mutex::new(BTreeMap::new()),
             needs_resolve: Mutex::new(()),
             pairing_codes: Mutex::new(Vec::new()),
             sheet_buttons: Mutex::new(Vec::new()),
@@ -1111,13 +1218,25 @@ impl PermissionMonitor {
 
     /// File an agent question or a blocked run. Gate approvals are filed by admission.
     pub fn file_needs_you(&self, filed: NeedsYouFile) -> Result<String, String> {
+        self.file_needs_you_with_details(filed, None)
+            .map(|(id, _)| id)
+    }
+
+    /// File an agent question or blocked run with optional structured question
+    /// metadata and durable continuation binding. Returns `(needs_you_id, ui_answer_token)`.
+    pub fn file_needs_you_with_details(
+        &self,
+        filed: NeedsYouFile,
+        details: Option<NeedsYouDetails>,
+    ) -> Result<(String, String), String> {
         if filed.kind.is_approval() {
             return Err("approval items are filed by the permission gate".to_string());
         }
         if filed.actor.is_empty() || filed.summary.is_empty() {
             return Err("needs-you actor and summary are required".to_string());
         }
-        let id = {
+        let now = self.now_secs();
+        let (id, record, reused) = {
             let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(tag) = filed.run_tag.as_deref() {
                 if let Some(existing) = map.values().find(|row| {
@@ -1130,7 +1249,18 @@ impl PermissionMonitor {
                         existing.id,
                         existing.kind.as_str()
                     );
-                    return Ok(existing.id.clone());
+                    let id = existing.id.clone();
+                    let record = existing.clone();
+                    drop(map);
+                    let token = self
+                        .question_tokens
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(id.clone())
+                        .or_insert_with(|| format!("nytok_{}", uuid::Uuid::new_v4()))
+                        .clone();
+                    let _ = (now, record);
+                    return Ok((id, token));
                 }
             }
             let id = format!("ny_{}", uuid::Uuid::new_v4());
@@ -1140,10 +1270,12 @@ impl PermissionMonitor {
                 actor: filed.actor,
                 resource: filed.resource,
                 summary: filed.summary,
-                created_at: self.now_secs(),
+                created_at: now,
                 expires_at: filed.expires_at,
                 run_tag: filed.run_tag,
                 resolution: None,
+                details: details.clone(),
+                answer: None,
             };
             log::info!(
                 "needs_you: filed {} kind={} actor={} resource={}",
@@ -1152,12 +1284,193 @@ impl PermissionMonitor {
                 record.actor,
                 record.resource
             );
-            map.insert(id.clone(), record);
-            id
+            map.insert(id.clone(), record.clone());
+            (id, record, false)
         };
+        let _ = reused;
+        let token = format!("nytok_{}", uuid::Uuid::new_v4());
+        self.question_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), token.clone());
         self.remember_origin(&id);
+        if matches!(record.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun) {
+            let det = details.unwrap_or_default();
+            let run_id = det
+                .correlation_id
+                .clone()
+                .or_else(|| record.run_tag.clone())
+                .unwrap_or_else(|| id.clone());
+            self.upsert_continuation(ContinuationRecord {
+                run_id,
+                operation_id: record.run_tag.clone(),
+                correlation_id: det.correlation_id,
+                session_id: det.session_id,
+                pane_id: det.pane_id,
+                context_id: det.context_id,
+                actor: record.actor.clone(),
+                target_resource: record.resource.clone(),
+                expected_revision: det.expected_revision,
+                needs_you_id: Some(id.clone()),
+                resume_condition: Some(record.kind.as_str().to_string()),
+                state: ContinuationState::WaitingUser,
+                resolution: None,
+                answer: None,
+                run_outcome: None,
+                receipt: None,
+                origin_session: self.session_id.clone(),
+                created_at: now,
+                updated_at: now,
+            });
+        }
         self.persist_queue();
-        Ok(id)
+        Ok((id, token))
+    }
+
+    /// Answer an open creative `Question` or `BlockedRun` item.
+    ///
+    /// Never writes a `GrantRecord` or widens tool permissions. Refuses approval
+    /// kinds (`ApprovalClick`, `PermissionChange`, `Integrity`, `Keychain`) on all
+    /// surfaces, and refuses unauthenticated agent-pane callers so a model or tool
+    /// call inside the pane cannot forge a human answer.
+    pub fn answer_needs_you_from(
+        &self,
+        id: &str,
+        answer: &str,
+        surface: ResolveSurface,
+        ui_token: Option<&str>,
+        caller_is_agent_pane: bool,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        let answer_trimmed = answer.trim();
+        if answer_trimmed.is_empty() {
+            return Err(NeedsYouResolveError::Failed(
+                "needs-you answer cannot be empty".to_string(),
+            ));
+        }
+        let row = self.needs_you_of(id);
+        let kind = row.as_ref().map(|r| r.kind);
+        let is_question_kind = matches!(
+            kind,
+            Some(NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+        );
+        let surface_allowed = match surface {
+            ResolveSurface::Desktop => is_question_kind,
+            ResolveSurface::Socket => {
+                if !is_question_kind {
+                    false
+                } else if !caller_is_agent_pane {
+                    true
+                } else {
+                    let expected = self
+                        .question_tokens
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(id)
+                        .cloned();
+                    matches!(
+                        (expected.as_deref(), ui_token),
+                        (Some(exp), Some(tok)) if !exp.is_empty() && exp == tok
+                    )
+                }
+            }
+            ResolveSurface::Phone => false,
+        };
+        if !surface_allowed {
+            log::info!(
+                "needs_you: refused {} answer {id} kind={} agent_pane={caller_is_agent_pane}",
+                surface.as_str(),
+                kind.map(NeedsYouKind::as_str).unwrap_or("unknown")
+            );
+            self.refuse_client_resolve(id);
+            return Err(NeedsYouResolveError::Refused);
+        }
+        let Some(row) = row else {
+            return Err(NeedsYouResolveError::Failed(format!(
+                "unknown needs-you item {id}"
+            )));
+        };
+        if let Some(details) = &row.details {
+            if !details.choices.is_empty()
+                && !details.allow_free_text
+                && !details.choices.iter().any(|c| c == answer_trimmed)
+            {
+                return Err(NeedsYouResolveError::Failed(format!(
+                    "answer {:?} is not one of the allowed choices {:?}",
+                    answer_trimmed, details.choices
+                )));
+            }
+        }
+        let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        self.expire_needs_you_locked();
+        if let Some(current) = self.needs_you_of(id) {
+            if let Some(resolution) = current.resolution {
+                log::info!("needs_you: answer {id} already {}", resolution.as_str());
+                return Ok(NeedsYouReceipt {
+                    id: id.to_string(),
+                    resolution,
+                    already: true,
+                    run_outcome: self.stored_outcome(id),
+                });
+            }
+        }
+        {
+            let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(item) = map.get_mut(id) {
+                item.answer = Some(answer_trimmed.to_string());
+            }
+        }
+        let outcome = self.run_outcome_for(id);
+        if !self.close_needs_you(id, NeedsYouResolution::Approved, "answered", "") {
+            if let Some(existing) = self.resolved_receipt(id, true) {
+                return Ok(existing);
+            }
+            return Err(NeedsYouResolveError::Failed(format!(
+                "needs-you item {id} could not be audited"
+            )));
+        }
+        self.question_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        self.run_outcomes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), outcome);
+        self.update_continuation_on_needs_you(
+            id,
+            NeedsYouResolution::Approved,
+            Some(answer_trimmed.to_string()),
+            outcome,
+        );
+        log::info!(
+            "needs_you: {} answered {id} answer={:?} run_outcome={}",
+            surface.as_str(),
+            answer_trimmed,
+            outcome.as_str()
+        );
+        self.resolved_receipt(id, false).ok_or_else(|| {
+            NeedsYouResolveError::Failed(format!("needs-you item {id} was not resolved"))
+        })
+    }
+
+    /// Return one `NeedsYouRecord` (open or resolved) by id.
+    pub fn get_needs_you(&self, id: &str) -> Option<NeedsYouRecord> {
+        self.expire_needs_you();
+        self.needs_you_of(id)
+    }
+
+    /// Return all `NeedsYouRecord`s (open and resolved) in creation order.
+    pub fn all_needs_you(&self) -> Vec<NeedsYouRecord> {
+        self.expire_needs_you();
+        let mut rows: Vec<NeedsYouRecord> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        rows
     }
 
     /// Drop expired open items, denying each one once.
@@ -1182,6 +1495,12 @@ impl PermissionMonitor {
             if !self.close_needs_you(&row.id, NeedsYouResolution::Denied, "auto_denied", "") {
                 continue;
             }
+            self.update_continuation_on_needs_you(
+                &row.id,
+                NeedsYouResolution::Denied,
+                None,
+                RunOutcome::OutcomeUnknown,
+            );
             log::info!(
                 "needs_you: auto-denied {} kind={}",
                 row.id,
@@ -1269,6 +1588,11 @@ impl PermissionMonitor {
             });
         }
         let outcome = self.run_outcome_for(id);
+        let final_resolution = if approve {
+            NeedsYouResolution::Approved
+        } else {
+            NeedsYouResolution::Denied
+        };
         match row.kind {
             NeedsYouKind::ApprovalClick => {
                 let choice = if approve {
@@ -1284,11 +1608,7 @@ impl PermissionMonitor {
                 }
             }
             NeedsYouKind::PermissionChange => {
-                let resolution = if approve {
-                    NeedsYouResolution::Approved
-                } else {
-                    NeedsYouResolution::Denied
-                };
+                let resolution = final_resolution;
                 let decision = if approve { "approved" } else { "denied" };
                 let widen = self
                     .widens
@@ -1317,11 +1637,7 @@ impl PermissionMonitor {
                 }
             }
             NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
-                let resolution = if approve {
-                    NeedsYouResolution::Approved
-                } else {
-                    NeedsYouResolution::Denied
-                };
+                let resolution = final_resolution;
                 let decision = if approve { "approved" } else { "denied" };
                 if !self.close_needs_you(id, resolution, decision, "") {
                     if let Some(existing) = self.resolved_receipt(id, true) {
@@ -1339,11 +1655,7 @@ impl PermissionMonitor {
                         return Err(error);
                     }
                 }
-                let resolution = if approve {
-                    NeedsYouResolution::Approved
-                } else {
-                    NeedsYouResolution::Denied
-                };
+                let resolution = final_resolution;
                 let decision = if approve { "approved" } else { "denied" };
                 let key_still_unreadable = !approve
                     && super::seal::existing_mac_key().err().is_some_and(|error| {
@@ -1363,6 +1675,7 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(id.to_string(), outcome);
+        self.update_continuation_on_needs_you(id, final_resolution, None, outcome);
         log::info!("needs_you: resolve {id} run_outcome={}", outcome.as_str());
         self.resolved_receipt(id, false)
             .ok_or_else(|| format!("needs-you item {id} was not resolved"))
@@ -1421,26 +1734,46 @@ impl PermissionMonitor {
     }
 
     fn upsert_approval_needs_you(&self, pending: &Pending) {
+        let now = self.now_secs();
+        let resource = pending
+            .binding
+            .resource_id
+            .clone()
+            .unwrap_or_else(|| pending.tool.clone());
         let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
         if map.contains_key(&pending.id) {
             drop(map);
             self.remember_origin(&pending.id);
             return;
         }
+        let details = NeedsYouDetails {
+            choices: Vec::new(),
+            allow_free_text: false,
+            preview_refs: Vec::new(),
+            correlation_id: (!pending.binding.operation_id.is_empty())
+                .then(|| pending.binding.operation_id.clone())
+                .or_else(|| Some(pending.binding.call_id.clone())),
+            session_id: pending.binding.session_id.clone(),
+            context_id: pending.binding.context_id,
+            pane_id: pending
+                .binding
+                .actor_id
+                .strip_prefix("pane:")
+                .and_then(|s| s.parse::<u64>().ok()),
+            expected_revision: None,
+        };
         let record = NeedsYouRecord {
             id: pending.id.clone(),
             kind: NeedsYouKind::ApprovalClick,
             actor: pending.binding.actor_id.clone(),
-            resource: pending
-                .binding
-                .resource_id
-                .clone()
-                .unwrap_or_else(|| pending.tool.clone()),
+            resource: resource.clone(),
             summary: format!("Allow {}", pending.tool),
-            created_at: self.now_secs(),
+            created_at: now,
             expires_at: None,
             run_tag: Some(pending.binding.call_id.clone()),
             resolution: None,
+            details: Some(details.clone()),
+            answer: None,
         };
         log::info!(
             "needs_you: filed {} kind={} actor={} resource={}",
@@ -1452,6 +1785,35 @@ impl PermissionMonitor {
         map.insert(record.id.clone(), record);
         drop(map);
         self.remember_origin(&pending.id);
+        let run_id = if !pending.binding.operation_id.is_empty() {
+            pending.binding.operation_id.clone()
+        } else {
+            pending.binding.call_id.clone()
+        };
+        if !run_id.is_empty() {
+            self.upsert_continuation(ContinuationRecord {
+                run_id,
+                operation_id: (!pending.binding.operation_id.is_empty())
+                    .then(|| pending.binding.operation_id.clone()),
+                correlation_id: details.correlation_id,
+                session_id: details.session_id,
+                pane_id: details.pane_id,
+                context_id: details.context_id,
+                actor: pending.binding.actor_id.clone(),
+                target_resource: resource,
+                expected_revision: None,
+                needs_you_id: Some(pending.id.clone()),
+                resume_condition: Some("approval_click".to_string()),
+                state: ContinuationState::WaitingUser,
+                resolution: None,
+                answer: None,
+                run_outcome: None,
+                receipt: None,
+                origin_session: self.session_id.clone(),
+                created_at: now,
+                updated_at: now,
+            });
+        }
     }
 
     /// Mark an open item resolved and audit it. Returns false when it was already resolved
@@ -1474,11 +1836,12 @@ impl PermissionMonitor {
             row.resolution = Some(resolution);
             row.clone()
         };
-        let audited_decision = if self.origin_is_current(id) {
+        let current_origin = self.origin_is_current(id);
+        let audited_decision = if current_origin {
             decision.to_string()
         } else {
             match decision {
-                "approved" | "denied" => "outcome_unknown".to_string(),
+                "approved" | "denied" | "answered" => "outcome_unknown".to_string(),
                 other => other.to_string(),
             }
         };
@@ -1492,7 +1855,7 @@ impl PermissionMonitor {
             operation_id: snapshot.id.clone(),
             decision: audited_decision,
             revision_before: String::new(),
-            revision_after: String::new(),
+            revision_after: snapshot.answer.clone().unwrap_or_default(),
         };
         if let Err(error) = self.audit(&fact) {
             log::error!("needs_you: audit failed for {id}: {error}");
@@ -1506,9 +1869,231 @@ impl PermissionMonitor {
             }
             return false;
         }
+        let outcome = if current_origin {
+            RunOutcome::Unblocked
+        } else {
+            RunOutcome::OutcomeUnknown
+        };
+        self.update_continuation_on_needs_you(
+            id,
+            resolution,
+            snapshot.answer.clone(),
+            outcome,
+        );
         log::info!("needs_you: resolved {id} {decision}");
         self.persist_queue();
         true
+    }
+
+    pub fn upsert_continuation(&self, mut record: ContinuationRecord) -> ContinuationRecord {
+        let now = self.now_secs();
+        record.updated_at = now;
+        if record.created_at == 0 {
+            record.created_at = now;
+        }
+        if record.origin_session.is_empty() {
+            record.origin_session = self.session_id.clone();
+        }
+        let stored = {
+            let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.get_mut(&record.run_id) {
+                // Never overwrite a terminal completed/outcome_unknown record with an earlier state.
+                if matches!(
+                    existing.state,
+                    ContinuationState::Completed | ContinuationState::OutcomeUnknown
+                ) && record.state.is_in_flight()
+                {
+                    return existing.clone();
+                }
+                existing.updated_at = now;
+                if record.operation_id.is_some() {
+                    existing.operation_id = record.operation_id;
+                }
+                if record.correlation_id.is_some() {
+                    existing.correlation_id = record.correlation_id;
+                }
+                if record.session_id.is_some() {
+                    existing.session_id = record.session_id;
+                }
+                if record.pane_id.is_some() {
+                    existing.pane_id = record.pane_id;
+                }
+                if record.context_id.is_some() {
+                    existing.context_id = record.context_id;
+                }
+                if !record.target_resource.is_empty() {
+                    existing.target_resource = record.target_resource;
+                }
+                if record.expected_revision.is_some() {
+                    existing.expected_revision = record.expected_revision;
+                }
+                if record.needs_you_id.is_some() {
+                    existing.needs_you_id = record.needs_you_id;
+                }
+                if record.resume_condition.is_some() {
+                    existing.resume_condition = record.resume_condition;
+                }
+                existing.state = record.state;
+                if record.resolution.is_some() {
+                    existing.resolution = record.resolution;
+                }
+                if record.answer.is_some() {
+                    existing.answer = record.answer;
+                }
+                if record.run_outcome.is_some() {
+                    existing.run_outcome = record.run_outcome;
+                }
+                if record.receipt.is_some() {
+                    existing.receipt = record.receipt;
+                }
+                existing.clone()
+            } else {
+                map.insert(record.run_id.clone(), record.clone());
+                record
+            }
+        };
+        log::info!(
+            "continuation: upserted run_id={} state={} needs_you={:?} resource={}",
+            stored.run_id,
+            stored.state.as_str(),
+            stored.needs_you_id,
+            stored.target_resource
+        );
+        self.persist_continuations();
+        stored
+    }
+
+    pub fn get_continuation(&self, id_or_needs_you: &str) -> Option<ContinuationRecord> {
+        let map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(found) = map.get(id_or_needs_you) {
+            return Some(found.clone());
+        }
+        map.values()
+            .find(|row| {
+                row.needs_you_id.as_deref() == Some(id_or_needs_you)
+                    || row.operation_id.as_deref() == Some(id_or_needs_you)
+                    || row.correlation_id.as_deref() == Some(id_or_needs_you)
+            })
+            .cloned()
+    }
+
+    pub fn list_continuations(
+        &self,
+        session_id: Option<&str>,
+        pane_id: Option<u64>,
+        context_id: Option<u64>,
+    ) -> Vec<ContinuationRecord> {
+        let mut rows: Vec<ContinuationRecord> = self
+            .continuations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| {
+                session_id.is_none_or(|sid| row.session_id.as_deref() == Some(sid))
+                    && pane_id.is_none_or(|pid| row.pane_id == Some(pid))
+                    && context_id.is_none_or(|cid| row.context_id == Some(cid))
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.run_id.cmp(&b.run_id)));
+        rows
+    }
+
+    pub fn complete_continuation(
+        &self,
+        run_id: &str,
+        state: ContinuationState,
+        receipt: Option<String>,
+    ) -> Result<ContinuationRecord, String> {
+        let now = self.now_secs();
+        let updated = {
+            let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+            let key = if map.contains_key(run_id) {
+                Some(run_id.to_string())
+            } else {
+                map.values()
+                    .find(|row| {
+                        row.needs_you_id.as_deref() == Some(run_id)
+                            || row.operation_id.as_deref() == Some(run_id)
+                            || row.correlation_id.as_deref() == Some(run_id)
+                    })
+                    .map(|row| row.run_id.clone())
+            };
+            let Some(key) = key else {
+                return Err(format!("unknown continuation {run_id}"));
+            };
+            let entry = map.get_mut(&key).expect("checked key");
+            entry.state = state;
+            if let Some(rcpt) = receipt {
+                entry.receipt = Some(rcpt);
+            }
+            entry.updated_at = now;
+            entry.clone()
+        };
+        log::info!(
+            "continuation: completed run_id={} state={} receipt={:?}",
+            updated.run_id,
+            updated.state.as_str(),
+            updated.receipt
+        );
+        self.persist_continuations();
+        Ok(updated)
+    }
+
+    fn update_continuation_on_needs_you(
+        &self,
+        needs_you_id: &str,
+        resolution: NeedsYouResolution,
+        answer: Option<String>,
+        outcome: RunOutcome,
+    ) {
+        let now = self.now_secs();
+        let mut changed = false;
+        {
+            let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+            for record in map.values_mut() {
+                if record.needs_you_id.as_deref() == Some(needs_you_id) {
+                    record.resolution = Some(resolution);
+                    if answer.is_some() {
+                        record.answer = answer.clone();
+                    }
+                    record.run_outcome = Some(outcome.as_str().to_string());
+                    record.updated_at = now;
+                    if outcome == RunOutcome::OutcomeUnknown && record.receipt.is_none() {
+                        record.state = ContinuationState::OutcomeUnknown;
+                    } else if resolution == NeedsYouResolution::Denied {
+                        if record.state.is_in_flight() {
+                            record.state = ContinuationState::Canceled;
+                        }
+                    } else if record.state == ContinuationState::WaitingUser {
+                        record.state = ContinuationState::Running;
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist_continuations();
+        }
+    }
+
+    fn persist_continuations(&self) {
+        let Some(profile) = self.profile_dir.clone() else {
+            return;
+        };
+        let records: Vec<ContinuationRecord> = self
+            .continuations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        if let Err(error) = super::needs_you_store::save_continuations(&profile, &records) {
+            log::error!(
+                "needs_you: persist continuations failed for {}: {error}",
+                profile.display()
+            );
+        }
     }
 
     fn restore_queue(&self) {
@@ -1545,6 +2130,45 @@ impl PermissionMonitor {
                 }
             }
         }
+        self.restore_continuations(&profile);
+    }
+
+    fn restore_continuations(&self, profile: &Path) {
+        let loaded = super::needs_you_store::load_continuations(profile);
+        if loaded.is_empty() {
+            return;
+        }
+        let open_ids: std::collections::BTreeSet<String> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| row.resolution.is_none())
+            .map(|row| row.id.clone())
+            .collect();
+        let mut dirty = false;
+        let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+        for mut record in loaded {
+            if record.origin_session != self.session_id && record.receipt.is_none() {
+                let waiting_on_restored_open = record
+                    .needs_you_id
+                    .as_ref()
+                    .is_some_and(|ny_id| open_ids.contains(ny_id));
+                if record.state.is_in_flight() && !waiting_on_restored_open {
+                    record.state = ContinuationState::OutcomeUnknown;
+                    record.run_outcome = Some(RunOutcome::OutcomeUnknown.as_str().to_string());
+                    dirty = true;
+                } else if waiting_on_restored_open {
+                    record.run_outcome = Some(RunOutcome::OutcomeUnknown.as_str().to_string());
+                    dirty = true;
+                }
+            }
+            map.insert(record.run_id.clone(), record);
+        }
+        drop(map);
+        if dirty {
+            self.persist_continuations();
+        }
     }
 
     fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) {
@@ -1574,6 +2198,8 @@ impl PermissionMonitor {
                     expires_at: item.expires_at,
                     run_tag: item.run_tag,
                     resolution: None,
+                    details: item.details,
+                    answer: None,
                 },
             );
         }
@@ -1605,6 +2231,8 @@ impl PermissionMonitor {
                     expires_at: None,
                     run_tag: Some(format!("integrity:{id}")),
                     resolution: None,
+                    details: None,
+                    answer: None,
                 },
             );
         self.remember_origin(&id);
@@ -1665,6 +2293,7 @@ impl PermissionMonitor {
                 run_tag: record.run_tag.clone(),
                 origin_session: origin,
                 pending: restored_pending,
+                details: record.details.clone(),
             });
         }
         if let Err(error) = super::needs_you_store::save(&profile, &items) {
@@ -1732,7 +2361,7 @@ impl PermissionMonitor {
         revision_before: &str,
         revision_after: &str,
     ) -> Result<(), String> {
-        self.audit(&AuditFact {
+        let audited = self.audit(&AuditFact {
             kind: "outcome".to_string(),
             actor: actor.to_string(),
             call_id: call_id.to_string(),
@@ -1743,7 +2372,24 @@ impl PermissionMonitor {
             decision: decision.to_string(),
             revision_before: revision_before.to_string(),
             revision_after: revision_after.to_string(),
-        })
+        });
+        let run_key = if !operation_id.is_empty() {
+            operation_id
+        } else {
+            call_id
+        };
+        if !run_key.is_empty() {
+            let state = if decision == "ok" {
+                ContinuationState::Completed
+            } else {
+                ContinuationState::Failed
+            };
+            let receipt = Some(format!(
+                "call_id={call_id};grant_id={grant_id};decision={decision};rev_before={revision_before};rev_after={revision_after}"
+            ));
+            let _ = self.complete_continuation(run_key, state, receipt);
+        }
+        audited
     }
 
     pub fn consume_once(&self, grant_id: &str, operation_id: Option<&str>) {
@@ -3021,6 +3667,20 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
             return (ResourceScope::Game, Some(game_id));
         }
     }
+    if let Some(doc_id) = parsed.as_ref().and_then(|value| {
+        for key in ["clip_id", "resource_id", "document_id"] {
+            if let Some(id) = value
+                .get(key)
+                .and_then(|item| item.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                return Some(id.to_string());
+            }
+        }
+        None
+    }) {
+        return (ResourceScope::Document, Some(doc_id));
+    }
     if let Some(path) = parsed.as_ref().and_then(|value| {
         value
             .get("path")
@@ -3382,6 +4042,8 @@ mod tests {
             expires_at: None,
             run_tag: None,
             resolution: None,
+            details: None,
+            answer: None,
         }]);
         assert_eq!(
             items[0]["phone_can_approve"],
@@ -4963,6 +5625,164 @@ mod tests {
             .recv_timeout(deadline)
             .expect("second thread deadlocked between ExclusiveHostKey and PermissionMonitor::for_profile");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn clip_id_grant_is_resource_scoped_and_does_not_cover_other_clips() {
+        let monitor = PermissionMonitor::ephemeral();
+        let workspace = tempfile::tempdir().unwrap();
+
+        let admit_clip = |call_id: &str, clip_id: &str, preset: &str| {
+            let input = serde_json::json!({
+                "clip_id": clip_id,
+                "crop_preset": preset,
+                "expected_revision": "rev-1",
+                "operation_id": format!("op-{call_id}"),
+            })
+            .to_string();
+            monitor.admit(AdmitRequest {
+                call_id,
+                tool: "clip-editor-probe__clip.crop",
+                input_json: &input,
+                actor_type: ActorType::Agent,
+                actor_id: "pane:1",
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: workspace.path(),
+                context_id: 1,
+                package_id: "clip-editor-probe",
+                instance_id: 2,
+                target_type: TargetType::AppConnector,
+            })
+        };
+
+        // Ask for clip "intro" and grant session-wide tool allowance (`AllowTool`)
+        let pending_intro = match admit_clip("c1", "intro", "9:16") {
+            Admission::Required { pending_request_id } => pending_request_id,
+            _ => panic!("expected Required for intro"),
+        };
+        monitor
+            .approve_pending(&pending_intro, ApprovalChoice::AllowTool)
+            .unwrap();
+
+        // Different preset on the SAME clip ("intro") is covered by AllowTool
+        match admit_clip("c2", "intro", "1:1") {
+            Admission::Proceed {
+                resource_scope,
+                resource_id,
+                ..
+            } => {
+                assert_eq!(resource_scope, ResourceScope::Document);
+                assert_eq!(resource_id.as_deref(), Some("intro"));
+            }
+            _ => panic!("expected Proceed for intro"),
+        }
+
+        // Different clip ("outro") is NOT covered and still requires its own approval
+        match admit_clip("c3", "outro", "9:16") {
+            Admission::Required { .. } => {}
+            _ => panic!("expected Required for outro"),
+        }
+    }
+
+    #[test]
+    fn structured_question_never_mints_grant_refuses_unauthenticated_agent_and_persists_continuation() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(dir.path());
+        let records_before = monitor.store().records().len();
+
+        let details = NeedsYouDetails {
+            choices: vec!["16:9".to_string(), "9:16".to_string(), "1:1".to_string()],
+            allow_free_text: false,
+            preview_refs: vec!["clip:intro@0..3000ms".to_string()],
+            correlation_id: Some("corr-crop-intro".to_string()),
+            session_id: Some("sess-pi-1".to_string()),
+            context_id: Some(1),
+            pane_id: Some(7),
+            expected_revision: Some("rev-1".to_string()),
+        };
+        let (qid, ui_token) = monitor
+            .file_needs_you_with_details(
+                NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: "pane:7".to_string(),
+                    resource: "intro".to_string(),
+                    summary: "Which crop preset for intro?".to_string(),
+                    expires_at: None,
+                    run_tag: Some("op-crop-intro".to_string()),
+                },
+                Some(details),
+            )
+            .unwrap();
+
+        // Continuation starts in WaitingUser
+        let cont = monitor.get_continuation("corr-crop-intro").unwrap();
+        assert_eq!(cont.state, ContinuationState::WaitingUser);
+        assert_eq!(cont.needs_you_id.as_deref(), Some(qid.as_str()));
+        assert_eq!(cont.expected_revision.as_deref(), Some("rev-1"));
+
+        // 1. Unauthenticated agent-pane socket caller cannot forge a human answer
+        let forged = monitor.answer_needs_you_from(
+            &qid,
+            "9:16",
+            ResolveSurface::Socket,
+            None,
+            true,
+        );
+        assert_eq!(forged, Err(NeedsYouResolveError::Refused));
+        assert!(monitor.get_needs_you(&qid).unwrap().resolution.is_none());
+
+        // 2. Invalid choice when allow_free_text=false is rejected
+        let invalid = monitor.answer_needs_you_from(
+            &qid,
+            "21:9",
+            ResolveSurface::Desktop,
+            None,
+            false,
+        );
+        assert!(matches!(invalid, Err(NeedsYouResolveError::Failed(_))));
+
+        // 3. Authenticated interactive UI token OR desktop click settles the question once
+        let receipt = monitor
+            .answer_needs_you_from(
+                &qid,
+                "9:16",
+                ResolveSurface::Socket,
+                Some(&ui_token),
+                true,
+            )
+            .unwrap();
+        assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
+        assert!(!receipt.already);
+        assert_eq!(receipt.run_outcome, RunOutcome::Unblocked);
+
+        // Answering a question NEVER writes a GrantRecord
+        assert_eq!(monitor.store().records().len(), records_before);
+
+        // Continuation reflects the human answer and Running (unblocked, ready to resume) state
+        let cont_after = monitor.get_continuation(&qid).unwrap();
+        assert_eq!(cont_after.answer.as_deref(), Some("9:16"));
+        assert_eq!(cont_after.resolution, Some(NeedsYouResolution::Approved));
+        assert_eq!(cont_after.state, ContinuationState::Running);
+
+        // Complete the continuation with a receipt and verify it survives a profile reload
+        monitor
+            .complete_continuation(
+                "corr-crop-intro",
+                ContinuationState::Completed,
+                Some(r#"{"ok":true,"revision_after":"rev-2"}"#.to_string()),
+            )
+            .unwrap();
+        crate::broker::integrity::mark_clean_shutdown(dir.path());
+
+        let reloaded = PermissionMonitor::reload_for_test(dir.path());
+        let restored = reloaded.get_continuation("corr-crop-intro").unwrap();
+        assert_eq!(restored.state, ContinuationState::Completed);
+        assert_eq!(restored.answer.as_deref(), Some("9:16"));
+        assert_eq!(
+            restored.receipt.as_deref(),
+            Some(r#"{"ok":true,"revision_after":"rev-2"}"#)
+        );
     }
 }
 

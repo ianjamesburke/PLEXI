@@ -1,0 +1,21 @@
+schema_version = 1
+
+[app]
+id = "clip-editor-probe"
+type = "app"
+name = "Clip Editor Probe"
+entry = "main.py"
+version = "0.1.0"
+description = "Deterministic editor-like fixture for clip inspection, revision-checked mutations, and clip events"
+watch = true
+
+[runtime]
+python_compat = true
+
+[state]
+scopes = ["context"]
+
+[app.capabilities]
+capabilities = []
+
+[launch]
