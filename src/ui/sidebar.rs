@@ -211,6 +211,9 @@ impl PlexiApp {
             if open_attention {
                 self.open_attention_overlay("sidebar");
             }
+            if let Some(item) = crate::overlays::attention::oldest_actionable(&waiting).cloned() {
+                self.draw_sidebar_needs_you_actions(ui, &item);
+            }
         }
         ui.add_space(4.0);
 

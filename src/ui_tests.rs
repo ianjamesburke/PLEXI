@@ -949,6 +949,137 @@ mod tests {
         attention_screenshot(520.0, 480.0, "_narrow");
     }
 
+    /// Stint 0788 Part 2a: a real click on the sidebar Approve for a Keychain
+    /// item runs the Keychain recovery path (`reload_after_keychain_prompt`):
+    /// the key is read with interaction allowed and saved grants load again.
+    #[test]
+    fn sidebar_approve_on_keychain_item_reloads_saved_permissions() {
+        use crate::broker::gate::{NeedsYouKind, PermissionMonitor};
+        use crate::broker::{Decision, GrantRecord, PermissionRequest};
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().expect("workspace");
+        {
+            let sealer = PermissionMonitor::open_profile(profile.path());
+            let mut store = sealer.store();
+            store.record(GrantRecord::app_capability(
+                "my-app",
+                ws.path(),
+                crate::app::permissions::Capability::NetHttp,
+                Decision::Allow,
+            ));
+            store.try_save().expect("seal profile grant");
+        }
+        crate::broker::integrity::mark_clean_shutdown(profile.path());
+        let denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let open = monitor.open_needs_you();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].kind, NeedsYouKind::Keychain);
+        let request = PermissionRequest::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+        );
+        assert_ne!(monitor.store().evaluate(&request, None), Decision::Allow);
+
+        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(2);
+        assert_eq!(denied.interactive_reads(), 0, "painting must not prompt");
+        h.harness().get_by_label("Approve").click();
+        h.run_steps(2);
+        assert_eq!(
+            denied.interactive_reads(),
+            1,
+            "the click reads the key with interaction allowed"
+        );
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .all(|row| row.kind != NeedsYouKind::Keychain),
+            "{:?}",
+            monitor.open_needs_you()
+        );
+        assert_eq!(
+            monitor.store().evaluate(&request, None),
+            Decision::Allow,
+            "saved permissions are loaded again"
+        );
+    }
+
+    /// Stint 0788 Part 2a: the sidebar buttons act on the oldest item that is
+    /// not an approval click, and their bounds are registered so a synthetic
+    /// `pane click` on them is refused before injection.
+    #[test]
+    fn sidebar_needs_you_buttons_are_registered_against_synthetic_clicks() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        seed_attention_items(&monitor);
+        let oldest = monitor.open_needs_you()[0].clone();
+        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(2);
+        for label in ["Approve", "Dismiss"] {
+            let rect = h.harness().get_by_label(label).rect();
+            let target = h.with_app(|a| {
+                a.approval_buttons
+                    .iter()
+                    .find(|button| button.label == label)
+                    .map(|button| button.pending_request_id.clone())
+            });
+            assert_eq!(target.as_deref(), Some(oldest.id.as_str()), "{label}");
+            let refused =
+                h.with_app(|a| a.synthetic_approval_target(0, None, Some(rect.center())));
+            assert_eq!(refused.as_deref(), Some(oldest.id.as_str()), "{label}");
+        }
+        assert_eq!(monitor.open_needs_you().len(), 4, "painting resolves nothing");
+        h.harness().get_by_label("Dismiss").click();
+        h.run_steps(2);
+        assert!(
+            monitor.open_needs_you().iter().all(|row| row.id != oldest.id),
+            "a real Dismiss click settles the oldest item"
+        );
+    }
+
+    /// Visual review for the sidebar Needs-you row with Integrity, Keychain,
+    /// Question and BlockedRun items seeded.
+    #[test]
+    fn screenshot_sidebar_needs_you_actions() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        use crate::broker::gate::NeedsYouKind as K;
+        for (kind, actor, resource, summary) in [
+            (K::Integrity, "host", "grants.toml", LONG_INTEGRITY),
+            (K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY),
+            (K::Question, "agent:codex", "pane:3", "Should I overwrite the existing migration?"),
+            (K::BlockedRun, "agent:claude", "pane:4", "CI runner stopped waiting for input"),
+        ] {
+            monitor
+                .file_needs_you(crate::broker::gate::NeedsYouFile {
+                    kind,
+                    actor: actor.to_string(),
+                    resource: resource.to_string(),
+                    summary: summary.to_string(),
+                    expires_at: None,
+                    run_tag: None,
+                })
+                .expect("file needs-you item");
+        }
+        let mut h = PlexiUiHarness::new_sized(900.0, 420.0);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(3);
+        h.harness().get_by_label("Approve");
+        h.harness().get_by_label("Dismiss");
+        h.save_screenshot(&evidence_png!()).expect("render sidebar needs-you");
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]

@@ -91,12 +91,53 @@ impl NeedsYouKind {
         matches!(self, Self::ApprovalClick)
     }
 
-    /// A paired phone may answer a question or a blocked run.
-    /// An approval click, a permission change, an integrity alert, and a
-    /// keychain prompt stay on the desktop. Approving one of those is not a grant.
-    pub fn phone_may_approve(self) -> bool {
-        matches!(self, Self::Question | Self::BlockedRun)
+    /// The one rule for who may settle an item of this kind.
+    ///
+    /// A real click in the host window may approve or deny every kind.
+    /// Every other surface (command socket, terminal, agent pane, phone) may
+    /// never approve, and may not deny an integrity alert or a keychain
+    /// prompt: acknowledging a seal fault or declining Keychain recovery is a
+    /// decision for the person at the desktop.
+    pub fn surface_may_resolve(self, surface: ResolveSurface, approve: bool) -> bool {
+        match surface {
+            ResolveSurface::Desktop => true,
+            ResolveSurface::Socket | ResolveSurface::Phone => {
+                !approve && !matches!(self, Self::Integrity | Self::Keychain)
+            }
+        }
     }
+}
+
+/// Where a Needs-you decision came from. Callers name the surface; the
+/// broker applies `NeedsYouKind::surface_may_resolve`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveSurface {
+    /// A real (non-synthetic) pointer click or key in the host window.
+    Desktop,
+    /// The command socket: a terminal, an agent pane, or any script.
+    Socket,
+    /// A paired phone over the relay.
+    Phone,
+}
+
+impl ResolveSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Socket => "socket",
+            Self::Phone => "phone",
+        }
+    }
+}
+
+/// Why a surface-aware resolve did not settle the item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NeedsYouResolveError {
+    /// The surface may not make this decision. The item stays open and the
+    /// audit records the refusal.
+    Refused,
+    /// The decision was allowed but could not be applied.
+    Failed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -222,7 +263,9 @@ pub fn needs_you_phone_items(items: &[NeedsYouRecord]) -> Vec<serde_json::Value>
             if let Some(obj) = value.as_object_mut() {
                 obj.insert(
                     "phone_can_approve".to_string(),
-                    serde_json::Value::Bool(item.kind.phone_may_approve()),
+                    serde_json::Value::Bool(
+                        item.kind.surface_may_resolve(ResolveSurface::Phone, true),
+                    ),
                 );
             }
             value
@@ -1162,8 +1205,43 @@ impl PermissionMonitor {
         rows
     }
 
-    /// Resolve one item from any surface. A second call returns the first receipt.
-    pub fn resolve_needs_you(&self, id: &str, approve: bool) -> Result<NeedsYouReceipt, String> {
+    /// Resolve one item from `surface`. The single entry point for every
+    /// surface: the desktop click, the command socket and the phone relay all
+    /// come through here, and `NeedsYouKind::surface_may_resolve` decides. A
+    /// refused decision leaves the item open and audits `refused_resolve`. For
+    /// an unknown id a non-desktop approve is still refused; a deny reports
+    /// the unknown id.
+    pub fn resolve_needs_you_from(
+        &self,
+        id: &str,
+        approve: bool,
+        surface: ResolveSurface,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        let kind = self.needs_you_of(id).map(|row| row.kind);
+        let allowed = match kind {
+            Some(kind) => kind.surface_may_resolve(surface, approve),
+            None => surface == ResolveSurface::Desktop || !approve,
+        };
+        if !allowed {
+            log::info!(
+                "needs_you: refused {} resolve {id} kind={} approve={approve}",
+                surface.as_str(),
+                kind.map(NeedsYouKind::as_str).unwrap_or("unknown")
+            );
+            self.refuse_client_resolve(id);
+            return Err(NeedsYouResolveError::Refused);
+        }
+        log::info!(
+            "needs_you: {} resolve {id} approve={approve}",
+            surface.as_str()
+        );
+        self.resolve_needs_you(id, approve)
+            .map_err(NeedsYouResolveError::Failed)
+    }
+
+    /// Settle one item. A second call returns the first receipt. Private:
+    /// every caller goes through `resolve_needs_you_from`.
+    fn resolve_needs_you(&self, id: &str, approve: bool) -> Result<NeedsYouReceipt, String> {
         let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_needs_you_locked();
         let Some(row) = self.needs_you_of(id) else {
@@ -3256,25 +3334,91 @@ mod tests {
     }
 
     #[test]
-    fn phone_may_approve_questions_and_blocked_runs_only() {
-        assert!(!NeedsYouKind::ApprovalClick.phone_may_approve());
-        assert!(NeedsYouKind::Question.phone_may_approve());
-        assert!(NeedsYouKind::BlockedRun.phone_may_approve());
-        assert!(!NeedsYouKind::PermissionChange.phone_may_approve());
-        assert!(!NeedsYouKind::Integrity.phone_may_approve());
-        assert!(!NeedsYouKind::Keychain.phone_may_approve());
+    fn only_the_desktop_approves_and_seal_items_need_the_desktop_to_deny() {
+        use NeedsYouKind as K;
+        let all = [
+            K::ApprovalClick,
+            K::Question,
+            K::BlockedRun,
+            K::PermissionChange,
+            K::Integrity,
+            K::Keychain,
+        ];
+        for kind in all {
+            assert!(kind.surface_may_resolve(ResolveSurface::Desktop, true), "{kind:?}");
+            assert!(kind.surface_may_resolve(ResolveSurface::Desktop, false), "{kind:?}");
+            for surface in [ResolveSurface::Socket, ResolveSurface::Phone] {
+                assert!(
+                    !kind.surface_may_resolve(surface, true),
+                    "{surface:?} must never approve {kind:?}"
+                );
+                let seal = matches!(kind, K::Integrity | K::Keychain);
+                assert_eq!(
+                    kind.surface_may_resolve(surface, false),
+                    !seal,
+                    "{surface:?} deny of {kind:?}"
+                );
+            }
+        }
         let items = needs_you_phone_items(&[NeedsYouRecord {
             id: "ny-1".to_string(),
-            kind: NeedsYouKind::ApprovalClick,
+            kind: NeedsYouKind::Question,
             actor: "agent:chess".to_string(),
             resource: "chess.play".to_string(),
-            summary: "play e2e4".to_string(),
+            summary: "which file".to_string(),
             created_at: 0,
             expires_at: None,
             run_tag: None,
             resolution: None,
         }]);
-        assert_eq!(items[0]["phone_can_approve"], serde_json::json!(false));
+        assert_eq!(
+            items[0]["phone_can_approve"],
+            serde_json::json!(false),
+            "a phone no longer answers questions"
+        );
+    }
+
+    #[test]
+    fn non_desktop_resolve_is_refused_and_leaves_the_item_open() {
+        let monitor = PermissionMonitor::ephemeral();
+        let file = |kind| {
+            monitor
+                .file_needs_you(NeedsYouFile {
+                    kind,
+                    actor: "agent:probe".to_string(),
+                    resource: "pane:1".to_string(),
+                    summary: "probe".to_string(),
+                    expires_at: None,
+                    run_tag: None,
+                })
+                .unwrap()
+        };
+        let question = file(NeedsYouKind::Question);
+        let integrity = file(NeedsYouKind::Integrity);
+        for surface in [ResolveSurface::Socket, ResolveSurface::Phone] {
+            assert_eq!(
+                monitor.resolve_needs_you_from(&question, true, surface),
+                Err(NeedsYouResolveError::Refused)
+            );
+            assert_eq!(
+                monitor.resolve_needs_you_from(&integrity, false, surface),
+                Err(NeedsYouResolveError::Refused)
+            );
+            assert_eq!(
+                monitor.resolve_needs_you_from("ny_unknown", true, surface),
+                Err(NeedsYouResolveError::Refused)
+            );
+        }
+        assert_eq!(monitor.open_needs_you().len(), 2, "refusals leave items open");
+        let denied = monitor
+            .resolve_needs_you_from(&question, false, ResolveSurface::Socket)
+            .expect("a terminal may still deny a question");
+        assert_eq!(denied.resolution, NeedsYouResolution::Denied);
+        let acked = monitor
+            .resolve_needs_you_from(&integrity, true, ResolveSurface::Desktop)
+            .expect("the desktop settles an integrity alert");
+        assert_eq!(acked.resolution, NeedsYouResolution::Approved);
+        assert!(monitor.open_needs_you().is_empty());
     }
 
     fn binding(fingerprint: &str) -> ExactBinding {

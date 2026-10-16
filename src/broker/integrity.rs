@@ -287,7 +287,9 @@ mod tests {
         assert!(item.resolution.is_none());
         let item_id = item.id.clone();
 
-        let receipt = monitor.resolve_needs_you(&item_id, true).unwrap();
+        let receipt = monitor
+            .resolve_needs_you_from(&item_id, true, crate::broker::gate::ResolveSurface::Desktop)
+            .unwrap();
         assert_eq!(
             receipt.resolution,
             crate::broker::gate::NeedsYouResolution::Approved
