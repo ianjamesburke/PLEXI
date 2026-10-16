@@ -165,6 +165,10 @@ cat > /tmp/stint-body.md <<'EOF'
 
 - <Bullet: exactly what gets built or changed>
 
+## Done-When
+
+- <Bullet: an observable check a tester can run: a named test, CLI output, a log line>
+
 ## Non-Scope
 
 - <Bullet: what explicitly is NOT in this task>
@@ -193,7 +197,7 @@ Omit `--blocked-by` / `--gh-issue` entirely when empty -- do not pass an empty s
 
 `--no-edit` is required in agent context -- without it `stint add` opens `$EDITOR` and blocks. On success the command prints the created file's path (e.g. `.stint/tasks/0727-temp-syntax-check-task.md`); the ID is the leading number in that filename. Capture it from the printed path -- never derive an ID by listing task files beforehand.
 
-Omit body sections that have nothing to say.
+Omit body sections that have nothing to say, except `## Done-When`: it is mandatory. Testers judge only against it, and babysitter-v3 skips any stint without it.
 
 ---
 
