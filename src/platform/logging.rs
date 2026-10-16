@@ -228,6 +228,7 @@ pub(crate) fn prune_controlled_logs(
 /// When `cli_mode` is true, CLI-targeted logs are file-only so command output
 /// remains a clean stdout payload plus explicit stderr diagnostics.
 pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
+    crate::platform::log_export::mark_session_start();
     let log_file_path = log_path();
     let config_dir = crate::config::config_dir();
 

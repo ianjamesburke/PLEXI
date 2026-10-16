@@ -8,12 +8,6 @@ use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
 
-fn open_needs_you() -> Vec<crate::broker::gate::NeedsYouRecord> {
-    crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
-        .map(|monitor| monitor.open_needs_you())
-        .unwrap_or_default()
-}
-
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
         if mouse_y <= rect.center().y {
@@ -181,15 +175,6 @@ impl PlexiApp {
                     .size(10.0)
                     .color(self.colors.text_section),
             );
-            let waiting = open_needs_you();
-            if !waiting.is_empty() {
-                crate::ui::badge::badge(
-                    ui,
-                    &waiting.len().to_string(),
-                    self.colors.warning,
-                    &self.colors,
-                );
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
                 if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
@@ -197,15 +182,35 @@ impl PlexiApp {
                 }
             });
         });
-        if let Some(first) = open_needs_you().first() {
+        // One fixed-height entry, however long a diagnostic is. The full text
+        // lives in the attention review, never in the navigation header.
+        let waiting = crate::overlays::attention::open_items();
+        if !waiting.is_empty() {
+            let label = crate::overlays::attention::sidebar_label(waiting.len());
+            let mut open_attention = false;
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
-                crate::ui::typography::caption(
-                    ui,
-                    format!("Needs you · {}", first.summary),
-                    &self.colors,
-                );
+                let width = (ui.available_width() - 12.0).max(0.0);
+                let button = egui::Button::new(
+                    RichText::new(label)
+                        .size(crate::ui::style::TEXT_CAPTION)
+                        .color(self.colors.warning),
+                )
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(Stroke::new(1.0_f32, self.colors.warning))
+                .truncate()
+                .min_size(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H));
+                if ui
+                    .add_sized(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H), button)
+                    .on_hover_text("Review items that need your attention")
+                    .clicked()
+                {
+                    open_attention = true;
+                }
             });
+            if open_attention {
+                self.open_attention_overlay("sidebar");
+            }
         }
         ui.add_space(4.0);
 

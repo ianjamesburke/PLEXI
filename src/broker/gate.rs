@@ -1494,7 +1494,7 @@ impl PermissionMonitor {
         self.persist_queue();
     }
 
-    fn file_integrity_memory_only(&self, reason: &str) {
+    pub(crate) fn file_integrity_memory_only(&self, reason: &str) {
         let id = format!("ny_{}", uuid::Uuid::new_v4());
         let summary = format!(
             "Needs you queue failed its integrity check ({reason}). Stored entries in that file were not loaded."

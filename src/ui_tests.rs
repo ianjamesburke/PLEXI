@@ -820,6 +820,135 @@ mod tests {
             .expect("render keychain recovery");
     }
 
+    const LONG_INTEGRITY: &str = "Needs you queue failed its integrity check (seal mismatch for host/needs-you.journal; record ny_0f3a resource needs-you). Stored entries in that file were not loaded. END-OF-DIAGNOSTIC";
+
+    fn seed_attention_items(monitor: &crate::broker::gate::PermissionMonitor) {
+        monitor.file_integrity_memory_only("seal mismatch for host/needs-you.journal");
+        let file = |kind, actor: &str, resource: &str, summary: &str| {
+            monitor
+                .file_needs_you(crate::broker::gate::NeedsYouFile {
+                    kind,
+                    actor: actor.to_string(),
+                    resource: resource.to_string(),
+                    summary: summary.to_string(),
+                    expires_at: None,
+                    run_tag: None,
+                })
+                .expect("file needs-you item");
+        };
+        use crate::broker::gate::NeedsYouKind as K;
+        file(K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY);
+        file(K::PermissionChange, "agent:claude", "secret.get OPENAI_API_KEY", "Agent wants to read OPENAI_API_KEY");
+        file(K::Question, "agent:codex", "run-7", "Should I overwrite the existing migration?");
+    }
+
+    /// Stint 0801: diagnostic length cannot expand the context-navigation
+    /// header; the sidebar shows one compact labelled entry instead.
+    #[test]
+    fn attention_long_diagnostic_cannot_expand_sidebar_header() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Integrity,
+                actor: "host".to_string(),
+                resource: "needs-you".to_string(),
+                summary: LONG_INTEGRITY.to_string(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .expect("file");
+        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(2);
+        assert!(
+            h.harness().query_by_label_contains("END-OF-DIAGNOSTIC").is_none(),
+            "diagnostic text must not be painted in the sidebar"
+        );
+        let entry = h.harness().get_by_label_contains("Needs attention");
+        let height = entry.rect().height();
+        assert!(
+            height <= crate::ui::style::BUTTON_H_MD,
+            "entry height {height} must stay bounded"
+        );
+    }
+
+    /// Stint 0801: keyboard open/select/close, focus restoration, and that
+    /// closing never resolves a record.
+    #[test]
+    fn attention_overlay_keyboard_flow_does_not_resolve_records() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        seed_attention_items(&monitor);
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.run_steps(2);
+        assert!(!h.with_app(|a| a.attention.open), "must not auto-open");
+        let before = h.with_app(|a| a.focus_stack.clone());
+        h.with_app_mut(|a| a.open_attention_overlay("test"));
+        h.run_steps(3);
+        assert!(h.with_app(|a| a.focus_stack.contains(&crate::app::FocusKind::AttentionOverlay)));
+        h.harness().get_by_label("Needs attention");
+        h.harness().key_press(egui::Key::ArrowDown);
+        h.run_steps(2);
+        assert_eq!(h.with_app(|a| a.attention.selected), 1);
+        h.harness().key_press(egui::Key::D);
+        h.run_steps(2);
+        assert!(h.with_app(|a| a.attention.show_technical));
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(!h.with_app(|a| a.attention.open));
+        assert_eq!(h.with_app(|a| a.focus_stack.clone()), before, "focus restored");
+        assert_eq!(monitor.open_needs_you().len(), 4, "closing resolves nothing");
+    }
+
+    /// Stint 0801: an issue arriving while the window is hidden stays
+    /// discoverable and never pops an overlay.
+    #[test]
+    fn attention_item_arriving_while_hidden_is_discoverable() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(2);
+        seed_attention_items(&monitor);
+        h.run_steps(2);
+        assert!(!h.with_app(|a| a.attention.open));
+        assert_eq!(crate::overlays::attention::open_items().len(), 4);
+        h.harness().get_by_label_contains("Needs attention");
+    }
+
+    fn attention_screenshot(width: f32, height: f32, suffix: &str) {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        seed_attention_items(&monitor);
+        let mut h = PlexiUiHarness::new_sized(width, height);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(2);
+        h.with_app_mut(|a| a.open_attention_overlay("test"));
+        h.run_steps(3);
+        h.harness().key_press(egui::Key::D);
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!(suffix)).expect("render attention");
+    }
+
+    #[test]
+    fn screenshot_attention_overlay_normal_width() {
+        attention_screenshot(1100.0, 640.0, "_normal");
+    }
+
+    #[test]
+    fn screenshot_attention_overlay_narrow() {
+        attention_screenshot(520.0, 480.0, "_narrow");
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]
