@@ -554,6 +554,9 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `add` | Install an agent definition from the global registry into the current workspace |
 | `update` | Re-install an agent definition from the global registry, preserving memory and logs |
 | `list` | List agents installed in the current workspace |
+| `spawn` | Spawn a worker agent from a `.plexi/agents/<name>.toml` or global role configuration |
+| `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
+| `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
 | `hook` | Install or uninstall agent hook integrations |
@@ -605,6 +608,51 @@ Example: plexi agent update project-manager
 
 List agents installed in the current workspace
 
+### `plexi agent spawn`
+
+Spawn a worker agent from a `.plexi/agents/<name>.toml` or global role configuration.
+
+Creates or reuses an isolated sub-context when `--subcontext` (or the role's `subcontext` key) is set, links a parent `PortalPane` in the caller's context, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL`, and boots the configured CLI harness.
+
+Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<config>` | string | yes | Role config name (in `.plexi/agents/<name>.toml` or `~/.plexi-<channel>/agents/<name>.toml`) or path to a `.toml` file |
+| `--task` | string | yes | Task brief passed to the spawned agent harness |
+| `--subcontext` | string | no | Sub-context name to spawn into (overrides `subcontext` in the role config) |
+| `--ephemeral` | flag | no | Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish |
+| `--from` | string | no | Parent/caller pane ID (defaults to `$PLEXI_PANE_ID`) |
+| `--cwd` | string | no | Working directory for the spawned worker pane |
+| `--json` | flag | no | Print full host JSON response instead of bare pane ID |
+
+### `plexi agent done`
+
+Validate a worker's structured result against its schema, write completion slots, and exit cleanly.
+
+Validates `--result` against the pane's `result_schema` (when present), writes the `completed` and `summary` pane slots, and transitions the pane to `Idle` so an ephemeral worker can exit `0` and trigger sub-context auto-collapse.
+
+Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit complete"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--result` | string | yes | Structured JSON result payload |
+| `--summary` | string | no | Human- and master-readable completion summary written to the `summary` slot |
+| `--pane-id` | string | no | Target pane ID (defaults to `$PLEXI_PANE_ID`) |
+
+### `plexi agent ask`
+
+Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state).
+
+Transitions this worker pane to `Blocked`, writes the `question` slot, and wakes the `PLEXI_PARENT_PANE` master agent waiting on `plexi pane wait` without filing a human-facing `NeedsYou` alert.
+
+Example: plexi agent ask "Should we preserve the legacy v1 token endpoint?"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<question>` | string | yes | Question text for the parent master agent |
+| `--pane-id` | string | no | Target pane ID (defaults to `$PLEXI_PANE_ID`) |
+
 ### `plexi agent report`
 
 Report agent state for this pane to the host.
@@ -615,7 +663,7 @@ Example: plexi agent report --state working --agent claude-code
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--state` | string | yes | State to report: working, blocked, or idle |
+| `--state` | string | yes | State to report: working, blocked, needs_you, or idle |
 | `--agent` | string | no | Agent name (e.g. "claude-code") Default: `unknown`. |
 | `--detail` | string | no | Active tool detail (optional, from hook event JSON) |
 | `--session-id` | string | no | Session ID (optional, from hook event JSON) |
