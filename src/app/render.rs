@@ -191,6 +191,7 @@ impl PlexiApp {
         crate::platform::logging::time_drain("update_pane_context_snapshot", || {
             self.update_pane_context_snapshot()
         });
+        self.refresh_portal_context_states();
 
         // Auto-dismiss notifications from the focused pane before reconciling
         // the focus stack so modal state is already correct this frame.
@@ -216,6 +217,47 @@ impl PlexiApp {
         self.sync_raw_wasm_review_focus();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
+    }
+
+    /// Recompute cached `ContextState` on every `PortalPane` across all windows.
+    /// Runs in `update_preamble` (part of `App::logic`) so portal state stays
+    /// truthful even while the window is hidden or a sub-context is in the background.
+    pub(crate) fn refresh_portal_context_states(&mut self) {
+        let targets: Vec<(usize, PaneId, u64)> = self
+            .windows
+            .iter()
+            .enumerate()
+            .flat_map(|(win_idx, win)| {
+                win.panes.iter().filter_map(move |(&pid, pane)| {
+                    pane.as_portal()
+                        .map(|portal| (win_idx, pid, portal.target_context_id))
+                })
+            })
+            .collect();
+        for (win_idx, pid, child_ctx_id) in targets {
+            let state = crate::host::context_state::ContextState::compute(
+                child_ctx_id,
+                self.router.as_slice(),
+                &self.windows,
+            );
+            if let Some(portal) = self.windows[win_idx]
+                .panes
+                .get_mut(&pid)
+                .and_then(|p| p.as_portal_mut())
+            {
+                let old_status = portal.context_state.as_ref().map(|s| s.status.clone());
+                let new_status = state.status.clone();
+                if old_status.as_ref() != Some(&new_status) {
+                    log::info!(
+                        "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} panes={} agents={}",
+                        new_status,
+                        state.pane_count,
+                        state.active_agents,
+                    );
+                }
+                portal.context_state = Some(state);
+            }
+        }
     }
 
     /// Render the toolbar, toolbar separator, sidebar, central panel, quit overlay,

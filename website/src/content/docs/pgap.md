@@ -524,6 +524,48 @@ Read a pane's validated structured result (`plexi pane result <id>`, stint 0666)
 | `timeout_secs` | `number` | no |
 | `wait` | `boolean` | no |
 
+### `agent_spawn`
+
+Spawn a configured agent worker pane, optionally into a created or reused child sub-context with a parent `PortalPane...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `command` | `string` | yes |
+| `cwd` | `string?` | no |
+| `ephemeral` | `boolean` | no |
+| `harness` | `string` | yes |
+| `initial_slots` | `any[][]` | no |
+| `name` | `string?` | no |
+| `no_focus` | `boolean` | no |
+| `parent_pane_id` | `integer?` | no |
+| `response_file` | `string` | yes |
+| `result_schema` | `any` | no |
+| `role` | `string` | no |
+| `subcontext` | `string?` | no |
+| `task` | `string?` | no |
+| `worktree` | `string?` | no |
+
+### `agent_done`
+
+Complete a worker agent's task, validating `--result` against `result_schema` (stint 0666), writing `completed` and `...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+| `result` | `string?` | no |
+| `summary` | `string?` | no |
+
+### `agent_ask`
+
+Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question and transition the worker pane to `Age...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `question` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `focus_pane`
 
 Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.

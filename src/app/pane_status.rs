@@ -33,6 +33,7 @@ pub(crate) fn composite_status(
         AgentState::Working => "working",
         AgentState::Idle => "idle",
         AgentState::Blocked => "blocked",
+        AgentState::NeedsYou => "needs_you",
     });
     let detail = agent.and_then(|state| state.detail.clone());
 
@@ -41,7 +42,7 @@ pub(crate) fn composite_status(
     } else {
         match agent.map(|state| &state.state) {
             Some(AgentState::Working) => ("working", "high"),
-            Some(AgentState::Blocked)
+            Some(AgentState::Blocked | AgentState::NeedsYou)
                 if detail
                     .as_deref()
                     .is_some_and(|detail| !detail.trim().is_empty()) =>

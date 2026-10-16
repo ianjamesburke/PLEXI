@@ -650,6 +650,7 @@ fn agent_state_label(state: &crate::protocol::AgentState) -> &'static str {
     match state {
         crate::protocol::AgentState::Working => "working",
         crate::protocol::AgentState::Blocked => "blocked",
+        crate::protocol::AgentState::NeedsYou => "needs_you",
         crate::protocol::AgentState::Idle => "idle",
     }
 }

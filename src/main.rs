@@ -595,6 +595,35 @@ fn main() -> eframe::Result {
                         AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
                         AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
                         AgentCmd::List => std::process::exit(cli::agent_list()),
+                        AgentCmd::Spawn {
+                            config,
+                            task,
+                            subcontext,
+                            ephemeral,
+                            from,
+                            cwd,
+                            json,
+                        } => std::process::exit(cli::agent_spawn_cli(
+                            &config,
+                            &task,
+                            subcontext.as_deref(),
+                            ephemeral,
+                            from,
+                            cwd.as_deref(),
+                            json,
+                        )),
+                        AgentCmd::Done {
+                            result,
+                            summary,
+                            pane_id,
+                        } => std::process::exit(cli::agent_done_cli(
+                            &result,
+                            summary.as_deref(),
+                            pane_id,
+                        )),
+                        AgentCmd::Ask { question, pane_id } => {
+                            std::process::exit(cli::agent_ask_cli(&question, pane_id))
+                        }
                         AgentCmd::Report {
                             state,
                             agent,

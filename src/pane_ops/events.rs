@@ -37,19 +37,27 @@ impl PlexiApp {
         }
     }
 
-    fn ensure_pane_lifecycle(&mut self, pane_id: u64) -> Option<u64> {
-        let context_id = self
+    pub(crate) fn ensure_pane_lifecycle(&mut self, pane_id: u64) -> Option<u64> {
+        let (context_id, parent_pane_id) = self
             .windows
             .iter()
-            .find(|win| win.panes.contains_key(&pane_id))
-            .map(|win| win.context_id)?;
+            .find_map(|win| {
+                win.panes.get(&pane_id).map(|pane| {
+                    let parent_id = pane.as_terminal().and_then(|t| t.parent_pane_id);
+                    (win.context_id, parent_id)
+                })
+            })?;
         if let Some(state) = self.host.pane_lifecycle.get_mut(&pane_id) {
             state.context_id = context_id;
+            if parent_pane_id.is_some() {
+                state.parent_pane_id = parent_pane_id;
+            }
         } else if self.publish_pane_lifecycle(context_id, pane_id, PaneLifecycleEvent::Spawned) {
             self.host.pane_lifecycle.insert(
                 pane_id,
                 PaneLifecycleState {
                     context_id,
+                    parent_pane_id,
                     ..Default::default()
                 },
             );

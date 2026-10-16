@@ -1486,6 +1486,225 @@ impl PlexiApp {
         new_id
     }
 
+    /// Spawn a worker terminal pane for `plexi agent spawn`, creating or reusing
+    /// a sub-context and linking a `PortalPane` in the parent context when
+    /// `subcontext` is specified.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_agent_worker_pane(
+        &mut self,
+        role: &str,
+        harness: &str,
+        cmd: &str,
+        task: &str,
+        subcontext: Option<&str>,
+        ephemeral: bool,
+        from_pane_id: Option<u64>,
+        cwd_override: Option<std::path::PathBuf>,
+        result_schema: Option<serde_json::Value>,
+    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        let parent_lookup = from_pane_id.and_then(|pid| {
+            self.find_pane_in_any_window(pid)
+                .map(|(w_idx, _)| (pid, w_idx, self.windows[w_idx].context_id))
+        });
+        let (parent_pane_id, parent_win_idx, parent_ctx_id) = match parent_lookup {
+            Some((pid, w_idx, c_id)) => (Some(pid), w_idx, c_id),
+            None => (
+                from_pane_id,
+                self.active_window,
+                self.windows[self.active_window].context_id,
+            ),
+        };
+        let parent_root = self
+            .router
+            .position(|c| c.context_id == parent_ctx_id)
+            .map(|idx| self.router.get(idx).root.clone())
+            .unwrap_or_else(|| self.windows[parent_win_idx].path.clone());
+        let parent_depth = self
+            .router
+            .position(|c| c.context_id == parent_ctx_id)
+            .map(|idx| self.router.get(idx).depth)
+            .unwrap_or(0);
+        let effective_cwd = cwd_override.unwrap_or_else(|| parent_root.clone());
+
+        let (target_win_idx, target_ctx_id) = if let Some(sub_name) = subcontext {
+            if let Some(existing_ctx_idx) = self.router.position(|c| {
+                c.parent_id == Some(parent_ctx_id)
+                    && c.name.displayed().eq_ignore_ascii_case(sub_name)
+            }) {
+                let existing_ctx_id = self.router.get(existing_ctx_idx).context_id;
+                let win_idx = self
+                    .windows
+                    .iter()
+                    .position(|w| w.context_id == existing_ctx_id)
+                    .ok_or_else(|| {
+                        format!("sub-context '{sub_name}' (id={existing_ctx_id}) has no window")
+                    })?;
+                (win_idx, existing_ctx_id)
+            } else {
+                let ctx_id = self.next_window_id;
+                self.next_window_id += 1;
+                let win_id = self.next_window_id;
+                self.next_window_id += 1;
+
+                // Insert a PortalPane in the parent window adjacent to the caller pane.
+                let portal_pane_id = self.host.alloc_pane_id();
+                let split_target = parent_pane_id
+                    .and_then(|pid| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
+                    .or(self.windows[parent_win_idx].focused_pane);
+                super::layout::insert_split_tile(
+                    &mut self.windows[parent_win_idx].tree,
+                    split_target,
+                    portal_pane_id,
+                    true,
+                    crate::host::command::ShareRatio {
+                        numerator: 1.0,
+                        denominator: 1.0,
+                    },
+                    false,
+                );
+                self.windows[parent_win_idx].panes.insert(
+                    portal_pane_id,
+                    Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                        pane_id: portal_pane_id,
+                        target_context_id: ctx_id,
+                        context_state: None,
+                        hidden: false,
+                    })),
+                );
+
+                self.router.push(crate::host::context::Context {
+                    name: crate::host::context::ContextName::custom(sub_name.to_string()),
+                    root: effective_cwd.clone(),
+                    description: None,
+                    context_id: ctx_id,
+                    parent_id: Some(parent_ctx_id),
+                    depth: parent_depth + 1,
+                    parked: false,
+                });
+                self.windows.push(crate::host::context::Window {
+                    name: String::new(),
+                    path: effective_cwd.clone(),
+                    tree: egui_tiles::Tree::empty("plexi"),
+                    panes: std::collections::HashMap::new(),
+                    focused_pane: None,
+                    zoomed_pane: None,
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: win_id,
+                    context_id: ctx_id,
+                });
+                self.context_active_window.insert(ctx_id, win_id);
+                (self.windows.len() - 1, ctx_id)
+            }
+        } else {
+            (parent_win_idx, parent_ctx_id)
+        };
+
+        let new_id = self.host.alloc_pane_id();
+        let context = self.pane_context_env_for_window(target_win_idx);
+        let effective_cwd_for_schema = effective_cwd.clone();
+        let (mut settings, pending_credential) = Self::make_backend_settings(
+            new_id,
+            Some(effective_cwd),
+            &self.colors,
+            context.context_id,
+            &context.name,
+            &context.description,
+            context.root.as_ref(),
+            context.depth,
+            true,
+        );
+        if let Some(pid) = parent_pane_id {
+            settings
+                .env
+                .insert("PLEXI_PARENT_PANE".into(), pid.to_string());
+        }
+        if ephemeral {
+            settings.env.insert("PLEXI_EPHEMERAL".into(), "1".into());
+        }
+        settings
+            .env
+            .insert("PLEXI_AGENT_HARNESS".into(), harness.to_string());
+        settings
+            .env
+            .insert("PLEXI_AGENT_ROLE".into(), role.to_string());
+        settings
+            .env
+            .insert("PLEXI_AGENT_TASK".into(), task.to_string());
+        super::apply_initial_cmd(&mut settings, cmd, ephemeral);
+
+        let Some(mut pane) = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
+            return Err(format!("failed to create terminal pane for agent role '{role}'"));
+        };
+        pane.ephemeral = ephemeral;
+        pane.parent_pane_id = parent_pane_id;
+        pane.agent_harness = Some(harness.to_string());
+        pane.agent_role = Some(role.to_string());
+        pane.name = Some(role.to_string());
+        pane.name_locked = true;
+        pane.agent = Some(crate::protocol::PaneAgentState {
+            pane_id: new_id,
+            state: crate::protocol::AgentState::Working,
+            agent: harness.to_string(),
+            detail: (!task.is_empty()).then(|| task.to_string()),
+            session_id: None,
+        });
+        pane.agent_reported_at = Some(std::time::Instant::now());
+
+        self.windows[target_win_idx]
+            .panes
+            .insert(new_id, Pane::Terminal(Box::new(pane)));
+        pending_credential.mark_live();
+
+        let split_target = self.windows[target_win_idx].focused_pane;
+        let share =
+            crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
+        let new_tile = super::layout::insert_split_tile(
+            &mut self.windows[target_win_idx].tree,
+            split_target,
+            new_id,
+            true,
+            share,
+            false,
+        );
+        if self.windows[target_win_idx].focused_pane.is_none() {
+            self.windows[target_win_idx].focused_pane = Some(new_tile);
+        }
+
+        if let Some(schema) = result_schema {
+            if let Err(err) = self
+                .pane_results
+                .entry(new_id)
+                .or_default()
+                .set_schema(schema.clone(), Some(&effective_cwd_for_schema))
+            {
+                log::warn!("agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}");
+                self.pane_results.entry(new_id).or_default().schema = Some(schema);
+            }
+        }
+        let _ = self.ensure_pane_lifecycle(new_id);
+        self.emit_pane_lifecycle(
+            new_id,
+            crate::host::pane_lifecycle::PaneLifecycleEvent::AgentWorking {
+                provenance: crate::host::pane_lifecycle::Provenance {
+                    source: crate::host::pane_lifecycle::Source::Hook,
+                    agent_label: harness.to_string(),
+                    session_id: None,
+                    raw_event: Some("AgentSpawn".into()),
+                },
+            },
+        );
+        self.refresh_portal_context_states();
+        self.mark_workspace_dirty();
+        Ok((new_id, target_ctx_id))
+    }
+
     /// Toggle the file browser: if the focused pane has a file browser open,
     /// close it. Otherwise, open one.
     pub(crate) fn open_file_browser(&mut self) {

@@ -983,6 +983,13 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
+            if let Some(ref pane) = removed_pane {
+                if let Some(slots) = pane.slots() {
+                    if !slots.is_empty() {
+                        self.closed_pane_slots.insert(pane_id, slots.clone());
+                    }
+                }
+            }
             match crate::host::app_timeline::global().lock() {
                 Ok(mut timeline) => timeline.close_lifecycle_pane(pane_id),
                 Err(error) => log::error!("pane_lifecycle: closing pane {pane_id}: {error}"),

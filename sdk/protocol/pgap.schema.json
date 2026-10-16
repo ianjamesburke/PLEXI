@@ -18,6 +18,7 @@
           "enum": [
             "working",
             "blocked",
+            "needs_you",
             "idle"
           ],
           "type": "string"
@@ -1820,6 +1821,177 @@
           "required": [
             "type",
             "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Spawn a configured agent worker pane, optionally into a created or reused\nchild sub-context with a parent `PortalPane` (`plexi agent spawn`, stint 0802).",
+          "properties": {
+            "command": {
+              "description": "Shell command to launch the agent harness.",
+              "type": "string"
+            },
+            "cwd": {
+              "description": "Optional working directory override.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ephemeral": {
+              "default": false,
+              "description": "Whether the worker pane is ephemeral (`PLEXI_EPHEMERAL=1`, self-closes on exit 0).",
+              "type": "boolean"
+            },
+            "harness": {
+              "description": "CLI harness identifier (`claude`, `codex`, `pi`, `agy`).",
+              "type": "string"
+            },
+            "initial_slots": {
+              "description": "Initial slots (`key`, `value`) written onto the worker pane at spawn.",
+              "items": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "name": {
+              "description": "Optional display name for the spawned pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "no_focus": {
+              "default": false,
+              "description": "Keep focus on the caller's pane/context rather than switching to the worker.",
+              "type": "boolean"
+            },
+            "parent_pane_id": {
+              "description": "Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "result_schema": {
+              "description": "Optional JSON Schema for validating the worker's structured result on `plexi agent done`."
+            },
+            "role": {
+              "default": "",
+              "description": "Agent role name (`.plexi/agents/<name>.toml`).",
+              "type": "string"
+            },
+            "subcontext": {
+              "description": "Optional child sub-context name to create or reuse under the parent context.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "description": "Optional task brief passed to the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "agent_spawn",
+              "type": "string"
+            },
+            "worktree": {
+              "description": "Optional managed git worktree branch slug.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "harness",
+            "command",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Complete a worker agent's task, validating `--result` against `result_schema`\n(stint 0666), writing `completed` and `summary` slots, and closing the\nephemeral worker pane so `collapse_subcontext_if_empty` auto-collapses the\nsub-context when all workers succeed (`plexi agent done`, stint 0802).",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "result": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "agent_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question\nand transition the worker pane to `AgentState::Blocked` without interrupting\nthe human (`plexi agent ask`, stint 0802).",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "question": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_ask",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "question",
             "response_file"
           ],
           "type": "object"
@@ -4161,6 +4333,8 @@
             "Idle",
             "Working",
             "Error",
+            "Blocked",
+            "NeedsYou",
             "Done"
           ],
           "type": "string"
@@ -4267,7 +4441,9 @@
           "enum": [
             "Idle",
             "Active",
-            "Error"
+            "Error",
+            "Blocked",
+            "NeedsYou"
           ],
           "type": "string"
         },

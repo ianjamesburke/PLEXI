@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub enum AgentState {
     Working,
     Blocked,
+    NeedsYou,
     Idle,
 }
 
@@ -660,6 +661,72 @@ pub enum AppRequest {
         wait: bool,
         #[serde(default)]
         timeout_secs: f64,
+        response_file: String,
+    },
+
+    /// Spawn a configured agent worker pane, optionally into a created or reused
+    /// child sub-context with a parent `PortalPane` (`plexi agent spawn`, stint 0802).
+    AgentSpawn {
+        /// Agent role name (`.plexi/agents/<name>.toml`).
+        #[serde(default, alias = "role_name")]
+        role: String,
+        /// CLI harness identifier (`claude`, `codex`, `pi`, `agy`).
+        harness: String,
+        /// Shell command to launch the agent harness.
+        #[serde(alias = "cmd")]
+        command: String,
+        /// Optional task brief passed to the spawned agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        /// Optional child sub-context name to create or reuse under the parent context.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subcontext: Option<String>,
+        /// Whether the worker pane is ephemeral (`PLEXI_EPHEMERAL=1`, self-closes on exit 0).
+        #[serde(default)]
+        ephemeral: bool,
+        /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
+        #[serde(default, alias = "from_pane_id", skip_serializing_if = "Option::is_none")]
+        parent_pane_id: Option<u64>,
+        /// Optional display name for the spawned pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Optional working directory override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        /// Optional managed git worktree branch slug.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree: Option<String>,
+        /// Optional JSON Schema for validating the worker's structured result on `plexi agent done`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_schema: Option<serde_json::Value>,
+        /// Initial slots (`key`, `value`) written onto the worker pane at spawn.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        initial_slots: Vec<(String, String)>,
+        /// Keep focus on the caller's pane/context rather than switching to the worker.
+        #[serde(default)]
+        no_focus: bool,
+        response_file: String,
+    },
+
+    /// Complete a worker agent's task, validating `--result` against `result_schema`
+    /// (stint 0666), writing `completed` and `summary` slots, and closing the
+    /// ephemeral worker pane so `collapse_subcontext_if_empty` auto-collapses the
+    /// sub-context when all workers succeed (`plexi agent done`, stint 0802).
+    AgentDone {
+        pane_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        response_file: String,
+    },
+
+    /// Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question
+    /// and transition the worker pane to `AgentState::Blocked` without interrupting
+    /// the human (`plexi agent ask`, stint 0802).
+    AgentAsk {
+        pane_id: u64,
+        question: String,
         response_file: String,
     },
 

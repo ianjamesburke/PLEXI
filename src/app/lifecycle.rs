@@ -155,6 +155,55 @@ impl PlexiApp {
                     crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1,
                 );
             }
+            // When a parent master pane subscribes to its spawned child worker's
+            // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
+            // subscription to the child pane's context and grant a session-scoped
+            // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
+            if req.publisher_app_id == crate::host::pane_lifecycle::PUBLISHER {
+                if let (Some(caller_id), Some(target_pane_id)) = (
+                    req.from_pane_id,
+                    req.resource_id.as_deref().and_then(|s| s.parse::<u64>().ok()),
+                ) {
+                    let target_parent = self
+                        .windows
+                        .iter()
+                        .find_map(|win| win.panes.get(&target_pane_id))
+                        .and_then(|p| p.as_terminal())
+                        .and_then(|t| t.parent_pane_id)
+                        .or_else(|| {
+                            self.host
+                                .pane_lifecycle
+                                .get(&target_pane_id)
+                                .and_then(|s| s.parent_pane_id)
+                        });
+                    if target_parent == Some(caller_id) {
+                        let target_ctx_id = self
+                            .windows
+                            .iter()
+                            .find_map(|win| {
+                                win.panes
+                                    .contains_key(&target_pane_id)
+                                    .then_some(win.context_id)
+                            })
+                            .or_else(|| {
+                                self.host
+                                    .pane_lifecycle
+                                    .get(&target_pane_id)
+                                    .map(|s| s.context_id)
+                            });
+                        if let Some(t_ctx_id) = target_ctx_id {
+                            req.context_id_override = Some(t_ctx_id);
+                        }
+                        if let Some(ref ws) = req.workspace_root_override {
+                            let actor = req.broker_actor_override.clone().unwrap_or_else(|| {
+                                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1
+                            });
+                            self.host_subscriptions
+                                .allow_parent_child_lifecycle(&actor, ws);
+                        }
+                    }
+                }
+            }
             // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
             // returns a parked consent we surface as a host modal next frame.
             if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
@@ -549,6 +598,15 @@ impl PlexiApp {
                             "slots": pane_slots_json(pane),
                             "heartbeat": self.pane_heartbeat_json(*pane_id),
                         });
+                        if let crate::host::pane::Pane::Terminal(t) = pane {
+                            entry["parent_pane_id"] = serde_json::json!(t.parent_pane_id);
+                            entry["agent_harness"] = serde_json::json!(t.agent_harness);
+                            entry["agent_session_id"] = serde_json::json!(t.agent_session_id);
+                            entry["agent_role"] = serde_json::json!(t.agent_role);
+                            entry["resume_command"] = serde_json::json!(t.resume_command());
+                            entry["exited"] = serde_json::json!(t.exited);
+                            entry["exit_status"] = serde_json::json!(t.exit_status);
+                        }
                         if let Some(wt) = self.pane_worktrees.get(pane_id) {
                             entry["worktree"] = serde_json::json!({
                                 "branch": wt.branch,
@@ -630,6 +688,13 @@ impl PlexiApp {
                                     "window_id": win.window_id,
                                     "cwd": cwd,
                                     "agent": agent,
+                                    "parent_pane_id": t.parent_pane_id,
+                                    "agent_harness": t.agent_harness,
+                                    "agent_session_id": t.agent_session_id,
+                                    "agent_role": t.agent_role,
+                                    "resume_command": t.resume_command(),
+                                    "exited": t.exited,
+                                    "exit_status": t.exit_status,
                                     "slots": pane_slots_json(pane),
                                     "heartbeat": self.pane_heartbeat_json(*pane_id),
                                 });
@@ -780,136 +845,20 @@ impl PlexiApp {
                     "pane_ipc: kind=slot_write pane_id={pane_id} slot={slot_name:?} bytes={} append={append} replace={replace}",
                     content.len()
                 );
-                if let Err(msg) = validate_slot_name(slot_name) {
-                    slot_error(response_file, msg);
-                    return;
-                }
-                if *append && *replace {
-                    slot_error(response_file, "use only one of append or replace");
-                    return;
-                }
-                if content.len() > MAX_SLOT_CONTENT_SIZE {
-                    slot_error(
-                        response_file,
-                        format!(
-                            "slot '{slot_name}' content size {} exceeds 10485760 bytes",
-                            content.len()
-                        ),
-                    );
-                    return;
-                }
-                let target = self.windows.iter().enumerate().find_map(|(idx, win)| {
-                    if win.panes.contains_key(pane_id) {
-                        Some((idx, win.context_id))
-                    } else {
-                        None
-                    }
-                });
-                let Some((win_idx, context_id)) = target else {
-                    slot_error(response_file, format!("pane {pane_id} not found"));
-                    return;
-                };
-                let context_root = self
-                    .router
-                    .iter()
-                    .find(|ctx| ctx.context_id == context_id)
-                    .map(|ctx| ctx.root.clone());
-                let slot_dir = slot_base_dir(context_root.as_deref()).join(pane_id.to_string());
-                let slot_path = slot_dir.join(slot_name);
-                let Some(pane) = self.windows[win_idx].panes.get_mut(pane_id) else {
-                    slot_error(response_file, format!("pane {pane_id} not found"));
-                    return;
-                };
-                let Some(slots) = pane.slots_mut() else {
-                    slot_error(
-                        response_file,
-                        format!("pane {pane_id} does not support slots"),
-                    );
-                    return;
-                };
-                let tracked_path = slots.get(slot_name).cloned();
-                let existing_path = tracked_path.clone().unwrap_or(slot_path.clone());
-                let write_path = if *append {
-                    tracked_path.clone().unwrap_or(slot_path)
-                } else {
-                    slot_path
-                };
-                let exists = tracked_path.as_ref().is_some_and(|path| path.exists());
-                if exists && !*append && !*replace {
-                    slot_error(
-                        response_file,
-                        format!(
-                            "slot '{slot_name}' already exists — use --append to add to it or --replace to overwrite it"
-                        ),
-                    );
-                    return;
-                }
-                if *append {
-                    let existing_size = std::fs::metadata(&existing_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let final_size = existing_size.saturating_add(content.len() as u64);
-                    if final_size > MAX_SLOT_CONTENT_SIZE as u64 {
-                        slot_error(
+                match self.write_pane_slot_internal(*pane_id, slot_name, content, *append, *replace) {
+                    Ok((absolute, size)) => {
+                        write_json_response(
                             response_file,
-                            format!(
-                                "slot '{slot_name}' content size {final_size} exceeds 10485760 bytes"
-                            ),
+                            serde_json::json!({
+                                "ok": true,
+                                "name": slot_name,
+                                "path": absolute.to_string_lossy(),
+                                "size": size,
+                            }),
                         );
-                        return;
                     }
+                    Err(msg) => slot_error(response_file, msg),
                 }
-                let write_dir = write_path.parent().unwrap_or(slot_dir.as_path());
-                if let Err(e) = std::fs::create_dir_all(write_dir) {
-                    slot_error(
-                        response_file,
-                        format!(
-                            "could not create slot directory {}: {e}",
-                            write_dir.display()
-                        ),
-                    );
-                    return;
-                }
-                let write_result = if *append {
-                    use std::io::Write as _;
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&write_path)
-                        .and_then(|mut f| f.write_all(content).map(|_| ()))
-                } else {
-                    std::fs::write(&write_path, content)
-                };
-                if let Err(e) = write_result {
-                    slot_error(
-                        response_file,
-                        format!("could not write slot '{slot_name}': {e}"),
-                    );
-                    return;
-                }
-                let absolute = write_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| write_path.clone());
-                slots.insert(slot_name.clone(), absolute.clone());
-                let size = std::fs::metadata(&absolute).map(|m| m.len()).unwrap_or(0);
-                write_json_response(
-                    response_file,
-                    serde_json::json!({
-                        "ok": true,
-                        "name": slot_name,
-                        "path": absolute.to_string_lossy(),
-                        "size": size,
-                    }),
-                );
-                match std::fs::read(&absolute) {
-                    Ok(value) => self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::SlotChanged {
-                        name: slot_name.clone(), value,
-                    }),
-                    Err(error) => log::error!("pane_lifecycle: cannot read committed slot {}: {error}", absolute.display()),
-                }
-                // The write path is the only thing that changes a slot's
-                // value, so it is where parked waiters are answered.
-                self.complete_slot_waits(*pane_id, slot_name);
             }
             crate::protocol::AppRequest::SlotWait {
                 pane_id,
@@ -951,21 +900,8 @@ impl PlexiApp {
                         return;
                     }
                 };
-                let Some(pane) = self.windows.iter().find_map(|win| win.panes.get(pane_id)) else {
-                    slot_read_error(response_file, format!("pane {pane_id} not found"));
-                    return;
-                };
-                if pane.slots().is_none() {
-                    slot_read_error(
-                        response_file,
-                        format!("pane {pane_id} does not support slots"),
-                    );
-                    return;
-                }
-                // Level-triggered: a value that already matches answers now.
-                // A caller cannot guarantee it armed the wait before the
-                // writer ran, so an edge-only wait would hang on a race it
-                // has no way to avoid.
+                // Level-triggered: a value that already matches answers now,
+                // even if an ephemeral worker pane already exited 0 and closed.
                 if let Some(path) = self.tracked_slot_path(*pane_id, slot_name) {
                     match std::fs::read(&path) {
                         Ok(bytes) => {
@@ -986,6 +922,17 @@ impl PlexiApp {
                             return;
                         }
                     }
+                }
+                let Some(pane) = self.windows.iter().find_map(|win| win.panes.get(pane_id)) else {
+                    slot_read_error(response_file, format!("pane {pane_id} not found"));
+                    return;
+                };
+                if pane.slots().is_none() {
+                    slot_read_error(
+                        response_file,
+                        format!("pane {pane_id} does not support slots"),
+                    );
+                    return;
                 }
                 let expires_at =
                     std::time::Instant::now() + std::time::Duration::from_secs_f64(*timeout_secs);
@@ -1373,7 +1320,12 @@ impl PlexiApp {
                     .iter()
                     .find_map(|win| win.panes.get(pane_id))
                     .and_then(|pane| pane.slots())
-                    .and_then(|slots| slots.get(slot_name).cloned());
+                    .and_then(|slots| slots.get(slot_name).cloned())
+                    .or_else(|| {
+                        self.closed_pane_slots
+                            .get(pane_id)
+                            .and_then(|slots| slots.get(slot_name).cloned())
+                    });
                 let Some(path) = path else {
                     slot_read_error(response_file, format!("slot '{slot_name}' not found"));
                     return;
@@ -1399,7 +1351,8 @@ impl PlexiApp {
                     .windows
                     .iter()
                     .find_map(|win| win.panes.get(pane_id))
-                    .and_then(|pane| pane.slots());
+                    .and_then(|pane| pane.slots())
+                    .or_else(|| self.closed_pane_slots.get(pane_id));
                 match slots {
                     Some(slots) => {
                         write_json_response(
@@ -3056,8 +3009,20 @@ impl PlexiApp {
                     detail.is_some()
                 );
                 let mut found = false;
+                let mut has_parent_pane = false;
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
+                        if let Some(t) = pane.as_terminal_mut() {
+                            has_parent_pane = t.parent_pane_id.is_some();
+                            if let Some(sid) = session_id.as_ref().filter(|s| !s.is_empty()) {
+                                t.agent_session_id = Some(sid.clone());
+                            }
+                            if t.agent_harness.is_none() {
+                                if let Some(h) = crate::cli::AgentHarness::parse(agent) {
+                                    t.agent_harness = Some(h.as_str().to_string());
+                                }
+                            }
+                        }
                         found = pane.set_agent(Some(crate::protocol::PaneAgentState {
                             pane_id: *pane_id,
                             state: state.clone(),
@@ -3090,14 +3055,31 @@ impl PlexiApp {
                     } else if *state == crate::protocol::AgentState::Idle && (session_started || event.is_none()) {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
+                    self.refresh_portal_context_states();
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
-                    if *state == crate::protocol::AgentState::Blocked
-                        && *blocked_reason != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
-                    {
+                    // 2-tier escalation (stint 0802):
+                    // Tier 1 (`AgentState::Blocked`) on a child worker pane with a `parent_pane_id`
+                    // wakes the master agent via `PaneLifecycleEvent::AgentBlocked` without
+                    // interrupting the human via `PermissionMonitor::file_needs_you`.
+                    // Tier 2 (`AgentState::NeedsYou`, or `Blocked` on an unparented root agent)
+                    // files a human-owned NeedsYou record.
+                    let should_file_human_needs_you = match state {
+                        crate::protocol::AgentState::NeedsYou => true,
+                        crate::protocol::AgentState::Blocked => {
+                            !has_parent_pane
+                                && *blocked_reason
+                                    != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
+                        }
+                        _ => false,
+                    };
+                    if should_file_human_needs_you {
                         let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
                             format!("{agent} is blocked")
                         });
-                        let kind = if event.as_deref() == Some("AskQuestion") {
+                        let kind = if *state == crate::protocol::AgentState::NeedsYou
+                            || event.as_deref() == Some("AskQuestion")
+                            || event.as_deref() == Some("AgentAsk")
+                        {
                             crate::broker::gate::NeedsYouKind::Question
                         } else {
                             crate::broker::gate::NeedsYouKind::BlockedRun
@@ -3776,6 +3758,308 @@ impl PlexiApp {
                     response_file,
                 );
             }
+            crate::protocol::AppRequest::AgentSpawn {
+                role,
+                harness,
+                command,
+                task,
+                subcontext,
+                ephemeral,
+                parent_pane_id,
+                name,
+                cwd,
+                worktree: _,
+                result_schema,
+                initial_slots,
+                no_focus: _,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={parent_pane_id:?}"
+                );
+                let result = self.spawn_agent_worker_pane(
+                    role,
+                    harness,
+                    command,
+                    task.as_deref().unwrap_or_default(),
+                    subcontext.as_deref(),
+                    *ephemeral,
+                    *parent_pane_id,
+                    cwd.as_deref().map(std::path::PathBuf::from),
+                    result_schema.clone(),
+                );
+                let payload = match result {
+                    Ok((new_pane_id, target_ctx_id)) => {
+                        if let Some(ref custom_name) = name {
+                            if !custom_name.is_empty() {
+                                self.apply_inline_pane_name(new_pane_id, custom_name);
+                            }
+                        }
+                        for (slot_key, slot_val) in initial_slots {
+                            let _ = self.write_pane_slot_internal(
+                                new_pane_id,
+                                slot_key,
+                                slot_val.as_bytes(),
+                                false,
+                                true,
+                            );
+                        }
+                        let portal_pane_id = self
+                            .windows
+                            .iter()
+                            .flat_map(|w| w.panes.values())
+                            .find_map(|p| match p {
+                                crate::host::pane::Pane::Portal(portal)
+                                    if portal.target_context_id == target_ctx_id =>
+                                {
+                                    Some(portal.pane_id)
+                                }
+                                _ => None,
+                            });
+                        serde_json::json!({
+                            "ok": true,
+                            "pane_id": new_pane_id,
+                            "context_id": target_ctx_id,
+                            "context_name": self.context_name_for(target_ctx_id),
+                            "portal_pane_id": portal_pane_id,
+                            "role": role,
+                            "harness": harness,
+                            "command": command,
+                        })
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                };
+                write_json_response(response_file, payload);
+            }
+            crate::protocol::AppRequest::AgentDone {
+                pane_id,
+                result,
+                summary,
+                response_file,
+            } => {
+                let raw_result = result.as_deref().unwrap_or("{}");
+                let summary_str = summary.as_deref().unwrap_or_default();
+                log::info!(
+                    "pane_ipc: kind=agent_done pane_id={pane_id} result_len={} summary_len={}",
+                    raw_result.len(),
+                    summary_str.len()
+                );
+                let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
+                if !pane_alive && !self.pane_results.contains_key(pane_id) {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": false,
+                            "pane_id": pane_id,
+                            "error_code": "pane_not_found",
+                            "error": format!("pane {pane_id} not found"),
+                        }),
+                    );
+                    return;
+                }
+                match self
+                    .pane_results
+                    .entry(*pane_id)
+                    .or_default()
+                    .write_payload(raw_result)
+                {
+                    Ok(committed) => {
+                        self.complete_result_waits(*pane_id);
+                        let completed_payload = serde_json::json!({
+                            "pane_id": pane_id,
+                            "status": "completed",
+                            "summary": summary_str,
+                            "result": committed,
+                        })
+                        .to_string();
+                        if !summary_str.is_empty() {
+                            let _ = self.write_pane_slot_internal(
+                                *pane_id,
+                                "summary",
+                                summary_str.as_bytes(),
+                                false,
+                                true,
+                            );
+                        }
+                        let slot_res = self.write_pane_slot_internal(
+                            *pane_id,
+                            "completed",
+                            completed_payload.as_bytes(),
+                            false,
+                            true,
+                        );
+                        let mut agent_label = "agent".to_string();
+                        let mut session_id = None;
+                        for win in &mut self.windows {
+                            if let Some(pane) = win.panes.get_mut(pane_id) {
+                                if let Some(t) = pane.as_terminal_mut() {
+                                    if let Some(ref h) = t.agent_harness {
+                                        agent_label = h.clone();
+                                    } else if let Some(ref a) = t.agent {
+                                        agent_label = a.agent.clone();
+                                    }
+                                    session_id = t.agent_session_id.clone();
+                                }
+                                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                                    pane_id: *pane_id,
+                                    state: crate::protocol::AgentState::Idle,
+                                    agent: agent_label.clone(),
+                                    detail: (!summary_str.is_empty())
+                                        .then(|| summary_str.to_string()),
+                                    session_id: session_id.clone(),
+                                }));
+                                break;
+                            }
+                        }
+                        let provenance = Provenance {
+                            source: Source::LegacyReport,
+                            agent_label,
+                            session_id,
+                            raw_event: Some("AgentDone".to_string()),
+                        };
+                        self.emit_pane_lifecycle(
+                            *pane_id,
+                            PaneLifecycleEvent::TurnFinished {
+                                provenance: provenance.clone(),
+                            },
+                        );
+                        self.emit_pane_lifecycle(
+                            *pane_id,
+                            PaneLifecycleEvent::AgentIdle { provenance },
+                        );
+                        self.refresh_portal_context_states();
+                        let payload = match slot_res {
+                            Ok((path, bytes)) => serde_json::json!({
+                                "ok": true,
+                                "pane_id": pane_id,
+                                "slot": "completed",
+                                "path": path.to_string_lossy(),
+                                "bytes": bytes,
+                                "result": committed,
+                                "summary": summary,
+                            }),
+                            Err(e) => serde_json::json!({
+                                "ok": true,
+                                "pane_id": pane_id,
+                                "result": committed,
+                                "summary": summary,
+                                "slot_warning": e,
+                            }),
+                        };
+                        write_json_response(response_file, payload);
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "pane_ipc: agent_done validation failed for pane {pane_id}: {}",
+                            err.message()
+                        );
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "ok": false,
+                                "pane_id": pane_id,
+                                "error_code": err.error_code(),
+                                "error": err.message(),
+                                "validation_errors": err.validation_errors(),
+                            }),
+                        );
+                    }
+                }
+            }
+            crate::protocol::AppRequest::AgentAsk {
+                pane_id,
+                question,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=agent_ask pane_id={pane_id} question_len={}",
+                    question.len()
+                );
+                let mut found = false;
+                let mut parent_pane_id = None;
+                let mut agent_label = "agent".to_string();
+                let mut session_id = None;
+                for win in &mut self.windows {
+                    if let Some(pane) = win.panes.get_mut(pane_id) {
+                        if let Some(t) = pane.as_terminal_mut() {
+                            parent_pane_id = t.parent_pane_id;
+                            if let Some(ref h) = t.agent_harness {
+                                agent_label = h.clone();
+                            } else if let Some(ref a) = t.agent {
+                                agent_label = a.agent.clone();
+                            }
+                            session_id = t.agent_session_id.clone();
+                        }
+                        found = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                            pane_id: *pane_id,
+                            state: crate::protocol::AgentState::Blocked,
+                            agent: agent_label.clone(),
+                            detail: Some(question.clone()),
+                            session_id: session_id.clone(),
+                        }));
+                        break;
+                    }
+                }
+                if found {
+                    let question_payload = serde_json::json!({
+                        "pane_id": pane_id,
+                        "parent_pane_id": parent_pane_id,
+                        "question": question,
+                    })
+                    .to_string();
+                    let _ = self.write_pane_slot_internal(
+                        *pane_id,
+                        "question",
+                        question_payload.as_bytes(),
+                        false,
+                        true,
+                    );
+                    let provenance = Provenance {
+                        source: Source::Hook,
+                        agent_label: agent_label.clone(),
+                        session_id: session_id.clone(),
+                        raw_event: Some("AgentAsk".to_string()),
+                    };
+                    self.emit_pane_lifecycle(
+                        *pane_id,
+                        PaneLifecycleEvent::AgentBlocked {
+                            provenance,
+                            reason: crate::protocol::AgentBlockedReason::Unknown,
+                        },
+                    );
+                    self.refresh_portal_context_states();
+                    // Tier 1 escalation: if this pane has a `parent_pane_id`, wake the master
+                    // agent via `PaneLifecycleEvent::AgentBlocked` (and its `question` slot)
+                    // without interrupting the human. Only file human `NeedsYou` when unparented.
+                    if parent_pane_id.is_none() {
+                        let _ = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        )
+                        .file_needs_you(crate::broker::gate::NeedsYouFile {
+                            kind: crate::broker::gate::NeedsYouKind::Question,
+                            actor: agent_label,
+                            resource: format!("pane:{pane_id}"),
+                            summary: question.clone(),
+                            expires_at: None,
+                            run_tag: session_id.or_else(|| Some(format!("pane:{pane_id}"))),
+                        });
+                    }
+                    let payload = serde_json::json!({
+                        "ok": true,
+                        "pane_id": pane_id,
+                        "parent_pane_id": parent_pane_id,
+                        "state": "blocked",
+                        "question": question,
+                    });
+                    write_json_response(response_file, payload);
+                } else {
+                    let payload = serde_json::json!({
+                        "ok": false,
+                        "error": format!("pane {pane_id} not found or not a terminal"),
+                    });
+                    write_json_response(response_file, payload);
+                }
+            }
             crate::protocol::AppRequest::Wake => {
                 // No-op: the wake effect is the socket listener's repaint
                 // request — by the time this arm runs, a frame is already
@@ -3795,6 +4079,113 @@ impl PlexiApp {
                 log::warn!("pane_ipc: unsupported command kind, dropping");
             }
         }
+    }
+
+    pub(crate) fn write_pane_slot_internal(
+        &mut self,
+        pane_id: u64,
+        slot_name: &str,
+        content: &[u8],
+        append: bool,
+        replace: bool,
+    ) -> Result<(std::path::PathBuf, u64), String> {
+        validate_slot_name(slot_name)?;
+        if append && replace {
+            return Err("use only one of append or replace".to_string());
+        }
+        if content.len() > MAX_SLOT_CONTENT_SIZE {
+            return Err(format!(
+                "slot '{slot_name}' content size {} exceeds 10485760 bytes",
+                content.len()
+            ));
+        }
+        let target = self.windows.iter().enumerate().find_map(|(idx, win)| {
+            if win.panes.contains_key(&pane_id) {
+                Some((idx, win.context_id))
+            } else {
+                None
+            }
+        });
+        let Some((win_idx, context_id)) = target else {
+            return Err(format!("pane {pane_id} not found"));
+        };
+        let context_root = self
+            .router
+            .iter()
+            .find(|ctx| ctx.context_id == context_id)
+            .map(|ctx| ctx.root.clone());
+        let slot_dir = slot_base_dir(context_root.as_deref()).join(pane_id.to_string());
+        let slot_path = slot_dir.join(slot_name);
+        let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) else {
+            return Err(format!("pane {pane_id} not found"));
+        };
+        let Some(slots) = pane.slots_mut() else {
+            return Err(format!("pane {pane_id} does not support slots"));
+        };
+        let tracked_path = slots.get(slot_name).cloned();
+        let existing_path = tracked_path.clone().unwrap_or_else(|| slot_path.clone());
+        let write_path = if append {
+            tracked_path.clone().unwrap_or(slot_path)
+        } else {
+            slot_path
+        };
+        let exists = tracked_path.as_ref().is_some_and(|path| path.exists());
+        if exists && !append && !replace {
+            return Err(format!(
+                "slot '{slot_name}' already exists — use --append to add to it or --replace to overwrite it"
+            ));
+        }
+        if append {
+            let existing_size = std::fs::metadata(&existing_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let final_size = existing_size.saturating_add(content.len() as u64);
+            if final_size > MAX_SLOT_CONTENT_SIZE as u64 {
+                return Err(format!(
+                    "slot '{slot_name}' content size {final_size} exceeds 10485760 bytes"
+                ));
+            }
+        }
+        let write_dir = write_path.parent().unwrap_or(slot_dir.as_path());
+        if let Err(e) = std::fs::create_dir_all(write_dir) {
+            return Err(format!(
+                "could not create slot directory {}: {e}",
+                write_dir.display()
+            ));
+        }
+        let write_result = if append {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&write_path)
+                .and_then(|mut f| f.write_all(content).map(|_| ()))
+        } else {
+            std::fs::write(&write_path, content)
+        };
+        if let Err(e) = write_result {
+            return Err(format!("could not write slot '{slot_name}': {e}"));
+        }
+        let absolute = write_path
+            .canonicalize()
+            .unwrap_or_else(|_| write_path.clone());
+        slots.insert(slot_name.to_string(), absolute.clone());
+        let size = std::fs::metadata(&absolute).map(|m| m.len()).unwrap_or(0);
+        match std::fs::read(&absolute) {
+            Ok(value) => self.emit_pane_lifecycle(
+                pane_id,
+                PaneLifecycleEvent::SlotChanged {
+                    name: slot_name.to_string(),
+                    value,
+                },
+            ),
+            Err(error) => log::error!(
+                "pane_lifecycle: cannot read committed slot {}: {error}",
+                absolute.display()
+            ),
+        }
+        self.complete_slot_waits(pane_id, slot_name);
+        Ok((absolute, size))
     }
 
     /// `ListPermissions` host handler (stint 0017). Writes the permission
@@ -4445,17 +4836,41 @@ impl PlexiApp {
                 PtyEvent::Exit(pty_status) => {
                     let status = ExitStatus::from(*pty_status);
                     let mut newly_exited = false;
+                    let subcontext_ids: std::collections::HashSet<u64> = self
+                        .router
+                        .iter()
+                        .filter(|c| c.parent_id.is_some())
+                        .map(|c| c.context_id)
+                        .collect();
                     for win in &mut self.windows {
+                        let is_subcontext = subcontext_ids.contains(&win.context_id);
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 newly_exited = !t.exited;
                                 t.exited = true;
+                                t.exit_status = Some(status);
+                                let is_agent_or_subcontext = is_subcontext
+                                    || t.parent_pane_id.is_some()
+                                    || t.agent_harness.is_some()
+                                    || t.agent_role.is_some();
                                 log::info!(
-                                    "pty: pane {id} process exited status={status:?} ephemeral={}",
+                                    "pty: pane {id} process exited status={status:?} ephemeral={} is_agent_or_subcontext={is_agent_or_subcontext}",
                                     t.ephemeral
                                 );
+                                // Stint 0765 / 0802: ephemeral agent/sub-context panes only
+                                // self-close on clean exit (0); non-zero or signal-terminated
+                                // crashes stay open in Error state for debugging and prevent
+                                // `collapse_subcontext_if_empty` from hiding the failed run.
                                 if t.ephemeral {
-                                    panes_to_close.push(id);
+                                    if status.is_failure() && is_agent_or_subcontext {
+                                        t.agent = None;
+                                        t.observed_agent = None;
+                                        log::info!(
+                                            "pty: retaining ephemeral pane {id} open after non-zero exit ({status:?})"
+                                        );
+                                    } else {
+                                        panes_to_close.push(id);
+                                    }
                                 }
                             }
                             break;
@@ -4521,6 +4936,7 @@ impl PlexiApp {
         for pane_id in panes_to_close {
             self.close_pane_by_id(pane_id);
         }
+        self.refresh_portal_context_states();
     }
 
     /// Apply an inline pane name immediately after spawn. Sets `name_locked` so

@@ -47,6 +47,6 @@ pub fn dot_color_from_time(
             egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
         }
         AgentState::Idle => colors.pip_idle,
-        AgentState::Blocked => colors.pip_blocked,
+        AgentState::Blocked | AgentState::NeedsYou => colors.pip_blocked,
     }
 }

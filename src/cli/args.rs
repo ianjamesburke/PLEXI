@@ -2572,6 +2572,67 @@ pub enum AgentCmd {
     },
     /// List agents installed in the current workspace.
     List,
+    /// Spawn a worker agent from a `.plexi/agents/<name>.toml` or global role configuration.
+    ///
+    /// Creates or reuses an isolated sub-context when `--subcontext` (or the role's
+    /// `subcontext` key) is set, links a parent `PortalPane` in the caller's context,
+    /// stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL`, and boots the configured CLI harness.
+    ///
+    /// Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
+    Spawn {
+        /// Role config name (in `.plexi/agents/<name>.toml` or `~/.plexi-<channel>/agents/<name>.toml`) or path to a `.toml` file
+        config: String,
+        /// Task brief passed to the spawned agent harness
+        #[arg(long)]
+        task: String,
+        /// Sub-context name to spawn into (overrides `subcontext` in the role config)
+        #[arg(long)]
+        subcontext: Option<String>,
+        /// Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish
+        #[arg(long)]
+        ephemeral: bool,
+        /// Parent/caller pane ID (defaults to `$PLEXI_PANE_ID`)
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<u64>,
+        /// Working directory for the spawned worker pane
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Print full host JSON response instead of bare pane ID
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a worker's structured result against its schema, write completion slots, and exit cleanly.
+    ///
+    /// Validates `--result` against the pane's `result_schema` (when present), writes
+    /// the `completed` and `summary` pane slots, and transitions the pane to `Idle` so
+    /// an ephemeral worker can exit `0` and trigger sub-context auto-collapse.
+    ///
+    /// Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit complete"
+    Done {
+        /// Structured JSON result payload
+        #[arg(long)]
+        result: String,
+        /// Human- and master-readable completion summary written to the `summary` slot
+        #[arg(long)]
+        summary: Option<String>,
+        /// Target pane ID (defaults to `$PLEXI_PANE_ID`)
+        #[arg(long = "pane-id")]
+        pane_id: Option<u64>,
+    },
+    /// Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state).
+    ///
+    /// Transitions this worker pane to `Blocked`, writes the `question` slot, and wakes
+    /// the `PLEXI_PARENT_PANE` master agent waiting on `plexi pane wait` without filing
+    /// a human-facing `NeedsYou` alert.
+    ///
+    /// Example: plexi agent ask "Should we preserve the legacy v1 token endpoint?"
+    Ask {
+        /// Question text for the parent master agent
+        question: String,
+        /// Target pane ID (defaults to `$PLEXI_PANE_ID`)
+        #[arg(long = "pane-id")]
+        pane_id: Option<u64>,
+    },
     /// Report agent state for this pane to the host.
     ///
     /// Called internally by hook scripts. Requires PLEXI_SOCKET and PLEXI_PANE_ID
@@ -2579,7 +2640,7 @@ pub enum AgentCmd {
     ///
     /// Example: plexi agent report --state working --agent claude-code
     Report {
-        /// State to report: working, blocked, or idle
+        /// State to report: working, blocked, needs_you, or idle
         #[arg(long)]
         state: String,
         /// Agent name (e.g. "claude-code")
