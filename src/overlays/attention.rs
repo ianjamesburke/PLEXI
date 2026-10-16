@@ -231,8 +231,44 @@ pub(crate) struct AttentionState {
     pub show_technical: bool,
     pub feedback: Option<Feedback>,
     pub export: ExportState,
+    /// Issue the per-item state above (export, feedback, details) belongs to.
+    /// When the selected record changes, that state is discarded: it must
+    /// never be shown, copied or saved against a different issue.
+    pub item_id: Option<String>,
     /// Action requested by a key this frame; applied by `draw` (needs `ctx`).
     pub pending: Option<AttentionAction>,
+}
+
+impl AttentionState {
+    /// Drop everything that belongs to the previously selected item.
+    fn reset_item_state(&mut self) {
+        self.show_technical = false;
+        self.feedback = None;
+        self.export = ExportState::Idle;
+    }
+
+    /// Bind per-item state to `current`; reset it when the item changed.
+    fn bind_item(&mut self, current: Option<&str>) {
+        if self.item_id.as_deref() != current {
+            self.reset_item_state();
+            self.item_id = current.map(str::to_string);
+        }
+    }
+
+    /// True when a prepared export belongs to `issue_id`.
+    fn export_ready_for(&self, issue_id: &str) -> bool {
+        matches!(&self.export, ExportState::Ready { issue_id: id, .. } if id == issue_id)
+    }
+}
+
+/// `L` prepares the log excerpt, then copies it once it is ready for the
+/// selected issue. Pure so the keyboard path is testable.
+fn log_key_action(ready_for_selected: bool) -> AttentionAction {
+    if ready_for_selected {
+        AttentionAction::CopyLogs
+    } else {
+        AttentionAction::PrepareLogs
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,8 +296,8 @@ impl PlexiApp {
         );
         self.attention.open = true;
         self.attention.selected = 0;
-        self.attention.show_technical = false;
-        self.attention.feedback = None;
+        self.attention.reset_item_state();
+        self.attention.item_id = None;
     }
 
     pub(crate) fn close_attention_overlay(&mut self) {
@@ -293,7 +329,13 @@ impl PlexiApp {
         } else if input.consume_key(none, Key::C) {
             Some(AttentionAction::CopyError)
         } else if input.consume_key(none, Key::L) {
-            Some(AttentionAction::PrepareLogs)
+            let items = open_items();
+            let ready = items
+                .get(self.attention.selected)
+                .is_some_and(|item| self.attention.export_ready_for(&item.id));
+            Some(log_key_action(ready))
+        } else if input.consume_key(none, Key::X) {
+            Some(AttentionAction::DiscardLogs)
         } else if input.consume_key(none, Key::S) {
             Some(AttentionAction::SaveLogs)
         } else if input.consume_key(none, Key::N) {
@@ -320,11 +362,13 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_attention_overlay(&mut self, ctx: &egui::Context) {
-        self.poll_attention_export(ctx);
         let items = open_items();
         if !items.is_empty() {
             self.attention.selected = self.attention.selected.min(items.len() - 1);
         }
+        self.attention
+            .bind_item(items.get(self.attention.selected).map(|item| item.id.as_str()));
+        self.poll_attention_export(ctx);
         let colors = self.colors;
         let selected = self.attention.selected;
         let views: Vec<AttentionView> = items.iter().map(attention_view).collect();
@@ -338,8 +382,9 @@ impl PlexiApp {
         let detail_max = (body_max - list_max - 90.0).max(110.0);
         let show_technical = self.attention.show_technical;
         let feedback = self.attention.feedback.clone();
+        let selected_id = selected_record.as_ref().map(|r| r.id.clone());
         let export_summary: Option<(String, String)> = match &self.attention.export {
-            ExportState::Ready { excerpt, .. } => {
+            ExportState::Ready { excerpt, issue_id } if Some(issue_id) == selected_id.as_ref() => {
                 Some((excerpt.summary(), excerpt.clipboard_text.clone()))
             }
             _ => None,
@@ -496,6 +541,7 @@ impl PlexiApp {
                     ui.add_space(style::SPACE_SM);
                     typography::caption_strong(ui, "Review before copying", &colors);
                     typography::caption(ui, summary.clone(), &colors);
+                    typography::caption(ui, "L copy · S save · X discard", &colors);
                     egui::ScrollArea::vertical()
                         .id_salt("attention_log_preview")
                         .max_height(110.0)
@@ -574,9 +620,6 @@ impl PlexiApp {
             AttentionAction::Close => self.close_attention_overlay(),
             AttentionAction::Select(idx) => {
                 self.attention.selected = idx;
-                self.attention.show_technical = false;
-                self.attention.feedback = None;
-                self.attention.export = ExportState::Idle;
             }
             AttentionAction::ToggleTechnical => {
                 self.attention.show_technical = !self.attention.show_technical;
@@ -598,13 +641,17 @@ impl PlexiApp {
                 };
                 let issue_id = record.id.clone();
                 let thread_issue = issue_id.clone();
+                // Resolve the path here: it depends on the calling thread's
+                // profile, which the worker does not share.
+                let log_path = crate::platform::logging::log_path();
+                let session_start = log_export::session_start();
                 let (tx, rx) = mpsc::channel();
                 let spawn = std::thread::Builder::new()
                     .name("attention-log-export".to_string())
                     .spawn(move || {
                         let result = log_export::prepare_excerpt(
-                            &crate::platform::logging::log_path(),
-                            log_export::session_start(),
+                            &log_path,
+                            session_start,
                             &thread_issue,
                             log_export::CLIPBOARD_LIMIT_BYTES,
                             log_export::SAVE_LIMIT_BYTES,
@@ -625,7 +672,11 @@ impl PlexiApp {
                 }
             }
             AttentionAction::CopyLogs => {
-                if let ExportState::Ready { excerpt, issue_id } = &self.attention.export {
+                let selected_ready = record
+                    .is_some_and(|r| self.attention.export_ready_for(&r.id));
+                if let (true, ExportState::Ready { excerpt, issue_id }) =
+                    (selected_ready, &self.attention.export)
+                {
                     ctx.copy_text(excerpt.clipboard_text.clone());
                     log::info!("attention: copied session logs id={issue_id}");
                     self.set_attention_feedback("Copied reviewed session logs to the clipboard.", false);
@@ -634,8 +685,10 @@ impl PlexiApp {
                 }
             }
             AttentionAction::SaveLogs => {
+                let selected_ready = record
+                    .is_some_and(|r| self.attention.export_ready_for(&r.id));
                 let text = match &self.attention.export {
-                    ExportState::Ready { excerpt, .. } => excerpt.save_text.clone(),
+                    ExportState::Ready { excerpt, .. } if selected_ready => excerpt.save_text.clone(),
                     _ => {
                         self.set_attention_feedback("Prepare session logs first (L).", true);
                         return;
@@ -660,15 +713,24 @@ impl PlexiApp {
                     return;
                 };
                 log::info!("attention: keychain recovery invoked id={} approve={approve}", record.id);
-                self.resolve_from_desktop(&record.id, approve, "keychain recovery");
+                self.finish_attention_resolve(&record.id, approve, "keychain recovery");
             }
             AttentionAction::Acknowledge => {
                 let Some(record) = record.filter(|r| r.kind == NeedsYouKind::Integrity) else {
                     return;
                 };
                 log::info!("attention: acknowledged integrity issue id={}", record.id);
-                self.resolve_from_desktop(&record.id, false, "integrity acknowledge");
+                self.finish_attention_resolve(&record.id, false, "integrity acknowledge");
             }
+        }
+    }
+
+    /// Resolve through the shared desktop handler. The resolved item's export,
+    /// feedback and details never carry over to whichever item is selected next.
+    fn finish_attention_resolve(&mut self, id: &str, approve: bool, label: &str) {
+        match self.resolve_from_desktop(id, approve, label) {
+            Ok(()) => self.attention.reset_item_state(),
+            Err(error) => self.set_attention_feedback(error, true),
         }
     }
 
@@ -744,6 +806,25 @@ mod tests {
         assert!(text.contains("Plexi 9.9.9 (channel: alpha)"));
         assert!(text.contains("Time: "));
         assert!(text.contains("kind: integrity"));
+    }
+
+    #[test]
+    fn log_key_prepares_then_copies() {
+        assert_eq!(log_key_action(false), AttentionAction::PrepareLogs);
+        assert_eq!(log_key_action(true), AttentionAction::CopyLogs);
+    }
+
+    #[test]
+    fn per_item_state_never_follows_a_different_item() {
+        let mut state = AttentionState::default();
+        state.bind_item(Some("a"));
+        state.feedback = Some(Feedback { text: "x".into(), is_error: false });
+        state.show_technical = true;
+        state.bind_item(Some("a"));
+        assert!(state.feedback.is_some(), "same item keeps its state");
+        state.bind_item(Some("b"));
+        assert!(state.feedback.is_none() && !state.show_technical);
+        assert!(!state.export_ready_for("a"));
     }
 
     #[test]

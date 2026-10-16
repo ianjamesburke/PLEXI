@@ -9431,3 +9431,172 @@ fn test_host_removes_owned_scratch_on_drop() {
         permissions.display()
     );
 }
+
+// ── Needs attention review (stint 0801) ──────────────────────────────────────
+
+mod attention_review {
+    use super::*;
+    use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
+    use crate::overlays::attention::{open_items, ExportState};
+
+    fn file(monitor: &PermissionMonitor, kind: NeedsYouKind, summary: &str) -> String {
+        monitor
+            .file_needs_you(NeedsYouFile {
+                kind,
+                actor: "host".to_string(),
+                resource: "needs-you".to_string(),
+                summary: summary.to_string(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .expect("file needs-you")
+    }
+
+    fn copied(h: &HostHarness) -> Vec<String> {
+        h.last_platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn seeded() -> (HostHarness, std::sync::Arc<PermissionMonitor>) {
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        file(&monitor, NeedsYouKind::Question, "Overwrite the migration?");
+        file(&monitor, NeedsYouKind::BlockedRun, "CI runner stopped");
+        h.run_frames(2);
+        h.app.open_attention_overlay("test");
+        h.run_frames(2);
+        (h, monitor)
+    }
+
+    fn wait_for_export(h: &mut HostHarness) {
+        for _ in 0..200 {
+            h.run_frames(1);
+            if !matches!(h.app.attention.export, ExportState::Preparing { .. }) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("log export never finished");
+    }
+
+    #[test]
+    fn c_copies_the_whole_error_without_resolving() {
+        let (mut h, monitor) = seeded();
+        let selected = open_items()[0].clone();
+        h.press_key(egui::Key::C, egui::Modifiers::NONE);
+        let texts = copied(&h);
+        assert_eq!(texts.len(), 1, "one copy per press");
+        assert!(texts[0].contains(&selected.id) && texts[0].contains(&selected.summary));
+        assert!(texts[0].contains("channel:"));
+        assert!(h.app.attention.feedback.as_ref().is_some_and(|f| !f.is_error));
+        assert_eq!(monitor.open_needs_you().len(), 2, "copying resolves nothing");
+    }
+
+    #[test]
+    fn l_prepares_then_copies_session_logs_from_the_callers_profile() {
+        let (mut h, monitor) = seeded();
+        let selected = open_items()[0].clone();
+        // The worker must read the *caller's* profile log (thread-local test dir).
+        let log = crate::platform::logging::log_path();
+        std::fs::write(
+            &log,
+            format!(
+                "[2026-10-16 03:00:00] [WARN] [plexi::gate] {} token=supersecretvalue1234\n",
+                selected.id
+            ),
+        )
+        .expect("write log fixture");
+        h.press_key(egui::Key::L, egui::Modifiers::NONE);
+        wait_for_export(&mut h);
+        assert!(
+            matches!(&h.app.attention.export, ExportState::Ready { issue_id, .. } if *issue_id == selected.id),
+            "export must be ready for the selected issue"
+        );
+        assert!(copied(&h).is_empty(), "preparing must not copy");
+        h.press_key(egui::Key::L, egui::Modifiers::NONE);
+        let texts = copied(&h);
+        assert_eq!(texts.len(), 1, "L again copies the reviewed excerpt");
+        assert!(texts[0].contains(&selected.id));
+        assert!(!texts[0].contains("supersecretvalue1234"), "redacted");
+        assert!(texts[0].contains("PARTIAL"), "unknown session start is labelled");
+        assert_eq!(monitor.open_needs_you().len(), 2);
+        h.press_key(egui::Key::X, egui::Modifiers::NONE);
+        assert!(matches!(h.app.attention.export, ExportState::Idle), "X discards");
+    }
+
+    #[test]
+    fn missing_log_and_empty_selection_report_failure_visibly() {
+        let (mut h, monitor) = seeded();
+        h.press_key(egui::Key::L, egui::Modifiers::NONE);
+        wait_for_export(&mut h);
+        assert!(
+            matches!(&h.app.attention.export, ExportState::Failed(error) if error.contains("could not open")),
+            "a missing log is an error, not an empty success"
+        );
+        assert_eq!(monitor.open_needs_you().len(), 2);
+
+        // Nothing selectable: copy has no payload and says so.
+        let mut empty = HostHarness::new();
+        empty.run_frames(2);
+        empty.app.open_attention_overlay("test");
+        empty.run_frames(2);
+        empty.press_key(egui::Key::C, egui::Modifiers::NONE);
+        assert!(copied(&empty).is_empty());
+        assert!(empty.app.attention.feedback.as_ref().is_some_and(|f| f.is_error));
+    }
+
+    #[test]
+    fn selecting_another_item_discards_stale_export_and_feedback() {
+        let (mut h, _monitor) = seeded();
+        std::fs::write(
+            crate::platform::logging::log_path(),
+            "[2026-10-16 03:00:00] [INFO] [a] hello\n",
+        )
+        .unwrap();
+        h.press_key(egui::Key::L, egui::Modifiers::NONE);
+        wait_for_export(&mut h);
+        h.press_key(egui::Key::C, egui::Modifiers::NONE);
+        assert!(h.app.attention.feedback.is_some());
+        h.press_key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.run_frames(1);
+        assert!(matches!(h.app.attention.export, ExportState::Idle));
+        assert!(h.app.attention.feedback.is_none());
+    }
+
+    #[test]
+    fn issue_arriving_while_hidden_is_discoverable_and_does_not_open() {
+        let mut h = HostHarness::new();
+        h.run_frames(2);
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        file(&monitor, NeedsYouKind::Question, "Hidden arrival");
+        h.run_hidden_frames(3);
+        assert!(!h.app.attention.open, "no popup while hidden");
+        assert_eq!(open_items().len(), 1, "discoverable once visible");
+        h.run_frames(2);
+        assert!(!h.app.attention.open);
+    }
+
+    #[test]
+    fn unresolved_items_survive_restart_and_closing_the_overlay() {
+        let (mut h, monitor) = seeded();
+        let ids: Vec<String> = open_items().into_iter().map(|item| item.id).collect();
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        h.run_frames(1);
+        assert!(!h.app.attention.open);
+        drop(monitor);
+        let restored = PermissionMonitor::reload_for_test(&crate::config::config_dir());
+        let open = restored.list_needs_you();
+        // An unclean shutdown also files its own integrity item under the
+        // existing persistence rules, so assert ours are present, not the count.
+        for id in &ids {
+            assert!(open.iter().any(|row| &row.id == id), "{id} lost: {open:?}");
+            assert!(open_items().iter().any(|row| &row.id == id), "{id} hidden");
+        }
+    }
+}

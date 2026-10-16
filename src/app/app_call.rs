@@ -586,29 +586,40 @@ impl PlexiApp {
         let Some(approve) = choice else {
             return;
         };
-        self.resolve_from_desktop(&item.id, approve, "keychain recovery");
+        let _ = self.resolve_from_desktop(&item.id, approve, "keychain recovery");
     }
 
     /// Resolve a Needs-you record from a desktop click or key. Synthetic
     /// input, sockets and phones never reach this: it is the single guarded
     /// desktop path shared by the recovery banner and the attention review.
     /// Resolving a record never mints an app grant.
-    pub(crate) fn resolve_from_desktop(&mut self, id: &str, approve: bool, label: &str) {
+    pub(crate) fn resolve_from_desktop(
+        &mut self,
+        id: &str,
+        approve: bool,
+        label: &str,
+    ) -> Result<(), String> {
         if self.synthetic_input_frame {
             log::info!(
                 "permission_seal: ignored synthetic {label} click id={id} approve={approve}"
             );
-            return;
+            return Err("Ignored: only the person at the desktop can do this.".to_string());
         }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         match monitor.resolve_needs_you(id, approve) {
-            Ok(receipt) => log::info!(
-                "permission_seal: desktop {label} resolved id={} resolution={}",
-                receipt.id,
-                receipt.resolution.as_str()
-            ),
-            Err(error) => log::error!("permission_seal: desktop {label} failed id={id}: {error}"),
+            Ok(receipt) => {
+                log::info!(
+                    "permission_seal: desktop {label} resolved id={} resolution={}",
+                    receipt.id,
+                    receipt.resolution.as_str()
+                );
+                Ok(())
+            }
+            Err(error) => {
+                log::error!("permission_seal: desktop {label} failed id={id}: {error}");
+                Err(format!("Could not complete {label}: {error}"))
+            }
         }
     }
 
