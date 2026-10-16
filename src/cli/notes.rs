@@ -40,40 +40,80 @@ fn cli_capture_tier() -> std::path::PathBuf {
 /// `plexi note "<text>"` — capture a note into the tier cwd belongs to.
 pub fn note_capture_cli(text: &str) -> i32 {
     let dir = cli_capture_tier();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("error: failed to create notes dir {:?}: {e}", dir);
-        return 1;
-    }
-
-    let now = chrono::Utc::now();
-    let ts = now.format("%Y%m%dT%H%M%S%.3fZ").to_string();
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    match capture_note_into(&dir, text, &cwd) {
+        Ok(path) => {
+            log::info!("note_capture: wrote {:?}", path);
+            println!("{}", path.display());
+            0
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            1
+        }
+    }
+}
 
+/// Write one timestamped note into `dir`, returning its path.
+fn capture_note_into(
+    dir: &std::path::Path,
+    text: &str,
+    cwd: &str,
+) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("failed to create notes dir {:?}: {e}", dir))?;
+    let now = chrono::Utc::now();
+    let ts = now.format("%Y%m%dT%H%M%S%.3fZ").to_string();
     // Provenance only — the note's tier, not its frontmatter, is what locates it.
     let frontmatter = format!(
         "---\ncaptured_at: {}\nsource: cli\ncwd: {cwd}\n---\n",
         now.to_rfc3339()
     );
     let content = format!("{frontmatter}{}\n", text.trim());
-
     let path = dir.join(format!("{ts}.md"));
-    match std::fs::write(&path, &content) {
-        Ok(_) => {
-            log::info!("note_capture: wrote {:?}", path);
-            println!("{}", path.display());
+    std::fs::write(&path, content).map_err(|e| format!("failed to write note: {e}"))?;
+    Ok(path)
+}
+
+/// `plexi note [add|list|open] | plexi note "<text>"` — the canonical entry point.
+///
+/// Bare `plexi note` prints the note help and exits without capturing anything
+/// or touching a pane.
+pub fn note_cli(cmd: Option<super::args::NoteCmd>, text: Option<String>) -> i32 {
+    match (cmd, text) {
+        (Some(cmd), _) => run_note_cmd(cmd),
+        (None, Some(text)) => note_capture_cli(&text),
+        (None, None) => {
+            use clap::CommandFactory;
+            let mut root = super::args::Cli::command();
+            if let Some(sub) = root.find_subcommand_mut("note") {
+                let _ = sub.print_help();
+                println!();
+            }
             0
-        }
-        Err(e) => {
-            eprintln!("error: failed to write note: {e}");
-            1
         }
     }
 }
 
-/// `plexi notes list` — every note across every visible tier, newest first.
+/// Hidden `plexi notes [list|open]` compatibility entry point; bare `notes` lists.
+pub fn notes_compat_cli(cmd: Option<super::args::NoteCmd>) -> i32 {
+    log::info!("notes_compat: legacy `notes` spelling used");
+    run_note_cmd(cmd.unwrap_or(super::args::NoteCmd::List))
+}
+
+fn run_note_cmd(cmd: super::args::NoteCmd) -> i32 {
+    use super::args::NoteCmd;
+    match cmd {
+        NoteCmd::Add { text } => note_capture_cli(&text),
+        NoteCmd::List => notes_list_cli(),
+        NoteCmd::Open => notes_open_cli(),
+    }
+}
+
+/// `plexi note list` — every note across every visible tier, newest first.
 pub fn notes_list_cli() -> i32 {
     let scopes = cli_notes_scopes();
     log::info!(
@@ -103,9 +143,9 @@ pub fn notes_list_cli() -> i32 {
     0
 }
 
-/// `plexi notes open` — inject an fzf note picker into the focused terminal pane.
+/// `plexi note open` — inject an fzf note picker into the focused terminal pane.
 ///
-/// The picker's candidate list is `plexi notes list`, so tier resolution and
+/// The picker's candidate list is `plexi note list`, so tier resolution and
 /// ordering have exactly one implementation.
 pub fn notes_open_cli() -> i32 {
     if !binary_in_path("fzf") {
@@ -121,8 +161,8 @@ pub fn notes_open_cli() -> i32 {
         }
         Err(_) => {
             eprintln!(
-                "error: PLEXI_PANE_ID is not set — `notes open` drives a terminal pane, so it \
-                 must run inside one. Use `plexi notes list` outside a pane."
+                "error: PLEXI_PANE_ID is not set — `note open` drives a terminal pane, so it \
+                 must run inside one. Use `plexi note list` outside a pane."
             );
             return 1;
         }
@@ -130,8 +170,8 @@ pub fn notes_open_cli() -> i32 {
 
     if !super::command_socket_available() {
         eprintln!(
-            "error: no Plexi host reachable — `notes open` types into a live pane. Start a host, \
-             or use `plexi notes list` to print paths instead."
+            "error: no Plexi host reachable — `note open` types into a live pane. Start a host, \
+             or use `plexi note list` to print paths instead."
         );
         return 1;
     }
@@ -176,7 +216,7 @@ fn missing_picker_error(platform: InstallPlatform) -> String {
 fn notes_open_command(self_exe: &str, editor: &str) -> String {
     let list_command = crate::host::shell::shell_join(&[
         self_exe.to_owned(),
-        "notes".to_owned(),
+        "note".to_owned(),
         "list".to_owned(),
     ]);
     format!(
@@ -187,7 +227,7 @@ fn notes_open_command(self_exe: &str, editor: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{missing_picker_error, notes_open_command, InstallPlatform};
+    use super::{capture_note_into, missing_picker_error, notes_open_command, InstallPlatform};
 
     #[test]
     fn missing_picker_hint_uses_each_platforms_native_install_path() {
@@ -206,11 +246,35 @@ mod tests {
     }
 
     #[test]
+    fn capture_writes_into_the_given_tier_and_is_scannable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tier = tmp.path().join(".plexi").join("notes");
+        let path = capture_note_into(&tier, "  list  ", "/work").expect("capture");
+        assert!(path.starts_with(&tier));
+        let body = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            body.contains("source: cli") && body.contains("cwd: /work"),
+            "{body}"
+        );
+        assert!(body.ends_with("list\n"), "{body}");
+        assert_eq!(crate::notes::scan_tier(&tier), vec![path]);
+    }
+
+    #[test]
+    fn capture_into_an_unwritable_tier_reports_instead_of_panicking() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocker = tmp.path().join("file");
+        std::fs::write(&blocker, "x").expect("seed");
+        let err = capture_note_into(&blocker.join("notes"), "x", "").unwrap_err();
+        assert!(err.contains("failed to create notes dir"), "{err}");
+    }
+
+    #[test]
     fn picker_command_uses_the_running_binary_and_opens_the_selected_note() {
         let command = notes_open_command("/Applications/Plexi Beta/plexi", "nano");
 
         assert!(
-            command.starts_with("selected=$('/Applications/Plexi Beta/plexi' notes list | fzf"),
+            command.starts_with("selected=$('/Applications/Plexi Beta/plexi' note list | fzf"),
             "{command}"
         );
         assert!(command.contains("--header='Select note'"), "{command}");

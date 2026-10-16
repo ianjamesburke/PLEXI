@@ -2004,40 +2004,45 @@ Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14)
 | `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
 | `<pairs>` | string (repeatable) | yes | One or more KEY=VALUE pairs to write |
 
-## `plexi notes`
+## `plexi note`
 
-Browse and open scratchpad notes.
+Capture, list, and open notes.
 
-Each scratchpad session writes a timestamped file to `<config_dir>/notes/`. Use `plexi notes list` to print note paths, or `plexi notes open` to pick one with fzf.
+`plexi note "a thought"` captures a note. `plexi note list` prints note paths, and `plexi note open` picks one with fzf in the focused pane. Notes live in the tier of the current directory (its nearest ancestor holding `.plexi/`, else the global tier); see `src/host/AGENTS.md` for the tier contract. `list` also rolls up nested tiers and the global tier.
+
+Text that is exactly `list`, `open`, or `add` is read as that subcommand; shell quoting cannot tell them apart. Capture it with `plexi note add list`.
+
+Example: plexi note "remember to update the docs"
 
 | Subcommand | Description |
 |---|---|
+| `add` | Capture a note explicitly, even when the text is `list`, `open`, or `add` |
 | `list` | Print paths of every note in every visible tier, newest first |
 | `open` | Open a note picker with fzf in the focused terminal pane |
 
-### `plexi notes list`
+### `plexi note add`
+
+Capture a note explicitly, even when the text is `list`, `open`, or `add`.
+
+Writes a timestamped note into the tier of the current directory.
+
+Example: plexi note add "remember to update the docs"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<text>` | string | yes | Note text to capture |
+
+### `plexi note list`
 
 Print paths of every note in every visible tier, newest first.
 
 Tiers are the current directory's context tier (its nearest ancestor holding a `.plexi/` directory), any tier nested below it, and the global tier. Resolved from the working directory, never from the environment.
 
-### `plexi notes open`
+### `plexi note open`
 
 Open a note picker with fzf in the focused terminal pane.
 
-Candidates come from `plexi notes list`. Requires fzf and a running host; both are reported as errors rather than silently degrading.
-
-## `plexi note`
-
-Capture a quick note to the inbox.
-
-Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter capturing cwd, workspace, and context root. Triage later in the notes picker.
-
-Example: plexi note "remember to update the docs"
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<text>` | string | yes | Note text to capture |
+Candidates come from `plexi note list`. Requires fzf and a running host; both are reported as errors rather than silently degrading.
 
 ## `plexi doctor`
 

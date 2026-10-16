@@ -277,23 +277,31 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// Browse and open scratchpad notes.
+    /// Capture, list, and open notes.
     ///
-    /// Each scratchpad session writes a timestamped file to `<config_dir>/notes/`.
-    /// Use `plexi notes list` to print note paths, or `plexi notes open` to pick one with fzf.
-    Notes {
-        #[command(subcommand)]
-        cmd: Option<NotesCmd>,
-    },
-    /// Capture a quick note to the inbox.
+    /// `plexi note "a thought"` captures a note. `plexi note list` prints note
+    /// paths, and `plexi note open` picks one with fzf in the focused pane.
+    /// Notes live in the tier of the current directory (its nearest ancestor
+    /// holding `.plexi/`, else the global tier); see `src/host/AGENTS.md` for the
+    /// tier contract. `list` also rolls up nested tiers and the global tier.
     ///
-    /// Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter
-    /// capturing cwd, workspace, and context root. Triage later in the notes picker.
+    /// Text that is exactly `list`, `open`, or `add` is read as that
+    /// subcommand; shell quoting cannot tell them apart. Capture it with
+    /// `plexi note add list`.
     ///
     /// Example: plexi note "remember to update the docs"
+    #[command(args_conflicts_with_subcommands = true)]
     Note {
-        /// Note text to capture
-        text: String,
+        #[command(subcommand)]
+        cmd: Option<NoteCmd>,
+        /// Note text to capture (shorthand for `note add`)
+        text: Option<String>,
+    },
+    /// Compatibility spelling of `plexi note list` / `plexi note open`.
+    #[command(hide = true)]
+    Notes {
+        #[command(subcommand)]
+        cmd: Option<NoteCmd>,
     },
     /// Audit all installed apps for capability and config gaps.
     ///
@@ -2131,7 +2139,16 @@ pub enum RoutineCmd {
 }
 
 #[derive(Subcommand)]
-pub enum NotesCmd {
+pub enum NoteCmd {
+    /// Capture a note explicitly, even when the text is `list`, `open`, or `add`.
+    ///
+    /// Writes a timestamped note into the tier of the current directory.
+    ///
+    /// Example: plexi note add "remember to update the docs"
+    Add {
+        /// Note text to capture
+        text: String,
+    },
     /// Print paths of every note in every visible tier, newest first.
     ///
     /// Tiers are the current directory's context tier (its nearest ancestor
@@ -2140,7 +2157,7 @@ pub enum NotesCmd {
     List,
     /// Open a note picker with fzf in the focused terminal pane.
     ///
-    /// Candidates come from `plexi notes list`. Requires fzf and a running host;
+    /// Candidates come from `plexi note list`. Requires fzf and a running host;
     /// both are reported as errors rather than silently degrading.
     Open,
 }
@@ -2481,6 +2498,68 @@ mod tests {
         SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn note_parses_shorthand_capture_subcommands_and_bare_help() {
+        use super::{Commands, NoteCmd};
+        let parse = |args: &[&str]| {
+            let mut v = vec!["plexi"];
+            v.extend_from_slice(args);
+            Cli::try_parse_from(v)
+        };
+        let note = |c: Cli| match c.command {
+            Some(Commands::Note { cmd, text }) => (cmd, text),
+            _ => panic!("not a note command"),
+        };
+        let (cmd, text) = note(parse(&["note", "a thought"]).unwrap());
+        assert!(cmd.is_none());
+        assert_eq!(text.as_deref(), Some("a thought"));
+        let (cmd, text) = note(parse(&["note"]).unwrap());
+        assert!(cmd.is_none() && text.is_none());
+        for (word, want_list) in [("list", true), ("open", false)] {
+            let (cmd, text) = note(parse(&["note", word]).unwrap());
+            assert!(text.is_none());
+            assert!(matches!(
+                (cmd, want_list),
+                (Some(NoteCmd::List), true) | (Some(NoteCmd::Open), false)
+            ));
+        }
+        for word in ["list", "open", "add"] {
+            let (cmd, _) = note(parse(&["note", "add", word]).unwrap());
+            assert!(matches!(cmd, Some(NoteCmd::Add { text }) if text == word));
+        }
+        // Stray arguments are errors, never accidental captures.
+        assert!(parse(&["note", "list", "extra"]).is_err());
+        assert!(parse(&["note", "add"]).is_err());
+        assert!(parse(&["note", "one", "two"]).is_err());
+    }
+
+    #[test]
+    fn notes_compat_dispatches_and_is_hidden() {
+        use super::{Commands, NoteCmd};
+        for (args, ok) in [
+            (vec!["plexi", "notes"], true),
+            (vec!["plexi", "notes", "list"], true),
+            (vec!["plexi", "notes", "open"], true),
+        ] {
+            let c = Cli::try_parse_from(args).unwrap();
+            assert!(ok && matches!(c.command, Some(Commands::Notes { .. })));
+        }
+        let c = Cli::try_parse_from(["plexi", "notes", "list"]).unwrap();
+        assert!(matches!(
+            c.command,
+            Some(Commands::Notes {
+                cmd: Some(NoteCmd::List)
+            })
+        ));
+        let root = <Cli as clap::CommandFactory>::command();
+        assert!(root
+            .find_subcommand("notes")
+            .is_some_and(|c| c.is_hide_set()));
+        assert!(root
+            .find_subcommand("note")
+            .is_some_and(|c| !c.is_hide_set()));
+    }
 
     #[test]
     fn notify_preserves_post_flags_and_exposes_dismiss_subcommand() {

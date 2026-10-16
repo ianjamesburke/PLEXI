@@ -53,13 +53,13 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **Notes resolve their tier from the working directory, never from
   `PLEXI_CONTEXT_ROOT`.** `plexi note` writes into the tier of cwd's nearest
   anchored ancestor (the nearest directory holding a `.plexi/`), falling back to
-  the global tier when nothing above is anchored. `plexi notes list` rolls up that
+  the global tier when nothing above is anchored. `plexi note list` rolls up that
   tier, every tier nested below it, and the global tier, through the same
   `notes::notes_scopes_for_root` the GUI picker calls — so the two surfaces list
   the same notes by construction. The env var is stamped at pane spawn and a parent
   cannot mutate a live child's environment, so it goes permanently stale after
-  `plexi context set-root`; see `src/host/AGENTS.md`. `notes open` builds its fzf
-  candidate list by shelling `plexi notes list`, so ordering and tier resolution
+  `plexi context set-root`; see `src/host/AGENTS.md`. `note open` builds its fzf
+  candidate list by shelling `plexi note list`, so ordering and tier resolution
   have exactly one implementation, and it fails loudly — never printing a directory
   instead — when fzf, a pane, or a host is missing.
 - **`plexi demo` is macOS-only until platform keymaps exist.** On Linux and

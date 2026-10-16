@@ -216,9 +216,11 @@ plexi skill install --agent codex
 <!-- /experiment -->
 
 - **Notes** — capture and browse notes across their two storage tiers
-  (`~/.plexi/notes/` and `<context-root>/.plexi/notes/`): `plexi note --help` and
-  `plexi notes --help`. `note` writes into the tier the working directory belongs
-  to; `notes list` also rolls up any tier nested below it plus the global tier.
+  (`~/.plexi/notes/` and `<context-root>/.plexi/notes/`): `plexi note --help`.
+  `plexi note "text"` writes into the tier the working directory belongs to;
+  `plexi note list` also rolls up any tier nested below it plus the global tier,
+  and `plexi note open` picks one with fzf. Use `plexi note add <text>` when the
+  text is itself `list`, `open`, or `add`.
 - **Events** — subscribe to an app's event stream and declare/emit events:
   `plexi events --help`.
 <!-- experiment: mcp_client -->
@@ -277,7 +279,6 @@ account
 <!-- /experiment -->
 registry
 note
-notes
 ```
 
 <!-- experiment: folder_secrets -->

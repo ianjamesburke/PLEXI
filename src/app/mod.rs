@@ -318,7 +318,7 @@ pub struct PlexiApp {
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
     /// Cleared after the one-shot notes migration off the pre-tier store has
-    /// run. Boot-time rather than picker-time so `plexi notes list`, which has
+    /// run. Boot-time rather than picker-time so `plexi note list`, which has
     /// no router and therefore cannot migrate, still sees migrated notes without
     /// the GUI ever opening.
     pub(crate) notes_migration_pending: bool,
@@ -4519,7 +4519,7 @@ impl PlexiApp {
     /// Open the Cmd+O picker from the in-memory index and refresh it off the
     /// UI thread.
     ///
-    /// Tier discovery shares `discover_notes_scopes` with `plexi notes list`
+    /// Tier discovery shares `discover_notes_scopes` with `plexi note list`
     /// (`notes_scopes_for_root`). The picker also passes context roots it
     /// already knows so a home-rooted context does not have to walk `~/Library`
     /// to find them. That walk never runs on this thread: a cache hit paints
