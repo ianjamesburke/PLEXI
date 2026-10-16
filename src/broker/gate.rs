@@ -422,6 +422,18 @@ pub enum Admission {
 impl PermissionMonitor {
     pub fn for_profile(dir: &Path) -> Arc<Self> {
         let key = crate::platform::path::canonical_or_self(dir);
+        if let Some(existing) = monitors()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return existing;
+        }
+        // Acquire the test host-key guard before `monitors()` so a cache miss
+        // never holds `monitors()` while waiting on `ExclusiveHostKey`.
+        #[cfg(test)]
+        let _host_key = super::host_key::TestBackendGuard::acquire_if_needed();
         let mut map = monitors().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(key)
             .or_insert_with(|| Self::open_profile(dir))
@@ -4914,6 +4926,43 @@ mod tests {
         assert_eq!(rows.len(), AUDIT_MEM_CAP);
         assert_eq!(rows.first().unwrap().call_id, "call-25");
         assert_eq!(rows.last().unwrap().call_id, format!("call-{}", total - 1));
+    }
+
+    #[test]
+    fn for_profile_concurrent_with_exclusive_host_key_does_not_deadlock() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let path_a = dir_a.path().to_path_buf();
+        let path_b = dir_b.path().to_path_buf();
+
+        let (exclusive_held_tx, exclusive_held_rx) = std::sync::mpsc::sync_channel(1);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(2);
+
+        let done_a = done_tx.clone();
+        std::thread::spawn(move || {
+            let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+            let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
+            let _ = exclusive_held_tx.send(());
+            std::thread::sleep(Duration::from_millis(25));
+            let _monitor = PermissionMonitor::for_profile(&path_a);
+            let _ = done_a.send("exclusive");
+        });
+
+        let done_b = done_tx;
+        std::thread::spawn(move || {
+            let _ = exclusive_held_rx.recv();
+            let _monitor = PermissionMonitor::for_profile(&path_b);
+            let _ = done_b.send("unguarded");
+        });
+
+        let deadline = Duration::from_secs(3);
+        let first = done_rx
+            .recv_timeout(deadline)
+            .expect("first thread deadlocked between ExclusiveHostKey and PermissionMonitor::for_profile");
+        let second = done_rx
+            .recv_timeout(deadline)
+            .expect("second thread deadlocked between ExclusiveHostKey and PermissionMonitor::for_profile");
+        assert_ne!(first, second);
     }
 }
 
