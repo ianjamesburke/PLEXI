@@ -9761,6 +9761,313 @@ mod pane_lifecycle_events {
         }
     }
 
+    #[test]
+    fn agent_spawn_and_done_validates_schema_writes_slots_and_collapses_ephemeral_subcontext() {
+        let mut h = HostHarness::new();
+        let master_pane = h.add_focused_terminal();
+        let dir = tempfile::tempdir().unwrap();
+
+        let spawn_reply = temp_response(dir.path(), "agent-spawn");
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["pr_url"],
+            "properties": {
+                "pr_url": { "type": "string" }
+            }
+        });
+        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+            role: "worker".into(),
+            harness: "codex".into(),
+            command: "sleep 30".into(),
+            task: Some("Ship stint 0802".into()),
+            subcontext: Some("squad-alpha".into()),
+            ephemeral: true,
+            parent_pane_id: Some(master_pane),
+            name: None,
+            cwd: None,
+            worktree: None,
+            result_schema: Some(schema),
+            initial_slots: vec![],
+            no_focus: true,
+            response_file: spawn_reply.clone(),
+        });
+        h.hidden_frame();
+
+        let spawned = read_json_response(&spawn_reply);
+        assert_eq!(spawned["ok"], true, "agent_spawn must succeed: {spawned}");
+        let worker_id = spawned["pane_id"].as_u64().expect("worker pane_id");
+        let sub_ctx_id = spawned["context_id"].as_u64().expect("subcontext id");
+        let portal_id = spawned["portal_pane_id"].as_u64().expect("portal pane_id");
+
+        // Verify worker pane environment and PortalPane rollup (Working).
+        let worker_win = h
+            .app
+            .windows
+            .iter()
+            .find(|w| w.context_id == sub_ctx_id)
+            .expect("subcontext window");
+        let term = worker_win.panes[&worker_id]
+            .as_terminal()
+            .expect("worker terminal");
+        assert_eq!(term.parent_pane_id, Some(master_pane));
+        assert!(term.ephemeral);
+        assert_eq!(
+            term.spawn_env.get("PLEXI_PARENT_PANE").map(String::as_str),
+            Some(master_pane.to_string().as_str())
+        );
+        assert_eq!(
+            term.spawn_env.get("PLEXI_EPHEMERAL").map(String::as_str),
+            Some("1")
+        );
+
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::Working
+        );
+
+        // 1. Invalid result payload is rejected synchronously by schema validation.
+        let bad_done = temp_response(dir.path(), "agent-done-bad");
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            pane_id: worker_id,
+            result: Some(r#"{"wrong": 123}"#.into()),
+            summary: Some("incomplete".into()),
+            response_file: bad_done.clone(),
+        });
+        h.hidden_frame();
+        let bad_reply = read_json_response(&bad_done);
+        assert_eq!(bad_reply["ok"], false);
+        assert_eq!(bad_reply["error_code"], "invalid_result");
+
+        // 2. Valid result payload commits result, writes `completed` + `summary` slots.
+        let good_done = temp_response(dir.path(), "agent-done-good");
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            pane_id: worker_id,
+            result: Some(r#"{"pr_url": "https://github.com/org/repo/pull/802"}"#.into()),
+            summary: Some("Shipped agent squads".into()),
+            response_file: good_done.clone(),
+        });
+        h.hidden_frame();
+        let good_reply = read_json_response(&good_done);
+        assert_eq!(good_reply["ok"], true, "valid agent_done must succeed: {good_reply}");
+
+        // 3. Clean exit (code 0) closes the ephemeral worker and auto-collapses the sub-context + PortalPane.
+        h.app
+            .pty_event_tx
+            .send((
+                worker_id,
+                egui_term::PtyEvent::Exit(egui_term::PtyExitStatus::Code(0)),
+            ))
+            .unwrap();
+        h.hidden_frame();
+
+        assert!(
+            !h.app.windows.iter().any(|w| w.panes.contains_key(&worker_id)),
+            "ephemeral worker must close on exit 0"
+        );
+        assert!(
+            !h.app.router.iter().any(|c| c.context_id == sub_ctx_id),
+            "subcontext must auto-collapse when last ephemeral worker exits 0"
+        );
+        assert!(
+            !h.app.windows[0].panes.contains_key(&portal_id),
+            "PortalPane must be removed when subcontext auto-collapses"
+        );
+
+        // 4. Master can still read `completed` and `summary` slots after ephemeral close.
+        let summary_slot = temp_response(dir.path(), "slot-summary");
+        h.inject_ipc(crate::protocol::AppRequest::SlotRead {
+            pane_id: worker_id,
+            slot_name: "summary".into(),
+            response_file: summary_slot.clone(),
+        });
+        h.hidden_frame();
+        assert_eq!(
+            std::fs::read_to_string(&summary_slot).unwrap(),
+            "Shipped agent squads"
+        );
+    }
+
+    #[test]
+    fn ephemeral_agent_worker_nonzero_crash_retains_pane_and_subcontext_in_error_state() {
+        let mut h = HostHarness::new();
+        let master_pane = h.add_focused_terminal();
+        let dir = tempfile::tempdir().unwrap();
+
+        let spawn_reply = temp_response(dir.path(), "agent-spawn-crash");
+        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+            role: "crasher".into(),
+            harness: "claude".into(),
+            command: "sleep 30".into(),
+            task: Some("Crash task".into()),
+            subcontext: Some("squad-crash".into()),
+            ephemeral: true,
+            parent_pane_id: Some(master_pane),
+            name: None,
+            cwd: None,
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: true,
+            response_file: spawn_reply.clone(),
+        });
+        h.hidden_frame();
+
+        let spawned = read_json_response(&spawn_reply);
+        let worker_id = spawned["pane_id"].as_u64().unwrap();
+        let sub_ctx_id = spawned["context_id"].as_u64().unwrap();
+        let portal_id = spawned["portal_pane_id"].as_u64().unwrap();
+
+        // Simulate non-zero crash (exit code 1).
+        h.app
+            .pty_event_tx
+            .send((
+                worker_id,
+                egui_term::PtyEvent::Exit(egui_term::PtyExitStatus::Code(1)),
+            ))
+            .unwrap();
+        h.hidden_frame();
+
+        assert!(
+            h.app.windows.iter().any(|w| w.panes.contains_key(&worker_id)),
+            "crashed ephemeral worker must stay open for debugging"
+        );
+        assert!(
+            h.app.router.iter().any(|c| c.context_id == sub_ctx_id),
+            "subcontext with crashed worker must not auto-collapse"
+        );
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::Error,
+            "crashed worker must roll up Error status onto parent PortalPane"
+        );
+    }
+
+    #[test]
+    fn two_tier_escalation_blocked_wakes_parent_without_human_needs_you_and_captures_resume_cmd() {
+        let mut h = HostHarness::new();
+        let master_pane = h.add_focused_terminal();
+        let dir = tempfile::tempdir().unwrap();
+        let mon = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let initial_needs_you_count = mon.list_needs_you().len();
+
+        let spawn_reply = temp_response(dir.path(), "agent-spawn-ask");
+        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+            role: "implementer".into(),
+            harness: "codex".into(),
+            command: "sleep 30".into(),
+            task: Some("Implement feature".into()),
+            subcontext: Some("squad-ask".into()),
+            ephemeral: true,
+            parent_pane_id: Some(master_pane),
+            name: None,
+            cwd: None,
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: true,
+            response_file: spawn_reply.clone(),
+        });
+        h.hidden_frame();
+        let spawned = read_json_response(&spawn_reply);
+        let worker_id = spawned["pane_id"].as_u64().unwrap();
+        let portal_id = spawned["portal_pane_id"].as_u64().unwrap();
+
+        // Hook report captures session_id and populates resume_command (`codex resume sess-77`).
+        h.inject_ipc(
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": worker_id,
+                "state": "working",
+                "agent": "codex",
+                "session_id": "sess-77",
+                "event": "SessionStart"
+            }))
+            .unwrap(),
+        );
+        h.hidden_frame();
+
+        let info_reply = temp_response(dir.path(), "pane-info");
+        h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+            pane_id: worker_id,
+            response_file: info_reply.clone(),
+        });
+        h.hidden_frame();
+        let info = read_json_response(&info_reply);
+        assert_eq!(info["resume_command"], "codex resume sess-77");
+        assert_eq!(info["parent_pane_id"], master_pane);
+
+        // Tier 1 (`plexi agent ask`): worker transitions to Blocked, writes `question` slot,
+        // rolls up `ContextStatus::Blocked` on parent PortalPane, and does NOT file human NeedsYou.
+        let ask_reply = temp_response(dir.path(), "agent-ask");
+        h.inject_ipc(crate::protocol::AppRequest::AgentAsk {
+            pane_id: worker_id,
+            question: "Should we use BTreeMap or HashMap?".into(),
+            response_file: ask_reply.clone(),
+        });
+        h.hidden_frame();
+
+        let ask_json = read_json_response(&ask_reply);
+        assert_eq!(ask_json["ok"], true);
+        assert_eq!(ask_json["state"], "blocked");
+        assert_eq!(
+            mon.list_needs_you().len(),
+            initial_needs_you_count,
+            "Tier 1 Blocked on a child worker with parent_pane_id must NOT file human NeedsYou"
+        );
+
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::Blocked
+        );
+
+        // Tier 2 (`NeedsYou`): escalates to the human and rolls up `ContextStatus::NeedsYou`.
+        h.inject_ipc(
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": worker_id,
+                "state": "needs_you",
+                "agent": "codex",
+                "detail": "Approve production credentials",
+                "session_id": "sess-77"
+            }))
+            .unwrap(),
+        );
+        h.hidden_frame();
+
+        assert!(
+            mon.list_needs_you().len() > initial_needs_you_count,
+            "Tier 2 NeedsYou must file a human NeedsYou entry"
+        );
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::NeedsYou
+        );
+    }
+
 }
 mod flight_recorder_session {
     use super::*;

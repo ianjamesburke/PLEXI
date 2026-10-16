@@ -233,6 +233,537 @@ fn install_agent(global_agent_md: &Path, ws_agent_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
+/// Multi-CLI harness identifiers supported natively by Plexi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentHarness {
+    Claude,
+    Codex,
+    Pi,
+    Agy,
+}
+
+impl AgentHarness {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "claude" | "claude-code" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "pi" => Some(Self::Pi),
+            "agy" | "antigravity" => Some(Self::Agy),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Pi => "pi",
+            Self::Agy => "agy",
+        }
+    }
+
+    pub fn adapter(self) -> &'static HarnessAdapter {
+        HARNESS_ADAPTERS
+            .iter()
+            .find(|a| a.harness == self)
+            .expect("all AgentHarness variants exist in HARNESS_ADAPTERS")
+    }
+
+    pub fn resume_command(self, session_id: &str) -> String {
+        self.adapter().resume_command(session_id)
+    }
+}
+
+/// First-class adapter mapping a CLI agent harness to its spawn, session-ID capture,
+/// and resume command conventions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarnessAdapter {
+    pub harness: AgentHarness,
+    pub binary: &'static str,
+    pub task_flag: &'static str,
+    pub resume_subcommand_or_flag: &'static str,
+}
+
+pub const HARNESS_ADAPTERS: [HarnessAdapter; 4] = [
+    HarnessAdapter {
+        harness: AgentHarness::Claude,
+        binary: "claude",
+        task_flag: "-p",
+        resume_subcommand_or_flag: "--resume",
+    },
+    HarnessAdapter {
+        harness: AgentHarness::Codex,
+        binary: "codex",
+        task_flag: "exec",
+        resume_subcommand_or_flag: "resume",
+    },
+    HarnessAdapter {
+        harness: AgentHarness::Pi,
+        binary: "pi",
+        task_flag: "-p",
+        resume_subcommand_or_flag: "--session",
+    },
+    HarnessAdapter {
+        harness: AgentHarness::Agy,
+        binary: "agy",
+        task_flag: "--prompt",
+        resume_subcommand_or_flag: "--resume",
+    },
+];
+
+pub fn harness_adapter(name: &str) -> Option<&'static HarnessAdapter> {
+    let kind = AgentHarness::parse(name)?;
+    HARNESS_ADAPTERS.iter().find(|a| a.harness == kind)
+}
+
+fn shell_quote_arg(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':'))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+impl HarnessAdapter {
+    /// Build the exact CLI command to resume a captured session ID.
+    pub fn resume_command(&self, session_id: &str) -> String {
+        let sid = shell_quote_arg(session_id.trim());
+        format!("{} {} {}", self.binary, self.resume_subcommand_or_flag, sid)
+    }
+
+    /// Build the non-interactive / task-seeded CLI command to spawn a worker for `task`.
+    pub fn spawn_command(
+        &self,
+        task: &str,
+        model: Option<&str>,
+        system_prompt_file: Option<&Path>,
+    ) -> String {
+        let mut parts = vec![self.binary.to_string()];
+        if let Some(m) = model.and_then(non_empty_string) {
+            parts.push("--model".to_string());
+            parts.push(shell_quote_arg(m));
+        }
+        if let Some(prompt_path) = system_prompt_file {
+            let quoted_path = shell_quote_arg(&prompt_path.to_string_lossy());
+            match self.harness {
+                AgentHarness::Claude => {
+                    parts.push("--append-system-prompt-file".to_string());
+                    parts.push(quoted_path);
+                }
+                AgentHarness::Pi => {
+                    parts.push("--system-prompt".to_string());
+                    parts.push(quoted_path);
+                }
+                AgentHarness::Codex | AgentHarness::Agy => {
+                    parts.push("--system-prompt-file".to_string());
+                    parts.push(quoted_path);
+                }
+            }
+        }
+        parts.push(self.task_flag.to_string());
+        parts.push(shell_quote_arg(task));
+        parts.join(" ")
+    }
+
+    /// Extract a session ID from a hook JSON payload or structured telemetry value.
+    pub fn capture_session_id(&self, payload: &serde_json::Value) -> Option<String> {
+        let candidates = match self.harness {
+            AgentHarness::Claude => &["session_id", "sessionId"][..],
+            AgentHarness::Codex => &["session_id", "thread_id", "conversation_id"][..],
+            AgentHarness::Pi => &["session_id", "sessionId", "sessionFile"][..],
+            AgentHarness::Agy => &["session_id", "conversation_id", "conversationId"][..],
+        };
+        for key in candidates {
+            if let Some(val) = payload
+                .get(*key)
+                .and_then(|v| v.as_str())
+                .and_then(non_empty_string)
+            {
+                return Some(val.to_string());
+            }
+        }
+        None
+    }
+}
+
+/// Declarative agent role configuration loaded from `.plexi/agents/<name>.toml`
+/// or `~/.plexi-<channel>/agents/<name>.toml`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AgentRoleConfig {
+    /// Logical role name (defaults to the `.toml` file stem when omitted).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Primary CLI harness (`claude`, `codex`, `pi`, `agy`).
+    #[serde(alias = "default_harness")]
+    pub harness: String,
+    /// Optional fallback CLI harness when the primary binary is unavailable.
+    #[serde(default)]
+    pub fallback_harness: Option<String>,
+    /// Optional model identifier passed to the harness.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Whether the worker pane should auto-close on clean exit (`0`).
+    #[serde(default)]
+    pub ephemeral: Option<bool>,
+    /// Default target sub-context name for squad execution.
+    #[serde(default)]
+    pub subcontext: Option<String>,
+    /// Optional path to a system prompt markdown file.
+    #[serde(default)]
+    pub system_prompt_file: Option<PathBuf>,
+    /// Optional JSON Schema enforcing structured output on `plexi agent done`.
+    #[serde(default)]
+    pub result_schema: Option<serde_json::Value>,
+    /// Optional explicit shell command template (for custom harnesses or test fixtures).
+    #[serde(default)]
+    pub command: Option<String>,
+}
+
+impl AgentRoleConfig {
+    pub fn parse_toml(content: &str, default_name: Option<&str>) -> Result<Self, String> {
+        let mut cfg: Self =
+            toml::from_str(content).map_err(|e| format!("invalid agent role TOML: {e}"))?;
+        if cfg.name.as_deref().and_then(non_empty_string).is_none() {
+            cfg.name = default_name.map(ToOwned::to_owned);
+        }
+        if harness_adapter(&cfg.harness).is_none() {
+            return Err(format!(
+                "unknown harness '{}' (expected one of: claude, codex, pi, agy)",
+                cfg.harness
+            ));
+        }
+        if let Some(ref fb) = cfg.fallback_harness {
+            if harness_adapter(fb).is_none() {
+                return Err(format!(
+                    "unknown fallback_harness '{}' (expected one of: claude, codex, pi, agy)",
+                    fb
+                ));
+            }
+        }
+        Ok(cfg)
+    }
+
+    /// Resolve the active harness adapter, preferring `harness` when its binary is on `PATH`
+    /// (or when no `fallback_harness` is configured) and falling back to `fallback_harness`
+    /// if the primary binary is absent.
+    pub fn resolve_adapter(&self) -> Result<&'static HarnessAdapter, String> {
+        let primary = harness_adapter(&self.harness).ok_or_else(|| {
+            format!(
+                "unknown harness '{}' (expected claude, codex, pi, or agy)",
+                self.harness
+            )
+        })?;
+        if super::binary_in_path(primary.binary) {
+            return Ok(primary);
+        }
+        if let Some(ref fb_name) = self.fallback_harness {
+            let fallback = harness_adapter(fb_name).ok_or_else(|| {
+                format!(
+                    "unknown fallback_harness '{}' (expected claude, codex, pi, or agy)",
+                    fb_name
+                )
+            })?;
+            if super::binary_in_path(fallback.binary) {
+                return Ok(fallback);
+            }
+        }
+        Ok(primary)
+    }
+
+    /// Resolve the JSON schema configured on this role, supporting either an inline JSON/TOML
+    /// schema table or a string path/JSON literal.
+    pub fn resolved_result_schema(
+        &self,
+        base_dir: Option<&Path>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(ref raw) = self.result_schema else {
+            return Ok(None);
+        };
+        match raw {
+            serde_json::Value::String(spec) => {
+                crate::host::pane_result::parse_schema_spec(spec, base_dir).map(Some)
+            }
+            serde_json::Value::Object(_) => {
+                crate::host::pane_result::normalize_schema_value(raw, base_dir).map(Some)
+            }
+            _ => Err("result_schema must be a JSON Schema table/object or a path/JSON string".into()),
+        }
+    }
+}
+
+/// Load an `AgentRoleConfig` by name or path.
+/// Searches:
+/// 1. Direct path if `name_or_path` ends with `.toml` or contains a path separator
+/// 2. `<workspace>/.plexi/agents/<name>.toml` (and channel-scoped workspace dir)
+/// 3. `<profile_dir>/agents/<name>.toml` (`~/.plexi-<channel>/agents/<name>.toml`)
+/// 4. `<shared_dir>/agents/<name>.toml` (`~/.plexi/agents/<name>.toml`)
+pub fn load_agent_role_config(
+    name_or_path: &str,
+    workspace_root: Option<&Path>,
+) -> Result<(AgentRoleConfig, PathBuf), String> {
+    let trimmed = name_or_path.trim();
+    if trimmed.is_empty() {
+        return Err("agent config name cannot be empty".to_string());
+    }
+    let direct_path = Path::new(trimmed);
+    if trimmed.ends_with(".toml") || trimmed.contains('/') || trimmed.contains('\\') {
+        if !direct_path.is_file() {
+            return Err(format!(
+                "agent config file not found: {}",
+                direct_path.display()
+            ));
+        }
+        let content = std::fs::read_to_string(direct_path)
+            .map_err(|e| format!("could not read {}: {e}", direct_path.display()))?;
+        let stem = direct_path.file_stem().and_then(|s| s.to_str());
+        let cfg = AgentRoleConfig::parse_toml(&content, stem)?;
+        return Ok((cfg, direct_path.to_path_buf()));
+    }
+
+    let file_name = format!("{trimmed}.toml");
+    let mut candidates = Vec::new();
+    if let Some(ws) = workspace_root {
+        candidates.push(ws.join(".plexi").join("agents").join(&file_name));
+        let chan_dir = crate::config::workspace_channel_dir();
+        if chan_dir != ".plexi" {
+            candidates.push(ws.join(chan_dir).join("agents").join(&file_name));
+        }
+    }
+    candidates.push(crate::config::config_dir().join("agents").join(&file_name));
+    let shared_agents = crate::config::shared_dir().join("agents").join(&file_name);
+    if !candidates.contains(&shared_agents) {
+        candidates.push(shared_agents);
+    }
+
+    for candidate in &candidates {
+        if candidate.is_file() {
+            let content = std::fs::read_to_string(candidate)
+                .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
+            let cfg = AgentRoleConfig::parse_toml(&content, Some(trimmed))?;
+            return Ok((cfg, candidate.clone()));
+        }
+    }
+
+    let searched: Vec<String> = candidates
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    Err(format!(
+        "agent role config '{trimmed}' not found (searched: {})",
+        searched.join(", ")
+    ))
+}
+
+/// `plexi agent spawn <config> --task "<brief>" [--subcontext <name>] [--ephemeral]`
+#[allow(clippy::too_many_arguments)]
+pub fn agent_spawn_cli(
+    config_name: &str,
+    task: &str,
+    subcontext: Option<&str>,
+    ephemeral: bool,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+    json: bool,
+) -> i32 {
+    log::info!(
+        "agent_spawn:cli: config={config_name} subcontext={subcontext:?} ephemeral={ephemeral}"
+    );
+    let effective_cwd = cwd
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let workspace_root = effective_cwd
+        .as_deref()
+        .and_then(crate::app::registry::resolve_workspace_root);
+
+    let (role_cfg, cfg_path) = match load_agent_role_config(config_name, workspace_root.as_deref()) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let adapter = match role_cfg.resolve_adapter() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let cfg_dir = cfg_path.parent();
+    let result_schema = match role_cfg.resolved_result_schema(workspace_root.as_deref().or(cfg_dir))
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: invalid_schema: {e}");
+            return 1;
+        }
+    };
+    let resolved_prompt = role_cfg.system_prompt_file.as_ref().map(|p| {
+        if p.is_absolute() {
+            p.clone()
+        } else if let Some(ws) = workspace_root.as_deref() {
+            ws.join(p)
+        } else if let Some(dir) = cfg_dir {
+            dir.join(p)
+        } else {
+            p.clone()
+        }
+    });
+    let cmd_string = match role_cfg.command.as_deref().and_then(non_empty_string) {
+        Some(custom) => {
+            if custom.contains("{task}") {
+                custom.replace("{task}", &shell_quote_arg(task))
+            } else {
+                custom.to_string()
+            }
+        }
+        None => adapter.spawn_command(
+            task,
+            role_cfg.model.as_deref(),
+            resolved_prompt.as_deref(),
+        ),
+    };
+    let role_name = role_cfg
+        .name
+        .clone()
+        .unwrap_or_else(|| config_name.to_string());
+    let effective_ephemeral = ephemeral || role_cfg.ephemeral.unwrap_or(false);
+    let effective_subcontext = subcontext
+        .map(ToOwned::to_owned)
+        .or_else(|| role_cfg.subcontext.clone());
+    let parent_pane_id = from_pane_id.or_else(|| {
+        std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    });
+
+    let mut payload = serde_json::json!({
+        "type": "agent_spawn",
+        "role": role_name,
+        "harness": adapter.harness.as_str(),
+        "command": cmd_string,
+        "task": task,
+        "ephemeral": effective_ephemeral,
+    });
+    if let Some(sub) = effective_subcontext {
+        payload["subcontext"] = serde_json::Value::String(sub);
+    }
+    if let Some(pid) = parent_pane_id {
+        payload["parent_pane_id"] = serde_json::json!(pid);
+    }
+    if let Some(dir) = effective_cwd.as_ref().and_then(|p| p.to_str()) {
+        payload["cwd"] = serde_json::Value::String(dir.to_string());
+    }
+    if let Some(schema) = result_schema {
+        payload["result_schema"] = schema;
+    }
+
+    let content = match super::request(payload, "agent-spawn-response", "agent spawn") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    if json {
+        println!("{content}");
+        return 0;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+            println!("{pid}");
+            return 0;
+        }
+    }
+    println!("{content}");
+    0
+}
+
+/// `plexi agent done --result <json> [--summary "<text>"] [--pane-id <id>]`
+pub fn agent_done_cli(
+    result: &str,
+    summary: Option<&str>,
+    pane_id_flag: Option<u64>,
+) -> i32 {
+    let Some(pane_id) = pane_id_flag.or_else(|| {
+        std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    }) else {
+        eprintln!("error: PLEXI_PANE_ID is not set — pass --pane-id or run inside a Plexi pane");
+        return 1;
+    };
+    log::info!(
+        "agent_done:cli: pane_id={pane_id} bytes={} summary_present={}",
+        result.len(),
+        summary.is_some()
+    );
+    let mut payload = serde_json::json!({
+        "type": "agent_done",
+        "pane_id": pane_id,
+        "result": result,
+    });
+    if let Some(s) = summary.and_then(non_empty_string) {
+        payload["summary"] = serde_json::Value::String(s.to_string());
+    }
+    let content = match super::request(payload, "agent-done-response", "agent done") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+        if val.get("ok").and_then(|v| v.as_bool()) == Some(false)
+            || val.get("error").is_some()
+        {
+            let err_code = val
+                .get("error_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("error");
+            let msg = val
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent done failed");
+            eprintln!("error: {err_code}: {msg}");
+            return if err_code == "invalid_result" { 2 } else { 1 };
+        }
+    }
+    println!("{content}");
+    0
+}
+
+/// `plexi agent ask "<question>" [--pane-id <id>]` — Tier 1 worker-to-master escalation.
+pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
+    let Some(pane_id) = pane_id_flag.or_else(|| {
+        std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    }) else {
+        eprintln!("error: PLEXI_PANE_ID is not set — pass --pane-id or run inside a Plexi pane");
+        return 1;
+    };
+    let Some(q) = non_empty_string(question) else {
+        eprintln!("error: question cannot be empty");
+        return 1;
+    };
+    log::info!("agent_ask:cli: pane_id={pane_id} question_len={}", q.len());
+    let payload = serde_json::json!({
+        "type": "agent_ask",
+        "pane_id": pane_id,
+        "question": q,
+    });
+    let content = match super::request(payload, "agent-ask-response", "agent ask") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    println!("{content}");
+    0
+}
+
 /// `plexi agent report --state <state>` — report agent state to host via socket.
 pub fn agent_report_cli(
     state: &str,
@@ -249,9 +780,10 @@ pub fn agent_report_cli(
     let normalized = match state.to_lowercase().as_str() {
         "working" => "working",
         "blocked" => "blocked",
+        "needs_you" | "needs-you" => "needs_you",
         "idle" => "idle",
         other => {
-            eprintln!("error: unknown state '{other}'; expected working, blocked, or idle");
+            eprintln!("error: unknown state '{other}'; expected working, blocked, needs_you, or idle");
             return 1;
         }
     };
@@ -274,8 +806,19 @@ pub fn agent_report_cli(
     if let Some(active_tool) = detail.and_then(non_empty_string) {
         payload["detail"] = serde_json::Value::String(active_tool.to_string());
     }
-    if let Some(sid) = session_id {
-        payload["session_id"] = serde_json::Value::String(sid.to_string());
+    let resolved_session_id = session_id
+        .and_then(non_empty_string)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            let adapter = harness_adapter(agent)?;
+            let raw_json = std::env::var("PLEXI_AGENT_HOOK_JSON")
+                .ok()
+                .or_else(|| detail.map(ToOwned::to_owned))?;
+            let val: serde_json::Value = serde_json::from_str(&raw_json).ok()?;
+            adapter.capture_session_id(&val)
+        });
+    if let Some(sid) = resolved_session_id {
+        payload["session_id"] = serde_json::Value::String(sid);
     }
     // The shared hook script uses an invocation-scoped env var so older
     // channel CLIs can still accept its unchanged state-report arguments.
@@ -1400,5 +1943,98 @@ mod agent_tests {
         assert!(!ext_path.exists());
         assert!(bak_path.is_file());
         assert_eq!(fs::read_to_string(&bak_path).unwrap(), generated);
+    }
+
+    #[test]
+    fn multi_cli_harness_adapters_build_spawn_resume_and_capture_session_ids() {
+        let claude = super::harness_adapter("claude").expect("claude adapter");
+        assert_eq!(claude.resume_command("sess-claude-1"), "claude --resume sess-claude-1");
+        assert_eq!(
+            claude.spawn_command("fix bug", Some("claude-sonnet-4-5"), None),
+            "claude --model claude-sonnet-4-5 -p 'fix bug'"
+        );
+        assert_eq!(
+            claude.capture_session_id(&serde_json::json!({"session_id": "s-1"})),
+            Some("s-1".to_string())
+        );
+
+        let codex = super::harness_adapter("codex").expect("codex adapter");
+        assert_eq!(codex.resume_command("thread-99"), "codex resume thread-99");
+        assert_eq!(
+            codex.spawn_command("run tests", None, None),
+            "codex exec 'run tests'"
+        );
+        assert_eq!(
+            codex.capture_session_id(&serde_json::json!({"thread_id": "t-99"})),
+            Some("t-99".to_string())
+        );
+
+        let pi = super::harness_adapter("pi").expect("pi adapter");
+        assert_eq!(pi.resume_command("pi-sess-7"), "pi --session pi-sess-7");
+        assert_eq!(
+            pi.spawn_command("audit module", None, None),
+            "pi -p 'audit module'"
+        );
+        assert_eq!(
+            pi.capture_session_id(&serde_json::json!({"sessionId": "pi-7"})),
+            Some("pi-7".to_string())
+        );
+
+        let agy = super::harness_adapter("agy").expect("agy adapter");
+        assert_eq!(agy.resume_command("conv-123"), "agy --resume conv-123");
+        assert_eq!(
+            agy.spawn_command("implement stint", None, None),
+            "agy --prompt 'implement stint'"
+        );
+        assert_eq!(
+            agy.capture_session_id(&serde_json::json!({"conversation_id": "conv-123"})),
+            Some("conv-123".to_string())
+        );
+    }
+
+    #[test]
+    fn declarative_agent_role_config_parses_workspace_toml_and_result_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join(".plexi").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        let toml_path = agents_dir.join("reviewer.toml");
+        fs::write(
+            &toml_path,
+            r#"
+default_harness = "codex"
+fallback_harness = "claude"
+model = "gpt-5-codex"
+ephemeral = true
+subcontext = "review-squad"
+system_prompt_file = "prompts/reviewer.md"
+
+[result_schema]
+type = "object"
+required = ["verdict", "findings"]
+
+[result_schema.properties.verdict]
+type = "string"
+
+[result_schema.properties.findings]
+type = "array"
+"#,
+        )
+        .unwrap();
+
+        let (cfg, loaded_path) =
+            super::load_agent_role_config("reviewer", Some(dir.path())).expect("load reviewer.toml");
+        assert_eq!(loaded_path, toml_path);
+        assert_eq!(cfg.name.as_deref(), Some("reviewer"));
+        assert_eq!(cfg.harness, "codex");
+        assert_eq!(cfg.fallback_harness.as_deref(), Some("claude"));
+        assert_eq!(cfg.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(cfg.ephemeral, Some(true));
+        assert_eq!(cfg.subcontext.as_deref(), Some("review-squad"));
+        let schema = cfg
+            .resolved_result_schema(Some(dir.path()))
+            .expect("valid result_schema")
+            .expect("result_schema present");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], serde_json::json!(["verdict", "findings"]));
     }
 }

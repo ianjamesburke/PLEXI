@@ -50,6 +50,9 @@ pub(super) fn apply_initial_cmd(
     } else {
         cmd.to_string()
     };
+    if close_on_exit {
+        settings.env.insert("PLEXI_EPHEMERAL".into(), "1".into());
+    }
     settings.args = match shell_name {
         "zsh" | "bash" => vec![
             "-i".to_string(),

@@ -17,7 +17,8 @@ pub struct ContextState {
     pub children: Vec<ContextState>,
 }
 
-/// Overall status of a context, derived from its pane summaries.
+/// Overall status of a context, derived from its pane summaries and child contexts.
+/// Precedence: `NeedsYou > Blocked > Error > Working > Idle`.
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -25,6 +26,8 @@ pub enum ContextStatus {
     Idle,
     Working,
     Error,
+    Blocked,
+    NeedsYou,
     Done,
 }
 
@@ -37,6 +40,7 @@ pub struct PaneSummary {
 }
 
 /// Status of an individual pane.
+/// Precedence: `NeedsYou > Blocked > Error > Active > Idle`.
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -44,6 +48,8 @@ pub enum PaneSummaryStatus {
     Idle,
     Active,
     Error,
+    Blocked,
+    NeedsYou,
 }
 
 impl ContextState {
@@ -51,12 +57,14 @@ impl ContextState {
     /// recursing into child contexts.
     ///
     /// `contexts` is the full router slice, `windows` is all windows.
-    /// Reads existing status: `StatusSummary` text for apps, `pty_title` for terminals.
+    /// Precedence: `NeedsYou > Blocked > Error > Working (Active) > Idle`.
     pub fn compute(
         context_id: u64,
         contexts: &[crate::host::context::Context],
         windows: &[crate::host::context::Window],
     ) -> Self {
+        use crate::protocol::AgentState;
+
         let label = contexts
             .iter()
             .find(|c| c.context_id == context_id)
@@ -66,6 +74,8 @@ impl ContextState {
         let mut pane_summaries = Vec::new();
         let mut active_agents: u32 = 0;
         let mut has_error = false;
+        let mut has_blocked = false;
+        let mut has_needs_you = false;
 
         for win in windows.iter().filter(|w| w.context_id == context_id) {
             let mut entries: Vec<_> = win.panes.iter().collect();
@@ -78,28 +88,58 @@ impl ContextState {
                             .clone()
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
-                        let status = if t.exited {
+                        let status = if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
+                            has_error = true;
+                            PaneSummaryStatus::Error
+                        } else if let Some(agent) = pane.agent() {
+                            match agent.state {
+                                AgentState::NeedsYou => {
+                                    has_needs_you = true;
+                                    PaneSummaryStatus::NeedsYou
+                                }
+                                AgentState::Blocked => {
+                                    has_blocked = true;
+                                    PaneSummaryStatus::Blocked
+                                }
+                                AgentState::Working => {
+                                    if t.exited {
+                                        PaneSummaryStatus::Idle
+                                    } else {
+                                        active_agents += 1;
+                                        PaneSummaryStatus::Active
+                                    }
+                                }
+                                AgentState::Idle => PaneSummaryStatus::Idle,
+                            }
+                        } else if t.exited {
                             PaneSummaryStatus::Idle
-                        } else {
-                            PaneSummaryStatus::Active
-                        };
-                        if status == PaneSummaryStatus::Active {
+                        } else if t.activity == Some(AgentState::Working) {
                             active_agents += 1;
-                        }
+                            PaneSummaryStatus::Active
+                        } else {
+                            PaneSummaryStatus::Idle
+                        };
                         (name, status)
                     }
                     crate::host::pane::Pane::App(a) => {
-                        let status_text: Option<String> = None;
-                        let status = match status_text.as_deref() {
-                            Some(t) if t.contains("error") || t.contains("Error") => {
-                                has_error = true;
-                                PaneSummaryStatus::Error
+                        let status = if let Some(agent) = a.agent.as_ref() {
+                            match agent.state {
+                                AgentState::NeedsYou => {
+                                    has_needs_you = true;
+                                    PaneSummaryStatus::NeedsYou
+                                }
+                                AgentState::Blocked => {
+                                    has_blocked = true;
+                                    PaneSummaryStatus::Blocked
+                                }
+                                AgentState::Working => {
+                                    active_agents += 1;
+                                    PaneSummaryStatus::Active
+                                }
+                                AgentState::Idle => PaneSummaryStatus::Idle,
                             }
-                            Some(_) => {
-                                active_agents += 1;
-                                PaneSummaryStatus::Active
-                            }
-                            None => PaneSummaryStatus::Idle,
+                        } else {
+                            PaneSummaryStatus::Idle
                         };
                         (a.name.clone(), status)
                     }
@@ -125,18 +165,23 @@ impl ContextState {
             .map(|&cid| Self::compute(cid, contexts, windows))
             .collect();
 
-        // Roll up child status.
+        // Roll up child status (NeedsYou > Blocked > Error > Working > Idle).
         for child in &children {
-            if child.status == ContextStatus::Error {
-                has_error = true;
+            match child.status {
+                ContextStatus::NeedsYou => has_needs_you = true,
+                ContextStatus::Blocked => has_blocked = true,
+                ContextStatus::Error => has_error = true,
+                ContextStatus::Working | ContextStatus::Idle | ContextStatus::Done => {}
             }
-            if child.status == ContextStatus::Working {
-                active_agents += child.active_agents;
-            }
+            active_agents += child.active_agents;
         }
 
         let pane_count = pane_summaries.len() as u32;
-        let status = if has_error {
+        let status = if has_needs_you {
+            ContextStatus::NeedsYou
+        } else if has_blocked {
+            ContextStatus::Blocked
+        } else if has_error {
             ContextStatus::Error
         } else if active_agents > 0 {
             ContextStatus::Working
@@ -210,5 +255,81 @@ mod tests {
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children.len(), 1);
         assert_eq!(state.children[0].label, "Child");
+    }
+
+    use crate::protocol::AgentState;
+
+    struct DummyApp;
+    impl crate::app::app_trait::App for DummyApp {
+        fn type_id(&self) -> &'static str {
+            "test.app"
+        }
+        fn display_name(&self) -> String {
+            "Test App".to_string()
+        }
+        fn ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            _pending_click: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn child_status_precedence_needs_you_beats_blocked_beats_error_beats_working() {
+        let contexts = vec![
+            make_context(1, "Root", None),
+            make_context(2, "Squad", Some(1)),
+        ];
+        let mut child_win = make_empty_window(2, 101);
+        let make_app_pane = |id: u64, state: AgentState| {
+            crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+                id,
+                name: format!("app-{id}"),
+                manifest_id: "test.app".into(),
+                runtime: crate::host::pane::AppRuntime::Builtin(Box::new(DummyApp)),
+                workspace_root: PathBuf::from("/tmp"),
+                permissions: crate::app::permissions::AppPermissions::default(),
+                pane_group: None,
+                linked_pane_id: None,
+                agent: Some(crate::protocol::PaneAgentState {
+                    pane_id: id,
+                    state,
+                    agent: "codex".into(),
+                    detail: None,
+                    session_id: None,
+                }),
+                pip_status: None,
+                slots: std::collections::HashMap::new(),
+                hidden: false,
+                overlay_replaced: None,
+                semantic_state: crate::host::pane::SemanticPaneState::default(),
+            }))
+        };
+
+        child_win.panes.insert(10, make_app_pane(10, AgentState::Working));
+        let windows = vec![make_empty_window(1, 100), child_win];
+        let state = ContextState::compute(1, &contexts, &windows);
+        assert_eq!(state.children[0].status, ContextStatus::Working);
+        assert_eq!(state.status, ContextStatus::Working);
+
+        let mut windows = windows;
+        windows[1]
+            .panes
+            .insert(11, make_app_pane(11, AgentState::Blocked));
+        let state = ContextState::compute(1, &contexts, &windows);
+        assert_eq!(state.children[0].status, ContextStatus::Blocked);
+        assert_eq!(state.status, ContextStatus::Blocked);
+
+        windows[1]
+            .panes
+            .insert(12, make_app_pane(12, AgentState::NeedsYou));
+        let state = ContextState::compute(1, &contexts, &windows);
+        assert_eq!(state.children[0].status, ContextStatus::NeedsYou);
+        assert_eq!(state.status, ContextStatus::NeedsYou);
     }
 }

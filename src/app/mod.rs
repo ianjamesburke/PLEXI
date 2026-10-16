@@ -226,6 +226,7 @@ pub struct PlexiApp {
     pub(crate) next_pane_message_id: u64,
     /// Per-pane schema-validated structured results (`plexi pane result`, stint 0666).
     /// Retained across pane close so spawners can read results after an ephemeral worker exits.
+    pub(crate) closed_pane_slots: HashMap<PaneId, HashMap<String, std::path::PathBuf>>,
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
@@ -1500,6 +1501,7 @@ impl PlexiApp {
                     pane_mailboxes: HashMap::new(),
                     pending_message_recvs: Vec::new(),
                     next_pane_message_id: 1,
+                    closed_pane_slots: HashMap::new(),
                     pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
@@ -1752,6 +1754,7 @@ impl PlexiApp {
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
             next_pane_message_id: 1,
+            closed_pane_slots: HashMap::new(),
             pane_results: HashMap::new(),
             pending_result_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
@@ -2537,6 +2540,7 @@ impl PlexiApp {
                 pane_mailboxes: HashMap::new(),
                 pending_message_recvs: Vec::new(),
                 next_pane_message_id: 1,
+                closed_pane_slots: HashMap::new(),
                 pane_results: HashMap::new(),
                 pending_result_waits: Vec::new(),
                 last_sent_window_title: None,
@@ -2812,6 +2816,10 @@ impl PlexiApp {
              agent_pane={agent_pane}"
         );
         let mut env = shell::build_env(working_directory.as_deref());
+        env.remove("PLEXI_PARENT_PANE");
+        env.remove("PLEXI_EPHEMERAL");
+        env.remove("PLEXI_AGENT_HARNESS");
+        env.remove("PLEXI_AGENT_ROLE");
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
         // Host MCP discovery. The bearer is registered against this trusted

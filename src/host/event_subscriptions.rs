@@ -546,6 +546,27 @@ impl HostSubscriptionService {
         (ActorType::Agent, id)
     }
 
+    /// Record an in-memory session-scoped `Allow` grant so a parent master pane
+    /// (`broker_actor_id`, e.g. `"pane:1"`) can subscribe to its spawned child
+    /// worker pane's `plexi.pane::lifecycle` stream without a human consent modal.
+    pub fn allow_parent_child_lifecycle(&mut self, broker_actor_id: &str, workspace_root: &Path) {
+        let target = format!(
+            "{}::{}",
+            crate::host::pane_lifecycle::PUBLISHER,
+            crate::host::pane_lifecycle::STREAM
+        );
+        self.grant_store.record(GrantRecord::event_stream_allow(
+            ActorType::Agent,
+            broker_actor_id,
+            ActorScope::User,
+            &target,
+            workspace_root,
+            GrantDuration::Session,
+            GrantSource::Session,
+            None,
+        ));
+    }
+
     /// Resolve host-stamped identity, validate the requested streams are
     /// declared, and run the broker check. The single host entry point both
     /// transports' UI-thread drain calls. Consumes the request so a deferred

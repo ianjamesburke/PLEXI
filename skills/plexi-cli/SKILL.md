@@ -203,8 +203,18 @@ plexi skill install --agent codex
 <!-- experiment: routines -->
   Scheduled commands: `plexi routine --help`.
 <!-- /experiment -->
-- **Agents** — install workspace definitions and report or inspect agent state:
-  `plexi agent --help`. `agent report --event` preserves
+- **Agents** — install workspace definitions, spawn declarative squad workers, and report or inspect agent state:
+  `plexi agent --help`. `plexi agent spawn <config> --task "<brief>" [--subcontext <name>] [--ephemeral]`
+  loads `.plexi/agents/<name>.toml` (or `<profile>/agents/<name>.toml`), creates or reuses
+  a sub-context with a parent `PortalPane`, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL=1`,
+  and boots the configured harness (`claude`, `codex`, `pi`, or `agy`). Workers report
+  structured completion via `plexi agent done --result <json> --summary "<text>"` (validates
+  against `result_schema`, writes `completed` and `summary` slots, and exits `0` so the
+  ephemeral pane closes and the sub-context auto-collapses when all workers succeed; non-zero
+  crashes keep the pane and sub-context open in `Error` state). Workers escalate to their
+  parent master agent via `plexi agent ask "<question>"` (Tier 1 `Blocked`, waking the parent's
+  `pane wait` without filing human `NeedsYou`), while `plexi needs-you` is Tier 2 human
+  escalation. `agent report --event` preserves
   a provider lifecycle event separately from its UI state; `--blocked-reason`
   supplies a typed reason. Read `agent report --help` before using these optional
   fields.

@@ -1380,8 +1380,9 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
 pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
-    agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
-    agent_report_cli, agent_status_cli, agent_update,
+    agent_add, agent_ask_cli, agent_done_cli, agent_hook_install_cli, agent_hook_uninstall_cli,
+    agent_init, agent_list, agent_report_cli, agent_spawn_cli, agent_status_cli, agent_update,
+    AgentHarness,
 };
 pub use agents_api::{
     agent_assign_cli, agent_cancel_cli, agent_conversation_cli, agent_delegate_cli, agent_head_dispatch, agent_run_dispatch,

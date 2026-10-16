@@ -253,6 +253,11 @@ impl PlexiApp {
             .find_map(|win| win.panes.get(&pane_id))
             .and_then(|pane| pane.slots())
             .and_then(|slots| slots.get(slot_name).cloned())
+            .or_else(|| {
+                self.closed_pane_slots
+                    .get(&pane_id)
+                    .and_then(|slots| slots.get(slot_name).cloned())
+            })
     }
 
     /// Expire overdue slot waits and keep frames coming until the next one.

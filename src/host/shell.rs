@@ -722,6 +722,7 @@ pub fn known_agent_process(name: &str) -> Option<&'static str> {
         "claude" => Some("claude-code"),
         "codex" => Some("codex"),
         "pi" => Some("pi"),
+        "agy" | "antigravity" => Some("agy"),
         _ => None,
     }
 }

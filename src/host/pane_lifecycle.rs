@@ -43,6 +43,13 @@ pub(crate) enum ExitStatus {
     Unknown,
 }
 
+impl ExitStatus {
+    /// True when the PTY exited with a non-zero exit code or a signal.
+    pub(crate) fn is_failure(self) -> bool {
+        matches!(self, Self::Code(c) if c != 0) || matches!(self, Self::Signal(_))
+    }
+}
+
 impl From<egui_term::PtyExitStatus> for ExitStatus {
     fn from(status: egui_term::PtyExitStatus) -> Self {
         match status {
@@ -98,6 +105,7 @@ pub(crate) enum PaneLifecycleEvent {
 #[derive(Debug, Default)]
 pub(crate) struct PaneLifecycleState {
     pub context_id: u64,
+    pub parent_pane_id: Option<u64>,
     pub booted: bool,
 }
 
@@ -124,6 +132,10 @@ impl PaneLifecycleEvent {
                 reason: AgentBlockedReason::BootFailure,
                 provenance,
             },
+            Some("AgentAsk") => Self::AgentBlocked {
+                reason: reason.unwrap_or(AgentBlockedReason::Unknown),
+                provenance,
+            },
             Some(
                 "UserPromptSubmit" | "agent_start" | "before_agent_start" | "PreToolUse"
                 | "tool_call" | "PostToolUse" | "PostToolBatch" | "tool_result",
@@ -132,7 +144,7 @@ impl PaneLifecycleEvent {
             None => match state {
                 AgentState::Idle => Self::AgentIdle { provenance },
                 AgentState::Working => Self::AgentWorking { provenance },
-                AgentState::Blocked => Self::AgentBlocked {
+                AgentState::Blocked | AgentState::NeedsYou => Self::AgentBlocked {
                     reason: reason.unwrap_or(AgentBlockedReason::Unknown),
                     provenance,
                 },

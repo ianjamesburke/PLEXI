@@ -57,6 +57,8 @@ pub mod host {
             Idle,
             Working,
             Error,
+            Blocked,
+            NeedsYou,
             Done,
         }
 
@@ -74,6 +76,8 @@ pub mod host {
             Idle,
             Active,
             Error,
+            Blocked,
+            NeedsYou,
         }
     }
 }

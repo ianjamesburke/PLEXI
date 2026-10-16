@@ -630,13 +630,25 @@ pub struct TerminalPane {
     pub id: PaneId,
     pub backend: TerminalBackend,
     pub exited: bool,
+    /// Observed PTY exit status (`Code`, `Signal`, or `Unknown`), recorded in
+    /// `drain_pty_events` or `AgentDone` so `ContextState::compute` and crash
+    /// retention can distinguish exit 0 from non-zero/signal failures.
+    pub(crate) exit_status: Option<crate::host::pane_lifecycle::ExitStatus>,
     pub name: Option<String>,
     /// When true, the name was set explicitly by the user and OSC title sequences must not overwrite it.
     pub name_locked: bool,
     pub font_size: f32,
-    /// When true, the pane closes automatically when its process exits (no "[process exited]" prompt).
-    /// Set by `plexi pane new --ephemeral`.
+    /// When true, the pane closes automatically when its process exits cleanly with code 0.
+    /// Set by `plexi pane new --ephemeral` or `plexi agent spawn --ephemeral`.
     pub ephemeral: bool,
+    /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
+    pub parent_pane_id: Option<u64>,
+    /// Configured or hook-detected CLI agent harness (`claude`, `codex`, `pi`, `agy`).
+    pub agent_harness: Option<String>,
+    /// Latest captured CLI agent session ID for resume (`claude --resume <id>`, etc.).
+    pub agent_session_id: Option<String>,
+    /// Optional agent role config name (`.plexi/agents/<name>.toml`).
+    pub agent_role: Option<String>,
     /// Last OSC 2 title string the process wrote, tracked independently of `name` and `name_locked`.
     /// Used by FocusChanged events to record what was running in the pane.
     pub pty_title: Option<String>,
@@ -682,6 +694,16 @@ impl TerminalPane {
         settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
+        let ephemeral = settings
+            .env
+            .get("PLEXI_EPHEMERAL")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let parent_pane_id = settings
+            .env
+            .get("PLEXI_PARENT_PANE")
+            .and_then(|v| v.parse::<u64>().ok());
+        let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
+        let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
         #[cfg(test)]
         let spawn_env = settings.env.clone();
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
@@ -695,10 +717,15 @@ impl TerminalPane {
             id,
             backend,
             exited: false,
+            exit_status: None,
             name: None,
             name_locked: false,
             font_size: default_font_size,
-            ephemeral: false,
+            ephemeral,
+            parent_pane_id,
+            agent_harness,
+            agent_session_id: None,
+            agent_role,
             pty_title: None,
             outside_workspace_cached: false,
             outside_workspace_checked_at: None,
@@ -713,6 +740,23 @@ impl TerminalPane {
             #[cfg(test)]
             spawn_env,
         })
+    }
+
+    /// Build the CLI resume invocation (`claude --resume <id>`, `codex resume <id>`,
+    /// `pi --session <id>`, `agy --resume <id>`) when both a harness and session ID
+    /// have been captured for this terminal pane.
+    pub fn resume_command(&self) -> Option<String> {
+        let harness_str = self
+            .agent_harness
+            .as_deref()
+            .or_else(|| self.agent.as_ref().map(|a| a.agent.as_str()))
+            .or_else(|| self.observed_agent.as_ref().map(|a| a.agent.as_str()))?;
+        let harness = crate::cli::AgentHarness::parse(harness_str)?;
+        let session_id = self
+            .agent_session_id
+            .as_deref()
+            .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.as_deref()))?;
+        Some(harness.resume_command(session_id))
     }
 }
 
