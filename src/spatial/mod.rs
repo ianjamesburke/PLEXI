@@ -116,6 +116,14 @@ impl PlexiApp {
             self.context_active_window.insert(ws_id, w.window_id);
             let wid = w.window_id;
             self.record_context_visit(wid);
+            if self.windows[idx].focused_pane.is_none() {
+                if let Some(tile_id) = self.leftmost_pane_in_window(idx) {
+                    log::info!(
+                        "navigate_page: repaired focusless destination window={wid} pane={tile_id:?}"
+                    );
+                    self.windows[idx].navigate_to(tile_id);
+                }
+            }
         }
     }
 

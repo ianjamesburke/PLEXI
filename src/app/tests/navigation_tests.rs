@@ -20,6 +20,21 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     }
 }
 
+fn same_workspace_window_right(context_id: u64, window_id: u64) -> Window {
+    Window {
+        name: "Window B".into(),
+        path: crate::testing::scratch_context_root("window-b"),
+        tree: egui_tiles::Tree::empty("test_tree_right"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id,
+        context_id,
+    }
+}
+
 fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_below");
     let tile = tree.tiles.insert_pane(pane_id);
@@ -94,6 +109,106 @@ fn pane_navigate_cross_window_updates_active_window() {
         h.app.windows[1].focused_pane.is_some(),
         "focused_pane must be set on target window"
     );
+}
+
+#[test]
+fn closing_focused_pane_in_background_window_keeps_nearest_sibling_focused() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_right(context_id, 2));
+
+    let (left_tile, left_pane) = h.app.add_app_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
+    let root = h.app.windows[1]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![left_tile, right_tile]);
+    h.app.windows[1].tree.root = Some(root);
+    h.app.windows[1].focused_pane = Some(right_tile);
+
+    h.app.close_pane_by_id(right_pane);
+
+    assert_eq!(
+        h.app.windows[1].focused_pane,
+        Some(left_tile),
+        "closing B's focused pane must focus its explicit sibling while A stays active"
+    );
+    assert_eq!(h.app.active_window, 0, "background close must not steal focus");
+    assert!(h.app.windows[1].panes.contains_key(&left_pane));
+}
+
+#[test]
+fn closing_background_pane_in_background_window_preserves_its_focus() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_right(context_id, 2));
+
+    let (left_tile, _left_pane) = h.app.add_app_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
+    let root = h.app.windows[1]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![left_tile, right_tile]);
+    h.app.windows[1].tree.root = Some(root);
+    h.app.windows[1].focused_pane = Some(left_tile);
+
+    h.app.close_pane_by_id(right_pane);
+
+    assert_eq!(
+        h.app.windows[1].focused_pane,
+        Some(left_tile),
+        "closing a background pane must preserve B's focused sibling"
+    );
+    assert_eq!(h.app.active_window, 0, "background close must not steal focus");
+}
+
+#[test]
+fn page_arrival_repairs_focusless_destination_before_lateral_navigation() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_right(context_id, 2));
+    let (left_tile, left_pane) = h.app.add_app_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
+    let root = h.app.windows[1]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![left_tile, right_tile]);
+    h.app.windows[1].tree.root = Some(root);
+
+    // Lay out B once so its geometric left/right relationship is real, then
+    // restore the persisted focusless state before navigating into it.
+    h.app.active_window = 1;
+    h.run_frames(1);
+    h.app.active_window = 0;
+    h.app.windows[1].focused_pane = None;
+    let left_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&left_pane)
+        .expect("left pane must remain in B's tree after layout");
+    let right_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&right_pane)
+        .expect("right pane must remain in B's tree after layout");
+    assert_eq!(h.app.leftmost_pane_in_window(1), Some(left_tile));
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+
+    assert_eq!(h.app.active_window, 1);
+    assert_eq!(
+        h.app.windows[1].focused_pane,
+        Some(left_tile),
+        "arrival must select B's leftmost pane; left={:?} right={:?}",
+        h.app.windows[1].tree.tiles.rect(left_tile),
+        h.app.windows[1].tree.tiles.rect(right_tile),
+    );
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+    assert_eq!(h.app.active_window, 1, "lateral navigation must stay in B");
+    assert_eq!(h.app.windows[1].focused_pane, Some(right_tile));
 }
 
 /// Regression guard for #823: pane_navigate must also sync router.active_idx

@@ -810,6 +810,7 @@ impl PlexiApp {
         // Snapshot focus/zoom state before any mutation so Phase 2 guards are accurate.
         let is_focused = self.windows[ctx_idx].focused_pane == Some(tile_id);
         let is_zoomed = self.windows[ctx_idx].zoomed_pane == Some(tile_id);
+        let is_background_window = ctx_idx != self.active_window;
 
         // Phase 1: Read-only — determine sibling and container type
         let parent_info = self.windows[ctx_idx].find_logical_parent(tile_id);
@@ -921,6 +922,12 @@ impl PlexiApp {
             // Only update focused_pane when focus actually needs to transfer.
             // A background-pane close must not steal focus from the current pane.
             if let Some(new_focus) = next {
+                if is_background_window {
+                    log::info!(
+                        "close_tile: background window focus fallback -> {:?}",
+                        new_focus
+                    );
+                }
                 log::info!("close_tile: focus -> {:?}", new_focus);
                 ctx.navigate_to(new_focus);
             } else if is_focused {
@@ -969,6 +976,42 @@ impl PlexiApp {
             self.tombstone_pane_notifications(pane_id);
             // else: builtin app pane drops here
         }
+    }
+
+    /// Select a deterministic pane for a window that has none focused.
+    ///
+    /// Laid-out windows use their spatially leftmost active pane. Before the
+    /// first render there are no rects yet, so retain structural tree order as
+    /// a stable fallback rather than leaving a non-empty window focusless.
+    pub(crate) fn leftmost_pane_in_window(&self, window_idx: usize) -> Option<TileId> {
+        let dest = self.windows.get(window_idx)?;
+        let active_panes: Vec<TileId> = dest
+            .tree
+            .active_tiles()
+            .into_iter()
+            .filter(|tile_id| matches!(dest.tree.tiles.get(*tile_id), Some(Tile::Pane(_))))
+            .collect();
+
+        active_panes
+            .iter()
+            .filter_map(|tile_id| dest.tree.tiles.rect(*tile_id).map(|rect| (*tile_id, rect)))
+            .min_by(|(_, a), (_, b)| {
+                a.left()
+                    .partial_cmp(&b.left())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(
+                        a.top()
+                            .partial_cmp(&b.top())
+                            .unwrap_or(std::cmp::Ordering::Equal),
+                    )
+            })
+            .map(|(tile_id, _)| tile_id)
+            .or_else(|| {
+                dest.tree
+                    .root()
+                    .and_then(|root| dest.find_first_pane_in(root))
+            })
+            .or_else(|| active_panes.into_iter().next())
     }
 
     /// Move focus or active page in `dir`, returning whether navigation succeeded.
@@ -1025,33 +1068,7 @@ impl PlexiApp {
                     let wid = w.window_id;
                     self.context_active_window.insert(ws_id, wid);
                     self.record_context_visit(wid);
-                    // Focus the spatially leftmost pane in the destination window.
-                    // If the window has not yet been rendered (no rects), leave focused_pane as-is.
-                    let leftmost: Option<TileId> = {
-                        let dest = &self.windows[idx];
-                        dest.tree
-                            .active_tiles()
-                            .into_iter()
-                            .filter_map(|tile_id| {
-                                if !matches!(dest.tree.tiles.get(tile_id), Some(Tile::Pane(_))) {
-                                    return None;
-                                }
-                                let rect = dest.tree.tiles.rect(tile_id)?;
-                                Some((tile_id, rect))
-                            })
-                            .min_by(|(_, a), (_, b)| {
-                                a.left()
-                                    .partial_cmp(&b.left())
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                                    .then(
-                                        a.top()
-                                            .partial_cmp(&b.top())
-                                            .unwrap_or(std::cmp::Ordering::Equal),
-                                    )
-                            })
-                            .map(|(tile_id, _)| tile_id)
-                    };
-                    if let Some(tile_id) = leftmost {
+                    if let Some(tile_id) = self.leftmost_pane_in_window(idx) {
                         log::info!("navigate({:?}): focused_pane → leftmost {:?}", dir, tile_id);
                         self.windows[idx].navigate_to(tile_id);
                     }
