@@ -1352,7 +1352,7 @@ Open a new terminal pane, or launch an agent with `--agent` and wait until ready
 
 `--agent <tier-alias>` is the supported way to launch an agent into a fresh pane: the host runs the command in the new pane and prints the pane id only once the agent reports idle, so a printed id on stdout means ready-to-brief with `plexi pane send <id> "<brief>" --submit` (two commands, no sleeps, no capture polling).
 
-Examples: plexi pane new --agent c-large -n "worker" --no-focus   # agent pane, id printed once ready-to-brief plexi pane new                                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"                   # terminal with command, named plexi pane new -d                                       # split below
+Examples: plexi pane new --agent c-large -n "worker" --no-focus   # agent pane, id printed once ready-to-brief plexi pane new --worktree feature/0668-test             # terminal in isolated wtp worktree plexi pane new                                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"                   # terminal with command, named plexi pane new -d                                       # split below
 
 For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 
@@ -1373,6 +1373,7 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 | `--ephemeral` / `-e` | flag | no | Close the pane when the command finishes |
 | `--no-focus` | flag | no | Keep focus on the current pane |
 | `--cwd` | string | no | Working directory |
+| `--worktree` | string | no | Create or check out an isolated git worktree for <BRANCH> via `wtp` and start the pane inside it. When the pane closes, the host automatically reclaims the worktree if clean and unmoved, or retains it and reports its path if dirty or ahead |
 
 ### `plexi pane name`
 
@@ -1421,7 +1422,9 @@ Example: plexi pane heartbeat 42 --every 5m --text "cycle"
 
 ### `plexi pane close`
 
-Close a pane. Omit the pane id to close the pane you are currently in
+Close a pane. Omit the pane id to close the pane you are currently in.
+
+If the pane was created with `plexi pane new --worktree <BRANCH>`, the host automatically reclaims the worktree via `wtp` when clean and unmoved, or retains it and prints the retained worktree path when dirty or ahead.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

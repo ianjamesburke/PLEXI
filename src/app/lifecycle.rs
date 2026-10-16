@@ -511,7 +511,12 @@ impl PlexiApp {
                             crate::host::pane::Pane::Terminal(t) => {
                                 let name = t.name.clone().unwrap_or_else(|| "terminal".to_string());
                                 let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
-                                    .map(|p| p.to_string_lossy().into_owned());
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .or_else(|| {
+                                        self.pane_worktrees
+                                            .get(pane_id)
+                                            .map(|wt| wt.path.to_string_lossy().into_owned())
+                                    });
                                 ("terminal", name, cwd)
                             }
                             crate::host::pane::Pane::App(a) => {
@@ -523,7 +528,7 @@ impl PlexiApp {
                             }
                         };
                         let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
-                        entries.push(serde_json::json!({
+                        let mut entry = serde_json::json!({
                             "id": pane_id,
                             "type": pane_type,
                             "title": title,
@@ -535,7 +540,15 @@ impl PlexiApp {
                             "agent": pane.agent(),
                             "slots": pane_slots_json(pane),
                             "heartbeat": self.pane_heartbeat_json(*pane_id),
-                        }));
+                        });
+                        if let Some(wt) = self.pane_worktrees.get(pane_id) {
+                            entry["worktree"] = serde_json::json!({
+                                "branch": wt.branch,
+                                "path": wt.path,
+                                "repo_root": wt.repo_root,
+                            });
+                        }
+                        entries.push(entry);
                     }
                 }
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
@@ -592,8 +605,13 @@ impl PlexiApp {
                         let info = match pane {
                             crate::host::pane::Pane::Terminal(t) => {
                                 let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
-                                    .map(|p| p.to_string_lossy().into_owned());
-                                serde_json::json!({
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .or_else(|| {
+                                        self.pane_worktrees
+                                            .get(pane_id)
+                                            .map(|wt| wt.path.to_string_lossy().into_owned())
+                                    });
+                                let mut obj = serde_json::json!({
                                     "id": pane_id,
                                     "type": "terminal",
                                     "title": t.name.clone().unwrap_or_else(|| "terminal".to_string()),
@@ -606,7 +624,15 @@ impl PlexiApp {
                                     "agent": agent,
                                     "slots": pane_slots_json(pane),
                                     "heartbeat": self.pane_heartbeat_json(*pane_id),
-                                })
+                                });
+                                if let Some(wt) = self.pane_worktrees.get(pane_id) {
+                                    obj["worktree"] = serde_json::json!({
+                                        "branch": wt.branch,
+                                        "path": wt.path,
+                                        "repo_root": wt.repo_root,
+                                    });
+                                }
+                                obj
                             }
                             crate::host::pane::Pane::App(a) => {
                                 serde_json::json!({
@@ -1325,13 +1351,36 @@ impl PlexiApp {
                     log::warn!("pane_ipc: focus_pane: pane_id={pane_id} not found");
                 }
             }
-            crate::protocol::AppRequest::ClosePane { pane_id } => {
-                log::info!("pane_ipc: kind=close_pane pane_id={pane_id}");
-                let before: usize = self.windows.iter().map(|w| w.panes.len()).sum();
-                self.close_pane_by_id(*pane_id);
-                let after: usize = self.windows.iter().map(|w| w.panes.len()).sum();
-                if before == after {
+            crate::protocol::AppRequest::ClosePane {
+                pane_id,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=close_pane pane_id={pane_id} response_file={response_file:?}"
+                );
+                let exists = self.windows.iter().any(|w| w.panes.contains_key(pane_id));
+                if !exists {
                     log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({ "error": format!("pane {pane_id} not found") }),
+                        );
+                    }
+                } else {
+                    let wt_report = self.reclaim_pane_worktree(*pane_id);
+                    if let Some(rf) = response_file {
+                        let mut reply = serde_json::json!({
+                            "ok": true,
+                            "pane_id": pane_id,
+                        });
+                        if let Some(report) = &wt_report {
+                            reply["worktree"] =
+                                serde_json::to_value(report).unwrap_or(serde_json::Value::Null);
+                        }
+                        write_json_response(rf, reply);
+                    }
+                    self.close_pane_by_id(*pane_id);
                 }
             }
             crate::protocol::AppRequest::SpawnPane { response_file, .. } => {
@@ -1346,7 +1395,7 @@ impl PlexiApp {
                     }
                 };
                 log::info!(
-                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} from_pane_id={:?} cwd={:?} workspace_root={:?} response_file={:?}",
+                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} from_pane_id={:?} cwd={:?} worktree={:?} workspace_root={:?} response_file={:?}",
                     spec.target_for_log(),
                     spec.layout,
                     spec.args,
@@ -1354,6 +1403,7 @@ impl PlexiApp {
                     spec.no_focus,
                     spec.from_pane_id,
                     spec.cwd,
+                    spec.worktree,
                     spec.workspace_root,
                     spec.response_file
                 );
@@ -1372,7 +1422,8 @@ impl PlexiApp {
                 let mut response_pane_id = self.host.next_pane_id();
 
                 let active = self.active_window;
-                let cwd_override = spec.cwd.clone();
+                let mut cwd_override = spec.cwd.clone();
+                let mut created_worktree: Option<crate::host::worktree::ManagedWorktree> = None;
                 let mut launch_result: Result<(), String> = Ok(());
                 if matches!(
                     spec.target,
@@ -1385,7 +1436,9 @@ impl PlexiApp {
                     // matching the scheduler's fire path. The context is a hard
                     // target — a missing name errors back to the caller, and
                     // the spawn never touches active_window or focus state.
-                    if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
+                    let resolved_context_target = if let Some(ctx_name) =
+                        spec.context_name.as_deref().filter(|c| !c.is_empty())
+                    {
                         if layout_str == "new_window" || layout_str == "tab" {
                             let msg = format!(
                                 "context_name does not support layout '{layout_str}' — use a split layout"
@@ -1419,6 +1472,31 @@ impl PlexiApp {
                             }
                             return;
                         };
+                        Some((ctx_name, target_ctx_id, target_win, target_tile))
+                    } else {
+                        None
+                    };
+
+                    if let Some(ref branch) = spec.worktree {
+                        let anchor_dir = self.resolve_worktree_anchor(&spec);
+                        match crate::host::worktree::create_worktree(&anchor_dir, branch) {
+                            Ok(wt) => {
+                                cwd_override = Some(wt.path.clone());
+                                created_worktree = Some(wt);
+                            }
+                            Err(msg) => {
+                                log::warn!("pane_ipc: spawn_pane worktree rejected: {msg}");
+                                if let Some(rf) = &spec.response_file {
+                                    write_json_response(rf, serde_json::json!({ "error": msg }));
+                                }
+                                return;
+                            }
+                        }
+                    }
+
+                    if let Some((ctx_name, target_ctx_id, target_win, target_tile)) =
+                        resolved_context_target
+                    {
                         let vertical =
                             matches!(layout_str, "split_h" | "split_right" | "split_left");
                         let new_pane_first = matches!(layout_str, "split_above" | "split_left");
@@ -1438,15 +1516,7 @@ impl PlexiApp {
                             spec.agent.is_some(),
                             inject_folder_secrets,
                         );
-                        if let Some(ref pane_name) = spec.name {
-                            if !pane_name.is_empty() {
-                                self.apply_inline_pane_name(response_pane_id, pane_name);
-                            }
-                        }
-                        self.reply_spawn_pane(&spec, response_pane_id, &Ok(()));
-                        return;
-                    }
-                    if layout_str == "new_window" {
+                    } else if layout_str == "new_window" {
                         // Derive context from the calling pane's window; fall back to active.
                         let target_win_idx = spec
                             .from_pane_id
@@ -1513,71 +1583,53 @@ impl PlexiApp {
                         let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                         // Resolve target window and tile: from_pane_id wins (cross-window),
                         // then fall back to the active window's focused pane.
-                        let (target_win, target_tile) = if let Some(from_id) = spec.from_pane_id {
+                        let split_target = if let Some(from_id) = spec.from_pane_id {
                             match self.find_pane_in_any_window(from_id) {
                                 Some(loc) => {
                                     log::info!(
                                         "pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}",
                                         loc.0
                                     );
-                                    loc
+                                    Some(loc)
                                 }
                                 None => {
                                     log::warn!(
                                         "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
                                     );
-                                    if let Some(tile) = self.windows[active]
+                                    self.windows[active]
                                         .focused_pane
                                         .or(self.windows[active].tree.root)
-                                    {
-                                        (active, tile)
-                                    } else {
-                                        // Active window is empty (windowless boot):
-                                        // split_focused would no-op, so seed a root
-                                        // pane in place instead of dropping the spawn.
-                                        log::info!(
-                                            "pane_ipc: spawn_pane terminal layout={layout_str} (empty active window — seeding root)"
-                                        );
-                                        match self.seed_root_pane(
-                                            initial_cmd.as_deref(),
-                                            spec.ephemeral,
-                                            cwd_override,
-                                            spec.agent.is_some(),
-                                            inject_folder_secrets,
-                                        ) {
-                                            Some(seeded_id) => response_pane_id = seeded_id,
-                                            None => {
-                                                launch_result =
-                                                    Err("failed to seed root pane".into())
-                                            }
-                                        }
-                                        if spec.no_focus {
-                                            self.active_window = active;
-                                        }
-                                        if launch_result.is_ok() {
-                                            if let Some(ref pane_name) = spec.name {
-                                                if !pane_name.is_empty() {
-                                                    self.apply_inline_pane_name(
-                                                        response_pane_id,
-                                                        pane_name,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        self.reply_spawn_pane(
-                                            &spec,
-                                            response_pane_id,
-                                            &launch_result,
-                                        );
-                                        return;
-                                    }
+                                        .map(|tile| (active, tile))
                                 }
                             }
-                        } else if let Some(tile) = self.windows[active]
-                            .focused_pane
-                            .or(self.windows[active].tree.root)
-                        {
-                            (active, tile)
+                        } else {
+                            self.windows[active]
+                                .focused_pane
+                                .or(self.windows[active].tree.root)
+                                .map(|tile| (active, tile))
+                        };
+
+                        if let Some((target_win, target_tile)) = split_target {
+                            let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
+                            log::info!(
+                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
+                                spec.ephemeral
+                            );
+                            response_pane_id = self.spawn_terminal_pane_at(
+                                target_win,
+                                target_tile,
+                                vertical,
+                                new_pane_first,
+                                initial_cmd.as_deref(),
+                                spec.ephemeral,
+                                cwd_override,
+                                keep_focus,
+                                spec.agent.is_some(),
+                                inject_folder_secrets,
+                            );
+                            if spec.no_focus {
+                                self.active_window = active;
+                            }
                         } else {
                             // Truly empty window (windowless boot): no root pane to
                             // split, so `split_focused` would no-op and drop the
@@ -1600,36 +1652,6 @@ impl PlexiApp {
                             if spec.no_focus {
                                 self.active_window = active;
                             }
-                            if launch_result.is_ok() {
-                                if let Some(ref pane_name) = spec.name {
-                                    if !pane_name.is_empty() {
-                                        self.apply_inline_pane_name(response_pane_id, pane_name);
-                                    }
-                                }
-                            }
-                            // Skip rest of split path
-                            self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
-                            return;
-                        };
-                        let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
-                            spec.ephemeral
-                        );
-                        response_pane_id = self.spawn_terminal_pane_at(
-                            target_win,
-                            target_tile,
-                            vertical,
-                            new_pane_first,
-                            initial_cmd.as_deref(),
-                            spec.ephemeral,
-                            cwd_override,
-                            keep_focus,
-                            spec.agent.is_some(),
-                            inject_folder_secrets,
-                        );
-                        if spec.no_focus {
-                            self.active_window = active;
                         }
                     }
                 } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
@@ -1705,6 +1727,23 @@ impl PlexiApp {
                     if spec.no_focus {
                         self.active_window = active;
                         self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                    }
+                }
+                if let Some(wt) = created_worktree {
+                    let pane_live = launch_result.is_ok()
+                        && self
+                            .windows
+                            .iter()
+                            .any(|w| w.panes.contains_key(&response_pane_id));
+                    if pane_live {
+                        log::info!(
+                            "pane_worktree: registered pane_id={response_pane_id} branch='{}' path='{}'",
+                            wt.branch,
+                            wt.path.display()
+                        );
+                        self.pane_worktrees.insert(response_pane_id, wt);
+                    } else {
+                        let _ = crate::host::worktree::reclaim_or_retain_worktree(&wt);
                     }
                 }
                 if matches!(
@@ -4098,6 +4137,7 @@ impl PlexiApp {
                 // `pane new --agent` requires PLEXI_SOCKET for this reason.
                 agent_cmd: None,
                 boot_timeout_secs: None,
+                worktree: val["worktree"].as_str().map(str::to_string),
                 peer_ancestry: None,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
@@ -4267,6 +4307,56 @@ impl PlexiApp {
         log::warn!(
             "pane_ipc: spawn_pane: could not apply name to pane_id={pane_id} (not found or not a terminal)"
         );
+    }
+
+    /// Resolve the repository anchor directory for a `plexi pane new --worktree`
+    /// request: explicit `--cwd` wins, then named-context root, then the calling
+    /// pane's repo root / cwd / context root, then the active window's focused
+    /// pane or active context root.
+    pub(crate) fn resolve_worktree_anchor(
+        &self,
+        spec: &crate::app::launch_spec::PaneLaunchSpec,
+    ) -> std::path::PathBuf {
+        if let Some(ref cwd) = spec.cwd {
+            return cwd.clone();
+        }
+        if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
+            if let Some(ctx) = self.router.iter().find(|c| c.name == ctx_name) {
+                return ctx.root.clone();
+            }
+        }
+        if let Some(from_id) = spec.from_pane_id {
+            if let Some(wt) = self.pane_worktrees.get(&from_id) {
+                return wt.repo_root.clone();
+            }
+            if let Some((win_idx, tile)) = self.find_pane_in_any_window(from_id) {
+                if let Some(cwd) = self.windows[win_idx].get_focused_pane_cwd(tile) {
+                    return cwd;
+                }
+                let ctx_id = self.windows[win_idx].context_id;
+                if let Some(ctx) = self.router.iter().find(|c| c.context_id == ctx_id) {
+                    return ctx.root.clone();
+                }
+            }
+        }
+        let active = self.active_window;
+        if let Some(win) = self.windows.get(active) {
+            if let Some(tile) = win.focused_pane.or(win.tree.root) {
+                if let Some(egui_tiles::Tile::Pane(pid)) = win.tree.tiles.get(tile) {
+                    if let Some(wt) = self.pane_worktrees.get(pid) {
+                        return wt.repo_root.clone();
+                    }
+                }
+                if let Some(cwd) = win.get_focused_pane_cwd(tile) {
+                    return cwd;
+                }
+            }
+            let ctx_id = win.context_id;
+            if let Some(ctx) = self.router.iter().find(|c| c.context_id == ctx_id) {
+                return ctx.root.clone();
+            }
+        }
+        self.router.active().root.clone()
     }
 }
 

@@ -1510,6 +1510,7 @@ pub enum PaneCmd {
     ///
     /// Examples:
     ///   plexi pane new --agent c-large -n "worker" --no-focus   # agent pane, id printed once ready-to-brief
+    ///   plexi pane new --worktree feature/0668-test             # terminal in isolated wtp worktree
     ///   plexi pane new                                          # empty terminal, split right
     ///   plexi pane new "npm run dev" -n "dev"                   # terminal with command, named
     ///   plexi pane new -d                                       # split below
@@ -1573,6 +1574,12 @@ pub enum PaneCmd {
         /// Working directory
         #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
+        /// Create or check out an isolated git worktree for <BRANCH> via `wtp`
+        /// and start the pane inside it. When the pane closes, the host
+        /// automatically reclaims the worktree if clean and unmoved, or retains
+        /// it and reports its path if dirty or ahead.
+        #[arg(long, value_name = "BRANCH")]
+        worktree: Option<String>,
     },
     /// Rename a pane.
     ///
@@ -1622,6 +1629,11 @@ pub enum PaneCmd {
         off: bool,
     },
     /// Close a pane. Omit the pane id to close the pane you are currently in.
+    ///
+    /// If the pane was created with `plexi pane new --worktree <BRANCH>`, the
+    /// host automatically reclaims the worktree via `wtp` when clean and
+    /// unmoved, or retains it and prints the retained worktree path when dirty
+    /// or ahead.
     Close {
         /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
         pane_id: Option<u64>,

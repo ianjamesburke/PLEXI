@@ -233,6 +233,13 @@ pub struct PlexiApp {
     pub(crate) pending_submits: Vec<crate::app::pane_wait::PendingSubmit>,
     /// Host-owned recurring prompts, keyed by terminal pane id.
     pub(crate) pane_heartbeats: HashMap<PaneId, PaneHeartbeat>,
+    /// Worktrees created by `plexi pane new --worktree <branch>`, keyed by the
+    /// owning terminal pane id so closing the pane reclaims or retains them (stint 0668).
+    pub(crate) pane_worktrees: HashMap<PaneId, crate::host::worktree::ManagedWorktree>,
+    /// Most recent close-time worktree disposition per pane id, consumed by
+    /// `ClosePane` replies and inspected by tests.
+    pub(crate) last_worktree_close_reports:
+        HashMap<PaneId, crate::host::worktree::WorktreeCloseReport>,
     /// Last window title sent via `ViewportCommand::Title`. egui's
     /// `send_viewport_cmd` unconditionally requests a repaint, so sending the
     /// title every frame creates a self-sustaining repaint loop (60fps
@@ -1489,6 +1496,8 @@ impl PlexiApp {
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
                     pane_heartbeats: restored.pane_heartbeats,
+                    pane_worktrees: HashMap::new(),
+                    last_worktree_close_reports: HashMap::new(),
                     last_sent_window_title: None,
                     permission_store_dir: profile_dir.clone(),
                     #[cfg(test)]
@@ -1737,6 +1746,8 @@ impl PlexiApp {
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
             pane_heartbeats: HashMap::new(),
+            pane_worktrees: HashMap::new(),
+            last_worktree_close_reports: HashMap::new(),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
             #[cfg(test)]
@@ -2510,6 +2521,8 @@ impl PlexiApp {
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
                 pane_heartbeats: HashMap::new(),
+                pane_worktrees: HashMap::new(),
+                last_worktree_close_reports: HashMap::new(),
                 pane_mailboxes: HashMap::new(),
                 pending_message_recvs: Vec::new(),
                 next_pane_message_id: 1,

@@ -766,6 +766,7 @@ fn main() -> eframe::Result {
                                         &[],
                                         None,
                                         None,
+                                        None,
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
@@ -1330,6 +1331,7 @@ fn main() -> eframe::Result {
                             ephemeral,
                             no_focus,
                             cwd,
+                            worktree,
                             agent,
                             boot_timeout,
                         } => {
@@ -1367,6 +1369,7 @@ fn main() -> eframe::Result {
                                 &[],
                                 None,
                                 agent.as_ref(),
+                                worktree.as_deref(),
                             ));
                         }
                     },

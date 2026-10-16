@@ -1201,12 +1201,17 @@ impl PlexiApp {
         // their host MCP credentials before dropping the panes: a context
         // delete bypasses close_tile and therefore has no terminal-exit
         // cleanup.
-        for window in self
+        let doomed_pane_ids: Vec<crate::spatial::tiling::PaneId> = self
             .windows
             .iter()
             .filter(|window| deleted.contains(&window.context_id))
-        {
-            revoke_window_pane_credentials(window);
+            .flat_map(|window| {
+                revoke_window_pane_credentials(window);
+                window.panes.keys().copied().collect::<Vec<_>>()
+            })
+            .collect();
+        for pane_id in doomed_pane_ids {
+            self.reclaim_pane_worktree(pane_id);
         }
         let doomed: Vec<Window> = {
             let mut kept = Vec::new();

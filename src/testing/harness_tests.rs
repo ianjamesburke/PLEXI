@@ -6267,6 +6267,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         name: None,
         agent_cmd: None,
         boot_timeout_secs: None,
+        worktree: None,
         peer_ancestry: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
@@ -7750,6 +7751,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            worktree: None,
             peer_ancestry: None,
         });
 
@@ -7798,6 +7800,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            worktree: None,
             peer_ancestry: None,
         });
 
@@ -8224,6 +8227,7 @@ mod agent_boot {
             name: Some("agent".to_string()),
             agent_cmd: Some(agent_cmd.to_string()),
             boot_timeout_secs,
+            worktree: None,
             peer_ancestry: None,
         });
         response
@@ -8355,7 +8359,10 @@ mod agent_boot {
         h.run_frames(1);
         let pane_id = spawned_terminal(&h);
 
-        h.inject_ipc(AppRequest::ClosePane { pane_id });
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id,
+            response_file: None,
+        });
         h.run_frames(1);
 
         let reply = read_json_response(&response);
@@ -8435,6 +8442,7 @@ mod agent_boot {
             name: None,
             agent_cmd: Some("c-large".to_string()),
             boot_timeout_secs: None,
+            worktree: None,
             peer_ancestry: None,
         });
         h.run_frames(1);
@@ -8704,7 +8712,10 @@ mod agent_boot {
             "a continuously streaming agent must never satisfy the boot predicate: {reply}"
         );
 
-        h.inject_ipc(AppRequest::ClosePane { pane_id });
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id,
+            response_file: None,
+        });
         h.run_frames(1);
     }
 
@@ -10057,5 +10068,260 @@ mod attention_review {
             assert!(open.iter().any(|row| &row.id == id), "{id} lost: {open:?}");
             assert!(open_items().iter().any(|row| &row.id == id), "{id} hidden");
         }
+    }
+}
+
+mod pane_worktree_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn init_temp_git_repo() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+
+        let run_git = |args: &[&str], dir: &Path| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git command");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run_git(&["init", "-b", "alpha"], &repo);
+        run_git(&["config", "user.email", "test@plexiapp.com"], &repo);
+        run_git(&["config", "user.name", "Plexi Test"], &repo);
+        std::fs::write(repo.join("README.md"), "hello\n").expect("write readme");
+        run_git(&["add", "README.md"], &repo);
+        run_git(&["commit", "-m", "initial"], &repo);
+        (tmp, repo)
+    }
+
+    #[test]
+    fn spawn_pane_worktree_creates_wtp_checkout_and_reclaims_when_clean_and_unmoved() {
+        let (tmp, repo) = init_temp_git_repo();
+        let mut h = HostHarness::new();
+        h.app.set_context_root(repo.clone(), None);
+        h.add_test_pane();
+
+        let spawn_resp = temp_response(tmp.path(), "wt-spawn-clean");
+        h.inject_ipc(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(spawn_resp.clone()),
+            ephemeral: false,
+            cwd: Some(repo.to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: Some("wt-clean".to_string()),
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: Some("feature/0668-clean".to_string()),
+            peer_ancestry: None,
+        });
+        h.run_frames(1);
+
+        let reply = read_json_response(&spawn_resp);
+        let Some(pane_id) = reply["pane_id"].as_u64() else {
+            return;
+        };
+        let wt_path = PathBuf::from(
+            reply["worktree"]
+                .as_str()
+                .expect("spawn reply must include worktree path"),
+        );
+        assert_eq!(reply["branch"].as_str(), Some("feature/0668-clean"));
+        assert!(wt_path.exists(), "worktree path must exist after spawn");
+
+        let info_resp = temp_response(tmp.path(), "wt-info-clean");
+        h.inject_ipc(AppRequest::GetPaneInfo {
+            pane_id,
+            response_file: info_resp.clone(),
+        });
+        h.run_frames(1);
+        let info = read_json_response(&info_resp);
+        assert_eq!(
+            info["worktree"]["branch"].as_str(),
+            Some("feature/0668-clean")
+        );
+        assert_eq!(
+            info["worktree"]["path"].as_str(),
+            Some(wt_path.to_string_lossy().as_ref())
+        );
+
+        let close_resp = temp_response(tmp.path(), "wt-close-clean");
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id,
+            response_file: Some(close_resp.clone()),
+        });
+        h.run_frames(1);
+
+        let close_reply = read_json_response(&close_resp);
+        assert_eq!(close_reply["ok"].as_bool(), Some(true));
+        assert_eq!(
+            close_reply["worktree"]["action"].as_str(),
+            Some("reclaimed")
+        );
+        assert!(close_reply["worktree"]["reason"].is_null());
+        assert!(
+            !wt_path.exists(),
+            "clean unmoved worktree must be reclaimed on pane close"
+        );
+    }
+
+    #[test]
+    fn spawn_pane_worktree_retains_and_reports_path_when_dirty() {
+        let (tmp, repo) = init_temp_git_repo();
+        let mut h = HostHarness::new();
+        h.app.set_context_root(repo.clone(), None);
+        h.add_test_pane();
+
+        let spawn_resp = temp_response(tmp.path(), "wt-spawn-dirty");
+        h.inject_ipc(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(spawn_resp.clone()),
+            ephemeral: false,
+            cwd: Some(repo.to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: Some("wt-dirty".to_string()),
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: Some("feature/0668-dirty".to_string()),
+            peer_ancestry: None,
+        });
+        h.run_frames(1);
+
+        let reply = read_json_response(&spawn_resp);
+        let Some(pane_id) = reply["pane_id"].as_u64() else {
+            return;
+        };
+        let wt_path = PathBuf::from(
+            reply["worktree"]
+                .as_str()
+                .expect("spawn reply must include worktree path"),
+        );
+        std::fs::write(wt_path.join("untracked.txt"), "work in progress\n")
+            .expect("write untracked file");
+
+        let close_resp = temp_response(tmp.path(), "wt-close-dirty");
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id,
+            response_file: Some(close_resp.clone()),
+        });
+        h.run_frames(1);
+
+        let close_raw = std::fs::read_to_string(&close_resp).expect("read close response");
+        let close_reply: serde_json::Value =
+            serde_json::from_str(&close_raw).expect("parse close response");
+        assert_eq!(close_reply["worktree"]["action"].as_str(), Some("retained"));
+        assert_eq!(close_reply["worktree"]["reason"].as_str(), Some("dirty"));
+        assert_eq!(
+            close_reply["worktree"]["path"].as_str(),
+            Some(wt_path.to_string_lossy().as_ref())
+        );
+        assert!(
+            wt_path.exists(),
+            "dirty worktree must remain on disk after pane close"
+        );
+
+        let (stdout, stderr, code) = crate::cli::pane::close_pane_outcome(&close_raw);
+        assert_eq!(code, 0);
+        assert!(stderr.is_none());
+        assert!(
+            stdout
+                .as_deref()
+                .is_some_and(|s| s.contains(&wt_path.to_string_lossy().into_owned())
+                    && s.contains("dirty")),
+            "CLI close outcome must report retained path and reason: {stdout:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_pane_worktree_retains_and_reports_path_when_ahead() {
+        let (tmp, repo) = init_temp_git_repo();
+        let mut h = HostHarness::new();
+        h.app.set_context_root(repo.clone(), None);
+        h.add_test_pane();
+
+        let spawn_resp = temp_response(tmp.path(), "wt-spawn-ahead");
+        h.inject_ipc(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(spawn_resp.clone()),
+            ephemeral: false,
+            cwd: Some(repo.to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: Some("wt-ahead".to_string()),
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: Some("feature/0668-ahead".to_string()),
+            peer_ancestry: None,
+        });
+        h.run_frames(1);
+
+        let reply = read_json_response(&spawn_resp);
+        let Some(pane_id) = reply["pane_id"].as_u64() else {
+            return;
+        };
+        let wt_path = PathBuf::from(
+            reply["worktree"]
+                .as_str()
+                .expect("spawn reply must include worktree path"),
+        );
+        std::fs::write(wt_path.join("README.md"), "updated\n").expect("update readme");
+        for args in [&["add", "README.md"][..], &["commit", "-m", "advance"][..]] {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&wt_path)
+                .output()
+                .expect("git commit");
+            assert!(out.status.success());
+        }
+
+        let close_resp = temp_response(tmp.path(), "wt-close-ahead");
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id,
+            response_file: Some(close_resp.clone()),
+        });
+        h.run_frames(1);
+
+        let close_reply = read_json_response(&close_resp);
+        assert_eq!(close_reply["worktree"]["action"].as_str(), Some("retained"));
+        assert_eq!(close_reply["worktree"]["reason"].as_str(), Some("ahead"));
+        assert_eq!(
+            close_reply["worktree"]["path"].as_str(),
+            Some(wt_path.to_string_lossy().as_ref())
+        );
+        assert!(
+            wt_path.exists(),
+            "ahead worktree must remain on disk after pane close"
+        );
     }
 }
