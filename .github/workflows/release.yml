@@ -14,11 +14,56 @@ on:
         description: Run package/signing acceptance without publishing a release
         type: boolean
         default: false
+      signing_only:
+        description: Check only signing credentials on a disposable Mac runner; never publish
+        type: boolean
+        default: false
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
+  signing:
+    if: ${{ inputs.signing_only }}
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Import the persistent signing identity
+        timeout-minutes: 2
+        env:
+          PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+          PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+          PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+        run: bash scripts/setup-alpha-release-signing.sh
+      - name: Sign and verify a changed executable
+        run: |
+          cp /usr/bin/true "$RUNNER_TEMP/signing-probe"
+          codesign --force --sign "$PLEXI_SIGN_IDENTITY" --keychain "$PLEXI_SIGNING_KEYCHAIN" --identifier com.ianjamesburke.plexi-alpha "$RUNNER_TEMP/signing-probe"
+          codesign --verify --strict "$RUNNER_TEMP/signing-probe"
+          uv run --no-project python - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.package import macos_signature
+          actual = macos_signature(Path(os.environ['RUNNER_TEMP']) / 'signing-probe')
+          assert actual['authorities'][0] == 'Plexi Dev', actual
+          assert actual['certificate_sha1'] == os.environ['PLEXI_SIGNING_CERT_SHA1'], actual
+          print('PASS: protected identity imported and signed executable verified')
+          PY
+      - name: Remove temporary signing trust and Keychain
+        if: always()
+        run: |
+          certificate="$RUNNER_TEMP/plexi-alpha-release-signing.pem"
+          keychain="$RUNNER_TEMP/plexi-alpha-release-signing.keychain-db"
+          if [[ -f "$certificate.trusted" ]]; then sudo -n security remove-trusted-cert -d "$certificate"; fi
+          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
   packages:
+    if: ${{ !inputs.signing_only }}
     uses: ./.github/workflows/distribution.yml
     with:
       ref: ${{ inputs.tag || github.ref }}
@@ -28,7 +73,7 @@ jobs:
       PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
       PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
   publish:
-    if: ${{ !inputs.verify_only }}
+    if: ${{ !inputs.verify_only && !inputs.signing_only }}
     needs: packages
     runs-on: ubuntu-latest
     permissions:

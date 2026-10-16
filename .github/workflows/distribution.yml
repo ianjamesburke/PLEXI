@@ -60,6 +60,19 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.11"
+      - name: Import the persistent public macOS signing identity
+        if: runner.os == 'macOS' && inputs.tag != ''
+        timeout-minutes: 2
+        env:
+          PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+          PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+          PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+        shell: bash
+        run: |
+          case '${{ inputs.tag }}' in
+            *-alpha.*) bash scripts/setup-alpha-release-signing.sh ;;
+            *) echo 'error: public beta/stable macOS releases require Developer ID signing and notarization; this Alpha-only identity may not be used' >&2; exit 1 ;;
+          esac
       - name: Fetch the verified package runtime
         shell: bash
         run: uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'
@@ -95,18 +108,6 @@ jobs:
         shell: bash
         run: |
           RUSTFLAGS="-D warnings" cargo build --release --bin plexi
-      - name: Import the persistent public macOS signing identity
-        if: runner.os == 'macOS' && inputs.tag != ''
-        env:
-          PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
-          PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
-          PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
-        shell: bash
-        run: |
-          case '${{ inputs.tag }}' in
-            *-alpha.*) bash scripts/setup-alpha-release-signing.sh ;;
-            *) echo 'error: public beta/stable macOS releases require Developer ID signing and notarization; this Alpha-only identity may not be used' >&2; exit 1 ;;
-          esac
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb xauth
@@ -144,7 +145,7 @@ jobs:
         run: |
           keychain="$RUNNER_TEMP/plexi-alpha-release-signing.keychain-db"
           certificate="$RUNNER_TEMP/plexi-alpha-release-signing.pem"
-          if [[ -f "$certificate" ]]; then security remove-trusted-cert "$certificate"; fi
+          if [[ -f "$certificate.trusted" ]]; then sudo -n security remove-trusted-cert -d "$certificate"; fi
           if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
       - uses: actions/upload-artifact@v4
         if: always()

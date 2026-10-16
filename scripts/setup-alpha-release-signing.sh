@@ -29,7 +29,9 @@ PY
 security create-keychain -p "$PLEXI_ALPHA_SIGNING_P12_PASSWORD" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
 security unlock-keychain -p "$PLEXI_ALPHA_SIGNING_P12_PASSWORD" "$keychain"
+echo 'release-signing: importing the pinned private identity'
 security import "$p12" -k "$keychain" -P "$PLEXI_ALPHA_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+echo 'release-signing: configuring codesign access'
 security set-key-partition-list -S apple-tool:,apple: -s -k "$PLEXI_ALPHA_SIGNING_P12_PASSWORD" "$keychain"
 
 expected="$(printf '%s' "$PLEXI_ALPHA_SIGNING_CERT_SHA1" | tr '[:lower:]' '[:upper:]' | tr -d ':')"
@@ -42,7 +44,9 @@ fi
 
 # A self-signed certificate needs code-signing trust on the disposable runner.
 # Pin it before adding trust; the workflow removes this setting at teardown.
-security add-trusted-cert -r trustRoot -p codeSign -k "$keychain" "$certificate"
+echo 'release-signing: trusting the pinned certificate for code signing on the disposable runner'
+sudo -n security add-trusted-cert -d -r trustRoot -p codeSign -k "$keychain" "$certificate"
+touch "$certificate.trusted"
 identity="$(security find-identity -v -p codesigning "$keychain" | awk -v wanted="$expected" 'toupper($2) == wanted { print $2; exit }')"
 if [[ -z "$identity" ]]; then
   echo "error: protected Alpha certificate is not a usable code-signing identity" >&2

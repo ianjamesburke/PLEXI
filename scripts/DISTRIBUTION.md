@@ -91,6 +91,12 @@ For CI qualification without publication, dispatch `release.yml` with
 `verify_only=true` and `tag` set to the source ref to test. This runs the real
 package/signing acceptance with a synthetic Alpha build tag, then skips the
 publish job. It creates neither a Git tag nor a GitHub Release.
+For a fast credential check, use `signing_only=true` instead: it imports the
+same identity, signs a disposable executable, verifies the fingerprint and
+designated requirement, and removes the runner's temporary trust and Keychain.
+Signing setup runs before compilation with a bounded timeout. The disposable
+runner installs code-signing trust in its admin domain through noninteractive
+sudo so it cannot wait on a user-domain authorization dialog.
 
 ## Layout and ownership
 
