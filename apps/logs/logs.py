@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from plexi_sdk import log, state
+from plexi_sdk import log, state, tools
 from plexi_sdk.effects import ReadHostLog, SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import (
     HostLogResult,
@@ -88,6 +88,43 @@ DEFAULT_STATE: dict[str, Any] = {
 }
 
 
+@tools.tool(
+    "logs.query",
+    "Return matching log lines filtered by optional `level`, substring `contains`, and `limit`.",
+    {"level": str, "contains": str, "limit": int},
+    read_only=True,
+)
+def _tool_query(
+    level: str | None = None,
+    contains: str | None = None,
+    limit: int | None = None,
+) -> dict:
+    data = _state()
+    matched = _query_lines(data["lines"], level=level, contains=contains, limit=limit)
+    log.info(f"logs: tool logs.query returned {len(matched)} line(s)")
+    return {"lines": matched, "count": len(matched)}
+
+
+@tools.tool(
+    "logs.set_filter",
+    "Set the active log level filter (ALL, ERROR, WARN, INFO, DEBUG).",
+    {"level": str},
+)
+def _tool_set_filter(level: str) -> tools.Reply:
+    norm_level = str(level or "").strip().upper()
+    if norm_level not in LEVELS:
+        raise ValueError(
+            f"unknown log level {level!r}; expected one of {', '.join(LEVELS)}"
+        )
+    data = _state()
+    data["filter"] = norm_level
+    log.info(f"logs: filter set to {norm_level} via assistant")
+    return tools.Reply(
+        {"filter": norm_level, "level": norm_level, "count": len(_filtered(data))},
+        [SetState(data), SetStatus(_status(data))],
+    )
+
+
 def init(size, args) -> list:
     data = _state()
     log.info("logs: SDK v3 initialized — requesting host log via read_host_log effect")
@@ -97,10 +134,15 @@ def init(size, args) -> list:
         ReadHostLog(TAIL_BYTES),
         SetStatus(_status(data)),
         SetState(data),
+        tools.expose(),
     ]
 
 
 def update(event) -> list:
+    handled = tools.dispatch(event)
+    if handled is not None:
+        return handled
+
     data = _state()
 
     if isinstance(event, HostLogResult):
@@ -281,18 +323,37 @@ def _tab_index(handler_id: str) -> int | None:
     return index if 0 <= index < len(LEVELS) else None
 
 
-def _filtered(data: dict) -> list[dict]:
-    lines = data["lines"]
-    if data["filter"] != "ALL":
-        lines = [line for line in lines if line["level"] == data["filter"]]
-    query = data["query"].lower().strip()
-    if query:
-        lines = [
+def _query_lines(
+    lines: list[dict],
+    level: str | None = None,
+    contains: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    result = list(lines)
+    if level is not None and str(level).strip():
+        norm_level = str(level).strip().upper()
+        if norm_level not in LEVELS:
+            raise ValueError(
+                f"unknown log level {level!r}; expected one of {', '.join(LEVELS)}"
+            )
+        if norm_level != "ALL":
+            result = [line for line in result if line["level"] == norm_level]
+    if contains is not None and str(contains).strip():
+        needle = str(contains).lower().strip()
+        result = [
             line
-            for line in lines
-            if query in line["target"].lower() or query in line["message"].lower()
+            for line in result
+            if needle in line["target"].lower() or needle in line["message"].lower()
         ]
-    return lines
+    if limit is not None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"limit must be a non-negative integer, got {limit!r}")
+        result = result[:limit]
+    return result
+
+
+def _filtered(data: dict) -> list[dict]:
+    return _query_lines(data["lines"], level=data["filter"], contains=data["query"])
 
 
 def _body(data: dict) -> Component:
