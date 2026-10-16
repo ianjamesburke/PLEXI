@@ -1646,14 +1646,17 @@ fn peek_child_wait_status(pid: u32) -> Option<PtyExitStatus> {
             &mut info,
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         );
-        if rc != 0 || info.si_pid as u32 != pid {
+        // Use `siginfo_t::si_pid()` / `si_status()` methods rather than field
+        // access: on Linux/Solaris/NetBSD/OpenBSD those live inside the union
+        // backing `siginfo_t` and `libc` exposes them as methods across all
+        // Unix targets (including macOS).
+        if rc != 0 || info.si_pid() as u32 != pid {
             return None;
         }
+        let status = info.si_status();
         match info.si_code {
-            libc::CLD_EXITED => Some(PtyExitStatus::Code(info.si_status)),
-            libc::CLD_KILLED | libc::CLD_DUMPED => {
-                Some(PtyExitStatus::Signal(info.si_status))
-            }
+            libc::CLD_EXITED => Some(PtyExitStatus::Code(status)),
+            libc::CLD_KILLED | libc::CLD_DUMPED => Some(PtyExitStatus::Signal(status)),
             _ => None,
         }
     }
