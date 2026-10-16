@@ -16,16 +16,16 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 
 | File | Covers | Stint |
 |---|---|---|
-| `agent-run-orchestration.md` | Host primitives + durable run record behind the babysitter loop | see file |
+| `agent-run-orchestration.md` | Superseded: prose queue-runner host primitives; direction now `@plexi/pi` (0796) + squads per `TRUTH.md` | see file |
 | `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
-| `assistant-agent-mesh.md` | Per-context head agents, central memory drain, derived capability-card registry + `ask_question` routing, per-head testability, `plexi assistant` + picker + inter-agent receipts, MCP Apps pane + Tasks adoption | none yet |
+| `assistant-agent-mesh.md` | Superseded: built-in Assistant head-agent mesh; replaced by CLI coding agents + `@plexi/pi` (0796) + squads per `TRUTH.md` | none yet |
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
 | `specs/agents-api-and-permission-gate.md` | Agents API and the one permission gate. P1 is the monitor, exact grants, and host-approved chess | none yet |
-| `assistant-host-app.md` | Host assistant app spec | see file |
+| `assistant-host-app.md` | Superseded: built-in Assistant is not the primary orchestrator (`TRUTH.md`) | see file |
 | `browser-surface.md` | Native browser App pane, profiles, context binding, automation, and live validation | see file |
 | `context-root-uniqueness-and-rollup.md` | Duplicate-root hard stop + parent-dir todo rollup — design brief awaiting a ruling | 0679 |
 | `context-state-persistence-audit.md` | Why context-scoped app state does not survive a restart — findings and evidence | 0678 |
-| `decision-trust-plane.md` | Typed decision records, worker→head→human resolution, per-category trust folded from outcomes | none yet |
+| `decision-trust-plane.md` | Superseded: typed decision records on the retired head-agent mesh (`TRUTH.md`) | none yet |
 | `linux-support-plan.md` | Linux x86_64 as a second host platform: phase-by-phase verification contract, platform seam, v0 non-goals | none yet |
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
 | `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
