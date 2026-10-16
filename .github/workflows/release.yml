@@ -7,9 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable release tag
+        description: Existing immutable release tag (or source ref for verification only)
         required: true
         type: string
+      verify_only:
+        description: Run package/signing acceptance without publishing a release
+        type: boolean
+        default: false
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -18,12 +22,13 @@ jobs:
     uses: ./.github/workflows/distribution.yml
     with:
       ref: ${{ inputs.tag || github.ref }}
-      tag: ${{ inputs.tag || github.ref_name }}
+      tag: ${{ inputs.verify_only && 'v0.0.0-alpha.0' || inputs.tag || github.ref_name }}
     secrets:
       PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
       PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
       PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
   publish:
+    if: ${{ !inputs.verify_only }}
     needs: packages
     runs-on: ubuntu-latest
     permissions:

@@ -87,6 +87,11 @@ It uses a disposable private Keychain and checks that the user's default
 Keychain and search list are unchanged. CI rebuilds B with a different compiled
 build tag; identical executable bytes are rejected as insufficient evidence.
 
+For CI qualification without publication, dispatch `release.yml` with
+`verify_only=true` and `tag` set to the source ref to test. This runs the real
+package/signing acceptance with a synthetic Alpha build tag, then skips the
+publish job. It creates neither a Git tag nor a GitHub Release.
+
 ## Layout and ownership
 
 macOS uses per-user `~/Applications/Plexi.app`, `Plexi Alpha.app` and
