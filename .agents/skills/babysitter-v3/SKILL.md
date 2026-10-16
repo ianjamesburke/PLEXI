@@ -12,29 +12,32 @@ You are the **head**: a router, never a coder. You spawn panes, brief them, read
 Settings (roles, aliases, limits, footers, paths) live in `RUN_CONFIG.toml` next to this file. Read it at start and before every spawn. Never restate its values in briefs or state files.
 
 ```
-/babysitter-v3 <STINT_ID> [<STINT_ID> ...]
-/babysitter-v3 resume
+/babysitter-v3 <STINT_ID> [<STINT_ID> ...] [parent=<PANE_ID>]
+/babysitter-v3 resume [parent=<PANE_ID>]
 ```
+
+`parent` is the pane that launched you, usually an orchestrating agent that reports to Ian. Without it, Ian is reading your pane directly.
 
 ## Run directory
 
-Every run writes to `<run_root>/<YYYYMMDD-HHMM>/` (git-ignored, so it never dirties alpha):
+Every run writes to exactly one `<run_root>/<YYYYMMDD-HHMM>/`, named from `date -u +%Y%m%d-%H%M` (UTC, never local time). The directory is git-ignored, so it never dirties alpha:
 
 | File | Purpose |
 |---|---|
 | `RUN_STATE.md` | The baton. Overwritten at every merge or park: remaining queue, batches, lane → pane/PR/round, parked items, orphaned worktrees. A fresh head resumes from it alone. |
-| `LOG.md` | Append-only, UTC timestamps: briefs, PR opened, verdicts, merges, respawns, friction. Ends with a run recap. |
+| `LOG.md` | Append-only, UTC timestamps: briefs, PR opened, verdicts, merges, respawns, friction. |
+| `REPORT.md` | Written once at close-out. The single artifact Ian reads; see Stop conditions. |
 | `HUMAN_CHECKS.md` | Non-blocking post-merge checks only a human can judge (`- [ ] PR #N (stint): what to look at. Evidence: <path>`). |
 | `briefs/<pane-label>.md` | The full brief for each pane. Panes are told to read it; the launch prompt stays short. |
 
-`resume` = find the newest run dir, read `RUN_STATE.md`, append a takeover line to `LOG.md`, continue.
+`resume` = find the newest run dir, read `RUN_STATE.md` (it records `parent`), append a takeover line to `LOG.md`, continue.
 
 ## Before the first spawn
 
 1. `git status --porcelain` on the alpha root is empty (run `git update-index --refresh` first). Dirty → stop and tell Ian.
 2. Drop any stint in `[reservations].attended_only`, any `blocked`, and any whose body has no `## Done-When`. Exception: a stint Ian names explicitly. Rule its Done-When from its Scope/Testing sections, on the record in `LOG.md` and in the brief.
-3. **Batch the queue.** Related small stints that touch the same area ship as one PR. Batches that touch overlapping files never run at the same time. Write the batch plan into `RUN_STATE.md`.
-4. Run `caffeinate -dimsu` in its own pane (`plexi pane new "caffeinate -dimsu" -n caffeinate -d --no-focus`).
+3. **Batch the queue.** Related small stints that touch the same area ship as one PR. Batches that touch overlapping files never run at the same time. Write the batch plan and `parent` (or `none`) into `RUN_STATE.md`.
+4. Run `caffeinate -dimsu` in its own pane (`plexi pane new "caffeinate -dimsu" -n caffeinate --no-focus`).
 
 ## Spawning a pane (every role, every engine)
 
@@ -42,9 +45,9 @@ Every run writes to `<run_root>/<YYYYMMDD-HHMM>/` (git-ignored, so it never dirt
 
 1. Write the brief to `briefs/<label>.md`.
 2. Pick the alias: the first entry of the role's list in `RUN_CONFIG.toml` that hasn't hit a limit this run. Look up its engine with `[engines.alias_engine]` and build the command from `[engines.launch]`.
-3. Launch with a short single-quoted prompt (no `'` or backticks inside it):
+3. Launch with a short single-quoted prompt (no `'` or backticks inside it). The default split is to the right, which puts panes side by side. Never pass `-d`: it means `--down`, not detached.
    ```bash
-   ID=$(plexi pane new "<launch command>" -n <label> -d --no-focus)
+   ID=$(plexi pane new "<launch command>" -n <label> --no-focus)
    # e.g. agym -i '/validate-pr 2601 — read your brief first: .stint/runs/20261016-0300/briefs/tester-2601-r1.md'
    ```
 4. Confirm it started: within 60 s the `status` slot is non-empty, or the footer shows the engine's working text. If neither, read the capture once and diagnose; never send the same prompt again.
@@ -81,7 +84,7 @@ If the stints touch the assistant or `ai.query`, add: `export PLEXI_TEST_OPENROU
 
 **3. Route the verdict.** Read `verdict`, then the tester's final reply (`plexi pane capture <id> --lines 60 --plain`). Close the tester pane.
 
-- **PASS** and `gh pr checks <PR>` green → send the worker `PASS` (`plexi pane send <worker> "PASS" --submit`) if `auto_merge` is on; otherwise add the PR to `RUN_STATE.md` as awaiting Ian and move on. A red check is not the PR's if it fails the same way on alpha, or passes on one `gh run rerun <run-id> --failed`: overrule it on the record and file a stint (or add the evidence to an existing flake stint).
+- **PASS** and `gh pr checks <PR>` green → first check the Done-When yourself. List each item in `LOG.md` as met, overruled with a reason, or unmet. Any unmet item that isn't overruled → treat it as a FAIL caused by the PR. If it can't be met in this run (blocked by something outside the batch), send the worker `PASS`, but also file the remainder as a follow-up stint and name it in `REPORT.md`. Never let a stint close as done with silent gaps. Then send the worker `PASS` (`plexi pane send <worker> "PASS" --submit`) if `auto_merge` is on; otherwise add the PR to `RUN_STATE.md` as awaiting Ian and move on. A red check is not the PR's if it fails the same way on alpha, or passes on one `gh run rerun <run-id> --failed`: overrule it on the record and file a stint (or add the evidence to an existing flake stint).
 - **FAIL caused by the PR** → send the worker `FOLLOW-UP: <tester's numbered list, verbatim>. Write status=impl:working now. Find the root cause, not a patch. Push to the same PR, write status=pr:done again.` Confirm the slot has left `pr:done` before you wait on it again. Then spawn a new tester (`r<round+1>`) to re-check only what changed, plus a one-line smoke of what already passed.
 - **FAIL from a pre-existing alpha defect, or a criterion not in the Done-When** → your call: overrule it on the record in `LOG.md`, file a follow-up stint, treat it as PASS.
 - **Rounds exceed `max_fix_rounds`** → send `FAIL: <summary>`, park the batch in `RUN_STATE.md`, keep the worktree, move on.
@@ -103,8 +106,18 @@ The head rots too. After every **two** merges, or whenever your own context feel
 
 ## Stop conditions and close-out
 
-- **Done** = every batch is merged or parked with a written reason. Then: reap orphaned worktrees through a fresh small worker (`wtp rm` only for merged or superseded work, never unpushed commits; list the rest in `RUN_STATE.md`), close `caffeinate`, and write the recap in `LOG.md`: merged PR → stints, parked items and why, per-batch wall time and rounds, respawns by engine, friction worth turning into skill edits.
-- Ian says stop → finish writing state, leave panes running, report.
+- **Done** = every batch is merged or parked with a written reason. Then, in order:
+  1. Reap orphaned worktrees through a fresh small worker (`wtp rm` only for merged or superseded work, never unpushed commits; list the rest in `RUN_STATE.md`). Close `caffeinate`.
+  2. Write `REPORT.md`, the only thing Ian needs to read. Keep it short and lead with the state:
+     - **Landed:** each PR → stints, rounds, wall time, the worker and tester alias.
+     - **Not landed / gaps:** parked batches and why; Done-When items overruled or carried into follow-up stints (by id).
+     - **State left behind:** alpha head sha, open PRs from this run, panes still open (should be none), kept worktrees and why.
+     - **Filed:** new stints, and evidence added to existing ones.
+     - **Friction:** skill or CLI edits worth making. One line each, at most 5, the highest-leverage first.
+     - **Needs Ian:** the `HUMAN_CHECKS.md` items, plus any decision only he can make.
+  3. Append the run to `TRUTH.md`, pointing at `REPORT.md`.
+  4. **With a `parent`:** `plexi pane send <parent> "BABYSITTER DONE: <run dir>/REPORT.md" --submit`, then close your own pane (`plexi pane close`). The parent relays the report to Ian, so your pane has nothing left to read. **Without a `parent`:** print `REPORT.md` as your final reply and stay open.
+- Ian (or the parent) says stop → finish writing state, write a partial `REPORT.md`, leave lane panes running, report the same way.
 
 ## Rules
 
