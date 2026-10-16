@@ -13,7 +13,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 **Path rules:** Never hardcode a profile directory path — always use `config_dir()`. Never hardcode `.plexi/` as a workspace dir — always use `workspace_channel_dir()` or `workspace_config_path()`.
 
-**Socket rule:** An explicit `--socket` wins, followed by `PLEXI_SOCKET`; otherwise a channel-suffixed binary resolves its own profile endpoint and the bare `plexi` binary has no command socket. Route new command dispatch through `resolve_command_socket()`. On Windows the endpoint is the stable `\\.\pipe\plexi-<channel>` named pipe, never a filename-derived `.exe` suffix.
+**Socket rule:** An explicit `--socket` wins, followed by binary identity: a channel-suffixed binary resolves its own profile endpoint and ignores an inherited `PLEXI_SOCKET` (logged). Only the bare `plexi` binary adopts ambient `PLEXI_SOCKET`, and with none it has no command socket. Self-identity vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_*`) feed defaults only, never routing. Route new command dispatch through `resolve_command_socket()`. On Windows the endpoint is the stable `\\.\pipe\plexi-<channel>` named pipe, never a filename-derived `.exe` suffix.
 
 **Transport completion is newline-framed.** The CLI reports socket success only after the complete newline-delimited JSON frame is accepted. The host discards EOF-terminated partial frames, even when the partial bytes form valid JSON. An explicitly reported incomplete-frame transport failure was not dispatched and is safe to retry; a later host response timeout is not proof of non-delivery.
 

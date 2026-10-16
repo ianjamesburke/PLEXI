@@ -18,7 +18,7 @@ first see if alpha is clean, if not set state to blocked and send a plexi notifi
 if clean, `stint claim <task-id>` to claim on alpha, marking as in progress
 
 report status as `<step>:<state>`, state one of `working`, `done`, `blocked`, `failed` (babysitter-v3 waits on these exact values):
-plexi pane slot write status impl:working --replace; plexi pane slot write pipeline_phase "implement-stint-v2:0728" --replace
+plexi pane slot write status impl:working --replace --pane-id $PLEXI_PANE_ID; plexi pane slot write pipeline_phase "implement-stint-v2:0728" --replace --pane-id $PLEXI_PANE_ID
 
 run builds and tests in the foreground. if your turn ends while a job runs in the background, nothing wakes you.
 

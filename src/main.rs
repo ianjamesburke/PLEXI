@@ -1248,22 +1248,43 @@ fn main() -> eframe::Result {
                                     pane_id,
                                 ));
                             }
-                            PaneSlotCmd::Read { name, pane_id } => {
-                                std::process::exit(cli::pane_slot_read_cli(&name, pane_id))
+                            PaneSlotCmd::Read {
+                                name,
+                                pane_id,
+                                pane_id_flag,
+                            } => {
+                                std::process::exit(cli::pane_slot_read_cli(
+                                    &name,
+                                    pane_id.or(pane_id_flag),
+                                ))
                             }
                             PaneSlotCmd::Wait {
                                 name,
                                 pane_id,
+                                pane_id_flag,
                                 until,
                                 timeout,
                             } => std::process::exit(cli::pane_slot_wait_cli(
-                                &name, pane_id, &until, timeout,
+                                &name,
+                                pane_id.or(pane_id_flag),
+                                &until,
+                                timeout,
                             )),
-                            PaneSlotCmd::List { pane_id } => {
-                                std::process::exit(cli::pane_slot_list_cli(pane_id))
-                            }
-                            PaneSlotCmd::Delete { name, pane_id } => {
-                                std::process::exit(cli::pane_slot_delete_cli(&name, pane_id))
+                            PaneSlotCmd::List {
+                                pane_id,
+                                pane_id_flag,
+                            } => std::process::exit(cli::pane_slot_list_cli(
+                                pane_id.or(pane_id_flag),
+                            )),
+                            PaneSlotCmd::Delete {
+                                name,
+                                pane_id,
+                                pane_id_flag,
+                            } => {
+                                std::process::exit(cli::pane_slot_delete_cli(
+                                    &name,
+                                    pane_id.or(pane_id_flag),
+                                ))
                             }
                         },
                         PaneCmd::New {

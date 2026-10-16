@@ -1786,8 +1786,12 @@ pub enum PaneSlotCmd {
     Read {
         /// Slot name
         name: String,
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
         pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
     },
     /// Block until a slot's value matches a pattern, then print it.
     ///
@@ -1796,8 +1800,12 @@ pub enum PaneSlotCmd {
     Wait {
         /// Slot name
         name: String,
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
         pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
         /// Regex the slot value must match.
         #[arg(long)]
         until: String,
@@ -1807,15 +1815,23 @@ pub enum PaneSlotCmd {
     },
     /// List slots for a pane as JSON.
     List {
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
         pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
     },
     /// Delete a named pane slot.
     Delete {
         /// Slot name
         name: String,
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
         pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
     },
 }
 
@@ -2804,5 +2820,66 @@ mod tests {
         assert_eq!(by.as_deref(), Some("kind"));
         assert_eq!(since.as_deref(), Some("2026-01-01"));
         assert!(json);
+    }
+
+    fn slot_pane_id(args: &[&str]) -> Option<Option<u64>> {
+        let cli = Cli::try_parse_from(args).ok()?;
+        let Some(Commands::Pane {
+            cmd: super::PaneCmd::Slot { cmd },
+        }) = cli.command
+        else {
+            panic!("expected pane slot");
+        };
+        Some(match cmd {
+            super::PaneSlotCmd::Read {
+                pane_id,
+                pane_id_flag,
+                ..
+            }
+            | super::PaneSlotCmd::Wait {
+                pane_id,
+                pane_id_flag,
+                ..
+            }
+            | super::PaneSlotCmd::Delete {
+                pane_id,
+                pane_id_flag,
+                ..
+            }
+            | super::PaneSlotCmd::List {
+                pane_id,
+                pane_id_flag,
+            } => pane_id.or(pane_id_flag),
+            super::PaneSlotCmd::Write { pane_id, .. } => pane_id,
+        })
+    }
+
+    #[test]
+    fn pane_slot_verbs_accept_flag_and_positional_pane_id() {
+        let verbs: [(&'static [&'static str], &'static [&'static str]); 4] = [
+            (&["read", "status"], &[]),
+            (&["wait", "status"], &["--until", "x"]),
+            (&["list"], &[]),
+            (&["delete", "status"], &[]),
+        ];
+        for (verb, extra) in verbs {
+            let base: [&'static str; 3] = ["plexi", "pane", "slot"];
+            let build = |tail: &'static [&'static str]| -> Vec<&'static str> {
+                base.iter()
+                    .chain(verb.iter())
+                    .chain(tail.iter())
+                    .chain(extra.iter())
+                    .copied()
+                    .collect()
+            };
+            assert_eq!(slot_pane_id(&build(&["--pane-id", "42"])), Some(Some(42)));
+            assert_eq!(slot_pane_id(&build(&["42"])), Some(Some(42)));
+            assert_eq!(slot_pane_id(&build(&[])), Some(None));
+            assert_eq!(
+                slot_pane_id(&build(&["42", "--pane-id", "43"])),
+                None,
+                "both spellings must be rejected for {verb:?}"
+            );
+        }
     }
 }
