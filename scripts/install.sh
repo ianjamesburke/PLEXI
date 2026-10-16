@@ -15,10 +15,14 @@ fi
 case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) echo 'Source packaging requires macOS or Linux.' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64) arch=x64 ;; *) echo 'Unsupported architecture.' >&2; exit 1 ;; esac
 if [[ "$channel" == pr-* ]]; then export PLEXI_BUILD_TEST_CHANNEL="$channel"; else unset PLEXI_BUILD_TEST_CHANNEL; fi
-just build
-bash scripts/cargo-with-lease.sh cargo build --release -p plexi-distribution --bin plexi-installer
 metadata="$(cargo metadata --format-version=1 --no-deps)"
 target="$(printf '%s' "$metadata" | uv run --no-project --python 3.11 python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
+if [[ "${PLEXI_REUSE_RELEASE_BUILD:-}" == 1 && "$channel" == pr-* && -x "$target/release/plexi" ]]; then
+  echo "install: reusing provenance-checked release binary (PLEXI_REUSE_RELEASE_BUILD)"
+else
+  just build
+fi
+bash scripts/cargo-with-lease.sh cargo build --release -p plexi-distribution --bin plexi-installer
 stage="$(mktemp -d "${TMPDIR:-/tmp}/plexi-source-package.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 if [[ "$os" == macos && -z "${PLEXI_SIGN_IDENTITY:-}" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q 'Plexi Dev'; then
