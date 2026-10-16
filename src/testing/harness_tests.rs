@@ -10076,14 +10076,6 @@ mod pane_worktree_tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    fn wtp_available() -> bool {
-        Command::new("wtp")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
     fn init_temp_git_repo() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let repo = tmp.path().join("repo");
@@ -10113,9 +10105,6 @@ mod pane_worktree_tests {
 
     #[test]
     fn spawn_pane_worktree_creates_wtp_checkout_and_reclaims_when_clean_and_unmoved() {
-        if !wtp_available() {
-            return;
-        }
         let (tmp, repo) = init_temp_git_repo();
         let mut h = HostHarness::new();
         h.app.set_context_root(repo.clone(), None);
@@ -10194,9 +10183,6 @@ mod pane_worktree_tests {
 
     #[test]
     fn spawn_pane_worktree_retains_and_reports_path_when_dirty() {
-        if !wtp_available() {
-            return;
-        }
         let (tmp, repo) = init_temp_git_repo();
         let mut h = HostHarness::new();
         h.app.set_context_root(repo.clone(), None);
@@ -10272,9 +10258,6 @@ mod pane_worktree_tests {
 
     #[test]
     fn spawn_pane_worktree_retains_and_reports_path_when_ahead() {
-        if !wtp_available() {
-            return;
-        }
         let (tmp, repo) = init_temp_git_repo();
         let mut h = HostHarness::new();
         h.app.set_context_root(repo.clone(), None);

@@ -43,6 +43,232 @@ pub struct WorktreeCloseReport {
     pub reason: Option<String>,
 }
 
+/// Which `wtp` command runner to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WtpBackend {
+    /// Default runtime behavior: invokes `"wtp"` in production; in `#[cfg(test)]`
+    /// uses `"wtp"` when installed on `PATH`, otherwise falls back to the
+    /// self-contained test shim.
+    Default,
+    #[cfg(test)]
+    /// Explicitly force the self-contained test shim even on machines where
+    /// `wtp` is installed, so unit tests always cover the shim path.
+    TestShim,
+}
+
+fn wtp_command(backend: WtpBackend) -> Command {
+    #[cfg(not(test))]
+    {
+        let _ = backend;
+        Command::new("wtp")
+    }
+    #[cfg(test)]
+    {
+        match backend {
+            WtpBackend::Default if system_wtp_available() => Command::new("wtp"),
+            WtpBackend::Default | WtpBackend::TestShim => {
+                let mut cmd = Command::new("python3");
+                cmd.arg(test_wtp_shim_script());
+                cmd
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn system_wtp_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("wtp")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+#[cfg(test)]
+fn test_wtp_shim_script() -> &'static Path {
+    use std::sync::OnceLock;
+    static SHIM_PATH: OnceLock<PathBuf> = OnceLock::new();
+    SHIM_PATH
+        .get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("plexi-wtp-shim-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create wtp shim dir");
+            let script_path = dir.join("wtp_shim.py");
+            std::fs::write(&script_path, TEST_WTP_SHIM_PY).expect("write wtp shim script");
+            script_path
+        })
+        .as_path()
+}
+
+#[cfg(test)]
+const TEST_WTP_SHIM_PY: &str = r#"import os
+import shutil
+import subprocess
+import sys
+
+def run_git(cwd, args, check=True):
+    return subprocess.run(
+        ["git", "-C", cwd] + list(args),
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+def resolve_repo_root(cwd):
+    res = run_git(cwd, ["rev-parse", "--show-toplevel"], check=False)
+    if res.returncode != 0:
+        sys.stderr.write(res.stderr or "not a git repository\n")
+        sys.exit(1)
+    toplevel = res.stdout.strip()
+    marker = os.path.join(toplevel, ".git", "plexi-wtp-root")
+    if os.path.isfile(marker):
+        with open(marker, "r", encoding="utf-8") as f:
+            root = f.read().strip()
+            if root:
+                return root
+    return toplevel
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        sys.stderr.write("usage: wtp <cd|add|remove>\n")
+        sys.exit(1)
+
+    sub = argv[0]
+    rest = argv[1:]
+    cwd = os.getcwd()
+
+    if sub == "cd":
+        repo_root = resolve_repo_root(cwd)
+        if not rest:
+            print(repo_root)
+            sys.exit(0)
+        branch = rest[-1]
+        wt_path = os.path.join(repo_root, "worktrees", branch)
+        if os.path.isdir(wt_path):
+            print(wt_path)
+            sys.exit(0)
+        sys.stderr.write(f"worktree not found for branch '{branch}'\n")
+        sys.exit(1)
+
+    if sub == "add":
+        create_branch = False
+        branch = None
+        i = 0
+        while i < len(rest):
+            arg = rest[i]
+            if arg in ("--quiet", "-q"):
+                i += 1
+                continue
+            if arg == "-b":
+                create_branch = True
+                i += 1
+                if i >= len(rest):
+                    sys.stderr.write("missing branch name after -b\n")
+                    sys.exit(1)
+                branch = rest[i]
+                i += 1
+                continue
+            if arg.startswith("-"):
+                sys.stderr.write(f"unknown flag: {arg}\n")
+                sys.exit(1)
+            branch = arg
+            i += 1
+
+        if not branch:
+            sys.stderr.write("missing branch name\n")
+            sys.exit(1)
+
+        repo_root = resolve_repo_root(cwd)
+        if create_branch:
+            br = run_git(repo_root, ["branch", branch, "HEAD"], check=False)
+            if br.returncode != 0:
+                sys.stderr.write(br.stderr)
+                sys.exit(1)
+        else:
+            verify = run_git(
+                repo_root,
+                ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                check=False,
+            )
+            if verify.returncode != 0:
+                sys.stderr.write(f"branch '{branch}' does not exist\n")
+                sys.exit(1)
+
+        wt_path = os.path.join(repo_root, "worktrees", branch)
+        if os.path.exists(wt_path):
+            sys.stderr.write(f"worktree path '{wt_path}' already exists\n")
+            sys.exit(1)
+        os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+
+        cl = subprocess.run(
+            ["git", "clone", "--quiet", "--local", repo_root, wt_path],
+            capture_output=True,
+            text=True,
+        )
+        if cl.returncode != 0:
+            sys.stderr.write(cl.stderr)
+            sys.exit(1)
+
+        for key, fallback in (("user.email", "test@plexiapp.com"), ("user.name", "Plexi Test")):
+            cfg = run_git(repo_root, ["config", "--get", key], check=False)
+            val = cfg.stdout.strip() if cfg.returncode == 0 and cfg.stdout.strip() else fallback
+            run_git(wt_path, ["config", key, val], check=False)
+
+        target_ref = "HEAD" if create_branch else f"refs/remotes/origin/{branch}"
+        co = run_git(wt_path, ["checkout", "-q", "-B", branch, target_ref], check=False)
+        if co.returncode != 0:
+            sys.stderr.write(co.stderr)
+            sys.exit(1)
+
+        marker = os.path.join(wt_path, ".git", "plexi-wtp-root")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(repo_root + "\n")
+
+        print(wt_path)
+        sys.exit(0)
+
+    if sub in ("remove", "rm"):
+        with_branch = False
+        branch = None
+        for arg in rest:
+            if arg == "--with-branch":
+                with_branch = True
+            elif not arg.startswith("-"):
+                branch = arg
+        if not branch:
+            sys.stderr.write("missing branch name for remove\n")
+            sys.exit(1)
+        repo_root = resolve_repo_root(cwd)
+        wt_path = os.path.join(repo_root, "worktrees", branch)
+        if not os.path.exists(wt_path):
+            sys.stderr.write(f"worktree '{wt_path}' does not exist\n")
+            sys.exit(1)
+        shutil.rmtree(wt_path)
+        parent = os.path.dirname(wt_path)
+        worktrees_root = os.path.join(repo_root, "worktrees")
+        while parent.startswith(worktrees_root) and parent != repo_root:
+            try:
+                os.rmdir(parent)
+            except OSError:
+                break
+            parent = os.path.dirname(parent)
+        if with_branch:
+            br = run_git(repo_root, ["branch", "-D", branch], check=False)
+            if br.returncode != 0:
+                sys.stderr.write(br.stderr)
+                sys.exit(1)
+        sys.exit(0)
+
+    sys.stderr.write(f"unsupported subcommand: {sub}\n")
+    sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+"#;
+
 /// Provision a git worktree for `branch` via `wtp`, anchored at `anchor_dir`.
 ///
 /// Validates `branch`, resolves the main worktree root via `wtp cd`, checks
@@ -50,6 +276,14 @@ pub struct WorktreeCloseReport {
 /// new), and records the initial `HEAD` commit so close-time reclamation can
 /// tell whether any commits were made.
 pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktree, String> {
+    create_worktree_with(anchor_dir, branch, WtpBackend::Default)
+}
+
+fn create_worktree_with(
+    anchor_dir: &Path,
+    branch: &str,
+    backend: WtpBackend,
+) -> Result<ManagedWorktree, String> {
     let branch = branch.trim();
     if branch.is_empty() {
         return Err("worktree branch name cannot be empty".to_string());
@@ -70,7 +304,7 @@ pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktre
     // Resolve the main worktree root through `wtp cd` (with no args, `wtp cd`
     // prints the main worktree path). This also verifies `wtp` is installed and
     // `anchor_dir` is inside a git repository.
-    let wtp_cd_out = Command::new("wtp")
+    let wtp_cd_out = wtp_command(backend)
         .arg("cd")
         .current_dir(anchor_dir)
         .output()
@@ -110,7 +344,7 @@ pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktre
         .map(|s| s.success())
         .unwrap_or(false);
 
-    let mut add_cmd = Command::new("wtp");
+    let mut add_cmd = wtp_command(backend);
     add_cmd.arg("add");
     if !branch_exists {
         add_cmd.arg("-b").arg(branch);
@@ -145,7 +379,7 @@ pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktre
 
     // Resolve the created path via `wtp cd <branch>`, falling back to the last
     // non-empty stdout line of `wtp add --quiet`.
-    let worktree_path = resolve_worktree_path(&repo_root, branch).or_else(|| {
+    let worktree_path = resolve_worktree_path(&repo_root, branch, backend).or_else(|| {
         String::from_utf8_lossy(&add_out.stdout)
             .lines()
             .rev()
@@ -185,6 +419,13 @@ pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktre
 /// Inspect `wt` on pane close: reclaim via `wtp remove` when clean and unmoved,
 /// or retain on disk and report why when dirty or ahead/moved.
 pub fn reclaim_or_retain_worktree(wt: &ManagedWorktree) -> WorktreeCloseReport {
+    reclaim_or_retain_worktree_with(wt, WtpBackend::Default)
+}
+
+fn reclaim_or_retain_worktree_with(
+    wt: &ManagedWorktree,
+    backend: WtpBackend,
+) -> WorktreeCloseReport {
     if !wt.path.exists() {
         log::info!(
             "pane_worktree: close branch={:?} path={} already absent; treating as reclaimed",
@@ -245,7 +486,7 @@ pub fn reclaim_or_retain_worktree(wt: &ManagedWorktree) -> WorktreeCloseReport {
 
     // Clean and unmoved: reclaim via `wtp remove`. Run from `repo_root` so
     // `wtp` never complains about running inside the worktree being removed.
-    let mut rm_cmd = Command::new("wtp");
+    let mut rm_cmd = wtp_command(backend);
     rm_cmd.arg("remove");
     if wt.created_branch {
         rm_cmd.arg("--with-branch");
@@ -301,8 +542,8 @@ pub fn reclaim_or_retain_worktree(wt: &ManagedWorktree) -> WorktreeCloseReport {
     }
 }
 
-fn resolve_worktree_path(repo_root: &Path, branch: &str) -> Option<PathBuf> {
-    let out = Command::new("wtp")
+fn resolve_worktree_path(repo_root: &Path, branch: &str, backend: WtpBackend) -> Option<PathBuf> {
+    let out = wtp_command(backend)
         .args(["cd", branch])
         .current_dir(repo_root)
         .output()
@@ -460,5 +701,46 @@ mod tests {
         assert!(create_worktree(&repo, "").is_err());
         assert!(create_worktree(&repo, "   ").is_err());
         assert!(create_worktree(&repo, "--help").is_err());
+    }
+
+    #[test]
+    fn shim_fallback_exercises_create_reclaim_and_retain_without_system_wtp() {
+        let (_tmp, repo) = init_temp_git_repo();
+
+        // 1. Clean + unmoved -> reclaimed and branch removed.
+        let clean_wt = create_worktree_with(&repo, "feature/shim-clean", WtpBackend::TestShim)
+            .expect("create clean worktree via shim");
+        assert!(clean_wt.path.is_dir());
+        assert!(clean_wt.created_branch);
+        let clean_report = reclaim_or_retain_worktree_with(&clean_wt, WtpBackend::TestShim);
+        assert_eq!(clean_report.action, "reclaimed");
+        assert!(clean_report.reason.is_none());
+        assert!(!clean_wt.path.exists());
+
+        // 2. Dirty -> retained with path and reason="dirty".
+        let dirty_wt = create_worktree_with(&repo, "feature/shim-dirty", WtpBackend::TestShim)
+            .expect("create dirty worktree via shim");
+        std::fs::write(dirty_wt.path.join("wip.txt"), "dirty\n").expect("write dirty file");
+        let dirty_report = reclaim_or_retain_worktree_with(&dirty_wt, WtpBackend::TestShim);
+        assert_eq!(dirty_report.action, "retained");
+        assert_eq!(dirty_report.reason.as_deref(), Some("dirty"));
+        assert_eq!(dirty_report.path, dirty_wt.path);
+        assert!(dirty_wt.path.is_dir());
+
+        // 3. Ahead -> retained with path and reason="ahead".
+        let ahead_wt = create_worktree_with(&repo, "feature/shim-ahead", WtpBackend::TestShim)
+            .expect("create ahead worktree via shim");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&ahead_wt.path)
+            .args(["commit", "--allow-empty", "-m", "shim commit"])
+            .status()
+            .expect("commit in shim worktree");
+        assert!(status.success());
+        let ahead_report = reclaim_or_retain_worktree_with(&ahead_wt, WtpBackend::TestShim);
+        assert_eq!(ahead_report.action, "retained");
+        assert_eq!(ahead_report.reason.as_deref(), Some("ahead"));
+        assert_eq!(ahead_report.path, ahead_wt.path);
+        assert!(ahead_wt.path.is_dir());
     }
 }
