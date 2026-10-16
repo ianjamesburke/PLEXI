@@ -1721,6 +1721,7 @@ dependencies = [
  "libc",
  "log",
  "open",
+ "polling",
 ]
 
 [[package]]

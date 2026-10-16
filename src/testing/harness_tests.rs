@@ -9397,19 +9397,59 @@ mod pane_lifecycle_events {
     }
 
     #[test]
-    #[ignore = "requires-pty"]
     fn pane_lifecycle_exit_unknown_survives_ephemeral_close_without_duplicate() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         h.app.windows[0].panes.get_mut(&pane_id).unwrap().as_terminal_mut().unwrap().ephemeral = true;
-        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit)).unwrap();
-        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit)).unwrap();
+        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit(egui_term::PtyExitStatus::Unknown))).unwrap();
+        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit(egui_term::PtyExitStatus::Unknown))).unwrap();
         h.hidden_frame();
         assert!(!h.app.windows.iter().any(|win| win.panes.contains_key(&pane_id)));
         let events = records(pane_id);
         let exits: Vec<_> = events.iter().filter(|e| e["kind"] == "exited").collect();
         assert_eq!(exits.len(), 1, "exit must be published before removal, once");
         assert_eq!(exits[0]["status"], "unknown");
+    }
+
+    #[test]
+    fn pane_lifecycle_real_pty_exit_retains_zero_nonzero_and_signal_across_ephemeral_close() {
+        let mut h = HostHarness::new();
+        let anchor = h.add_test_pane();
+        for (cmd, expected_status) in [
+            ("exit 0", serde_json::json!({"code": 0})),
+            ("exit 23", serde_json::json!({"code": 23})),
+            ("kill -9 $$", serde_json::json!({"signal": 9})),
+        ] {
+            h.focus_pane(anchor);
+            h.run_frames(1);
+            let pane_id = h
+                .app
+                .split_focused(true, Some(cmd), true, false, None)
+                .expect("split_focused must create an ephemeral terminal pane");
+
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+            while h.app.windows.iter().any(|win| win.panes.contains_key(&pane_id)) {
+                h.hidden_frame();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "ephemeral pane {pane_id} ({cmd}) did not exit and close in time"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            let events = records(pane_id);
+            let exits: Vec<_> = events.iter().filter(|e| e["kind"] == "exited").collect();
+            assert_eq!(
+                exits.len(),
+                1,
+                "ephemeral pane {pane_id} ({cmd}) must publish exactly one exited event before removal: {events:?}"
+            );
+            assert_eq!(
+                exits[0]["status"], expected_status,
+                "ephemeral pane {pane_id} ({cmd}) lost actual PTY exit status"
+            );
+        }
     }
 
     #[test]

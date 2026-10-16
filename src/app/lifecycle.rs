@@ -4020,7 +4020,8 @@ impl PlexiApp {
                 term.last_pty_output_at = Some(std::time::Instant::now());
             }
             match &event {
-                PtyEvent::Exit => {
+                PtyEvent::Exit(pty_status) => {
+                    let status = ExitStatus::from(*pty_status);
                     let mut newly_exited = false;
                     for win in &mut self.windows {
                         if let Some(pane) = win.panes.get_mut(&id) {
@@ -4028,7 +4029,7 @@ impl PlexiApp {
                                 newly_exited = !t.exited;
                                 t.exited = true;
                                 log::info!(
-                                    "pty: pane {id} process exited ephemeral={}",
+                                    "pty: pane {id} process exited status={status:?} ephemeral={}",
                                     t.ephemeral
                                 );
                                 if t.ephemeral {
@@ -4039,7 +4040,7 @@ impl PlexiApp {
                         }
                     }
                     if newly_exited {
-                        self.emit_pane_lifecycle(id, PaneLifecycleEvent::Exited { status: ExitStatus::Unknown });
+                        self.emit_pane_lifecycle(id, PaneLifecycleEvent::Exited { status });
                     }
                 }
                 PtyEvent::Title(title) => {

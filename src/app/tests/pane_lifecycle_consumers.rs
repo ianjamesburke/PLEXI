@@ -207,6 +207,41 @@ fn pane_consumer_retains_unknown_exit_after_close() {
 }
 
 #[test]
+fn pane_consumer_retains_exit_code_signal_and_keeps_provider_stop_separate() {
+    use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent};
+    let mut h = HostHarness::new();
+    let caller = h.add_test_pane();
+
+    for (status, expected) in [
+        (ExitStatus::Code(0), json!({"code": 0})),
+        (ExitStatus::Code(23), json!({"code": 23})),
+        (ExitStatus::Signal(9), json!({"signal": 9})),
+        (ExitStatus::Unknown, json!("unknown")),
+    ] {
+        let target = h.add_test_pane();
+        for provider_event in ["Stop", "StopFailure", "SessionEnd"] {
+            report(&mut h, target, "idle", provider_event);
+        }
+        let no_exit_yet = Connection::open(&mut h, wait_request(target, caller, "exited", 0.05));
+        let pre_exit_reply = no_exit_yet.next(&mut h);
+        assert_eq!(
+            pre_exit_reply["type"], "timeout",
+            "provider Stop/StopFailure/SessionEnd must never satisfy exited: {pre_exit_reply}"
+        );
+        drop(no_exit_yet);
+
+        h.app
+            .emit_pane_lifecycle(target, PaneLifecycleEvent::Exited { status });
+        close(&mut h, target);
+
+        let connection = Connection::open(&mut h, wait_request(target, caller, "exited", 1.0));
+        let reply = connection.next(&mut h);
+        assert_eq!(reply["payload"]["kind"], "exited", "{reply}");
+        assert_eq!(reply["payload"]["status"], expected);
+    }
+}
+
+#[test]
 fn pane_consumer_failure_and_session_end_invalidate_idle() {
     for event in ["StopFailure", "SessionEnd", "UserPromptSubmit"] {
         let mut h = HostHarness::new();

@@ -57,8 +57,8 @@ plexi skill install --agent codex
   prints the matching JSON record and exits 0; timeout exits 2; permission,
   missing-pane, transport, and argument errors exit 1. `idle` describes agent
   readiness, not task success. `blocked` retains its typed reason. `exited`
-  matches any recorded PTY exit, including explicitly unknown status; it does
-  not promise a successful exit. A retained exit remains queryable after the
+  matches any recorded PTY exit (`status` is `{"code": <i32>}`, `{"signal": <i32>}`,
+  or `"unknown"` when unavailable); it does not promise a successful exit. A retained exit remains queryable after the
   pane closes, for this host lifetime. `plexi pane events --follow [--pane <id>]`
   streams new lifecycle records as NDJSON, scoped to the caller's context and
   subject to event-stream consent. Stop, StopFailure, and SessionEnd remain
