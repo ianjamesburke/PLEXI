@@ -71,7 +71,7 @@ Write: `plexi pane slot write <name> <value> --replace`. Workers' steps: `impl` 
 
 > /implement-stint-v2 <ids...>. You are being run by babysitter-v3: Ian is not watching. Publish the slot contract in `.agents/skills/babysitter-v3/SKILL.md`. Do the full local gate from `src/testing/TESTING.md` (`just build`, `cargo test --bin plexi`, `cargo clippy --bin plexi -- -D warnings`, plus the scene/screenshot test for UI changes). Run every gate in the foreground: if your turn ends while a job runs in the background, nothing wakes you. Open the PR and let its checks run; do **not** run `just pr-install` (the tester does). When the PR is open and the local gate is green, write `pr` and `status=pr:done`, post the `[IMPLEMENTED]` block, and wait. Answers to your questions arrive as `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`. On FOLLOW-UP, write `status=impl:working` before anything else. On PASS, merge with `just merge-pr <PR>` from the alpha root, confirm the stints are done, then write `status=merge:done`. Pre-existing defects outside your diff: note them in the PR body and file them as stints; don't fix them here. Never use `rm -rf`. <run-specific facts only>
 
-Wait: `plexi pane slot wait status <id> --until '^(pr|merge):(done|blocked|failed)$|:(blocked|failed)$' --timeout <heartbeat_seconds>`.
+Wait: `plexi pane slot wait status --pane-id <id> --until '^(pr|merge):(done|blocked|failed)$|:(blocked|failed)$' --timeout <heartbeat_seconds>`.
 
 **2. Tester.** As soon as `pr` is set, spawn a fresh `tester` pane. Choose the brief by `gh pr diff <PR> --name-only`:
 

@@ -60,22 +60,9 @@ plexi-pr-<N> pane new "npm run dev" -n dev
 
 `pane click` (stint 0398) injects a synthetic pointer click at PANE-PIXEL coordinates (origin at the pane's top-left) into an app pane — this is the sanctioned way to drive canvas interaction (games, grids, any `Canvas` node). It is delivered through the pane's real `canvas_transform` inversion (the same math a physical click would hit), not a shortcut. **Never reach for OS-level automation (`osascript`, `cliclick`) to simulate a click** — it trips the macOS Accessibility permission prompt this skill is meant to avoid, and `pane click` covers the same ground through a sanctioned host primitive. Only drag/hover/scroll remain unsupported (press/click only, non-scope of stint 0398).
 
-Every drive command needs the env discipline below. Always target panes by the id from `pane list` — never rely on "current pane" defaults, which read stale `PLEXI_*` vars from the pane you launched this skill in.
+Always target panes by the id from `pane list` — never rely on "current pane" defaults, which read stale `PLEXI_*` identity vars from the pane you launched this skill in.
 
-**Env discipline.** Current channel-suffixed binaries reject a socket inherited from another channel. Keep pointing every drive command at the PR host's socket for compatibility with older binaries, and strip inherited pane/context identity because those values still describe the launching pane:
-
-```bash
-env -u PLEXI_PANE_ID -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_ROOT -u PLEXI_RUNNING \
-  PLEXI_SOCKET=$HOME/.plexi-pr-<N>/notify.sock PLEXI_CHANNEL=pr-<N> \
-  plexi-pr-<N> pane list
-```
-
-To watch an app's event streams, subscribe (NDJSON, one object per line) with the same env prefix:
-
-```bash
-env -u PLEXI_PANE_ID ... PLEXI_SOCKET=$HOME/.plexi-pr-<N>/notify.sock PLEXI_CHANNEL=pr-<N> \
-  plexi-pr-<N> events subscribe <app_id> <stream>
-```
+**No env stripping.** A channel-named shim (`plexi-pr-<N>`) binds to its own profile's socket and ignores an inherited `PLEXI_SOCKET`/`PLEXI_CHANNEL`, so run it as-is from any pane: `plexi-pr-<N> pane list`. To watch an app's event streams, subscribe (NDJSON, one object per line): `plexi-pr-<N> events subscribe <app_id> <stream>`.
 
 ### 3. Observe
 

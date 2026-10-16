@@ -365,7 +365,7 @@ value is no longer useful.
 ```bash
 WORKER=$(plexi pane new 'exec zsh' --name report-builder --no-focus)
 plexi pane slot write result ready --pane-id "$WORKER"
-RESULT=$(plexi pane slot wait result "$WORKER" --until '^ready$' --timeout 300)
+RESULT=$(plexi pane slot wait result --pane-id "$WORKER" --until '^ready$' --timeout 300)
 printf 'worker result: %s\n' "$RESULT"
 plexi pane close "$WORKER"
 ```

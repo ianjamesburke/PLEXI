@@ -362,22 +362,24 @@ mod socket_resolution_tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn ambient_socket_override_wins_over_binary_channel() {
+    fn binary_channel_wins_over_ambient_socket() {
         let actual = resolve_command_socket_from(
             None,
-            Some("pr-2384"),
-            Some(OsStr::new("/tmp/alpha.sock")),
+            Some("pr-2765"),
+            Some(OsStr::new("/Users/test/.plexi-beta/notify.sock")),
             Path::new("/Users/test"),
         );
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/tmp/alpha.sock"))
+            Some(crate::platform::ipc::endpoint_in(Path::new(
+                "/Users/test/.plexi-pr-2765"
+            )))
         );
     }
 
     #[test]
-    fn ambient_socket_override_wins_for_alpha_binary() {
+    fn alpha_binary_ignores_ambient_beta_socket() {
         let actual = resolve_command_socket_from(
             None,
             Some("alpha"),
@@ -387,22 +389,9 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/tmp/beta.sock"))
-        );
-    }
-
-    #[test]
-    fn ambient_socket_override_wins_for_beta_binary() {
-        let actual = resolve_command_socket_from(
-            None,
-            Some("beta"),
-            Some(OsStr::new("/tmp/alpha.sock")),
-            Path::new("/Users/test"),
-        );
-
-        assert_eq!(
-            actual,
-            Some(PathBuf::from("/tmp/alpha.sock"))
+            Some(crate::platform::ipc::endpoint_in(Path::new(
+                "/Users/test/.plexi-alpha"
+            )))
         );
     }
 
@@ -419,7 +408,7 @@ mod socket_resolution_tests {
     }
 
     #[test]
-    fn suffixed_binary_accepts_matching_channel_socket() {
+    fn suffixed_binary_matching_ambient_socket_resolves_same_endpoint() {
         let actual = resolve_command_socket_from(
             None,
             Some("alpha"),
@@ -429,7 +418,9 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
+            Some(crate::platform::ipc::endpoint_in(Path::new(
+                "/Users/test/.plexi-alpha"
+            )))
         );
     }
 
@@ -474,15 +465,15 @@ fn resolve_command_socket_from(
     if let Some(socket) = explicit_socket {
         return Some(socket.to_path_buf());
     }
-    if let Some(socket) = ambient_socket {
-        return Some(std::path::PathBuf::from(socket));
-    }
+    // Binary identity outranks inherited routing env: a channel-named shim
+    // self-binds to its own profile endpoint and ignores an ambient
+    // PLEXI_SOCKET stamped by whichever host spawned the pane.
     if let Some(channel) = binary_channel {
         return Some(crate::platform::ipc::endpoint_in(
             &home_dir.join(format!(".plexi-{channel}")),
         ));
     }
-    None
+    ambient_socket.map(std::path::PathBuf::from)
 }
 
 static COMMAND_SOCKET_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> =
@@ -698,11 +689,20 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     if let Some(path) = socket.as_ref() {
         let source = if explicit.is_some() {
             "--socket"
-        } else if ambient.is_some() {
-            "PLEXI_SOCKET"
-        } else {
+        } else if channel.is_some() {
             "binary-channel"
+        } else {
+            "PLEXI_SOCKET"
         };
+        if explicit.is_none() && channel.is_some() {
+            if let Some(ignored) = ambient.as_ref() {
+                if ignored.as_os_str() != path.as_os_str() {
+                    log::info!(
+                        "cli: ignored ambient PLEXI_SOCKET={ignored:?} because binary identity names channel {channel:?}"
+                    );
+                }
+            }
+        }
         log::info!(
             "cli: resolved command socket source={source} binary_channel={channel:?} path={path:?}"
         );
