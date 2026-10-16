@@ -1035,6 +1035,7 @@ impl PlexiApp {
                 &declared_caps,
                 installed.manifest.capabilities.allowed_hosts.clone(),
             );
+        apply_media_release_gate(&app_id, &mut permissions);
         permissions
             .capabilities
             .retain(|cap| !permissions.blocked.contains(cap));
@@ -2831,9 +2832,32 @@ fn gate_app_permissions(
             crate::app::permissions::Capability::try_from(capability.as_str()).ok()
         })
         .collect();
-    crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-        .materialize_app_permissions(app_id, workspace_root, &declared, allowed_hosts)
+    let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(
+        &crate::config::config_dir(),
+    )
+    .materialize_app_permissions(app_id, workspace_root, &declared, allowed_hosts);
+    apply_media_release_gate(app_id, &mut permissions);
+    permissions
 }
+
+/// The one release policy for protocol media operations: unless the
+/// `media_io` experiment is on, every media capability is withheld before the
+/// app's permissions reach any dispatch path. Additive to the capability
+/// model — it only removes grants.
+fn apply_media_release_gate(app_id: &str, permissions: &mut crate::app::permissions::AppPermissions) {
+    if permissions.is_builtin || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
+    {
+        return;
+    }
+    let withheld = permissions.withhold_media_io();
+    if !withheld.is_empty() {
+        log::info!(
+            "release_gate: withheld media capabilities {withheld:?} from {app_id} (media_io off)"
+        );
+        crate::release::log_feature_blocked(crate::release::ReleaseFeature::MediaIo);
+    }
+}
+
 
 fn gate_wasm_sets(
     app_id: &str,
@@ -2925,6 +2949,50 @@ mod tests {
         let app = WasmApp::load_ephemeral_run("counter-pane", &counter_fixture(), store)
             .expect("load counter fixture");
         (app, snapshot)
+    }
+
+    fn media_permissions() -> AppPermissions {
+        use crate::app::permissions::Capability;
+        let mut permissions = AppPermissions::default();
+        permissions
+            .capabilities
+            .extend(Capability::MEDIA_IO.iter().copied());
+        permissions.capabilities.insert(Capability::FsRead);
+        permissions
+    }
+
+    #[test]
+    fn media_gate_withholds_every_media_capability_when_experiment_off() {
+        use crate::app::permissions::Capability;
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let mut permissions = media_permissions();
+        apply_media_release_gate("com.example.media", &mut permissions);
+        for cap in Capability::MEDIA_IO {
+            assert!(!permissions.capabilities.contains(&cap), "{cap:?} granted");
+            assert!(permissions.blocked.contains(&cap), "{cap:?} not blocked");
+        }
+        assert!(permissions.capabilities.contains(&Capability::FsRead));
+    }
+
+    #[test]
+    fn media_gate_keeps_media_capabilities_when_experiment_on() {
+        use crate::app::permissions::Capability;
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::MediaIo]);
+        let mut permissions = media_permissions();
+        apply_media_release_gate("com.example.media", &mut permissions);
+        for cap in Capability::MEDIA_IO {
+            assert!(permissions.capabilities.contains(&cap), "{cap:?} lost");
+            assert!(!permissions.blocked.contains(&cap));
+        }
+    }
+
+    #[test]
+    fn media_gate_leaves_builtin_apps_alone() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let mut permissions = AppPermissions::builtin();
+        apply_media_release_gate("builtin", &mut permissions);
+        assert!(permissions.blocked.is_empty());
     }
 
     #[test]

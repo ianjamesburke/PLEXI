@@ -544,6 +544,11 @@ pub fn host_start_cli(
     if matches!(probe_notify_socket(&socket_path, deadline.saturating_duration_since(Instant::now())), RunningState::Running) {
         log::warn!("host_start: endpoint already held socket={socket_path:?}");
         eprintln!("error: a Plexi host for this channel is already running or busy (socket {})", socket_path.display());
+        let running = running_build_info();
+        let installed = installed_identity();
+        for line in host_identity_lines(running.as_ref(), installed.as_ref().map(|(t, b)| (t.as_str(), b.as_str())), &restart_hint()) {
+            eprintln!("{line}");
+        }
         return 1;
     }
 
@@ -837,6 +842,45 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     serde_json::from_str(&content).ok()
 }
 
+/// Human-readable running-vs-installed identity for `host status` and the
+/// `host start` already-running path (stint 0596). Returns no lines when the
+/// installation is unmanaged or the host did not report a build. When the
+/// running build differs from the installed package, the last line is the
+/// restart prompt. Never restarts anything on its own.
+pub(crate) fn host_identity_lines(
+    running: Option<&serde_json::Value>,
+    installed: Option<(&str, &str)>,
+    stop_start: &str,
+) -> Vec<String> {
+    let (Some(running), Some((installed_tag, installed_build))) = (running, installed) else {
+        return Vec::new();
+    };
+    let Some(running_build) = running.get("build_id").and_then(|v| v.as_str()) else {
+        return Vec::new();
+    };
+    let running_tag = running.get("tag").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let mut lines = vec![
+        format!("Running host: {running_tag} ({running_build})"),
+        format!("Installed:    {installed_tag} ({installed_build})"),
+    ];
+    if running_build != installed_build {
+        lines.push(format!(
+            "The running host is older than the installed build. Restart it to use the update: {stop_start}"
+        ));
+    }
+    lines
+}
+
+fn installed_identity() -> Option<(String, String)> {
+    let receipt = crate::distribution::installed().ok().flatten()?;
+    Some((receipt.active.tag, receipt.active.build_id))
+}
+
+fn restart_hint() -> String {
+    let name = crate::config::current_exe_basename();
+    format!("{name} host stop && {name} host start")
+}
+
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
@@ -868,6 +912,9 @@ pub fn host_status_cli(json: bool) -> i32 {
             pane_count.unwrap_or(0),
             socket_path.display()
         );
+        for line in host_identity_lines(running.as_ref(), installed_identity().as_ref().map(|(t, b)| (t.as_str(), b.as_str())), &restart_hint()) {
+            println!("{line}");
+        }
     } else {
         println!(
             "Plexi host is not running (socket {})",
@@ -989,6 +1036,31 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identity_lines_prompt_restart_when_running_build_is_older() {
+        let running = serde_json::json!({"tag": "v0.1.16", "build_id": "old"});
+        let lines = super::host_identity_lines(Some(&running), Some(("v0.2.0", "new")), "plexi host stop && plexi host start");
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("v0.1.16") && lines[0].contains("old"));
+        assert!(lines[1].contains("v0.2.0") && lines[1].contains("new"));
+        assert!(lines[2].contains("plexi host stop && plexi host start"));
+    }
+
+    #[test]
+    fn identity_lines_have_no_prompt_when_builds_match() {
+        let running = serde_json::json!({"tag": "v0.2.0", "build_id": "same"});
+        let lines = super::host_identity_lines(Some(&running), Some(("v0.2.0", "same")), "restart");
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn identity_lines_are_empty_without_both_identities() {
+        let running = serde_json::json!({"tag": "v0.2.0", "build_id": "x"});
+        assert!(super::host_identity_lines(Some(&running), None, "r").is_empty());
+        assert!(super::host_identity_lines(None, Some(("v1", "x")), "r").is_empty());
+        assert!(super::host_identity_lines(Some(&serde_json::json!({})), Some(("v1", "x")), "r").is_empty());
+    }
+
     #[test]
     fn distribution_socket_inode_preserves_spaces_in_the_path() {
         let path = "/tmp/Plexi home with  spaces/.plexi/notify.sock";

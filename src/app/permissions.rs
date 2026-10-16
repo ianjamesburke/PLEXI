@@ -113,6 +113,18 @@ impl fmt::Display for Capability {
 }
 
 impl Capability {
+    /// Capabilities guarding the protocol media operations (audio playback,
+    /// microphone capture and device listing, MIDI device listing/in/out,
+    /// video decoder open/state/close). All sit behind the `media_io`
+    /// release experiment.
+    pub const MEDIA_IO: [Capability; 5] = [
+        Self::AudioRecord,
+        Self::AudioPlayback,
+        Self::VideoPlayback,
+        Self::MidiIn,
+        Self::MidiOut,
+    ];
+
     /// One-line human-readable description shown in the permission grant
     /// modal under the wire-format capability string.
     pub fn description(self) -> &'static str {
@@ -350,6 +362,21 @@ pub struct AppPermissions {
 }
 
 impl AppPermissions {
+    /// Move every media-I/O capability out of the granted set and into
+    /// `blocked`, so each protocol media operation (playback, capture, device
+    /// listing, MIDI in/out, video decode) is auto-denied without a prompt.
+    /// Returns the withheld capabilities. Release gating is additive: this
+    /// never grants anything, and the remaining capability checks are untouched.
+    pub fn withhold_media_io(&mut self) -> Vec<Capability> {
+        let withheld: Vec<Capability> = Capability::MEDIA_IO
+            .iter()
+            .copied()
+            .filter(|cap| self.capabilities.remove(cap))
+            .collect();
+        self.blocked.extend(Capability::MEDIA_IO.iter().copied());
+        withheld
+    }
+
     /// Full permissions for built-in first-party apps — bypasses all checks.
     pub fn builtin() -> Self {
         Self {
