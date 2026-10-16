@@ -65,6 +65,20 @@ Grep `GOTCHAS.md` for related pitfalls if it exists.
 
 ---
 
+## Step 2.5 -- Proper-Solution Gate
+
+Stints are implemented as written, often by unattended workers that will not second-guess the scope. The judgment about whether this is the right work happens here, before the file exists. Answer each question from the Step 2 research; do not skip any:
+
+1. **Real task?** Does a user, agent, or release actually hit this, or is it speculative cleanup? Speculative → don't file it, or file at `P4`.
+2. **Aligned?** Does it serve `NORTH_STAR.md` and the current release focus in `TRUTH.md` (when present)? If it pulls against either, say so to the user (or under `## Open Questions` in autonomous mode) instead of quietly filing it.
+3. **Root cause, not symptom?** Does the scope fix the mechanism that produces the bug, or does it paper over one manifestation (a special case, a retry, a sleep, a flag, a widened timeout, an `if channel == …` branch)? If it's a patch, rescope to the root cause.
+4. **Fits the architecture?** Does it follow the owning directory's `AGENTS.md` and the root Traps? Examples: an explicit parameter instead of mutating global focus state; servicing in `App::logic` instead of `App::ui`; one fact in one place. A scope that needs an exception to a documented rule is the wrong scope.
+5. **Right size for the right fix?** If the proper fix is bigger than the request, scope the proper fix. Don't shrink it into a hack to keep it `S`. If it truly must be split, file the real fix as well and have the smaller task reference it.
+
+Write the outcome into the body's `## Why`: one line on why this is the proper fix and not a workaround. If any answer is unresolved, the task isn't ready. Go back to Step 0 or record it under `## Open Questions`.
+
+---
+
 ## Step 3 -- No Sprints
 
 **This repo runs a flat task list. There are no sprints.** The sprint index files were deleted on 2026-08-02 and the `sprint` frontmatter field stripped from every task, so there is nothing to place a task into and nothing to ask the user about. Do not run `stint sprint ...`, do not add a `sprint` field, and do not ask which sprint a task belongs to.

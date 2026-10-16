@@ -4,13 +4,14 @@
 # Each role is an ordered fallback list of shell aliases (defined in the
 # operator's zshrc). The head spawns with the first entry; when a pane hits a
 # usage limit it respawns the role with the next entry. Workers and testers
-# deliberately start on different vendors so the tester is an independent check.
+# deliberately start on different model families so the tester is an
+# independent check. agym/agyl run Claude models, so they count as Claude here.
 [roles]
 head          = ["cm", "agyl"]          # needs a self-scheduling engine (Claude ScheduleWakeup / agy schedule)
-worker        = ["com", "agyl", "cm"]   # medium; default for every batch
-worker_small  = ["cos", "agym", "cs"]   # only for genuinely trivial, mechanical batches
-worker_large  = ["col", "agyl", "cl"]   # only on Ian's say-so or after a hard reject
-tester        = ["agym", "cs", "com"]
+worker        = ["agym", "com", "cm"]   # medium; default for every batch
+worker_small  = ["agym", "cos", "cs"]   # only for genuinely trivial, mechanical batches
+worker_large  = ["agyl", "col", "cl"]   # only on Ian's say-so or after a hard reject
+tester        = ["com", "agy", "cs"]    # skip any entry in the same model family as the batch's worker
 
 # How each engine takes an initial prompt on its command line. {alias} and
 # {prompt} are substituted; {prompt} is always single-quoted by the head.
