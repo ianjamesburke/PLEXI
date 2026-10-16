@@ -179,8 +179,10 @@ pub struct HostHarness {
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,
-    /// Keeps the per-test tempdir alive for the harness lifetime; auto-deletes on drop.
-    _profile_dir: tempfile::TempDir,
+    /// Keeps the per-test tempdir alive for the harness lifetime when owned; auto-deletes on drop.
+    _profile_dir: Option<tempfile::TempDir>,
+    /// Profile directory backing this harness (`workspaces/default.json`, `config.toml`, etc.).
+    profile_path: std::path::PathBuf,
     /// Isolated workspace root for panes the harness creates. Held alive for the
     /// harness lifetime and auto-deleted on drop, so any channel dir a pane
     /// writes (e.g. the assistant's `AssistantStore`) lands here — never in the
@@ -193,21 +195,23 @@ pub struct HostHarness {
     /// where user-data tiers live (`state_scope::UserDataKind`). Without this a
     /// test touching the global notes tier would read and write the developer's
     /// real notes — `config_dir()` isolation alone does not cover it, because the
-    /// shared dir is deliberately *not* channel-scoped.
+    /// shared dir is deliberately *not* channel-scoped. Rooted at
+    /// `<profile_path>/shared` so a second harness booted via
+    /// [`Self::from_profile_dir`] shares the same global user-data tier.
     _shared_guard: crate::config::TestSharedDirGuard,
-    /// Keeps the shared-dir tempdir alive for the harness lifetime.
-    _shared_dir: tempfile::TempDir,
 }
 
 impl HostHarness {
     /// Create a harness with an empty `PlexiApp` and a 1280×800 viewport.
     pub fn new() -> Self {
         let profile_dir = tempfile::TempDir::new().expect("failed to create test profile tempdir");
+        let profile_path = profile_dir.path().to_path_buf();
+        let shared_path = profile_path.join("shared");
+        std::fs::create_dir_all(&shared_path).expect("failed to create test shared dir");
         let workspace_dir =
             tempfile::TempDir::new().expect("failed to create test workspace tempdir");
-        let shared_dir = tempfile::TempDir::new().expect("failed to create test shared tempdir");
-        let profile_guard = set_test_profile_dir(profile_dir.path().to_path_buf());
-        let shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
+        let profile_guard = set_test_profile_dir(profile_path.clone());
+        let shared_guard = crate::config::set_test_shared_dir(shared_path);
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
         let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
@@ -223,12 +227,73 @@ impl HostHarness {
             next_pane_id: reserve_pane_id_block(),
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
-            _profile_dir: profile_dir,
+            _profile_dir: Some(profile_dir),
+            profile_path,
             _workspace_dir: workspace_dir,
             _profile_guard: profile_guard,
             _shared_guard: shared_guard,
-            _shared_dir: shared_dir,
         }
+    }
+
+    /// Boot a `HostHarness` from a caller-managed `profile_dir`. If
+    /// `<profile_dir>/workspaces/default.json` already exists, reconstructs
+    /// windows, contexts, heartbeats, and focus state through
+    /// [`crate::app::restore_workspace`] and installs the restored workspace
+    /// into the harness's `PlexiApp`.
+    pub fn from_profile_dir(profile_dir: impl Into<std::path::PathBuf>) -> Self {
+        let profile_path = profile_dir.into();
+        let shared_path = profile_path.join("shared");
+        std::fs::create_dir_all(&shared_path).expect("failed to create test shared dir");
+        let workspace_dir =
+            tempfile::TempDir::new().expect("failed to create test workspace tempdir");
+        let profile_guard = set_test_profile_dir(profile_path.clone());
+        let shared_guard = crate::config::set_test_shared_dir(shared_path);
+        let ctx = egui::Context::default();
+        let frame_tick = Arc::new(AtomicU64::new(0));
+        let config = crate::config::PlexiConfig::load_with_workspace(None);
+        let (mut app, ipc_tx) = PlexiApp::new_for_test_with_config(ctx.clone(), frame_tick, config);
+        app.permission_store_dir = profile_path.clone();
+        app.focus_journal_path = profile_path.join("focus-journal.jsonl");
+
+        let restored = crate::workspace::WorkspaceFile::load_from(&profile_path).and_then(|ws| {
+            let cfg = app.config.clone();
+            let colors = app.colors.clone();
+            crate::app::restore_workspace(
+                ws,
+                &cfg,
+                crate::app::WorkspaceRestoreCollaborators {
+                    profile_dir: &profile_path,
+                    colors: &colors,
+                    hot_reload: &mut app.hot_reload,
+                    state_watch: &mut app.state_watch,
+                    terminal_spawner: None,
+                },
+            )
+        });
+        if let Some(restored) = restored {
+            app.install_restored_workspace(restored);
+        } else {
+            app.set_initial_context_id_for_test(reserve_test_context_id());
+            app.host.seed_next_pane_id(reserve_pane_id_block());
+        }
+
+        Self {
+            app,
+            ctx,
+            next_pane_id: reserve_pane_id_block(),
+            ipc_tx,
+            last_platform_output: egui::PlatformOutput::default(),
+            _profile_dir: None,
+            profile_path,
+            _workspace_dir: workspace_dir,
+            _profile_guard: profile_guard,
+            _shared_guard: shared_guard,
+        }
+    }
+
+    /// Profile directory backing this harness (`workspaces/default.json`, etc.).
+    pub fn profile_dir(&self) -> &std::path::Path {
+        &self.profile_path
     }
 
     // ── Pane management ──────────────────────────────────────────────────────

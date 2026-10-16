@@ -6580,19 +6580,18 @@ mod tests {
             .expect("the app persists an item");
         }
 
-        /// Q5, positive regression — stint 0680's fix. A saved workspace now
-        /// records an app pane under its real manifest id, with enough launch
-        /// context to relaunch it, and `restore_app_pane` on that record
-        /// produces a runtime that re-addresses the exact state file the live
-        /// pane wrote. This replaces
-        /// `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`,
-        /// which documented the defect this asserts is fixed — per that
-        /// test's own docstring, the fix was expected to flip both of its
-        /// assertions together.
+        /// Q5, positive regression — stint 0680's fix + stint 0686's full
+        /// `HostHarness` save→restore round trip. A saved workspace records an
+        /// app pane under its real manifest id with launch context, and booting
+        /// a fresh `HostHarness::from_profile_dir` against that profile
+        /// reconstructs the workspace via `restore_workspace` so the restored
+        /// pane resolves the exact state file address the live pane wrote.
         #[test]
         fn saved_app_pane_can_re_address_its_own_state() {
-            let mut harness = crate::testing::HostHarness::new();
+            let profile = tempdir().expect("profile dir");
             let root = tempdir().expect("workspace root");
+
+            let mut harness = crate::testing::HostHarness::from_profile_dir(profile.path());
             let context_id = harness.app.router.get(0).context_id;
             harness
                 .app
@@ -6614,7 +6613,8 @@ mod tests {
             seed_items(&live_address, &serde_json::json!(["buy milk"]));
 
             harness.app.save_workspace_now();
-            let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
+            let saved =
+                crate::workspace::WorkspaceFile::load_from(profile.path()).expect("saved workspace");
             let record = saved
                 .windows
                 .iter()
@@ -6655,46 +6655,25 @@ mod tests {
             assert_eq!(recorded_dir, &app_dir, "launch context must name the real app_dir");
             assert!(args.is_empty());
 
-            let colors =
-                crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-            let crate::pane_ops::RestoredAppPane {
-                pane, state_paths, ..
-            } = crate::pane_ops::restore_app_pane(
-                &manifest_id,
-                &launch,
-                crate::pane_ops::RestoreTarget {
-                    pane_id,
-                    context_id,
-                    workspace_root: root.path().to_path_buf(),
-                    context_root: root.path(),
-                    saved_name: record.name.as_deref(),
-                },
-                &colors,
-            )
-            .expect("the saved record can relaunch the same app");
-
-            let restored = pane.as_app().expect("restored pane is an app pane");
-            assert_eq!(restored.manifest_id, manifest_id);
+            // Drop the first harness and boot a fresh HostHarness from the same
+            // profile directory, exercising the full WorkspaceFile::load_from →
+            // restore_workspace → install_restored_workspace path.
+            drop(harness);
+            let restored_harness = crate::testing::HostHarness::from_profile_dir(profile.path());
+            let restored_pane = restored_harness.app.windows[restored_harness.app.active_window]
+                .panes
+                .get(&pane_id)
+                .and_then(crate::host::pane::Pane::as_app)
+                .expect("restored harness must contain the saved app pane");
+            assert_eq!(restored_pane.manifest_id, manifest_id);
             assert!(matches!(
-                restored.runtime,
+                restored_pane.runtime,
                 crate::host::pane::AppRuntime::Python(_)
             ));
-            let restored_address = match &restored.runtime {
-                crate::host::pane::AppRuntime::Python(live) => {
-                    python_state_path_for_config(&live.config)
-                }
-                other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
-            };
+            let restored_address = live_state_address(&restored_harness, pane_id);
             assert_eq!(
                 restored_address, live_address,
-                "the restored runtime must re-address the exact file the live pane wrote"
-            );
-            assert!(
-                state_paths.contains(&(
-                    crate::host::state_scope::StateScope::Context,
-                    live_address
-                )),
-                "restore_app_pane must report the re-addressed state path for watcher registration"
+                "the restored pane in a fresh HostHarness must resolve the exact state address the live pane wrote"
             );
         }
 

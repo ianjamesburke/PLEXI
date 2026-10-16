@@ -271,18 +271,37 @@ pub(crate) struct RestoredAppPane {
 /// Restore a saved Python or WASM app pane by relaunching it through the same
 /// runtime-construction path a fresh open uses — never through
 /// `place_app_pane`, which allocates a new pane id and mutates the tile tree.
-/// The caller (the restore loop in `PlexiApp::new`) keeps the saved pane id,
+/// The caller (the restore loop in `restore_workspace`) keeps the saved pane id,
 /// tree, and placement; this only builds the runtime and its `AppPane`
 /// envelope.
 ///
 /// `Err` means the app no longer resolves (manifest gone, permission review
 /// required, component failed to load) — the caller must render a
 /// launch-failed pane, never silently substitute a terminal.
+#[cfg(test)]
 pub(crate) fn restore_app_pane(
     manifest_id: &str,
     launch: &crate::workspace::SavedAppLaunch,
     target: RestoreTarget<'_>,
     theme: &crate::ui::theme::Colors,
+) -> Result<RestoredAppPane, String> {
+    restore_app_pane_in_profile(
+        manifest_id,
+        launch,
+        target,
+        theme,
+        &crate::config::config_dir(),
+    )
+}
+
+/// Profile-explicit variant of [`restore_app_pane`] used by [`crate::app::restore_workspace`]
+/// so workspace restore does not read an ambient `config_dir()`.
+pub(crate) fn restore_app_pane_in_profile(
+    manifest_id: &str,
+    launch: &crate::workspace::SavedAppLaunch,
+    target: RestoreTarget<'_>,
+    theme: &crate::ui::theme::Colors,
+    profile_dir: &Path,
 ) -> Result<RestoredAppPane, String> {
     let RestoreTarget {
         pane_id,
@@ -303,7 +322,8 @@ pub(crate) fn restore_app_pane(
                 crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
-            let permissions = gate_app_permissions(
+            let permissions = gate_app_permissions_in_profile(
+                profile_dir,
                 &config.app_id,
                 &workspace_root,
                 &config.capabilities,
@@ -362,16 +382,15 @@ pub(crate) fn restore_app_pane(
                     wasm_path.display()
                 ));
             }
-            let permission_store = crate::app::permissions::PermissionStore::load_or_default(
-                &crate::config::config_dir(),
-            );
+            let permission_store =
+                crate::app::permissions::PermissionStore::load_or_default(profile_dir);
             let required_grants = WasmApp::inspect_required_grants(wasm_path)
                 .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
             let required_caps = required_grants.capability_ids();
             let declared: std::collections::HashSet<String> =
                 required_caps.iter().cloned().collect();
             let (remembered_grants, remembered_blocks) =
-                gate_wasm_sets(manifest_id, &workspace_root, &declared);
+                gate_wasm_sets_in_profile(profile_dir, manifest_id, &workspace_root, &declared);
             let missing: Vec<String> = required_caps
                 .iter()
                 .filter(|cap| !remembered_grants.contains(*cap))
@@ -385,8 +404,12 @@ pub(crate) fn restore_app_pane(
             }
             // Persistent, not ephemeral — restore must re-address the same
             // state file a fresh installed-app launch would (stint 0678).
-            let store = StateStore::persistent(wasm_state_path(manifest_id, &workspace_root))
-                .map_err(|e| format!("open wasm state for {manifest_id}: {e}"))?;
+            let store = StateStore::persistent(wasm_state_path_in_profile(
+                profile_dir,
+                manifest_id,
+                &workspace_root,
+            ))
+            .map_err(|e| format!("open wasm state for {manifest_id}: {e}"))?;
             let snapshot = store.snapshot();
             let app = WasmApp::load_with_grants(manifest_id, wasm_path, store, required_grants)
                 .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
@@ -2864,16 +2887,30 @@ fn gate_app_permissions(
     capability_strings: &[String],
     allowed_hosts: Vec<String>,
 ) -> crate::app::permissions::AppPermissions {
+    gate_app_permissions_in_profile(
+        &crate::config::config_dir(),
+        app_id,
+        workspace_root,
+        capability_strings,
+        allowed_hosts,
+    )
+}
+
+fn gate_app_permissions_in_profile(
+    profile_dir: &std::path::Path,
+    app_id: &str,
+    workspace_root: &std::path::Path,
+    capability_strings: &[String],
+    allowed_hosts: Vec<String>,
+) -> crate::app::permissions::AppPermissions {
     let declared = capability_strings
         .iter()
         .filter_map(|capability| {
             crate::app::permissions::Capability::try_from(capability.as_str()).ok()
         })
         .collect();
-    let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(
-        &crate::config::config_dir(),
-    )
-    .materialize_app_permissions(app_id, workspace_root, &declared, allowed_hosts);
+    let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
+        .materialize_app_permissions(app_id, workspace_root, &declared, allowed_hosts);
     apply_media_release_gate(app_id, &mut permissions);
     permissions
 }
@@ -2905,7 +2942,24 @@ fn gate_wasm_sets(
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
 ) {
-    crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+    gate_wasm_sets_in_profile(
+        &crate::config::config_dir(),
+        app_id,
+        workspace_root,
+        declared,
+    )
+}
+
+fn gate_wasm_sets_in_profile(
+    profile_dir: &std::path::Path,
+    app_id: &str,
+    workspace_root: &std::path::Path,
+    declared: &std::collections::HashSet<String>,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
         .materialize_wasm_sets(app_id, workspace_root, declared)
 }
 
@@ -2941,7 +2995,15 @@ fn wasm_runtime_capabilities_from_permissions(
 }
 
 fn wasm_state_path(app_id: &str, workspace_root: &std::path::Path) -> PathBuf {
-    crate::config::config_dir()
+    wasm_state_path_in_profile(&crate::config::config_dir(), app_id, workspace_root)
+}
+
+fn wasm_state_path_in_profile(
+    profile_dir: &std::path::Path,
+    app_id: &str,
+    workspace_root: &std::path::Path,
+) -> PathBuf {
+    profile_dir
         .join("wasm-state")
         .join(sanitize_wasm_path_component(app_id))
         .join(format!(
