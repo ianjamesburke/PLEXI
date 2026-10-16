@@ -123,7 +123,7 @@ jobs:
             signing_args=(--require-macos-signing --macos-signing-authority 'Plexi Dev' --macos-signing-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1")
           fi
           for channel in $PACKAGE_CHANNELS; do
-            uv run --no-project python scripts/package.py --binary "target/release/plexi$suffix" --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}' --channel "$channel" --output dist "${signing_args[@]}"
+            uv run --no-project python scripts/package.py --binary "target/release/plexi$suffix" --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}' --channel "$channel" --output dist ${signing_args[@]+"${signing_args[@]}"}
             command=(uv run --no-project python scripts/test-package.py --package "dist/package-${{ matrix.platform }}-$channel" --output "evidence/$channel" --gui)
             if [[ '${{ runner.os }}' == Linux ]]; then xvfb-run -a "${command[@]}"; else "${command[@]}"; fi
             if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' != '' ]]; then
@@ -134,7 +134,7 @@ jobs:
             # Change compiled build identity so B has a different code hash.
             # Packaging identical bytes twice would not test an actual upgrade.
             PLEXI_BUILD_TAG="${PLEXI_BUILD_TAG}-continuity-b" RUSTFLAGS="-D warnings" cargo build --release --bin plexi
-            uv run --no-project python scripts/package.py --binary "target/release/plexi" --installer "target/release/plexi-installer" --platform '${{ matrix.platform }}' --channel alpha --output continuity-b "${signing_args[@]}"
+            uv run --no-project python scripts/package.py --binary "target/release/plexi" --installer "target/release/plexi-installer" --platform '${{ matrix.platform }}' --channel alpha --output continuity-b ${signing_args[@]+"${signing_args[@]}"}
             uv run --no-project python scripts/test-macos-keychain-continuity.py --package-a "dist/package-${{ matrix.platform }}-alpha" --package-b "continuity-b/package-${{ matrix.platform }}-alpha"
           fi
           cp "target/release/plexi-installer$suffix" "dist/plexi-installer-${{ matrix.platform }}$suffix"
