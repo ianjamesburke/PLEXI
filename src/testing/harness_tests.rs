@@ -791,18 +791,19 @@ fn write_restore_fixture_app(parent: &std::path::Path, app_id: &str) -> std::pat
     app_dir
 }
 
-/// stint 0680 — a saved Python app pane's `app_id` must be the real manifest
-/// id (never the runtime kind), it must carry enough launch context to
-/// relaunch through `restore_app_pane`, and `hidden` must round-trip. This is
-/// the round-trip the fix exists for: without it, restore falls back to a
-/// terminal (see `saved_app_pane_can_re_address_its_own_state` for the
-/// state-file-addressing half of this proof).
+/// stint 0680 + stint 0686 — a saved Python app pane's `app_id` must be the
+/// real manifest id (never the runtime kind), it must carry enough launch
+/// context to relaunch, `hidden` must round-trip, and booting a fresh
+/// `HostHarness::from_profile_dir` against the saved profile must reconstruct
+/// the workspace through `restore_workspace` so the restored pane resolves the
+/// same state paths.
 #[test]
 fn saved_python_app_pane_restores_as_that_app() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let app_dir = write_restore_fixture_app(tmp.path(), "todo");
 
     let mut h = HostHarness::new();
+    let saved_profile = h.profile_dir().to_path_buf();
     let pane_id = h
         .app
         .launch_app_by_path_with_layout_no_review_modal(
@@ -814,6 +815,7 @@ fn saved_python_app_pane_restores_as_that_app() {
         .expect("launch fixture app")
         .expect("a Python launch returns a pane id");
     let context_id = h.app.windows[h.app.active_window].context_id;
+    let saved_focused = h.app.windows[h.app.active_window].focused_pane;
 
     h.app.windows[h.app.active_window]
         .panes
@@ -821,8 +823,17 @@ fn saved_python_app_pane_restores_as_that_app() {
         .expect("pane exists")
         .set_hidden(true);
 
+    let live_state_paths = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("live app pane")
+        .runtime
+        .state_paths();
+
     h.app.save_workspace_now();
-    let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
+    let saved =
+        crate::workspace::WorkspaceFile::load_from(&saved_profile).expect("saved workspace");
     let record = saved
         .windows
         .iter()
@@ -849,41 +860,181 @@ fn saved_python_app_pane_restores_as_that_app() {
     assert_eq!(recorded_dir, &app_dir);
     assert!(args.is_empty());
 
-    let live_state_paths = h.app.windows[h.app.active_window]
+    let restored_harness = HostHarness::from_profile_dir(&saved_profile);
+    assert_eq!(
+        restored_harness.app.router.active().context_id,
+        context_id,
+        "restored harness must preserve the saved context id"
+    );
+    let active_win = &restored_harness.app.windows[restored_harness.app.active_window];
+    assert_eq!(
+        active_win.focused_pane, saved_focused,
+        "restored harness must preserve focused_pane"
+    );
+    let restored_pane = active_win
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
-        .expect("live app pane")
-        .runtime
-        .state_paths();
-
-    let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-    let crate::pane_ops::RestoredAppPane {
-        pane: restored_pane,
-        state_paths: restored_state_paths,
-        ..
-    } = crate::pane_ops::restore_app_pane(
-        "todo",
-        &launch,
-        crate::pane_ops::RestoreTarget {
-            pane_id,
-            context_id,
-            workspace_root: app_dir.clone(),
-            context_root: &app_dir,
-            saved_name: record.name.as_deref(),
-        },
-        &colors,
-    )
-    .expect("restore relaunches the same app");
-
+        .expect("restored window must contain the saved pane");
+    assert!(
+        restored_pane.is_hidden(),
+        "restored pane must preserve hidden state"
+    );
     let restored = restored_pane.as_app().expect("restored pane is an app pane");
     assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
     assert_eq!(restored.manifest_id, "todo");
     assert!(matches!(restored.runtime, AppRuntime::Python(_)));
     assert_eq!(
-        restored_state_paths, live_state_paths,
-        "restored runtime must re-address the same state files as the live pane"
+        restored.runtime.state_paths(),
+        live_state_paths,
+        "restored runtime in fresh HostHarness must re-address the same state files as the live pane"
     );
+}
+
+/// stint 0686 — `restore_workspace` reconstructs windows, contexts (including
+/// subcontext `depth_stack`), heartbeats, focus state, and id counters from an
+/// explicit `WorkspaceFile` and explicit collaborators without reading ambient
+/// `config_dir()`.
+#[test]
+fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
+    let profile_dir = tempfile::tempdir().expect("profile tempdir");
+    let root_a = tempfile::tempdir().expect("root a");
+    let root_b = tempfile::tempdir().expect("root b");
+
+    let mut tree_a: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+        egui_tiles::Tree::empty("win-a");
+    let tile_a = tree_a.tiles.insert_pane(41);
+    tree_a.root = Some(tile_a);
+
+    let mut tree_b: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+        egui_tiles::Tree::empty("win-b");
+    let tile_b = tree_b.tiles.insert_pane(42);
+    tree_b.root = Some(tile_b);
+
+    let mut context_active_window = std::collections::HashMap::new();
+    context_active_window.insert(10, 100);
+    context_active_window.insert(20, 200);
+
+    let ws = crate::workspace::WorkspaceFile {
+        version: 2,
+        active_context: 1,
+        sidebar_visible: false,
+        next_pane_id: 77,
+        contexts: vec![
+            crate::host::context::Context {
+                name: crate::host::context::ContextName::custom("Parent".to_string()),
+                root: root_a.path().to_path_buf(),
+                description: Some("parent context".to_string()),
+                context_id: 10,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            },
+            crate::host::context::Context {
+                name: crate::host::context::ContextName::custom("Child".to_string()),
+                root: root_b.path().to_path_buf(),
+                description: None,
+                context_id: 20,
+                parent_id: Some(10),
+                depth: 1,
+                parked: false,
+            },
+        ],
+        windows: vec![
+            crate::workspace::SavedWindow {
+                name: "Parent Win".to_string(),
+                path: root_a.path().to_path_buf(),
+                tree: tree_a,
+                panes: vec![crate::workspace::SavedPane {
+                    id: 41,
+                    kind: crate::workspace::SavedPaneKind::Portal { context_id: 20 },
+                    cwd: root_a.path().to_path_buf(),
+                    name: None,
+                    app_id: None,
+                    runtime_kind: None,
+                    launch: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: Some(crate::workspace::SavedPaneHeartbeat {
+                        every_ms: 15_000,
+                        text: "ping".to_string(),
+                        while_idle_only: true,
+                    }),
+                }],
+                focused_pane: Some(tile_a),
+                grid_x: 0,
+                grid_y: 0,
+                window_id: 100,
+                context_id: 10,
+            },
+            crate::workspace::SavedWindow {
+                name: "Child Win".to_string(),
+                path: root_b.path().to_path_buf(),
+                tree: tree_b,
+                panes: vec![crate::workspace::SavedPane {
+                    id: 42,
+                    kind: crate::workspace::SavedPaneKind::App,
+                    cwd: root_b.path().to_path_buf(),
+                    name: Some("Browser".to_string()),
+                    app_id: Some("file_browser".to_string()),
+                    runtime_kind: Some("builtin".to_string()),
+                    launch: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                }],
+                focused_pane: Some(tile_b),
+                grid_x: 1,
+                grid_y: 2,
+                window_id: 200,
+                context_id: 20,
+            },
+        ],
+        context_active_window,
+    };
+
+    let config = crate::config::PlexiConfig::default();
+    let colors = crate::ui::theme::colors_from_config(&config);
+    let ui_wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> = std::sync::Arc::new(
+        crate::app::ui_mailbox::EguiWake::new(egui::Context::default()),
+    );
+    let (mut hr_watcher, _hr_rx) =
+        crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
+    let (mut sw_watcher, _sw_rx) =
+        crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
+
+    let restored = crate::app::restore_workspace(
+        ws,
+        &config,
+        crate::app::WorkspaceRestoreCollaborators {
+            profile_dir: profile_dir.path(),
+            colors: &colors,
+            hot_reload: &mut hr_watcher,
+            state_watch: &mut sw_watcher,
+            terminal_spawner: None,
+        },
+    )
+    .expect("restore_workspace succeeds");
+
+    assert_eq!(restored.router.len(), 2);
+    assert_eq!(restored.router.active().context_id, 20);
+    assert_eq!(
+        restored.router.depth_stack,
+        vec![(10, 100, None)],
+        "subcontext restore must rebuild depth_stack for parent context"
+    );
+    assert_eq!(restored.windows.len(), 2);
+    assert_eq!(restored.active_window, 1);
+    assert_eq!(restored.windows[1].focused_pane, Some(tile_b));
+    assert!(!restored.sidebar_visible);
+    assert_eq!(restored.next_pane_id, 77);
+    assert_eq!(restored.next_window_id, 201);
+    let hb = restored
+        .pane_heartbeats
+        .get(&41)
+        .expect("heartbeat restored for pane 41");
+    assert_eq!(hb.every, std::time::Duration::from_millis(15_000));
+    assert_eq!(hb.text, "ping");
+    assert!(hb.while_idle_only);
 }
 
 /// stint 0680 migration path: a pre-fix workspace file (`version = 2`, an App

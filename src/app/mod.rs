@@ -1286,19 +1286,12 @@ impl PlexiApp {
 
         // Hot-reload watcher set (#83). Constructed once per host instance.
         // The receiver lives on `self.hot_reload_rx`; `update()` drains it
-        // each frame and reloads the matching pane. Both branches of `new()`
-        // (workspace-restore and default) use the same instance via shadow
-        // names — kept on stack until consumed by `Self {..}`.
+        // each frame and reloads the matching pane.
         let (mut hr_watcher, hr_rx) =
             crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
-        let (hr_watcher2, hr_rx2) =
-            crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
 
-        // App state file watcher (stint 0644). Same two-branch shadow-name
-        // pattern as hot_reload above.
+        // App state file watcher (stint 0644).
         let (mut sw_watcher, sw_rx) =
-            crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
-        let (sw_watcher2, sw_rx2) =
             crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
 
         // Config file watcher (#1115). Watches config.toml for saves so the
@@ -1359,25 +1352,27 @@ impl PlexiApp {
         registries.view_for_root(&cwd);
         let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
+        let profile_dir = crate::config::config_dir();
+
         // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl.
         // Per-context routing (stint 0724 Phase E) is decided per-record at
         // each emit call site via `emit_scoped`, not once here from cwd.
         {
-            let global_path = crate::config::config_dir().join("events.jsonl");
+            let global_path = profile_dir.join("events.jsonl");
             crate::host::event_log::init_global(global_path);
         }
 
         // Check for an unclean shutdown from the previous session.
         // If the focus journal has an unclosed segment, emit a crash_recovery event.
         {
-            let journal_path = crate::config::config_dir().join("focus-journal.jsonl");
+            let journal_path = profile_dir.join("focus-journal.jsonl");
             crate::app::focus_journal::recover_from_focus_journal(&journal_path);
         }
 
         // Spawn background update check. Sends the latest version once if newer.
         let (update_mailbox, update_rx) =
             ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&ui_wake), "update_check");
-        crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_mailbox);
+        crate::cli::updater::spawn_update_check(profile_dir.clone(), update_mailbox);
         let last_update_check = std::time::Instant::now();
 
         let (pane_ipc_mailbox, pane_ipc_rx) =
@@ -1393,7 +1388,7 @@ impl PlexiApp {
         crate::platform::app_nap::disable_app_nap();
         // File a death/tamper item and leave a running stamp before any client
         // can connect. A kill skips `exit_host`, so the next start can see it.
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        crate::broker::gate::PermissionMonitor::for_profile(&profile_dir);
         spawn_socket_listener(
             pane_ipc_mailbox,
             event_subscribe_mailbox.clone(),
@@ -1402,13 +1397,13 @@ impl PlexiApp {
         let relay_start = crate::cli::relay::start_host_relay();
         log::info!("relay: host start outcome={relay_start:?}");
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
-            &crate::config::config_dir(),
+            &profile_dir,
             crate::host::app_timeline::global(),
         );
         if crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
             if let Err(e) = host_mcp::start_host_mcp_server(
                 event_subscribe_mailbox.with_source("host_mcp_subscribe"),
-                &crate::config::config_dir(),
+                &profile_dir,
             ) {
                 log::warn!("host_mcp: failed to start host MCP server: {e}");
             }
@@ -1421,283 +1416,23 @@ impl PlexiApp {
         // One-time migration: remove the legacy file-queue directory if it
         // still exists from a previous install. Notify commands now travel
         // over the PLEXI_SOCKET, so the directory is dead weight.
-        let _ = std::fs::remove_dir_all(crate::config::config_dir().join("notify-queue"));
+        let _ = std::fs::remove_dir_all(profile_dir.join("notify-queue"));
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
-            let mut windows = Vec::new();
-            let mut restored_heartbeats = HashMap::new();
-            let ctx_name_map: std::collections::HashMap<u64, String> = ws
-                .contexts
-                .iter()
-                .map(|c| (c.context_id, c.name.to_string()))
-                .collect();
-            let ctx_desc_map: std::collections::HashMap<u64, String> = ws
-                .contexts
-                .iter()
-                .filter_map(|c| c.description.as_ref().map(|d| (c.context_id, d.clone())))
-                .collect();
-            let ctx_root_map: std::collections::HashMap<u64, PathBuf> = ws
-                .contexts
-                .iter()
-                .map(|c| (c.context_id, c.root.clone()))
-                .collect();
-            let ctx_depth_map: std::collections::HashMap<u64, u32> = ws
-                .contexts
-                .iter()
-                .map(|c| (c.context_id, c.depth))
-                .collect();
-            for saved_win in ws.windows {
-                let mut panes = HashMap::new();
-                for saved_pane in &saved_win.panes {
-                    if let Some(heartbeat) = &saved_pane.heartbeat {
-                        restored_heartbeats.insert(
-                            saved_pane.id,
-                            PaneHeartbeat {
-                                every: std::time::Duration::from_millis(heartbeat.every_ms),
-                                text: heartbeat.text.clone(),
-                                while_idle_only: heartbeat.while_idle_only,
-                                next_fire: std::time::Instant::now()
-                                    + std::time::Duration::from_millis(heartbeat.every_ms),
-                            },
-                        );
-                    }
-                    let cwd = if saved_pane.cwd.is_dir() {
-                        Some(saved_pane.cwd.clone())
-                    } else if saved_win.path.is_dir() {
-                        Some(saved_win.path.clone())
-                    } else {
-                        dirs::home_dir()
-                    };
-                    let mut pane_entry: Option<Pane> = None;
-                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App) {
-                        let Some(app_type) = &saved_pane.app_id else {
-                            continue;
-                        };
-                        let app_cwd = saved_pane.cwd.clone();
-                        if let Some(launch) = &saved_pane.launch {
-                            // Real manifest identity + launch context (stint
-                            // 0680): relaunch through the shared runtime
-                            // construction path, keeping the saved pane id.
-                            let ctx_root = ctx_root_map
-                                .get(&saved_win.context_id)
-                                .cloned()
-                                .unwrap_or_else(|| app_cwd.clone());
-                            match crate::pane_ops::restore_app_pane(
-                                app_type,
-                                launch,
-                                crate::pane_ops::RestoreTarget {
-                                    pane_id: saved_pane.id,
-                                    context_id: saved_win.context_id,
-                                    workspace_root: app_cwd.clone(),
-                                    context_root: &ctx_root,
-                                    saved_name: saved_pane.name.as_deref(),
-                                },
-                                &colors,
-                            ) {
-                                Ok(crate::pane_ops::RestoredAppPane {
-                                    pane,
-                                    state_paths,
-                                    hot_reload_dir,
-                                }) => {
-                                    if !hot_reload_dir.as_os_str().is_empty() {
-                                        hr_watcher.watch(saved_pane.id, &hot_reload_dir);
-                                    }
-                                    if !state_paths.is_empty() {
-                                        sw_watcher.watch(saved_pane.id, &state_paths);
-                                    }
-                                    log::info!(
-                                        "workspace_restore: pane {} (app_id={app_type}) relaunched as its own app",
-                                        saved_pane.id
-                                    );
-                                    pane_entry = Some(pane);
-                                }
-                                Err(reason) => {
-                                    log::info!(
-                                        "workspace_restore: pane {} (app_id={app_type}) failed to relaunch: {reason} — rendering launch-failed pane",
-                                        saved_pane.id
-                                    );
-                                    pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
-                                        app_type,
-                                        saved_pane.id,
-                                        app_cwd.clone(),
-                                        reason,
-                                    ));
-                                }
-                            }
-                        } else if !saved_pane.is_legacy_runtime_kind_id() {
-                            pane_entry = crate::pane_ops::restore_builtin_app_pane(
-                                app_type,
-                                saved_pane.id,
-                                app_cwd.clone(),
-                                saved_pane.app_state.as_ref(),
-                            );
-                            // The Assistant is a builtin needing a broker + profile
-                            // dir, so the broker-free factory can't build it. Build
-                            // it here where the loaded `config.ai` is available; the
-                            // conversation auto-resumes from disk.
-                            if pane_entry.is_none()
-                                && app_type == "assistant"
-                                && crate::release::feature_enabled(
-                                    crate::release::ReleaseFeature::Assistant,
-                                )
-                            {
-                                let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
-                                    std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
-                                        config.ai.clone(),
-                                    ));
-                                pane_entry = Some(crate::pane_ops::restore_assistant_pane(
-                                    saved_pane.id,
-                                    app_cwd.clone(),
-                                    broker,
-                                    &crate::config::config_dir(),
-                                    saved_win.context_id,
-                                ));
-                            }
-                            if pane_entry.is_none() && app_type == "assistant" {
-                                crate::release::log_feature_blocked(
-                                    crate::release::ReleaseFeature::Assistant,
-                                );
-                            }
-                        } else {
-                            // Pre-0680 save of a Python/WASM app pane: `app_id`
-                            // holds the runtime kind, not a manifest id, and
-                            // there is no launch context to relaunch from.
-                            // There is no recoverable manifest identity here,
-                            // but that is not a reason to go silent — render
-                            // a launch-failed pane naming the runtime kind
-                            // and pointing at the recovery path, never a bare
-                            // terminal.
-                            log::info!(
-                                "workspace_restore: legacy app pane pane_id={} runtime_kind={app_type} restored as launch-failed",
-                                saved_pane.id
-                            );
-                            pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
-                                app_type,
-                                saved_pane.id,
-                                app_cwd.clone(),
-                                format!(
-                                    "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); reopen the app with `plexi app open <id>`"
-                                ),
-                            ));
-                        }
-                    }
-
-                    // Portal panes — restore the tile reference, no process to start.
-                    if matches!(
-                        saved_pane.kind,
-                        crate::workspace::SavedPaneKind::Portal { .. }
-                    ) {
-                        if let crate::workspace::SavedPaneKind::Portal { context_id } =
-                            &saved_pane.kind
-                        {
-                            pane_entry =
-                                Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                                    pane_id: saved_pane.id,
-                                    target_context_id: *context_id,
-                                    context_state: None,
-                                    hidden: false,
-                                })));
-                        }
-                    }
-
-                    if pane_entry.is_none() {
-                        let ctx_name = ctx_name_map
-                            .get(&saved_win.context_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        let ctx_desc = ctx_desc_map
-                            .get(&saved_win.context_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        let ctx_root = ctx_root_map.get(&saved_win.context_id);
-                        let ctx_depth = ctx_depth_map
-                            .get(&saved_win.context_id)
-                            .copied()
-                            .unwrap_or(0);
-                        let (settings, pending_credential) = Self::make_backend_settings(
-                            saved_pane.id,
-                            cwd,
-                            &colors,
-                            saved_win.context_id,
-                            &ctx_name,
-                            &ctx_desc,
-                            ctx_root,
-                            ctx_depth,
-                            false,
-                        );
-                        if let Some(mut pane) = TerminalPane::new(
-                            saved_pane.id,
-                            cc.egui_ctx.clone(),
-                            tx.clone(),
-                            settings,
-                            default_font_size,
-                        ) {
-                            pane.name = saved_pane.name.clone();
-                            pane_entry = Some(Pane::Terminal(Box::new(pane)));
-                            pending_credential.mark_live();
-                        }
-                    }
-
-                    if let Some(mut pane) = pane_entry {
-                        if saved_pane.hidden {
-                            pane.set_hidden(true);
-                        }
-                        panes.insert(saved_pane.id, pane);
-                    }
-                }
-                // Skip only if there were saved panes that all failed to restore
-                // (corrupted state). An empty saved pane list means the user
-                // intentionally closed all panes — restore the empty window so
-                // the welcome screen appears on next launch.
-                if !saved_win.panes.is_empty() && panes.is_empty() {
-                    continue;
-                }
-                windows.push(Window {
-                    // Strip old auto-generated "Page X,Y" names — treat them as
-                    // unnamed so they don't pollute the command palette.
-                    name: if is_auto_window_name(&saved_win.name) {
-                        String::new()
-                    } else {
-                        saved_win.name
-                    },
-                    path: saved_win.path,
-                    tree: saved_win.tree,
-                    panes,
-                    focused_pane: saved_win.focused_pane,
-                    zoomed_pane: None,
-                    grid_x: saved_win.grid_x,
-                    grid_y: saved_win.grid_y,
-                    window_id: saved_win.window_id,
-                    context_id: saved_win.context_id,
-                });
-            }
-            if !windows.is_empty() {
-                // Repair window_ids: old workspace files have window_id=0.
-                // Assign sequential IDs so every window has a stable unique ID.
-                let mut next_id: u64 = 1;
-                for win in &mut windows {
-                    if win.window_id == 0 {
-                        win.window_id = next_id;
-                        next_id += 1;
-                    } else {
-                        next_id = next_id.max(win.window_id + 1);
-                    }
-                }
-                let contexts = ws.contexts;
-                let active_ctx = ws.active_context.min(contexts.len().saturating_sub(1));
-                let active_ctx_id = contexts[active_ctx].context_id;
-                let active = ws
-                    .context_active_window
-                    .get(&active_ctx_id)
-                    .and_then(|win_id| windows.iter().position(|w| w.window_id == *win_id))
-                    .unwrap_or(0);
-                let window_count = windows
-                    .iter()
-                    .filter(|w| w.context_id == active_ctx_id)
-                    .count();
+            if let Some(restored) = restore_workspace(
+                ws,
+                &config,
+                WorkspaceRestoreCollaborators {
+                    profile_dir: &profile_dir,
+                    colors: &colors,
+                    hot_reload: &mut hr_watcher,
+                    state_watch: &mut sw_watcher,
+                    terminal_spawner: Some((&cc.egui_ctx, &tx)),
+                },
+            ) {
                 let mut host = crate::host::model::HostModel::new();
-                host.seed_next_pane_id(ws.next_pane_id);
+                host.seed_next_pane_id(restored.next_pane_id);
                 let mut app = Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
@@ -1705,10 +1440,10 @@ impl PlexiApp {
                     colors,
                     default_font_size,
                     ctx: cc.egui_ctx.clone(),
-                    router: crate::workspace::router::WorkspaceRouter::new(contexts, active_ctx),
-                    windows,
-                    active_window: active,
-                    sidebar_visible: ws.sidebar_visible,
+                    router: restored.router,
+                    windows: restored.windows,
+                    active_window: restored.active_window,
+                    sidebar_visible: restored.sidebar_visible,
                     show_shortcuts: false,
                     show_changelog: false,
                     show_ui_gallery: false,
@@ -1741,9 +1476,9 @@ impl PlexiApp {
                     pending_slot_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
-                    pane_heartbeats: restored_heartbeats,
+                    pane_heartbeats: restored.pane_heartbeats,
                     last_sent_window_title: None,
-                    permission_store_dir: crate::config::config_dir(),
+                    permission_store_dir: profile_dir.clone(),
                     #[cfg(test)]
                     _test_scratch: None,
                     renaming_window: None,
@@ -1768,7 +1503,7 @@ impl PlexiApp {
                     registries,
                     features,
                     pending_notifications: load_pending_notifications_from(
-                        &crate::config::config_dir().join("notifications.json"),
+                        &profile_dir.join("notifications.json"),
                     ),
                     show_notification_modal: false,
                     attention: Default::default(),
@@ -1780,7 +1515,7 @@ impl PlexiApp {
                     quick_note_attachments: Vec::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_migration_pending: true,
-            notes_picker_entries: Vec::new(),
+                    notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
                     notes_picker_query: String::new(),
                     notes_index: crate::notes::NotesIndexCache::default(),
@@ -1815,11 +1550,13 @@ impl PlexiApp {
                     registry_watchers,
                     workspace_dirty: false,
                     last_workspace_save: std::time::Instant::now(),
-                    minimap: crate::render::minimap::MinimapState::with_visible(window_count >= 2),
+                    minimap: crate::render::minimap::MinimapState::with_visible(
+                        restored.minimap_visible,
+                    ),
                     last_page_x_per_row: HashMap::new(),
-                    context_active_window: ws.context_active_window,
+                    context_active_window: restored.context_active_window,
                     minimap_visible_per_context: HashMap::new(),
-                    next_window_id: next_id,
+                    next_window_id: restored.next_window_id,
                     pane_snapshot_len: 0,
                     pane_anims: Vec::new(),
                     edge_pulse: None,
@@ -1842,7 +1579,7 @@ impl PlexiApp {
                     last_logged_focus: None,
                     focus_started_at: None,
                     terminal_traversal_lock: None,
-                    focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
+                    focus_journal_path: profile_dir.join("focus-journal.jsonl"),
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
                     pending_pane_clicks: HashMap::new(),
@@ -1851,51 +1588,6 @@ impl PlexiApp {
                     pending_pane_pointer_frames: HashMap::new(),
                     approval_banner_logged: None,
                 };
-                // Reconstruct depth_stack so Cmd+Escape works immediately when
-                // the workspace was saved while viewing a subcontext. The stack
-                // is in-memory only and starts empty; without this, zoom_out
-                // silently no-ops until the user manually navigates away and
-                // back in (which calls push_depth).
-                {
-                    let active_ctx_id = app.router.active().context_id;
-                    let mut ancestors: Vec<(u64, u64, Option<egui_tiles::TileId>)> = Vec::new();
-                    let mut cur_id = active_ctx_id;
-                    loop {
-                        let parent_id = app
-                            .router
-                            .iter()
-                            .find(|c| c.context_id == cur_id)
-                            .and_then(|c| c.parent_id);
-                        let Some(pid) = parent_id else { break };
-                        let win_id = app
-                            .context_active_window
-                            .get(&pid)
-                            .and_then(|wid| {
-                                app.windows
-                                    .iter()
-                                    .find(|w| w.window_id == *wid && w.context_id == pid)
-                                    .map(|w| w.window_id)
-                            })
-                            .or_else(|| {
-                                app.windows
-                                    .iter()
-                                    .find(|w| w.context_id == pid)
-                                    .map(|w| w.window_id)
-                            })
-                            .unwrap_or(0);
-                        ancestors.push((pid, win_id, None));
-                        cur_id = pid;
-                    }
-                    ancestors.reverse();
-                    if !ancestors.is_empty() {
-                        log::info!(
-                            "workspace restore: rebuilding depth_stack ({} entries) for subcontext ctx={}",
-                            ancestors.len(),
-                            active_ctx_id
-                        );
-                        app.router.depth_stack = ancestors;
-                    }
-                }
                 app.apply_context_transition_effects();
                 return app;
             }
@@ -2094,10 +1786,10 @@ impl PlexiApp {
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
             directed_pipes: HashMap::new(),
-            hot_reload: hr_watcher2,
-            hot_reload_rx: hr_rx2,
-            state_watch: sw_watcher2,
-            state_watch_rx: sw_rx2,
+            hot_reload: hr_watcher,
+            hot_reload_rx: hr_rx,
+            state_watch: sw_watcher,
+            state_watch_rx: sw_rx,
             _config_watcher: cfg_watcher.take(),
             config_reload_rx: cfg_reload_rx.take(),
             registry_watchers: default_registry_watchers,
@@ -2130,7 +1822,7 @@ impl PlexiApp {
             last_logged_focus: None,
             focus_started_at: None,
             terminal_traversal_lock: None,
-            focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
+            focus_journal_path: profile_dir.join("focus-journal.jsonl"),
             overlay_held_cmds: Vec::new(),
             agent_host,
             pending_pane_clicks: HashMap::new(),
@@ -2159,6 +1851,24 @@ impl PlexiApp {
         }
         app.apply_context_transition_effects();
         app
+    }
+
+    /// Install a [`RestoredWorkspace`] into an already-constructed `PlexiApp`,
+    /// replacing its router, windows, focus, heartbeats, and pane/window id
+    /// counters, then applying context transition effects.
+    #[cfg(test)]
+    pub(crate) fn install_restored_workspace(&mut self, restored: RestoredWorkspace) {
+        self.router = restored.router;
+        self.windows = restored.windows;
+        self.active_window = restored.active_window;
+        self.sidebar_visible = restored.sidebar_visible;
+        self.pane_heartbeats = restored.pane_heartbeats;
+        self.context_active_window = restored.context_active_window;
+        self.minimap =
+            crate::render::minimap::MinimapState::with_visible(restored.minimap_visible);
+        self.next_window_id = restored.next_window_id;
+        self.host.seed_next_pane_id(restored.next_pane_id);
+        self.apply_context_transition_effects();
     }
 
     /// Search ALL windows (not just the active one) for a pane by ID.
@@ -3025,6 +2735,33 @@ impl PlexiApp {
         context_depth: u32,
         agent_pane: bool,
     ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
+        Self::make_backend_settings_in_profile(
+            &crate::config::config_dir(),
+            pane_id,
+            working_directory,
+            colors,
+            context_id,
+            context_name,
+            context_description,
+            context_root,
+            context_depth,
+            agent_pane,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn make_backend_settings_in_profile(
+        profile_dir: &std::path::Path,
+        pane_id: u64,
+        working_directory: Option<PathBuf>,
+        colors: &Colors,
+        context_id: u64,
+        context_name: &str,
+        context_description: &str,
+        context_root: Option<&PathBuf>,
+        context_depth: u32,
+        agent_pane: bool,
+    ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
         log::info!(
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
@@ -3039,15 +2776,13 @@ impl PlexiApp {
             .cloned()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
-        let call_credential = crate::broker::gate::PermissionMonitor::for_profile(
-            &crate::config::config_dir(),
-        )
-        .issue_credential(
-            Some(pane_id),
-            context_id,
-            &workspace_root,
-            &format!("pane:{pane_id}"),
-        );
+        let call_credential = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
+            .issue_credential(
+                Some(pane_id),
+                context_id,
+                &workspace_root,
+                &format!("pane:{pane_id}"),
+            );
         env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
         if let Some((port, token)) =
             host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
@@ -5097,6 +4832,390 @@ fn drive_native_pane_key(
 fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
     let _ = (pane, pipe_id);
     false
+}
+
+/// Explicit collaborators passed to [`restore_workspace`] so workspace
+/// reconstruction reads no ambient profile directory, starts no servers, and
+/// spawns no terminal processes unless `terminal_spawner` is provided.
+pub(crate) struct WorkspaceRestoreCollaborators<'a> {
+    pub profile_dir: &'a std::path::Path,
+    pub colors: &'a Colors,
+    pub hot_reload: &'a mut crate::host::hot_reload::HotReloadWatcher,
+    pub state_watch: &'a mut crate::host::state_watch::StateWatcher,
+    pub terminal_spawner: Option<(&'a egui::Context, &'a mpsc::Sender<(u64, PtyEvent)>)>,
+}
+
+/// Reconstructed workspace state returned by [`restore_workspace`].
+pub(crate) struct RestoredWorkspace {
+    pub router: crate::workspace::router::WorkspaceRouter,
+    pub windows: Vec<Window>,
+    pub active_window: usize,
+    pub sidebar_visible: bool,
+    pub pane_heartbeats: HashMap<crate::spatial::tiling::PaneId, PaneHeartbeat>,
+    pub context_active_window: HashMap<u64, u64>,
+    pub minimap_visible: bool,
+    pub next_pane_id: u64,
+    pub next_window_id: u64,
+}
+
+/// Reconstruct windows, contexts, heartbeats, and focus state from a loaded
+/// [`WorkspaceFile`]. Returns `None` when the workspace has no contexts or
+/// no windows survive pane restoration.
+pub(crate) fn restore_workspace(
+    ws: WorkspaceFile,
+    config: &config::PlexiConfig,
+    collaborators: WorkspaceRestoreCollaborators<'_>,
+) -> Option<RestoredWorkspace> {
+    if ws.contexts.is_empty() {
+        return None;
+    }
+    let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
+    let mut windows = Vec::new();
+    let mut restored_heartbeats = HashMap::new();
+    let ctx_name_map: std::collections::HashMap<u64, String> = ws
+        .contexts
+        .iter()
+        .map(|c| (c.context_id, c.name.to_string()))
+        .collect();
+    let ctx_desc_map: std::collections::HashMap<u64, String> = ws
+        .contexts
+        .iter()
+        .filter_map(|c| c.description.as_ref().map(|d| (c.context_id, d.clone())))
+        .collect();
+    let ctx_root_map: std::collections::HashMap<u64, PathBuf> = ws
+        .contexts
+        .iter()
+        .map(|c| (c.context_id, c.root.clone()))
+        .collect();
+    let ctx_depth_map: std::collections::HashMap<u64, u32> = ws
+        .contexts
+        .iter()
+        .map(|c| (c.context_id, c.depth))
+        .collect();
+
+    for saved_win in ws.windows {
+        let mut panes = HashMap::new();
+        for saved_pane in &saved_win.panes {
+            if let Some(heartbeat) = &saved_pane.heartbeat {
+                restored_heartbeats.insert(
+                    saved_pane.id,
+                    PaneHeartbeat {
+                        every: std::time::Duration::from_millis(heartbeat.every_ms),
+                        text: heartbeat.text.clone(),
+                        while_idle_only: heartbeat.while_idle_only,
+                        next_fire: std::time::Instant::now()
+                            + std::time::Duration::from_millis(heartbeat.every_ms),
+                    },
+                );
+            }
+            let cwd = if saved_pane.cwd.is_dir() {
+                Some(saved_pane.cwd.clone())
+            } else if saved_win.path.is_dir() {
+                Some(saved_win.path.clone())
+            } else {
+                dirs::home_dir()
+            };
+            let mut pane_entry: Option<Pane> = None;
+            if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App) {
+                let Some(app_type) = &saved_pane.app_id else {
+                    continue;
+                };
+                let app_cwd = saved_pane.cwd.clone();
+                if let Some(launch) = &saved_pane.launch {
+                    // Real manifest identity + launch context (stint 0680):
+                    // relaunch through the shared runtime construction path,
+                    // keeping the saved pane id.
+                    let ctx_root = ctx_root_map
+                        .get(&saved_win.context_id)
+                        .cloned()
+                        .unwrap_or_else(|| app_cwd.clone());
+                    match crate::pane_ops::restore_app_pane_in_profile(
+                        app_type,
+                        launch,
+                        crate::pane_ops::RestoreTarget {
+                            pane_id: saved_pane.id,
+                            context_id: saved_win.context_id,
+                            workspace_root: app_cwd.clone(),
+                            context_root: &ctx_root,
+                            saved_name: saved_pane.name.as_deref(),
+                        },
+                        collaborators.colors,
+                        collaborators.profile_dir,
+                    ) {
+                        Ok(crate::pane_ops::RestoredAppPane {
+                            pane,
+                            state_paths,
+                            hot_reload_dir,
+                        }) => {
+                            if !hot_reload_dir.as_os_str().is_empty() {
+                                collaborators
+                                    .hot_reload
+                                    .watch(saved_pane.id, &hot_reload_dir);
+                            }
+                            if !state_paths.is_empty() {
+                                collaborators.state_watch.watch(saved_pane.id, &state_paths);
+                            }
+                            log::info!(
+                                "workspace_restore: pane {} (app_id={app_type}) relaunched as its own app",
+                                saved_pane.id
+                            );
+                            pane_entry = Some(pane);
+                        }
+                        Err(reason) => {
+                            log::info!(
+                                "workspace_restore: pane {} (app_id={app_type}) failed to relaunch: {reason} — rendering launch-failed pane",
+                                saved_pane.id
+                            );
+                            pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
+                                app_type,
+                                saved_pane.id,
+                                app_cwd.clone(),
+                                reason,
+                            ));
+                        }
+                    }
+                } else if !saved_pane.is_legacy_runtime_kind_id() {
+                    pane_entry = crate::pane_ops::restore_builtin_app_pane(
+                        app_type,
+                        saved_pane.id,
+                        app_cwd.clone(),
+                        saved_pane.app_state.as_ref(),
+                    );
+                    // The Assistant is a builtin needing a broker + profile
+                    // dir, so the broker-free factory can't build it. Build
+                    // it here where the loaded `config.ai` is available; the
+                    // conversation auto-resumes from disk.
+                    if pane_entry.is_none()
+                        && app_type == "assistant"
+                        && crate::release::feature_enabled(
+                            crate::release::ReleaseFeature::Assistant,
+                        )
+                    {
+                        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+                            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
+                                config.ai.clone(),
+                            ));
+                        pane_entry = Some(crate::pane_ops::restore_assistant_pane(
+                            saved_pane.id,
+                            app_cwd.clone(),
+                            broker,
+                            collaborators.profile_dir,
+                            saved_win.context_id,
+                        ));
+                    }
+                    if pane_entry.is_none() && app_type == "assistant" {
+                        crate::release::log_feature_blocked(
+                            crate::release::ReleaseFeature::Assistant,
+                        );
+                    }
+                } else {
+                    // Pre-0680 save of a Python/WASM app pane: `app_id`
+                    // holds the runtime kind, not a manifest id, and
+                    // there is no launch context to relaunch from.
+                    log::info!(
+                        "workspace_restore: legacy app pane pane_id={} runtime_kind={app_type} restored as launch-failed",
+                        saved_pane.id
+                    );
+                    pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
+                        app_type,
+                        saved_pane.id,
+                        app_cwd.clone(),
+                        format!(
+                            "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); reopen the app with `plexi app open <id>`"
+                        ),
+                    ));
+                }
+            }
+
+            // Portal panes — restore the tile reference, no process to start.
+            if matches!(
+                saved_pane.kind,
+                crate::workspace::SavedPaneKind::Portal { .. }
+            ) {
+                if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
+                    pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                        pane_id: saved_pane.id,
+                        target_context_id: *context_id,
+                        context_state: None,
+                        hidden: false,
+                    })));
+                }
+            }
+
+            if pane_entry.is_none() {
+                if let Some((egui_ctx, pty_event_tx)) = collaborators.terminal_spawner {
+                    let ctx_name = ctx_name_map
+                        .get(&saved_win.context_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let ctx_desc = ctx_desc_map
+                        .get(&saved_win.context_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let ctx_root = ctx_root_map.get(&saved_win.context_id);
+                    let ctx_depth = ctx_depth_map
+                        .get(&saved_win.context_id)
+                        .copied()
+                        .unwrap_or(0);
+                    let (settings, pending_credential) =
+                        PlexiApp::make_backend_settings_in_profile(
+                            collaborators.profile_dir,
+                            saved_pane.id,
+                            cwd,
+                            collaborators.colors,
+                            saved_win.context_id,
+                            &ctx_name,
+                            &ctx_desc,
+                            ctx_root,
+                            ctx_depth,
+                            false,
+                        );
+                    if let Some(mut pane) = TerminalPane::new(
+                        saved_pane.id,
+                        egui_ctx.clone(),
+                        pty_event_tx.clone(),
+                        settings,
+                        default_font_size,
+                    ) {
+                        pane.name = saved_pane.name.clone();
+                        pane_entry = Some(Pane::Terminal(Box::new(pane)));
+                        pending_credential.mark_live();
+                    }
+                } else {
+                    log::info!(
+                        "workspace_restore: skipping terminal pane {} in headless restore",
+                        saved_pane.id
+                    );
+                }
+            }
+
+            if let Some(mut pane) = pane_entry {
+                if saved_pane.hidden {
+                    pane.set_hidden(true);
+                }
+                panes.insert(saved_pane.id, pane);
+            }
+        }
+        // Skip only if there were saved panes that all failed to restore
+        // (corrupted state). An empty saved pane list means the user
+        // intentionally closed all panes — restore the empty window so
+        // the welcome screen appears on next launch.
+        if !saved_win.panes.is_empty() && panes.is_empty() {
+            continue;
+        }
+        windows.push(Window {
+            // Strip old auto-generated "Page X,Y" names — treat them as
+            // unnamed so they don't pollute the command palette.
+            name: if is_auto_window_name(&saved_win.name) {
+                String::new()
+            } else {
+                saved_win.name
+            },
+            path: saved_win.path,
+            tree: saved_win.tree,
+            panes,
+            focused_pane: saved_win.focused_pane,
+            zoomed_pane: None,
+            grid_x: saved_win.grid_x,
+            grid_y: saved_win.grid_y,
+            window_id: saved_win.window_id,
+            context_id: saved_win.context_id,
+        });
+    }
+
+    if windows.is_empty() {
+        return None;
+    }
+
+    // Repair window_ids: old workspace files have window_id=0.
+    // Assign sequential IDs so every window has a stable unique ID.
+    let mut next_id: u64 = 1;
+    for win in &mut windows {
+        if win.window_id == 0 {
+            win.window_id = next_id;
+            next_id += 1;
+        } else {
+            next_id = next_id.max(win.window_id + 1);
+        }
+    }
+    let contexts = ws.contexts;
+    let active_ctx = ws.active_context.min(contexts.len().saturating_sub(1));
+    let active_ctx_id = contexts[active_ctx].context_id;
+    let active = ws
+        .context_active_window
+        .get(&active_ctx_id)
+        .and_then(|win_id| windows.iter().position(|w| w.window_id == *win_id))
+        .unwrap_or(0);
+    let window_count = windows
+        .iter()
+        .filter(|w| w.context_id == active_ctx_id)
+        .count();
+
+    let mut router = crate::workspace::router::WorkspaceRouter::new(contexts, active_ctx);
+    // Reconstruct depth_stack so Cmd+Escape works immediately when
+    // the workspace was saved while viewing a subcontext. The stack
+    // is in-memory only and starts empty; without this, zoom_out
+    // silently no-ops until the user manually navigates away and
+    // back in (which calls push_depth).
+    {
+        let active_ctx_id = router.active().context_id;
+        let mut ancestors: Vec<(u64, u64, Option<egui_tiles::TileId>)> = Vec::new();
+        let mut cur_id = active_ctx_id;
+        loop {
+            let parent_id = router
+                .iter()
+                .find(|c| c.context_id == cur_id)
+                .and_then(|c| c.parent_id);
+            let Some(pid) = parent_id else { break };
+            let win_id = ws
+                .context_active_window
+                .get(&pid)
+                .and_then(|wid| {
+                    windows
+                        .iter()
+                        .find(|w| w.window_id == *wid && w.context_id == pid)
+                        .map(|w| w.window_id)
+                })
+                .or_else(|| {
+                    windows
+                        .iter()
+                        .find(|w| w.context_id == pid)
+                        .map(|w| w.window_id)
+                })
+                .unwrap_or(0);
+            ancestors.push((pid, win_id, None));
+            cur_id = pid;
+        }
+        ancestors.reverse();
+        if !ancestors.is_empty() {
+            log::info!(
+                "workspace restore: rebuilding depth_stack ({} entries) for subcontext ctx={}",
+                ancestors.len(),
+                active_ctx_id
+            );
+            router.depth_stack = ancestors;
+        }
+    }
+
+    log::info!(
+        "workspace_restore: restored contexts={} windows={} active_window={} next_pane_id={}",
+        router.len(),
+        windows.len(),
+        active,
+        ws.next_pane_id
+    );
+
+    Some(RestoredWorkspace {
+        router,
+        windows,
+        active_window: active,
+        sidebar_visible: ws.sidebar_visible,
+        pane_heartbeats: restored_heartbeats,
+        context_active_window: ws.context_active_window,
+        minimap_visible: window_count >= 2,
+        next_pane_id: ws.next_pane_id,
+        next_window_id: next_id,
+    })
 }
 
 #[cfg(test)]

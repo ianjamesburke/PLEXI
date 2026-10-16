@@ -126,10 +126,8 @@ pub enum SavedAppLaunch {
     },
 }
 
-fn workspace_path() -> PathBuf {
-    crate::config::config_dir()
-        .join("workspaces")
-        .join("default.json")
+pub fn workspace_path_in(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("workspaces").join("default.json")
 }
 
 /// Env switch for a hermetic host session, set by `plexi host start
@@ -198,7 +196,11 @@ impl WorkspaceFile {
             log::info!("workspace_save: skipped (ephemeral session)");
             return Ok(());
         }
-        let path = workspace_path();
+        self.save_to(&crate::config::config_dir())
+    }
+
+    pub fn save_to(&self, profile_dir: &Path) -> io::Result<()> {
+        let path = workspace_path_in(profile_dir);
         let temp_path = unique_temp_path(&path);
         let started = Instant::now();
         let result = (|| {
@@ -243,7 +245,11 @@ impl WorkspaceFile {
             log::info!("workspace_load: skipped (ephemeral session)");
             return None;
         }
-        let path = workspace_path();
+        Self::load_from(&crate::config::config_dir())
+    }
+
+    pub fn load_from(profile_dir: &Path) -> Option<Self> {
+        let path = workspace_path_in(profile_dir);
         let data = match std::fs::read_to_string(&path) {
             Ok(d) => d,
             Err(_) => return None,

@@ -17,7 +17,9 @@ mod layout;
 mod workspace;
 
 pub(crate) use create::cli_open_placement;
-pub(crate) use create::{restore_app_pane, RestoreTarget, RestoredAppPane};
+#[cfg(test)]
+pub(crate) use create::restore_app_pane;
+pub(crate) use create::{restore_app_pane_in_profile, RestoreTarget, RestoredAppPane};
 pub(crate) use create::restore_assistant_pane;
 pub(crate) use create::restore_builtin_app_pane;
 pub(crate) use create::restore_launch_failed_pane;

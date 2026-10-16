@@ -1102,31 +1102,40 @@ pub fn set_test_channel(channel: &str) -> TestChannelGuard {
 }
 
 #[cfg(test)]
+static NEXT_TEST_DIR_GUARD_TOKEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(test)]
 thread_local! {
-    static TEST_PROFILE_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(None) };
+    static TEST_PROFILE_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// RAII guard that clears the per-thread test profile dir override on drop.
+/// RAII guard that removes its per-thread test profile dir override on drop.
 #[cfg(test)]
-pub struct TestProfileDirGuard;
+pub struct TestProfileDirGuard {
+    token: u64,
+}
 
 #[cfg(test)]
 impl Drop for TestProfileDirGuard {
     fn drop(&mut self) {
-        TEST_PROFILE_DIR_OVERRIDE.with(|c| *c.borrow_mut() = None);
+        let token = self.token;
+        TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
     }
 }
 
 /// Override the full profile directory for the current test thread. The returned
-/// guard must be held for the duration of the test; dropping it clears the override.
+/// guard must be held for the duration of the test; dropping it removes this
+/// guard's override while preserving any outer or sibling live guard on the thread.
 ///
 /// Prefer this over `set_test_channel` for new tests — it redirects `config_dir()`
 /// and `config_path()` to a fully isolated tempdir rather than a subdir of $HOME.
 #[cfg(test)]
 pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
-    TEST_PROFILE_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(path));
-    TestProfileDirGuard
+    let token = NEXT_TEST_DIR_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
+    TestProfileDirGuard { token }
 }
 
 /// The isolated profile directory installed by [`set_test_profile_dir`], if any.
@@ -1136,7 +1145,7 @@ pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
 /// (`config_dir()` asserts when the channel dir is a real profile name).
 #[cfg(test)]
 pub(crate) fn test_profile_dir_override() -> Option<std::path::PathBuf> {
-    TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().clone())
+    TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().last().map(|(_, dir)| dir.clone()))
 }
 
 /// Returns the workspace channel directory name for the current binary.
@@ -1226,8 +1235,7 @@ pub fn config_path() -> PathBuf {
 pub fn config_dir() -> PathBuf {
     #[cfg(test)]
     {
-        let override_dir = TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().clone());
-        if let Some(dir) = override_dir {
+        if let Some(dir) = test_profile_dir_override() {
             return dir;
         }
     }
@@ -1244,7 +1252,8 @@ pub fn config_dir() -> PathBuf {
 pub fn shared_dir() -> PathBuf {
     #[cfg(test)]
     {
-        let override_dir = TEST_SHARED_DIR_OVERRIDE.with(|c| c.borrow().clone());
+        let override_dir =
+            TEST_SHARED_DIR_OVERRIDE.with(|c| c.borrow().last().map(|(_, dir)| dir.clone()));
         if let Some(dir) = override_dir {
             return dir;
         }
@@ -1258,18 +1267,21 @@ const SHARED_DIR_NAME: &str = ".plexi";
 
 #[cfg(test)]
 thread_local! {
-    static TEST_SHARED_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(None) };
+    static TEST_SHARED_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// RAII guard that clears the per-thread test shared dir override on drop.
+/// RAII guard that removes its per-thread test shared dir override on drop.
 #[cfg(test)]
-pub struct TestSharedDirGuard;
+pub struct TestSharedDirGuard {
+    token: u64,
+}
 
 #[cfg(test)]
 impl Drop for TestSharedDirGuard {
     fn drop(&mut self) {
-        TEST_SHARED_DIR_OVERRIDE.with(|c| *c.borrow_mut() = None);
+        let token = self.token;
+        TEST_SHARED_DIR_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
     }
 }
 
@@ -1277,8 +1289,9 @@ impl Drop for TestSharedDirGuard {
 /// The returned guard must be held for the duration of the test.
 #[cfg(test)]
 pub fn set_test_shared_dir(path: std::path::PathBuf) -> TestSharedDirGuard {
-    TEST_SHARED_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(path));
-    TestSharedDirGuard
+    let token = NEXT_TEST_DIR_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TEST_SHARED_DIR_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
+    TestSharedDirGuard { token }
 }
 
 pub fn workspace_config_path(workspace_root: &Path) -> PathBuf {
