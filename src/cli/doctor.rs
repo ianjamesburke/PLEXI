@@ -39,10 +39,8 @@ fn check_openrouter() -> OpenRouterReport {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        let key = ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .find_map(|name| store.get(&keychain_user_name(name)));
+        super::workspace::reconcile_secrets_before_read("cli:doctor");
+        let key = system_store().get(&keychain_user_name("OPENROUTER_API_KEY"));
         match key {
             None => {
                 log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");

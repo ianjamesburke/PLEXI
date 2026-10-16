@@ -148,7 +148,10 @@ plexi skill install --agent codex
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
   project secrets: `plexi workspace --help`, `plexi run --help`, and
-  `plexi secret --help`.
+  `plexi secret --help`. `secret list` first reconciles its index with the
+  keychain, so it also shows keys added outside Plexi. A legacy-format secrets
+  index is migrated the first time `secret get` or `secret list` runs, not at
+  CLI startup.
 <!-- experiment: routines -->
   Scheduled commands: `plexi routine --help`.
 <!-- /experiment -->

@@ -252,10 +252,10 @@ fn check_openrouter_configured() -> bool {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .any(|name| store.get(&keychain_user_name(name)).is_some())
+        super::workspace::reconcile_secrets_before_read("ai:doctor");
+        system_store()
+            .get(&keychain_user_name("OPENROUTER_API_KEY"))
+            .is_some()
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
