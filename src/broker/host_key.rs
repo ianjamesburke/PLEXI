@@ -812,14 +812,14 @@ fn host_key_test_lock() -> &'static Mutex<()> {
 }
 
 #[cfg(test)]
-struct TestBackendGuard {
+pub(crate) struct TestBackendGuard {
     release: bool,
     _guard: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 #[cfg(test)]
 impl TestBackendGuard {
-    fn acquire_if_needed() -> Self {
+    pub(crate) fn acquire_if_needed() -> Self {
         if HOST_KEY_HELD.with(|held| held.get()) {
             return Self {
                 release: false,
