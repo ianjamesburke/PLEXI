@@ -3931,6 +3931,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            worktree: None,
             peer_ancestry: None,
         });
         app.drain_pane_cmd_channel();

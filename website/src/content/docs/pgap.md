@@ -328,6 +328,7 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 | `target_context` | `integer?` | no |
 | `type_id` | `string` | yes |
 | `workspace_root` | `string?` | no |
+| `worktree` | `string?` | no |
 
 ### `set_pane_title`
 
@@ -501,11 +502,12 @@ Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
 
 ### `close_pane`
 
-Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.
+Close a pane by PaneId. Sent by `plexi pane close`. When `response_file` is set, the host writes `{"ok": true, "pane_...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
+| `response_file` | `string?` | no |
 
 ### `send_to_pane`
 

@@ -588,15 +588,72 @@ pub fn pane_focus_cli(pane_id: u64) -> i32 {
     }))
 }
 
+/// Map a host `close_pane` JSON reply onto `(stdout_line, stderr_line, exit_code)`.
+///
+/// When the closed pane owned a `--worktree` checkout that was dirty or ahead,
+/// the host retains the worktree and includes `"worktree": {"action": "retained", "path": "...", "reason": "..."}`
+/// in the reply; the CLI surfaces the retained path on stdout.
+pub fn close_pane_outcome(response: &str) -> (Option<String>, Option<String>, i32) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(response) else {
+        return (
+            None,
+            Some(format!("error: invalid JSON from host: {response}")),
+            1,
+        );
+    };
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        return (None, Some(format!("error: {err}")), 1);
+    }
+    if let Some(wt) = v.get("worktree") {
+        if wt.get("action").and_then(|a| a.as_str()) == Some("retained") {
+            let path = wt.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            let reason = wt
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("dirty_or_ahead");
+            return (
+                Some(format!("retained worktree: {path} ({reason})")),
+                None,
+                0,
+            );
+        }
+    }
+    (None, None, 0)
+}
+
 /// `plexi pane close <pane_id>`
 ///
-/// Sends a `close_pane` command to PLEXI_SOCKET. Fire-and-forget.
-/// Returns 0 on success, 1 on error.
+/// Sends a `close_pane` command to PLEXI_SOCKET. When closing another pane,
+/// waits for the host's response so any retained `--worktree` path is reported
+/// on stdout. When a pane closes itself (`PLEXI_PANE_ID == pane_id`), sends
+/// fire-and-forget so the CLI exits cleanly before the PTY receives SIGHUP
+/// (the host still reclaims or retains the worktree on close).
 pub fn pane_close_cli(pane_id: u64) -> i32 {
-    send_to_socket(serde_json::json!({
+    let self_pane = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok());
+    if self_pane == Some(pane_id) {
+        return send_to_socket(serde_json::json!({
+            "type": "close_pane",
+            "pane_id": pane_id,
+        }));
+    }
+    let payload = serde_json::json!({
         "type": "close_pane",
         "pane_id": pane_id,
-    }))
+    });
+    let content = match super::request(payload, "close-pane-response", "pane close") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    let (stdout, stderr, code) = close_pane_outcome(&content);
+    if let Some(err) = stderr {
+        eprintln!("{err}");
+    }
+    if let Some(out) = stdout {
+        println!("{out}");
+    }
+    code
 }
 
 /// `plexi pane send <pane_id> <text>`
@@ -1693,6 +1750,31 @@ mod pane_message_tests {
         let code = pane_message_recv_cli(Some(7), true, 0.1);
         handle.join().expect("listener thread");
         assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn close_pane_outcome_formats_retained_and_reclaimed_worktrees() {
+        let (out, err, code) = close_pane_outcome(
+            r#"{"ok":true,"pane_id":9,"worktree":{"branch":"feature/x","path":"/tmp/wt/feature/x","action":"retained","reason":"dirty"}}"#,
+        );
+        assert_eq!(code, 0);
+        assert!(err.is_none());
+        assert_eq!(
+            out.as_deref(),
+            Some("retained worktree: /tmp/wt/feature/x (dirty)")
+        );
+
+        let (out2, err2, code2) = close_pane_outcome(
+            r#"{"ok":true,"pane_id":9,"worktree":{"branch":"feature/x","path":"/tmp/wt/feature/x","action":"reclaimed","reason":"clean_and_unmoved"}}"#,
+        );
+        assert_eq!(code2, 0);
+        assert!(err2.is_none());
+        assert!(out2.is_none());
+
+        let (out3, err3, code3) = close_pane_outcome(r#"{"error":"pane 9 not found"}"#);
+        assert_eq!(code3, 1);
+        assert!(out3.is_none());
+        assert_eq!(err3.as_deref(), Some("error: pane 9 not found"));
     }
 }
 

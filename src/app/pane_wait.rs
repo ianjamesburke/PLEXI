@@ -320,6 +320,7 @@ impl PlexiApp {
             Ok(()) => None,
             Err(msg) => {
                 log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
+                self.reclaim_pane_worktree(pane_id);
                 Some(msg.clone())
             }
         };
@@ -338,6 +339,7 @@ impl PlexiApp {
             if typed.is_none() {
                 let msg = format!("pane {pane_id} is not a terminal, cannot launch an agent in it");
                 log::warn!("pane_agent_boot: {msg}");
+                self.reclaim_pane_worktree(pane_id);
                 if let Some(rf) = &spec.response_file {
                     crate::rpc::write_json_response(rf, serde_json::json!({ "error": msg }));
                 }
@@ -374,10 +376,21 @@ impl PlexiApp {
             return;
         };
         let json = match error {
-            None => serde_json::json!({ "pane_id": pane_id }),
+            None => self.spawn_pane_success_json(pane_id),
             Some(msg) => serde_json::json!({ "error": msg }),
         };
         crate::rpc::write_json_response(rf, json);
+    }
+
+    pub(crate) fn spawn_pane_success_json(&self, pane_id: u64) -> serde_json::Value {
+        match self.pane_worktrees.get(&pane_id) {
+            Some(wt) => serde_json::json!({
+                "pane_id": pane_id,
+                "worktree": wt.path,
+                "branch": wt.branch,
+            }),
+            None => serde_json::json!({ "pane_id": pane_id }),
+        }
     }
 
     /// True once the pane's agent reports idle — the boot predicate.
@@ -596,16 +609,14 @@ impl PlexiApp {
             .partition(|boot| boot.pane_id == pane_id);
         self.pending_agent_boots = live;
         self.emit_agent_booted(pane_id, self.pane_observation_provenance(pane_id));
+        let payload = self.spawn_pane_success_json(pane_id);
         for boot in booted {
             log::info!(
                 "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} reported ready after {:.2}s",
                 boot.agent_cmd,
                 boot.requested_at.elapsed().as_secs_f64()
             );
-            crate::rpc::write_json_response(
-                &boot.response_file,
-                serde_json::json!({ "pane_id": pane_id }),
-            );
+            crate::rpc::write_json_response(&boot.response_file, payload.clone());
         }
     }
 

@@ -42,3 +42,4 @@ pub mod wasm_gpu;
 pub mod wasm_pane;
 pub mod wasm_python;
 pub mod wasm_render;
+pub mod worktree;

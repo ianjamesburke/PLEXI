@@ -449,6 +449,13 @@ pub enum AppRequest {
         /// answering with a typed timeout. Requires `agent_cmd`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         boot_timeout_secs: Option<f64>,
+        /// When set, the host creates or checks out a git worktree for this
+        /// branch via `wtp` before spawning the terminal, starts the pane inside
+        /// the worktree directory, and reclaims (clean + unmoved) or retains
+        /// (dirty or ahead) the worktree when the pane closes (stint 0668).
+        /// Terminal spawns only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree: Option<String>,
         /// Host-stamped ancestor pids of the socket peer. The client cannot
         /// set this: `handle_socket_line` overwrites it from the kernel
         /// credential captured at accept. `None` means the request did not
@@ -623,8 +630,14 @@ pub enum AppRequest {
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
     FocusPane { pane_id: u64 },
 
-    /// Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.
-    ClosePane { pane_id: u64 },
+    /// Close a pane by PaneId. Sent by `plexi pane close`. When `response_file`
+    /// is set, the host writes `{"ok": true, "pane_id": ..., "worktree": ...}`
+    /// (with worktree close report when the pane owned a `--worktree` checkout).
+    ClosePane {
+        pane_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
 
     /// Write text to a terminal PTY or an app's input path (`plexi pane send`).
     /// `\n` in text (literal backslash-n) is interpreted as Enter unless
@@ -2961,6 +2974,71 @@ mod tests {
             !serialised_absent.contains("context_name"),
             "context_name should be omitted when None: {serialised_absent}"
         );
+    }
+
+    #[test]
+    fn spawn_pane_worktree_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","worktree":"feature/0668-test"}"#;
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            AppRequest::SpawnPane { worktree, .. } => {
+                assert_eq!(worktree.as_deref(), Some("feature/0668-test"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""worktree":"feature/0668-test""#),
+            "worktree missing: {serialised}"
+        );
+
+        let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        match &cmd_absent {
+            AppRequest::SpawnPane { worktree, .. } => {
+                assert!(
+                    worktree.is_none(),
+                    "absent worktree must deserialise to None"
+                );
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_absent = serde_json::to_string(&cmd_absent).expect("serialise absent");
+        assert!(
+            !serialised_absent.contains("worktree"),
+            "worktree should be omitted when None: {serialised_absent}"
+        );
+    }
+
+    #[test]
+    fn close_pane_response_file_round_trips_serde() {
+        let json = r#"{"type":"close_pane","pane_id":12,"response_file":"/tmp/close.json"}"#;
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            AppRequest::ClosePane {
+                pane_id,
+                response_file,
+            } => {
+                assert_eq!(*pane_id, 12);
+                assert_eq!(response_file.as_deref(), Some("/tmp/close.json"));
+            }
+            other => panic!("expected ClosePane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""response_file":"/tmp/close.json""#));
+
+        let legacy = r#"{"type":"close_pane","pane_id":12}"#;
+        let cmd_legacy: AppRequest = serde_json::from_str(legacy).expect("deserialise legacy");
+        match &cmd_legacy {
+            AppRequest::ClosePane {
+                pane_id,
+                response_file,
+            } => {
+                assert_eq!(*pane_id, 12);
+                assert!(response_file.is_none());
+            }
+            other => panic!("expected ClosePane, got {other:?}"),
+        }
     }
 
     #[test]

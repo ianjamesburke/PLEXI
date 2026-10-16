@@ -51,7 +51,12 @@ plexi skill install --agent codex
   `status` slot) together with the host's `observed_state` (process alive,
   output recency, child pids) — never trust the claim alone for liveness;
   add `--stale-after <secs>` to raise a typed `stale_claim` when the claim
-  looks fresh but output has gone quiet.
+  looks fresh but output has gone quiet. Pass `--worktree <branch>` to
+  `plexi pane new` to create or attach an isolated git worktree via `wtp` and
+  start the terminal pane inside it; closing the pane automatically reclaims the
+  worktree when clean and unmoved, or retains it and prints
+  `retained worktree: <path> (dirty|ahead)` when uncommitted changes or commits
+  are present.
 - **Lifecycle events** — `plexi pane wait <id> --until idle|blocked|exited
   --timeout <seconds>` waits for current state or a later matching event. It
   prints the matching JSON record and exits 0; timeout exits 2; permission,

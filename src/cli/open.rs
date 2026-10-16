@@ -153,6 +153,7 @@ pub fn pane_new_cli(
     extra_args: &[String],
     context_name: Option<&str>,
     agent: Option<&AgentBootRequest>,
+    worktree: Option<&str>,
 ) -> i32 {
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
@@ -218,7 +219,10 @@ pub fn pane_new_cli(
                 payload["boot_timeout_secs"] = serde_json::json!(secs);
             }
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?}", agent.map(|a| &a.command));
+        if let Some(wt) = worktree {
+            payload["worktree"] = serde_json::Value::String(wt.to_string());
+        }
+        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?} worktree={worktree:?}", agent.map(|a| &a.command));
         let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
             Ok(response_file) => response_file,
             Err(code) => return code,
@@ -271,7 +275,10 @@ pub fn pane_new_cli(
     if let Some(ctx) = context_name {
         queue_payload["context_name"] = serde_json::Value::String(ctx.to_string());
     }
-    log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?}");
+    if let Some(wt) = worktree {
+        queue_payload["worktree"] = serde_json::Value::String(wt.to_string());
+    }
+    log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?} worktree={worktree:?}");
     match crate::cli::queue_spawn(queue_payload, "pane new", &format!("open {type_id}")) {
         Ok(()) => 0,
         Err(code) => code,
@@ -380,6 +387,7 @@ fn open_descriptor_in_renderer(
         &[path],
         None,
         None,
+        None,
     )
 }
 
@@ -435,6 +443,7 @@ pub fn open_mcp_by_name(
                 Some("mcp-renderer"),
                 &entry.command,
                 &[],
+                None,
                 None,
                 None,
             )
@@ -717,6 +726,7 @@ pub fn open_cli(
         Some(type_id),
         &[],
         args,
+        None,
         None,
         None,
     )
@@ -1197,6 +1207,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            None,
         );
 
         assert_eq!(code, 1);
@@ -1250,6 +1261,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            Some("feature/0668-test"),
         );
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -1259,6 +1271,7 @@ mod agent_boot_tests {
         assert_eq!(payload["type_id"], "terminal");
         assert_eq!(payload["agent_cmd"], "c-large");
         assert_eq!(payload["boot_timeout_secs"], 5.0);
+        assert_eq!(payload["worktree"], "feature/0668-test");
         assert_eq!(code, 0);
     }
 
@@ -1306,6 +1319,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            None,
         );
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -1315,6 +1329,10 @@ mod agent_boot_tests {
         assert!(
             payload.get("boot_timeout_secs").is_none(),
             "an omitted --boot-timeout must not be sent: {payload}"
+        );
+        assert!(
+            payload.get("worktree").is_none(),
+            "an omitted --worktree must not be sent: {payload}"
         );
         assert_eq!(code, 0);
     }

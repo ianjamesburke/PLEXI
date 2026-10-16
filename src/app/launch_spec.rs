@@ -40,6 +40,7 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) context_name: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) agent: Option<AgentBootSpec>,
+    pub(crate) worktree: Option<String>,
     /// Host-stamped. See `AppRequest::SpawnPane::peer_ancestry`.
     pub(crate) peer_ancestry: Option<Vec<u32>>,
 }
@@ -64,6 +65,7 @@ impl PaneLaunchSpec {
             context_name: None,
             name: None,
             agent: None,
+            worktree: None,
             peer_ancestry: None,
         })
     }
@@ -85,6 +87,7 @@ impl PaneLaunchSpec {
             name,
             agent_cmd,
             boot_timeout_secs,
+            worktree,
             peer_ancestry,
             ..
         } = request
@@ -95,6 +98,24 @@ impl PaneLaunchSpec {
         if context_name.as_deref().is_some_and(|c| !c.is_empty()) && type_id != "terminal" {
             return Err("context_name is only supported for terminal spawns".to_string());
         }
+
+        let worktree = match worktree.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(branch) => {
+                if type_id != "terminal" {
+                    return Err("worktree is only supported for terminal spawns".to_string());
+                }
+                if branch.starts_with('-') {
+                    return Err(format!("invalid worktree branch name: {branch}"));
+                }
+                Some(branch.to_string())
+            }
+            None => {
+                if worktree.is_some() {
+                    return Err("worktree branch name cannot be empty".to_string());
+                }
+                None
+            }
+        };
 
         let agent = match agent_cmd.as_deref().filter(|cmd| !cmd.is_empty()) {
             Some(command) => {
@@ -158,6 +179,7 @@ impl PaneLaunchSpec {
             context_name: context_name.clone(),
             name: name.clone(),
             agent,
+            worktree,
             peer_ancestry: peer_ancestry.clone(),
         })
     }
@@ -206,6 +228,7 @@ impl PaneLaunchSpec {
             name: self.name.clone(),
             agent_cmd: self.agent.as_ref().map(|agent| agent.command.clone()),
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
+            worktree: self.worktree.clone(),
             peer_ancestry: self.peer_ancestry.clone(),
         }
     }
@@ -242,6 +265,7 @@ mod tests {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            worktree: None,
             peer_ancestry: None,
         }
     }
@@ -338,5 +362,39 @@ mod tests {
         let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
 
         assert_eq!(err, "spawn_pane cannot set both app id and path target");
+    }
+
+    #[test]
+    fn from_spawn_pane_accepts_worktree_on_terminal() {
+        let mut request = spawn_pane("terminal", None, &[]);
+        if let AppRequest::SpawnPane { worktree, .. } = &mut request {
+            *worktree = Some("feature/0668-test".to_string());
+        }
+        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        assert_eq!(spec.worktree.as_deref(), Some("feature/0668-test"));
+        assert_eq!(
+            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request()).expect("round trip"),
+            spec
+        );
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_worktree_on_app_target() {
+        let mut request = spawn_pane("snake", None, &[]);
+        if let AppRequest::SpawnPane { worktree, .. } = &mut request {
+            *worktree = Some("feature/0668-test".to_string());
+        }
+        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        assert_eq!(err, "worktree is only supported for terminal spawns");
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_flag_like_worktree_branch() {
+        let mut request = spawn_pane("terminal", None, &[]);
+        if let AppRequest::SpawnPane { worktree, .. } = &mut request {
+            *worktree = Some("-b".to_string());
+        }
+        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        assert!(err.contains("invalid worktree branch name"));
     }
 }

@@ -1269,6 +1269,13 @@
                 "string",
                 "null"
               ]
+            },
+            "worktree": {
+              "description": "When set, the host creates or checks out a git worktree for this\nbranch via `wtp` before spawning the terminal, starts the pane inside\nthe worktree directory, and reclaims (clean + unmoved) or retains\n(dirty or ahead) the worktree when the pane closes (stint 0668).\nTerminal spawns only.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1749,12 +1756,18 @@
         },
         {
           "additionalProperties": false,
-          "description": "Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.",
+          "description": "Close a pane by PaneId. Sent by `plexi pane close`. When `response_file`\nis set, the host writes `{\"ok\": true, \"pane_id\": ..., \"worktree\": ...}`\n(with worktree close report when the pane owned a `--worktree` checkout).",
           "properties": {
             "pane_id": {
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "close_pane",
