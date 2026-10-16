@@ -104,6 +104,7 @@ An experiment owns its storage in its own versioned location and never writes co
 - **A context rooted at the home directory has the global tier as its context
   tier.** `new_context_empty` produces exactly that, so any code listing both
   tiers must dedupe canonically or it shows the same directory twice.
+- **Live logs roll while the host runs; the in-memory windows are bounded.** `plexi.log`, `events.jsonl`, `effects.jsonl` and `sessions/<sess-id>.jsonl` are written through `platform::rolling::RollingFile` (10 MB or a calendar-day change, at a line boundary). Archives are `<stem>-<YYYY-MM-DD>[.<n>].<ext>` and `prune_controlled_logs` is the one pruner. `AppTimeline.events` and `PermissionMonitor.audit_mem` are rings; the durable record is the session trace, so nothing may rely on an old event still being in memory. Trace taps address the profile from the monitor (`record_in`), never `config_dir()`, on worker threads.
 - **`WasmPythonRuntime::launch` returns before the guest can run any Python.**
   The Wasmtime compile of the CPython WASI module happens on the guest thread
   *after* `launch` returns, behind a process-global cache mutex, and costs

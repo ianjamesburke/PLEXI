@@ -1854,6 +1854,48 @@ Totals for tokens, cost, run count, and wall time
 | `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
 | `--json` | flag | no | Print one JSON object on stdout |
 
+## `plexi debug`
+
+Inspect what the host recorded: per-session flight traces.
+
+Reads files in the channel profile and does not require a running host.
+
+Example: plexi debug session list Example: plexi debug session show latest --pane 3 --join-agents
+
+| Subcommand | Description |
+|---|---|
+| `session` | Inspect recorded host sessions |
+
+### `plexi debug session`
+
+Inspect recorded host sessions
+
+| Subcommand | Description |
+|---|---|
+| `list` | List recorded host sessions with start/last time, contexts, panes, and attached external agent session ids |
+| `show` | Show one session as a single chronological timeline |
+
+#### `plexi debug session list`
+
+List recorded host sessions with start/last time, contexts, panes, and attached external agent session ids
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print one JSON object on stdout |
+
+#### `plexi debug session show`
+
+Show one session as a single chronological timeline.
+
+With `--join-agents`, recorded agent session ids are resolved to their transcripts under `~/.pi/agent/sessions` and `~/.claude/projects`, and agent prompts and tool calls are interleaved with host permission and app events.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<session>` | string | no | Session id (`sess-…`) or `latest`. Omitted means `latest` |
+| `--pane` | string | no | Only records for this pane (and the calls it made) |
+| `--join-agents` | flag | no | Interleave external agent transcripts |
+| `--json` | flag | no | Print one JSON object on stdout |
+
 ## `plexi experiments`
 
 List, enable, or disable experiments (features outside the stable v1 surface).

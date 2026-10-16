@@ -9287,6 +9287,131 @@ mod pane_lifecycle_events {
     }
 
 }
+mod flight_recorder_session {
+    use super::*;
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+    use crate::protocol::AiTool;
+    use std::time::{Duration, Instant};
+
+    fn pump_until(h: &mut HostHarness, mut done: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            h.run_frames(1);
+            assert!(
+                started.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(40)),
+                "timed out waiting for the flight trace"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Two agent panes, an ask-gated `app call`, a desktop approval, and a
+    /// pane lifecycle app event must leave one ordered, complete session trace
+    /// that `debug session show --json` reconstructs.
+    #[test]
+    fn multi_pane_session_with_desktop_approval_writes_a_complete_ordered_trace() {
+        let mut h = HostHarness::new();
+        let caller = h.add_test_pane();
+        let target = h.add_test_pane();
+        let workspace = h.workspace_root();
+        let context_id = h.app.windows[h.app.active_window].context_id;
+        let profile = crate::config::config_dir();
+        let mon = PermissionMonitor::for_profile(&profile);
+
+        for (pane, agent_session) in [(caller, "agent-sess-a"), (target, "agent-sess-b")] {
+            h.inject_ipc(serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": pane, "state": "working",
+                "agent": "pi", "session_id": agent_session, "event": "SessionStart"
+            })).unwrap());
+            h.hidden_frame();
+        }
+
+        let credential = mon.issue_credential(
+            Some(caller), context_id, &workspace, &format!("pane:{caller}"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(target, "flight-probe".into(), vec![AiTool {
+            name: "probe.todo".into(), description: "todo".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+            output_schema: serde_json::json!({"type":"object"}),
+            timeout_ms: Some(1000), read_only: false,
+        }], AppEventSender::Channel(tx), crate::host::scope::ScopeOrigin {
+            context_id, context_root: workspace.clone(), window_id: 1,
+            pane_id: target, app_id: Some("flight-probe".into()),
+        });
+        let reply = workspace.join("flight-reply.json");
+        let request: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+            "type":"call_app_tool", "app_id":"flight-probe", "tool":"probe.todo",
+            "input_json": r#"{"text":"Buy groceries"}"#, "caller_pane_id": caller,
+            "call_credential": credential, "peer_ancestry": [std::process::id()],
+            "target_pane_id": target, "wait_approved": true, "response_file": reply,
+        })).unwrap();
+        h.inject_ipc(request);
+        pump_until(&mut h, || !mon.list_pending().is_empty());
+        mon.approve_pending(&mon.list_pending()[0].pending_request_id, ApprovalChoice::Once).unwrap();
+        let event: crate::protocol::PlexiEvent =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        let crate::protocol::PlexiEvent::ToolCall { call_id, .. } = event else {
+            panic!("expected tool call");
+        };
+        tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"added":true}"#));
+        pump_until(&mut h, || reply.is_file());
+        tool_dispatch::unregister(target);
+
+        let (session_id, skipped, timeline) =
+            crate::cli::debug::build_show(&profile, Some("latest"), None, None)
+                .expect("debug session show must reconstruct the trace");
+        assert_eq!(session_id, mon.session_id());
+        assert_eq!(skipped, 0);
+        let position = |kind: &str| {
+            timeline.iter().position(|r| r["kind"] == kind)
+                .unwrap_or_else(|| panic!("no {kind} row in {timeline:#?}"))
+        };
+        let lifecycle = timeline.iter().position(|r| {
+            r["kind"] == "timeline_event"
+                && r["data"]["payload"]["provenance"]["session_id"] == "agent-sess-a"
+        }).expect("pane lifecycle row carrying the agent session id");
+        let requested = position("tool_call_requested");
+        let ask = position("permission_ask");
+        let decision = position("permission_decision");
+        let used = position("permission_use");
+        let completed = position("tool_call_completed");
+        assert!(lifecycle < requested && requested < ask && ask < decision
+            && decision < used && used < completed, "out of order: {timeline:#?}");
+        let seqs: Vec<u64> = timeline.iter().map(|r| r["seq"].as_u64().unwrap()).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "seq must increase: {seqs:?}");
+        assert!(timeline.iter().all(|r| r["host_session_id"] == session_id.as_str()));
+        assert!(timeline.iter().all(|r| r["ts"].as_str().is_some()));
+
+        let call = timeline[requested]["call_id"].as_str().unwrap().to_string();
+        for index in [ask, decision, used, completed] {
+            assert_eq!(timeline[index]["call_id"], call.as_str());
+        }
+        assert_eq!(timeline[requested]["pane_id"], caller);
+        assert_eq!(timeline[requested]["context_id"], context_id);
+        assert_eq!(timeline[requested]["data"]["wait_approved"], true);
+        assert_eq!(timeline[requested]["data"]["input"]["text"], "Buy groceries");
+        assert!(timeline[ask]["data"]["pending_request_id"].as_str().is_some());
+        assert_eq!(timeline[decision]["data"]["choice"], "allow_once");
+        assert_eq!(timeline[decision]["data"]["pending_request_id"],
+            timeline[ask]["data"]["pending_request_id"]);
+        assert_eq!(timeline[completed]["data"]["ok"], true);
+        assert_eq!(timeline[completed]["data"]["output"]["added"], true);
+
+        // --pane keeps the pane's own rows and the calls it made.
+        let (_, _, pane_rows) =
+            crate::cli::debug::build_show(&profile, None, Some(caller), None).unwrap();
+        assert!(pane_rows.iter().any(|r| r["kind"] == "permission_decision"));
+        assert!(pane_rows.iter().all(|r| r["pane_id"] == caller || r["call_id"] == call.as_str()));
+
+        let (rows, _) = crate::host::flight_recorder::read_session(&profile, &session_id).unwrap();
+        let summary = crate::host::flight_recorder::summarize(&session_id, &rows);
+        let agents = summary["agent_sessions"].as_array().unwrap();
+        assert!(agents.iter().any(|a| a == "agent-sess-a"));
+        assert!(agents.iter().any(|a| a == "agent-sess-b"));
+    }
+}
+
 #[test]
 fn test_host_removes_owned_scratch_on_drop() {
     let h = HostHarness::new();

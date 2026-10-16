@@ -241,6 +241,16 @@ pub enum Commands {
     },
 
     // ── System ────────────────────────────────────────────────────────────────
+    /// Inspect what the host recorded: per-session flight traces.
+    ///
+    /// Reads files in the channel profile and does not require a running host.
+    ///
+    /// Example: plexi debug session list
+    /// Example: plexi debug session show latest --pane 3 --join-agents
+    Debug {
+        #[command(subcommand)]
+        cmd: DebugCmd,
+    },
     /// List, enable, or disable experiments (features outside the stable v1 surface).
     ///
     /// Every experiment is off by default on every channel. Switches live in the
@@ -496,6 +506,45 @@ pub enum RelayCmd {
     Disable,
     /// Print the desktop's relay status.
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum DebugCmd {
+    /// Inspect recorded host sessions.
+    Session {
+        #[command(subcommand)]
+        cmd: DebugSessionCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DebugSessionCmd {
+    /// List recorded host sessions with start/last time, contexts, panes, and
+    /// attached external agent session ids.
+    List {
+        /// Print one JSON object on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one session as a single chronological timeline.
+    ///
+    /// With `--join-agents`, recorded agent session ids are resolved to their
+    /// transcripts under `~/.pi/agent/sessions` and `~/.claude/projects`, and
+    /// agent prompts and tool calls are interleaved with host permission and
+    /// app events.
+    Show {
+        /// Session id (`sess-…`) or `latest`. Omitted means `latest`.
+        session: Option<String>,
+        /// Only records for this pane (and the calls it made).
+        #[arg(long)]
+        pane: Option<u64>,
+        /// Interleave external agent transcripts.
+        #[arg(long)]
+        join_agents: bool,
+        /// Print one JSON object on stdout.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

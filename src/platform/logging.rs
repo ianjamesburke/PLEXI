@@ -4,10 +4,15 @@
 //! also mirrors output to stderr so `cargo run` / CLI invocations stay usable.
 //!
 //! Date-based rotation on startup: if `plexi.log` exists and is non-empty and
-//! was last written on a previous calendar day, it is renamed to
-//! `plexi-YYYY-MM-DD.log` (the modification date). Same-day restarts continue
+//! its first line was written on a previous calendar day, it is renamed to
+//! `plexi-YYYY-MM-DD.log` (that first-line date; mtime is only the fallback,
+//! because a shutdown write bumps mtime to today). Same-day restarts continue
 //! appending to `plexi.log`. Files older than `retention_days` (default 30)
 //! are pruned automatically on each startup.
+//!
+//! While the host stays open the live file also rolls at a line boundary when
+//! the segment passes 10 MB or the calendar day changes
+//! (`platform::rolling::RollingFile`).
 //!
 //! Third-party crates (egui, wgpu, winit, etc.) are clamped to `warn` to avoid
 //! noise; everything under `plexi::` logs at the caller-supplied level.
@@ -98,10 +103,9 @@ fn rotate_and_prune(
     // Rotation: rename plexi.log → plexi-PREV-DATE.log if modified on a prior day.
     if let Ok(meta) = std::fs::metadata(log_path) {
         if meta.len() > 0 {
-            let prev_date = meta
-                .modified()
-                .ok()
-                .map(|mtime| chrono::DateTime::<chrono::Local>::from(mtime).date_naive());
+            // The segment's first line names the day it began. mtime would be
+            // today after any shutdown write, hiding a multi-day segment.
+            let prev_date = super::rolling::segment_start_day(log_path, &meta);
 
             if let Some(prev_date) = prev_date {
                 if prev_date < today {
@@ -152,36 +156,69 @@ fn rotate_and_prune(
     messages
 }
 
-/// Delete dated `plexi-YYYY-MM-DD.log` archives whose name-date is strictly
-/// older than `retention_days` before `today`. The live `plexi.log` is not a
-/// dated archive and is left in place. This is the log half of cloud retention.
+/// Total size cap for archived session traces under `sessions/`.
+pub(crate) const SESSION_TRACE_DIR_CAP_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Delete dated archives whose date is strictly older than `retention_days`
+/// before `today`: `plexi-*.log`, `events-*.jsonl`, `effects-*.jsonl` (named
+/// `<stem>-<date>[.<n>].<ext>`), and `sessions/*.jsonl` traces by mtime date.
+/// Live files (`plexi.log`, `events.jsonl`, `effects.jsonl`, `sessions/latest.jsonl`)
+/// are never dated archives and are left in place. Afterwards the session trace
+/// directory is trimmed oldest-first to [`SESSION_TRACE_DIR_CAP_BYTES`].
+/// This is the log half of cloud retention.
 pub(crate) fn prune_controlled_logs(
     config_dir: &Path,
     today: chrono::NaiveDate,
     retention_days: u32,
 ) -> u32 {
     let cutoff = today - chrono::Duration::days(retention_days as i64);
-    let Ok(entries) = std::fs::read_dir(config_dir) else {
-        return 0;
-    };
     let mut pruned = 0u32;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if let Some(date_str) = name_str
-            .strip_prefix("plexi-")
-            .and_then(|s| s.strip_suffix(".log"))
-        {
-            if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                if date < cutoff {
-                    if let Err(e) = std::fs::remove_file(entry.path()) {
-                        eprintln!("[plexi::logging] could not prune {name_str}: {e}");
-                    } else {
-                        pruned += 1;
-                    }
-                }
+    let mut remove = |path: &Path| match std::fs::remove_file(path) {
+        Ok(()) => {
+            pruned += 1;
+        }
+        Err(e) => eprintln!("[plexi::logging] could not prune {}: {e}", path.display()),
+    };
+    if let Ok(entries) = std::fs::read_dir(config_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let dated = super::rolling::archive_date(&name_str, "plexi", "log")
+                .or_else(|| super::rolling::archive_date(&name_str, "events", "jsonl"))
+                .or_else(|| super::rolling::archive_date(&name_str, "effects", "jsonl"));
+            if dated.is_some_and(|date| date < cutoff) {
+                remove(&entry.path());
             }
         }
+    }
+    let sessions = config_dir.join("sessions");
+    let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&sessions) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".jsonl") || name == "latest.jsonl" {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            let day = chrono::DateTime::<chrono::Local>::from(modified).date_naive();
+            if day < cutoff {
+                remove(&entry.path());
+            } else {
+                kept.push((modified, meta.len(), entry.path()));
+            }
+        }
+    }
+    let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
+    kept.sort_by_key(|(modified, _, _)| *modified);
+    // Oldest first, but never the newest trace (the live session's).
+    while total > SESSION_TRACE_DIR_CAP_BYTES && kept.len() > 1 {
+        let (_, len, path) = kept.remove(0);
+        remove(&path);
+        total = total.saturating_sub(len);
     }
     pruned
 }
@@ -217,8 +254,10 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             ))
         };
 
-    // Try to open the log file; if it fails, use stderr only.
-    let file_result = fern::log_file(&log_file_path);
+    // Try to open the log file; if it fails, use stderr only. The rolling
+    // writer archives the live file at 10 MB or a day change while open.
+    let file_result = super::rolling::RollingFile::open(&log_file_path)
+        .map(|rolling| fern::Output::writer(Box::new(rolling.quiet()), "\n"));
 
     PLEXI_LEVEL.store(level as usize, Ordering::Relaxed);
 
@@ -883,5 +922,74 @@ mod tests {
             !dir.path().join("plexi-2026-05-02.log").exists(),
             "8-day-old file should be pruned with 7-day retention"
         );
+    }
+
+    /// The bug: after a multi-day run, shutdown writes bump mtime to today, so
+    /// an mtime-only check skipped rotation on a same-day restart and the old
+    /// days stayed inside `plexi.log`. The first line names the real start day.
+    #[test]
+    fn rotates_multi_day_log_on_same_day_restart_despite_fresh_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("plexi.log");
+        let today = today_plus(0);
+        let started = today - chrono::Duration::days(3);
+        fs::write(
+            &log_path,
+            format!(
+                "[{} 09:00:00] [INFO] [plexi::x] first day\n[{} 23:59:59] [INFO] [plexi::x] shutdown\n",
+                started.format("%Y-%m-%d"),
+                today.format("%Y-%m-%d")
+            ),
+        )
+        .unwrap();
+        // mtime is "now" == today, exactly as after a shutdown write.
+        let msgs = rotate_and_prune(&log_path, dir.path(), today, 30);
+        let expected = format!("plexi-{}.log", started.format("%Y-%m-%d"));
+        assert!(dir.path().join(&expected).exists(), "should rotate to {expected}");
+        assert!(!log_path.exists());
+        assert!(msgs.iter().any(|m| m.contains("rotated")));
+    }
+
+    #[test]
+    fn prunes_archived_jsonl_traces_and_numbered_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
+        for name in [
+            "events-2026-03-01.jsonl",
+            "events-2026-03-01.2.jsonl",
+            "effects-2026-03-01.jsonl",
+            "plexi-2026-03-01.1.log",
+            "events-2026-05-09.jsonl",
+            "events.jsonl",
+            "effects.jsonl",
+        ] {
+            fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let pruned = prune_controlled_logs(dir.path(), today, 30);
+        assert_eq!(pruned, 4);
+        for kept in ["events-2026-05-09.jsonl", "events.jsonl", "effects.jsonl"] {
+            assert!(dir.path().join(kept).exists(), "{kept} must stay");
+        }
+    }
+
+    #[test]
+    fn prunes_old_session_traces_but_never_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let old = sessions.join("sess-old.jsonl");
+        let fresh = sessions.join("sess-fresh.jsonl");
+        let latest = sessions.join("latest.jsonl");
+        for path in [&old, &fresh, &latest] {
+            fs::write(path, b"{}\n").unwrap();
+        }
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(60 * 24 * 3600);
+        fs::File::options().write(true).open(&old).unwrap().set_modified(long_ago).unwrap();
+        fs::File::options().write(true).open(&latest).unwrap().set_modified(long_ago).unwrap();
+        let pruned = prune_controlled_logs(dir.path(), today_plus(0), 30);
+        assert_eq!(pruned, 1);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(latest.exists(), "latest.jsonl is a pointer, never pruned by age");
     }
 }

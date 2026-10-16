@@ -11,6 +11,7 @@ pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_menu;
 pub mod path;
+pub mod rolling;
 pub mod text;
 pub mod toml_store;
 pub mod ui_profile;

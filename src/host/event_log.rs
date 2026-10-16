@@ -21,7 +21,9 @@
 //!
 //! Drop-on-full policy: if the channel is at capacity (4096 events), the
 //! event is silently discarded and `dropped_count` is incremented. No retry,
-//! no blocking, no rotation.
+//! no blocking. Each file rolls over live at 10 MB or a day change
+//! (`platform::rolling::RollingFile`).
+use crate::platform::rolling::RollingFile;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
@@ -238,7 +240,7 @@ impl EventLog {
                 // file it already holds a handle for. `None` is cached too
                 // (a root whose file failed to open once is not retried
                 // every subsequent event).
-                let mut root_files: HashMap<PathBuf, Option<std::fs::File>> = HashMap::new();
+                let mut root_files: HashMap<PathBuf, Option<RollingFile>> = HashMap::new();
 
                 while let Ok(msg) = rx.recv() {
                     match serde_json::to_string(&msg.envelope) {
@@ -300,18 +302,8 @@ impl EventLog {
 
 // ── File helpers ──────────────────────────────────────────────────────────────
 
-fn open_log_file(path: &std::path::Path) -> Option<std::fs::File> {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!("event_log: failed to create log dir {:?}: {e}", parent);
-            return None;
-        }
-    }
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+fn open_log_file(path: &std::path::Path) -> Option<RollingFile> {
+    match RollingFile::open(path) {
         Ok(f) => Some(f),
         Err(e) => {
             log::warn!("event_log: failed to open {:?}: {e}", path);
@@ -320,7 +312,7 @@ fn open_log_file(path: &std::path::Path) -> Option<std::fs::File> {
     }
 }
 
-fn append_line(file: &mut std::fs::File, line: &str) {
+fn append_line(file: &mut RollingFile, line: &str) {
     if let Err(e) = writeln!(file, "{}", line) {
         log::warn!("event_log: write failed: {e}");
     }
@@ -352,9 +344,25 @@ pub fn init_global(global_path: PathBuf) {
 /// uses — pass `None` when no `ScopeOrigin`/context-root is resolvable
 /// nearby (global-only, same behavior as before Phase E).
 pub fn emit_scoped(event: HostEvent, context_root: Option<&std::path::Path>) {
+    mirror_to_flight_recorder(&event);
     if let Some(log) = GLOBAL_EVENT_LOG.get() {
         log.emit_scoped(event, context_root);
     }
+}
+
+/// Mirror a host event into the session flight trace as `host_event`, lifting
+/// `pane_id` / `context_id` into the envelope when the event names them.
+fn mirror_to_flight_recorder(event: &HostEvent) {
+    let data = match serde_json::to_value(event) {
+        Ok(data) => data,
+        Err(e) => {
+            log::warn!("event_log: flight mirror serialize failed: {e}");
+            return;
+        }
+    };
+    let pane_id = data["pane_id"].as_u64();
+    let context_id = data["context_id"].as_u64();
+    crate::host::flight_recorder::record("host_event", context_id, pane_id, None, data);
 }
 
 // ── Typed emit helpers ────────────────────────────────────────────────────────
