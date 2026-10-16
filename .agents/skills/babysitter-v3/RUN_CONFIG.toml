@@ -3,15 +3,17 @@
 
 # Each role is an ordered fallback list of shell aliases (defined in the
 # operator's zshrc). The head spawns with the first entry; when a pane hits a
-# usage limit it respawns the role with the next entry. Workers and testers
-# deliberately start on different model families so the tester is an
-# independent check. agym/agyl run Claude models, so they count as Claude here.
+# usage limit it respawns the role with the next entry. Every agy alias draws
+# on the same Google AI Ultra quota, so each list ends on a different pool
+# (Claude / Codex) as the real usage-limit escape hatch.
+# Workers are chosen by batch size = the largest stint size in the batch.
+# Testers must be a different model family from the batch's worker: agym/agyl
+# run Claude models, so the default tester is agy (Gemini Argon).
 [roles]
-head          = ["cm", "agyl"]          # needs a self-scheduling engine (Claude ScheduleWakeup / agy schedule)
-worker        = ["agym", "com", "cm"]   # medium; default for every batch
-worker_small  = ["agym", "cos", "cs"]   # only for genuinely trivial, mechanical batches
-worker_large  = ["agyl", "col", "cl"]   # only on Ian's say-so or after a hard reject
-tester        = ["com", "agy", "cs"]    # skip any entry in the same model family as the batch's worker
+head          = ["agym", "agyl", "cm"]  # router; needs background tasks + wake (agy and claude both have it)
+worker        = ["agym", "agyl", "com"] # batches whose largest stint is S or M
+worker_large  = ["agyl", "cl", "col"]   # batches containing an L stint, or after a hard reject
+tester        = ["agy", "com", "cs"]    # skip any entry in the same model family as the batch's worker
 
 # How each engine takes an initial prompt on its command line. {alias} and
 # {prompt} are substituted; {prompt} is always single-quoted by the head.

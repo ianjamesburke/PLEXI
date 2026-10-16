@@ -64,7 +64,7 @@ Write: `plexi pane slot write <name> <value> --replace`. Workers' steps: `impl` 
 
 ## The loop (per batch, up to `max_concurrent_lanes` at once)
 
-**1. Worker.** Spawn the `worker` role (or `worker_small`/`worker_large` per the config notes). Brief:
+**1. Worker.** Pick the role by batch size, meaning the largest `Size` among the batch's stints (`stint show <id>`). If every stint is S or M, use `worker`. If the batch contains an L stint, or follows a hard reject, use `worker_large`. Brief:
 
 > /implement-stint-v2 <ids...>. You are being run by babysitter-v3: Ian is not watching. Publish the slot contract in `.agents/skills/babysitter-v3/SKILL.md`. Do the full local gate from `src/testing/TESTING.md` (`just build`, `cargo test --bin plexi`, `cargo clippy --bin plexi -- -D warnings`, plus the scene/screenshot test for UI changes). Run every gate in the foreground: if your turn ends while a job runs in the background, nothing wakes you. Open the PR and let its checks run; do **not** run `just pr-install` (the tester does). When the PR is open and the local gate is green, write `pr` and `status=pr:done`, post the `[IMPLEMENTED]` block, and wait. Answers to your questions arrive as `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`. On FOLLOW-UP, write `status=impl:working` before anything else. On PASS, merge with `just merge-pr <PR>` from the alpha root, confirm the stints are done, then write `status=merge:done`. Pre-existing defects outside your diff: note them in the PR body and file them as stints; don't fix them here. Never use `rm -rf`. <run-specific facts only>
 
