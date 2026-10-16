@@ -613,6 +613,84 @@ pub enum NeedsYouCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Show one needs-you item and its continuation record as JSON.
+    Show {
+        /// Needs-you item id or continuation id.
+        id: String,
+    },
+    /// File a creative or blocking question for the human and return its id + continuation record.
+    Ask {
+        /// Question summary shown in Needs you and agent UI.
+        #[arg(long)]
+        summary: String,
+        /// Target resource identifier (e.g. clip id or file path).
+        #[arg(long, default_value = "workspace")]
+        resource: String,
+        /// Allowed answer choices (repeat `--choice` for multiple options).
+        #[arg(long = "choice")]
+        choices: Vec<String>,
+        /// Allow free-text answers in addition to `--choice` options.
+        #[arg(long)]
+        allow_free_text: bool,
+        /// Preview references (e.g. clip/frame/path references).
+        #[arg(long = "preview-ref")]
+        preview_refs: Vec<String>,
+        /// Correlation id joining the question to an operation or continuation.
+        #[arg(long)]
+        correlation_id: Option<String>,
+        /// Operation id for idempotent resume.
+        #[arg(long)]
+        operation_id: Option<String>,
+        /// Agent session id for reattachment across restarts.
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Expected resource revision when resuming after the human answers.
+        #[arg(long)]
+        expected_revision: Option<String>,
+        /// Target context id (defaults to caller pane's context).
+        #[arg(long)]
+        context_id: Option<u64>,
+        /// Caller pane id (defaults to `$PLEXI_PANE_ID`).
+        #[arg(long)]
+        pane_id: Option<u64>,
+    },
+    /// Answer an open creative question (`Question` or `BlockedRun`). Never mints a permission grant.
+    Answer {
+        /// Needs-you question id.
+        id: String,
+        /// Selected choice or free-text answer.
+        #[arg(long)]
+        answer: String,
+        /// Interactive UI prompt token returned when the question was filed.
+        #[arg(long)]
+        ui_token: Option<String>,
+    },
+    /// Reconcile open and resolved needs-you items and continuation records for a session, pane, or context.
+    Reconcile {
+        /// Filter by agent session id.
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Filter by pane id.
+        #[arg(long)]
+        pane_id: Option<u64>,
+        /// Filter by context id.
+        #[arg(long)]
+        context_id: Option<u64>,
+        /// Filter by specific item/run/operation/correlation id.
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Mark a continuation record completed (or failed/canceled) with an execution receipt.
+    Complete {
+        /// Continuation run id, operation id, correlation id, or needs-you id.
+        id: String,
+        /// Terminal state (`completed`, `failed`, `canceled`, `outcome_unknown`).
+        #[arg(long, default_value = "completed")]
+        state: String,
+        /// Execution receipt JSON or summary string.
+        #[arg(long)]
+        receipt: Option<String>,
+    },
     /// Resolve one item. Approving a click approval is refused; deny still denies it.
     Resolve {
         id: String,

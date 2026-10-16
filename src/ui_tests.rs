@@ -1080,6 +1080,94 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render sidebar needs-you");
     }
 
+    fn seed_structured_clip_question(
+        monitor: &crate::broker::gate::PermissionMonitor,
+    ) -> String {
+        let details = crate::broker::gate::NeedsYouDetails {
+            choices: vec!["16:9".to_string(), "9:16".to_string(), "1:1".to_string()],
+            allow_free_text: false,
+            preview_refs: vec!["clip:intro@0..3000ms".to_string()],
+            correlation_id: Some("corr-crop-intro".to_string()),
+            session_id: Some("sess-pi-ui".to_string()),
+            context_id: Some(1),
+            pane_id: Some(1),
+            expected_revision: Some("rev-1".to_string()),
+        };
+        let (qid, _token) = monitor
+            .file_needs_you_with_details(
+                crate::broker::gate::NeedsYouFile {
+                    kind: crate::broker::gate::NeedsYouKind::Question,
+                    actor: "pane:1".to_string(),
+                    resource: "intro".to_string(),
+                    summary: "Which crop preset should we apply to Intro Slate?".to_string(),
+                    expires_at: None,
+                    run_tag: Some("op-crop-intro".to_string()),
+                },
+                Some(details),
+            )
+            .expect("file structured question");
+        qid
+    }
+
+    #[test]
+    fn sidebar_and_attention_structured_question_choice_settles_without_minting_grant() {
+        let profile = tempfile::tempdir().expect("profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let grants_before = monitor.store().records().len();
+        let qid = seed_structured_clip_question(&monitor);
+
+        let mut h = PlexiUiHarness::new_sized(980.0, 520.0);
+        h.with_app_mut(|a| a.sidebar_visible = true);
+        h.run_steps(3);
+
+        // Verify choice buttons are rendered on the sidebar and registered against synthetic clicks
+        let choice_rect = h.harness().get_by_label("9:16").rect();
+        let synthetic_target =
+            h.with_app(|a| a.synthetic_approval_target(0, None, Some(choice_rect.center())));
+        assert_eq!(synthetic_target.as_deref(), Some(qid.as_str()));
+
+        // Real desktop click on "9:16" answers the question, updates the continuation, and writes zero grants
+        h.harness().get_by_label("9:16").click();
+        h.run_steps(2);
+
+        let item = monitor.get_needs_you(&qid).expect("question record");
+        assert_eq!(
+            item.resolution,
+            Some(crate::broker::gate::NeedsYouResolution::Approved)
+        );
+        assert_eq!(item.answer.as_deref(), Some("9:16"));
+        let cont = monitor
+            .get_continuation("corr-crop-intro")
+            .expect("continuation record");
+        assert_eq!(cont.answer.as_deref(), Some("9:16"));
+        assert_eq!(cont.state, crate::broker::gate::ContinuationState::Running);
+        assert_eq!(
+            monitor.store().records().len(),
+            grants_before,
+            "answering a creative question must never write a GrantRecord"
+        );
+    }
+
+    #[test]
+    fn screenshot_structured_question_wide_and_narrow() {
+        for (width, height, suffix) in [(1100.0, 620.0, "_wide"), (560.0, 520.0, "_narrow")] {
+            let profile = tempfile::tempdir().expect("profile");
+            let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+            let monitor =
+                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            seed_structured_clip_question(&monitor);
+            let mut h = PlexiUiHarness::new_sized(width, height);
+            h.with_app_mut(|a| a.sidebar_visible = true);
+            h.run_steps(2);
+            h.with_app_mut(|a| a.open_attention_overlay("test"));
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(suffix))
+                .expect("render structured question screenshot");
+        }
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]

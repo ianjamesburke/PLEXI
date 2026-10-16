@@ -14,7 +14,7 @@
 //! file is removed. When it does not, the file is removed and the journal is
 //! untrusted.
 
-use super::gate::NeedsYouKind;
+use super::gate::{ContinuationRecord, NeedsYouDetails, NeedsYouKind};
 use super::ExactBinding;
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
@@ -54,6 +54,7 @@ pub(crate) struct RestoredItem {
     pub run_tag: Option<String>,
     pub origin_session: String,
     pub pending: Option<RestoredPending>,
+    pub details: Option<NeedsYouDetails>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,8 @@ struct DiskItem {
     origin_session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending: Option<DiskPending>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    details: Option<NeedsYouDetails>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -100,6 +103,19 @@ struct DiskPending {
     tool: String,
     input_summary: String,
     binding: ExactBinding,
+}
+
+#[derive(serde::Serialize)]
+struct DiskContinuations<'a> {
+    schema: u32,
+    records: &'a [ContinuationRecord],
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiskContinuationsOwned {
+    schema: u32,
+    records: Vec<ContinuationRecord>,
 }
 
 /// Bytes of a pre-host-store `seal.key`: the HMAC key plus the last MAC tip.
@@ -329,6 +345,7 @@ fn validate(items: &[DiskItem]) -> Result<Vec<RestoredItem>, String> {
                 input_summary: pending.input_summary,
                 binding: pending.binding,
             }),
+            details: item.details.clone(),
         });
     }
     Ok(out)
@@ -351,8 +368,70 @@ impl From<&RestoredItem> for DiskItem {
                 input_summary: pending.input_summary.clone(),
                 binding: pending.binding.clone(),
             }),
+            details: item.details.clone(),
         }
     }
+}
+
+pub(crate) fn save_continuations(profile: &Path, records: &[ContinuationRecord]) -> Result<(), String> {
+    let host = ensure_host_dir(profile)?;
+    let key = super::seal::mac_key_bytes()?;
+    let body = serde_json::to_vec(&DiskContinuations {
+        schema: SCHEMA,
+        records,
+    })
+    .map_err(|error| error.to_string())?;
+    let mac = hmac_sha256(&key, &body);
+    let mut file_bytes = body;
+    file_bytes.push(b'\n');
+    file_bytes.extend_from_slice(b"#mac ");
+    file_bytes.extend_from_slice(hex_encode(&mac).as_bytes());
+    file_bytes.push(b'\n');
+    let path = continuations_path(profile);
+    write_private(&path, &file_bytes)?;
+    log::info!(
+        "needs_you: persisted {} continuation records to {}",
+        records.len(),
+        path.display()
+    );
+    let _ = host;
+    Ok(())
+}
+
+pub(crate) fn load_continuations(profile: &Path) -> Vec<ContinuationRecord> {
+    let path = continuations_path(profile);
+    if is_symlink(&path) || !journal_is_file(&path) {
+        return Vec::new();
+    }
+    let Ok(Some(key)) = super::seal::existing_mac_key() else {
+        return Vec::new();
+    };
+    let Ok(raw) = fs::read(&path) else {
+        return Vec::new();
+    };
+    let Some((body, mac)) = split_mac(&raw) else {
+        log::warn!("needs_you: continuations file has no seal: {}", path.display());
+        return Vec::new();
+    };
+    if !ct_eq(&hmac_sha256(&key, body), &mac) {
+        log::warn!("needs_you: continuations file failed seal: {}", path.display());
+        return Vec::new();
+    }
+    match serde_json::from_slice::<DiskContinuationsOwned>(body) {
+        Ok(parsed) if parsed.schema == SCHEMA => parsed.records,
+        Ok(parsed) => {
+            log::warn!("needs_you: continuations schema {} != {SCHEMA}", parsed.schema);
+            Vec::new()
+        }
+        Err(error) => {
+            log::warn!("needs_you: continuations parse error: {error}");
+            Vec::new()
+        }
+    }
+}
+
+fn continuations_path(profile: &Path) -> PathBuf {
+    host_private_dir(profile).join("continuations.json")
 }
 
 fn journal_path(profile: &Path) -> PathBuf {
@@ -780,6 +859,7 @@ mod tests {
                     operation_id: "op-1".into(),
                 },
             }),
+            details: None,
         }
     }
 }

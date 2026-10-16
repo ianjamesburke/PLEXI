@@ -2409,6 +2409,38 @@
         },
         {
           "additionalProperties": false,
+          "description": "Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`,\n`reconcile`, or `complete`. `peer_ancestry` is stamped by the socket\nlistener so the host knows whether the caller lives inside a terminal pane.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": true,
+            "peer_ancestry": {
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "needs_you_api",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "payload",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "`plexi secret get` from a terminal pane. The host admits `secret.get`\nfor the pane named by `peer_ancestry` and answers `status` `value`,\n`permission_required` (with `pending_request_id`), `denied`, or\n`not_found`. Without a grant no value is read; the desktop Allow once\nclick is what grants. A caller that resolves to no pane is denied.",
           "properties": {
             "global": {

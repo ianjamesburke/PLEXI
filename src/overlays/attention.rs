@@ -479,6 +479,17 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_SM);
                             typography::caption_strong(ui, "What to do", &colors);
                             typography::body(ui, view.next_action.clone(), &colors);
+                            if let Some(details) = &record.details {
+                                if !details.preview_refs.is_empty() {
+                                    ui.add_space(style::SPACE_SM);
+                                    typography::caption_strong(ui, "Preview references", &colors);
+                                    typography::body(
+                                        ui,
+                                        details.preview_refs.join(" · "),
+                                        &colors,
+                                    );
+                                }
+                            }
                             ui.add_space(style::SPACE_SM);
                             let toggle = if show_technical {
                                 "▾ Technical details"
@@ -504,7 +515,24 @@ impl PlexiApp {
                             }
                         });
                     ui.add_space(style::SPACE_MD);
+                    let mut chosen_answer: Option<String> = None;
                     ui.horizontal_wrapped(|ui| {
+                        if matches!(record.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun) {
+                            if let Some(details) = &record.details {
+                                for (idx, choice_label) in details.choices.iter().enumerate() {
+                                    let kind = if idx == 0 {
+                                        ButtonKind::Accent
+                                    } else {
+                                        ButtonKind::Primary
+                                    };
+                                    if chrome_button(ui, choice_label, kind, &colors, 0.0)
+                                        .clicked_by(egui::PointerButton::Primary)
+                                    {
+                                        chosen_answer = Some(choice_label.clone());
+                                    }
+                                }
+                            }
+                        }
                         if record.kind == NeedsYouKind::Keychain {
                             if chrome_button(ui, "Continue", ButtonKind::Accent, &colors, 0.0)
                                 .clicked()
@@ -539,6 +567,12 @@ impl PlexiApp {
                             action = Some(AttentionAction::PrepareLogs);
                         }
                     });
+                    if let Some(answer_text) = chosen_answer {
+                        match self.answer_from_desktop(&record.id, &answer_text, "attention question") {
+                            Ok(()) => self.attention.reset_item_state(),
+                            Err(error) => self.set_attention_feedback(error, true),
+                        }
+                    }
                 }
 
                 if preparing {
@@ -787,6 +821,8 @@ mod tests {
             expires_at: None,
             run_tag: None,
             resolution: None,
+            details: None,
+            answer: None,
         }
     }
 

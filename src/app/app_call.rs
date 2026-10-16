@@ -253,6 +253,304 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    pub(crate) fn handle_needs_you_api(
+        &mut self,
+        op: &str,
+        payload: &serde_json::Value,
+        peer_ancestry: &[u32],
+        response_file: &str,
+    ) {
+        let profile = crate::config::config_dir();
+        let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) else {
+            log::warn!("needs_you: host api query ({op}) arrived before the monitor was ready");
+            crate::rpc::write_response(
+                response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "host_not_ready",
+                    "error": "needs-you is not ready; retry after the host finishes starting",
+                })
+                .to_string()
+                .as_bytes(),
+            );
+            return;
+        };
+
+        let peer_pane = self.resolve_socket_peer_pane(peer_ancestry);
+        let body = match op {
+            "ask" => {
+                let summary = payload
+                    .get("summary")
+                    .or_else(|| payload.get("question"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let resource = payload
+                    .get("resource")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("workspace")
+                    .trim()
+                    .to_string();
+                let explicit_pane = payload.get("pane_id").and_then(|v| v.as_u64());
+                let resolved_pane = peer_pane
+                    .map(|(pane_id, _, _)| pane_id)
+                    .or(explicit_pane);
+                let resolved_context = peer_pane
+                    .map(|(_, _, ctx_id)| ctx_id)
+                    .or_else(|| payload.get("context_id").and_then(|v| v.as_u64()))
+                    .or_else(|| {
+                        resolved_pane
+                            .and_then(|pid| self.find_pane_in_any_window(pid))
+                            .map(|(win_idx, _)| self.windows[win_idx].context_id)
+                    })
+                    .unwrap_or_else(|| self.windows[self.active_window].context_id);
+                let actor = payload
+                    .get("actor")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| caller_identity(resolved_pane, None));
+                let choices: Vec<String> = payload
+                    .get("choices")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let allow_free_text = payload
+                    .get("allow_free_text")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(choices.is_empty());
+                let preview_refs: Vec<String> = payload
+                    .get("preview_refs")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let correlation_id = payload
+                    .get("correlation_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string);
+                let session_id = payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string);
+                let expected_revision = payload
+                    .get("expected_revision")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string);
+                let run_tag = payload
+                    .get("operation_id")
+                    .or_else(|| payload.get("run_tag"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| correlation_id.clone());
+                let details = crate::broker::gate::NeedsYouDetails {
+                    choices,
+                    allow_free_text,
+                    preview_refs,
+                    correlation_id,
+                    session_id,
+                    context_id: Some(resolved_context),
+                    pane_id: resolved_pane,
+                    expected_revision,
+                };
+                match monitor.file_needs_you_with_details(
+                    crate::broker::gate::NeedsYouFile {
+                        kind: crate::broker::gate::NeedsYouKind::Question,
+                        actor,
+                        resource,
+                        summary,
+                        expires_at: None,
+                        run_tag,
+                    },
+                    Some(details),
+                ) {
+                    Ok((id, ui_token)) => {
+                        let item = monitor.get_needs_you(&id);
+                        let continuation = monitor.get_continuation(&id);
+                        log::info!("needs_you: api ask filed id={id} pane={resolved_pane:?} context={resolved_context}");
+                        serde_json::json!({
+                            "ok": true,
+                            "id": id,
+                            "ui_token": ui_token,
+                            "item": item,
+                            "continuation": continuation,
+                        })
+                    }
+                    Err(error) => serde_json::json!({
+                        "ok": false,
+                        "error": error,
+                    }),
+                }
+            }
+            "show" => {
+                let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let item = monitor.get_needs_you(id);
+                let continuation = monitor.get_continuation(id);
+                if item.is_none() && continuation.is_none() {
+                    serde_json::json!({
+                        "ok": false,
+                        "error": format!("unknown needs-you item or continuation {id}"),
+                    })
+                } else {
+                    serde_json::json!({
+                        "ok": true,
+                        "id": id,
+                        "item": item,
+                        "continuation": continuation,
+                    })
+                }
+            }
+            "answer" => {
+                let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let answer = payload.get("answer").and_then(|v| v.as_str()).unwrap_or("");
+                let ui_token = payload.get("ui_token").and_then(|v| v.as_str());
+                let explicit_agent = payload
+                    .get("caller_pane_id")
+                    .and_then(|v| v.as_u64())
+                    .is_some();
+                let caller_is_agent_pane = peer_pane.is_some() || explicit_agent;
+                match monitor.answer_needs_you_from(
+                    id,
+                    answer,
+                    crate::broker::gate::ResolveSurface::Socket,
+                    ui_token,
+                    caller_is_agent_pane,
+                ) {
+                    Ok(receipt) => {
+                        let item = monitor.get_needs_you(id);
+                        let continuation = monitor.get_continuation(id);
+                        serde_json::json!({
+                            "ok": !receipt.already,
+                            "id": receipt.id,
+                            "resolution": receipt.resolution.as_str(),
+                            "already": receipt.already,
+                            "run_outcome": receipt.run_outcome.as_str(),
+                            "answer": item.as_ref().and_then(|i| i.answer.clone()),
+                            "item": item,
+                            "continuation": continuation,
+                        })
+                    }
+                    Err(crate::broker::gate::NeedsYouResolveError::Refused) => serde_json::json!({
+                        "ok": false,
+                        "error_code": "permission_denied",
+                        "error": "only the person at the desktop or an interactive UI prompt can answer a question; model and tool calls inside a pane cannot forge human answers or approve permissions",
+                        "id": id,
+                    }),
+                    Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => {
+                        serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                            "id": id,
+                        })
+                    }
+                }
+            }
+            "reconcile" => {
+                let session_id = payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty());
+                let pane_id = payload.get("pane_id").and_then(|v| v.as_u64());
+                let context_id = payload.get("context_id").and_then(|v| v.as_u64());
+                let id_filter = payload
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty());
+                let mut continuations = monitor.list_continuations(session_id, pane_id, context_id);
+                if let Some(id) = id_filter {
+                    continuations.retain(|c| {
+                        c.run_id == id
+                            || c.needs_you_id.as_deref() == Some(id)
+                            || c.operation_id.as_deref() == Some(id)
+                            || c.correlation_id.as_deref() == Some(id)
+                    });
+                }
+                let mut items = monitor.all_needs_you();
+                items.retain(|item| {
+                    let details = item.details.as_ref();
+                    let match_id = id_filter.is_none_or(|id| {
+                        item.id == id
+                            || item.run_tag.as_deref() == Some(id)
+                            || details.and_then(|d| d.correlation_id.as_deref()) == Some(id)
+                    });
+                    let match_session = session_id.is_none_or(|sid| {
+                        details.and_then(|d| d.session_id.as_deref()) == Some(sid)
+                    });
+                    let match_pane = pane_id.is_none_or(|pid| {
+                        details.and_then(|d| d.pane_id) == Some(pid)
+                            || item.actor == format!("pane:{pid}")
+                    });
+                    let match_ctx = context_id.is_none_or(|cid| {
+                        details.and_then(|d| d.context_id) == Some(cid)
+                    });
+                    match_id && match_session && match_pane && match_ctx
+                });
+                log::info!(
+                    "needs_you: api reconcile session={session_id:?} pane={pane_id:?} context={context_id:?} items={} continuations={}",
+                    items.len(),
+                    continuations.len()
+                );
+                serde_json::json!({
+                    "ok": true,
+                    "items": items,
+                    "continuations": continuations,
+                })
+            }
+            "complete" => {
+                let id = payload
+                    .get("id")
+                    .or_else(|| payload.get("run_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let state_str = payload
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("completed");
+                let state = match state_str {
+                    "completed" => crate::broker::gate::ContinuationState::Completed,
+                    "failed" => crate::broker::gate::ContinuationState::Failed,
+                    "canceled" => crate::broker::gate::ContinuationState::Canceled,
+                    "outcome_unknown" => crate::broker::gate::ContinuationState::OutcomeUnknown,
+                    "running" => crate::broker::gate::ContinuationState::Running,
+                    _ => crate::broker::gate::ContinuationState::Completed,
+                };
+                let receipt = payload
+                    .get("receipt")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                match monitor.complete_continuation(id, state, receipt) {
+                    Ok(continuation) => serde_json::json!({
+                        "ok": true,
+                        "continuation": continuation,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "ok": false,
+                        "error": error,
+                    }),
+                }
+            }
+            _ => serde_json::json!({
+                "ok": false,
+                "error": format!("unknown needs-you api operation {op}"),
+            }),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,
@@ -499,6 +797,91 @@ impl PlexiApp {
             )
             .on_hover_text(view.explanation.clone());
         });
+        let details = item.details.as_ref();
+        if let Some(det) = details {
+            if !det.preview_refs.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    let width = (ui.available_width() - 12.0).max(0.0);
+                    ui.add_sized(
+                        egui::vec2(width, crate::ui::style::TEXT_CAPTION + 4.0),
+                        egui::Label::new(
+                            egui::RichText::new(format!("Preview: {}", det.preview_refs.join(", ")))
+                                .size(crate::ui::style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        )
+                        .truncate(),
+                    );
+                });
+            }
+        }
+        let choices = details
+            .map(|d| d.choices.as_slice())
+            .unwrap_or(&[]);
+        if matches!(
+            item.kind,
+            crate::broker::gate::NeedsYouKind::Question
+                | crate::broker::gate::NeedsYouKind::BlockedRun
+        ) && !choices.is_empty()
+        {
+            let mut chosen_answer: Option<String> = None;
+            let mut dismissed = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(16.0);
+                for (idx, choice_label) in choices.iter().enumerate() {
+                    let kind = if idx == 0 {
+                        crate::ui::button::ButtonKind::Accent
+                    } else {
+                        crate::ui::button::ButtonKind::Primary
+                    };
+                    let response =
+                        crate::ui::button::chrome_button(ui, choice_label, kind, &colors, 0.0)
+                            .on_hover_text(view.next_action.clone());
+                    let rect = response.rect;
+                    self.approval_buttons.push(ApprovalButton {
+                        label: choice_label.clone(),
+                        bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                        pending_request_id: item.id.clone(),
+                    });
+                    if response.clicked_by(egui::PointerButton::Primary) {
+                        chosen_answer = Some(choice_label.clone());
+                    }
+                }
+                let response = crate::ui::button::chrome_button(
+                    ui,
+                    "Dismiss",
+                    crate::ui::button::ButtonKind::Secondary,
+                    &colors,
+                    0.0,
+                )
+                .on_hover_text(view.next_action.clone());
+                let rect = response.rect;
+                self.approval_buttons.push(ApprovalButton {
+                    label: "Dismiss".to_string(),
+                    bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                    pending_request_id: item.id.clone(),
+                });
+                if response.clicked_by(egui::PointerButton::Primary) {
+                    dismissed = true;
+                }
+            });
+            if let Some(answer) = chosen_answer {
+                log::info!(
+                    "attention: sidebar answer={answer:?} id={} kind={}",
+                    item.id,
+                    item.kind.as_str()
+                );
+                let _ = self.answer_from_desktop(&item.id, &answer, "sidebar needs-you");
+            } else if dismissed {
+                log::info!(
+                    "attention: sidebar Dismiss id={} kind={}",
+                    item.id,
+                    item.kind.as_str()
+                );
+                let _ = self.resolve_from_desktop(&item.id, false, "sidebar needs-you");
+            }
+            return;
+        }
         let mut chosen = None;
         ui.horizontal(|ui| {
             ui.add_space(16.0);
@@ -734,6 +1117,48 @@ impl PlexiApp {
             }
             Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => {
                 log::error!("permission_seal: desktop {label} failed id={id}: {error}");
+                Err(format!("Could not complete {label}: {error}"))
+            }
+        }
+    }
+
+    /// Answer a creative `Question` / `BlockedRun` Needs-you record from a desktop click.
+    /// Never mints an app grant or widens permission scopes.
+    pub(crate) fn answer_from_desktop(
+        &mut self,
+        id: &str,
+        answer: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        if self.synthetic_input_frame {
+            log::info!(
+                "permission_seal: ignored synthetic {label} answer click id={id} answer={answer:?}"
+            );
+            return Err("Ignored: only the person at the desktop can do this.".to_string());
+        }
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        match monitor.answer_needs_you_from(
+            id,
+            answer,
+            crate::broker::gate::ResolveSurface::Desktop,
+            None,
+            false,
+        ) {
+            Ok(receipt) => {
+                log::info!(
+                    "permission_seal: desktop {label} answered id={} answer={answer:?} resolution={}",
+                    receipt.id,
+                    receipt.resolution.as_str()
+                );
+                Ok(())
+            }
+            Err(crate::broker::gate::NeedsYouResolveError::Refused) => {
+                log::error!("permission_seal: desktop {label} answer refused id={id}");
+                Err(format!("Could not complete {label}: refused"))
+            }
+            Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => {
+                log::error!("permission_seal: desktop {label} answer failed id={id}: {error}");
                 Err(format!("Could not complete {label}: {error}"))
             }
         }

@@ -355,6 +355,14 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
                 self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
             }
+            crate::protocol::AppRequest::NeedsYouApi {
+                op,
+                payload,
+                peer_ancestry,
+                response_file,
+            } => {
+                self.handle_needs_you_api(op, payload, peer_ancestry, response_file);
+            }
             crate::protocol::AppRequest::PaneSecretGet {
                 name,
                 global,

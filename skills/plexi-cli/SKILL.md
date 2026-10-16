@@ -145,15 +145,25 @@ plexi skill install --agent codex
   gate unchanged. `plexi secret get` cannot read `plexi:host:*`; a workspace id
   of `host` is reserved.
 - **Needs you** — `plexi needs-you list --json` prints everything waiting on
-  the human. Click approvals, agent questions, blocked runs, permission-widen
-  requests, integrity alerts, and keychain prompts share that record. Expired
-  items are auto-denied. Open rows are sealed under the profile `host`
-  directory and listed again after a restart. From the terminal, command socket,
-  or phone, `needs-you resolve --approve` is refused (permission_denied) for
-  every kind: the row stays open and a refusal is recorded. Only a click in the
-  host window approves (Allow once on the approval banner for click approvals;
-  Approve on the sidebar Needs-you row or in Needs attention for the rest,
-  including Keychain recovery). `--deny` from the terminal or phone settles
+  the human; `plexi needs-you show <id> [--json]` inspects one item (open or
+  settled) with its structured `details`, `answer`, and linked `continuation`.
+  Click approvals, agent questions, blocked runs, permission-widen requests,
+  integrity alerts, and keychain prompts share that record. `plexi needs-you ask`
+  files a structured `question` or `blocked_run` item (`--choice`, `--allow-free-text`,
+  `--preview-ref`, `--correlation-id`) and optionally binds a durable continuation
+  record (`--operation-id`, `--session-id`, `--expected-revision`, `--resume-condition`)
+  sealed under `<profile>/host/continuations.json`. `plexi needs-you answer <id> --answer <text>`
+  settles a question or blocked run without minting a grant; unauthenticated agent
+  panes cannot forge an answer (`permission_denied`). `plexi needs-you reconcile --json`
+  returns durable continuation records paired with their `NeedsYouRecord` after a
+  session or host restart, and `plexi needs-you complete <operation_id> --receipt <json>`
+  marks a continuation completed. Expired items are auto-denied. Open rows are
+  sealed under the profile `host` directory and listed again after a restart. From
+  the terminal, command socket, or phone, `needs-you resolve --approve` is refused
+  (permission_denied) for every kind: the row stays open and a refusal is recorded.
+  Only a click in the host window approves (Allow once on the approval banner for
+  click approvals; Approve on the sidebar Needs-you row or in Needs attention for
+  the rest, including Keychain recovery). `--deny` from the terminal or phone settles
   questions, blocked runs, click approvals, and permission-widen requests; it
   is refused for integrity and keychain items. A phone does not approve or
   answer questions.

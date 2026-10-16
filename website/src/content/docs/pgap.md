@@ -701,6 +701,17 @@ Resolve one needs-you item. Approving a click approval is refused: the row stays
 | `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `needs_you_api`
+
+Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`, `reconcile`, or `complete`. `peer_ancestry` is st...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | yes |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string` | yes |
+
 ### `pane_secret_get`
 
 `plexi secret get` from a terminal pane. The host admits `secret.get` for the pane named by `peer_ancestry` and answe...

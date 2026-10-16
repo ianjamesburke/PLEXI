@@ -104,6 +104,12 @@ build:
 linux-smoke:
     bash scripts/linux-smoke.sh
 
+# Live Pi + Plexi integration test harness: exercises interactive Pi TUI inside
+# a Plexi host, non-interactive `pi -p --mode json`, tool discovery/invocation,
+# Needs-you continuation across restart, and OpenRouter/mock turns.
+pi-plexi-live:
+    bash scripts/pi-plexi-live.sh
+
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/protocol/.
 gen-schema:

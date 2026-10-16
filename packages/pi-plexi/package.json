@@ -1,0 +1,36 @@
+{
+  "name": "@plexi/pi-plexi",
+  "version": "0.1.0",
+  "description": "First-party Pi coding agent package for Plexi: live workspace widget, pane & app tool bridge, event subscriptions, and durable Needs you continuation.",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./extension": "./extensions/index.ts"
+  },
+  "keywords": [
+    "pi-package",
+    "plexi",
+    "pi-coding-agent",
+    "extension",
+    "skill"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0"
+  },
+  "scripts": {
+    "test": "node --test ./tests/pi-plexi.test.mjs"
+  }
+}
