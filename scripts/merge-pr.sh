@@ -133,13 +133,30 @@ task_file_for_stint() {
     find .stint/tasks -maxdepth 1 -name "${STINT}-*.md" -print -quit
 }
 
+stint_ids_from_body() {
+    # Explicit directives only — never free prose. A prose mention such as
+    # "stint-0568-shaped" is useful writing, not a close directive.
+    #   Stint: 0560, 0561          (also `Stints:`, optionally bulleted/bolded)
+    #   Closes stint 0560          (closing keyword + `stint` + id)
+    local PR_BODY="$1"
+    {
+        printf '%s\n' "$PR_BODY" \
+            | grep -Ei '^[[:space:]>*_-]*stints?[[:space:]*_]*:' \
+            | sed -E 's/^[^:]*://' \
+            | grep -Eo '[0-9]{4}' || true
+        printf '%s\n' "$PR_BODY" \
+            | grep -Eio '(close[sd]?|fix(e[sd])?|resolve[sd]?) +stint[ #-]*[0-9]{4}' \
+            | grep -Eo '[0-9]{4}$' || true
+    }
+}
+
 resolve_stints() {
     local BRANCH="$1"
     local PR_BODY="${2:-}"
     local STINT
     {
         printf '%s\n' "$BRANCH" | grep -Eo 'stint-[0-9-]+' | grep -Eo '[0-9]{4}' || true
-        printf '%s\n' "$PR_BODY" | grep -Eio 'stint[ #-]*[0-9]{4}' | grep -Eo '[0-9]{4}' || true
+        stint_ids_from_body "$PR_BODY"
     } | sort -u | while IFS= read -r STINT; do
         [ -n "$STINT" ] || continue
         local TASK_FILE
@@ -156,6 +173,22 @@ join_by() {
     local IFS="$1"
     shift
     printf '%s\n' "$*"
+}
+
+# describe_closures <issue-or-empty> [stint-id ...]
+# "issue #N", "stint task(s) A, B", or both joined with " and ".
+describe_closures() {
+    local ISSUE="${1:-}"
+    shift || true
+    local PARTS=""
+    if [ -n "$ISSUE" ]; then
+        PARTS="issue #$ISSUE"
+    fi
+    if [ "$#" -gt 0 ]; then
+        [ -z "$PARTS" ] || PARTS="$PARTS and "
+        PARTS="${PARTS}stint task(s) $(join_by ", " "$@")"
+    fi
+    printf '%s\n' "$PARTS"
 }
 
 do_close_stints() {
@@ -249,25 +282,110 @@ test_resolve_issue() {
 }
 
 test_resolve_stints() {
-    local actual
-    actual=$(resolve_stints "feature/stint-0241-0285-0327-packages-trust" "")
-    [ "$actual" = "$(printf '0241\n0285\n0327')" ] || {
-        echo "expected stint ids from branch, got '$actual'" >&2
-        return 1
-    }
+    local TMP actual
+    TMP=$(mktemp -d)
+    mkdir -p "$TMP/.stint/tasks"
+    local ID
+    for ID in 0241 0285 0327 0560 0561 0568; do
+        : > "$TMP/.stint/tasks/${ID}-fixture.md"
+    done
 
-    actual=$(resolve_stints "feature/packages-trust" "Stint tasks 0241, 0285, 0327")
-    [ "$actual" = "$(printf '0241\n0285\n0327')" ] || {
-        echo "expected stint ids from PR body, got '$actual'" >&2
-        return 1
-    }
+    # resolve_stints reads .stint/tasks relative to cwd (the canonical checkout).
+    (
+        cd "$TMP"
 
-    if resolve_stints "feature/stint-9999-missing" "" >/dev/null 2>&1; then
-        echo "expected missing stint task to fail" >&2
-        return 1
-    fi
+        actual=$(resolve_stints "feature/stint-0241-0285-0327-packages-trust" "")
+        [ "$actual" = "$(printf '0241\n0285\n0327')" ] || {
+            echo "expected stint ids from branch, got '$actual'" >&2
+            exit 1
+        }
+
+        actual=$(resolve_stints "feature/packages-trust" "Stint: 0241, 0285, 0327")
+        [ "$actual" = "$(printf '0241\n0285\n0327')" ] || {
+            echo "expected stint ids from explicit 'Stint:' body line, got '$actual'" >&2
+            exit 1
+        }
+
+        actual=$(resolve_stints "feature/packages-trust" "Closes stint 0560")
+        [ "$actual" = "0560" ] || {
+            echo "expected stint id from closing keyword, got '$actual'" >&2
+            exit 1
+        }
+
+        # Prose mention of an unrelated stint must NOT be treated as a close directive
+        # (PR #2502 closed 0568 because its body said "stint-0568-shaped").
+        actual=$(resolve_stints "feature/stint-0560-merge-pr" "The squad is stint-0568-shaped, see stint 0561 and Stint 0285 notes.")
+        [ "$actual" = "0560" ] || {
+            echo "expected prose-mentioned stints to be ignored (only 0560), got '$actual'" >&2
+            exit 1
+        }
+
+        if resolve_stints "feature/stint-9999-missing" "" >/dev/null 2>&1; then
+            echo "expected missing stint task to fail" >&2
+            exit 1
+        fi
+
+        # Strictness holds even when an issue is also present: a named-but-missing
+        # task is still an error.
+        if resolve_stints "feature/packages-trust" "Closes #2138
+Stint: 9999" >/dev/null 2>&1; then
+            echo "expected missing explicit stint task to fail" >&2
+            exit 1
+        fi
+    ) || return 1
 
     echo "resolve_stints tests passed"
+}
+
+# Regression (stint 0560): a PR with BOTH a closing issue and stint ids resolves
+# both, and an unrelated prose mention resolves neither.
+test_resolve_both() {
+    gh() {
+        if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+            if printf '%s\n' "$*" | grep -q 'closingIssuesReferences'; then
+                printf '\n'
+            else
+                return 1
+            fi
+        fi
+    }
+
+    local TMP actual BODY
+    TMP=$(mktemp -d)
+    mkdir -p "$TMP/.stint/tasks"
+    local ID
+    for ID in 0560 0561 0568; do
+        : > "$TMP/.stint/tasks/${ID}-fixture.md"
+    done
+    BODY="Closes #2138
+Stint: 0561
+The three-pane squad was stint-0568-shaped."
+
+    (
+        cd "$TMP"
+        actual=$(resolve_issue 2497 "feature/stint-0560-merge-pr" "$BODY")
+        [ "$actual" = "2138" ] || {
+            echo "expected issue 2138 alongside stints, got '$actual'" >&2
+            exit 1
+        }
+        actual=$(resolve_stints "feature/stint-0560-merge-pr" "$BODY")
+        [ "$actual" = "$(printf '0560\n0561')" ] || {
+            echo "expected stints 0560+0561 alongside issue (not prose 0568), got '$actual'" >&2
+            exit 1
+        }
+        actual=$(describe_closures 2138 0560 0561)
+        [ "$actual" = "issue #2138 and stint task(s) 0560,0561" ] || {
+            echo "unexpected closure description '$actual'" >&2
+            exit 1
+        }
+        actual=$(describe_closures "" 0560)
+        [ "$actual" = "stint task(s) 0560" ] || {
+            echo "unexpected stint-only description '$actual'" >&2
+            exit 1
+        }
+    ) || return 1
+
+    echo "resolve_both tests passed"
 }
 
 # Regression: a worktree dir that survives `git worktree remove --force` (the
@@ -302,6 +420,7 @@ CMD="${1:-}"
 case "$CMD" in
     test-resolve-issue) test_resolve_issue ;;
     test-resolve-stints) test_resolve_stints ;;
+    test-resolve-both) test_resolve_both ;;
     test-cleanup-survivor) test_cleanup_survivor ;;
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" ;;
@@ -338,26 +457,26 @@ case "$CMD" in
         STINT_ARGS=()
         if [ "$NO_ISSUE" -eq 0 ]; then
             ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY" || true)
-            if [ -z "$ISSUE" ]; then
-                STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
-                if [ -z "$STINTS" ]; then
-                    echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
-                    echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch/body." >&2
-                    echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR no-issue" >&2
-                    exit 1
-                fi
-                while IFS= read -r STINT; do
-                    [ -n "$STINT" ] && STINT_ARGS+=("$STINT")
-                done <<< "$STINTS"
+            # Resolved independently of the issue: a PR routinely has both. A named
+            # stint with no task file is a hard error (set -e), issue found or not.
+            STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
+            if [ -z "$ISSUE" ] && [ -z "$STINTS" ]; then
+                echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
+                echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch or a 'Stint: 0123, 0124' line in the PR body." >&2
+                echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR no-issue" >&2
+                exit 1
             fi
+            while IFS= read -r STINT; do
+                if [ -n "$STINT" ]; then
+                    STINT_ARGS+=("$STINT")
+                fi
+            done <<< "$STINTS"
         fi
 
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> PR #$PR: $BRANCH (standalone — no issue/stint to close, state: $STATE)"
-        elif [ -n "$ISSUE" ]; then
-            echo "==> PR #$PR: $BRANCH (issue #$ISSUE, state: $STATE)"
         else
-            echo "==> PR #$PR: $BRANCH (stint tasks: $(join_by ", " "${STINT_ARGS[@]}"), state: $STATE)"
+            echo "==> PR #$PR: $BRANCH ($(describe_closures "$ISSUE" "${STINT_ARGS[@]+"${STINT_ARGS[@]}"}"), state: $STATE)"
         fi
 
         # Fail fast if root worktree has uncommitted changes
@@ -379,20 +498,21 @@ case "$CMD" in
         do_cleanup "$PR" "$BRANCH"
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> Skipping issue/stint close (no-issue)"
-        elif [ -n "$ISSUE" ]; then
-            do_close "$ISSUE" "$PR"
         else
-            do_close_stints "$PR" "${STINT_ARGS[@]}"
+            if [ -n "$ISSUE" ]; then
+                do_close "$ISSUE" "$PR"
+            fi
+            if [ "${#STINT_ARGS[@]}" -gt 0 ]; then
+                do_close_stints "$PR" "${STINT_ARGS[@]}"
+            fi
         fi
 
         VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         echo ""
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> Done: PR #$PR merged → alpha (current version v$VERSION, standalone — nothing closed)"
-        elif [ -n "$ISSUE" ]; then
-            echo "==> Done: PR #$PR merged → alpha (current version v$VERSION), issue #$ISSUE closed"
         else
-            echo "==> Done: PR #$PR merged → alpha (current version v$VERSION), stint task(s) $(join_by ", " "${STINT_ARGS[@]}") closed"
+            echo "==> Done: PR #$PR merged → alpha (current version v$VERSION), $(describe_closures "$ISSUE" "${STINT_ARGS[@]+"${STINT_ARGS[@]}"}") closed"
         fi
         ;;
 esac

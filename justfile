@@ -347,18 +347,46 @@ pr-install number:
     # never the caller's cwd.
     ( cd "$_wt" && just fetch-python-runtime sdk-smoke )
     ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
+    # Binary reuse (stint 0637): skip the release build only when the selected
+    # tree already holds a binary whose embedded sha equals the PR head, stamped
+    # by a previous install for this very channel. Any doubt means build as today.
+    # Only honoured by install.sh heads that know the flag, so the log never
+    # claims a reuse that did not happen.
+    _reuse_note="built release binary"
+    _reuse_env=""
+    if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
+      if _reuse_verdict="$(bash "$_driver_root/scripts/pr-install-reuse.sh" check "$_wt" "$_head_oid" "pr-{{number}}")"; then
+        _reuse_env="1"
+        _reuse_note="reused existing artifact @ ${_head_oid:0:8}"
+      else
+        echo "pr-install: not reusing a prior binary ($_reuse_verdict)"
+      fi
+    fi
     if rg -q 'cargo-with-lease\.sh' "$_wt/scripts/install.sh"; then
-      ( cd "$_wt" && bash scripts/install.sh --from-source "pr-{{number}}" )
+      ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" bash scripts/install.sh --from-source "pr-{{number}}" )
     else
       # Older PR heads predate the leaf wrapper. Treat their opaque install
       # script as the compatibility leaf; newer heads acquire inside their
       # own bundle invocation and must never acquire twice.
       ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
     fi
+    # Record that this binary was built for pr-<N> at this head, so a later
+    # install of the same head can prove it may reuse it.
+    if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
+      bash "$_driver_root/scripts/pr-install-reuse.sh" stamp "$_wt" "$_head_oid" "pr-{{number}}" \
+        || echo "pr-install: warning: could not stamp the release binary for reuse"
+    fi
+    # SDK guard (stint 0657): the binary's head sha says nothing about the
+    # Python SDK. Assert the installed SDK is byte-identical to the resolved
+    # worktree's sdk/python/plexi_sdk, or abort with SDK_MISMATCH.
+    if ! _sdk_prov="$(bash "$_driver_root/scripts/pr-install-verify-sdk.sh" verify "{{number}}" "$_wt" "$_head_oid")"; then
+      echo "Error: pr-install SDK_MISMATCH — the installed PR build does not carry PR #{{number}}'s Python SDK. Refusing to report a clean install."
+      exit 1
+    fi
     # Provenance trace: which head this channel is actually running. Written
     # after install.sh; path matches
     # install.sh's profile_dir for channel pr-{{number}}.
-    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
+    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt build=\"$_reuse_note\" $_sdk_prov"
     mkdir -p "$HOME/.plexi-pr-{{number}}"
     echo "$_prov" | tee -a "$HOME/.plexi-pr-{{number}}/install.log"
 
@@ -475,6 +503,14 @@ uninstall channel="all":
 #   just merge-pr 2202 no-issue   — standalone follow-up PR, skips issue/stint close
 merge-pr PR *FLAGS:
     bash scripts/merge-pr.sh {{PR}} {{FLAGS}}
+
+# Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
+test-infra-scripts:
+    bash scripts/merge-pr.sh test-resolve-issue
+    bash scripts/merge-pr.sh test-resolve-stints
+    bash scripts/merge-pr.sh test-resolve-both
+    bash scripts/pr-install-reuse.sh self-test
+    bash scripts/pr-install-verify-sdk.sh self-test
 
 # Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
 #   just merge-rebase feature/2155-foo   — rebase + force-push feature branch
