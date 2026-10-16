@@ -410,6 +410,69 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn list_app_tools(
+        &self,
+        app_id: Option<&str>,
+        explicit_context_id: Option<u64>,
+        caller_pane_id: Option<u64>,
+        caller_context_id: Option<u64>,
+        peer_ancestry: &[u32],
+        response_file: &str,
+    ) {
+        let context_known = |id: u64| {
+            self.router.iter().any(|c| c.context_id == id)
+                || self.windows.iter().any(|w| w.context_id == id)
+        };
+        let resolved_context_id = if let Some(ctx_id) = explicit_context_id {
+            if !context_known(ctx_id) {
+                log::warn!("app_tools: explicit context_id={ctx_id} not found");
+                crate::rpc::write_json_response(
+                    response_file,
+                    serde_json::json!({
+                        "ok": false,
+                        "error": format!("context {ctx_id} not found"),
+                    }),
+                );
+                return;
+            }
+            ctx_id
+        } else if let Some((_pane_id, _win_id, peer_ctx_id)) =
+            self.resolve_socket_peer_pane(peer_ancestry)
+        {
+            peer_ctx_id
+        } else if let Some(pane_id) = caller_pane_id {
+            if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
+                self.windows[win_idx].context_id
+            } else if let Some(ctx_id) = caller_context_id.filter(|&id| context_known(id)) {
+                ctx_id
+            } else {
+                self.windows[self.active_window].context_id
+            }
+        } else if let Some(ctx_id) = caller_context_id.filter(|&id| context_known(id)) {
+            ctx_id
+        } else {
+            self.windows[self.active_window].context_id
+        };
+
+        let mut tools =
+            crate::plexi_ai::tool_dispatch::snapshot_tools_for_context(resolved_context_id);
+        if let Some(filter_app) = app_id.map(str::trim).filter(|s| !s.is_empty()) {
+            tools.retain(|entry| entry.app_id == filter_app);
+        }
+        log::info!(
+            "pane_ipc: kind=list_app_tools context_id={resolved_context_id} app_id={app_id:?} count={}",
+            tools.len()
+        );
+        crate::rpc::write_json_response(
+            response_file,
+            serde_json::json!({
+                "ok": true,
+                "context_id": resolved_context_id,
+                "tools": tools,
+            }),
+        );
+    }
+
     /// Approve/Dismiss on the sidebar Needs-you row for `item` (the oldest
     /// open item that is not an approval click). Wired like
     /// `draw_approval_banner`: the bounds are registered in

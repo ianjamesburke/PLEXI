@@ -669,6 +669,7 @@ pub(crate) fn handle_socket_line(
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                 }
                 crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::ListAppTools { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::PaneSecretGet { peer_ancestry: p, .. } => {
                     // Overwrite any client-supplied ancestry. A missing capture
                     // leaves the vector empty so the call cannot pretend to be a pane.

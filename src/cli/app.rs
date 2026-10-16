@@ -1482,7 +1482,129 @@ fn copy_dir_all_inner(
     Ok(())
 }
 
-/// `plexi app info <id>` — show manifest info for an installed app.
+/// Build the `list_app_tools` IPC request payload, attaching caller pane/context
+/// env hints when present.
+pub(crate) fn build_list_app_tools_payload(
+    app_id: Option<&str>,
+    context_id: Option<u64>,
+) -> serde_json::Value {
+    let caller_pane_id = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    let caller_context_id = std::env::var("PLEXI_CONTEXT_ID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    let mut payload = serde_json::json!({
+        "type": "list_app_tools",
+    });
+    if let Some(id) = app_id.map(str::trim).filter(|s| !s.is_empty()) {
+        payload["app_id"] = serde_json::json!(id);
+    }
+    if let Some(ctx) = context_id {
+        payload["context_id"] = serde_json::json!(ctx);
+    }
+    if let Some(pane) = caller_pane_id {
+        payload["caller_pane_id"] = serde_json::json!(pane);
+    }
+    if let Some(ctx) = caller_context_id {
+        payload["caller_context_id"] = serde_json::json!(ctx);
+    }
+    payload
+}
+
+/// Best-effort live registry query for `plexi app info <id>`. Returns `None`
+/// silently when no host socket is reachable so offline `plexi app info` never
+/// fails or prints a socket error.
+fn try_query_live_app_tools_for_info(
+    app_id: &str,
+) -> Option<(u64, Vec<crate::plexi_ai::tool_dispatch::LiveToolEntry>)> {
+    let socket = super::resolve_command_socket()?;
+    if !super::spawn_socket_accepting(&socket) {
+        return None;
+    }
+    let payload = build_list_app_tools_payload(Some(app_id), None);
+    let content = super::request_with(
+        payload,
+        "app-tools-response",
+        "app tools",
+        std::time::Duration::from_secs(2),
+    )
+    .ok()?;
+    let reply: serde_json::Value = serde_json::from_str(&content).ok()?;
+    if reply.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let context_id = reply.get("context_id").and_then(|v| v.as_u64())?;
+    let tools: Vec<crate::plexi_ai::tool_dispatch::LiveToolEntry> =
+        serde_json::from_value(reply.get("tools")?.clone()).ok()?;
+    Some((context_id, tools))
+}
+
+/// Format `plexi app info <id>` output. Populates `tools` from `live_tools` when
+/// at least one pane of the app is running in the caller's context; otherwise
+/// explicitly labels the section as `manifest-only` (or `static source scan`)
+/// so an unopened app is never misreported as declaring no tools.
+pub(crate) fn format_app_info(
+    m: &crate::app::registry::AppManifestApp,
+    app_dir: &std::path::Path,
+    live_tools: Option<(u64, &[crate::plexi_ai::tool_dispatch::LiveToolEntry])>,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "id:          {}", m.id);
+    let _ = writeln!(out, "name:        {}", m.name);
+    let _ = writeln!(out, "version:     {}", m.version);
+    let _ = writeln!(out, "description: {}", m.description);
+    if let Some(ref author) = m.author {
+        let _ = writeln!(out, "author:      {author}");
+    }
+    if !m.tags.is_empty() {
+        let _ = writeln!(out, "tags:        {}", m.tags.join(", "));
+    }
+    if let Some(ref repo) = m.repo {
+        let _ = writeln!(out, "repo:        {repo}");
+    }
+    if let Some((context_id, live)) = live_tools.filter(|(_, entries)| !entries.is_empty()) {
+        let _ = writeln!(out, "tools (live registry, context {context_id}):");
+        for entry in live {
+            let ro = if entry.read_only { " [read_only]" } else { "" };
+            let _ = writeln!(
+                out,
+                "  {}  (pane {}){}  {}",
+                entry.name, entry.pane_id, ro, entry.description
+            );
+            let _ = writeln!(out, "    input_schema:  {}", entry.input_schema);
+            let _ = writeln!(out, "    output_schema: {}", entry.output_schema);
+        }
+        return out;
+    }
+
+    let static_tools = crate::cli::introspect::declared_tools(app_dir);
+    if !static_tools.is_empty() {
+        let _ = writeln!(
+            out,
+            "tools (static source scan; manifest-only while not running — open '{}' and run `plexi app tools` for live schemas):",
+            m.id
+        );
+        for (name, description) in &static_tools {
+            let _ = writeln!(out, "  {name}  {description}");
+        }
+    } else {
+        let _ = writeln!(
+            out,
+            "tools (manifest-only — manifests do not declare tools; no running pane of '{}' in current context):",
+            m.id
+        );
+        let _ = writeln!(
+            out,
+            "  (none in manifest; open '{}' and run `plexi app tools` to inspect live runtime tools)",
+            m.id
+        );
+    }
+    out
+}
+
+/// `plexi app info <id>` — show manifest info and honest tool status for an installed app.
 pub fn app_info(id: &str) -> i32 {
     let registry =
         crate::app::registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
@@ -1495,30 +1617,15 @@ pub fn app_info(id: &str) -> i32 {
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| installed.bin_path.clone());
-    let m = &installed.manifest;
-    println!("id:          {}", m.id);
-    println!("name:        {}", m.name);
-    println!("version:     {}", m.version);
-    println!("description: {}", m.description);
-    if let Some(ref author) = m.author {
-        println!("author:      {author}");
-    }
-    if !m.tags.is_empty() {
-        println!("tags:        {}", m.tags.join(", "));
-    }
-    if let Some(ref repo) = m.repo {
-        println!("repo:        {repo}");
-    }
-    let tools = crate::cli::introspect::declared_tools(&app_dir);
-    println!("tools:");
-    if tools.is_empty() {
-        println!("  (none declared)");
-    } else {
-        for (name, description) in &tools {
-            println!("  {name}  {description}");
-        }
-    }
-    log::info!("app_info: id={id} tools={}", tools.len());
+    let live = try_query_live_app_tools_for_info(id);
+    let live_count = live.as_ref().map(|(_, t)| t.len()).unwrap_or(0);
+    let formatted = format_app_info(
+        &installed.manifest,
+        &app_dir,
+        live.as_ref().map(|(ctx, t)| (*ctx, t.as_slice())),
+    );
+    print!("{formatted}");
+    log::info!("app_info: id={id} live_tools={live_count}");
     0
 }
 
@@ -2008,6 +2115,64 @@ pub fn app_call_cli(
             1
         }
     }
+}
+
+/// `plexi app tools [--app <app_id>] [--context <context_id>] [--json]` —
+/// snapshot the live tool registry exposed by running app panes in the resolved
+/// context.
+pub fn app_tools_cli(app_id: Option<&str>, context_id: Option<u64>, json: bool) -> i32 {
+    log::info!(
+        "app_tools:cli: app={app_id:?} context={context_id:?} json={json}"
+    );
+    let payload = build_list_app_tools_payload(app_id, context_id);
+    let content = match super::request(payload, "app-tools-response", "app tools") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    if json {
+        return super::print_json_output(&content);
+    }
+    let reply: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(error) => {
+            eprintln!("error: host reply is not JSON: {error}");
+            return 1;
+        }
+    };
+    let resolved_ctx = reply
+        .get("context_id")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tools: Vec<crate::plexi_ai::tool_dispatch::LiveToolEntry> = reply
+        .get("tools")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    if tools.is_empty() {
+        if let Some(app) = app_id {
+            println!("No live tools registered for app '{app}' in context {resolved_ctx}.");
+        } else {
+            println!("No live tools registered in context {resolved_ctx}.");
+        }
+        return 0;
+    }
+    println!(
+        "context {resolved_ctx} — {} live tool(s):",
+        tools.len()
+    );
+    for entry in &tools {
+        let ro = if entry.read_only { " [read_only]" } else { "" };
+        println!(
+            "  {}  (app: {}, pane: {}){}  {}",
+            entry.name, entry.app_id, entry.pane_id, ro, entry.description
+        );
+        println!("    input_schema:  {}", entry.input_schema);
+        println!("    output_schema: {}", entry.output_schema);
+    }
+    0
 }
 
 /// `plexi needs-you list --json` and `plexi needs-you resolve <id> --approve|--deny`.
@@ -3278,5 +3443,106 @@ mod app_init_collision_tests {
             msg.contains("plexi app init stale-dir-2"),
             "must suggest a concrete alternative name: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod app_info_honesty_tests {
+    use super::format_app_info;
+    use crate::app::registry::{AppCapabilities, AppManifestApp, ManifestType};
+    use crate::plexi_ai::tool_dispatch::LiveToolEntry;
+
+    fn sample_manifest(id: &str) -> AppManifestApp {
+        AppManifestApp {
+            id: id.to_string(),
+            name: "Calculator".to_string(),
+            entry: "main.py".to_string(),
+            manifest_type: ManifestType::App,
+            version: "0.1.0".to_string(),
+            min_sdk_version: None,
+            description: "Scientific calculator".to_string(),
+            capabilities: AppCapabilities::default(),
+            watch: None,
+            author: None,
+            tags: Vec::new(),
+            repo: None,
+            dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn app_info_populates_live_tools_when_pane_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = sample_manifest("calc");
+        let live = vec![LiveToolEntry {
+            name: "calc.add".to_string(),
+            provider_name: "calc.add".to_string(),
+            app_id: "calc".to_string(),
+            pane_id: 42,
+            context_id: 7,
+            description: "Add two numbers".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+                "required": ["a", "b"]
+            }),
+            output_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"result": {"type": "number"}},
+                "required": ["result"]
+            }),
+            read_only: false,
+            timeout_ms: None,
+        }];
+        let out = format_app_info(&manifest, dir.path(), Some((7, &live)));
+        assert!(
+            out.contains("tools (live registry, context 7):"),
+            "expected live registry header: {out}"
+        );
+        assert!(out.contains("calc.add  (pane 42)  Add two numbers"), "{out}");
+        assert!(out.contains("input_schema:"), "{out}");
+        assert!(out.contains("output_schema:"), "{out}");
+    }
+
+    #[test]
+    fn app_info_labels_manifest_only_when_not_running_and_no_static_literals() {
+        let dir = tempfile::tempdir().unwrap();
+        // Dynamic tool registration in a loop (like apps/calc) has no literal string first arg.
+        std::fs::write(
+            dir.path().join("main.py"),
+            "for name in ['add', 'sub']:\n    @tools.tool(f'calc.{name}', 'desc')\n    def _op(): pass\n",
+        )
+        .unwrap();
+        let manifest = sample_manifest("calc");
+        let out = format_app_info(&manifest, dir.path(), None);
+        assert!(
+            out.contains("manifest-only"),
+            "must explicitly label manifest-only when not running: {out}"
+        );
+        assert!(
+            out.contains("plexi app tools"),
+            "must signpost `plexi app tools` for live runtime tools: {out}"
+        );
+        assert!(
+            !out.contains("(none declared)"),
+            "must never print the misleading '(none declared)': {out}"
+        );
+    }
+
+    #[test]
+    fn app_info_labels_static_source_scan_when_not_running_with_static_decorators() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("main.py"),
+            "@tools.tool(\"chess.state\", \"Return current board state.\")\ndef _state(): pass\n",
+        )
+        .unwrap();
+        let manifest = sample_manifest("chess");
+        let out = format_app_info(&manifest, dir.path(), Some((1, &[])));
+        assert!(
+            out.contains("static source scan; manifest-only while not running"),
+            "must label static scan honestly: {out}"
+        );
+        assert!(out.contains("chess.state  Return current board state."), "{out}");
     }
 }

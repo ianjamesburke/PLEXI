@@ -176,6 +176,18 @@ pub enum Commands {
 
     // ── Panes ─────────────────────────────────────────────────────────────────
     /// Control panes — list, focus, send input, capture output, and more.
+    ///
+    /// Driving an agent in another pane (two commands, no sleeps, no capture polling):
+    ///   1. Boot: `ID=$(plexi pane new --agent <tier-alias> -n "<name>" --no-focus)`
+    ///      Blocks until the agent TUI is idle; a printed id means ready-to-brief.
+    ///   2. Brief: `plexi pane send "$ID" "<brief>" --submit`
+    ///      Settles the pane, presses Enter, and exits 0 only once the host
+    ///      confirms the prompt left the input line.
+    ///   3. Wait: `plexi pane wait "$ID" --until idle --timeout 300`
+    ///      (or `plexi pane slot wait <slot> --pane-id "$ID" --until '<regex>'`)
+    ///
+    /// For an ordinary shell command in a terminal pane, use
+    /// `plexi pane command <id> "<cmd>" --enter`.
     #[command(next_help_heading = "Panes")]
     Pane {
         #[command(subcommand)]
@@ -1185,7 +1197,13 @@ pub enum AppCmd {
         #[arg(long)]
         snapshot: bool,
     },
-    /// Show details about an installed app: id, name, version, and available tools.
+    /// Show details about an installed app: manifest fields and tool status.
+    ///
+    /// Populates `tools` from the live tool registry when a pane of this app is
+    /// running in the current context; otherwise labels the section as
+    /// manifest-only (or static source scan) so an unopened app is never
+    /// misreported as declaring no tools. Run `plexi app tools` to snapshot all
+    /// live tools in the current context.
     Info { id: String },
     /// Read or replace a file-backed app's state document.
     ///
@@ -1346,6 +1364,28 @@ pub enum AppCmd {
         #[arg(long)]
         wait_approved: bool,
     },
+    /// Snapshot the live tool registry exposed by running app panes in the current context.
+    ///
+    /// Reads the same context-scoped `ToolDispatcher` registry that agents and
+    /// `plexi app call` see: exposed tool name (including `<name>@<pane_id>`
+    /// disambiguation when multiple panes expose the same tool), owning app id
+    /// and pane id, description, and full JSON input/output schemas.
+    ///
+    /// Example: plexi app tools
+    /// Example: plexi app tools --json
+    /// Example: plexi app tools --app calc --json
+    #[command(name = "tools")]
+    Tools {
+        /// Filter to tools exposed by this app id
+        #[arg(long, value_name = "APP_ID")]
+        app: Option<String>,
+        /// Inspect a specific context ID instead of the caller's context
+        #[arg(long, value_name = "CONTEXT_ID")]
+        context: Option<u64>,
+        /// Output as JSON (`{"ok": true, "context_id": ..., "tools": [...]}`)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
@@ -1460,19 +1500,42 @@ pub enum PaneCmd {
         #[arg(long)]
         pane: Option<u64>,
     },
-    /// Open a new terminal pane.
+    /// Open a new terminal pane, or launch an agent with `--agent` and wait until ready.
+    ///
+    /// `--agent <tier-alias>` is the supported way to launch an agent into a fresh
+    /// pane: the host runs the command in the new pane and prints the pane id only
+    /// once the agent reports idle, so a printed id on stdout means ready-to-brief
+    /// with `plexi pane send <id> "<brief>" --submit` (two commands, no sleeps, no
+    /// capture polling).
     ///
     /// Examples:
-    ///   plexi pane new                          # empty terminal, split right
-    ///   plexi pane new "npm run dev" -n "dev"   # terminal with command, named
-    ///   plexi pane new -d                       # split below
-    ///   plexi pane new --agent c-large          # agent pane, id printed once it is ready
+    ///   plexi pane new --agent c-large -n "worker" --no-focus   # agent pane, id printed once ready-to-brief
+    ///   plexi pane new                                          # empty terminal, split right
+    ///   plexi pane new "npm run dev" -n "dev"                   # terminal with command, named
+    ///   plexi pane new -d                                       # split below
     ///
     /// For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
     New {
         /// Shell command to run in the new terminal
         #[arg(conflicts_with = "agent")]
         cmd: Option<String>,
+        /// Launch an agent in the new pane and block until it reports ready-to-brief.
+        ///
+        /// The value is a shell command — normally a size-tier alias such as
+        /// `c-large` or `codex-small` — run in the new pane verbatim. The pane
+        /// id is printed only once the agent has booted, so a successful id on
+        /// stdout means the pane is ready to receive a brief via
+        /// `plexi pane send <id> "<brief>" --submit`. On boot timeout the reason
+        /// and the created pane id go to stderr, stdout stays empty, and the
+        /// exit code is 2 so the caller can close the pane.
+        ///
+        /// Requires a running Plexi host (PLEXI_SOCKET).
+        #[arg(long, value_name = "TIER_ALIAS")]
+        agent: Option<String>,
+        /// How long to wait for the agent to report ready, in seconds.
+        /// Defaults to 60 when omitted (the host owns the default).
+        #[arg(long, value_name = "SECS", requires = "agent")]
+        boot_timeout: Option<f64>,
         /// Name the pane
         #[arg(long, short = 'n')]
         name: Option<String>,
@@ -1510,22 +1573,6 @@ pub enum PaneCmd {
         /// Working directory
         #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
-        /// Launch an agent in the new pane and block until it reports ready.
-        ///
-        /// The value is a shell command — normally a size-tier alias such as
-        /// `c-large` or `codex-small` — run in the new pane verbatim. The pane
-        /// id is printed only once the agent has booted, so a successful id on
-        /// stdout means the pane is ready to receive a brief. On boot timeout
-        /// the reason and the created pane id go to stderr, stdout stays
-        /// empty, and the exit code is 2 so the caller can close the pane.
-        ///
-        /// Requires a running Plexi host (PLEXI_SOCKET).
-        #[arg(long, value_name = "TIER_ALIAS")]
-        agent: Option<String>,
-        /// How long to wait for the agent to report ready, in seconds.
-        /// Defaults to 60 when omitted (the host owns the default).
-        #[arg(long, value_name = "SECS", requires = "agent")]
-        boot_timeout: Option<f64>,
     },
     /// Rename a pane.
     ///
@@ -1579,17 +1626,25 @@ pub enum PaneCmd {
         /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
         pane_id: Option<u64>,
     },
-    /// Type text into another pane as if it came from the keyboard.
+    /// Type text into another pane as if it came from the keyboard, or pass `--submit`
+    /// for host-confirmed prompt submission.
     ///
-    /// Terminal panes receive PTY bytes. App panes receive one real egui text
-    /// input event after the host focuses the target pane. Use `\n` in terminal
-    /// text to press Enter (which submits a command).
+    /// Pass `--submit` (`-s`) when briefing an agent or submitting a prompt in a
+    /// terminal pane: the host settles the pane, presses Enter (re-sending once if
+    /// the text was parked as a collapsed paste), and exits 0 only once the prompt
+    /// has left the input line — no `sleep` or `pane key <id> enter` needed.
     ///
-    /// Example: plexi pane send 42 "git status\n"
+    /// Without `--submit`, terminal panes receive raw PTY bytes and app panes receive
+    /// one egui text input event after the host focuses the target pane. For an
+    /// ordinary shell command, see also `plexi pane command <id> "<cmd>" --enter`.
+    ///
+    /// Examples:
+    ///   plexi pane send 42 "Read the brief and implement the fix" --submit
+    ///   plexi pane send 42 "partial text"
     Send {
         /// Pane id to send text to (from `plexi pane list`)
         pane_id: u64,
-        /// Text to type into the pane (use `\n` for Enter)
+        /// Text to type into the pane (prefer `--submit` to submit with confirmation)
         #[arg(allow_hyphen_values = true)]
         text: String,
         /// Press Enter for you and wait until the host confirms the prompt
@@ -1654,11 +1709,17 @@ pub enum PaneCmd {
     /// For terminal panes, injects the keystroke into the terminal.
     /// For app panes, delivers a structured key event.
     ///
+    /// To submit a prompt or command with host confirmation, prefer
+    /// `plexi pane send <id> "<text>" --submit` (or `plexi pane command <id> "<cmd>" --enter`)
+    /// instead of chaining `pane send` + `pane key <id> enter`: `--submit` settles
+    /// the pane, handles collapsed-paste Enter, and exits 0 only once the host
+    /// confirms the input line cleared.
+    ///
     /// Key formats: single character ("h"), named key ("enter", "escape", "space",
     /// "up", "down", "left", "right", "backspace", "plus", "minus", "equals"),
     /// or chord ("ctrl+c").
     ///
-    /// Example: plexi pane key 42 enter
+    /// Example: plexi pane key 42 escape
     Key {
         /// Pane id to send the key to (from `plexi pane list`)
         pane_id: u64,
@@ -3011,5 +3072,64 @@ mod tests {
                 "both spellings must be rejected for {verb:?}"
             );
         }
+    }
+
+    #[test]
+    fn pane_help_signposts_agent_boot_and_confirmed_submit_recipe() {
+        let mut root = <Cli as clap::CommandFactory>::command();
+        let render_long_help = |path: &[&str], root: &mut clap::Command| -> String {
+            let mut cmd = root
+                .find_subcommand_mut(path[0])
+                .unwrap_or_else(|| panic!("missing subcommand {}", path[0]));
+            for seg in &path[1..] {
+                cmd = cmd
+                    .find_subcommand_mut(seg)
+                    .unwrap_or_else(|| panic!("missing subcommand {seg}"));
+            }
+            cmd.render_long_help().to_string()
+        };
+
+        let pane_help = render_long_help(&["pane"], &mut root);
+        assert!(
+            pane_help.contains("Driving an agent in another pane"),
+            "plexi pane --help must include the agent orientation block:\n{pane_help}"
+        );
+        assert!(
+            pane_help.contains("pane new --agent") && pane_help.contains("pane send") && pane_help.contains("--submit"),
+            "plexi pane --help must name the two-step recipe (pane new --agent + pane send --submit):\n{pane_help}"
+        );
+        assert!(
+            pane_help.contains("no sleeps, no capture polling"),
+            "plexi pane --help must state no sleeps, no capture polling:\n{pane_help}"
+        );
+
+        let pane_new_help = render_long_help(&["pane", "new"], &mut root);
+        assert!(
+            pane_new_help.contains("supported way to launch an agent")
+                && pane_new_help.contains("ready-to-brief"),
+            "plexi pane new --help must promote --agent up front and state that a printed id means ready-to-brief:\n{pane_new_help}"
+        );
+        let agent_opt_pos = pane_new_help
+            .find("--agent <TIER_ALIAS>")
+            .expect("--agent option must appear in pane new --help");
+        let down_opt_pos = pane_new_help
+            .find("--down")
+            .expect("--down option must appear in pane new --help");
+        assert!(
+            agent_opt_pos < down_opt_pos,
+            "--agent must be promoted ahead of split placement flags in pane new --help:\n{pane_new_help}"
+        );
+
+        let pane_send_help = render_long_help(&["pane", "send"], &mut root);
+        assert!(
+            pane_send_help.contains("--submit") && pane_send_help.contains("host-confirmed"),
+            "plexi pane send --help must cross-reference --submit for confirmed submission:\n{pane_send_help}"
+        );
+
+        let pane_key_help = render_long_help(&["pane", "key"], &mut root);
+        assert!(
+            pane_key_help.contains("pane send") && pane_key_help.contains("--submit"),
+            "plexi pane key --help must cross-reference pane send --submit for confirmed submission:\n{pane_key_help}"
+        );
     }
 }

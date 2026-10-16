@@ -939,7 +939,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
 | `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run an app's AppHarness tests with `uv run --with pytest pytest tests/` |
-| `info` | Show details about an installed app: id, name, version, and available tools |
+| `info` | Show details about an installed app: manifest fields and tool status |
 | `state` | Read or replace a file-backed app's state document |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
@@ -952,6 +952,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `update` | Pull git-backed installed apps to their latest source revision |
 | `action` | Send a semantic action to a running app pane |
 | `call` | Call a tool an app exposes and print its JSON result |
+| `tools` | Snapshot the live tool registry exposed by running app panes in the current context |
 
 ### `plexi app open`
 
@@ -1058,7 +1059,9 @@ Runs the Python tests in the app's `tests/` directory (the `tests/test_app.py` s
 
 ### `plexi app info`
 
-Show details about an installed app: id, name, version, and available tools
+Show details about an installed app: manifest fields and tool status.
+
+Populates `tools` from the live tool registry when a pane of this app is running in the current context; otherwise labels the section as manifest-only (or static source scan) so an unopened app is never misreported as declaring no tools. Run `plexi app tools` to snapshot all live tools in the current context.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1224,6 +1227,20 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 | `--pane` | string | no | Pane that owns the tool when more than one instance of the app is open |
 | `--wait-approved` | flag | no | Wait up to two minutes for desktop approval, then execute once |
 
+### `plexi app tools`
+
+Snapshot the live tool registry exposed by running app panes in the current context.
+
+Reads the same context-scoped `ToolDispatcher` registry that agents and `plexi app call` see: exposed tool name (including `<name>@<pane_id>` disambiguation when multiple panes expose the same tool), owning app id and pane id, description, and full JSON input/output schemas.
+
+Example: plexi app tools Example: plexi app tools --json Example: plexi app tools --app calc --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--app` | string | no | Filter to tools exposed by this app id |
+| `--context` | string | no | Inspect a specific context ID instead of the caller's context |
+| `--json` | flag | no | Output as JSON (`{"ok": true, "context_id": ..., "tools": [...]}`) |
+
 ## `plexi account`
 
 Optional account that links this desktop to relay and cloud features.
@@ -1280,19 +1297,23 @@ Check installed CLI tools for changes to their help output and update Plexi's kn
 
 ## `plexi pane`
 
-Control panes — list, focus, send input, capture output, and more
+Control panes — list, focus, send input, capture output, and more.
+
+Driving an agent in another pane (two commands, no sleeps, no capture polling): 1. Boot: `ID=$(plexi pane new --agent <tier-alias> -n "<name>" --no-focus)` Blocks until the agent TUI is idle; a printed id means ready-to-brief. 2. Brief: `plexi pane send "$ID" "<brief>" --submit` Settles the pane, presses Enter, and exits 0 only once the host confirms the prompt left the input line. 3. Wait: `plexi pane wait "$ID" --until idle --timeout 300` (or `plexi pane slot wait <slot> --pane-id "$ID" --until '<regex>'`)
+
+For an ordinary shell command in a terminal pane, use `plexi pane command <id> "<cmd>" --enter`.
 
 | Subcommand | Description |
 |---|---|
 | `wait` | Wait for current idle, blocked, or exited state; print its lifecycle record. Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure |
 | `events` | Follow brokered pane lifecycle records as NDJSON until interrupted |
-| `new` | Open a new terminal pane |
+| `new` | Open a new terminal pane, or launch an agent with `--agent` and wait until ready |
 | `name` | Rename a pane |
 | `list` | List all open panes as a JSON array |
 | `focus` | Move the visible focus to a specific pane |
 | `heartbeat` | Configure a host-owned recurring prompt for a terminal pane |
 | `close` | Close a pane. Omit the pane id to close the pane you are currently in |
-| `send` | Type text into another pane as if it came from the keyboard |
+| `send` | Type text into another pane as if it came from the keyboard, or pass `--submit` for host-confirmed prompt submission |
 | `self` | Print the id of the pane you are currently in |
 | `info` | Print details about the current pane (or the previously focused pane) as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
@@ -1326,15 +1347,19 @@ Follow brokered pane lifecycle records as NDJSON until interrupted
 
 ### `plexi pane new`
 
-Open a new terminal pane.
+Open a new terminal pane, or launch an agent with `--agent` and wait until ready.
 
-Examples: plexi pane new                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"   # terminal with command, named plexi pane new -d                       # split below plexi pane new --agent c-large          # agent pane, id printed once it is ready
+`--agent <tier-alias>` is the supported way to launch an agent into a fresh pane: the host runs the command in the new pane and prints the pane id only once the agent reports idle, so a printed id on stdout means ready-to-brief with `plexi pane send <id> "<brief>" --submit` (two commands, no sleeps, no capture polling).
+
+Examples: plexi pane new --agent c-large -n "worker" --no-focus   # agent pane, id printed once ready-to-brief plexi pane new                                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"                   # terminal with command, named plexi pane new -d                                       # split below
 
 For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<cmd>` | string | no | Shell command to run in the new terminal |
+| `--agent` | string | no | Launch an agent in the new pane and block until it reports ready-to-brief.  The value is a shell command — normally a size-tier alias such as `c-large` or `codex-small` — run in the new pane verbatim. The pane id is printed only once the agent has booted, so a successful id on stdout means the pane is ready to receive a brief via `plexi pane send <id> "<brief>" --submit`. On boot timeout the reason and the created pane id go to stderr, stdout stays empty, and the exit code is 2 so the caller can close the pane.  Requires a running Plexi host (PLEXI_SOCKET). |
+| `--boot-timeout` | string | no | How long to wait for the agent to report ready, in seconds. Defaults to 60 when omitted (the host owns the default) |
 | `--name` / `-n` | string | no | Name the pane |
 | `--down` / `-d` | flag | no | Split below instead of right |
 | `--left` / `-l` | flag | no | Split left |
@@ -1347,8 +1372,6 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 | `--ephemeral` / `-e` | flag | no | Close the pane when the command finishes |
 | `--no-focus` | flag | no | Keep focus on the current pane |
 | `--cwd` | string | no | Working directory |
-| `--agent` | string | no | Launch an agent in the new pane and block until it reports ready.  The value is a shell command — normally a size-tier alias such as `c-large` or `codex-small` — run in the new pane verbatim. The pane id is printed only once the agent has booted, so a successful id on stdout means the pane is ready to receive a brief. On boot timeout the reason and the created pane id go to stderr, stdout stays empty, and the exit code is 2 so the caller can close the pane.  Requires a running Plexi host (PLEXI_SOCKET). |
-| `--boot-timeout` | string | no | How long to wait for the agent to report ready, in seconds. Defaults to 60 when omitted (the host owns the default) |
 
 ### `plexi pane name`
 
@@ -1405,16 +1428,18 @@ Close a pane. Omit the pane id to close the pane you are currently in
 
 ### `plexi pane send`
 
-Type text into another pane as if it came from the keyboard.
+Type text into another pane as if it came from the keyboard, or pass `--submit` for host-confirmed prompt submission.
 
-Terminal panes receive PTY bytes. App panes receive one real egui text input event after the host focuses the target pane. Use `\n` in terminal text to press Enter (which submits a command).
+Pass `--submit` (`-s`) when briefing an agent or submitting a prompt in a terminal pane: the host settles the pane, presses Enter (re-sending once if the text was parked as a collapsed paste), and exits 0 only once the prompt has left the input line — no `sleep` or `pane key <id> enter` needed.
 
-Example: plexi pane send 42 "git status\n"
+Without `--submit`, terminal panes receive raw PTY bytes and app panes receive one egui text input event after the host focuses the target pane. For an ordinary shell command, see also `plexi pane command <id> "<cmd>" --enter`.
+
+Examples: plexi pane send 42 "Read the brief and implement the fix" --submit plexi pane send 42 "partial text"
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to send text to (from `plexi pane list`) |
-| `<text>` | string | yes | Text to type into the pane (use `\n` for Enter) |
+| `<text>` | string | yes | Text to type into the pane (prefer `--submit` to submit with confirmation) |
 | `--submit` / `-s` | flag | no | Press Enter for you and wait until the host confirms the prompt left the pane's input line.  The host settles the pane, submits, and re-sends Enter once if the text is still parked as a collapsed paste. Exits 0 only when the submission is confirmed; on an unconfirmed submit it exits non-zero and prints the observed input line to stderr. Terminal panes only. |
 | `--paste` | flag | no | Paste literal text, including newlines, as one edit. App panes only; does not read or change the system clipboard |
 
@@ -1462,9 +1487,11 @@ Send a key press to a pane.
 
 For terminal panes, injects the keystroke into the terminal. For app panes, delivers a structured key event.
 
+To submit a prompt or command with host confirmation, prefer `plexi pane send <id> "<text>" --submit` (or `plexi pane command <id> "<cmd>" --enter`) instead of chaining `pane send` + `pane key <id> enter`: `--submit` settles the pane, handles collapsed-paste Enter, and exits 0 only once the host confirms the input line cleared.
+
 Key formats: single character ("h"), named key ("enter", "escape", "space", "up", "down", "left", "right", "backspace", "plus", "minus", "equals"), or chord ("ctrl+c").
 
-Example: plexi pane key 42 enter
+Example: plexi pane key 42 escape
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

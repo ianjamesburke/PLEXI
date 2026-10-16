@@ -942,6 +942,13 @@ fn main() -> eframe::Result {
                             } => std::process::exit(cli::app_call_cli(
                                 &app_id, &tool, &input, json, pane, wait_approved,
                             )),
+                            AppCmd::Tools { app, context, json } => {
+                                std::process::exit(cli::app_tools_cli(
+                                    app.as_deref(),
+                                    context,
+                                    json,
+                                ))
+                            }
                         }
                     }
                     Commands::Uninstall { keep_data, delete_data, yes } => {

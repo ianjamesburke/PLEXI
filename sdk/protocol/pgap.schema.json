@@ -2457,6 +2457,63 @@
         },
         {
           "additionalProperties": false,
+          "description": "Snapshot the live tool registry exposed by running app panes in the\nresolved context. Sent by `plexi app tools` and `plexi app info`.\nThe host resolves the viewer context from `context_id` when explicitly\nsupplied, otherwise from the verified socket peer pane or\n`caller_pane_id` (falling back to the active context when run outside a\npane), and writes `{\"ok\":true,\"context_id\":<u64>,\"tools\":[...]}` to\n`response_file`.",
+          "properties": {
+            "app_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "caller_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "peer_ancestry": {
+              "description": "Host-captured peer ancestry. Socket clients cannot set this; the\nlistener overwrites it before resolving the caller pane.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_app_tools",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
             "anchor_pane": {
