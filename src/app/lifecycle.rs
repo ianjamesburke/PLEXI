@@ -960,6 +960,156 @@ impl PlexiApp {
                         expires_at,
                     });
             }
+            crate::protocol::AppRequest::PaneMessageSend {
+                pane_id,
+                payload,
+                submit,
+                peer_ancestry,
+                response_file,
+            } => {
+                let from_pane_id = peer_ancestry
+                    .as_deref()
+                    .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry))
+                    .map(|(sender_id, _, _)| sender_id);
+                log::info!(
+                    "pane_ipc: kind=pane_message_send pane_id={pane_id} from_pane_id={from_pane_id:?} submit={submit}"
+                );
+                let Some((win_idx, _)) = self.find_pane_in_any_window(*pane_id) else {
+                    crate::rpc::write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": false,
+                            "error": format!("pane {pane_id} not found"),
+                        }),
+                    );
+                    return;
+                };
+                let message_id = self.next_pane_message_id;
+                self.next_pane_message_id = self.next_pane_message_id.saturating_add(1);
+                let timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let msg = crate::app::pane_wait::PaneMessage {
+                    id: message_id,
+                    pane_id: *pane_id,
+                    to_pane_id: *pane_id,
+                    from_pane_id,
+                    sender_pane_id: from_pane_id,
+                    payload: payload.clone(),
+                    timestamp_ms,
+                };
+                self.pane_mailboxes
+                    .entry(*pane_id)
+                    .or_default()
+                    .push_back(msg);
+
+                let delivered_to_waiter = self.complete_message_recvs(*pane_id);
+                let mut woke = false;
+                if *submit && !delivered_to_waiter {
+                    let can_wake =
+                        self.agent_reports_idle(*pane_id) && !self.submit_in_flight(*pane_id);
+                    if can_wake {
+                        if let Some(term) = self.windows[win_idx]
+                            .panes
+                            .get_mut(pane_id)
+                            .and_then(crate::host::pane::Pane::as_terminal_mut)
+                        {
+                            let sender_label = from_pane_id
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| "external".to_string());
+                            let notice = format!(
+                                "[plexi message from pane {sender_label}] run `plexi pane message recv`"
+                            );
+                            term.backend.process_command(
+                                egui_term::BackendCommand::Write(notice.clone().into_bytes()),
+                            );
+                            self.register_pending_submit(*pane_id, None, notice.chars().count());
+                            woke = true;
+                            log::info!(
+                                "pane_message_send: pane_id={pane_id} from_pane_id={from_pane_id:?} id={message_id} woke idle agent"
+                            );
+                        }
+                    } else {
+                        log::info!(
+                            "pane_message_send: pane_id={pane_id} from_pane_id={from_pane_id:?} id={message_id} queued without wake (busy or non-terminal)"
+                        );
+                    }
+                }
+
+                let queue_len = self.pane_mailboxes.get(pane_id).map_or(0, |q| q.len());
+                let status = if delivered_to_waiter || woke {
+                    "delivered"
+                } else {
+                    "queued"
+                };
+                crate::rpc::write_json_response(
+                    response_file,
+                    serde_json::json!({
+                        "ok": true,
+                        "status": status,
+                        "state": status,
+                        "pane_id": pane_id,
+                        "from_pane_id": from_pane_id,
+                        "sender_pane_id": from_pane_id,
+                        "message_id": message_id,
+                        "queue_len": queue_len,
+                        "woke": woke,
+                    }),
+                );
+            }
+            crate::protocol::AppRequest::PaneMessageRecv {
+                pane_id,
+                wait,
+                timeout_secs,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=pane_message_recv pane_id={pane_id} wait={wait} timeout={timeout_secs}"
+                );
+                if *wait
+                    && (!timeout_secs.is_finite()
+                        || *timeout_secs < 0.0
+                        || *timeout_secs > crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS)
+                {
+                    slot_read_error(
+                        response_file,
+                        format!(
+                            "--timeout must be a non-negative number of seconds at most {}, got {timeout_secs}",
+                            crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+                        ),
+                    );
+                    return;
+                }
+                if self.find_pane_in_any_window(*pane_id).is_none() {
+                    slot_read_error(response_file, format!("pane {pane_id} not found"));
+                    return;
+                }
+                let has_messages = self
+                    .pane_mailboxes
+                    .get(pane_id)
+                    .is_some_and(|q| !q.is_empty());
+                if !*wait || has_messages {
+                    let drained = self.drain_pane_messages(*pane_id);
+                    let mut bytes = serde_json::to_vec(&drained).unwrap_or_else(|_| b"[]".to_vec());
+                    bytes.push(b'\n');
+                    log::info!(
+                        "pane_message_recv: pane_id={pane_id} satisfied immediately count={}",
+                        drained.len()
+                    );
+                    write_response(response_file, &bytes);
+                    return;
+                }
+                let expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs_f64(*timeout_secs);
+                log::info!("pane_message_recv: pane_id={pane_id} parked for {timeout_secs}s");
+                self.pending_message_recvs
+                    .push(crate::app::pane_wait::PendingMessageRecv {
+                        pane_id: *pane_id,
+                        response_file: response_file.clone(),
+                        expires_at,
+                    });
+            }
             crate::protocol::AppRequest::SlotRead {
                 pane_id,
                 slot_name,

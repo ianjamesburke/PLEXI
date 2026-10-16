@@ -991,6 +991,9 @@ impl PlexiApp {
             if self.pane_heartbeats.remove(&pane_id).is_some() {
                 log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
             }
+            if self.pane_mailboxes.remove(&pane_id).is_some() {
+                log::info!("pane_mailbox: pane_id={pane_id} cleared reason=closed");
+            }
             for name in self.scheduler.reap_pane(pane_id) {
                 log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
             }

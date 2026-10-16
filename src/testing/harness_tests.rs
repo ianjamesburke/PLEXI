@@ -2124,6 +2124,274 @@ fn slot_wait_unknown_pane_writes_typed_error() {
 }
 
 #[test]
+fn pane_message_fifo_ordering_and_drain_without_clobbering() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    for (idx, body) in ["first", "second", "third"].into_iter().enumerate() {
+        let send_file = temp_response(tmp.path(), &format!("msg-send-{idx}"));
+        h.inject_ipc(AppRequest::PaneMessageSend {
+            pane_id: pane,
+            payload: body.to_string(),
+            submit: false,
+            peer_ancestry: None,
+            response_file: send_file.clone(),
+        });
+        h.run_frames(1);
+        let ack = read_json_response(&send_file);
+        assert_eq!(ack["ok"].as_bool(), Some(true));
+        assert_eq!(ack["status"].as_str(), Some("queued"));
+        assert_eq!(ack["state"].as_str(), Some("queued"));
+        assert_eq!(ack["queue_len"].as_u64(), Some((idx + 1) as u64));
+        assert_eq!(ack["woke"].as_bool(), Some(false));
+    }
+
+    let recv_file = temp_response(tmp.path(), "msg-recv-all");
+    h.inject_ipc(AppRequest::PaneMessageRecv {
+        pane_id: pane,
+        wait: false,
+        timeout_secs: 0.0,
+        response_file: recv_file.clone(),
+    });
+    h.run_frames(1);
+
+    let drained = read_json_response(&recv_file);
+    let arr = drained.as_array().expect("JSON array");
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0]["payload"].as_str(), Some("first"));
+    assert_eq!(arr[1]["payload"].as_str(), Some("second"));
+    assert_eq!(arr[2]["payload"].as_str(), Some("third"));
+    assert!(arr[0]["id"].as_u64().unwrap() < arr[1]["id"].as_u64().unwrap());
+    assert!(arr[1]["id"].as_u64().unwrap() < arr[2]["id"].as_u64().unwrap());
+
+    // Subsequent recv without new messages returns an empty array.
+    let empty_file = temp_response(tmp.path(), "msg-recv-empty");
+    h.inject_ipc(AppRequest::PaneMessageRecv {
+        pane_id: pane,
+        wait: false,
+        timeout_secs: 0.0,
+        response_file: empty_file.clone(),
+    });
+    h.run_frames(1);
+    let empty = read_json_response(&empty_file);
+    assert_eq!(empty.as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn pane_message_stamps_sender_pane_id_from_peer_ancestry() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let sender_pane = h.add_focused_terminal();
+    let receiver_pane = h.app.windows[0]
+        .panes
+        .keys()
+        .copied()
+        .find(|&id| id != sender_pane)
+        .expect("companion pane in tree");
+    let sender_pid = h.terminal_backend(sender_pane).child_pid();
+
+    let send_file = temp_response(tmp.path(), "msg-sender-stamp");
+    h.inject_ipc(AppRequest::PaneMessageSend {
+        pane_id: receiver_pane,
+        payload: "from worker".to_string(),
+        submit: false,
+        peer_ancestry: Some(vec![999_999, sender_pid]),
+        response_file: send_file.clone(),
+    });
+    h.run_frames(1);
+
+    let ack = read_json_response(&send_file);
+    assert_eq!(ack["ok"].as_bool(), Some(true));
+    assert_eq!(ack["from_pane_id"].as_u64(), Some(sender_pane));
+    assert_eq!(ack["sender_pane_id"].as_u64(), Some(sender_pane));
+
+    let recv_file = temp_response(tmp.path(), "msg-sender-recv");
+    h.inject_ipc(AppRequest::PaneMessageRecv {
+        pane_id: receiver_pane,
+        wait: false,
+        timeout_secs: 0.0,
+        response_file: recv_file.clone(),
+    });
+    h.run_frames(1);
+
+    let drained = read_json_response(&recv_file);
+    let msg = &drained.as_array().expect("array")[0];
+    assert_eq!(msg["from_pane_id"].as_u64(), Some(sender_pane));
+    assert_eq!(msg["sender_pane_id"].as_u64(), Some(sender_pane));
+    assert_eq!(msg["to_pane_id"].as_u64(), Some(receiver_pane));
+    assert_eq!(msg["payload"].as_str(), Some("from worker"));
+}
+
+#[test]
+fn pane_message_submit_does_not_interrupt_busy_agent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .expect("pane")
+        .set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id: pane,
+            state: crate::protocol::AgentState::Working,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.terminal_backend(pane).enable_input_tap();
+
+    let send_file = temp_response(tmp.path(), "msg-busy-submit");
+    h.inject_ipc(AppRequest::PaneMessageSend {
+        pane_id: pane,
+        payload: "hold until idle".to_string(),
+        submit: true,
+        peer_ancestry: None,
+        response_file: send_file.clone(),
+    });
+    h.run_frames(1);
+
+    let ack = read_json_response(&send_file);
+    assert_eq!(ack["ok"].as_bool(), Some(true));
+    assert_eq!(ack["status"].as_str(), Some("queued"));
+    assert_eq!(ack["woke"].as_bool(), Some(false));
+    assert!(
+        h.app.pending_submits.is_empty(),
+        "busy agent must not receive a synthetic submit"
+    );
+    assert!(
+        h.terminal_backend(pane).take_input_tap().is_empty(),
+        "busy agent PTY must not be written to"
+    );
+    assert_eq!(
+        h.app.pane_mailboxes.get(&pane).map(|q| q.len()),
+        Some(1),
+        "message must remain queued in the mailbox"
+    );
+}
+
+#[test]
+fn pane_message_submit_wakes_idle_agent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .expect("pane")
+        .set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id: pane,
+            state: crate::protocol::AgentState::Idle,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.terminal_backend(pane).enable_input_tap();
+
+    let send_file = temp_response(tmp.path(), "msg-idle-submit");
+    h.inject_ipc(AppRequest::PaneMessageSend {
+        pane_id: pane,
+        payload: "wake up".to_string(),
+        submit: true,
+        peer_ancestry: None,
+        response_file: send_file.clone(),
+    });
+    h.run_frames(1);
+
+    let ack = read_json_response(&send_file);
+    assert_eq!(ack["ok"].as_bool(), Some(true));
+    assert_eq!(ack["status"].as_str(), Some("delivered"));
+    assert_eq!(ack["woke"].as_bool(), Some(true));
+    assert_eq!(
+        h.app.pending_submits.len(),
+        1,
+        "idle agent must have a pending submit registered"
+    );
+    let tapped = String::from_utf8_lossy(&h.terminal_backend(pane).take_input_tap()).into_owned();
+    assert!(
+        tapped.contains("plexi pane message recv"),
+        "expected wake notice in PTY input tap, got {tapped:?}"
+    );
+}
+
+#[test]
+fn pane_message_recv_wait_completes_when_message_arrives_while_hidden() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    let recv_file = temp_response(tmp.path(), "msg-recv-wait-hidden");
+    h.inject_ipc(AppRequest::PaneMessageRecv {
+        pane_id: pane,
+        wait: true,
+        timeout_secs: 60.0,
+        response_file: recv_file.clone(),
+    });
+    h.run_hidden_frames(1);
+    assert!(
+        !std::path::Path::new(&recv_file).exists(),
+        "empty mailbox must park recv --wait"
+    );
+
+    let send_file = temp_response(tmp.path(), "msg-send-to-waiter");
+    h.inject_ipc(AppRequest::PaneMessageSend {
+        pane_id: pane,
+        payload: "unblock waiter".to_string(),
+        submit: false,
+        peer_ancestry: None,
+        response_file: send_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    let ack = read_json_response(&send_file);
+    assert_eq!(ack["ok"].as_bool(), Some(true));
+    assert_eq!(
+        ack["status"].as_str(),
+        Some("delivered"),
+        "sending to a pane with a parked recv --wait must report delivered"
+    );
+    assert_eq!(ack["queue_len"].as_u64(), Some(0));
+
+    let received = read_json_response(&recv_file);
+    let arr = received.as_array().expect("JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["payload"].as_str(), Some("unblock waiter"));
+}
+
+#[test]
+fn pane_message_recv_wait_times_out_with_typed_timeout_reply() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    let recv_file = temp_response(tmp.path(), "msg-recv-timeout");
+    h.inject_ipc(AppRequest::PaneMessageRecv {
+        pane_id: pane,
+        wait: true,
+        timeout_secs: 0.05,
+        response_file: recv_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    let error_file = format!("{recv_file}.err");
+    for _ in 0..40 {
+        if std::path::Path::new(&error_file).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.run_hidden_frames(1);
+    }
+
+    let response = read_json_response(&error_file);
+    assert_eq!(response["timeout"].as_bool(), Some(true));
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert!(
+        !std::path::Path::new(&recv_file).exists(),
+        "a timed-out recv --wait must leave stdout empty"
+    );
+}
+
+#[test]
 fn pane_slot_read_errors_use_sidecar_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();

@@ -367,6 +367,78 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
     0
 }
 
+/// `plexi pane message send <pane_id> <payload> [--submit]`
+pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool) -> i32 {
+    log::info!(
+        "pane_message_send:cli: pane_id={pane_id} bytes={} submit={submit}",
+        payload.len()
+    );
+    match super::request(
+        serde_json::json!({
+            "type": "pane_message_send",
+            "pane_id": pane_id,
+            "payload": payload,
+            "submit": submit,
+        }),
+        "pane-message-send-response",
+        "pane message send",
+    ) {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => print_json_output(&content),
+            Err(code) => code,
+        },
+        Err(code) => code,
+    }
+}
+
+/// `plexi pane message recv [pane_id] [--wait] [--timeout <SECS>]`
+pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i32 {
+    if !timeout.is_finite()
+        || !(0.0..=crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS).contains(&timeout)
+    {
+        eprintln!(
+            "error: --timeout must be a non-negative number of seconds at most {}, got {timeout}",
+            crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+        );
+        return 1;
+    }
+    let resolved_pane_id = match resolve_pane_id(pane_id) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    log::info!(
+        "pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
+    );
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "pane_message_recv",
+            "pane_id": resolved_pane_id,
+            "wait": wait,
+            "timeout_secs": timeout,
+        }),
+        "pane-message-recv-response",
+        "pane message recv",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
+    let deadline = if wait {
+        std::time::Duration::from_secs_f64(timeout) + SLOT_WAIT_REPLY_MARGIN
+    } else {
+        crate::rpc::DEFAULT_TIMEOUT
+    };
+    let outcome = slot_wait_outcome(crate::rpc::poll_slot_reply(&response_file, Some(deadline)));
+    match &outcome {
+        SlotWaitOutcome::Matched(content) => {
+            return print_json_output(&String::from_utf8_lossy(content));
+        }
+        SlotWaitOutcome::TimedOut(message) | SlotWaitOutcome::Failed(message) => {
+            eprintln!("error: {message}");
+        }
+    }
+    outcome.exit_code()
+}
+
 /// `plexi pane list`
 ///
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
@@ -1523,3 +1595,104 @@ mod submit_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod pane_message_tests {
+    use super::*;
+    use crate::cli::test_env::socket_env_guard;
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn send_payload_omits_self_reported_sender_and_forwards_submit() {
+        for submit in [false, true] {
+            let env = socket_env_guard();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket_path = dir.path().join("notify.sock");
+            let listener = UnixListener::bind(&socket_path).expect("bind socket");
+            env.set(&socket_path);
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                BufReader::new(stream)
+                    .read_line(&mut line)
+                    .expect("read payload");
+                let payload: serde_json::Value = serde_json::from_str(&line).expect("payload json");
+                crate::rpc::write_json_response(
+                    payload["response_file"].as_str().expect("response_file"),
+                    serde_json::json!({
+                        "ok": true,
+                        "status": if submit { "delivered" } else { "queued" },
+                        "state": if submit { "delivered" } else { "queued" },
+                        "pane_id": 42,
+                        "from_pane_id": 7,
+                        "sender_pane_id": 7,
+                        "message_id": 1,
+                        "queue_len": 1,
+                        "woke": submit,
+                    }),
+                );
+                tx.send(payload).ok();
+            });
+
+            let code = pane_message_send_cli(42, "hello mailbox", submit);
+            let payload = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("host listener never received the message send payload");
+            handle.join().expect("listener thread");
+
+            assert_eq!(code, 0, "submit={submit}");
+            assert_eq!(payload["type"], "pane_message_send");
+            assert_eq!(payload["pane_id"], 42);
+            assert_eq!(payload["payload"], "hello mailbox");
+            assert_eq!(payload["submit"], submit);
+            assert!(
+                payload.get("from_pane_id").is_none()
+                    && payload.get("sender_pane_id").is_none()
+                    && payload.get("peer_ancestry").is_none(),
+                "sender identity must never be self-reported by the CLI: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn recv_invalid_timeout_exits_one_before_socket_contact() {
+        assert_eq!(pane_message_recv_cli(Some(7), true, -1.0), 1);
+        assert_eq!(pane_message_recv_cli(Some(7), true, f64::NAN), 1);
+        assert_eq!(pane_message_recv_cli(Some(7), true, 1e308), 1);
+    }
+
+    #[test]
+    fn recv_timeout_sidecar_exits_two() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        env.set(&socket_path);
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read payload");
+            let payload: serde_json::Value = serde_json::from_str(&line).expect("payload json");
+            let rf = payload["response_file"].as_str().expect("response_file");
+            crate::rpc::write_json_response(
+                &format!("{rf}.err"),
+                serde_json::json!({
+                    "ok": false,
+                    "timeout": true,
+                    "error": "timed out waiting for message on pane 7",
+                }),
+            );
+        });
+
+        let code = pane_message_recv_cli(Some(7), true, 0.1);
+        handle.join().expect("listener thread");
+        assert_eq!(code, 2);
+    }
+}
+

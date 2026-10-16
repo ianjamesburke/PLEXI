@@ -134,6 +134,26 @@ pub(crate) struct PendingSlotWait {
     pub expires_at: Instant,
 }
 
+/// One structured message in a pane's host-managed FIFO inbox.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PaneMessage {
+    pub id: u64,
+    pub pane_id: u64,
+    pub to_pane_id: u64,
+    pub from_pane_id: Option<u64>,
+    pub sender_pane_id: Option<u64>,
+    pub payload: String,
+    pub timestamp_ms: u64,
+}
+
+/// A parked `plexi pane message recv --wait` request.
+pub(crate) struct PendingMessageRecv {
+    pub pane_id: u64,
+    pub response_file: String,
+    /// Reply with a typed timeout once this instant passes.
+    pub expires_at: Instant,
+}
+
 /// A `plexi pane new --agent` spawn whose response is held until the agent
 /// boots.
 pub(crate) struct PendingAgentBoot {
@@ -371,7 +391,7 @@ impl PlexiApp {
     /// defers `session_start` to the first prompt submission. There is
     /// deliberately no prompt-signature parsing anywhere in this predicate:
     /// both sources live in the one detector that also feeds `pane list`.
-    fn agent_reports_idle(&self, pane_id: u64) -> bool {
+    pub(crate) fn agent_reports_idle(&self, pane_id: u64) -> bool {
         self.windows
             .iter()
             .find_map(|win| win.panes.get(&pane_id))
@@ -845,6 +865,106 @@ impl PlexiApp {
             );
             crate::rpc::write_response(&wait.response_file, &bytes);
         }
+    }
+
+    /// Drain all queued messages from `pane_id`'s FIFO inbox in arrival order.
+    pub(crate) fn drain_pane_messages(&mut self, pane_id: u64) -> Vec<PaneMessage> {
+        self.pane_mailboxes
+            .get_mut(&pane_id)
+            .map(|queue| queue.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    /// Answer the oldest parked `pane message recv --wait` waiter on `pane_id`
+    /// if its inbox now holds at least one message. Returns `true` when a
+    /// waiter consumed the inbox.
+    pub(crate) fn complete_message_recvs(&mut self, pane_id: u64) -> bool {
+        let Some(pos) = self
+            .pending_message_recvs
+            .iter()
+            .position(|wait| wait.pane_id == pane_id)
+        else {
+            return false;
+        };
+        if !self
+            .pane_mailboxes
+            .get(&pane_id)
+            .is_some_and(|queue| !queue.is_empty())
+        {
+            return false;
+        }
+        let wait = self.pending_message_recvs.remove(pos);
+        let messages = self.drain_pane_messages(pane_id);
+        log::info!(
+            "pane_message_recv: pane_id={pane_id} delivered {} message(s) to parked waiter",
+            messages.len()
+        );
+        crate::rpc::write_json_response(&wait.response_file, serde_json::json!(messages));
+        true
+    }
+
+    /// Expire overdue `pane message recv --wait` requests, fail waiters whose
+    /// pane closed, and schedule the next deadline wakeup from `App::logic`.
+    pub(crate) fn service_pending_message_recvs(&mut self, ctx: &egui::Context) {
+        if self.pending_message_recvs.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .pending_message_recvs
+            .iter()
+            .any(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id))
+        {
+            let (done, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_message_recvs)
+                .into_iter()
+                .partition(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id));
+            self.pending_message_recvs = live;
+            for wait in done {
+                let pane_alive = self.pane_exists(wait.pane_id);
+                let (timeout, error) = if pane_alive {
+                    log::info!(
+                        "pane_message_recv: pane_id={} timed out",
+                        wait.pane_id
+                    );
+                    (
+                        true,
+                        format!("timed out waiting for message on pane {}", wait.pane_id),
+                    )
+                } else {
+                    log::info!(
+                        "pane_message_recv: pane_id={} closed while waiting for message",
+                        wait.pane_id
+                    );
+                    (
+                        false,
+                        format!("pane {} closed while waiting for a message", wait.pane_id),
+                    )
+                };
+                crate::rpc::write_json_response(
+                    &format!("{}.err", wait.response_file),
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": timeout,
+                        "error": error,
+                    }),
+                );
+            }
+        }
+        let Some(next_expiry) = self
+            .pending_message_recvs
+            .iter()
+            .map(|w| w.expires_at)
+            .min()
+        else {
+            return;
+        };
+        let predicted_frame =
+            std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            next_expiry,
+            Instant::now(),
+            predicted_frame,
+        ));
     }
 }
 

@@ -1325,6 +1325,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `command` | Send an ordinary shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
+| `message` | Send and receive structured messages via a host-managed per-pane FIFO mailbox |
 
 ### `plexi pane wait`
 
@@ -1646,6 +1647,42 @@ Delete a named pane slot
 | `<name>` | string | yes | Slot name |
 | `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
 | `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+
+### `plexi pane message`
+
+Send and receive structured messages via a host-managed per-pane FIFO mailbox
+
+| Subcommand | Description |
+|---|---|
+| `send` | Enqueue a message in a target pane's FIFO mailbox |
+| `recv` | Drain all queued messages from a pane's mailbox as a JSON array |
+
+#### `plexi pane message send`
+
+Enqueue a message in a target pane's FIFO mailbox.
+
+Sender identity (`from_pane_id`) is stamped host-side from the socket peer process ancestry and is never self-reported. Prints a JSON ack with `status` (`"queued"` or `"delivered"`), `message_id`, `queue_len`, and `woke`.
+
+Pass `--submit` to wake an idle target agent with a short notice to run `plexi pane message recv` without interrupting a busy agent.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Target pane id (from `plexi pane list`) |
+| `<payload>` | string | yes | Message payload to enqueue |
+| `--submit` | flag | no | Wake the target agent if idle (never interrupts a busy agent) |
+
+#### `plexi pane message recv`
+
+Drain all queued messages from a pane's mailbox as a JSON array.
+
+Defaults to `PLEXI_PANE_ID`. With `--wait`, blocks host-side with zero polling until at least one message is in the mailbox or `--timeout` expires (exits 0 with the drained JSON array, 2 on timeout, 1 on error).
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `--wait` | flag | no | Block host-side until at least one message arrives or `--timeout` expires |
+| `--timeout` | string | no | Seconds to wait when `--wait` is set before exiting 2 Default: `300`. |
 
 ## `plexi events`
 

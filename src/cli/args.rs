@@ -1855,6 +1855,11 @@ pub enum PaneCmd {
         #[command(subcommand)]
         cmd: PaneSlotCmd,
     },
+    /// Send and receive structured messages via a host-managed per-pane FIFO mailbox.
+    Message {
+        #[command(subcommand)]
+        cmd: PaneMessageCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1950,6 +1955,48 @@ pub enum PaneSlotCmd {
         /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
         pane_id_flag: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PaneMessageCmd {
+    /// Enqueue a message in a target pane's FIFO mailbox.
+    ///
+    /// Sender identity (`from_pane_id`) is stamped host-side from the socket
+    /// peer process ancestry and is never self-reported. Prints a JSON ack
+    /// with `status` (`"queued"` or `"delivered"`), `message_id`, `queue_len`,
+    /// and `woke`.
+    ///
+    /// Pass `--submit` to wake an idle target agent with a short notice to run
+    /// `plexi pane message recv` without interrupting a busy agent.
+    Send {
+        /// Target pane id (from `plexi pane list`)
+        pane_id: u64,
+        /// Message payload to enqueue
+        #[arg(allow_hyphen_values = true)]
+        payload: String,
+        /// Wake the target agent if idle (never interrupts a busy agent)
+        #[arg(long)]
+        submit: bool,
+    },
+    /// Drain all queued messages from a pane's mailbox as a JSON array.
+    ///
+    /// Defaults to `PLEXI_PANE_ID`. With `--wait`, blocks host-side with zero
+    /// polling until at least one message is in the mailbox or `--timeout`
+    /// expires (exits 0 with the drained JSON array, 2 on timeout, 1 on error).
+    Recv {
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
+        pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
+        /// Block host-side until at least one message arrives or `--timeout` expires.
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to wait when `--wait` is set before exiting 2.
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
     },
 }
 

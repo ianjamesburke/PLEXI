@@ -304,7 +304,7 @@ fn main() -> eframe::Result {
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd,
         DebugCmd, DebugSessionCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd,
-        PaneCmd, PaneSlotCmd,
+        PaneCmd, PaneMessageCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     use clap::FromArgMatches;
@@ -1294,6 +1294,27 @@ fn main() -> eframe::Result {
                                     pane_id.or(pane_id_flag),
                                 ))
                             }
+                        },
+                        PaneCmd::Message { cmd } => match cmd {
+                            PaneMessageCmd::Send {
+                                pane_id,
+                                payload,
+                                submit,
+                            } => std::process::exit(cli::pane_message_send_cli(
+                                pane_id,
+                                &payload,
+                                submit,
+                            )),
+                            PaneMessageCmd::Recv {
+                                pane_id,
+                                pane_id_flag,
+                                wait,
+                                timeout,
+                            } => std::process::exit(cli::pane_message_recv_cli(
+                                pane_id.or(pane_id_flag),
+                                wait,
+                                timeout,
+                            )),
                         },
                         PaneCmd::New {
                             cmd,
