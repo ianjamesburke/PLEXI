@@ -58,11 +58,7 @@ jobs:
       - name: Remove temporary signing trust and Keychain
         if: always()
         run: |
-          certificate="$RUNNER_TEMP/plexi-alpha-release-signing.pem"
-          keychain="$RUNNER_TEMP/plexi-alpha-release-signing.keychain-db"
-          # Trust is public certificate metadata on a disposable hosted VM.
-          # VM teardown discards it; avoid trust-removal APIs that can prompt.
-          rm -f "$keychain" "${keychain}-shm" "${keychain}-wal" "$certificate" "$certificate.trusted"
+          bash scripts/setup-alpha-release-signing.sh --cleanup
   packages:
     if: ${{ !inputs.signing_only }}
     uses: ./.github/workflows/distribution.yml

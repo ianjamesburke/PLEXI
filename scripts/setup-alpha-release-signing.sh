@@ -9,6 +9,22 @@ if [[ "$(uname -s)" != Darwin ]]; then
   exit 1
 fi
 
+: "${RUNNER_TEMP:?GitHub runner temporary directory is required}"
+if [[ "${1:-}" == --cleanup ]]; then
+  uv run --no-project python - <<'PY'
+import json, os, subprocess
+from pathlib import Path
+root = Path(os.environ['RUNNER_TEMP'])
+snapshot = root / 'plexi-alpha-release-signing-search-list.json'
+if snapshot.exists():
+    subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', *json.loads(snapshot.read_text())], check=True, timeout=20)
+for name in ('plexi-alpha-release-signing.keychain-db', 'plexi-alpha-release-signing.keychain-db-shm', 'plexi-alpha-release-signing.keychain-db-wal', 'plexi-alpha-release-signing.pem', 'plexi-alpha-release-signing.pem.trusted', 'plexi-alpha-release-signing.p12', 'plexi-alpha-release-signing-search-list.json'):
+    (root / name).unlink(missing_ok=True)
+print('release-signing: restored runner search list and removed temporary credential files')
+PY
+  exit 0
+fi
+
 : "${PLEXI_ALPHA_SIGNING_P12_BASE64:?missing protected Alpha signing certificate}"
 : "${PLEXI_ALPHA_SIGNING_P12_PASSWORD:?missing protected Alpha signing certificate password}"
 : "${PLEXI_ALPHA_SIGNING_CERT_SHA1:?missing pinned Alpha signing certificate SHA-1}"
@@ -33,6 +49,17 @@ echo 'release-signing: importing the pinned private identity'
 security import "$p12" -k "$keychain" -P "$PLEXI_ALPHA_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
 echo 'release-signing: configuring codesign access'
 security set-key-partition-list -S apple-tool:,apple: -s -k "$PLEXI_ALPHA_SIGNING_P12_PASSWORD" "$keychain"
+
+# codesign's internal key lookup still needs the imported chain in the search
+# list even when --keychain selects the identity. Preserve the runner's list.
+uv run --no-project python - <<'PY'
+import json, os, shlex, subprocess
+from pathlib import Path
+root = Path(os.environ['RUNNER_TEMP'])
+original = shlex.split(subprocess.check_output(['security', 'list-keychains', '-d', 'user'], text=True))
+(root / 'plexi-alpha-release-signing-search-list.json').write_text(json.dumps(original))
+subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', str(root / 'plexi-alpha-release-signing.keychain-db'), *original], check=True)
+PY
 
 expected="$(printf '%s' "$PLEXI_ALPHA_SIGNING_CERT_SHA1" | tr '[:lower:]' '[:upper:]' | tr -d ':')"
 security find-certificate -c 'Plexi Dev' -p "$keychain" >"$certificate"

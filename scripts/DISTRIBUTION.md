@@ -76,11 +76,13 @@ secrets `PLEXI_ALPHA_SIGNING_P12_BASE64` (base64 of that backup),
 certificate fingerprint, not its name). Never generate a replacement identity
 in CI. Missing credentials or a fingerprint mismatch stop publication. The
 imported key is kept in a temporary runner Keychain, selected explicitly for
-signing without replacing the default Keychain or its search list, and removed
+signing without replacing the default Keychain, and removed
 at job teardown. The runner trusts only the pinned certificate for code signing;
 disposal of the hosted VM discards its temporary admin-domain trust setting.
 Cleanup unlinks the temporary Keychain files rather than calling macOS trust
 removal APIs, which can block on authorization even during cancellation.
+The temporary Keychain is prepended to the runner's search list for codesign's
+internal identity lookup; cleanup restores the saved original list.
 
 `scripts/test-macos-keychain-continuity.py` installs distinct A and B packages
 into temporary destinations, files a question under A, and requires the same

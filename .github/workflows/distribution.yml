@@ -143,11 +143,7 @@ jobs:
         if: always() && runner.os == 'macOS' && inputs.tag != ''
         shell: bash
         run: |
-          keychain="$RUNNER_TEMP/plexi-alpha-release-signing.keychain-db"
-          certificate="$RUNNER_TEMP/plexi-alpha-release-signing.pem"
-          # Trust is public certificate metadata on a disposable hosted VM.
-          # VM teardown discards it; avoid trust-removal APIs that can prompt.
-          rm -f "$keychain" "${keychain}-shm" "${keychain}-wal" "$certificate" "$certificate.trusted"
+          bash scripts/setup-alpha-release-signing.sh --cleanup
       - uses: actions/upload-artifact@v4
         if: always()
         with:
