@@ -1988,8 +1988,10 @@ pub enum ContextCmd {
         #[arg(long, action = clap::ArgAction::Append, value_name = "CMD")]
         command: Vec<String>,
         /// How the panes are arranged inside the sub-context's window.
-        #[arg(long, value_enum, default_value_t = crate::protocol::SubContextLayout::Tiled)]
-        layout: crate::protocol::SubContextLayout,
+        /// Defaults to `tiled` when the pane count fills a square grid (4, 9, …)
+        /// and `columns` otherwise so no grid cell is left empty.
+        #[arg(long, value_enum)]
+        layout: Option<crate::protocol::SubContextLayout>,
         /// Zoom into the new sub-context after creation. Default: stay put.
         #[arg(long)]
         focus: bool,

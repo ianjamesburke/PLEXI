@@ -145,7 +145,7 @@ pub fn context_sub_cli(
     path: Option<&str>,
     agents: u32,
     commands: &[String],
-    layout: crate::protocol::SubContextLayout,
+    layout: Option<crate::protocol::SubContextLayout>,
     focus: bool,
     from: Option<u64>,
 ) -> i32 {
@@ -195,9 +195,11 @@ pub fn context_sub_cli(
         "name": name,
         "root": root.to_string_lossy(),
         "panes": panes,
-        "layout": layout,
         "focus": focus,
     });
+    if let Some(layout) = layout {
+        payload["layout"] = serde_json::to_value(layout).unwrap_or_default();
+    }
     if let Some(id) = parent_context_id {
         payload["parent_context_id"] = serde_json::Value::from(id);
     }

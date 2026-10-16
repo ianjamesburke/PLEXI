@@ -1286,7 +1286,7 @@ impl PlexiApp {
             if let Some(cmd) = initial_cmd {
                 super::apply_initial_cmd(&mut settings, cmd, false);
             }
-            let Some(pane) = TerminalPane::new(
+            let Some(mut pane) = TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
                 self.pty_event_tx.clone(),
@@ -1307,9 +1307,12 @@ impl PlexiApp {
                 );
                 return None;
             };
+            let pane_name = super::layout::default_squad_pane_name(&context.name, idx);
+            pane.name = Some(pane_name.clone());
+            pane.name_locked = true;
             log::info!(
                 "create_context_pane_set: spawned pane {} of {total} pane_id={new_id} \
-                 context_id={} cmd={initial_cmd:?}",
+                 name={pane_name:?} context_id={} cmd={initial_cmd:?}",
                 idx + 1,
                 context.context_id
             );

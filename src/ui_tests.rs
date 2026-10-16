@@ -5105,4 +5105,100 @@ mod tests {
         h.save_screenshot(&evidence_png!())
             .expect("render todo add form");
     }
+
+    /// Stint 0581 visual + geometry review: `--agents 3` with `--layout`
+    /// omitted arranges the squad as three equal full-height columns (not a
+    /// 2×2 grid with a dead bottom-right quadrant) and labels each pane header
+    /// `<name>-1`, `<name>-2`, `<name>-3`.
+    #[test]
+    fn screenshot_context_sub_three_agents_default_columns_and_names() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+        let anchor = add_focused_pane(&mut h);
+        let root = tempfile::tempdir().expect("squad root");
+
+        let pane_ids = h.with_app_mut(|app| {
+            let parent_id = app.router.active().context_id;
+            let layout = crate::pane_ops::default_squad_layout(3);
+            let child = app
+                .new_child_context(crate::pane_ops::ChildContextSpec {
+                    parent_id: Some(parent_id),
+                    parent_name: String::new(),
+                    name: Some("agentsquad".to_string()),
+                    path: root.path().to_path_buf(),
+                    portal_vertical: true,
+                    portal_first: false,
+                    anchor_pane: Some(anchor),
+                    panes: vec![None, None, None],
+                    layout,
+                })
+                .expect("create 3-pane squad");
+            let child_idx = app.router.len() - 1;
+            app.switch_workspace(child_idx);
+            child.pane_ids
+        });
+        h.run_steps(3);
+
+        let rects: Vec<egui::Rect> = h.with_app(|app| {
+            let window = &app.windows[app.active_window];
+            pane_ids
+                .iter()
+                .map(|pane_id| {
+                    let tile_id = window
+                        .tree
+                        .tiles
+                        .iter()
+                        .find_map(|(tid, tile)| {
+                            matches!(tile, egui_tiles::Tile::Pane(id) if id == pane_id)
+                                .then_some(*tid)
+                        })
+                        .expect("squad pane tile");
+                    window.tree.tiles.rect(tile_id).expect("painted pane rect")
+                })
+                .collect()
+        });
+        assert_eq!(rects.len(), 3);
+        for (i, rect) in rects.iter().enumerate() {
+            assert!(
+                (rect.min.y - rects[0].min.y).abs() < 2.0
+                    && (rect.max.y - rects[0].max.y).abs() < 2.0,
+                "pane {i} must span the same full vertical band as pane 0 (got {rect:?} vs {:?})",
+                rects[0]
+            );
+            assert!(
+                (rect.width() - rects[0].width()).abs() < 4.0,
+                "pane {i} must have equal column width (got {rect:?} vs {:?})",
+                rects[0]
+            );
+        }
+        assert!(
+            rects[0].max.x <= rects[1].min.x + 2.0 && rects[1].max.x <= rects[2].min.x + 2.0,
+            "the 3 squad panes must sit side-by-side left-to-right: {rects:?}"
+        );
+
+        let names: Vec<Option<String>> = h.with_app(|app| {
+            let window = &app.windows[app.active_window];
+            pane_ids
+                .iter()
+                .map(|id| {
+                    window
+                        .panes
+                        .get(id)
+                        .and_then(Pane::as_terminal)
+                        .and_then(|t| t.name.clone())
+                })
+                .collect()
+        });
+        assert_eq!(
+            names,
+            vec![
+                Some("agentsquad-1".to_string()),
+                Some("agentsquad-2".to_string()),
+                Some("agentsquad-3".to_string()),
+            ]
+        );
+
+        h.save_screenshot(&evidence_png!())
+            .expect("render 3-pane squad columns");
+    }
 }
