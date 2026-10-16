@@ -455,8 +455,90 @@ mod socket_resolution_tests {
             )
         );
     }
+
+    #[test]
+    fn nested_channel_matrix_routes_without_env_stripping() {
+        let home = Path::new("/Users/test");
+        let inherited_env = [
+            ("PLEXI_CHANNEL", "beta"),
+            ("PLEXI_SOCKET", "/Users/test/.plexi-beta/notify.sock"),
+            ("PLEXI_PANE_ID", "42"),
+            ("PLEXI_CONTEXT_ID", "7"),
+            ("PLEXI_CONTEXT_ROOT", "/Users/test/workspace"),
+            ("PLEXI_RUNNING", "1"),
+        ];
+        let env_get = |key: &str| -> Option<&str> {
+            inherited_env
+                .iter()
+                .find_map(|(k, v)| (*k == key).then_some(*v))
+        };
+
+        // Self-identity vars stay intact for default resolution (e.g. pane slot write).
+        assert_eq!(env_get("PLEXI_PANE_ID"), Some("42"));
+        assert_eq!(env_get("PLEXI_CONTEXT_ID"), Some("7"));
+        assert_eq!(env_get("PLEXI_CONTEXT_ROOT"), Some("/Users/test/workspace"));
+        assert_eq!(env_get("PLEXI_RUNNING"), Some("1"));
+
+        // (1) Channel-named shim with inherited beta routing + self-identity env
+        // resolves both profile dir and command socket to the shim's channel.
+        let shim_basename = "plexi-pr-2765";
+        let shim_channel = crate::config::channel_from_basename(shim_basename);
+        assert_eq!(shim_channel, Some("pr-2765"));
+        let shim_profile_dir =
+            crate::config::resolve_channel_dir(shim_basename, env_get("PLEXI_CHANNEL"));
+        let shim_socket = resolve_command_socket_from(
+            None,
+            shim_channel,
+            env_get("PLEXI_SOCKET").map(OsStr::new),
+            home,
+        );
+        assert_eq!(shim_profile_dir, ".plexi-pr-2765");
+        assert_eq!(
+            shim_socket,
+            Some(crate::platform::ipc::endpoint_in(
+                &home.join(".plexi-pr-2765")
+            ))
+        );
+
+        // (2) Explicit `--socket` overrides the shim's channel and ambient env.
+        let explicit_socket = Path::new("/tmp/custom-override.sock");
+        let overridden_socket = resolve_command_socket_from(
+            Some(explicit_socket),
+            shim_channel,
+            env_get("PLEXI_SOCKET").map(OsStr::new),
+            home,
+        );
+        assert_eq!(overridden_socket, Some(explicit_socket.to_path_buf()));
+
+        // (3) Bare `plexi` adopts inherited `PLEXI_CHANNEL` and `PLEXI_SOCKET`.
+        let bare_basename = "plexi";
+        let bare_channel = crate::config::channel_from_basename(bare_basename);
+        assert_eq!(bare_channel, None);
+        let bare_profile_dir =
+            crate::config::resolve_channel_dir(bare_basename, env_get("PLEXI_CHANNEL"));
+        let bare_socket = resolve_command_socket_from(
+            None,
+            bare_channel,
+            env_get("PLEXI_SOCKET").map(OsStr::new),
+            home,
+        );
+        assert_eq!(bare_profile_dir, ".plexi-beta");
+        assert_eq!(
+            bare_socket,
+            Some(PathBuf::from("/Users/test/.plexi-beta/notify.sock"))
+        );
+    }
 }
 
+/// Resolve the command socket endpoint from target-routing inputs.
+///
+/// Precedence: explicit `--socket` > binary channel identity (`plexi-<channel>`)
+/// > ambient `PLEXI_SOCKET` (bare `plexi` only) > `None`.
+///
+/// See `src/cli/AGENTS.md` ("Environment classification (`self-identity` vs
+/// `target-routing`)") for the canonical precedence table. Self-identity env
+/// vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_ID`, `PLEXI_CONTEXT_ROOT`,
+/// `PLEXI_RUNNING`) are never consulted for socket routing.
 fn resolve_command_socket_from(
     explicit_socket: Option<&std::path::Path>,
     binary_channel: Option<&str>,
