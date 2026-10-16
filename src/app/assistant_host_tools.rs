@@ -866,6 +866,7 @@ impl PlexiApp {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         });
         let result = if let Some(created) = self

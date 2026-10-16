@@ -640,6 +640,13 @@ impl PlexiApp {
                                         "repo_root": wt.repo_root,
                                     });
                                 }
+                                if let Some(schema) = self
+                                    .pane_results
+                                    .get(pane_id)
+                                    .and_then(|s| s.schema.as_ref())
+                                {
+                                    obj["result_schema"] = schema.clone();
+                                }
                                 obj
                             }
                             crate::host::pane::Pane::App(a) => {
@@ -1143,6 +1150,213 @@ impl PlexiApp {
                         response_file: response_file.clone(),
                         expires_at,
                     });
+            }
+            crate::protocol::AppRequest::PaneResultSchemaSet {
+                pane_id,
+                schema,
+                response_file,
+            } => {
+                log::info!("pane_ipc: kind=pane_result_schema_set pane_id={pane_id}");
+                let win_info = self.find_pane_in_any_window(*pane_id);
+                if win_info.is_none() && !self.pane_results.contains_key(pane_id) {
+                    log::warn!("pane_result: schema set rejected — pane {pane_id} not found");
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "pane_not_found",
+                            "error": format!("pane {pane_id} not found"),
+                        }),
+                    );
+                    return;
+                }
+                let base_dir = win_info
+                    .and_then(|(win_idx, _)| self.windows.get(win_idx))
+                    .map(|w| w.path.clone());
+                match self
+                    .pane_results
+                    .entry(*pane_id)
+                    .or_default()
+                    .set_schema(schema.clone(), base_dir.as_deref())
+                {
+                    Ok(normalized) => {
+                        log::info!("pane_result: schema set for pane_id={pane_id}");
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "ok": true,
+                                "pane_id": pane_id,
+                                "schema": normalized,
+                            }),
+                        );
+                    }
+                    Err(msg) => {
+                        log::warn!("pane_result: invalid schema for pane_id={pane_id}: {msg}");
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "ok": false,
+                                "pane_id": pane_id,
+                                "error_code": "invalid_schema",
+                                "error": msg,
+                            }),
+                        );
+                    }
+                }
+            }
+            crate::protocol::AppRequest::PaneResultWrite {
+                pane_id,
+                payload,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=pane_result_write pane_id={pane_id} bytes={}",
+                    payload.len()
+                );
+                let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
+                if !pane_alive && !self.pane_results.contains_key(pane_id) {
+                    log::warn!("pane_result: write rejected — pane {pane_id} not found");
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": false,
+                            "pane_id": pane_id,
+                            "error_code": "pane_not_found",
+                            "error": format!("pane {pane_id} not found"),
+                        }),
+                    );
+                    return;
+                }
+                match self
+                    .pane_results
+                    .entry(*pane_id)
+                    .or_default()
+                    .write_payload(payload)
+                {
+                    Ok(committed) => {
+                        log::info!("pane_result: valid result committed for pane_id={pane_id}");
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "ok": true,
+                                "pane_id": pane_id,
+                                "result": committed,
+                            }),
+                        );
+                        self.complete_result_waits(*pane_id);
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "pane_result: rejected write for pane_id={pane_id} code={} error={}",
+                            err.error_code(),
+                            err.message()
+                        );
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "ok": false,
+                                "pane_id": pane_id,
+                                "error_code": err.error_code(),
+                                "error": err.message(),
+                                "validation_errors": err.validation_errors(),
+                            }),
+                        );
+                    }
+                }
+            }
+            crate::protocol::AppRequest::PaneResultRead {
+                pane_id,
+                wait,
+                timeout_secs,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=pane_result_read pane_id={pane_id} wait={wait} timeout={timeout_secs}"
+                );
+                if *wait
+                    && (!timeout_secs.is_finite()
+                        || *timeout_secs < 0.0
+                        || *timeout_secs > crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS)
+                {
+                    write_json_response(
+                        &format!("{response_file}.err"),
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "invalid_timeout",
+                            "error": format!(
+                                "--timeout must be a non-negative number of seconds at most {}, got {timeout_secs}",
+                                crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+                            ),
+                        }),
+                    );
+                    return;
+                }
+                if let Some(committed) = self
+                    .pane_results
+                    .get(pane_id)
+                    .and_then(|state| state.committed.as_ref())
+                {
+                    let mut bytes =
+                        serde_json::to_vec(committed).unwrap_or_else(|_| b"{}".to_vec());
+                    bytes.push(b'\n');
+                    log::info!(
+                        "pane_result_read: pane_id={pane_id} satisfied immediately ({} bytes)",
+                        bytes.len()
+                    );
+                    write_response(response_file, &bytes);
+                    return;
+                }
+                let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
+                let known_state = self.pane_results.get(pane_id);
+                if !pane_alive && known_state.is_none() {
+                    log::warn!("pane_result_read: pane_id={pane_id} not found");
+                    write_json_response(
+                        &format!("{response_file}.err"),
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "pane_not_found",
+                            "error": format!("pane {pane_id} not found"),
+                        }),
+                    );
+                    return;
+                }
+                if *wait && pane_alive {
+                    let expires_at = std::time::Instant::now()
+                        + std::time::Duration::from_secs_f64(*timeout_secs);
+                    log::info!("pane_result_read: pane_id={pane_id} parked for {timeout_secs}s");
+                    self.pending_result_waits
+                        .push(crate::app::pane_wait::PendingResultWait {
+                            pane_id: *pane_id,
+                            response_file: response_file.clone(),
+                            expires_at,
+                        });
+                    return;
+                }
+                if let Some(reason) = known_state.and_then(|s| s.last_invalid_error.as_deref()) {
+                    log::info!(
+                        "pane_result_read: pane_id={pane_id} no valid result (last write invalid: {reason})"
+                    );
+                    write_json_response(
+                        &format!("{response_file}.err"),
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "invalid_result",
+                            "error": format!(
+                                "no valid result for pane {pane_id} (last write rejected: {reason})"
+                            ),
+                        }),
+                    );
+                } else {
+                    log::info!("pane_result_read: pane_id={pane_id} no result yet");
+                    write_json_response(
+                        &format!("{response_file}.err"),
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "no_result_yet",
+                            "error": format!("no result yet for pane {pane_id}"),
+                        }),
+                    );
+                }
             }
             crate::protocol::AppRequest::SlotRead {
                 pane_id,
@@ -1752,6 +1966,15 @@ impl PlexiApp {
                         self.pane_worktrees.insert(response_pane_id, wt);
                     } else {
                         let _ = crate::host::worktree::reclaim_or_retain_worktree(&wt);
+                    }
+                }
+                if launch_result.is_ok() {
+                    let entry = self.pane_results.entry(response_pane_id).or_default();
+                    if let Some(ref schema) = spec.result_schema {
+                        entry.schema = Some(schema.clone());
+                        log::info!(
+                            "pane_result: registered schema at spawn for pane_id={response_pane_id}"
+                        );
                     }
                 }
                 if matches!(
@@ -4146,6 +4369,7 @@ impl PlexiApp {
                 agent_cmd: None,
                 boot_timeout_secs: None,
                 worktree: val["worktree"].as_str().map(str::to_string),
+                result_schema: val.get("result_schema").cloned().filter(|v| !v.is_null()),
                 peer_ancestry: None,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)

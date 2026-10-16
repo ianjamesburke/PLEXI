@@ -1658,6 +1658,11 @@ pub enum PaneCmd {
         /// it and reports its path if dirty or ahead.
         #[arg(long, value_name = "BRANCH")]
         worktree: Option<String>,
+        /// Declare a JSON Schema (inline JSON object or path to a `.json` file)
+        /// that the pane's structured return (`plexi pane result write`) must
+        /// satisfy before the host accepts it.
+        #[arg(long, value_name = "JSON_OR_PATH")]
+        result_schema: Option<String>,
     },
     /// Rename a pane.
     ///
@@ -1949,6 +1954,123 @@ pub enum PaneCmd {
     Message {
         #[command(subcommand)]
         cmd: PaneMessageCmd,
+    },
+    /// Declare a result schema, write a schema-validated structured result once,
+    /// or read a pane's validated result.
+    ///
+    /// Spawners declare the JSON Schema at spawn (`plexi pane new --result-schema <schema>`)
+    /// or at brief time (`plexi pane result schema <schema> [--pane-id <id>]`).
+    /// The worker agent writes its structured JSON object once via
+    /// `plexi pane result write <json>`: the host validates it against the
+    /// declared schema synchronously and rejects malformed or schema-violating
+    /// payloads back to the agent (exit 1 with the validation error) so the
+    /// agent can self-correct before any consumer sees it.
+    ///
+    /// Reading via `plexi pane result <id>` (or `plexi pane result read <id>`)
+    /// prints the validated JSON object to stdout and exits 0, or exits 2 with
+    /// `error_code: "no_result_yet"` when no result has been written yet (or on
+    /// `--wait` timeout), or exits 1 with `error_code: "invalid_result"` when
+    /// the last attempted write was rejected and no valid result has been
+    /// committed yet.
+    #[command(args_conflicts_with_subcommands = true)]
+    Result {
+        #[command(subcommand)]
+        cmd: Option<PaneResultCmd>,
+        /// Pane id to read the result from (defaults to PLEXI_PANE_ID).
+        #[arg(conflicts_with = "pane_id_flag")]
+        pane_id: Option<u64>,
+        /// Pane id (flag form; defaults to PLEXI_PANE_ID).
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
+        /// Block host-side until a valid result is committed or `--timeout` expires.
+        #[arg(long, conflicts_with_all = ["write", "schema"])]
+        wait: bool,
+        /// Seconds to wait when `--wait` is set before exiting 2.
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
+        /// Shorthand for `plexi pane result write <JSON>`: validate and commit
+        /// a structured JSON object once for this pane.
+        #[arg(long, value_name = "JSON", allow_hyphen_values = true, conflicts_with = "schema")]
+        write: Option<String>,
+        /// Shorthand for `plexi pane result schema <JSON_OR_PATH>`: declare or
+        /// update the JSON Schema before a result is committed.
+        #[arg(long, value_name = "JSON_OR_PATH", conflicts_with = "write")]
+        schema: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PaneResultCmd {
+    /// Read a pane's validated structured result as JSON.
+    ///
+    /// Exits 0 and prints the validated JSON object when committed, exits 2
+    /// (`no_result_yet` or `--wait` `timeout`) when no result has been written
+    /// yet, or exits 1 (`invalid_result`) when the last write was rejected by
+    /// schema validation and not yet corrected.
+    Read {
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
+        pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
+        /// Block host-side until a valid result is committed or `--timeout` expires.
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to wait when `--wait` is set before exiting 2.
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
+    },
+    /// Block host-side until a pane commits a valid structured result, then print it.
+    ///
+    /// Equivalent to `plexi pane result <id> --wait`. Exits 0 with the validated
+    /// JSON object, 2 on timeout, 1 on error.
+    Wait {
+        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        #[arg(conflicts_with = "pane_id_flag")]
+        pane_id: Option<u64>,
+        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
+        /// Seconds to wait before exiting 2.
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
+    },
+    /// Validate and commit a structured JSON object once for a pane.
+    ///
+    /// If the payload is not a JSON object or violates the pane's declared
+    /// result schema, the host rejects it synchronously (exit 1 with the
+    /// validation error on stderr) and leaves the result uncommitted so the
+    /// agent can self-correct and retry. Once a valid result is committed,
+    /// subsequent writes are rejected with `result_already_set`.
+    ///
+    /// Accepts `write <json> [--pane-id <id>]`, `write <pane_id> <json>`, or
+    /// reads stdin when `<json>` is omitted.
+    Write {
+        /// JSON object payload (or pane id when two positional arguments are given).
+        /// Reads stdin when omitted.
+        #[arg(allow_hyphen_values = true)]
+        first: Option<String>,
+        /// JSON object payload when the first positional argument is a pane id.
+        #[arg(allow_hyphen_values = true, conflicts_with = "pane_id_flag")]
+        second: Option<String>,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
+    },
+    /// Declare a JSON Schema (inline JSON object or path to a `.json` file) for a pane's result.
+    ///
+    /// Accepts `schema <json-or-path> [--pane-id <id>]` or `schema <pane_id> <json-or-path>`.
+    Schema {
+        /// Inline JSON Schema object or path to a schema file (or pane id when two arguments are given).
+        #[arg(allow_hyphen_values = true)]
+        first: String,
+        /// Inline JSON Schema object or path to a schema file when the first argument is a pane id.
+        #[arg(allow_hyphen_values = true, conflicts_with = "pane_id_flag")]
+        second: Option<String>,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        #[arg(long = "pane-id", id = "pane_id_flag")]
+        pane_id_flag: Option<u64>,
     },
 }
 
@@ -3268,5 +3390,107 @@ mod tests {
             pane_key_help.contains("pane send") && pane_key_help.contains("--submit"),
             "plexi pane key --help must cross-reference pane send --submit for confirmed submission:\n{pane_key_help}"
         );
+    }
+
+    #[test]
+    fn pane_result_parses_shorthand_read_and_subcommands() {
+        use super::{Commands, PaneCmd, PaneResultCmd};
+
+        let parse = |args: &[&str]| Cli::try_parse_from(args);
+
+        // `plexi pane result 42`
+        let cli = parse(&["plexi", "pane", "result", "42"]).expect("pane result 42");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::Result {
+                    cmd: None,
+                    pane_id: Some(42),
+                    wait: false,
+                    write: None,
+                    schema: None,
+                    ..
+                }
+            })
+        ));
+
+        // `plexi pane result 42 --wait --timeout 15`
+        let cli = parse(&["plexi", "pane", "result", "42", "--wait", "--timeout", "15"])
+            .expect("pane result 42 --wait");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::Result {
+                    cmd: None,
+                    pane_id: Some(42),
+                    wait: true,
+                    timeout: t,
+                    ..
+                }
+            }) if (t - 15.0).abs() < f64::EPSILON
+        ));
+
+        // `plexi pane result write '{"status":"pass"}'`
+        let cli = parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#])
+            .expect("pane result write");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::Result {
+                    cmd: Some(PaneResultCmd::Write {
+                        first: Some(ref s),
+                        second: None,
+                        pane_id_flag: None,
+                    }),
+                    ..
+                }
+            }) if s == r#"{"status":"pass"}"#
+        ));
+
+        // `plexi pane result schema '{"required":["status"]}' --pane-id 42`
+        let cli = parse(&[
+            "plexi",
+            "pane",
+            "result",
+            "schema",
+            r#"{"required":["status"]}"#,
+            "--pane-id",
+            "42",
+        ])
+        .expect("pane result schema");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::Result {
+                    cmd: Some(PaneResultCmd::Schema {
+                        ref first,
+                        second: None,
+                        pane_id_flag: Some(42),
+                    }),
+                    ..
+                }
+            }) if first == r#"{"required":["status"]}"#
+        ));
+
+        // `plexi pane new --agent c-large --result-schema schema.json`
+        let cli = parse(&[
+            "plexi",
+            "pane",
+            "new",
+            "--agent",
+            "c-large",
+            "--result-schema",
+            "schema.json",
+        ])
+        .expect("pane new --result-schema");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::New {
+                    result_schema: Some(ref s),
+                    ..
+                }
+            }) if s == "schema.json"
+        ));
     }
 }

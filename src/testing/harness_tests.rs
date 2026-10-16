@@ -6268,6 +6268,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         agent_cmd: None,
         boot_timeout_secs: None,
         worktree: None,
+        result_schema: None,
         peer_ancestry: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
@@ -7752,6 +7753,7 @@ mod routine_firing {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         });
 
@@ -7801,6 +7803,7 @@ mod routine_firing {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         });
 
@@ -8228,6 +8231,7 @@ mod agent_boot {
             agent_cmd: Some(agent_cmd.to_string()),
             boot_timeout_secs,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         });
         response
@@ -8443,6 +8447,7 @@ mod agent_boot {
             agent_cmd: Some("c-large".to_string()),
             boot_timeout_secs: None,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         });
         h.run_frames(1);
@@ -10251,6 +10256,7 @@ mod pane_worktree_tests {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: Some("feature/0668-clean".to_string()),
+            result_schema: None,
             peer_ancestry: None,
         });
         h.run_frames(1);
@@ -10329,6 +10335,7 @@ mod pane_worktree_tests {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: Some("feature/0668-dirty".to_string()),
+            result_schema: None,
             peer_ancestry: None,
         });
         h.run_frames(1);
@@ -10404,6 +10411,7 @@ mod pane_worktree_tests {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: Some("feature/0668-ahead".to_string()),
+            result_schema: None,
             peer_ancestry: None,
         });
         h.run_frames(1);
@@ -10445,5 +10453,258 @@ mod pane_worktree_tests {
             wt_path.exists(),
             "ahead worktree must remain on disk after pane close"
         );
+    }
+}
+
+mod pane_result_harness_tests {
+    use super::*;
+    use crate::cli::pane::{pane_result_read_outcome, PaneResultReadOutcome};
+    use crate::rpc::SlotReply;
+
+    #[test]
+    fn spawn_pane_with_result_schema_rejects_invalid_writes_synchronously_and_allows_self_correction()
+    {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["status", "pr"],
+            "properties": {
+                "status": { "type": "string", "enum": ["pass", "fail"] },
+                "pr": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+        });
+
+        let spawn_resp = temp_response(tmp.path(), "result-spawn");
+        h.inject_ipc(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(spawn_resp.clone()),
+            ephemeral: false,
+            cwd: None,
+            no_focus: true,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: Some("worker".to_string()),
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: None,
+            result_schema: Some(schema),
+            peer_ancestry: None,
+        });
+        h.run_frames(1);
+
+        let spawn_reply = read_json_response(&spawn_resp);
+        let pane_id = spawn_reply["pane_id"]
+            .as_u64()
+            .expect("spawn_pane must return pane_id");
+
+        // 1. Before any write: read returns sidecar .err with `no_result_yet` (exit 2).
+        let read_before = temp_response(tmp.path(), "result-read-before");
+        h.inject_ipc(AppRequest::PaneResultRead {
+            pane_id,
+            wait: false,
+            timeout_secs: 300.0,
+            response_file: read_before.clone(),
+        });
+        h.run_frames(1);
+        let err_before = std::fs::read(format!("{read_before}.err")).expect("read_before .err");
+        let err_before_json: serde_json::Value =
+            serde_json::from_slice(&err_before).expect("err_before json");
+        assert_eq!(err_before_json["error_code"].as_str(), Some("no_result_yet"));
+        let outcome_before = pane_result_read_outcome(Ok(SlotReply::Err(err_before)));
+        assert_eq!(outcome_before.exit_code(), 2);
+
+        // 2. Agent writes malformed JSON -> rejected synchronously back to the agent.
+        let write_malformed = temp_response(tmp.path(), "result-write-malformed");
+        h.inject_ipc(AppRequest::PaneResultWrite {
+            pane_id,
+            payload: "{not valid json".to_string(),
+            response_file: write_malformed.clone(),
+        });
+        h.run_frames(1);
+        let malformed_reply = read_json_response(&write_malformed);
+        assert_eq!(malformed_reply["ok"].as_bool(), Some(false));
+        assert_eq!(
+            malformed_reply["error_code"].as_str(),
+            Some("invalid_result")
+        );
+        assert!(
+            malformed_reply["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("malformed JSON")),
+            "expected malformed JSON error, got {malformed_reply}"
+        );
+
+        // 3. Agent writes schema-violating JSON (missing required `pr`) -> rejected synchronously.
+        let write_invalid = temp_response(tmp.path(), "result-write-invalid");
+        h.inject_ipc(AppRequest::PaneResultWrite {
+            pane_id,
+            payload: r#"{"status":"pass"}"#.to_string(),
+            response_file: write_invalid.clone(),
+        });
+        h.run_frames(1);
+        let invalid_reply = read_json_response(&write_invalid);
+        assert_eq!(invalid_reply["ok"].as_bool(), Some(false));
+        assert_eq!(invalid_reply["error_code"].as_str(), Some("invalid_result"));
+        assert!(
+            invalid_reply["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("missing required property \"pr\"")),
+            "expected missing `pr` error, got {invalid_reply}"
+        );
+
+        // 4. Reading after a rejected write returns `invalid_result` (exit 1), distinct from `no_result_yet` (exit 2).
+        let read_after_invalid = temp_response(tmp.path(), "result-read-invalid");
+        h.inject_ipc(AppRequest::PaneResultRead {
+            pane_id,
+            wait: false,
+            timeout_secs: 300.0,
+            response_file: read_after_invalid.clone(),
+        });
+        h.run_frames(1);
+        let err_invalid =
+            std::fs::read(format!("{read_after_invalid}.err")).expect("read_after_invalid .err");
+        let err_invalid_json: serde_json::Value =
+            serde_json::from_slice(&err_invalid).expect("err_invalid json");
+        assert_eq!(
+            err_invalid_json["error_code"].as_str(),
+            Some("invalid_result")
+        );
+        let outcome_invalid = pane_result_read_outcome(Ok(SlotReply::Err(err_invalid)));
+        assert_eq!(outcome_invalid.exit_code(), 1);
+
+        // 5. Agent self-corrects and writes a schema-valid JSON object -> committed.
+        let write_valid = temp_response(tmp.path(), "result-write-valid");
+        h.inject_ipc(AppRequest::PaneResultWrite {
+            pane_id,
+            payload: r#"{"status":"pass","pr":42}"#.to_string(),
+            response_file: write_valid.clone(),
+        });
+        h.run_frames(1);
+        let valid_reply = read_json_response(&write_valid);
+        assert_eq!(valid_reply["ok"].as_bool(), Some(true));
+        assert_eq!(valid_reply["result"]["status"].as_str(), Some("pass"));
+        assert_eq!(valid_reply["result"]["pr"].as_u64(), Some(42));
+
+        // 6. Second write is rejected (`result_already_set`) and does not overwrite.
+        let write_second = temp_response(tmp.path(), "result-write-second");
+        h.inject_ipc(AppRequest::PaneResultWrite {
+            pane_id,
+            payload: r#"{"status":"fail","pr":99}"#.to_string(),
+            response_file: write_second.clone(),
+        });
+        h.run_frames(1);
+        let second_reply = read_json_response(&write_second);
+        assert_eq!(second_reply["ok"].as_bool(), Some(false));
+        assert_eq!(
+            second_reply["error_code"].as_str(),
+            Some("result_already_set")
+        );
+
+        // 7. Reading returns the validated JSON object (exit 0), even after the pane closes.
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id,
+            response_file: None,
+        });
+        h.run_frames(1);
+
+        let read_committed = temp_response(tmp.path(), "result-read-committed");
+        h.inject_ipc(AppRequest::PaneResultRead {
+            pane_id,
+            wait: false,
+            timeout_secs: 300.0,
+            response_file: read_committed.clone(),
+        });
+        h.run_frames(1);
+        let committed_bytes = std::fs::read(&read_committed).expect("read_committed data");
+        let outcome_committed = pane_result_read_outcome(Ok(SlotReply::Data(committed_bytes)));
+        assert_eq!(outcome_committed.exit_code(), 0);
+        let PaneResultReadOutcome::Validated(bytes) = outcome_committed else {
+            panic!("expected Validated outcome");
+        };
+        let committed_json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("committed json");
+        assert_eq!(
+            committed_json,
+            serde_json::json!({"status": "pass", "pr": 42})
+        );
+    }
+
+    #[test]
+    fn pane_result_wait_ignores_rejected_writes_and_wakes_when_valid_result_is_committed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+
+        let schema_resp = temp_response(tmp.path(), "result-schema-set");
+        h.inject_ipc(AppRequest::PaneResultSchemaSet {
+            pane_id,
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["verdict"],
+                "properties": {
+                    "verdict": { "enum": ["PASS", "FAIL"] }
+                }
+            }),
+            response_file: schema_resp.clone(),
+        });
+        h.run_frames(1);
+        let schema_reply = read_json_response(&schema_resp);
+        assert_eq!(schema_reply["ok"].as_bool(), Some(true));
+
+        // Park a `--wait` reader.
+        let wait_resp = temp_response(tmp.path(), "result-wait");
+        h.inject_ipc(AppRequest::PaneResultRead {
+            pane_id,
+            wait: true,
+            timeout_secs: 60.0,
+            response_file: wait_resp.clone(),
+        });
+        h.run_frames(1);
+        assert!(
+            !std::path::Path::new(&wait_resp).exists()
+                && !std::path::Path::new(&format!("{wait_resp}.err")).exists(),
+            "wait must remain parked until a valid result is committed"
+        );
+
+        // Invalid write is rejected back to the agent; parked wait must NOT fire.
+        let bad_write = temp_response(tmp.path(), "result-bad-write");
+        h.inject_ipc(AppRequest::PaneResultWrite {
+            pane_id,
+            payload: r#"{"verdict":"MAYBE"}"#.to_string(),
+            response_file: bad_write.clone(),
+        });
+        h.run_frames(1);
+        let bad_reply = read_json_response(&bad_write);
+        assert_eq!(bad_reply["ok"].as_bool(), Some(false));
+        assert_eq!(bad_reply["error_code"].as_str(), Some("invalid_result"));
+        assert!(
+            !std::path::Path::new(&wait_resp).exists()
+                && !std::path::Path::new(&format!("{wait_resp}.err")).exists(),
+            "parked wait must not wake on a rejected invalid write"
+        );
+
+        // Agent self-corrects -> parked wait wakes immediately with the validated JSON object.
+        let good_write = temp_response(tmp.path(), "result-good-write");
+        h.inject_ipc(AppRequest::PaneResultWrite {
+            pane_id,
+            payload: r#"{"verdict":"PASS"}"#.to_string(),
+            response_file: good_write.clone(),
+        });
+        h.run_frames(1);
+        let good_reply = read_json_response(&good_write);
+        assert_eq!(good_reply["ok"].as_bool(), Some(true));
+
+        let waited_json = read_json_response(&wait_resp);
+        assert_eq!(waited_json, serde_json::json!({"verdict": "PASS"}));
     }
 }
