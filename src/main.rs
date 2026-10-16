@@ -1935,7 +1935,13 @@ mod cli_tests {
     #[test]
     fn host_startup_is_positive_intent_only() {
         use super::is_host_startup;
-        for host in [&[][..], &["--profile", "alpha"], &["--socket", "/tmp/s.sock"], &["/tmp"]] {
+        for host in [
+            &[][..],
+            &["--profile", "alpha"],
+            &["--profile", "doctor"],
+            &["--socket", "/tmp/s.sock"],
+            &["/tmp"],
+        ] {
             assert!(is_host_startup(&argv(host)), "{host:?} starts a host");
         }
         for cli in [
