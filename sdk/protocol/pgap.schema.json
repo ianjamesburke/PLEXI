@@ -1653,6 +1653,82 @@
         },
         {
           "additionalProperties": false,
+          "description": "Append a structured message to a pane's host-managed FIFO inbox.\n\n`peer_ancestry` is stamped by the host from the socket connection's OS\ncredential (`handle_socket_line`) so the sender pane id is always\nhost-derived, never self-reported. When `submit` is true and the target\npane's agent reports idle (with no submit already in flight), the host\ninjects a short wake notice through the confirmed-submit state machine;\nwhen the target agent is busy, the message queues without interrupting.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "type": "string"
+            },
+            "peer_ancestry": {
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "submit": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "pane_message_send",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "payload",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Drain all queued messages from a pane's host-managed FIFO inbox.\n\nWhen `wait` is false, immediately writes the drained JSON array (empty\n`[]` if none) to `response_file`. When `wait` is true, behaves as a\nlevel-triggered wait: drains immediately if non-empty, or parks a\nwaiter until a message lands or `timeout_secs` expires (writing a\n`{\"ok\": false, \"timeout\": true, ...}` reply to `<response_file>.err`).",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "timeout_secs": {
+              "default": 0.0,
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "pane_message_recv",
+              "type": "string"
+            },
+            "wait": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.",
           "properties": {
             "pane_id": {

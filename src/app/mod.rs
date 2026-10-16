@@ -216,6 +216,14 @@ pub struct PlexiApp {
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
+    /// Per-pane FIFO message inboxes for `plexi pane message send/recv`.
+    pub(crate) pane_mailboxes:
+        HashMap<PaneId, std::collections::VecDeque<crate::app::pane_wait::PaneMessage>>,
+    /// `plexi pane message recv --wait` requests parked until a message lands
+    /// or their caller-supplied deadline passes.
+    pub(crate) pending_message_recvs: Vec<crate::app::pane_wait::PendingMessageRecv>,
+    /// Monotonically increasing host-stamped id for pane inbox messages.
+    pub(crate) next_pane_message_id: u64,
     /// `plexi pane new --agent` spawns whose response is withheld until the
     /// agent in the new pane self-reports idle (stint 0584).
     pub(crate) pending_agent_boots: Vec<crate::app::pane_wait::PendingAgentBoot>,
@@ -676,13 +684,14 @@ pub(crate) fn handle_socket_line(
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
-                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. } => {
+                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::PaneMessageSend { peer_ancestry: p, .. } => {
                     // Same rule as CallAppTool: the wire value is never the
                     // caller's identity. None when this process has no peer
                     // capture (tests that enqueue the request directly).
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                     log::info!(
-                        "pane_ipc: stamped SpawnPane peer ancestry ({} pid(s))",
+                        "pane_ipc: stamped peer ancestry ({} pid(s))",
                         p.as_ref().map(|pids| pids.len()).unwrap_or(0)
                     );
                 }
@@ -1474,6 +1483,9 @@ impl PlexiApp {
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
                     pending_slot_waits: Vec::new(),
+                    pane_mailboxes: HashMap::new(),
+                    pending_message_recvs: Vec::new(),
+                    next_pane_message_id: 1,
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
                     pane_heartbeats: restored.pane_heartbeats,
@@ -1719,6 +1731,9 @@ impl PlexiApp {
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
             pending_slot_waits: Vec::new(),
+            pane_mailboxes: HashMap::new(),
+            pending_message_recvs: Vec::new(),
+            next_pane_message_id: 1,
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
             pane_heartbeats: HashMap::new(),
@@ -2495,6 +2510,9 @@ impl PlexiApp {
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
                 pane_heartbeats: HashMap::new(),
+                pane_mailboxes: HashMap::new(),
+                pending_message_recvs: Vec::new(),
+                next_pane_message_id: 1,
                 last_sent_window_title: None,
                 permission_store_dir,
                 _test_scratch: Some(scratch),
@@ -3177,7 +3195,8 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::SlotWaits,
         );
         crate::platform::logging::time_drain("service_pending_slot_waits", || {
-            self.service_pending_slot_waits(ctx)
+            self.service_pending_slot_waits(ctx);
+            self.service_pending_message_recvs(ctx);
         });
 
         // And for `pane new --agent`, whose reply is owed either an idle

@@ -586,6 +586,40 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// Append a structured message to a pane's host-managed FIFO inbox.
+    ///
+    /// `peer_ancestry` is stamped by the host from the socket connection's OS
+    /// credential (`handle_socket_line`) so the sender pane id is always
+    /// host-derived, never self-reported. When `submit` is true and the target
+    /// pane's agent reports idle (with no submit already in flight), the host
+    /// injects a short wake notice through the confirmed-submit state machine;
+    /// when the target agent is busy, the message queues without interrupting.
+    PaneMessageSend {
+        pane_id: u64,
+        payload: String,
+        #[serde(default)]
+        submit: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_ancestry: Option<Vec<u32>>,
+        response_file: String,
+    },
+
+    /// Drain all queued messages from a pane's host-managed FIFO inbox.
+    ///
+    /// When `wait` is false, immediately writes the drained JSON array (empty
+    /// `[]` if none) to `response_file`. When `wait` is true, behaves as a
+    /// level-triggered wait: drains immediately if non-empty, or parks a
+    /// waiter until a message lands or `timeout_secs` expires (writing a
+    /// `{"ok": false, "timeout": true, ...}` reply to `<response_file>.err`).
+    PaneMessageRecv {
+        pane_id: u64,
+        #[serde(default)]
+        wait: bool,
+        #[serde(default)]
+        timeout_secs: f64,
+        response_file: String,
+    },
+
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
     FocusPane { pane_id: u64 },
 

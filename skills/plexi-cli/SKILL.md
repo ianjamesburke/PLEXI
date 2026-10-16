@@ -66,6 +66,13 @@ plexi skill install --agent codex
   a broken output pipe releases it. Events are not replayed after host restart.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
+- **Mailbox** — send and receive structured inter-agent messages on a per-pane
+  FIFO queue without clobbering: `plexi pane message send <id> "<payload>" [--submit]`
+  stamps `from_pane_id` host-side from socket peer ancestry, returns `queued` or
+  `delivered` ack state, and with `--submit` wakes an idle target agent without
+  interrupting a busy one. `plexi pane message recv [--wait --timeout <secs>]`
+  drains the caller's mailbox as a JSON array and blocks host-side on `--wait`
+  with zero polling (exits 0 on messages, 2 on timeout, 1 on error).
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
@@ -251,6 +258,9 @@ The release gate verifies these feature-map entry points:
 ```
 pane
 pane slot
+pane message
+pane message send
+pane message recv
 context
 app
 <!-- experiment: assistant -->

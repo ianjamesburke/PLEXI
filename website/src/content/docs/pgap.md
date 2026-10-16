@@ -468,6 +468,29 @@ Remove slot files for pane ids that are no longer live in any window.
 | `dry_run` | `boolean` | yes |
 | `response_file` | `string` | yes |
 
+### `pane_message_send`
+
+Append a structured message to a pane's host-managed FIFO inbox.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `payload` | `string` | yes |
+| `peer_ancestry` | `array?` | no |
+| `response_file` | `string` | yes |
+| `submit` | `boolean` | no |
+
+### `pane_message_recv`
+
+Drain all queued messages from a pane's host-managed FIFO inbox.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+| `timeout_secs` | `number` | no |
+| `wait` | `boolean` | no |
+
 ### `focus_pane`
 
 Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
