@@ -32,8 +32,32 @@ use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
 
 pub type TerminalMode = TermMode;
-pub type PtyEvent = Event;
 pub type SelectionType = AlacrittySelectionType;
+
+/// Kernel wait status observed for the PTY child process when it exits.
+///
+/// Kept distinct from provider-reported lifecycle hooks: `Code` and `Signal`
+/// are kernel observations from the child reaper, while `Unknown` explicitly
+/// represents a synthetic or unobserved exit without defaulting to `0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyExitStatus {
+    Code(i32),
+    Signal(i32),
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PtyEvent {
+    Title(String),
+    ResetTitle,
+    Bell,
+    Wakeup,
+    MouseCursorDirty,
+    CursorBlinkingChange,
+    ChildExit(i32),
+    Exit(PtyExitStatus),
+}
+
 
 fn terminal_config() -> term::Config {
     term::Config {
@@ -304,6 +328,14 @@ impl TerminalBackend {
             cursor_shape: term.cursor_style().shape,
         };
         let term = Arc::new(FairMutex::new(term));
+        let reaped_exit_status: Arc<Mutex<Option<PtyExitStatus>>> =
+            Arc::new(Mutex::new(None));
+        let pty = ReapingPty {
+            inner: pty,
+            #[cfg(unix)]
+            child_pid,
+            exit_status: reaped_exit_status.clone(),
+        };
         let pty_event_loop =
             EventLoop::new(term.clone(), event_proxy, pty, false, false)?;
         let event_loop_sender = pty_event_loop.channel();
@@ -321,37 +353,57 @@ impl TerminalBackend {
                 // closed on TerminalBackend drop), preventing a busy-loop on
                 // a dead channel that would spin a full CPU core at shutdown.
                 while let Ok(event) = event_receiver.recv() {
-                    if let Event::ColorRequest(index, formatter) = &event {
-                        if let Some(color) = resolve_dynamic_color(
-                            &event_term,
-                            &dynamic_colors,
-                            *index,
-                        ) {
-                            event_notifier
-                                .notify(formatter(color).into_bytes());
+                    let pty_event = match event {
+                        Event::ColorRequest(index, formatter) => {
+                            if let Some(color) = resolve_dynamic_color(
+                                &event_term,
+                                &dynamic_colors,
+                                index,
+                            ) {
+                                event_notifier
+                                    .notify(formatter(color).into_bytes());
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    // Write responses directly back to the PTY so programs like fzf
-                    // that query cursor position (ESC[6n) or text-area size don't hang.
-                    if let Event::PtyWrite(text) = &event {
-                        event_notifier.notify(text.clone().into_bytes());
-                        continue;
-                    }
-                    if let Event::TextAreaSizeRequest(formatter) = &event {
-                        let size = *shared_size_clone.lock().unwrap();
-                        event_notifier
-                            .notify(formatter(size.into()).into_bytes());
-                        continue;
-                    }
+                        // Write responses directly back to the PTY so programs like fzf
+                        // that query cursor position (ESC[6n) or text-area size don't hang.
+                        Event::PtyWrite(text) => {
+                            event_notifier.notify(text.into_bytes());
+                            continue;
+                        }
+                        Event::TextAreaSizeRequest(formatter) => {
+                            let size = *shared_size_clone.lock().unwrap();
+                            event_notifier
+                                .notify(formatter(size.into()).into_bytes());
+                            continue;
+                        }
+                        Event::ClipboardStore(_, _)
+                        | Event::ClipboardLoad(_, _) => continue,
+                        Event::ChildExit(code) => PtyEvent::ChildExit(code),
+                        Event::Title(title) => PtyEvent::Title(title),
+                        Event::ResetTitle => PtyEvent::ResetTitle,
+                        Event::Bell => PtyEvent::Bell,
+                        Event::Wakeup => PtyEvent::Wakeup,
+                        Event::MouseCursorDirty => PtyEvent::MouseCursorDirty,
+                        Event::CursorBlinkingChange => {
+                            PtyEvent::CursorBlinkingChange
+                        }
+                        Event::Exit => {
+                            let status = reaped_exit_status
+                                .lock()
+                                .unwrap()
+                                .unwrap_or(PtyExitStatus::Unknown);
+                            PtyEvent::Exit(status)
+                        }
+                    };
+                    let is_exit = matches!(pty_event, PtyEvent::Exit(_));
                     // If the receiver is gone (app shutting down) just exit.
-                    if pty_event_proxy_sender.send((id, event.clone())).is_err()
-                    {
+                    if pty_event_proxy_sender.send((id, pty_event)).is_err() {
                         break;
                     }
                     crate::diag::diag_note("terminal_pty_output");
                     app_context.clone().request_repaint();
-                    if let Event::Exit = event {
+                    if is_exit {
                         break;
                     }
                 }
@@ -1506,8 +1558,110 @@ fn reap_child(pid: u32) {
     unsafe { waitpid(ipid, std::ptr::null_mut(), 0) };
 }
 
+/// Wrapper around [`tty::Pty`] that retains the kernel wait status (`code` or
+/// `signal`) at the exact reaper site on the PTY event-loop thread before
+/// `alacritty_terminal::tty::Pty::next_child_event` discards signal information
+/// via `ExitStatus::code()`.
+struct ReapingPty {
+    inner: tty::Pty,
+    #[cfg(unix)]
+    child_pid: u32,
+    exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
+}
+
+impl tty::EventedReadWrite for ReapingPty {
+    type Reader = <tty::Pty as tty::EventedReadWrite>::Reader;
+    type Writer = <tty::Pty as tty::EventedReadWrite>::Writer;
+
+    unsafe fn register(
+        &mut self,
+        poll: &Arc<polling::Poller>,
+        interest: polling::Event,
+        poll_opts: polling::PollMode,
+    ) -> Result<()> {
+        unsafe { self.inner.register(poll, interest, poll_opts) }
+    }
+
+    fn reregister(
+        &mut self,
+        poll: &Arc<polling::Poller>,
+        interest: polling::Event,
+        poll_opts: polling::PollMode,
+    ) -> Result<()> {
+        self.inner.reregister(poll, interest, poll_opts)
+    }
+
+    fn deregister(&mut self, poll: &Arc<polling::Poller>) -> Result<()> {
+        self.inner.deregister(poll)
+    }
+
+    fn reader(&mut self) -> &mut Self::Reader {
+        self.inner.reader()
+    }
+
+    fn writer(&mut self) -> &mut Self::Writer {
+        self.inner.writer()
+    }
+}
+
+impl OnResize for ReapingPty {
+    fn on_resize(&mut self, window_size: WindowSize) {
+        self.inner.on_resize(window_size);
+    }
+}
+
+impl tty::EventedPty for ReapingPty {
+    fn next_child_event(&mut self) -> Option<tty::ChildEvent> {
+        #[cfg(unix)]
+        let peeked = peek_child_wait_status(self.child_pid);
+        #[cfg(not(unix))]
+        let peeked: Option<PtyExitStatus> = None;
+
+        let event = self.inner.next_child_event();
+        if let Some(tty::ChildEvent::Exited(code)) = &event {
+            let resolved = peeked
+                .or_else(|| code.map(PtyExitStatus::Code))
+                .unwrap_or(PtyExitStatus::Unknown);
+            *self.exit_status.lock().unwrap() = Some(resolved);
+        }
+        event
+    }
+}
+
+/// Non-destructively inspect the waitable child status (`WNOWAIT`) on the PTY
+/// reader thread right before `alacritty_terminal`'s `try_wait()` reaps it.
+/// Because `WNOWAIT` leaves the child waitable, `alacritty_terminal` remains
+/// the single `waitpid` consumer while we still retain `CLD_KILLED` /
+/// `CLD_DUMPED` signals that `std::process::ExitStatus::code()` discards.
+#[cfg(unix)]
+fn peek_child_wait_status(pid: u32) -> Option<PtyExitStatus> {
+    if pid == 0 {
+        return None;
+    }
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        let rc = libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        );
+        if rc != 0 || info.si_pid as u32 != pid {
+            return None;
+        }
+        match info.si_code {
+            libc::CLD_EXITED => Some(PtyExitStatus::Code(info.si_status)),
+            libc::CLD_KILLED | libc::CLD_DUMPED => {
+                Some(PtyExitStatus::Signal(info.si_status))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct EventProxy(mpsc::Sender<Event>);
+
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
@@ -1899,4 +2053,54 @@ mod tests {
             "stale alternate-screen cursor must receive the current full frame"
         );
     }
+
+    #[cfg(unix)]
+    fn spawn_and_await_exit(command: &str) -> super::PtyExitStatus {
+        use super::settings::BackendSettings;
+        use super::{PtyEvent, TerminalBackend};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let ctx = egui::Context::default();
+        let (tx, rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), command.to_string()],
+            ..Default::default()
+        };
+        let _backend =
+            TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok((_id, PtyEvent::Exit(status))) =
+                rx.recv_timeout(Duration::from_millis(50))
+            {
+                return status;
+            }
+        }
+        panic!("timed out waiting for PtyEvent::Exit from command {command:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_exit_retains_zero_nonzero_and_signal_status() {
+        use super::PtyExitStatus;
+
+        assert_eq!(
+            spawn_and_await_exit("exit 0"),
+            PtyExitStatus::Code(0),
+            "clean child exit must report Code(0), not Unknown"
+        );
+        assert_eq!(
+            spawn_and_await_exit("exit 17"),
+            PtyExitStatus::Code(17),
+            "nonzero child exit must preserve its exact exit code"
+        );
+        assert_eq!(
+            spawn_and_await_exit("kill -9 $$"),
+            PtyExitStatus::Signal(libc::SIGKILL),
+            "signal-terminated child must preserve the terminating signal"
+        );
+    }
 }
+

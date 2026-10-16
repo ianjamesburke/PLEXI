@@ -19,7 +19,8 @@ mod view;
 
 pub use backend::settings::BackendSettings;
 pub use backend::{
-    BackendCommand, PtyEvent, ResizeOutcome, TerminalBackend, TerminalMode,
+    BackendCommand, PtyEvent, PtyExitStatus, ResizeOutcome, TerminalBackend,
+    TerminalMode,
 };
 pub use bindings::{Binding, BindingAction, InputKind, KeyboardBinding};
 pub use diag::{set_repaint_diag_hook, set_span_hook};

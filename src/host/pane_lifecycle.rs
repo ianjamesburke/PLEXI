@@ -6,8 +6,8 @@
 //! temporary handles; provider labels are display attributes, not agent IDs.
 //! Hook/legacy reports are claims, while detector and PTY events are host
 //! observations. A normal turn stop is not a task-completion verdict, and a
-//! provider failure is not an OS crash. PTY status is explicitly unknown until
-//! the adapter carries it. Slot values are lossless byte arrays after the write.
+//! provider failure is not an OS crash. PTY exit status carries the observed
+//! kernel exit code or signal, or is explicitly unknown when unavailable. Slot values are lossless byte arrays after the write.
 //! Records have the timeline's in-memory lifetime; this is not a durable replay
 //! or restart contract. CLI wait/follow consumers use `app::event_stream`.
 use crate::protocol::{AgentBlockedReason, AgentState};
@@ -34,12 +34,25 @@ pub(crate) struct Provenance {
     pub raw_event: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExitStatus {
-    /// The PTY adapter does not currently carry a kernel exit status.
+    Code(i32),
+    Signal(i32),
+    /// The PTY adapter did not observe a kernel exit status.
     Unknown,
 }
+
+impl From<egui_term::PtyExitStatus> for ExitStatus {
+    fn from(status: egui_term::PtyExitStatus) -> Self {
+        match status {
+            egui_term::PtyExitStatus::Code(code) => Self::Code(code),
+            egui_term::PtyExitStatus::Signal(signal) => Self::Signal(signal),
+            egui_term::PtyExitStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -224,5 +237,36 @@ mod tests {
             2,
             "rejected publications cannot enter the bus"
         );
+    }
+
+    #[test]
+    fn exit_status_serializes_code_signal_and_unknown_without_defaulting_to_zero() {
+        let mut timeline = AppTimeline::default();
+        for (pty_status, expected_status) in [
+            (
+                egui_term::PtyExitStatus::Code(0),
+                serde_json::json!({"code": 0}),
+            ),
+            (
+                egui_term::PtyExitStatus::Code(23),
+                serde_json::json!({"code": 23}),
+            ),
+            (
+                egui_term::PtyExitStatus::Signal(9),
+                serde_json::json!({"signal": 9}),
+            ),
+            (
+                egui_term::PtyExitStatus::Unknown,
+                serde_json::json!("unknown"),
+            ),
+        ] {
+            let event = PaneLifecycleEvent::Exited {
+                status: ExitStatus::from(pty_status),
+            };
+            timeline.record_pane_lifecycle(41, 7, &event).unwrap();
+            let payload = timeline.events().back().unwrap().payload.as_ref().unwrap();
+            assert_eq!(payload["kind"], "exited");
+            assert_eq!(payload["status"], expected_status);
+        }
     }
 }

@@ -47,3 +47,7 @@ version = "0.2"
 
 [dependencies.log]
 version = "0.4"
+
+[dependencies.polling]
+version = "3.4.0"
+
