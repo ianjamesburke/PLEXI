@@ -1584,7 +1584,8 @@ Print raw bytes from a named pane slot
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
-| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
 
 #### `plexi pane slot wait`
 
@@ -1595,7 +1596,8 @@ Exits 0 on a match, 2 on timeout (nothing on stdout), 1 on error. A slot whose c
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
-| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--until` | string | yes | Regex the slot value must match |
 | `--timeout` | string | no | Seconds to wait before giving up Default: `300`. |
 
@@ -1605,7 +1607,8 @@ List slots for a pane as JSON
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
 
 #### `plexi pane slot delete`
 
@@ -1614,7 +1617,8 @@ Delete a named pane slot
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
-| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
 
 ## `plexi events`
 
