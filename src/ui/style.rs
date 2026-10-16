@@ -63,6 +63,7 @@ pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for b
 
 // ── Button heights ─────────────────────────────────────────────────────────
 pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
+pub const SIDEBAR_ATTENTION_H: f32 = 24.0; // Compact Needs attention entry under Contexts.
 /// Floor width for a modal's confirm/cancel pair. Wide enough that a short
 /// label ("OK") still reads as a button rather than as a chip, and that the
 /// two sit as a matched pair regardless of label length.

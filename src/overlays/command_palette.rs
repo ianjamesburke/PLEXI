@@ -184,6 +184,8 @@ struct PaletteFocusTarget {
 enum PaletteCommand {
     Host(crate::host::keys::Action),
     OpenWorkspaceConfig,
+    /// Open the Needs attention review (`overlays::attention`).
+    OpenAttention,
 }
 
 struct PaletteCommandEntry {
@@ -235,6 +237,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         name: "Review notifications",
         description: "Open the pending notification review queue",
         search_text: "review notifications notification queue alerts inbox pending",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::OpenAttention,
+        name: "Review issues needing attention",
+        description: "Open the Needs attention review for approvals, Keychain and integrity issues",
+        search_text: "needs attention review issues errors problems keychain integrity approvals recovery diagnostics",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote),
@@ -786,7 +794,7 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
         PaletteCommand::Host(Action::NavBackApp) => bindings.nav_back,
-        PaletteCommand::OpenWorkspaceConfig => return None,
+        PaletteCommand::OpenWorkspaceConfig | PaletteCommand::OpenAttention => return None,
         PaletteCommand::Host(other) => {
             log_missing_palette_shortcut_once(other);
             return None;
@@ -1688,6 +1696,7 @@ impl PlexiApp {
     fn run_palette_command(&mut self, command: PaletteCommand) {
         match command {
             PaletteCommand::Host(action) => self.run_palette_host_binding(action),
+            PaletteCommand::OpenAttention => self.open_attention_overlay("palette"),
             PaletteCommand::OpenWorkspaceConfig => {
                 let root = self.router.active().root.clone();
                 log::info!("palette: opening workspace config at {}", root.display());
@@ -2025,6 +2034,12 @@ mod tests {
         let bindings = KeyBindings::default();
         for entry in PALETTE_COMMANDS {
             match &entry.command {
+                PaletteCommand::OpenAttention => {
+                    assert!(
+                        palette_host_binding(&bindings, &entry.command).is_none(),
+                        "needs attention is a palette-only entry with no host chord"
+                    );
+                }
                 PaletteCommand::OpenWorkspaceConfig => {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),

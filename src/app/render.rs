@@ -203,6 +203,7 @@ impl PlexiApp {
         self.auto_dismiss_sender_focused_notifications();
         self.resurface_in_view_notifications();
         self.sync_notification_modal_focus();
+        self.sync_attention_focus();
         self.sync_confirm_close_focus();
         self.sync_context_close_focus();
         self.sync_command_palette_focus();

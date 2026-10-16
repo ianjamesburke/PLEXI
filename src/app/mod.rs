@@ -292,6 +292,8 @@ pub struct PlexiApp {
     /// `notifications.focus_mode` is on, in which case the modal only opens
     /// on Cmd+Shift+A.
     pub(crate) show_notification_modal: bool,
+    /// Needs attention review state (`src/overlays/attention.rs`).
+    pub(crate) attention: crate::overlays::attention::AttentionState,
     /// ID of the notification the modal is currently showing. `None` means
     /// "modal is empty / closed" — at the next render, the next notification
     /// in the queue becomes current.
@@ -1768,6 +1770,7 @@ impl PlexiApp {
                         &crate::config::config_dir().join("notifications.json"),
                     ),
                     show_notification_modal: false,
+                    attention: Default::default(),
                     current_notify_id: None,
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
@@ -2055,6 +2058,7 @@ impl PlexiApp {
                 &crate::config::config_dir().join("notifications.json"),
             ),
             show_notification_modal: false,
+            attention: Default::default(),
             current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
@@ -2812,6 +2816,7 @@ impl PlexiApp {
                 features,
                 pending_notifications: Vec::new(),
                 show_notification_modal: false,
+                attention: Default::default(),
                 current_notify_id: None,
                 modal_focused_option: 0,
                 modal_input_buffer: String::new(),

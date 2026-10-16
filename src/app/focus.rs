@@ -54,6 +54,9 @@ impl FocusSegmentReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FocusKind {
     NotificationModal,
+    /// Needs attention review (list/detail of unresolved Needs-you items).
+    /// Routing rule: `src/overlays/attention.rs`.
+    AttentionOverlay,
     ConfirmClose,
     CommandPalette,
     RenamePane,
@@ -94,6 +97,7 @@ impl FocusKind {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::NotificationModal => "NotificationModal",
+            Self::AttentionOverlay => "AttentionOverlay",
             Self::ConfirmClose => "ConfirmClose",
             Self::CommandPalette => "CommandPalette",
             Self::RenamePane => "RenamePane",
@@ -116,6 +120,7 @@ impl FocusKind {
     pub(crate) fn owner(self) -> &'static dyn FocusOwner {
         match self {
             Self::NotificationModal => &NotificationModalOwner,
+            Self::AttentionOverlay => &AttentionOverlayOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
             Self::CommandPalette => &CommandPaletteOwner,
             Self::RenamePane => &RenamePaneOwner,
@@ -200,6 +205,7 @@ macro_rules! focus_owner_tokens {
 }
 
 focus_owner_tokens! {
+    AttentionOverlay => AttentionOverlayOwner { key: attention_handle_key, draw: draw_attention_overlay },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
@@ -620,7 +626,7 @@ impl PlexiApp {
     /// removed) when `should_own` goes false. Every non-promoting `sync_*`
     /// function is a one-line call to this — see `FocusKind` doc comment for
     /// why this replaces 11 near-identical bodies instead of dyn dispatch.
-    fn reconcile_focus_layer(&mut self, layer: FocusKind, should_own: bool) {
+    pub(crate) fn reconcile_focus_layer(&mut self, layer: FocusKind, should_own: bool) {
         let has_layer = self.focus_stack.contains(&layer);
         if should_own && !has_layer {
             self.push_focus_layer(layer);

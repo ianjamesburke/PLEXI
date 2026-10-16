@@ -524,6 +524,11 @@ impl PlexiApp {
     /// approval: it reloads or rotates the host seal and never grants an app
     /// capability.
     pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
+        // The attention review offers the same recovery action; never stack
+        // two competing recovery overlays.
+        if self.attention.open {
+            return;
+        }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         let Some(item) = monitor
@@ -581,23 +586,40 @@ impl PlexiApp {
         let Some(approve) = choice else {
             return;
         };
+        let _ = self.resolve_from_desktop(&item.id, approve, "keychain recovery");
+    }
+
+    /// Resolve a Needs-you record from a desktop click or key. Synthetic
+    /// input, sockets and phones never reach this: it is the single guarded
+    /// desktop path shared by the recovery banner and the attention review.
+    /// Resolving a record never mints an app grant.
+    pub(crate) fn resolve_from_desktop(
+        &mut self,
+        id: &str,
+        approve: bool,
+        label: &str,
+    ) -> Result<(), String> {
         if self.synthetic_input_frame {
             log::info!(
-                "permission_seal: ignored synthetic keychain recovery click id={} approve={approve}",
-                item.id
+                "permission_seal: ignored synthetic {label} click id={id} approve={approve}"
             );
-            return;
+            return Err("Ignored: only the person at the desktop can do this.".to_string());
         }
-        match monitor.resolve_needs_you(&item.id, approve) {
-            Ok(receipt) => log::info!(
-                "permission_seal: desktop keychain recovery resolved id={} resolution={}",
-                receipt.id,
-                receipt.resolution.as_str()
-            ),
-            Err(error) => log::error!(
-                "permission_seal: desktop keychain recovery failed id={}: {error}",
-                item.id
-            ),
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        match monitor.resolve_needs_you(id, approve) {
+            Ok(receipt) => {
+                log::info!(
+                    "permission_seal: desktop {label} resolved id={} resolution={}",
+                    receipt.id,
+                    receipt.resolution.as_str()
+                );
+                Ok(())
+            }
+            Err(error) => {
+                log::error!("permission_seal: desktop {label} failed id={id}: {error}");
+                Err(format!("Could not complete {label}: {error}"))
+            }
         }
     }
 
