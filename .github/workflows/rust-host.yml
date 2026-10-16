@@ -1,15 +1,7 @@
 name: Rust host
 
 on:
-  push:
-    branches: [alpha]
-    paths-ignore:
-      - '**/*.md'
-      - '.agents/**'
-      - '.claude/**'
-      - 'docs/**'
-      - 'website/**'
-      - '.stint/**'
+  workflow_call:
   pull_request:
     branches: [alpha]
     paths-ignore:

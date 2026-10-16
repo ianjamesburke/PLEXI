@@ -1,0 +1,44 @@
+name: Nightly alpha
+
+# Hosted full verification for direct-to-alpha work. Per-push Rust host CI was
+# removed (stint 0799); the local gate is the merge gate. This runs the full
+# host tests, then, only if alpha has commits since the last alpha tag, tags
+# the next vX.Y.Z-alpha.N and dispatches release.yml (package, signing and
+# A-to-B Keychain continuity gates, then publish). Never promotes beta/stable.
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-alpha
+  cancel-in-progress: false
+
+jobs:
+  host:
+    uses: ./.github/workflows/rust-host.yml
+  tag:
+    needs: host
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: alpha
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Tag and dispatch release when alpha has new commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(bash scripts/nightly-alpha-tag.sh)
+          if [[ -z "$tag" ]]; then
+            echo "alpha has no commits since the last alpha tag; nothing to release"
+            exit 0
+          fi
+          git tag "$tag" HEAD
+          git push origin "refs/tags/$tag"
+          # Tag pushes made with GITHUB_TOKEN do not trigger release.yml.
+          gh workflow run release.yml --ref alpha -f tag="$tag"

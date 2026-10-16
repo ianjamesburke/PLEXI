@@ -79,6 +79,11 @@ bump `Cargo.toml` or touch the changelog — they pin a commit on `alpha` for
 testing the next version. The stable bump (`just bump`) sets the base version and
 regenerates the changelog.
 
+Alpha tags are cut nightly by `.github/workflows/nightly.yml` when `alpha` has
+commits since the last alpha tag (`scripts/nightly-alpha-tag.sh` picks the next
+`N`); beta and stable stay manual. Pushes to `alpha` run no Rust host CI, only
+pull requests do.
+
 SemVer ordering: `vX.Y.Z-alpha.1 < alpha.2 < beta.1 < beta.2 < vX.Y.Z`.
 The Python SDK publishes only on stable tags; prerelease tags skip
 `publish-sdk.yml`.
