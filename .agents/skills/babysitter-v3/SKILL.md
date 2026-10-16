@@ -43,7 +43,7 @@ Every run writes to exactly one `<run_root>/<YYYYMMDD-HHMM>/`, named from `date 
 
 `plexi pane new --agent` and `plexi pane status` do not recognise agy, so v3 uses one launch path for every engine:
 
-1. Write the brief to `briefs/<label>.md`.
+1. Write the brief to `briefs/<label>.md`: one file per pane, written on its own (no shell loops that build filenames). Before launching, confirm `test -s briefs/<label>.md`. Launch in a later step, never in the same command as the write: a pane that starts before its brief exists has to be redirected.
 2. Pick the alias: the first entry of the role's list in `RUN_CONFIG.toml` that hasn't hit a limit this run. Look up its engine with `[engines.alias_engine]` and build the command from `[engines.launch]`.
 3. Launch with a short single-quoted prompt (no `'` or backticks inside it). The default split is to the right, which puts panes side by side. Never pass `-d`: it means `--down`, not detached.
    ```bash
