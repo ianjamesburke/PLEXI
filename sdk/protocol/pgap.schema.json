@@ -1247,6 +1247,9 @@
                 "null"
               ]
             },
+            "result_schema": {
+              "description": "Optional JSON Schema declared for the spawned pane's structured return\n(`plexi pane new --result-schema <json-or-path>`, stint 0666)."
+            },
             "target_context": {
               "description": "When set, spawn the pane into this child context instead of the\nrequesting app's own context. The target context must exist and be\na descendant of the requesting app's context (#1518).",
               "format": "uint64",
@@ -1720,6 +1723,93 @@
             },
             "type": {
               "const": "pane_message_recv",
+              "type": "string"
+            },
+            "wait": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Declare or update the JSON Schema for a pane's structured return value\nbefore a result is committed (`plexi pane result schema`, stint 0666).",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "schema": true,
+            "type": {
+              "const": "pane_result_schema_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "schema",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Validate and commit a pane's structured JSON result once (`plexi pane result write`,\nstint 0666). Malformed JSON or payloads that fail the pane's declared schema\nare rejected synchronously (`ok: false, error_code: \"invalid_result\"`) so the\nagent can self-correct before any consumer sees the result.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_result_write",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "payload",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read a pane's validated structured result (`plexi pane result <id>`, stint 0666).\nWhen `wait` is false, returns the committed JSON object immediately or writes a\ntyped error (`\"no_result_yet\"` vs `\"invalid_result\"`) to `<response_file>.err`.\nWhen `wait` is true, blocks until a valid result is committed or `timeout_secs`\nexpires.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "timeout_secs": {
+              "default": 0.0,
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "pane_result_read",
               "type": "string"
             },
             "wait": {

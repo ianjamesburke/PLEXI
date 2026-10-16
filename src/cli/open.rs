@@ -155,6 +155,58 @@ pub fn pane_new_cli(
     agent: Option<&AgentBootRequest>,
     worktree: Option<&str>,
 ) -> i32 {
+    pane_new_with_schema_cli(
+        cmd,
+        name,
+        layout,
+        from_pane_id,
+        cwd,
+        ephemeral,
+        no_focus,
+        app,
+        mcp,
+        extra_args,
+        context_name,
+        agent,
+        worktree,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn pane_new_with_schema_cli(
+    cmd: Option<&str>,
+    name: Option<&str>,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+    ephemeral: bool,
+    no_focus: bool,
+    app: Option<&str>,
+    mcp: &[String],
+    extra_args: &[String],
+    context_name: Option<&str>,
+    agent: Option<&AgentBootRequest>,
+    worktree: Option<&str>,
+    result_schema: Option<&str>,
+) -> i32 {
+    let parsed_result_schema = match result_schema {
+        Some(spec) => {
+            let base = cwd
+                .map(PathBuf::from)
+                .or_else(|| std::env::current_dir().ok());
+            match crate::host::pane_result::parse_schema_spec(spec, base.as_deref()) {
+                Ok(schema) => Some(schema),
+                Err(e) => {
+                    log::warn!("pane_new:cli: invalid --result-schema: {e}");
+                    eprintln!("error: invalid --result-schema: {e}");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
     let type_id = if let Some(a) = app {
@@ -222,7 +274,14 @@ pub fn pane_new_cli(
         if let Some(wt) = worktree {
             payload["worktree"] = serde_json::Value::String(wt.to_string());
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?} worktree={worktree:?}", agent.map(|a| &a.command));
+        if let Some(ref schema) = parsed_result_schema {
+            payload["result_schema"] = schema.clone();
+        }
+        log::info!(
+            "pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?} worktree={worktree:?} has_result_schema={}",
+            agent.map(|a| &a.command),
+            parsed_result_schema.is_some()
+        );
         let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
             Ok(response_file) => response_file,
             Err(code) => return code,
@@ -277,6 +336,9 @@ pub fn pane_new_cli(
     }
     if let Some(wt) = worktree {
         queue_payload["worktree"] = serde_json::Value::String(wt.to_string());
+    }
+    if let Some(schema) = parsed_result_schema {
+        queue_payload["result_schema"] = schema;
     }
     log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?} worktree={worktree:?}");
     match crate::cli::queue_spawn(queue_payload, "pane new", &format!("open {type_id}")) {

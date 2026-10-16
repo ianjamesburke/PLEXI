@@ -154,6 +154,14 @@ pub(crate) struct PendingMessageRecv {
     pub expires_at: Instant,
 }
 
+/// A parked `plexi pane result --wait` request (stint 0666).
+pub(crate) struct PendingResultWait {
+    pub pane_id: u64,
+    pub response_file: String,
+    /// Reply with a typed timeout once this instant passes.
+    pub expires_at: Instant,
+}
+
 /// A `plexi pane new --agent` spawn whose response is held until the agent
 /// boots.
 pub(crate) struct PendingAgentBoot {
@@ -963,6 +971,136 @@ impl PlexiApp {
         }
         let Some(next_expiry) = self
             .pending_message_recvs
+            .iter()
+            .map(|w| w.expires_at)
+            .min()
+        else {
+            return;
+        };
+        let predicted_frame =
+            std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            next_expiry,
+            Instant::now(),
+            predicted_frame,
+        ));
+    }
+
+    /// Answer every parked `plexi pane result --wait` waiter on `pane_id` once a
+    /// validated result has been committed (stint 0666).
+    pub(crate) fn complete_result_waits(&mut self, pane_id: u64) {
+        if !self
+            .pending_result_waits
+            .iter()
+            .any(|wait| wait.pane_id == pane_id)
+        {
+            return;
+        }
+        let Some(committed) = self
+            .pane_results
+            .get(&pane_id)
+            .and_then(|state| state.committed.as_ref())
+            .cloned()
+        else {
+            return;
+        };
+        let mut bytes = serde_json::to_vec(&committed).unwrap_or_else(|_| b"{}".to_vec());
+        bytes.push(b'\n');
+        let (matched, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_result_waits)
+            .into_iter()
+            .partition(|wait| wait.pane_id == pane_id);
+        self.pending_result_waits = live;
+        for wait in matched {
+            log::info!(
+                "pane_result_wait: pane_id={pane_id} delivered validated result ({} bytes) to parked waiter",
+                bytes.len()
+            );
+            crate::rpc::write_response(&wait.response_file, &bytes);
+        }
+    }
+
+    /// Expire overdue `plexi pane result --wait` requests, fail waiters whose
+    /// pane closed without committing a valid result, and schedule the next
+    /// deadline wakeup from `App::logic` (stint 0666).
+    pub(crate) fn service_pending_result_waits(&mut self, ctx: &egui::Context) {
+        if self.pending_result_waits.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .pending_result_waits
+            .iter()
+            .any(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id))
+        {
+            let (done, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_result_waits)
+                .into_iter()
+                .partition(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id));
+            self.pending_result_waits = live;
+            for wait in done {
+                if let Some(committed) = self
+                    .pane_results
+                    .get(&wait.pane_id)
+                    .and_then(|state| state.committed.as_ref())
+                {
+                    let mut bytes =
+                        serde_json::to_vec(committed).unwrap_or_else(|_| b"{}".to_vec());
+                    bytes.push(b'\n');
+                    log::info!(
+                        "pane_result_wait: pane_id={} delivered committed result on close/expiry check",
+                        wait.pane_id
+                    );
+                    crate::rpc::write_response(&wait.response_file, &bytes);
+                    continue;
+                }
+                let pane_alive = self.pane_exists(wait.pane_id);
+                let (timeout, error_code, error) = if pane_alive {
+                    log::info!("pane_result_wait: pane_id={} timed out", wait.pane_id);
+                    (
+                        true,
+                        "timeout",
+                        format!("timed out waiting for result on pane {}", wait.pane_id),
+                    )
+                } else if let Some(reason) = self
+                    .pane_results
+                    .get(&wait.pane_id)
+                    .and_then(|s| s.last_invalid_error.as_deref())
+                {
+                    log::info!(
+                        "pane_result_wait: pane_id={} closed after invalid result write: {reason}",
+                        wait.pane_id
+                    );
+                    (
+                        false,
+                        "invalid_result",
+                        format!(
+                            "pane {} closed without a valid result (last write rejected: {reason})",
+                            wait.pane_id
+                        ),
+                    )
+                } else {
+                    log::info!(
+                        "pane_result_wait: pane_id={} closed before writing a result",
+                        wait.pane_id
+                    );
+                    (
+                        false,
+                        "no_result_yet",
+                        format!("pane {} closed before writing a result", wait.pane_id),
+                    )
+                };
+                crate::rpc::write_json_response(
+                    &format!("{}.err", wait.response_file),
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": timeout,
+                        "error_code": error_code,
+                        "error": error,
+                    }),
+                );
+            }
+        }
+        let Some(next_expiry) = self
+            .pending_result_waits
             .iter()
             .map(|w| w.expires_at)
             .min()

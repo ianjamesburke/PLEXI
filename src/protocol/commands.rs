@@ -456,6 +456,10 @@ pub enum AppRequest {
         /// Terminal spawns only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree: Option<String>,
+        /// Optional JSON Schema declared for the spawned pane's structured return
+        /// (`plexi pane new --result-schema <json-or-path>`, stint 0666).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_schema: Option<serde_json::Value>,
         /// Host-stamped ancestor pids of the socket peer. The client cannot
         /// set this: `handle_socket_line` overwrites it from the kernel
         /// credential captured at accept. `None` means the request did not
@@ -619,6 +623,38 @@ pub enum AppRequest {
     /// waiter until a message lands or `timeout_secs` expires (writing a
     /// `{"ok": false, "timeout": true, ...}` reply to `<response_file>.err`).
     PaneMessageRecv {
+        pane_id: u64,
+        #[serde(default)]
+        wait: bool,
+        #[serde(default)]
+        timeout_secs: f64,
+        response_file: String,
+    },
+
+    /// Declare or update the JSON Schema for a pane's structured return value
+    /// before a result is committed (`plexi pane result schema`, stint 0666).
+    PaneResultSchemaSet {
+        pane_id: u64,
+        schema: serde_json::Value,
+        response_file: String,
+    },
+
+    /// Validate and commit a pane's structured JSON result once (`plexi pane result write`,
+    /// stint 0666). Malformed JSON or payloads that fail the pane's declared schema
+    /// are rejected synchronously (`ok: false, error_code: "invalid_result"`) so the
+    /// agent can self-correct before any consumer sees the result.
+    PaneResultWrite {
+        pane_id: u64,
+        payload: String,
+        response_file: String,
+    },
+
+    /// Read a pane's validated structured result (`plexi pane result <id>`, stint 0666).
+    /// When `wait` is false, returns the committed JSON object immediately or writes a
+    /// typed error (`"no_result_yet"` vs `"invalid_result"`) to `<response_file>.err`.
+    /// When `wait` is true, blocks until a valid result is committed or `timeout_secs`
+    /// expires.
+    PaneResultRead {
         pane_id: u64,
         #[serde(default)]
         wait: bool,

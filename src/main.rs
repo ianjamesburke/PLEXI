@@ -304,7 +304,7 @@ fn main() -> eframe::Result {
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd,
         DebugCmd, DebugSessionCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd,
-        PaneCmd, PaneMessageCmd, PaneSlotCmd,
+        PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     use clap::FromArgMatches;
@@ -1398,6 +1398,75 @@ fn main() -> eframe::Result {
                                 timeout,
                             )),
                         },
+                        PaneCmd::Result {
+                            cmd,
+                            pane_id,
+                            pane_id_flag,
+                            wait,
+                            timeout,
+                            write,
+                            schema,
+                        } => match cmd {
+                            Some(PaneResultCmd::Read {
+                                pane_id,
+                                pane_id_flag,
+                                wait,
+                                timeout,
+                            }) => std::process::exit(cli::pane_result_read_cli(
+                                pane_id.or(pane_id_flag),
+                                wait,
+                                timeout,
+                            )),
+                            Some(PaneResultCmd::Wait {
+                                pane_id,
+                                pane_id_flag,
+                                timeout,
+                            }) => std::process::exit(cli::pane_result_read_cli(
+                                pane_id.or(pane_id_flag),
+                                true,
+                                timeout,
+                            )),
+                            Some(PaneResultCmd::Write {
+                                first,
+                                second,
+                                pane_id_flag,
+                            }) => std::process::exit(cli::pane_result_write_cli(
+                                first.as_deref(),
+                                second.as_deref(),
+                                pane_id_flag,
+                            )),
+                            Some(PaneResultCmd::Schema {
+                                first,
+                                second,
+                                pane_id_flag,
+                            }) => std::process::exit(cli::pane_result_schema_cli(
+                                &first,
+                                second.as_deref(),
+                                pane_id_flag,
+                            )),
+                            None => {
+                                let resolved = pane_id.or(pane_id_flag);
+                                if let Some(json_str) = write {
+                                    std::process::exit(cli::pane_result_write_cli(
+                                        Some(&json_str),
+                                        None,
+                                        resolved,
+                                    ));
+                                } else if let Some(schema_spec) = schema {
+                                    std::process::exit(cli::pane_result_schema_cli(
+                                        &schema_spec,
+                                        None,
+                                        resolved,
+                                    ));
+                                } else {
+                                    std::process::exit(cli::pane_result_read_cli(
+                                        resolved,
+                                        wait,
+                                        timeout,
+                                    ));
+                                }
+                            }
+                        },
                         PaneCmd::New {
                             cmd,
                             name,
@@ -1413,6 +1482,7 @@ fn main() -> eframe::Result {
                             no_focus,
                             cwd,
                             worktree,
+                            result_schema,
                             agent,
                             boot_timeout,
                         } => {
@@ -1437,7 +1507,7 @@ fn main() -> eframe::Result {
                             } else {
                                 "split_h"
                             };
-                            std::process::exit(cli::pane_new_cli(
+                            std::process::exit(cli::pane_new_with_schema_cli(
                                 cmd.as_deref(),
                                 name.as_deref(),
                                 Some(layout),
@@ -1451,6 +1521,7 @@ fn main() -> eframe::Result {
                                 None,
                                 agent.as_ref(),
                                 worktree.as_deref(),
+                                result_schema.as_deref(),
                             ));
                         }
                     },

@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.16"
+skill_version: "5.0.17"
 plexi_version: "0.3.5"
-last_verified: "2026-10-15"
+last_verified: "2026-10-16"
 ---
 
 # Plexi CLI
@@ -71,6 +71,16 @@ plexi skill install --agent codex
   a broken output pipe releases it. Events are not replayed after host restart.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
+- **Structured pane results** — declare a JSON Schema at spawn (`plexi pane new --result-schema <json-or-path>`)
+  or brief time (`plexi pane result schema <json-or-path> [--pane-id <id>]`).
+  The worker writes its structured JSON object once with `plexi pane result write <json>`:
+  the host validates it against the declared schema synchronously and rejects
+  malformed or schema-violating payloads back to the agent (`exit 1` with the
+  validation error on stderr) so the agent can self-correct before any consumer
+  sees it. Consumers read the validated object with `plexi pane result <id> [--wait --timeout <secs>]`
+  (`exit 0` with JSON on stdout, `exit 2` with `no_result_yet` or `timeout` when
+  not yet written, `exit 1` with `invalid_result` when the last write was
+  rejected).
 - **Mailbox** — send and receive structured inter-agent messages on a per-pane
   FIFO queue without clobbering: `plexi pane message send <id> "<payload>" [--submit]`
   stamps `from_pane_id` host-side from socket peer ancestry, returns `queued` or
@@ -273,6 +283,11 @@ The release gate verifies these feature-map entry points:
 ```
 pane
 pane slot
+pane result
+pane result schema
+pane result write
+pane result read
+pane result wait
 pane message
 pane message send
 pane message recv

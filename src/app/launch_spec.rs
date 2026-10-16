@@ -41,6 +41,7 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) name: Option<String>,
     pub(crate) agent: Option<AgentBootSpec>,
     pub(crate) worktree: Option<String>,
+    pub(crate) result_schema: Option<serde_json::Value>,
     /// Host-stamped. See `AppRequest::SpawnPane::peer_ancestry`.
     pub(crate) peer_ancestry: Option<Vec<u32>>,
 }
@@ -66,6 +67,7 @@ impl PaneLaunchSpec {
             name: None,
             agent: None,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         })
     }
@@ -88,6 +90,7 @@ impl PaneLaunchSpec {
             agent_cmd,
             boot_timeout_secs,
             worktree,
+            result_schema,
             peer_ancestry,
             ..
         } = request
@@ -115,6 +118,16 @@ impl PaneLaunchSpec {
                 }
                 None
             }
+        };
+
+        let result_schema = match result_schema {
+            Some(schema_val) => {
+                let base_dir = cwd.as_deref().map(std::path::Path::new);
+                Some(crate::host::pane_result::normalize_schema_value(
+                    schema_val, base_dir,
+                )?)
+            }
+            None => None,
         };
 
         let agent = match agent_cmd.as_deref().filter(|cmd| !cmd.is_empty()) {
@@ -180,6 +193,7 @@ impl PaneLaunchSpec {
             name: name.clone(),
             agent,
             worktree,
+            result_schema,
             peer_ancestry: peer_ancestry.clone(),
         })
     }
@@ -229,6 +243,7 @@ impl PaneLaunchSpec {
             agent_cmd: self.agent.as_ref().map(|agent| agent.command.clone()),
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
             worktree: self.worktree.clone(),
+            result_schema: self.result_schema.clone(),
             peer_ancestry: self.peer_ancestry.clone(),
         }
     }
@@ -266,6 +281,7 @@ mod tests {
             agent_cmd: None,
             boot_timeout_secs: None,
             worktree: None,
+            result_schema: None,
             peer_ancestry: None,
         }
     }
@@ -396,5 +412,33 @@ mod tests {
         }
         let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
         assert!(err.contains("invalid worktree branch name"));
+    }
+
+    #[test]
+    fn from_spawn_pane_accepts_and_validates_result_schema() {
+        let mut request = spawn_pane("terminal", None, &[]);
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {
+                "verdict": { "type": "string", "enum": ["PASS", "FAIL"] }
+            }
+        });
+        if let AppRequest::SpawnPane { result_schema, .. } = &mut request {
+            *result_schema = Some(schema.clone());
+        }
+        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        assert_eq!(spec.result_schema, Some(schema));
+        assert_eq!(
+            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request()).expect("round trip"),
+            spec
+        );
+
+        let mut bad_request = spawn_pane("terminal", None, &[]);
+        if let AppRequest::SpawnPane { result_schema, .. } = &mut bad_request {
+            *result_schema = Some(serde_json::json!({"type": "not_a_valid_type"}));
+        }
+        let err = PaneLaunchSpec::from_spawn_pane(&bad_request).unwrap_err();
+        assert!(err.contains("unknown JSON Schema type"), "unexpected error: {err}");
     }
 }

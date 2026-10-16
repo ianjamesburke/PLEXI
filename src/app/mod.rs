@@ -224,6 +224,12 @@ pub struct PlexiApp {
     pub(crate) pending_message_recvs: Vec<crate::app::pane_wait::PendingMessageRecv>,
     /// Monotonically increasing host-stamped id for pane inbox messages.
     pub(crate) next_pane_message_id: u64,
+    /// Per-pane schema-validated structured results (`plexi pane result`, stint 0666).
+    /// Retained across pane close so spawners can read results after an ephemeral worker exits.
+    pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
+    /// `plexi pane result --wait` requests parked until a valid result is committed
+    /// or their caller-supplied deadline passes (stint 0666).
+    pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
     /// `plexi pane new --agent` spawns whose response is withheld until the
     /// agent in the new pane self-reports idle (stint 0584).
     pub(crate) pending_agent_boots: Vec<crate::app::pane_wait::PendingAgentBoot>,
@@ -1494,6 +1500,8 @@ impl PlexiApp {
                     pane_mailboxes: HashMap::new(),
                     pending_message_recvs: Vec::new(),
                     next_pane_message_id: 1,
+                    pane_results: HashMap::new(),
+                    pending_result_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
                     pane_heartbeats: restored.pane_heartbeats,
@@ -1744,6 +1752,8 @@ impl PlexiApp {
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
             next_pane_message_id: 1,
+            pane_results: HashMap::new(),
+            pending_result_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
             pane_heartbeats: HashMap::new(),
@@ -2527,6 +2537,8 @@ impl PlexiApp {
                 pane_mailboxes: HashMap::new(),
                 pending_message_recvs: Vec::new(),
                 next_pane_message_id: 1,
+                pane_results: HashMap::new(),
+                pending_result_waits: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,
                 _test_scratch: Some(scratch),
@@ -3211,6 +3223,7 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("service_pending_slot_waits", || {
             self.service_pending_slot_waits(ctx);
             self.service_pending_message_recvs(ctx);
+            self.service_pending_result_waits(ctx);
         });
 
         // And for `pane new --agent`, whose reply is owed either an idle

@@ -325,6 +325,7 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 | `peer_ancestry` | `array?` | no |
 | `request_id` | `string?` | no |
 | `response_file` | `string?` | no |
+| `result_schema` | `any` | no |
 | `target_context` | `integer?` | no |
 | `type_id` | `string` | yes |
 | `workspace_root` | `string?` | no |
@@ -484,6 +485,37 @@ Append a structured message to a pane's host-managed FIFO inbox.
 ### `pane_message_recv`
 
 Drain all queued messages from a pane's host-managed FIFO inbox.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+| `timeout_secs` | `number` | no |
+| `wait` | `boolean` | no |
+
+### `pane_result_schema_set`
+
+Declare or update the JSON Schema for a pane's structured return value before a result is committed (`plexi pane resu...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+| `schema` | `any` | yes |
+
+### `pane_result_write`
+
+Validate and commit a pane's structured JSON result once (`plexi pane result write`, stint 0666). Malformed JSON or p...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `payload` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `pane_result_read`
+
+Read a pane's validated structured result (`plexi pane result <id>`, stint 0666). When `wait` is false, returns the c...
 
 | Field | Type | Required |
 |-------|------|----------|

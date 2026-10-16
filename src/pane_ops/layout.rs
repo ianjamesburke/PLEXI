@@ -994,6 +994,7 @@ impl PlexiApp {
             if self.pane_mailboxes.remove(&pane_id).is_some() {
                 log::info!("pane_mailbox: pane_id={pane_id} cleared reason=closed");
             }
+            self.pane_results.entry(pane_id).or_default().pane_closed = true;
             self.reclaim_pane_worktree(pane_id);
             for name in self.scheduler.reap_pane(pane_id) {
                 log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
