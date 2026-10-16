@@ -281,6 +281,10 @@ pub struct EventDelivery {
     pub created_at: String,
 }
 
+/// How many recent events [`AppTimeline`] keeps in memory. A host left open for
+/// days would otherwise grow this without bound.
+pub(crate) const EVENT_RING_CAP: usize = 4096;
+
 // ── AppTimeline ──────────────────────────────────────────────────────────────
 
 /// Host-owned timeline of app events, undo checkpoints, subscriptions, and
@@ -293,7 +297,11 @@ pub struct AppTimeline {
     /// share a stream namespace or clobber each other's schema — the
     /// cross-context bleed this phase fixes.
     streams: HashMap<(u64, String), HashMap<String, EventStreamDecl>>,
-    events: Vec<AppEventRecord>,
+    /// Ring buffer of the most recent events (see [`EVENT_RING_CAP`]); the
+    /// durable record is the session flight trace, not this window.
+    events: VecDeque<AppEventRecord>,
+    /// Ring capacity; `0` (the `Default`) means [`EVENT_RING_CAP`].
+    event_cap: usize,
     checkpoints: Vec<UndoCheckpoint>,
     subscriptions: Vec<SubscriptionRecord>,
     deliveries: VecDeque<EventDelivery>,
@@ -515,9 +523,41 @@ impl AppTimeline {
             checkpoint_id,
             deliveries_queued,
         };
-        self.events.push(record);
+        crate::host::flight_recorder::record(
+            "timeline_event",
+            Some(record.owner_context_id),
+            Some(record.pane_id),
+            None,
+            serde_json::to_value(&record).unwrap_or_else(|e| {
+                log::warn!("app_timeline: flight record serialize failed: {e}");
+                serde_json::Value::Null
+            }),
+        );
+        self.push_event(record);
         self.event_ready.notify_all();
         Ok(outcome)
+    }
+
+    /// Append to the ring, evicting the oldest event once it is full.
+    fn push_event(&mut self, record: AppEventRecord) {
+        let cap = if self.event_cap == 0 { EVENT_RING_CAP } else { self.event_cap };
+        self.events.push_back(record);
+        let mut evicted = 0usize;
+        while self.events.len() > cap {
+            self.events.pop_front();
+            evicted += 1;
+        }
+        if evicted > 0 && self.next_event_id.is_multiple_of(1024) {
+            log::info!(
+                "app_timeline: event ring at capacity {cap}; evicted {evicted} (latest id {})",
+                self.next_event_id
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_event_cap_for_test(&mut self, cap: usize) {
+        self.event_cap = cap;
     }
 
     /// Host-only producer for the pane stream. Public app/CLI entry points
@@ -659,7 +699,7 @@ impl AppTimeline {
 
     /// All recorded events (read-only, oldest first).
     #[cfg(test)]
-    pub fn events(&self) -> &[AppEventRecord] {
+    pub fn events(&self) -> &VecDeque<AppEventRecord> {
         &self.events
     }
 
@@ -1051,6 +1091,30 @@ mod tests {
             .find(|event| lifecycle_matches(event, "idle")).unwrap();
         assert_eq!(matched.event_id, idle.event_id,
             "registration must preserve a matching transition before the current snapshot");
+    }
+
+    #[test]
+    fn event_ring_evicts_oldest_and_keeps_newest_in_order() {
+        let mut t = timeline_with_stream();
+        t.set_event_cap_for_test(8);
+        let mut ids = Vec::new();
+        for _ in 0..20 {
+            ids.push(t.record_event(CTX, "chess", 1, emitted("move.played")).unwrap().event_id);
+        }
+        assert_eq!(t.events().len(), 8, "ring must stay at its cap");
+        let kept: Vec<u64> = t.events().iter().map(|e| e.event_id).collect();
+        assert_eq!(kept, ids[12..], "newest events survive, oldest first");
+        assert!(t.lifecycle_record(ids[0]).is_none(), "evicted event is gone");
+        assert!(t.lifecycle_record(ids[19]).is_some());
+    }
+
+    #[test]
+    fn event_ring_defaults_to_the_documented_capacity() {
+        let mut t = timeline_with_stream();
+        for _ in 0..(EVENT_RING_CAP + 10) {
+            t.record_event(CTX, "chess", 1, emitted("move.played")).unwrap();
+        }
+        assert_eq!(t.events().len(), EVENT_RING_CAP);
     }
 
     #[test]

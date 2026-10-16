@@ -714,6 +714,55 @@ impl ToolDispatcher {
     /// Dispatch a single tool call. The permission monitor admits the call
     /// before any handler runs. Hooks only observe a call that was admitted.
     pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
+        let pane = (self.scope.caller_pane_id != 0).then_some(self.scope.caller_pane_id);
+        let context = Some(self.scope.context_id);
+        log::info!(
+            "tool_dispatch: requested call_id={call_id} caller={} tool={name}",
+            self.scope.caller_app_id
+        );
+        // The monitor's profile is the trace's address; an ephemeral monitor
+        // has none and stays off disk. (Worker threads have no thread-local
+        // `config_dir()` test override, so never use it here.)
+        let profile = self.monitor.profile_dir().map(std::path::Path::to_path_buf);
+        let trace = |kind: &str, call_id: &str, data: serde_json::Value| {
+            if let Some(profile) = &profile {
+                crate::host::flight_recorder::record_in(
+                    profile, kind, context, pane, Some(call_id), data,
+                );
+            }
+        };
+        trace(
+            "tool_call_requested",
+            &call_id,
+            serde_json::json!({
+                "caller": self.scope.caller_app_id,
+                "app_id": self.provider_of(name).0,
+                "tool": name,
+                "wait_approved": self.presenter.is_some(),
+                "input": serde_json::from_str::<serde_json::Value>(&input_json)
+                    .unwrap_or_else(|_| serde_json::Value::String(input_json.clone())),
+            }),
+        );
+        let recorded_call_id = call_id.clone();
+        let result = self.dispatch_call_admitted(call_id, name, input_json);
+        trace(
+            "tool_call_completed",
+            &recorded_call_id,
+            serde_json::json!({
+                "ok": result.error.is_none(),
+                "error_code": result.error_code,
+                "pending_request_id": result.pending_request_id,
+                "output": result.output_json.as_deref().map(|out| {
+                    serde_json::from_str::<serde_json::Value>(out)
+                        .unwrap_or_else(|_| serde_json::Value::String(out.to_string()))
+                }),
+                "error": result.error,
+            }),
+        );
+        result
+    }
+
+    fn dispatch_call_admitted(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
         let known = self.host_tools.contains_key(name) || self.tools.contains_key(name);
         if !known {
             crate::broker::gate::trace_gate(format!(

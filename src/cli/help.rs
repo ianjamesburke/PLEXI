@@ -33,6 +33,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "config",
             "note",
             "doctor",
+            "debug",
             "demo",
             "update",
             "uninstall",

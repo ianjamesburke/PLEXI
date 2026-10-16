@@ -273,6 +273,9 @@ pub struct AuditFact {
     pub revision_after: String,
 }
 
+/// In-memory audit window size for [`PermissionMonitor`].
+pub(crate) const AUDIT_MEM_CAP: usize = 4096;
+
 pub struct PermissionMonitor {
     store: Arc<Mutex<GrantStore>>,
     pending: Mutex<Vec<Pending>>,
@@ -286,7 +289,9 @@ pub struct PermissionMonitor {
     /// Profile whose `<profile>/host` queue this monitor persists. `None` for
     /// an ephemeral monitor, which never touches disk.
     profile_dir: Option<PathBuf>,
-    audit_mem: Mutex<Vec<AuditFact>>,
+    /// Most recent audit rows (see [`AUDIT_MEM_CAP`]). The sealed file is the
+    /// record; this window only serves in-process readers.
+    audit_mem: Mutex<std::collections::VecDeque<AuditFact>>,
     fail_audit: AtomicBool,
     /// Open and resolved items waiting on the human. One map, one resolution.
     needs_you: Mutex<BTreeMap<String, NeedsYouRecord>>,
@@ -380,10 +385,17 @@ impl PermissionMonitor {
             .clone()
     }
 
+    /// Bind the profile's flight recorder to this run's session id.
+    fn adopt_flight_session(&self, dir: &Path) {
+        crate::host::flight_recorder::adopt_session(dir, &self.session_id);
+    }
+
     /// Open `dir` without the process cache. A restart test uses this so a
     /// second look actually reads the files again.
     pub fn open_profile(dir: &Path) -> Arc<Self> {
-        Arc::new(Self::open(dir))
+        let monitor = Self::open(dir);
+        monitor.adopt_flight_session(dir);
+        Arc::new(monitor)
     }
 
     /// Private store. Used by tests that must not share a profile monitor.
@@ -607,10 +619,7 @@ impl PermissionMonitor {
             match super::seal::append_audit(path, &fact) {
                 Ok(()) => {
                     super::integrity::note_saved_file(path);
-                    self.audit_mem
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .push(fact);
+                    self.remember_audit(fact);
                     log::info!(
                         "permission_seal: audited integrity fault {} ({})",
                         fault.file, fault.reason
@@ -644,7 +653,7 @@ impl PermissionMonitor {
             epoch: AtomicU64::new(1),
             audit_path,
             profile_dir,
-            audit_mem: Mutex::new(Vec::new()),
+            audit_mem: Mutex::new(std::collections::VecDeque::new()),
             fail_audit: AtomicBool::new(false),
             needs_you: Mutex::new(BTreeMap::new()),
             widens: Mutex::new(BTreeMap::new()),
@@ -695,6 +704,11 @@ impl PermissionMonitor {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Profile directory this monitor persists to; `None` for an ephemeral one.
+    pub fn profile_dir(&self) -> Option<&Path> {
+        self.profile_dir.as_deref()
     }
 
     #[cfg(test)]
@@ -782,18 +796,25 @@ impl PermissionMonitor {
             }
             Decision::Ask => {
                 let id = self.persist_pending(&binding, req.tool, req.input_json);
-                let _ = self.audit(&AuditFact {
-                    kind: "ask".to_string(),
-                    actor: binding.actor_id.clone(),
-                    call_id: binding.call_id.clone(),
-                    grant_id: String::new(),
-                    resource_id: binding.resource_id.clone().unwrap_or_default(),
-                    args_fingerprint: binding.args_fingerprint.clone(),
-                    operation_id: operation_id_of(req.input_json),
-                    decision: "ask".to_string(),
-                    revision_before: String::new(),
-                    revision_after: String::new(),
-                });
+                let _ = self.audit_with(
+                    &AuditFact {
+                        kind: "ask".to_string(),
+                        actor: binding.actor_id.clone(),
+                        call_id: binding.call_id.clone(),
+                        grant_id: String::new(),
+                        resource_id: binding.resource_id.clone().unwrap_or_default(),
+                        args_fingerprint: binding.args_fingerprint.clone(),
+                        operation_id: operation_id_of(req.input_json),
+                        decision: "ask".to_string(),
+                        revision_before: String::new(),
+                        revision_after: String::new(),
+                    },
+                    serde_json::json!({
+                        "context_id": req.context_id,
+                        "pending_request_id": id,
+                        "tool": req.tool,
+                    }),
+                );
                 Admission::Required {
                     pending_request_id: id,
                 }
@@ -911,18 +932,25 @@ impl PermissionMonitor {
             } else {
                 "denied"
             };
-            let _ = self.audit(&AuditFact {
-                kind: "deny".to_string(),
-                actor: pending.binding.actor_id.clone(),
-                call_id: pending.binding.call_id.clone(),
-                grant_id: grant_id.clone(),
-                resource_id: pending.binding.resource_id.clone().unwrap_or_default(),
-                args_fingerprint: pending.binding.args_fingerprint.clone(),
-                operation_id: String::new(),
-                decision: decision.to_string(),
-                revision_before: String::new(),
-                revision_after: String::new(),
-            });
+            let _ = self.audit_with(
+                &AuditFact {
+                    kind: "deny".to_string(),
+                    actor: pending.binding.actor_id.clone(),
+                    call_id: pending.binding.call_id.clone(),
+                    grant_id: grant_id.clone(),
+                    resource_id: pending.binding.resource_id.clone().unwrap_or_default(),
+                    args_fingerprint: pending.binding.args_fingerprint.clone(),
+                    operation_id: String::new(),
+                    decision: decision.to_string(),
+                    revision_before: String::new(),
+                    revision_after: String::new(),
+                },
+                serde_json::json!({
+                    "context_id": pending.binding.context_id,
+                    "pending_request_id": pending_id,
+                    "choice": decision,
+                }),
+            );
             log::info!("permission_monitor: denied pending {pending_id} decision={decision}");
             let _ = self.close_needs_you(
                 pending_id,
@@ -986,7 +1014,18 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(pending_id.to_string(), choice);
-        self.audit(&AuditFact {
+        let trace_extra = serde_json::json!({
+            "context_id": binding.context_id,
+            "pending_request_id": pending_id,
+            "choice": match choice {
+                ApprovalChoice::Once => "allow_once",
+                ApprovalChoice::Session => "allow_session",
+                ApprovalChoice::Always => "allow_until",
+                ApprovalChoice::AllowTool => "allow_tool_session",
+                ApprovalChoice::Deny | ApprovalChoice::DenyAlways => "deny",
+            },
+        });
+        self.audit_with(&AuditFact {
             kind: "grant".to_string(),
             actor: binding.actor_id.clone(),
             call_id: binding.call_id,
@@ -1004,7 +1043,7 @@ impl PermissionMonitor {
             .to_string(),
             revision_before: String::new(),
             revision_after: String::new(),
-        })?;
+        }, trace_extra)?;
         log::info!("permission_monitor: approved pending {pending_id} as {grant_id}");
         let _ = self.close_needs_you(
             pending_id,
@@ -2442,7 +2481,21 @@ impl PermissionMonitor {
     }
 
     pub fn audit_records(&self) -> Vec<AuditFact> {
-        self.audit_mem.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.audit_mem
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Keep `fact` in the bounded in-memory window, evicting the oldest row.
+    fn remember_audit(&self, fact: AuditFact) {
+        let mut mem = self.audit_mem.lock().unwrap_or_else(|e| e.into_inner());
+        mem.push_back(fact);
+        while mem.len() > AUDIT_MEM_CAP {
+            mem.pop_front();
+        }
     }
 
     fn audit(&self, fact: &AuditFact) -> Result<(), String> {
@@ -2450,15 +2503,63 @@ impl PermissionMonitor {
         self.audit_locked(fact)
     }
 
+    /// `audit` plus extra flight-recorder fields (`context_id`,
+    /// `pending_request_id`, desktop `choice`). The extras never reach the
+    /// sealed audit row.
+    fn audit_with(&self, fact: &AuditFact, extra: serde_json::Value) -> Result<(), String> {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        self.audit_locked_with(fact, extra)
+    }
+
     fn audit_locked(&self, fact: &AuditFact) -> Result<(), String> {
+        self.audit_locked_with(fact, serde_json::Value::Null)
+    }
+
+    /// Mirror an audit fact into the session flight trace as a timestamped
+    /// `permission_ask` / `permission_decision` / `permission_use` row,
+    /// correlated by `call_id`. Ephemeral monitors have no profile and stay
+    /// off disk.
+    fn trace_audit(&self, fact: &AuditFact, extra: &serde_json::Value) {
+        let Some(profile) = self.profile_dir.as_deref() else {
+            return;
+        };
+        let kind = match fact.kind.as_str() {
+            "ask" => "permission_ask",
+            "grant" | "deny" => "permission_decision",
+            "use" => "permission_use",
+            _ => "permission_audit",
+        };
+        let mut data = serde_json::json!({
+            "audit_kind": fact.kind,
+            "actor": fact.actor,
+            "grant_id": fact.grant_id,
+            "resource_id": fact.resource_id,
+            "operation_id": fact.operation_id,
+            "decision": fact.decision,
+        });
+        let mut context_id = None;
+        if let Some(extra) = extra.as_object() {
+            context_id = extra.get("context_id").and_then(|v| v.as_u64());
+            for (key, value) in extra {
+                if key != "context_id" {
+                    data[key] = value.clone();
+                }
+            }
+        }
+        let call_id = (!fact.call_id.is_empty()).then_some(fact.call_id.as_str());
+        crate::host::flight_recorder::record_in(profile, kind, context_id, None, call_id, data);
+    }
+
+    fn audit_locked_with(
+        &self,
+        fact: &AuditFact,
+        extra: serde_json::Value,
+    ) -> Result<(), String> {
         if self.fail_audit.load(Ordering::SeqCst) {
             log::error!("permission_monitor: audit write failed (injected) kind={}", fact.kind);
             return Err("audit write failed".to_string());
         }
-        self.audit_mem
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(fact.clone());
+        self.remember_audit(fact.clone());
         if let Some(path) = &self.audit_path {
             match super::seal::append_audit(path, fact) {
                 Ok(()) => super::integrity::note_saved_file(path),
@@ -2475,6 +2576,7 @@ impl PermissionMonitor {
                 }
             }
         }
+        self.trace_audit(fact, &extra);
         trace_gate(format!(
             "permission_monitor: audit {} actor={} call_id={} grant_id={} resource={} op={}",
             fact.kind,
@@ -4655,6 +4757,19 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn audit_memory_window_is_bounded_and_keeps_the_newest_rows() {
+        let monitor = PermissionMonitor::ephemeral();
+        let total = AUDIT_MEM_CAP + 25;
+        for n in 0..total {
+            monitor.note_denial("pane:1", &format!("call-{n}"), "res", "", "deny");
+        }
+        let rows = monitor.audit_records();
+        assert_eq!(rows.len(), AUDIT_MEM_CAP);
+        assert_eq!(rows.first().unwrap().call_id, "call-25");
+        assert_eq!(rows.last().unwrap().call_id, format!("call-{}", total - 1));
     }
 }
 

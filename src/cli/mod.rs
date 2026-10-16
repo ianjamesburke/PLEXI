@@ -227,6 +227,7 @@ pub mod doctor;
 pub mod events;
 pub mod host;
 pub mod install;
+pub mod debug;
 pub mod ledger;
 mod install_hint;
 pub mod install_host;

@@ -303,7 +303,8 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd,
-        HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
+        DebugCmd, DebugSessionCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd,
+        PaneCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     use clap::FromArgMatches;
@@ -1570,6 +1571,24 @@ fn main() -> eframe::Result {
                     Commands::Notes { cmd } => {
                         std::process::exit(cli::notes::notes_compat_cli(cmd))
                     }
+                    Commands::Debug { cmd } => match cmd {
+                        DebugCmd::Session { cmd } => match cmd {
+                            DebugSessionCmd::List { json } => {
+                                std::process::exit(cli::debug::debug_session_list_cli(json))
+                            }
+                            DebugSessionCmd::Show {
+                                session,
+                                pane,
+                                join_agents,
+                                json,
+                            } => std::process::exit(cli::debug::debug_session_show_cli(
+                                session.as_deref(),
+                                pane,
+                                join_agents,
+                                json,
+                            )),
+                        },
+                    },
                     Commands::Ledger { cmd } => {
                         let (by, since, json) = match cmd {
                             Some(LedgerCmd::Summary { by, since, json }) => (by, since, json),

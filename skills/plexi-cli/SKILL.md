@@ -272,6 +272,7 @@ ai
 <!-- experiment: ledger -->
 ledger
 <!-- /experiment -->
+debug
 doctor
 update
 <!-- experiment: cloud_account -->
@@ -416,6 +417,19 @@ NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to insp
   --scope context --timeout 30)
 plexi notify dismiss "$NOTICE"
 ```
+
+### Inspect a recorded host session
+
+Every host run writes a durable flight trace to
+`~/.plexi-<channel>/sessions/<sess-id>.jsonl` (`sessions/latest.jsonl` points at
+the newest). `plexi debug session list [--json]` lists sessions with first/last
+time, contexts, panes, and attached agent session ids. `plexi debug session show
+[<sess-id>|latest] [--pane <id>] [--join-agents] [--json]` prints one
+chronological timeline of app events, tool calls, permission asks, desktop
+decisions and uses, and pane/context lifecycle. Rows share `{seq, ts,
+host_session_id, context_id, pane_id, call_id}`. `--pane` keeps that pane's rows
+plus the calls it made. `--join-agents` interleaves the pi and Claude transcripts
+named by recorded agent session ids. Neither verb needs a running host.
 
 <!-- experiment: ledger -->
 ### Summarize AI ledger usage
