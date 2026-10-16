@@ -889,6 +889,28 @@ pub enum AppRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
+    /// Snapshot the live tool registry exposed by running app panes in the
+    /// resolved context. Sent by `plexi app tools` and `plexi app info`.
+    /// The host resolves the viewer context from `context_id` when explicitly
+    /// supplied, otherwise from the verified socket peer pane or
+    /// `caller_pane_id` (falling back to the active context when run outside a
+    /// pane), and writes `{"ok":true,"context_id":<u64>,"tools":[...]}` to
+    /// `response_file`.
+    ListAppTools {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_context_id: Option<u64>,
+        /// Host-captured peer ancestry. Socket clients cannot set this; the
+        /// listener overwrites it before resolving the caller pane.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        peer_ancestry: Vec<u32>,
+        response_file: String,
+    },
 
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {

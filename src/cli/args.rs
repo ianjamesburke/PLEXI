@@ -1185,7 +1185,13 @@ pub enum AppCmd {
         #[arg(long)]
         snapshot: bool,
     },
-    /// Show details about an installed app: id, name, version, and available tools.
+    /// Show details about an installed app: manifest fields and tool status.
+    ///
+    /// Populates `tools` from the live tool registry when a pane of this app is
+    /// running in the current context; otherwise labels the section as
+    /// manifest-only (or static source scan) so an unopened app is never
+    /// misreported as declaring no tools. Run `plexi app tools` to snapshot all
+    /// live tools in the current context.
     Info { id: String },
     /// Read or replace a file-backed app's state document.
     ///
@@ -1345,6 +1351,28 @@ pub enum AppCmd {
         /// Wait up to two minutes for desktop approval, then execute once.
         #[arg(long)]
         wait_approved: bool,
+    },
+    /// Snapshot the live tool registry exposed by running app panes in the current context.
+    ///
+    /// Reads the same context-scoped `ToolDispatcher` registry that agents and
+    /// `plexi app call` see: exposed tool name (including `<name>@<pane_id>`
+    /// disambiguation when multiple panes expose the same tool), owning app id
+    /// and pane id, description, and full JSON input/output schemas.
+    ///
+    /// Example: plexi app tools
+    /// Example: plexi app tools --json
+    /// Example: plexi app tools --app calc --json
+    #[command(name = "tools")]
+    Tools {
+        /// Filter to tools exposed by this app id
+        #[arg(long, value_name = "APP_ID")]
+        app: Option<String>,
+        /// Inspect a specific context ID instead of the caller's context
+        #[arg(long, value_name = "CONTEXT_ID")]
+        context: Option<u64>,
+        /// Output as JSON (`{"ok": true, "context_id": ..., "tools": [...]}`)
+        #[arg(long)]
+        json: bool,
     },
 }
 

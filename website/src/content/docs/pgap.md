@@ -714,6 +714,19 @@ Call an app-exposed tool through the host tool dispatcher. Sent by `plexi app ca
 | `tool` | `string` | yes |
 | `wait_approved` | `boolean` | no |
 
+### `list_app_tools`
+
+Snapshot the live tool registry exposed by running app panes in the resolved context. Sent by `plexi app tools` and `...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `app_id` | `string?` | no |
+| `caller_context_id` | `integer?` | no |
+| `caller_pane_id` | `integer?` | no |
+| `context_id` | `integer?` | no |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string` | yes |
+
 ### `create_context`
 
 Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.

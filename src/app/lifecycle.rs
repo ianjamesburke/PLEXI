@@ -2605,6 +2605,23 @@ impl PlexiApp {
                     *wait_approved,
                 );
             }
+            crate::protocol::AppRequest::ListAppTools {
+                app_id,
+                context_id,
+                caller_pane_id,
+                caller_context_id,
+                peer_ancestry,
+                response_file,
+            } => {
+                self.list_app_tools(
+                    app_id.as_deref(),
+                    *context_id,
+                    *caller_pane_id,
+                    *caller_context_id,
+                    peer_ancestry,
+                    response_file,
+                );
+            }
             crate::protocol::AppRequest::SetAgentState {
                 pane_id,
                 state,

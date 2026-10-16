@@ -1159,3 +1159,65 @@ fn agents_chess_approval_scene() {
     );
     log::info!("permission_gate: chess approval scene passed");
 }
+
+#[test]
+fn list_app_tools_snapshots_live_registry_for_context() {
+    let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
+    let pane = h.launch_repo_app("apps/chess", &[]);
+    let ctx = h.app.windows[h.app.active_window].context_id;
+    pump_until(&mut h, |_| {
+        crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane)
+    });
+
+    let query = |h: &mut HostHarness, app_id: Option<&str>, context_id: Option<u64>| -> serde_json::Value {
+        let reply = h
+            .workspace_root()
+            .join(format!("app-tools-{}.json", uuid::Uuid::new_v4()));
+        let req = AppRequest::ListAppTools {
+            app_id: app_id.map(str::to_string),
+            context_id,
+            caller_pane_id: Some(pane),
+            caller_context_id: Some(ctx),
+            peer_ancestry: Vec::new(),
+            response_file: reply.to_string_lossy().to_string(),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, None, &mut ack);
+        pump_until(h, |_| {
+            reply.is_file()
+                && std::fs::metadata(&reply)
+                    .map(|meta| meta.len() > 0)
+                    .unwrap_or(false)
+        });
+        serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
+    };
+
+    let all = query(&mut h, None, None);
+    assert_eq!(all["ok"], true, "{all}");
+    assert_eq!(all["context_id"], ctx, "{all}");
+    let tools = all["tools"].as_array().expect("tools array");
+    let play = tools
+        .iter()
+        .find(|t| t["name"] == "chess.play")
+        .expect("chess.play in live tool registry snapshot");
+    assert_eq!(play["provider_name"], "chess.play");
+    assert_eq!(play["app_id"], "chess");
+    assert_eq!(play["pane_id"], pane);
+    assert_eq!(play["context_id"], ctx);
+    assert!(!play["description"].as_str().unwrap_or("").is_empty());
+    assert_eq!(play["input_schema"]["type"], "object");
+    assert_eq!(play["output_schema"]["type"], "object");
+
+    let filtered_empty = query(&mut h, Some("nonexistent-app"), None);
+    assert_eq!(filtered_empty["ok"], true);
+    assert_eq!(filtered_empty["tools"].as_array().unwrap().len(), 0);
+
+    let unknown_ctx = query(&mut h, None, Some(999_999));
+    assert_eq!(unknown_ctx["ok"], false);
+    assert!(unknown_ctx["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("context 999999 not found"));
+}

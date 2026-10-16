@@ -939,7 +939,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
 | `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run an app's AppHarness tests with `uv run --with pytest pytest tests/` |
-| `info` | Show details about an installed app: id, name, version, and available tools |
+| `info` | Show details about an installed app: manifest fields and tool status |
 | `state` | Read or replace a file-backed app's state document |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
@@ -952,6 +952,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `update` | Pull git-backed installed apps to their latest source revision |
 | `action` | Send a semantic action to a running app pane |
 | `call` | Call a tool an app exposes and print its JSON result |
+| `tools` | Snapshot the live tool registry exposed by running app panes in the current context |
 
 ### `plexi app open`
 
@@ -1058,7 +1059,9 @@ Runs the Python tests in the app's `tests/` directory (the `tests/test_app.py` s
 
 ### `plexi app info`
 
-Show details about an installed app: id, name, version, and available tools
+Show details about an installed app: manifest fields and tool status.
+
+Populates `tools` from the live tool registry when a pane of this app is running in the current context; otherwise labels the section as manifest-only (or static source scan) so an unopened app is never misreported as declaring no tools. Run `plexi app tools` to snapshot all live tools in the current context.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1223,6 +1226,20 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 | `--json` | flag | no | Print the host reply, including structured permission errors |
 | `--pane` | string | no | Pane that owns the tool when more than one instance of the app is open |
 | `--wait-approved` | flag | no | Wait up to two minutes for desktop approval, then execute once |
+
+### `plexi app tools`
+
+Snapshot the live tool registry exposed by running app panes in the current context.
+
+Reads the same context-scoped `ToolDispatcher` registry that agents and `plexi app call` see: exposed tool name (including `<name>@<pane_id>` disambiguation when multiple panes expose the same tool), owning app id and pane id, description, and full JSON input/output schemas.
+
+Example: plexi app tools Example: plexi app tools --json Example: plexi app tools --app calc --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--app` | string | no | Filter to tools exposed by this app id |
+| `--context` | string | no | Inspect a specific context ID instead of the caller's context |
+| `--json` | flag | no | Output as JSON (`{"ok": true, "context_id": ..., "tools": [...]}`) |
 
 ## `plexi account`
 

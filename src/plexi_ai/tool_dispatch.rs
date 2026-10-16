@@ -322,6 +322,67 @@ impl ToolRegistry {
         by_app.into_iter().collect()
     }
 
+    /// Structured snapshot of tools visible to a caller in `viewer_context_id`,
+    /// preserving the exact `snapshot_for_caller` reachability and `<name>@<pane>`
+    /// disambiguation rules `ToolDispatcher::from_registry` uses.
+    fn snapshot_entries_for_caller(&self, viewer_context_id: u64) -> Vec<LiveToolEntry> {
+        let raw = self.snapshot_for_caller(viewer_context_id);
+        let mut out: Vec<LiveToolEntry> = raw
+            .into_iter()
+            .filter_map(|(exposed_name, (pane_id, provider_name, tool))| {
+                let entry = self.entries.get(&pane_id)?;
+                Some(LiveToolEntry {
+                    name: exposed_name,
+                    provider_name,
+                    app_id: entry.app_id.clone(),
+                    pane_id,
+                    context_id: entry.origin.context_id,
+                    description: tool.description,
+                    input_schema: tool.input_schema,
+                    output_schema: tool.output_schema,
+                    read_only: tool.read_only,
+                    timeout_ms: tool.timeout_ms,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.app_id
+                .cmp(&b.app_id)
+                .then_with(|| a.pane_id.cmp(&b.pane_id))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        out
+    }
+}
+
+/// One tool in the live tool-registry snapshot for a context, shaped identically
+/// to what `ToolDispatcher::from_registry` / `snapshot_for_caller` exposes to
+/// agents.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct LiveToolEntry {
+    /// Tool name as exposed to callers in this context (`<name>` when one pane
+    /// owns it, `<name>@<pane_id>` when multiple panes in the context expose the
+    /// same tool name).
+    pub name: String,
+    /// Tool name as originally registered by the owning app (`AiTool.name`).
+    pub provider_name: String,
+    /// Manifest `app.id` of the owning app.
+    pub app_id: String,
+    /// Live pane id that registered the tool.
+    pub pane_id: u64,
+    /// Host-established context id of the owning pane's `ScopeOrigin`.
+    pub context_id: u64,
+    /// Tool description.
+    pub description: String,
+    /// Full JSON Schema for tool input (`AiTool.input_schema`).
+    pub input_schema: serde_json::Value,
+    /// Full JSON Schema for tool output (`AiTool.output_schema`).
+    pub output_schema: serde_json::Value,
+    /// App-declared hint that the tool only reads state.
+    pub read_only: bool,
+    /// Optional per-call timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 static GLOBAL_REGISTRY: OnceLock<Arc<Mutex<ToolRegistry>>> = OnceLock::new();
@@ -371,6 +432,21 @@ pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
     }
     tools.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
     tools
+}
+
+/// Snapshot the live tool registry visible to a caller in `viewer_context_id`,
+/// using the exact `snapshot_for_caller` reachability and disambiguation rules
+/// `ToolDispatcher::from_registry` uses.
+pub fn snapshot_tools_for_context(viewer_context_id: u64) -> Vec<LiveToolEntry> {
+    let entries = global_registry()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .snapshot_entries_for_caller(viewer_context_id);
+    log::info!(
+        "tool_dispatch: snapshot_tools_for_context context_id={viewer_context_id} count={}",
+        entries.len()
+    );
+    entries
 }
 
 /// Whether `pane_id` currently has tools in the process-global registry.
@@ -1615,5 +1691,98 @@ mod tests {
             "denied calls must not enter WASM update()"
         );
         unregister(996);
+    }
+
+    #[test]
+    fn snapshot_tools_for_context_exposes_full_schema_and_disambiguates_duplicate_panes() {
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        let (tx3, _rx3) = std::sync::mpsc::channel();
+        let add_tool = AiTool {
+            name: "calc.add".to_string(),
+            description: "Add two numbers".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+                "required": ["a", "b"]
+            }),
+            output_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"result": {"type": "number"}},
+                "required": ["result"]
+            }),
+            timeout_ms: Some(4_000),
+            read_only: false,
+        };
+        let state_tool = AiTool {
+            name: "calc.state".to_string(),
+            description: "Read calculator display".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"display": {"type": "string"}},
+                "required": ["display"]
+            }),
+            timeout_ms: None,
+            read_only: true,
+        };
+        register(
+            1901,
+            "calc".to_string(),
+            vec![add_tool.clone(), state_tool.clone()],
+            AppEventSender::Channel(tx1),
+            origin(501, 1901),
+        );
+        register(
+            1902,
+            "calc".to_string(),
+            vec![add_tool.clone()],
+            AppEventSender::Channel(tx2),
+            origin(501, 1902),
+        );
+        register(
+            1903,
+            "other".to_string(),
+            vec![make_tool("other.secret")],
+            AppEventSender::Channel(tx3),
+            origin(502, 1903),
+        );
+
+        let snap = snapshot_tools_for_context(501);
+        unregister(1901);
+        unregister(1902);
+        unregister(1903);
+
+        assert_eq!(snap.len(), 3, "expected 3 exposed entries in context 501: {snap:?}");
+        assert!(
+            snap.iter().all(|e| e.context_id == 501 && e.app_id == "calc"),
+            "cross-context tools must never appear in context 501 snapshot: {snap:?}"
+        );
+        let add_1901 = snap
+            .iter()
+            .find(|e| e.name == "calc.add@1901")
+            .expect("disambiguated calc.add@1901");
+        assert_eq!(add_1901.provider_name, "calc.add");
+        assert_eq!(add_1901.pane_id, 1901);
+        assert_eq!(add_1901.description, "Add two numbers");
+        assert_eq!(add_1901.input_schema, add_tool.input_schema);
+        assert_eq!(add_1901.output_schema, add_tool.output_schema);
+        assert_eq!(add_1901.timeout_ms, Some(4_000));
+        assert!(!add_1901.read_only);
+
+        let add_1902 = snap
+            .iter()
+            .find(|e| e.name == "calc.add@1902")
+            .expect("disambiguated calc.add@1902");
+        assert_eq!(add_1902.provider_name, "calc.add");
+        assert_eq!(add_1902.pane_id, 1902);
+
+        let state_entry = snap
+            .iter()
+            .find(|e| e.name == "calc.state")
+            .expect("unqualified calc.state on single owner");
+        assert_eq!(state_entry.provider_name, "calc.state");
+        assert_eq!(state_entry.pane_id, 1901);
+        assert!(state_entry.read_only);
     }
 }

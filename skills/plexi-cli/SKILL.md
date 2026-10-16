@@ -62,18 +62,23 @@ plexi skill install --agent codex
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
-  `plexi app --help`. `plexi app info <id>` prints the manifest and the tools
-  declared in that app's source.
+  `plexi app --help`. `plexi app info <id>` prints the manifest and populates
+  its tools field from the live tool registry when a pane of `<id>` is running
+  in the context, or explicitly labels its static `@tools.tool` source scan
+  `manifest-only` when not running.
 - **App state** — read or replace a file-backed app's state document, so a human
   and an agent can drive the same app: `plexi app state --help`. Only apps that
   declare a `[state]` section are addressable; the path is resolved from the
   manifest and the calling context, never passed in. A running app picks the
   write up on its own event loop.
-- **App tools** — call a tool a running app exposes and get its JSON result:
-  `plexi app call <app_id> <tool> --input '<json object>'`. It uses the same
-  dispatcher as the Assistant, scoped to your pane's context. The app sees
-  `pane:<id>` from the host credential or peer; a missing pane is never
-  `user`. Identity fields in `--input` are ignored. `--json` prints the
+- **App tools** — inspect or call the tools running apps expose in a context:
+  `plexi app tools [--app <id>] [--context <id>] [--json]` snapshots the live
+  tool registry over the command socket (qualified tool name, owning `app_id`
+  and `pane_id`, description, and full JSON input schema). Call a live tool and
+  get its JSON result with `plexi app call <app_id> <tool> --input '<json object>'`.
+  It uses the same dispatcher as the Assistant, scoped to your pane's context.
+  The app sees `pane:<id>` from the host credential or peer; a missing pane is
+  never `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
   Add `--wait-approved` to wait up to two minutes for a real desktop decision,
