@@ -35,11 +35,18 @@ plexi skill install --agent codex
   stdout/stderr EOF with a deadline when driving CLI commands from a script.
 
 - **Panes** — create terminals, control their input and focus, inspect them, and
-  coordinate work: `plexi pane --help`. Running a command in another pane:
-  `pane command <id> "<cmd>" --enter` is the host-confirmed submit for an
-  ordinary shell command (exits 0 only once the host confirms it ran);
-  `pane send --submit` is the same contract for driving an interactive TUI,
-  and `pane new --agent` is the dedicated verb for booting another agent.
+  coordinate work: `plexi pane --help`. Driving an agent in another pane uses a
+  two-command host-confirmed recipe (two commands, no sleeps, no capture polling,
+  no manual `pane key <id> enter`):
+  1. Boot with `ID=$(plexi pane new --agent <tier-alias> -n "<name>" --no-focus)` —
+     the supported way to launch an agent into a fresh pane; blocks until the
+     agent TUI is idle, so a printed id on stdout means ready-to-brief.
+  2. Brief with `plexi pane send "$ID" "<brief>" --submit` — settles the pane,
+     presses Enter (re-sending once if parked as a collapsed paste), and exits 0
+     only once the host confirms the prompt left the input line.
+  Running an ordinary shell command in another pane:
+  `pane command <id> "<cmd>" --enter` is the same host-confirmed submit for a
+  shell prompt (exits 0 only once the host confirms it ran).
   `pane state <id>` always returns the agent's own `claimed_state` (its
   `status` slot) together with the host's `observed_state` (process alive,
   output recency, child pids) — never trust the claim alone for liveness;
