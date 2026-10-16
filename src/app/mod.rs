@@ -4221,7 +4221,8 @@ impl eframe::App for PlexiApp {
                     self.open_quick_note_modal();
                 }
                 Action::OpenConfig => {
-                    crate::config::open_config_file();
+                    let path = crate::config::ensure_config_file();
+                    self.open_config_in_editor(path);
                 }
                 Action::ReloadConfig => {
                     self.reload_config();
@@ -4352,6 +4353,10 @@ impl eframe::App for PlexiApp {
             crate::platform::macos_menu::apply_version_title_once();
             if crate::platform::macos_menu::take_reload_config_flag() {
                 self.reload_config();
+            }
+            if crate::platform::macos_menu::take_open_config_flag() {
+                let path = crate::config::ensure_config_file();
+                self.open_config_in_editor(path);
             }
         }
 

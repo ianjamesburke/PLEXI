@@ -1664,6 +1664,41 @@ impl PlexiApp {
         let _ = self.launch_app_by_id_with_layout(id, None, &[], None);
     }
 
+    /// Open a config file (global or workspace) in a Plexi text-editor pane
+    /// split from the focused pane. The one path behind the `open_config`
+    /// keybinding, the palette entries, and the macOS menu item. The file
+    /// opens through the editor's ordinary path launch argument; an already
+    /// open config is focused rather than duplicated. File buffers save only
+    /// on Cmd+S, so opening a real config here cannot silently mutate it.
+    pub(crate) fn open_config_in_editor(&mut self, path: PathBuf) {
+        if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
+            log::info!(
+                "open_config: {} already open in pane {pane_id}, focusing",
+                path.display()
+            );
+            self.pane_navigate(pane_id);
+            return;
+        }
+        let args = [path.display().to_string()];
+        let pane_id = self.host.next_pane_id();
+        match self.launch_app_by_id_with_layout(
+            "text-editor",
+            Some("split_h".to_string()),
+            &args,
+            None,
+        ) {
+            Ok(existing) => log::info!(
+                "open_config: {} opened in text-editor pane {}",
+                path.display(),
+                existing.unwrap_or(pane_id)
+            ),
+            Err(e) => log::error!(
+                "open_config: could not open {} in the text editor: {e}",
+                path.display()
+            ),
+        }
+    }
+
     /// Launch an installed app with an explicit layout and args override.
     ///   "overlay" (default) — full pane takeover; Esc restores the original pane
     ///   "split_h"           — horizontal split, new pane to the right

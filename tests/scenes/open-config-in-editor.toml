@@ -1,0 +1,25 @@
+# Stint 0735: Cmd+, opens the config in a Plexi text-editor split instead of
+# shelling out to VS Code. The pane count grows by one and a second Cmd+,
+# focuses the open config rather than stacking another editor.
+size = [1200.0, 720.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "scratch", args = ["{tmp}/scratch.md"] }
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+key = { target = "host", value = "cmd+," }
+
+[[steps]]
+assert = { pane_count = 2 }
+
+[[steps]]
+key = { target = "host", value = "cmd+," }
+
+[[steps]]
+assert = { pane_count = 2 }
+
+[[steps]]
+shot = "open-config-in-editor.png"
