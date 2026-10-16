@@ -7,7 +7,7 @@ import json
 from typing import Any
 from urllib.parse import quote
 
-from plexi_sdk import log, state
+from plexi_sdk import log, state, tools
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
 from plexi_sdk.events import HttpResponse, KeyEvent, UiValueChange
 from plexi_sdk.ui import (
@@ -47,12 +47,69 @@ DEFAULT_STATE: dict[str, Any] = {
 }
 
 
+@tools.tool(
+    "issues.list",
+    "List loaded GitHub issues filtered by optional `state`, search `query`, and `limit`.",
+    {"state": str, "query": str, "limit": int},
+    read_only=True,
+)
+def _tool_list(
+    state: str | None = None,
+    query: str | None = None,
+    limit: int | None = None,
+) -> dict:
+    data = _state()
+    matched = _query_issues(data, state_filter=state, query=query, limit=limit)
+    log.info(f"github-issues: tool issues.list returned {len(matched)} issue(s)")
+    return {"issues": matched, "count": len(matched)}
+
+
+@tools.tool(
+    "issues.open",
+    "Focus the issue row with `number` in the issue list.",
+    {"number": int},
+    read_only=True,
+)
+def _tool_open(number: int) -> tools.Reply:
+    if isinstance(number, bool) or not isinstance(number, int):
+        raise ValueError(f"issue number must be an integer, got {number!r}")
+    data = _state()
+    visible = _visible_issues(data)
+    idx = next(
+        (i for i, issue in enumerate(visible) if int(issue.get("number") or 0) == number),
+        None,
+    )
+    if idx is None and data.get("filter"):
+        data["filter"] = ""
+        visible = _visible_issues(data)
+        idx = next(
+            (i for i, issue in enumerate(visible) if int(issue.get("number") or 0) == number),
+            None,
+        )
+    if idx is None:
+        raise LookupError(f"no issue #{number} in loaded issues")
+    issue = visible[idx]
+    data["selected"] = idx
+    data["view"] = "list"
+    data["detail"] = None
+    log.info(f"github-issues: focused issue #{number} at row {idx} via assistant")
+    return tools.Reply(
+        {
+            "number": issue["number"],
+            "title": issue["title"],
+            "selected": idx,
+            "issue": issue,
+        },
+        [SetState(data), SetStatus(_status(data))],
+    )
+
+
 def init(size, args) -> list:
     repo = args[0] if args else state.get("repo", "")
     data = _state()
     if repo:
         data["repo"] = repo
-    effects: list = [SetTitle("GitHub Issues")]
+    effects: list = [SetTitle("GitHub Issues"), tools.expose()]
     if data["repo"]:
         data["loading"] = True
         data["pending"] = "list"
@@ -68,6 +125,9 @@ def init(size, args) -> list:
 
 
 def update(event) -> list:
+    handled = tools.dispatch(event)
+    if handled is not None:
+        return handled
     data = _state()
     if isinstance(event, HttpResponse):
         data.update(_handle_http(data, event))
@@ -325,6 +385,43 @@ def _visible_issues(data: dict) -> list[dict]:
             or query in " ".join(_issue_labels(issue)).lower()
         ]
     return visible
+
+
+def _query_issues(
+    data: dict,
+    state_filter: str | None = None,
+    query: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    issues = _filter_and_sort_issues(data["issues"], set(), data["sort_mode"])
+    if state_filter is not None and str(state_filter).strip():
+        norm_state = str(state_filter).strip().lower()
+        if norm_state not in ("open", "closed", "all"):
+            raise ValueError(
+                f"unknown issue state {state_filter!r}; expected open, closed, or all"
+            )
+        if norm_state != "all":
+            issues = [
+                issue
+                for issue in issues
+                if str(issue.get("state") or "open").lower() == norm_state
+            ]
+    if query is not None and str(query).strip():
+        raw_query = str(query).strip()
+        needle = raw_query.lower()
+        issues = [
+            issue
+            for issue in issues
+            if raw_query in set(_issue_labels(issue))
+            or needle in str(issue.get("title") or "").lower()
+            or needle in " ".join(_issue_labels(issue)).lower()
+            or needle in str(issue.get("body") or "").lower()
+        ]
+    if limit is not None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"limit must be a non-negative integer, got {limit!r}")
+        issues = issues[:limit]
+    return issues
 
 
 def _is_text_filter(value: str) -> bool:

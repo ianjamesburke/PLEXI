@@ -14,7 +14,9 @@ import importlib.util
 import json
 from pathlib import Path
 
-from plexi_sdk.events import HostLogResult
+from plexi_sdk import tools
+from plexi_sdk.effects import ExposeTools, SetState, ToolResult
+from plexi_sdk.events import HostLogResult, ToolCall
 from plexi_sdk.testing import AppHarness
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -28,6 +30,7 @@ THREE_LINE_LOG = (
 
 
 def _load_app_module():
+    tools._reset_for_tests()
     spec = importlib.util.spec_from_file_location("logs_app", APP)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -312,3 +315,128 @@ def test_renders_without_overlap(tmp_path):
     with AppHarness(str(APP), width=900, height=600, host_log_path=str(log_path)) as h:
         h.run(2)
         h.assert_no_overlap()
+
+
+# ── Assistant tools (logs.query, logs.set_filter) ────────────────────────────
+
+
+def test_init_exposes_logs_tools():
+    app = _load_app_module()
+    from plexi_sdk import _v3_state
+    from plexi_sdk._v3_state import StateSnapshot
+
+    _v3_state._state = StateSnapshot(dict(app.DEFAULT_STATE), {})
+    effects = app.init((800, 600), [])
+    exposed = next(e for e in effects if isinstance(e, ExposeTools))
+    by_name = {t.name: t for t in exposed.tools}
+    assert set(by_name) == {"logs.query", "logs.set_filter"}
+    assert by_name["logs.query"].read_only is True
+    assert by_name["logs.set_filter"].read_only is False
+
+
+def test_tools_dispatch_query_and_set_filter():
+    app = _load_app_module()
+    from plexi_sdk import _v3_state
+    from plexi_sdk._v3_state import StateSnapshot
+
+    seeded = dict(app.DEFAULT_STATE)
+    app._apply_log_result(
+        seeded,
+        HostLogResult(content=THREE_LINE_LOG.encode(), path="/x/plexi.log", error=None),
+    )
+    _v3_state._state = StateSnapshot(seeded, {})
+
+    # 1. logs.query with no filters returns all 3 lines (newest first).
+    effects = tools.dispatch(ToolCall("c1", "logs.query", "{}", "assistant"))
+    assert effects is not None
+    res = next(e for e in effects if isinstance(e, ToolResult))
+    assert res.error is None
+    payload = json.loads(res.output_json)
+    assert payload["count"] == 3
+    assert [ln["message"] for ln in payload["lines"]] == [
+        "retrying",
+        "save failed",
+        "loaded config",
+    ]
+
+    # 2. logs.query filtered by level, contains, and limit.
+    effects = tools.dispatch(
+        ToolCall(
+            "c2",
+            "logs.query",
+            json.dumps({"level": "ERROR", "contains": "todo", "limit": 1}),
+            "assistant",
+        )
+    )
+    assert effects is not None
+    res = next(e for e in effects if isinstance(e, ToolResult))
+    assert res.error is None
+    payload = json.loads(res.output_json)
+    assert payload["count"] == 1
+    assert payload["lines"][0]["message"] == "save failed"
+
+    # 3. logs.set_filter updates state filter and status.
+    effects = app.update(
+        ToolCall("c3", "logs.set_filter", json.dumps({"level": "WARN"}), "assistant")
+    )
+    res = next(e for e in effects if isinstance(e, ToolResult))
+    assert res.error is None
+    assert json.loads(res.output_json)["filter"] == "WARN"
+    new_state = next(e for e in effects if isinstance(e, SetState)).data
+    assert new_state["filter"] == "WARN"
+
+    # 4. Invalid level reports a structured ToolResult error rather than crashing.
+    bad = tools.dispatch(
+        ToolCall("c4", "logs.set_filter", json.dumps({"level": "BOGUS"}), "assistant")
+    )
+    assert bad is not None
+    assert bad[0].error is not None
+
+
+def test_app_harness_exercises_logs_tools_end_to_end(tmp_path):
+    log_path = tmp_path / "plexi.log"
+    log_path.write_text(THREE_LINE_LOG)
+    with AppHarness(str(APP), width=800, height=600, host_log_path=str(log_path)) as h:
+        h.run(2)
+        exposed = [c for c in h._events_seen if c.get("type") == "expose_tools"]
+        assert exposed, "init must emit expose_tools"
+        names = {t["name"] for t in exposed[-1]["tools"]}
+        assert names == {"logs.query", "logs.set_filter"}
+
+        h._send(
+            {
+                "type": "tool_call",
+                "call_id": "q-1",
+                "name": "logs.query",
+                "input_json": json.dumps({"contains": "todo", "limit": 1}),
+                "caller_id": "assistant",
+            }
+        )
+        h.run(1)
+        results = [
+            c
+            for c in h._events_seen
+            if c.get("type") == "tool_result" and c.get("call_id") == "q-1"
+        ]
+        assert results, "logs.query must emit tool_result"
+        out = json.loads(results[-1]["output_json"])
+        assert [ln["message"] for ln in out["lines"]] == ["retrying"]
+
+        h._send(
+            {
+                "type": "tool_call",
+                "call_id": "f-1",
+                "name": "logs.set_filter",
+                "input_json": json.dumps({"level": "ERROR"}),
+                "caller_id": "assistant",
+            }
+        )
+        h.run(1)
+        results = [
+            c
+            for c in h._events_seen
+            if c.get("type") == "tool_result" and c.get("call_id") == "f-1"
+        ]
+        assert results and json.loads(results[-1]["output_json"])["filter"] == "ERROR"
+        assert _last_status(h) == "1 lines"
+
