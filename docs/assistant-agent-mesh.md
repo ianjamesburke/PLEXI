@@ -1,6 +1,6 @@
 # Assistant Agent Mesh
 
-Status: active.
+Status: superseded. Superseded by the locked Pre-1.0 agent direction in `TRUTH.md` (§1 Locked Release Schedule, §9 Cuts): CLI coding agents (`pi`, `claude`, `codex`, `agy`) driven through `@plexi/pi` (`packages/pi-plexi`, stint 0796), self-closing sub-context squads, and all-over session restoration. The built-in Assistant is not the primary orchestrator. Kept as historical design context only; do not build from it.
 Stint: none yet — filed after the stable v1 cut lands.
 Parent: [`assistant-host-app.md`](assistant-host-app.md).
 Authority plane: [`assistant-authority-model.md`](assistant-authority-model.md).

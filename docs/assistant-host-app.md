@@ -1,6 +1,6 @@
 # Host Assistant App Spec
 
-Status: active.
+Status: superseded. Superseded by the locked Pre-1.0 agent direction in `TRUTH.md` (§1 Locked Release Schedule, §9 Cuts): CLI coding agents (`pi`, `claude`, `codex`, `agy`) driven through `@plexi/pi` (`packages/pi-plexi`, stint 0796), self-closing sub-context squads, and all-over session restoration. The built-in Assistant is not the primary orchestrator. Kept as historical design context only; do not build from it.
 Stint: `0439`, `0381`, `0382`.
 Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md).
 Authority plane: [`assistant-authority-model.md`](assistant-authority-model.md).

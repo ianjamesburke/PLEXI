@@ -1,6 +1,6 @@
 # Stint audit and sequencing to zero
 
-Date: 2026-08-01. Status: proposal, awaiting owner ruling.
+Date: 2026-08-01. Status: historical proposal; the live plan is `TRUTH.md`, and queue running is now `.agents/skills/babysitter-v3/SKILL.md`.
 Companion to [`2026-08-01-v1-cut.md`](2026-08-01-v1-cut.md), which remains the authoritative V1 node ordering. This document does not replace it. It amends it for the Assistant/mesh pull-forward, records the close list, and sequences everything else.
 
 Method: five parallel read-only auditors over all 172 open tasks (497 total, 324 done, 7 archived), partitioned by area with no overlap. Shipped-ness proven only with `git merge-base --is-ancestor <sha> origin/alpha` — never `git log --all`, which includes unmerged branches and produced one wrong audit before the rule was imposed.
