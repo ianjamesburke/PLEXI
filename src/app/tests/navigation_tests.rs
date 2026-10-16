@@ -170,21 +170,45 @@ fn page_arrival_repairs_focusless_destination_before_lateral_navigation() {
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
     h.app.windows.push(same_workspace_window_right(context_id, 2));
-    let (left_tile, _left_pane) = h.app.add_app_pane_in_window(1, "left");
-    let (right_tile, _right_pane) = h.app.add_app_pane_in_window(1, "right");
+    let (left_tile, left_pane) = h.app.add_app_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
     let root = h.app.windows[1]
         .tree
         .tiles
         .insert_horizontal_tile(vec![left_tile, right_tile]);
     h.app.windows[1].tree.root = Some(root);
 
+    // Lay out B once so its geometric left/right relationship is real, then
+    // restore the persisted focusless state before navigating into it.
+    h.app.active_window = 1;
+    h.run_frames(1);
+    h.app.active_window = 0;
+    h.app.windows[1].focused_pane = None;
+    let left_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&left_pane)
+        .expect("left pane must remain in B's tree after layout");
+    let right_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&right_pane)
+        .expect("right pane must remain in B's tree after layout");
+    assert_eq!(h.app.leftmost_pane_in_window(1), Some(left_tile));
+
     assert!(h.app.navigate(crate::host::keys::Direction::Right));
 
     assert_eq!(h.app.active_window, 1);
-    let repaired = h.app.windows[1]
-        .focused_pane
-        .expect("arrival must repair the persisted focusless destination");
-    assert!(matches!(repaired, tile if tile == left_tile || tile == right_tile));
+    assert_eq!(
+        h.app.windows[1].focused_pane,
+        Some(left_tile),
+        "arrival must select B's leftmost pane; left={:?} right={:?}",
+        h.app.windows[1].tree.tiles.rect(left_tile),
+        h.app.windows[1].tree.tiles.rect(right_tile),
+    );
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+    assert_eq!(h.app.active_window, 1, "lateral navigation must stay in B");
+    assert_eq!(h.app.windows[1].focused_pane, Some(right_tile));
 }
 
 /// Regression guard for #823: pane_navigate must also sync router.active_idx
