@@ -1145,3 +1145,34 @@ fn assistant_open_spawns_second_instance_in_other_context() {
         "each context must persist (and resume) its own conversation"
     );
 }
+
+/// Stint 0735: every config entry point routes through
+/// `open_config_in_editor`, which splits a Plexi text-editor pane on the
+/// config file (template written when absent) and focuses — never duplicates —
+/// an already-open config.
+#[test]
+fn open_config_in_editor_splits_and_dedups() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let before = h.pane_count();
+
+    let path = crate::config::ensure_config_file();
+    assert!(path.exists(), "ensure_config_file must write the template");
+    let on_disk = std::fs::read_to_string(&path).expect("template readable");
+
+    h.app.open_config_in_editor(path.clone());
+    assert_eq!(h.pane_count(), before + 1, "config opens in a new split");
+    let editor = h
+        .app
+        .find_open_text_editor_pane_any_window(&path)
+        .expect("a text-editor pane holds the config path");
+    assert_ne!(editor, first);
+
+    h.app.open_config_in_editor(path.clone());
+    assert_eq!(h.pane_count(), before + 1, "second open focuses, not stacks");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("config readable"),
+        on_disk,
+        "opening the editor must not rewrite the config"
+    );
+}

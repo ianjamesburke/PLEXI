@@ -1409,36 +1409,42 @@ pub fn migrate_config(path: &Path) {
     }
 }
 
-pub fn open_config_file() {
-    open_config_file_at(&config_path());
+/// The global config path, with its parent and a commented template written
+/// on first use. The host opens the returned path in a Plexi text-editor pane.
+pub fn ensure_config_file() -> PathBuf {
+    ensure_config_file_at(config_path())
 }
 
-/// Open a configuration file, creating its parent and a commented template on
-/// first use. The caller supplies the scope-resolved path so global and
-/// workspace palette entries share the same editor handoff.
-pub fn open_workspace_config_file(workspace_root: &Path) {
-    open_config_file_at(&workspace_config_path(workspace_root));
+/// The workspace config path for `workspace_root`, with its parent and a
+/// commented template written on first use. Global and workspace entries share
+/// the same editor handoff.
+pub fn ensure_workspace_config_file(workspace_root: &Path) -> PathBuf {
+    ensure_config_file_at(workspace_config_path(workspace_root))
 }
 
-fn open_config_file_at(path: &Path) {
-
+fn ensure_config_file_at(path: PathBuf) -> PathBuf {
     if !path.exists() {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::error!(
+                    "ensure_config_file: could not create {}: {e}",
+                    parent.display()
+                );
+            }
         }
-        let _ = std::fs::write(path, CONFIG_TEMPLATE);
+        if let Err(e) = std::fs::write(&path, CONFIG_TEMPLATE) {
+            log::error!(
+                "ensure_config_file: could not write template to {}: {e}",
+                path.display()
+            );
+        }
     }
-
-    if !open_file_with_fallback(path) {
-        log::error!(
-            "open_config_file: could not open {} with any available editor",
-            path.display()
-        );
-    }
+    path
 }
 
 /// Opens `path` with a fallback chain: VS Code → system default → TextEdit.
-/// Returns `true` if any opener succeeded.
+/// Returns `true` if any opener succeeded. Used by `plexi config edit` when
+/// `$EDITOR` is unset; the in-host config entry points use the Plexi editor.
 #[cfg(target_os = "macos")]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     let candidates: &[&[&str]] = &[&["-a", "Visual Studio Code"], &["-t"], &["-a", "TextEdit"]];

@@ -1691,7 +1691,8 @@ impl PlexiApp {
             PaletteCommand::OpenWorkspaceConfig => {
                 let root = self.router.active().root.clone();
                 log::info!("palette: opening workspace config at {}", root.display());
-                crate::config::open_workspace_config_file(&root);
+                let path = crate::config::ensure_workspace_config_file(&root);
+                self.open_config_in_editor(path);
             }
         }
     }
@@ -1710,7 +1711,8 @@ impl PlexiApp {
                 self.mark_workspace_dirty();
             }
             crate::host::keys::Action::OpenConfig => {
-                crate::config::open_config_file();
+                let path = crate::config::ensure_config_file();
+                self.open_config_in_editor(path);
             }
             crate::host::keys::Action::ReloadConfig => self.reload_config(),
             crate::host::keys::Action::OpenNotesPicker => self.open_notes_picker(),

@@ -19,6 +19,16 @@ static HANDLER: OnceLock<JsonHandler> = OnceLock::new();
 /// `PlexiApp::update()`.
 static RELOAD_CONFIG_FLAG: AtomicBool = AtomicBool::new(false);
 
+/// Set by the "Open Config" menu item; polled each frame in
+/// `PlexiApp::update()` so the config opens through the host's editor-split path
+/// (the menu callback has no access to the app).
+static OPEN_CONFIG_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// Check and clear the open-config flag. Called from the main app loop.
+pub fn take_open_config_flag() -> bool {
+    OPEN_CONFIG_FLAG.swap(false, Ordering::SeqCst)
+}
+
 /// Check and clear the reload flag. Called from the main app loop.
 pub fn take_reload_config_flag() -> bool {
     RELOAD_CONFIG_FLAG.swap(false, Ordering::SeqCst)
@@ -59,7 +69,7 @@ fn register_handler_class() -> &'static objc2::runtime::AnyClass {
             ClassBuilder::new(c"PlexiMenuHandler", superclass).expect("class already registered");
 
         unsafe extern "C" fn open_config(_this: &AnyObject, _cmd: Sel, _sender: *mut AnyObject) {
-            crate::config::open_config_file();
+            OPEN_CONFIG_FLAG.store(true, Ordering::SeqCst);
         }
 
         unsafe extern "C" fn reload_config(_this: &AnyObject, _cmd: Sel, _sender: *mut AnyObject) {
