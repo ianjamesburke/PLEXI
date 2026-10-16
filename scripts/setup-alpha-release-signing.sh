@@ -43,7 +43,7 @@ if [[ "$actual" != "$expected" ]]; then
 fi
 
 # A self-signed certificate needs code-signing trust on the disposable runner.
-# Pin it before adding trust; the workflow removes this setting at teardown.
+# Pin it before adding trust; disposal of the hosted VM discards this setting.
 echo 'release-signing: trusting the pinned certificate for code signing on the disposable runner'
 sudo -n security add-trusted-cert -d -r trustRoot -p codeSign -k "$keychain" "$certificate"
 touch "$certificate.trusted"

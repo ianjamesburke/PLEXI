@@ -60,8 +60,9 @@ jobs:
         run: |
           certificate="$RUNNER_TEMP/plexi-alpha-release-signing.pem"
           keychain="$RUNNER_TEMP/plexi-alpha-release-signing.keychain-db"
-          if [[ -f "$certificate.trusted" ]]; then sudo -n security remove-trusted-cert -d "$certificate"; fi
-          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
+          # Trust is public certificate metadata on a disposable hosted VM.
+          # VM teardown discards it; avoid trust-removal APIs that can prompt.
+          rm -f "$keychain" "${keychain}-shm" "${keychain}-wal" "$certificate" "$certificate.trusted"
   packages:
     if: ${{ !inputs.signing_only }}
     uses: ./.github/workflows/distribution.yml

@@ -77,8 +77,10 @@ certificate fingerprint, not its name). Never generate a replacement identity
 in CI. Missing credentials or a fingerprint mismatch stop publication. The
 imported key is kept in a temporary runner Keychain, selected explicitly for
 signing without replacing the default Keychain or its search list, and removed
-at job teardown. The runner trusts only the pinned certificate for code signing
-and removes that temporary trust setting at teardown.
+at job teardown. The runner trusts only the pinned certificate for code signing;
+disposal of the hosted VM discards its temporary admin-domain trust setting.
+Cleanup unlinks the temporary Keychain files rather than calling macOS trust
+removal APIs, which can block on authorization even during cancellation.
 
 `scripts/test-macos-keychain-continuity.py` installs distinct A and B packages
 into temporary destinations, files a question under A, and requires the same
@@ -93,7 +95,7 @@ package/signing acceptance with a synthetic Alpha build tag, then skips the
 publish job. It creates neither a Git tag nor a GitHub Release.
 For a fast credential check, use `signing_only=true` instead: it imports the
 same identity, signs a disposable executable, verifies the fingerprint and
-designated requirement, and removes the runner's temporary trust and Keychain.
+designated requirement, and removes the runner's temporary Keychain files.
 Signing setup runs before compilation with a bounded timeout. The disposable
 runner installs code-signing trust in its admin domain through noninteractive
 sudo so it cannot wait on a user-domain authorization dialog.
