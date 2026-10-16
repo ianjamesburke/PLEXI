@@ -996,7 +996,7 @@ fn channel_suffix_from_basename(basename: &str) -> String {
 
 /// The channel named by the running binary itself, if any: `plexi-alpha` →
 /// `Some("alpha")`, `plexi` → `None`.
-fn channel_from_basename(basename: &str) -> Option<&str> {
+pub(crate) fn channel_from_basename(basename: &str) -> Option<&str> {
     channel_binary_basename(basename)
         .strip_prefix("plexi-")
         .filter(|s| !s.is_empty())
@@ -1011,7 +1011,12 @@ fn channel_from_basename(basename: &str) -> Option<&str> {
 /// `plexi` binary carries no channel of its own, so it adopts the surrounding
 /// pane's `PLEXI_CHANNEL` when one is set (#2109) and falls back to `.plexi`
 /// outside any pane.
-fn resolve_channel_dir(basename: &str, env_channel: Option<&str>) -> String {
+///
+/// See `src/cli/AGENTS.md` ("Environment classification (`self-identity` vs
+/// `target-routing`)") for the canonical precedence table. Self-identity env
+/// vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_*`, `PLEXI_RUNNING`) are never
+/// consulted here.
+pub(crate) fn resolve_channel_dir(basename: &str, env_channel: Option<&str>) -> String {
     if channel_from_basename(basename).is_some() {
         return channel_suffix_from_basename(basename);
     }

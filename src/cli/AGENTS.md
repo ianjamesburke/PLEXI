@@ -13,7 +13,14 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 **Path rules:** Never hardcode a profile directory path — always use `config_dir()`. Never hardcode `.plexi/` as a workspace dir — always use `workspace_channel_dir()` or `workspace_config_path()`.
 
-**Socket rule:** An explicit `--socket` wins, followed by binary identity: a channel-suffixed binary resolves its own profile endpoint and ignores an inherited `PLEXI_SOCKET` (logged). Only the bare `plexi` binary adopts ambient `PLEXI_SOCKET`, and with none it has no command socket. Self-identity vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_*`) feed defaults only, never routing. Route new command dispatch through `resolve_command_socket()`. On Windows the endpoint is the stable `\\.\pipe\plexi-<channel>` named pipe, never a filename-derived `.exe` suffix.
+**Socket rule:** An explicit `--socket` wins, followed by binary identity: a channel-suffixed binary resolves its own profile endpoint and ignores an inherited `PLEXI_SOCKET` (logged). Only the bare `plexi` binary adopts ambient `PLEXI_SOCKET`, and with none it has no command socket. Self-identity vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_*`, `PLEXI_RUNNING`) feed defaults only, never routing. Route new command dispatch through `resolve_command_socket()`. On Windows the endpoint is the stable `\\.\pipe\plexi-<channel>` named pipe, never a filename-derived `.exe` suffix.
+
+**Environment classification (`self-identity` vs `target-routing`):**
+
+| Class | Inputs | Role | Precedence / Resolution Contract |
+|---|---|---|---|
+| `self-identity` | `PLEXI_PANE_ID`, `PLEXI_CONTEXT_ID`, `PLEXI_CONTEXT_ROOT`, `PLEXI_RUNNING` | Read-only facts stamped by the spawning host describing where the caller process lives. Feed argument defaults (e.g. `pane slot write`, `context current`), caller provenance (`notify`, `app call`), and nested-host launch guards. | Never consulted for profile-dir (`resolve_channel_dir` in `src/config/mod.rs`) or command-socket (`resolve_command_socket_from` in `src/cli/mod.rs`) routing. Stripped by `host start` (`filter_child_env`). |
+| `target-routing` | `--socket`, binary channel name (`plexi-<channel>`), `PLEXI_CHANNEL`, `PLEXI_SOCKET` | Select which host endpoint and channel profile directory (`~/.plexi-<channel>`, `.plexi-<channel>`) a CLI invocation addresses. | **Command socket** (`resolve_command_socket_from`): `--socket` > binary channel name (`plexi-<channel>` resolves `~/.plexi-<channel>` endpoint and ignores `PLEXI_SOCKET`) > `PLEXI_SOCKET` (bare `plexi` only) > none.<br>**Profile / workspace channel dir** (`resolve_channel_dir`): binary channel name (`plexi-<channel>` ignores `PLEXI_CHANNEL`) > `PLEXI_CHANNEL` (bare `plexi` only) > `.plexi` default. |
 
 **Transport completion is newline-framed.** The CLI reports socket success only after the complete newline-delimited JSON frame is accepted. The host discards EOF-terminated partial frames, even when the partial bytes form valid JSON. An explicitly reported incomplete-frame transport failure was not dispatched and is safe to retry; a later host response timeout is not proof of non-delivery.
 
