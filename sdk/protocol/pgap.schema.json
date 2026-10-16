@@ -2549,9 +2549,15 @@
               "type": "boolean"
             },
             "layout": {
-              "$ref": "#/$defs/SubContextLayout",
-              "default": "tiled",
-              "description": "How the panes are arranged inside the sub-context's single window."
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SubContextLayout"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the panes are arranged inside the sub-context's single window.\nWhen omitted, the host picks the default layout from `panes.len()`."
             },
             "name": {
               "description": "Name for the new sub-context.",
