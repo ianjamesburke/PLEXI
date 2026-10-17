@@ -133,12 +133,22 @@ pub(crate) fn paint_table_header_label(
     ui: &egui::Ui,
     cell: egui::Rect,
     label: impl Into<String>,
+    font_id: egui::FontId,
     colors: &Colors,
 ) {
+    let label = label.into();
+    let max_width = (cell.width() - style::SPACE_SM * 2.0).max(0.0);
+    let elided = crate::ui::text::elide(
+        ui,
+        &label,
+        font_id.clone(),
+        max_width,
+        crate::ui::text::Side::Trailing,
+    );
     paint_text_left_center(
         ui,
-        label,
-        egui::FontId::proportional(style::TEXT_HINT),
+        elided,
+        font_id,
         colors.text_dim,
         cell.left() + style::SPACE_SM,
         cell.center().y,
@@ -152,9 +162,18 @@ pub(crate) fn paint_table_cell_text(
     font_id: egui::FontId,
     color: Color32,
 ) {
+    let text = text.into();
+    let max_width = (cell.width() - style::SPACE_SM * 2.0).max(0.0);
+    let elided = crate::ui::text::elide(
+        ui,
+        &text,
+        font_id.clone(),
+        max_width,
+        crate::ui::text::Side::Trailing,
+    );
     paint_text_left_center(
         ui,
-        text,
+        elided,
         font_id,
         color,
         cell.left() + style::SPACE_SM,
@@ -453,10 +472,6 @@ pub struct ListRowResponse {
 impl ListRowResponse {
     pub fn row_clicked(&self) -> bool {
         self.row.clicked()
-    }
-
-    pub fn row_double_clicked(&self) -> bool {
-        self.row.double_clicked()
     }
 
     pub fn row_hovered(&self) -> bool {

@@ -5289,4 +5289,96 @@ mod tests {
         h.save_screenshot(&evidence_png!())
             .expect("render 3-pane squad columns");
     }
+
+    #[test]
+    fn file_browser_responsive_table_and_font_scaling_screenshots() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parent_dir = tmp.path().join("workspace-parent");
+        let leaf_dir = parent_dir.join("active-leaf");
+        std::fs::create_dir_all(&leaf_dir).expect("create dirs");
+        std::fs::write(leaf_dir.join("README.md"), b"# Project\nOverview").expect("write");
+        std::fs::write(
+            leaf_dir.join("very_long_component_filename_that_must_elide_cleanly_in_narrow_columns.rs"),
+            b"fn main() {}",
+        )
+        .expect("write");
+        std::fs::create_dir_all(leaf_dir.join("subfolder")).expect("mkdir");
+        std::fs::write(parent_dir.join("root-file.toml"), b"[package]").expect("write");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(440.0, 520.0, 2.0);
+        let leaf_clone = leaf_dir.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::file_browser::FileBrowserApp::new(leaf_clone.clone())),
+                AppPermissions::builtin(),
+                leaf_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(3);
+        assert!(
+            !h.host_has_label("compact") && !h.host_has_label("details"),
+            "stray mode label must not be rendered in toolbar"
+        );
+        h.save_screenshot(&evidence_png!("narrow"))
+            .expect("render narrow file_browser");
+
+        // Resize to wide width and verify unified table renders with breadcrumbs.
+        h.harness().set_size(egui::vec2(880.0, 520.0));
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("wide"))
+            .expect("render wide file_browser");
+
+        // Scale font size up via adjust_focused_pane_font_size and verify render.
+        h.with_app_mut(|app| {
+            app.adjust_focused_pane_font_size(4.0);
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("scaled"))
+            .expect("render scaled file_browser");
+
+        // Click ancestor breadcrumb "workspace-parent" (converting from kittest's
+        // 2x physical-pixel rect to points) and verify navigation to parent_dir.
+        let crumb_pos = h.harness().get_by_label("workspace-parent").rect().center() / 2.0;
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(crumb_pos));
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: crumb_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: crumb_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let fb = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .expect("FileBrowserApp pane");
+            assert_eq!(fb.cwd, parent_dir, "clicking breadcrumb must navigate to ancestor");
+        });
+    }
 }

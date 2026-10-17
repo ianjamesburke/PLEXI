@@ -67,7 +67,6 @@ pub(crate) struct Entry {
     pub created: Option<SystemTime>,
     pub extension: Option<String>,
     pub permissions: String,
-    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,11 +78,10 @@ pub(crate) enum ColumnId {
     Created,
     Extension,
     Permissions,
-    Tags,
 }
 
 impl ColumnId {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Name,
         Self::Kind,
         Self::Size,
@@ -91,7 +89,6 @@ impl ColumnId {
         Self::Created,
         Self::Extension,
         Self::Permissions,
-        Self::Tags,
     ];
 
     pub(crate) fn key(self) -> &'static str {
@@ -103,7 +100,6 @@ impl ColumnId {
             Self::Created => "created",
             Self::Extension => "extension",
             Self::Permissions => "permissions",
-            Self::Tags => "tags",
         }
     }
 
@@ -116,7 +112,6 @@ impl ColumnId {
             Self::Created => "Created",
             Self::Extension => "Ext",
             Self::Permissions => "Perms",
-            Self::Tags => "Tags",
         }
     }
 
@@ -129,7 +124,6 @@ impl ColumnId {
             Self::Created => 116.0,
             Self::Extension => 72.0,
             Self::Permissions => 76.0,
-            Self::Tags => 120.0,
         }
     }
 
@@ -140,7 +134,6 @@ impl ColumnId {
             Self::Size => 72.0,
             Self::Modified | Self::Created => 92.0,
             Self::Extension | Self::Permissions => 60.0,
-            Self::Tags => 88.0,
         }
     }
 
@@ -153,7 +146,6 @@ impl ColumnId {
             "created" => Some(Self::Created),
             "extension" => Some(Self::Extension),
             "permissions" => Some(Self::Permissions),
-            "tags" => Some(Self::Tags),
             _ => None,
         }
     }
@@ -234,16 +226,15 @@ impl Default for ColumnModel {
         Self {
             columns: vec![
                 ColumnConfig::new(ColumnId::Name, true),
-                ColumnConfig::new(ColumnId::Kind, true),
+                ColumnConfig::new(ColumnId::Kind, false),
                 ColumnConfig::new(ColumnId::Size, true),
                 ColumnConfig::new(ColumnId::Modified, true),
                 ColumnConfig::new(ColumnId::Created, false),
                 ColumnConfig::new(ColumnId::Extension, false),
                 ColumnConfig::new(ColumnId::Permissions, false),
-                ColumnConfig::new(ColumnId::Tags, false),
             ],
             sort: SortDescriptor::default(),
-            folders_on_top: true,
+            folders_on_top: false,
             show_hidden: false,
         }
     }
@@ -473,11 +464,9 @@ pub(crate) fn read_text_preview(path: &Path) -> Result<TextPreview, String> {
 
 fn default_direction_for(column: ColumnId) -> SortDirection {
     match column {
-        ColumnId::Name
-        | ColumnId::Kind
-        | ColumnId::Extension
-        | ColumnId::Permissions
-        | ColumnId::Tags => SortDirection::Asc,
+        ColumnId::Name | ColumnId::Kind | ColumnId::Extension | ColumnId::Permissions => {
+            SortDirection::Asc
+        }
         ColumnId::Size | ColumnId::Modified | ColumnId::Created => SortDirection::Desc,
     }
 }
@@ -518,7 +507,6 @@ fn compare_entry_column(a: &Entry, b: &Entry, column: ColumnId) -> Ordering {
         ColumnId::Created => a.created.cmp(&b.created),
         ColumnId::Extension => a.extension.cmp(&b.extension),
         ColumnId::Permissions => a.permissions.cmp(&b.permissions),
-        ColumnId::Tags => a.tags.join(",").cmp(&b.tags.join(",")),
     }
 }
 
@@ -660,8 +648,27 @@ mod column_model_tests {
             modified: Some(UNIX_EPOCH + Duration::from_secs(modified_secs)),
             created: None,
             permissions: "rw".to_string(),
-            tags: Vec::new(),
         }
+    }
+
+    #[test]
+    fn column_model_defaults_sort_by_modified_desc_without_folders_on_top() {
+        let model = ColumnModel::default();
+        assert!(!model.folders_on_top);
+        assert!(!model.show_hidden);
+        assert_eq!(
+            model.sort,
+            SortDescriptor {
+                column: ColumnId::Modified,
+                direction: SortDirection::Desc,
+            }
+        );
+        let visible_ids: Vec<ColumnId> = model.visible_columns().map(|c| c.id).collect();
+        assert_eq!(
+            visible_ids,
+            vec![ColumnId::Name, ColumnId::Size, ColumnId::Modified]
+        );
+        assert!(ColumnId::from_key("tags").is_none());
     }
 
     #[test]

@@ -7,7 +7,7 @@ pub(crate) use helpers::MediaKind;
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
-use crate::ui::list::{self, ListRow};
+use crate::ui::list;
 use crate::ui::overlay::ModalShell;
 use crate::ui::style;
 use crate::ui::text_field::TextField;
@@ -29,6 +29,9 @@ const INSPECTOR_MIN_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
 const DETAILS_HEADER_H: f32 = style::TABLE_HEADER_H;
 const DETAILS_ROW_H: f32 = style::LIST_ROW_DENSE_H;
+const FONT_SIZE_DEFAULT: f32 = style::TEXT_HINT;
+const FONT_SIZE_MIN: f32 = 9.0;
+const FONT_SIZE_MAX: f32 = 32.0;
 // Total footer reservation subtracted from the body scroll area: SPACE_XS
 // gap + separator + the status row + item spacing. Must cover everything
 // draw_status_bar allocates or the footer collides with the list rows.
@@ -41,30 +44,9 @@ const INSPECTOR_SPLITTER_W: f32 = 7.0;
 const QUICK_LOOK_TEXT_LINES: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileBrowserLayout {
-    CompactList,
-    DetailsTable,
-}
-
-impl FileBrowserLayout {
-    fn for_width(width: f32) -> Self {
-        if width >= DETAILS_TABLE_MIN_WIDTH {
-            Self::DetailsTable
-        } else {
-            Self::CompactList
-        }
-    }
-
-    fn shows_details(self) -> bool {
-        matches!(self, Self::DetailsTable)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Normal,
     Search,
-    Empty,
 }
 
 #[derive(Debug)]
@@ -83,12 +65,14 @@ enum FileBrowserAction {
     ToggleSort,
     ToggleInspector,
     ToggleQuickLook,
+    ToggleHidden,
     Refresh,
     CdTerminalAndClose,
     SelectAll,
     NewFolder,
     Rename,
     Copy,
+    CopyPath,
     Cut,
     Paste,
     MoveToTrash,
@@ -135,7 +119,6 @@ enum PendingFileOperation {
     MoveToTrash { paths: Vec<PathBuf> },
 }
 
-
 fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui::Key) -> bool {
     input.events().iter().any(
         |e| matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key),
@@ -149,25 +132,67 @@ fn classify_key(
     input: &crate::app::input_router::PlexiInput,
     in_search: bool,
 ) -> Option<FileBrowserAction> {
+    if !in_search
+        && input.modifiers().command
+        && input.modifiers().shift
+        && key_pressed_no_repeat(input, egui::Key::Period)
+    {
+        return Some(FileBrowserAction::ToggleHidden);
+    }
+    if !in_search
+        && input.modifiers().command
+        && input.modifiers().shift
+        && key_pressed_no_repeat(input, egui::Key::R)
+    {
+        return Some(FileBrowserAction::Refresh);
+    }
+    if !in_search
+        && input.modifiers().command
+        && input.modifiers().shift
+        && key_pressed_no_repeat(input, egui::Key::C)
+    {
+        return Some(FileBrowserAction::CopyPath);
+    }
     if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::A) {
         return Some(FileBrowserAction::SelectAll);
     }
     if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::N) {
         return Some(FileBrowserAction::NewFolder);
     }
-    // Command chords belong to the host shortcut router. F2 is the
-    // platform-neutral file-manager rename key and cannot collide with pane
-    // rename (Cmd+R).
-    if !in_search && key_pressed_no_repeat(input, egui::Key::F2) && !input.modifiers().any() {
+    // Command chords belong to the host shortcut router. F2 and bare `r` are
+    // the file-manager rename keys and cannot collide with pane rename (Cmd+R).
+    if !in_search
+        && !input.modifiers().any()
+        && (key_pressed_no_repeat(input, egui::Key::F2)
+            || key_pressed_no_repeat(input, egui::Key::R))
+    {
         return Some(FileBrowserAction::Rename);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::C) {
+    if !in_search && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Y) {
+        return Some(FileBrowserAction::CopyPath);
+    }
+    if !in_search
+        && !input.modifiers().shift
+        && ((input.modifiers().command && key_pressed_no_repeat(input, egui::Key::C))
+            || input.events().iter().any(|e| matches!(e, egui::Event::Copy)))
+    {
         return Some(FileBrowserAction::Copy);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::X) {
+    if !in_search
+        && !input.modifiers().shift
+        && ((input.modifiers().command && key_pressed_no_repeat(input, egui::Key::X))
+            || input.events().iter().any(|e| matches!(e, egui::Event::Cut)))
+    {
         return Some(FileBrowserAction::Cut);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::V) {
+    if !in_search
+        && !input.modifiers().shift
+        && ((input.modifiers().command && key_pressed_no_repeat(input, egui::Key::V))
+            || input
+                .events()
+                .iter()
+                .any(|e| matches!(e, egui::Event::Paste(_))))
+    {
         return Some(FileBrowserAction::Paste);
     }
     // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
@@ -223,7 +248,12 @@ fn classify_key(
     {
         return Some(FileBrowserAction::NavigateUp);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers().command {
+    if !in_search
+        && ((key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers().command)
+            || (input.modifiers().command
+                && !input.modifiers().shift
+                && key_pressed_no_repeat(input, egui::Key::F)))
+    {
         return Some(FileBrowserAction::EnterSearch);
     }
     if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any() {
@@ -234,9 +264,6 @@ fn classify_key(
     }
     if !in_search && key_pressed_no_repeat(input, egui::Key::Space) && !input.modifiers().any() {
         return Some(FileBrowserAction::ToggleQuickLook);
-    }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers().any() {
-        return Some(FileBrowserAction::Refresh);
     }
     if !in_search && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any() {
         return Some(FileBrowserAction::CdTerminalAndClose);
@@ -260,6 +287,7 @@ pub struct FileBrowserApp {
     multi_selected: BTreeSet<PathBuf>,
     selection_anchor: Option<usize>,
     columns: ColumnModel,
+    font_size: f32,
     error: Option<String>,
     // Image preview
     preview_texture: Option<egui::TextureHandle>,
@@ -277,6 +305,7 @@ pub struct FileBrowserApp {
     inspector_width: f32,
     quick_look_open: bool,
     operation_clipboard: Option<FileOperationClipboard>,
+    pending_clipboard_text: Option<String>,
     pending_operation: Option<PendingFileOperation>,
     rename_path: Option<PathBuf>,
     rename_buffer: String,
@@ -297,6 +326,9 @@ pub struct FileBrowserApp {
     /// In tests: collects paths passed to open_file instead of spawning the system opener.
     #[cfg(test)]
     pub(crate) opened_files: Vec<PathBuf>,
+    /// In tests: records the most recent path string copied via `CopyPath`.
+    #[cfg(test)]
+    pub(crate) last_copied_path: Option<String>,
 }
 
 /// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
@@ -328,6 +360,7 @@ impl FileBrowserApp {
             multi_selected: BTreeSet::new(),
             selection_anchor: None,
             columns: ColumnModel::default(),
+            font_size: FONT_SIZE_DEFAULT,
             error: None,
             preview_texture: None,
             preview_texture_path: None,
@@ -342,6 +375,7 @@ impl FileBrowserApp {
             inspector_width: INSPECTOR_DEFAULT_WIDTH,
             quick_look_open: false,
             operation_clipboard: None,
+            pending_clipboard_text: None,
             pending_operation: None,
             rename_path: None,
             rename_buffer: String::new(),
@@ -355,9 +389,23 @@ impl FileBrowserApp {
             watch: None,
             #[cfg(test)]
             opened_files: Vec::new(),
+            #[cfg(test)]
+            last_copied_path: None,
         };
         app.refresh();
         app
+    }
+
+    fn font_scale(&self) -> f32 {
+        self.font_size / FONT_SIZE_DEFAULT
+    }
+
+    fn row_height(&self) -> f32 {
+        (DETAILS_ROW_H * self.font_scale()).round()
+    }
+
+    fn header_height(&self) -> f32 {
+        (DETAILS_HEADER_H * self.font_scale()).round()
     }
 
     fn refresh(&mut self) {
@@ -371,7 +419,7 @@ impl FileBrowserApp {
                         let name = e.file_name().to_string_lossy().to_string();
                         let path = e.path();
                         let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                        if name.starts_with('.') && !is_dir && !self.columns.show_hidden {
+                        if name.starts_with('.') && !self.columns.show_hidden {
                             return None;
                         }
                         let meta = e.metadata().ok();
@@ -413,7 +461,6 @@ impl FileBrowserApp {
                             created,
                             extension: ext,
                             permissions: permissions.to_string(),
-                            tags: Vec::new(),
                         })
                     })
                     .collect();
@@ -974,7 +1021,18 @@ impl FileBrowserApp {
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let target = Self::unique_child_path(&self.cwd, file_name, None);
+            let (stem, ext) = if source.is_dir() {
+                (file_name, None)
+            } else {
+                match (
+                    source.file_stem().and_then(|s| s.to_str()),
+                    source.extension().and_then(|e| e.to_str()),
+                ) {
+                    (Some(s), Some(e)) if !s.is_empty() => (s, Some(e)),
+                    _ => (file_name, None),
+                }
+            };
+            let target = Self::unique_child_path(&self.cwd, stem, ext);
             match clipboard.operation {
                 FileOperation::Copy => Self::copy_path_recursive(source, &target)?,
                 FileOperation::Cut => fs::rename(source, &target).map_err(|err| {
@@ -1044,13 +1102,46 @@ impl FileBrowserApp {
     fn reveal_selected(&mut self) {
         for path in self.selected_paths() {
             log::info!("file_browser: reveal '{}'", path.display());
-            self.open_file(&path);
+            self.pending_cmds.push(AppCommand::OpenArtifact {
+                sender_pane_id: 0,
+                path: path.to_string_lossy().to_string(),
+                mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+            });
         }
     }
 
     fn open_selected_with_default(&mut self) {
         for path in self.selected_paths() {
-            self.open_file(&path);
+            log::info!("file_browser: open with default '{}'", path.display());
+            self.pending_cmds.push(AppCommand::OpenArtifact {
+                sender_pane_id: 0,
+                path: path.to_string_lossy().to_string(),
+                mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+            });
+        }
+    }
+
+    fn copy_selected_path(&mut self) {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let text = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        log::info!("file_browser: copied path '{}' to clipboard", text);
+        self.pending_clipboard_text = Some(text.clone());
+        #[cfg(test)]
+        {
+            self.last_copied_path = Some(text);
+        }
+        #[cfg(not(test))]
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Err(err) = clipboard.set_text(&text) {
+                log::warn!("file_browser: clipboard write failed: {err}");
+            }
         }
     }
 
@@ -1119,28 +1210,11 @@ impl FileBrowserApp {
                 .clone()
                 .unwrap_or_else(|| "\u{2014}".to_string()),
             ColumnId::Permissions => entry.permissions.clone(),
-            ColumnId::Tags => {
-                if entry.tags.is_empty() {
-                    "\u{2014}".to_string()
-                } else {
-                    entry.tags.join(", ")
-                }
-            }
         }
     }
 
-    fn entry_chip(entry: &Entry) -> &'static str {
-        if entry.is_dir {
-            "dir"
-        } else {
-            "file"
-        }
-    }
-
-    /// Apply one row's click and double-click to the selection. Shared by both
-    /// list views, which differ only in where their response comes from —
-    /// `ListRow::show` in the compact list, `allocate_exact_size` in the
-    /// details table. Returns the navigation target when the row was opened.
+    /// Apply one row's click and double-click to the selection. Returns the
+    /// navigation target when the row was opened.
     fn apply_row_click(
         &mut self,
         ui: &egui::Ui,
@@ -1166,38 +1240,6 @@ impl FileBrowserApp {
         None
     }
 
-    fn draw_compact_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
-        let mut navigate_to: Option<(PathBuf, bool)> = None;
-        let should_scroll = self.pending_scroll;
-        self.pending_scroll = false;
-        for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
-            let entry = self.entries[actual_idx].clone();
-            let is_selected = self.is_entry_selected(idx, &entry);
-            // Compact rows are single-line per the file-explorer PRD —
-            // metadata lives in the details table and the status bar, not
-            // in a second line that doubles every row's height.
-            let title = Self::entry_title(&entry);
-            let response = ListRow::new(&title)
-                .chip(Self::entry_chip(&entry))
-                .dense()
-                .selected(is_selected)
-                .show(ui, colors);
-            if is_selected {
-                response.scroll_into_view(ui, should_scroll);
-            }
-            if let Some(target) = self.apply_row_click(
-                ui,
-                idx,
-                &entry,
-                response.row_clicked(),
-                response.row_double_clicked(),
-            ) {
-                navigate_to = Some(target);
-            }
-        }
-        navigate_to
-    }
-
     fn draw_details_table(
         &mut self,
         ui: &mut egui::Ui,
@@ -1207,11 +1249,12 @@ impl FileBrowserApp {
         self.pending_scroll = false;
         self.draw_details_header(ui, colors);
 
+        let row_h = self.row_height();
         let mut navigate_to = None;
         for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
             let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), DETAILS_ROW_H),
+                egui::vec2(ui.available_width(), row_h),
                 egui::Sense::click(),
             );
             let selected = self.is_entry_selected(idx, &entry);
@@ -1237,10 +1280,11 @@ impl FileBrowserApp {
 
     fn draw_details_header(&mut self, ui: &mut egui::Ui, colors: &Colors) {
         let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), DETAILS_HEADER_H),
+            egui::vec2(ui.available_width(), self.header_height()),
             egui::Sense::hover(),
         );
         list::paint_table_header_background(ui, rect, colors);
+        let header_font = egui::FontId::proportional(self.font_size);
         for (column, cell) in self.details_columns(rect) {
             let handle_rect = egui::Rect::from_min_max(
                 egui::pos2(cell.right() - 5.0, cell.top()),
@@ -1310,6 +1354,7 @@ impl FileBrowserApp {
                 ui,
                 cell,
                 format!("{}{}", column.id.label(), sort_suffix),
+                header_font.clone(),
                 colors,
             );
             ui.painter().line_segment(
@@ -1330,20 +1375,25 @@ impl FileBrowserApp {
         entry: &Entry,
         selected: bool,
     ) {
-        let primary = if selected {
+        let is_hidden_entry = entry.name.starts_with('.');
+        let name_color = if selected || !is_hidden_entry {
             colors.text_primary
         } else {
             colors.text_dim
         };
-        let font = egui::FontId::proportional(style::TEXT_HINT);
+        let font = egui::FontId::proportional(self.font_size);
+        let icon_size = (18.0 * self.font_scale()).round();
         for (column, mut cell) in self.details_columns(rect) {
             if column.id == ColumnId::Name {
                 let icon_rect = egui::Rect::from_min_size(
-                    egui::pos2(cell.left() + style::SPACE_SM, cell.center().y - 9.0),
-                    egui::vec2(18.0, 18.0),
+                    egui::pos2(
+                        cell.left() + style::SPACE_SM,
+                        cell.center().y - icon_size * 0.5,
+                    ),
+                    egui::vec2(icon_size, icon_size),
                 );
                 paint_entry_icon(ui.painter(), icon_rect, entry, colors);
-                cell = cell.shrink2(egui::vec2(28.0, 0.0));
+                cell.min.x = (icon_rect.right() + 2.0).min(cell.right());
             }
             list::paint_table_cell_text(
                 ui,
@@ -1351,7 +1401,7 @@ impl FileBrowserApp {
                 Self::entry_cell_text(entry, column.id),
                 font.clone(),
                 if column.id == ColumnId::Name {
-                    primary
+                    name_color
                 } else {
                     colors.text_dim
                 },
@@ -1360,24 +1410,57 @@ impl FileBrowserApp {
     }
 
     fn details_columns(&self, rect: egui::Rect) -> Vec<(ColumnConfig, egui::Rect)> {
-        let mut x = rect.left();
-        let visible = self.columns.visible_columns().copied().collect::<Vec<_>>();
-        let total_config_width = visible
+        let enabled = self.columns.visible_columns().copied().collect::<Vec<_>>();
+        let name_min = ColumnId::Name.min_width();
+        let mut admitted_secondary = Vec::new();
+        let mut used_width = name_min;
+
+        // Progressively admit secondary columns alongside Name in priority order:
+        // Modified, then Size, then any extra user-enabled columns.
+        let priority_order = [
+            ColumnId::Modified,
+            ColumnId::Size,
+            ColumnId::Kind,
+            ColumnId::Created,
+            ColumnId::Extension,
+            ColumnId::Permissions,
+        ];
+        for id in priority_order {
+            if let Some(col) = enabled.iter().find(|c| c.id == id).copied() {
+                let col_w = col.width.max(col.id.min_width());
+                if used_width + col_w <= rect.width() {
+                    used_width += col_w;
+                    admitted_secondary.push(col.id);
+                }
+            }
+        }
+
+        let visible: Vec<ColumnConfig> = enabled
+            .into_iter()
+            .filter(|c| c.id == ColumnId::Name || admitted_secondary.contains(&c.id))
+            .collect();
+
+        let secondary_widths: f32 = visible
             .iter()
-            .map(|column| column.width.max(column.id.min_width()))
-            .sum::<f32>()
-            .max(1.0);
-        let scale = if total_config_width > rect.width() {
-            rect.width() / total_config_width
-        } else {
-            1.0
-        };
+            .filter(|c| c.id != ColumnId::Name)
+            .map(|c| c.width.max(c.id.min_width()))
+            .sum();
+        let name_width = (rect.width() - secondary_widths)
+            .max(name_min)
+            .min(rect.width());
+
+        let mut x = rect.left();
         let mut columns = Vec::with_capacity(visible.len());
         for (idx, column) in visible.iter().enumerate() {
+            let col_w = if column.id == ColumnId::Name {
+                name_width
+            } else {
+                column.width.max(column.id.min_width())
+            };
             let right = if idx + 1 == visible.len() {
                 rect.right()
             } else {
-                (x + column.width * scale).min(rect.right())
+                (x + col_w).min(rect.right())
             };
             columns.push((
                 *column,
@@ -1611,7 +1694,7 @@ impl FileBrowserApp {
                         egui::Label::new(
                             egui::RichText::new(text)
                                 .monospace()
-                                .size(style::TEXT_HINT)
+                                .size(self.font_size)
                                 .color(colors.text_primary),
                         )
                         .wrap(),
@@ -1620,13 +1703,13 @@ impl FileBrowserApp {
         } else if let Some(err) = &self.text_preview_error {
             ui.label(
                 egui::RichText::new(err)
-                    .size(style::TEXT_HINT)
+                    .size(self.font_size)
                     .color(colors.text_dim),
             );
         } else {
             ui.label(
                 egui::RichText::new("Loading\u{2026}")
-                    .size(style::TEXT_HINT)
+                    .size(self.font_size)
                     .color(colors.text_dim),
             );
         }
@@ -1905,62 +1988,133 @@ impl FileBrowserApp {
         }
     }
 
+    fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
+        let mut ancestors: Vec<&Path> = path.ancestors().collect();
+        ancestors.reverse();
+        ancestors
+            .into_iter()
+            .map(|ancestor| {
+                let label = if ancestor.parent().is_none() {
+                    ancestor.to_string_lossy().into_owned()
+                } else {
+                    ancestor
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| ancestor.display().to_string())
+                };
+                (label, ancestor.to_path_buf())
+            })
+            .collect()
+    }
+
     fn draw_toolbar(
         &mut self,
         ui: &mut egui::Ui,
         colors: &Colors,
-        layout: FileBrowserLayout,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
-        // Path gets its own full-width row, elided from the left so the
-        // leaf directory always stays visible. The old single-row layout
-        // (path left, chips right) collided at narrow widths: the chips
-        // wrapped under the path and the toolbar grew unpredictably.
+        let mut navigate_target: Option<PathBuf> = None;
+        let font_size = self.font_size;
+        let font_id = egui::FontId::monospace(font_size);
+
         ui.horizontal(|ui| {
-            // Elided from the left so the leaf directory always stays visible —
-            // `…/projects/plexi/src` reads better than `/Users/ian/Documen…`.
-            let elided = crate::ui::text::elide(
-                ui,
-                &self.cwd.display().to_string(),
-                egui::FontId::monospace(style::TEXT_HINT),
-                ui.available_width(),
-                crate::ui::text::Side::Leading,
-            );
-            ui.colored_label(
-                colors.accent,
-                egui::RichText::new(elided)
-                    .size(style::TEXT_HINT)
-                    .monospace(),
-            );
-        });
-        ui.add_space(style::SPACE_XS);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(match layout {
-                    FileBrowserLayout::CompactList => "compact",
-                    FileBrowserLayout::DetailsTable => "details",
-                })
-                .size(style::TEXT_HINT)
-                .color(colors.text_dim),
-            );
+            let view_reserve = 72.0 * self.font_scale();
+            let max_breadcrumb_w = (ui.available_width() - view_reserve).max(48.0);
+            let segments = Self::breadcrumb_segments(&self.cwd);
+
+            let measure = |ui: &egui::Ui, s: &str| -> f32 {
+                ui.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE).size().x)
+            };
+            let sep_w = measure(ui, "/") + style::SPACE_XS * 2.0;
+            let ellipsis_w = measure(ui, "\u{2026}") + sep_w;
+
+            let mut start = 0usize;
+            while start + 1 < segments.len() {
+                let prefix_w = if start > 0 { ellipsis_w } else { 0.0 };
+                let segs_w: f32 = segments[start..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (label, _))| {
+                        let w = measure(ui, label) + style::SPACE_XS * 2.0;
+                        if i > 0 && segments[start + i - 1].0 != "/" {
+                            w + sep_w
+                        } else {
+                            w
+                        }
+                    })
+                    .sum();
+                if prefix_w + segs_w <= max_breadcrumb_w {
+                    break;
+                }
+                start += 1;
+            }
+
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if start > 0 {
+                ui.label(
+                    egui::RichText::new("\u{2026}")
+                        .size(font_size)
+                        .monospace()
+                        .color(colors.text_dim),
+                );
+                ui.label(
+                    egui::RichText::new("/")
+                        .size(font_size)
+                        .monospace()
+                        .color(colors.text_dim),
+                );
+            }
+
+            let visible_slice = &segments[start..];
+            for (idx, (label, seg_path)) in visible_slice.iter().enumerate() {
+                let is_last = idx + 1 == visible_slice.len();
+                if idx > 0 && visible_slice[idx - 1].0 != "/" {
+                    ui.label(
+                        egui::RichText::new("/")
+                            .size(font_size)
+                            .monospace()
+                            .color(colors.text_dim),
+                    );
+                }
+                let display_label = if visible_slice.len() == 1 {
+                    crate::ui::text::elide(
+                        ui,
+                        label,
+                        font_id.clone(),
+                        max_breadcrumb_w,
+                        crate::ui::text::Side::Leading,
+                    )
+                } else {
+                    label.clone()
+                };
+                let text_color = if is_last {
+                    colors.accent
+                } else {
+                    colors.text_primary
+                };
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(display_label)
+                            .size(font_size)
+                            .monospace()
+                            .color(text_color),
+                    )
+                    .frame(false),
+                );
+                let synthetic_click =
+                    pending_click.is_some_and(|click| click.targets_id(btn.id));
+                if btn.clicked() || synthetic_click {
+                    navigate_target = Some(seg_path.clone());
+                }
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // A single menu button instead of a strip of toggle chips.
-                // The chip strip needed ~750px and, being right-to-left,
-                // overflowed past the pane's LEFT edge when it didn't fit —
-                // egui then extended every sibling row's left boundary, which
-                // shoved the whole table off-screen at middle widths. A menu
-                // is one fixed-width control: it fits at every pane size.
-                //
                 // Hand-rolled expansion of `ui.menu_button` (egui's
                 // `stationary_menu_impl`) so a queued node click can open the
                 // popup. `menu_button` flips its open state only from a real
                 // click resolved inside `Context::begin_pass`, which
                 // `plexi pane click --node` / `PendingPaneClick` bypasses
-                // (stint 0469). When a pending click targets this button we
-                // open the menu directly through egui's popup state so it
-                // renders this frame and exposes its items — including the
-                // Show hidden files checkbox — to the semantic tree and to a
-                // follow-up node click.
+                // (stint 0469).
                 let bar_id = ui.id().with("view_menu");
                 let menu_button = ui.add(egui::Button::new(
                     egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
@@ -1979,6 +2133,7 @@ impl FileBrowserApp {
                 };
                 egui::Popup::menu(&menu_button)
                     .id(bar_id)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .open_memory(set_open)
                     .show(|ui| {
                         let mut folders_on_top = self.columns.folders_on_top;
@@ -2010,57 +2165,64 @@ impl FileBrowserApp {
                         if ui.checkbox(&mut inspector, "Inspector").changed() {
                             self.toggle_inspector();
                         }
-                        // Column toggles only exist in the details table — in
-                        // the compact list they would be seven dead entries.
-                        if layout.shows_details() {
-                            ui.separator();
-                            for id in [
-                                ColumnId::Kind,
-                                ColumnId::Size,
-                                ColumnId::Modified,
-                                ColumnId::Created,
-                                ColumnId::Extension,
-                                ColumnId::Permissions,
-                                ColumnId::Tags,
-                            ] {
-                                let mut visible = self
-                                    .columns
-                                    .columns
-                                    .iter()
-                                    .find(|column| column.id == id)
-                                    .map(|column| column.visible)
-                                    .unwrap_or(false);
-                                if ui.checkbox(&mut visible, id.label()).changed() {
-                                    self.columns.set_column_visible(id, visible);
-                                    log::info!(
-                                        "file_browser: column {} visibility changed to {}",
-                                        id.key(),
-                                        visible
-                                    );
-                                }
+                        ui.separator();
+                        for id in [
+                            ColumnId::Kind,
+                            ColumnId::Size,
+                            ColumnId::Modified,
+                            ColumnId::Created,
+                            ColumnId::Extension,
+                            ColumnId::Permissions,
+                        ] {
+                            let mut visible = self
+                                .columns
+                                .columns
+                                .iter()
+                                .find(|column| column.id == id)
+                                .map(|column| column.visible)
+                                .unwrap_or(false);
+                            if ui.checkbox(&mut visible, id.label()).changed() {
+                                self.columns.set_column_visible(id, visible);
+                                log::info!(
+                                    "file_browser: column {} visibility changed to {}",
+                                    id.key(),
+                                    visible
+                                );
                             }
                         }
                     });
             });
         });
+
+        if let Some(target) = navigate_target {
+            self.navigate_into(target);
+        }
     }
 
     fn draw_search_bar(&self, ui: &mut egui::Ui, colors: &Colors) {
         ui.horizontal(|ui| {
-            ui.colored_label(colors.accent, "/");
+            ui.colored_label(
+                colors.accent,
+                egui::RichText::new("/").size(self.font_size),
+            );
             ui.colored_label(
                 colors.text_primary,
-                if self.search_query.is_empty() {
+                egui::RichText::new(if self.search_query.is_empty() {
                     "type to filter\u{2026}"
                 } else {
                     &self.search_query
-                },
+                })
+                .size(self.font_size),
             );
             let count = self.search_indices.len();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.colored_label(
                     colors.text_dim,
-                    format!("{count} match{}", if count == 1 { "" } else { "es" }),
+                    egui::RichText::new(format!(
+                        "{count} match{}",
+                        if count == 1 { "" } else { "es" }
+                    ))
+                    .size(self.font_size),
                 );
             });
         });
@@ -2184,6 +2346,11 @@ impl App for FileBrowserApp {
             .unwrap_or_else(|| "/".to_string())
     }
 
+    fn adjust_font_size(&mut self, delta: f32) {
+        self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        log::info!("file_browser: font_size -> {}", self.font_size);
+    }
+
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -2191,14 +2358,16 @@ impl App for FileBrowserApp {
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
+        if let Some(text) = self.pending_clipboard_text.take() {
+            ui.ctx().copy_text(text);
+        }
 
         egui::Frame::new()
             .fill(colors.terminal_bg)
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
-                let layout = FileBrowserLayout::for_width(ui.available_width());
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, layout, pending_click);
+                self.draw_toolbar(ui, colors, pending_click);
 
                 if self.in_search {
                     self.draw_search_bar(ui, colors);
@@ -2206,20 +2375,32 @@ impl App for FileBrowserApp {
 
                 ui.add_space(style::SPACE_XS);
 
-                if let Some(err) = &self.error.clone() {
-                    ui.colored_label(colors.text_dim, err);
-                    return;
-                }
-
-                if self.entries.is_empty() {
-                    ui.colored_label(colors.text_dim, "Empty directory");
-                    return;
-                }
-
                 let mut navigate_to: Option<(PathBuf, bool)> = None;
                 let body_height = (ui.available_height() - STATUS_BAR_H).max(0.0);
 
-                if show_inspector {
+                if let Some(err) = &self.error.clone() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.colored_label(
+                                colors.text_dim,
+                                egui::RichText::new(err).size(self.font_size),
+                            );
+                        },
+                    );
+                } else if self.entries.is_empty() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.colored_label(
+                                colors.text_dim,
+                                egui::RichText::new("Empty directory").size(self.font_size),
+                            );
+                        },
+                    );
+                } else if show_inspector {
                     let total_width = ui.available_width();
                     let max_inspector_width =
                         (total_width - DETAILS_TABLE_MIN_WIDTH - INSPECTOR_SPLITTER_W)
@@ -2279,22 +2460,16 @@ impl App for FileBrowserApp {
                         );
                     });
                 } else {
-                    {
-                        egui::ScrollArea::vertical()
-                            // animated(false): required by scroll_row_into_view —
-                            // see src/ui/list.rs.
-                            .animated(false)
-                            .id_salt("fb_list")
-                            .auto_shrink([false, false])
-                            .max_height(body_height)
-                            .show(ui, |ui| {
-                                navigate_to = if layout.shows_details() {
-                                    self.draw_details_table(ui, colors)
-                                } else {
-                                    self.draw_compact_list(ui, colors)
-                                };
-                            });
-                    }
+                    egui::ScrollArea::vertical()
+                        // animated(false): required by scroll_row_into_view —
+                        // see src/ui/list.rs.
+                        .animated(false)
+                        .id_salt("fb_list")
+                        .auto_shrink([false, false])
+                        .max_height(body_height)
+                        .show(ui, |ui| {
+                            navigate_to = self.draw_details_table(ui, colors);
+                        });
                 }
 
                 self.draw_status_bar(ui, colors, show_inspector);
@@ -2320,8 +2495,6 @@ impl App for FileBrowserApp {
         use crate::app::app_trait::KeyDisposition;
         let mode = if self.in_search {
             Mode::Search
-        } else if self.entries.is_empty() {
-            Mode::Empty
         } else {
             Mode::Normal
         };
@@ -2380,24 +2553,21 @@ impl App for FileBrowserApp {
         }
 
         match (mode, action) {
-            // Escape: closes browser in normal/empty, exits search in search mode
+            // Escape: closes browser in normal mode, exits search in search mode
             (Mode::Search, Some(FileBrowserAction::Escape)) => {
                 self.exit_search();
                 KeyDisposition::Consumed
             }
-            (_, Some(FileBrowserAction::Escape)) => {
+            (Mode::Normal, Some(FileBrowserAction::Escape)) => {
                 self.should_close = true;
                 KeyDisposition::Consumed
             }
-            // Works in Normal and Empty mode alike — an empty directory is
-            // still a valid handoff target. Search mode never produces this
-            // action (classify_key gates on !in_search).
-            (_, Some(FileBrowserAction::CdTerminalAndClose)) => {
+            (Mode::Normal, Some(FileBrowserAction::CdTerminalAndClose)) => {
                 self.cd_terminal_and_close();
                 KeyDisposition::Consumed
             }
             // NavigateUp (← / H): global — no modal conflict
-            (_, Some(FileBrowserAction::NavigateUp)) => {
+            (Mode::Normal, Some(FileBrowserAction::NavigateUp)) => {
                 self.navigate_up();
                 KeyDisposition::Consumed
             }
@@ -2407,7 +2577,7 @@ impl App for FileBrowserApp {
                 self.refilter();
                 KeyDisposition::Consumed
             }
-            (_, Some(FileBrowserAction::Backspace)) => {
+            (Mode::Normal, Some(FileBrowserAction::Backspace)) => {
                 self.navigate_up();
                 KeyDisposition::Consumed
             }
@@ -2443,8 +2613,6 @@ impl App for FileBrowserApp {
             }
             // Search mode consumes all unhandled input
             (Mode::Search, _) => KeyDisposition::Consumed,
-            // Empty mode: no further keys handled
-            (Mode::Empty, _) => KeyDisposition::Passthrough,
             // Normal mode actions
             (Mode::Normal, Some(FileBrowserAction::EnterSearch)) => {
                 self.in_search = true;
@@ -2453,7 +2621,7 @@ impl App for FileBrowserApp {
                 log::info!("file_browser: entering search mode");
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectNext)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectNext)) if !self.entries.is_empty() => {
                 let last = self.entries.len().saturating_sub(1);
                 let next = (self.selected + 1).min(last);
                 if input.modifiers().shift {
@@ -2464,7 +2632,7 @@ impl App for FileBrowserApp {
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectPrev)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectPrev)) if !self.entries.is_empty() => {
                 let prev = self.selected.saturating_sub(1);
                 if input.modifiers().shift {
                     self.extend_selection_to(prev);
@@ -2474,28 +2642,28 @@ impl App for FileBrowserApp {
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectFirst)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectFirst)) if !self.entries.is_empty() => {
                 self.set_single_selection(0);
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectLast)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectLast)) if !self.entries.is_empty() => {
                 self.set_single_selection(self.entries.len().saturating_sub(1));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::PageDown)) => {
+            (Mode::Normal, Some(FileBrowserAction::PageDown)) if !self.entries.is_empty() => {
                 let last = self.entries.len().saturating_sub(1);
                 self.set_single_selection((self.selected + 10).min(last));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::PageUp)) => {
+            (Mode::Normal, Some(FileBrowserAction::PageUp)) if !self.entries.is_empty() => {
                 self.set_single_selection(self.selected.saturating_sub(10));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Activate)) => {
+            (Mode::Normal, Some(FileBrowserAction::Activate)) if !self.entries.is_empty() => {
                 if let Some(entry) = self.selected_entry().cloned() {
                     if entry.is_dir {
                         self.navigate_into(entry.path);
@@ -2519,15 +2687,26 @@ impl App for FileBrowserApp {
                 self.toggle_inspector();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::ToggleQuickLook)) => {
+            (Mode::Normal, Some(FileBrowserAction::ToggleQuickLook))
+                if !self.entries.is_empty() =>
+            {
                 self.toggle_quick_look();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::ToggleHidden)) => {
+                self.columns.show_hidden = !self.columns.show_hidden;
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: show_hidden toggled to {}",
+                    self.columns.show_hidden
+                );
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
                 self.refresh();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectAll)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectAll)) if !self.entries.is_empty() => {
                 self.select_all_visible();
                 KeyDisposition::Consumed
             }
@@ -2537,15 +2716,15 @@ impl App for FileBrowserApp {
                 }
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Rename)) => {
+            (Mode::Normal, Some(FileBrowserAction::Rename)) if !self.entries.is_empty() => {
                 self.open_rename_modal();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Copy)) => {
+            (Mode::Normal, Some(FileBrowserAction::Copy)) if !self.entries.is_empty() => {
                 self.copy_selected(FileOperation::Copy);
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Cut)) => {
+            (Mode::Normal, Some(FileBrowserAction::Cut)) if !self.entries.is_empty() => {
                 self.copy_selected(FileOperation::Cut);
                 KeyDisposition::Consumed
             }
@@ -2555,7 +2734,7 @@ impl App for FileBrowserApp {
                 }
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) => {
+            (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) if !self.entries.is_empty() => {
                 self.request_move_selected_to_trash();
                 KeyDisposition::Consumed
             }
@@ -2565,6 +2744,10 @@ impl App for FileBrowserApp {
             }
             (Mode::Normal, Some(FileBrowserAction::OpenWithDefault)) => {
                 self.open_selected_with_default();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::CopyPath)) => {
+                self.copy_selected_path();
                 KeyDisposition::Consumed
             }
             _ => KeyDisposition::Passthrough,
@@ -2592,6 +2775,7 @@ impl App for FileBrowserApp {
             "cwd": self.cwd.display().to_string(),
             "selected": self.selected,
             "columns": self.columns.to_json(),
+            "font_size": self.font_size,
         }))
     }
 
@@ -2609,6 +2793,9 @@ impl App for FileBrowserApp {
         if state.get("columns").is_some() {
             self.columns = ColumnModel::from_json(&state["columns"]);
             self.refresh();
+        }
+        if let Some(size) = state["font_size"].as_f64() {
+            self.font_size = (size as f32).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
         }
     }
 }
@@ -2667,25 +2854,23 @@ mod tests {
     }
 
     #[test]
-    fn layout_policy_keeps_narrow_panes_compact() {
+    fn details_table_flexes_name_and_progressively_hides_trailing_columns_when_narrow() {
+        let (app, _dir) = make_populated_dir_app();
+        let wide_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(720.0, 24.0));
+        let wide_cols = app.details_columns(wide_rect);
+        let wide_ids: Vec<ColumnId> = wide_cols.iter().map(|(c, _)| c.id).collect();
         assert_eq!(
-            FileBrowserLayout::for_width(DETAILS_TABLE_MIN_WIDTH - 1.0),
-            FileBrowserLayout::CompactList
+            wide_ids,
+            vec![ColumnId::Name, ColumnId::Size, ColumnId::Modified]
         );
-        assert_eq!(
-            FileBrowserLayout::for_width(DETAILS_TABLE_MIN_WIDTH),
-            FileBrowserLayout::DetailsTable
-        );
-        assert_eq!(
-            FileBrowserLayout::for_width(INSPECTOR_MIN_WIDTH),
-            FileBrowserLayout::DetailsTable
-        );
-    }
+        let total_wide_w: f32 = wide_cols.iter().map(|(_, r)| r.width()).sum();
+        assert!((total_wide_w - 720.0).abs() < 1.0);
 
-    #[test]
-    fn layout_policy_exposes_details_and_inspector_separately() {
-        assert!(!FileBrowserLayout::CompactList.shows_details());
-        assert!(FileBrowserLayout::DetailsTable.shows_details());
+        let narrow_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 24.0));
+        let narrow_cols = app.details_columns(narrow_rect);
+        let narrow_ids: Vec<ColumnId> = narrow_cols.iter().map(|(c, _)| c.id).collect();
+        assert_eq!(narrow_ids, vec![ColumnId::Name]);
+        assert!((narrow_cols[0].1.width() - 200.0).abs() < 1.0);
     }
 
     #[test]
@@ -3264,11 +3449,11 @@ mod tests {
 
     #[test]
     fn enter_on_dir_navigates_not_opens() {
-        let (mut app, _dir) = make_mixed_dir_app();
-        // dirs sort first — selected=0 is the subdir
+        let (mut app, dir) = make_mixed_dir_app();
+        app.select_path(&dir.path().join("subdir"));
         assert!(
-            app.entries[0].is_dir,
-            "first entry must be the subdirectory"
+            app.selected_entry().is_some_and(|e| e.is_dir),
+            "selected entry must be the subdirectory"
         );
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
@@ -3469,10 +3654,9 @@ mod tests {
         assert!(created_index < modified_index);
     }
 
-    /// Dot directories remain navigable by default, while dotfiles stay hidden
-    /// until `show_hidden` is enabled.
+    /// Both dotfiles and dot-directories stay hidden until `show_hidden` is enabled.
     #[test]
-    fn show_hidden_toggle_filters_dotfiles_but_not_dot_directories() {
+    fn show_hidden_toggle_filters_all_dot_entries_including_dot_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("visible.txt"), b"v").expect("write visible");
         std::fs::write(dir.path().join(".hidden"), b"h").expect("write hidden");
@@ -3486,13 +3670,23 @@ mod tests {
             "dotfile must be filtered out while show_hidden is off"
         );
         assert!(
-            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
-            "dot directory must remain visible while show_hidden is off"
+            !app.entries.iter().any(|e| e.name == ".config"),
+            "dot directory must also be filtered out while show_hidden is off"
         );
 
-        app.columns.show_hidden = true;
-        app.refresh_preserving_filter();
-
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::Period,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed, "Cmd+Shift+. must toggle show_hidden");
+        assert!(app.columns.show_hidden);
         assert!(app.entries.iter().any(|e| e.name == "visible.txt"));
         assert!(
             app.entries.iter().any(|e| e.name == ".hidden"),
@@ -3500,19 +3694,28 @@ mod tests {
         );
         assert!(
             app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
-            "dot directory must remain visible once show_hidden is on"
+            "dot directory must appear once show_hidden is on"
         );
 
-        app.columns.show_hidden = false;
-        app.refresh_preserving_filter();
-
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::Period,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(!app.columns.show_hidden);
         assert!(
             !app.entries.iter().any(|e| e.name == ".hidden"),
             "dotfile must be filtered again once show_hidden is toggled back off"
         );
         assert!(
-            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
-            "dot directory must remain visible when show_hidden is toggled back off"
+            !app.entries.iter().any(|e| e.name == ".config"),
+            "dot directory must be filtered again when show_hidden is toggled back off"
         );
     }
 
@@ -3549,14 +3752,14 @@ mod tests {
     }
 
     #[test]
-    fn details_columns_keep_enabled_columns_reachable_at_breakpoint_width() {
+    fn details_columns_keep_enabled_columns_reachable_when_wide() {
         let (mut app, _dir) = make_populated_dir_app();
         for id in ColumnId::ALL {
             app.columns.set_column_visible(id, true);
         }
         let rect = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(DETAILS_TABLE_MIN_WIDTH, DETAILS_HEADER_H),
+            egui::vec2(960.0, DETAILS_HEADER_H),
         );
         let columns = app.details_columns(rect);
 
@@ -3611,5 +3814,194 @@ mod tests {
             "↓ must still move selection in search mode"
         );
         assert_eq!(app.search_query, "", "↓ must not append to query");
+    }
+
+    #[test]
+    fn adjust_font_size_scales_metrics_clamps_and_persists_in_state() {
+        let (mut app, _dir) = make_populated_dir_app();
+        let default_row_h = app.row_height();
+        let default_header_h = app.header_height();
+        assert_eq!(app.font_size, style::TEXT_HINT);
+
+        app.adjust_font_size(4.0);
+        assert_eq!(app.font_size, style::TEXT_HINT + 4.0);
+        assert!(app.row_height() > default_row_h);
+        assert!(app.header_height() > default_header_h);
+
+        let state = app.serialize_state().expect("serialize");
+        let mut restored = FileBrowserApp::new(app.cwd.clone());
+        restored.restore_state(&state);
+        assert_eq!(restored.font_size, style::TEXT_HINT + 4.0);
+
+        app.adjust_font_size(-100.0);
+        assert_eq!(app.font_size, FONT_SIZE_MIN);
+        app.adjust_font_size(100.0);
+        assert_eq!(app.font_size, FONT_SIZE_MAX);
+    }
+
+    #[test]
+    fn empty_dir_supports_new_folder_and_paste() {
+        let (mut src_app, _src_dir) = make_three_file_app();
+        src_app.copy_selected(FileOperation::Copy);
+        let clipboard = src_app.operation_clipboard.clone();
+
+        let (mut empty_app, empty_dir) = make_empty_dir_app();
+        empty_app.operation_clipboard = clipboard;
+        assert!(empty_app.entries.is_empty());
+
+        let consumed_paste = run_handle_key(
+            &mut empty_app,
+            vec![key_event(
+                Key::V,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_paste, "Cmd+V must work in an empty directory");
+        assert!(empty_dir.path().join("alpha.txt").exists());
+
+        let (mut empty_app2, empty_dir2) = make_empty_dir_app();
+        let consumed_mkdir = run_handle_key(
+            &mut empty_app2,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_mkdir, "Cmd+N must work in an empty directory");
+        assert!(empty_dir2.path().join("Untitled Folder").is_dir());
+    }
+
+    #[test]
+    fn reveal_and_open_with_default_emit_os_modes_not_open_in_pane() {
+        let (mut app, dir) = make_file_only_dir_app();
+        app.take_pending_commands();
+
+        let consumed_reveal = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::Enter,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_reveal);
+        let cmds = app.take_pending_commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            AppCommand::OpenArtifact {
+                path,
+                mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+                ..
+            } if path == &dir.path().join("readme.txt").display().to_string()
+        ));
+
+        let consumed_open = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::O,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_open);
+        let cmds = app.take_pending_commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            AppCommand::OpenArtifact {
+                path,
+                mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+                ..
+            } if path == &dir.path().join("readme.txt").display().to_string()
+        ));
+    }
+
+    #[test]
+    fn copy_and_paste_preserves_extension_before_copy_suffix() {
+        let (mut app, dir) = make_three_file_app();
+        app.copy_selected(FileOperation::Copy);
+
+        let first = app.paste_into_current_dir().expect("first paste");
+        assert_eq!(first, vec![dir.path().join("alpha 1.txt")]);
+
+        let second = app.paste_into_current_dir().expect("second paste");
+        assert_eq!(second, vec![dir.path().join("alpha 2.txt")]);
+    }
+
+    #[test]
+    fn r_and_f2_open_rename_modal_and_cmd_shift_r_refreshes() {
+        let (mut app, dir) = make_three_file_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::R, Modifiers::default())]);
+        assert!(consumed);
+        assert_eq!(app.rename_path, Some(dir.path().join("alpha.txt")));
+        app.cancel_rename_modal();
+
+        let consumed_f2 = run_handle_key(&mut app, vec![key_event(Key::F2, Modifiers::default())]);
+        assert!(consumed_f2);
+        assert_eq!(app.rename_path, Some(dir.path().join("alpha.txt")));
+        app.cancel_rename_modal();
+
+        std::fs::write(dir.path().join("delta.txt"), b"d").expect("write delta");
+        let consumed_refresh = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::R,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_refresh);
+        assert!(app.entries.iter().any(|e| e.name == "delta.txt"));
+    }
+
+    #[test]
+    fn y_and_cmd_shift_c_copy_selected_path() {
+        let (mut app, dir) = make_three_file_app();
+        let expected = dir.path().join("alpha.txt").display().to_string();
+
+        let consumed_y = run_handle_key(&mut app, vec![key_event(Key::Y, Modifiers::default())]);
+        assert!(consumed_y);
+        assert_eq!(app.pending_clipboard_text.take(), Some(expected.clone()));
+
+        let consumed_cmd_shift_c = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::C,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_cmd_shift_c);
+        assert_eq!(app.pending_clipboard_text.take(), Some(expected));
+    }
+
+    #[test]
+    fn breadcrumb_segments_split_ancestors_in_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("alpha").join("beta");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let segments = FileBrowserApp::breadcrumb_segments(&nested);
+        assert!(segments.len() >= 3);
+        assert_eq!(segments.last().unwrap().0, "beta");
+        assert_eq!(segments.last().unwrap().1, nested);
+        assert_eq!(segments[segments.len() - 2].0, "alpha");
+        assert_eq!(segments[segments.len() - 2].1, dir.path().join("alpha"));
     }
 }
