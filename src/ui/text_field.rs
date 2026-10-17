@@ -7,7 +7,7 @@ pub(crate) fn styled_text_input(
     id: egui::Id,
     colors: &Colors,
 ) -> egui::Response {
-    styled_text_input_inner(ui, buf, hint, id, colors, false)
+    styled_text_input_inner(ui, buf, hint, id, colors, false, f32::INFINITY)
 }
 
 fn styled_text_input_inner(
@@ -17,6 +17,7 @@ fn styled_text_input_inner(
     id: egui::Id,
     colors: &Colors,
     password: bool,
+    desired_width: f32,
 ) -> egui::Response {
     let hint: egui::WidgetText = hint.into();
     let hint = hint.color(colors.text_primary.gamma_multiply(0.5));
@@ -32,7 +33,8 @@ fn styled_text_input_inner(
         let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
         let edit = egui::TextEdit::singleline(buf)
             .id(id)
-            .desired_width(f32::INFINITY)
+            .desired_width(desired_width)
+            .text_color(colors.text_primary)
             .hint_text(hint)
             .font(egui::TextStyle::Body)
             .margin(egui::Margin::symmetric(8, 5))
@@ -173,6 +175,7 @@ pub(crate) struct TextField<'a> {
     surface: Option<crate::ui::focus::SurfaceKey>,
     select_all_on_focus: bool,
     password: bool,
+    desired_width: f32,
     log_name: &'a str,
 }
 
@@ -184,6 +187,7 @@ impl<'a> TextField<'a> {
             surface: None,
             select_all_on_focus: false,
             password: false,
+            desired_width: f32::INFINITY,
             log_name: "text_field",
         }
     }
@@ -207,6 +211,11 @@ impl<'a> TextField<'a> {
         self
     }
 
+    pub(crate) fn desired_width(mut self, desired_width: f32) -> Self {
+        self.desired_width = desired_width;
+        self
+    }
+
     pub(crate) fn log_name(mut self, log_name: &'a str) -> Self {
         self.log_name = log_name;
         self
@@ -218,7 +227,15 @@ impl<'a> TextField<'a> {
         buf: &mut String,
         colors: &Colors,
     ) -> egui::Response {
-        let response = styled_text_input_inner(ui, buf, self.hint, self.id, colors, self.password);
+        let response = styled_text_input_inner(
+            ui,
+            buf,
+            self.hint,
+            self.id,
+            colors,
+            self.password,
+            self.desired_width,
+        );
         if let Some(key) = self.surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);
         }

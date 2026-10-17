@@ -62,6 +62,7 @@ pub struct Colors {
     pub bg_toolbar: Color32,
     pub terminal_bg: Color32,
     pub bg_hover: Color32,
+    pub bg_elevated: Color32,
     pub bg_sidebar_hover: Color32,
     pub bg_active: Color32,
     // Text
@@ -152,12 +153,14 @@ impl Colors {
     }
 
     pub fn from_config(cfg: &ThemeConfig) -> Self {
+        let bg_hover = parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c));
         Self {
             bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
             bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x18, 0x18, 0x25)),
             bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x18, 0x18, 0x25)),
             terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x29, 0x2a, 0x44)),
-            bg_hover: parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
+            bg_hover,
+            bg_elevated: bg_hover,
             bg_sidebar_hover: parse_hex_or(
                 &cfg.bg_sidebar_hover,
                 Color32::from_rgb(0x2e, 0x2e, 0x48),
@@ -883,7 +886,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     v.extreme_bg_color = colors.bg_active; // TextEdit / ScrollArea / code block backgrounds.
     v.faint_bg_color = colors.bg_hover; // Striped rows / blockquote tints.
     v.code_bg_color = colors.bg_darkest;
-    v.override_text_color = Some(colors.text_primary);
+    v.override_text_color = None;
 
     // Window / menu / popup chrome: token radii, hairline border, soft
     // long-throw shadows instead of egui's tight dark halo.
@@ -917,9 +920,9 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     w.noninteractive.bg_fill = colors.bg_sidebar;
     w.noninteractive.weak_bg_fill = colors.bg_sidebar;
     w.noninteractive.bg_stroke = hairline; // Separators.
-    w.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, colors.text_dim);
-    w.inactive.bg_fill = colors.bg_hover;
-    w.inactive.weak_bg_fill = colors.bg_hover;
+    w.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, colors.text_secondary(colors.bg_sidebar));
+    w.inactive.bg_fill = colors.bg_elevated;
+    w.inactive.weak_bg_fill = colors.bg_elevated;
     w.inactive.bg_stroke = hairline;
     w.inactive.fg_stroke = text(1.0);
     w.hovered.bg_fill = colors.bg_sidebar_hover;
@@ -957,7 +960,13 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     // Reserve a gutter for the floating bar so full-width content (text
     // fields, selectable rows) never runs underneath it at the right edge.
     style.spacing.scroll.floating_allocated_width = tokens::SPACE_MD;
-    ctx.set_global_style(style);
+    ctx.set_theme(if dark_mode {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
+    ctx.set_style_of(egui::Theme::Dark, style.clone());
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 
 pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
@@ -1315,5 +1324,26 @@ mod tests {
                 "{name}: chip text_on(bg_active) below 3:1 (chip text illegible)"
             );
         }
+    }
+
+    #[test]
+    fn setup_style_locks_theme_against_os_system_theme_override() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&ThemeConfig::default());
+        setup_style(&ctx, &colors, true);
+
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                system_theme: Some(egui::Theme::Light),
+                ..Default::default()
+            },
+            |_ui| {},
+        );
+
+        assert!(ctx.global_style().visuals.dark_mode);
+        assert_eq!(
+            ctx.global_style().visuals.widgets.inactive.bg_fill,
+            colors.bg_elevated
+        );
     }
 }
