@@ -5200,7 +5200,8 @@ pub(crate) fn restore_workspace(
                             ctx_depth,
                             effective_session.is_some(),
                         );
-                    if let Some(ref session) = effective_session {
+                    let mut effective_session = effective_session;
+                    if let Some(ref mut session) = effective_session {
                         settings
                             .env
                             .insert("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone());
@@ -5220,31 +5221,34 @@ pub(crate) fn restore_workspace(
                                 .insert("PLEXI_EPHEMERAL".to_string(), "1".to_string());
                         }
                         if should_auto_resume {
-                            if let Some(sid) =
-                                session.session_id.as_deref().filter(|s| !s.is_empty())
+                            if let Some(harness) =
+                                crate::cli::AgentHarness::parse(&session.harness)
                             {
-                                if let Some(harness) =
-                                    crate::cli::AgentHarness::parse(&session.harness)
+                                let resume_cmd =
+                                    harness.restore_command(session.session_id.as_deref());
+                                if harness == crate::cli::AgentHarness::Pi
+                                    && resume_cmd == harness.adapter().binary
+                                    && session.session_id.is_some()
                                 {
-                                    let resume_cmd = harness.resume_command(sid);
-                                    log::info!(
-                                        "workspace_restore: auto-resuming agent pane {} harness={} session_id={} state={} cmd={:?}",
-                                        saved_pane.id,
-                                        session.harness,
-                                        sid,
-                                        session.last_state.as_str(),
-                                        resume_cmd
-                                    );
-                                    settings.env.insert(
-                                        "PLEXI_RESUME_COMMAND".to_string(),
-                                        resume_cmd.clone(),
-                                    );
-                                    crate::pane_ops::apply_initial_cmd(
-                                        &mut settings,
-                                        &resume_cmd,
-                                        session.ephemeral,
-                                    );
+                                    session.session_id = None;
                                 }
+                                log::info!(
+                                    "workspace_restore: auto-resuming agent pane {} harness={} session_id={:?} state={} cmd={:?}",
+                                    saved_pane.id,
+                                    session.harness,
+                                    session.session_id,
+                                    session.last_state.as_str(),
+                                    resume_cmd
+                                );
+                                settings.env.insert(
+                                    "PLEXI_RESUME_COMMAND".to_string(),
+                                    resume_cmd.clone(),
+                                );
+                                crate::pane_ops::apply_initial_cmd(
+                                    &mut settings,
+                                    &resume_cmd,
+                                    session.ephemeral,
+                                );
                             }
                         }
                     }

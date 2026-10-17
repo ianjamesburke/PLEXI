@@ -131,27 +131,34 @@ export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
         events.setAttachConfig(attachConfig);
       }
 
-      const sid = resolveSessionIdFromContext(ctx);
+      lifecycle.resetSession();
+      const sid = resolveSessionIdFromContext(ctx, {
+        requirePersisted: true,
+        turnStarted: false,
+      });
       if (attachConfig.attached) {
-        await lifecycle.report("idle", { sessionId: sid });
+        await lifecycle.report("idle", { sessionId: sid, force: true });
       }
       await refreshUi(ctx);
     });
 
     pi.on("before_agent_start", async (_event: any, ctx: any) => {
       lastContext = ctx;
+      lifecycle.markTurnStarted();
       const sid = resolveSessionIdFromContext(ctx);
-      await lifecycle.report("working", { sessionId: sid });
+      await lifecycle.report("working", { sessionId: sid, force: true });
     });
 
     pi.on("agent_start", async (_event: any, ctx: any) => {
       lastContext = ctx;
+      lifecycle.markTurnStarted();
       const sid = resolveSessionIdFromContext(ctx);
-      await lifecycle.report("working", { sessionId: sid });
+      await lifecycle.report("working", { sessionId: sid, force: true });
     });
 
     pi.on("tool_call", async (event: any, ctx: any) => {
       lastContext = ctx;
+      lifecycle.markTurnStarted();
       const sid = resolveSessionIdFromContext(ctx);
       const toolName = event?.toolName || "tool";
       await lifecycle.report("working", {
@@ -162,21 +169,26 @@ export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
 
     pi.on("tool_result", async (_event: any, ctx: any) => {
       lastContext = ctx;
+      lifecycle.markTurnStarted();
       const sid = resolveSessionIdFromContext(ctx);
       await lifecycle.report("working", { sessionId: sid });
     });
 
     pi.on("agent_end", async (_event: any, ctx: any) => {
       lastContext = ctx;
+      lifecycle.markTurnStarted();
       const sid = resolveSessionIdFromContext(ctx);
-      await lifecycle.report("idle", { sessionId: sid });
+      await lifecycle.report("idle", { sessionId: sid, force: true });
       await refreshUi(ctx);
     });
 
     pi.on("session_shutdown", async (_event: any, ctx: any) => {
       events.stopAll();
-      const sid = resolveSessionIdFromContext(ctx ?? lastContext);
-      await lifecycle.report("idle", { sessionId: sid });
+      const sid = resolveSessionIdFromContext(ctx ?? lastContext, {
+        requirePersisted: true,
+        turnStarted: lifecycle.hasTurnStarted(),
+      });
+      await lifecycle.report("idle", { sessionId: sid, force: true });
     });
 
     return {

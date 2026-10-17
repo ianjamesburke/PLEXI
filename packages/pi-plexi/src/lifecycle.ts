@@ -81,7 +81,41 @@ export function markPiPlexiPackageActive(): void {
   process.env.PLEXI_PI_PACKAGE_ACTIVE = "1";
 }
 
-export function resolveSessionIdFromContext(ctx: any): string {
+export interface ResolveSessionIdOptions {
+  requirePersisted?: boolean;
+  turnStarted?: boolean;
+  checkFileExists?: (path: string) => boolean;
+}
+
+export function isPiSessionPersisted(
+  ctx: any,
+  options: { turnStarted?: boolean; checkFileExists?: (path: string) => boolean } = {},
+): boolean {
+  if (options.turnStarted) return true;
+  try {
+    const fromFile = ctx?.sessionManager?.getSessionFile?.();
+    if (typeof fromFile === "string" && fromFile.trim()) {
+      const exists = options.checkFileExists ?? existsSync;
+      return exists(fromFile.trim());
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+export function resolveSessionIdFromContext(ctx: any): string;
+export function resolveSessionIdFromContext(
+  ctx: any,
+  options: ResolveSessionIdOptions,
+): string | undefined;
+export function resolveSessionIdFromContext(
+  ctx: any,
+  options?: ResolveSessionIdOptions,
+): string | undefined {
+  if (options?.requirePersisted && !isPiSessionPersisted(ctx, options)) {
+    return undefined;
+  }
   try {
     const fromId = ctx?.sessionManager?.getSessionId?.();
     if (typeof fromId === "string" && fromId.trim()) return fromId.trim();
@@ -90,6 +124,9 @@ export function resolveSessionIdFromContext(ctx: any): string {
   } catch {
     // ignore
   }
+  if (options?.requirePersisted) {
+    return process.env.PLEXI_PI_SESSION_ID?.trim() || undefined;
+  }
   return process.env.PLEXI_PI_SESSION_ID?.trim() || `pi-pane-${process.env.PLEXI_PANE_ID ?? "local"}`;
 }
 
@@ -97,9 +134,24 @@ export class PlexiLifecycleReporter {
   private client: PlexiCliClient;
   private lastState?: string;
   private lastDetail?: string;
+  private turnStarted = false;
 
   constructor(client: PlexiCliClient) {
     this.client = client;
+  }
+
+  hasTurnStarted(): boolean {
+    return this.turnStarted;
+  }
+
+  markTurnStarted(): void {
+    this.turnStarted = true;
+  }
+
+  resetSession(): void {
+    this.turnStarted = false;
+    this.lastState = undefined;
+    this.lastDetail = undefined;
   }
 
   async report(
@@ -108,11 +160,15 @@ export class PlexiLifecycleReporter {
       detail?: string;
       sessionId?: string;
       blockedReason?: "permission_prompt" | "question" | "usage_limit" | "error";
+      force?: boolean;
     } = {},
   ): Promise<void> {
+    if (state === "working" || state === "blocked") {
+      this.turnStarted = true;
+    }
     if (!this.client.getAttachConfig().attached) return;
     const key = `${state}:${options.detail ?? ""}:${options.blockedReason ?? ""}`;
-    if (this.lastState === key && this.lastDetail === options.sessionId) {
+    if (!options.force && this.lastState === key && this.lastDetail === options.sessionId) {
       return;
     }
     this.lastState = key;
@@ -125,3 +181,4 @@ export class PlexiLifecycleReporter {
     });
   }
 }
+
