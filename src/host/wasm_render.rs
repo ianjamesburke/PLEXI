@@ -103,15 +103,12 @@ pub fn render_ui_tree_with_canvas_fits(
     // and footers all get comfortable breathing room. Full-bleed pixel apps (a
     // grow Canvas or a GPU Surface anywhere in the tree) own their own layout
     // and are exempt.
+    // Paint the app-surface fill (`theme.bg`, the color apps are told their
+    // container is) across the entire pane rect first so both inset flow apps
+    // and full-bleed Canvas apps share the host theme backdrop.
+    ui.painter()
+        .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
     if tree_wants_content_padding(&tree.nodes) {
-        // Stint 0448: the inset must move only the *content* cursor, never the
-        // app's visible surface. Paint the app-surface fill (`theme.bg`, the
-        // color apps are told their container is) across the entire pane rect
-        // first, then inset the layout. Without this the surface would start
-        // inside the inset and the darker pane gutter would show through as a
-        // black border around every flow app.
-        ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
         // Stint 0674: chrome bands are exempt from the inset. A leading AppBar
         // and a trailing FooterKeys are the app's *edges*, not its content —
         // insetting them floats the title bar off the pane's top-left corner
@@ -313,7 +310,15 @@ pub fn render_ui_tree_to_png(
     height: f32,
     pixels_per_point: f32,
 ) -> Result<Vec<u8>, String> {
-    let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
+    let config = crate::config::PlexiConfig::load();
+    let colors = crate::ui::theme::colors_from_config(&config);
+    let dark_mode = !crate::ui::theme::is_light_preset(
+        config
+            .theme
+            .as_ref()
+            .and_then(|t| t.preset.as_deref())
+            .unwrap_or(""),
+    );
     let tree = tree.clone();
     // `set_fonts` only takes effect on the *next* frame's `begin_frame`, so the
     // custom `ui-medium` family used by declarative Button/ListRow nodes is not
@@ -329,6 +334,7 @@ pub fn render_ui_tree_to_png(
         .build_ui(move |ui| {
             if !fonts_ready {
                 crate::ui::theme::setup_fonts(ui.ctx());
+                crate::ui::theme::setup_style(ui.ctx(), &colors, dark_mode);
                 fonts_ready = true;
                 ui.ctx().request_repaint();
                 return;
@@ -667,9 +673,13 @@ fn render_node(
         UiNodeData::Empty => {}
 
         UiNodeData::Text(t) => {
+            let default_color = ui
+                .visuals()
+                .override_text_color
+                .unwrap_or(colors.text_primary);
             let mut rich = RichText::new(&t.text)
                 .size(t.size.unwrap_or(style::TEXT_BODY))
-                .color(colors.text_primary);
+                .color(default_color);
             if t.bold {
                 rich = rich.strong();
             }
@@ -953,10 +963,16 @@ fn render_node(
                 .id_salt(("l1_list_view", id))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    let has_on_select = l.on_select.as_deref().is_some_and(|a| !a.is_empty());
                     for (i, item_id) in l.items.iter().enumerate() {
                         let selected = l.selected == Some(i as u32);
-                        let resp = ui
-                            .scope(|ui| {
+                        let bg_idx = ui.painter().add(egui::Shape::Noop);
+                        let bar_idx = ui.painter().add(egui::Shape::Noop);
+                        let inner_resp = egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
                                 if selected {
                                     ui.visuals_mut().override_text_color = Some(colors.accent);
                                 }
@@ -973,9 +989,35 @@ fn render_node(
                                     surface_key,
                                     tree_seq,
                                 );
-                            })
-                            .response
-                            .interact(egui::Sense::click());
+                            });
+                        let row_rect = inner_resp.response.rect;
+                        let resp = inner_resp.response.interact(egui::Sense::click());
+                        if resp.hovered() && has_on_select {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if selected {
+                            ui.painter().set(
+                                bg_idx,
+                                egui::Shape::rect_filled(
+                                    row_rect,
+                                    4.0,
+                                    colors.accent.gamma_multiply(0.18),
+                                ),
+                            );
+                            let bar_rect = egui::Rect::from_min_size(
+                                egui::pos2(row_rect.left(), row_rect.top() + 2.0),
+                                egui::vec2(3.0, (row_rect.height() - 4.0).max(2.0)),
+                            );
+                            ui.painter().set(
+                                bar_idx,
+                                egui::Shape::rect_filled(bar_rect, 1.5, colors.accent),
+                            );
+                        } else if resp.hovered() && has_on_select {
+                            ui.painter().set(
+                                bg_idx,
+                                egui::Shape::rect_filled(row_rect, 4.0, colors.bg_hover),
+                            );
+                        }
                         let list_clicked = i == 0 && node_click_matches(pending_click, id);
                         if resp.clicked()
                             || node_click_matches(pending_click, *item_id)
@@ -2644,5 +2686,140 @@ mod tests {
         let png = render_ui_tree_to_png(&tree, 520.0, 360.0, 2.0)
             .expect("render 0816 widget tree to PNG");
         assert!(!png.is_empty());
+    }
+
+    #[test]
+    fn list_view_paints_selected_row_chrome_and_respects_override_text_color() {
+        fn collect_shapes(
+            shape: &egui::Shape,
+            rects: &mut Vec<egui::epaint::RectShape>,
+            texts: &mut Vec<egui::epaint::TextShape>,
+        ) {
+            match shape {
+                egui::Shape::Rect(r) => rects.push(r.clone()),
+                egui::Shape::Text(t) => texts.push(t.clone()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        collect_shapes(s, rects, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let tree = crate::host::wasm_python::decode_ui_tree(
+            &serde_json::json!({
+                "root": 0,
+                "nodes": [
+                    {
+                        "id": 0,
+                        "key": "list",
+                        "data": {
+                            "type": "ListView",
+                            "items": [1, 4],
+                            "selected": 0,
+                            "on_select": "pick"
+                        }
+                    },
+                    {
+                        "id": 1,
+                        "key": "row-0",
+                        "data": {
+                            "type": "Row",
+                            "children": [2, 3],
+                            "gap": 8.0
+                        }
+                    },
+                    {
+                        "id": 2,
+                        "key": "row-0-title",
+                        "data": {
+                            "type": "Text",
+                            "text": "Selected Title"
+                        }
+                    },
+                    {
+                        "id": 3,
+                        "key": "row-0-sub",
+                        "data": {
+                            "type": "Text",
+                            "text": "Muted Trailing",
+                            "color": "muted",
+                            "size": 12.0
+                        }
+                    },
+                    {
+                        "id": 4,
+                        "key": "row-1",
+                        "data": {
+                            "type": "Text",
+                            "text": "Unselected Title"
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("decode list_view tree");
+
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        crate::ui::theme::setup_style(&ctx, &colors, true);
+
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+            });
+        });
+
+        let mut rects = Vec::new();
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect_shapes(&clipped.shape, &mut rects, &mut texts);
+        }
+
+        let selected_fill = colors.accent.gamma_multiply(0.18);
+        assert!(
+            rects.iter().any(|r| r.fill == selected_fill && r.rect.width() > 20.0),
+            "selected ListView row must paint accent-tinted background fill"
+        );
+        assert!(
+            rects
+                .iter()
+                .any(|r| r.fill == colors.accent && (r.rect.width() - 3.0).abs() < 0.1),
+            "selected ListView row must paint a 3px left accent indicator bar"
+        );
+
+        let color_of = |label: &str| {
+            let t = texts
+                .iter()
+                .find(|t| t.galley.job.text == label)
+                .unwrap_or_else(|| panic!("missing text {label}"));
+            let c = t.galley.job.sections[0].format.color;
+            if c == Color32::PLACEHOLDER {
+                t.fallback_color
+            } else {
+                c
+            }
+        };
+
+        assert_eq!(
+            color_of("Selected Title"),
+            colors.accent,
+            "selected row primary text without explicit color must respect override_text_color"
+        );
+        assert_eq!(
+            color_of("Unselected Title"),
+            colors.text_primary,
+            "unselected row primary text must use text_primary"
+        );
+        assert_ne!(
+            color_of("Muted Trailing"),
+            colors.accent,
+            "explicit muted color on secondary/trailing text must stay muted inside selected row"
+        );
     }
 }
