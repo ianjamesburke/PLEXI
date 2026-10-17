@@ -99,4 +99,5 @@ plexi-pr-<N> host status
 - Target panes by explicit id from `pane list` — never "current pane" defaults, which read the launching pane's stale identity.
 - Observe from `pane state` / `pane capture` / the channel log, never from assumption.
 - One host per channel. `host stop` before re-booting; leave no orphaned host behind.
+- Ephemeral `pr-<N>` channels automatically isolate host-seal storage to `~/.plexi-pr-<N>/host/pr-host-seal.json` (mode `0600`) instead of writing to the user's login Keychain; set `PLEXI_KEYCHAIN_PATH` explicitly when a live test specifically exercises macOS Keychain storage.
 - The flag surface lives in stint 0342 and `--help`; do not restate it — link it.

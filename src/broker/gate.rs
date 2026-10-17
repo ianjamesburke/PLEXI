@@ -574,7 +574,12 @@ impl PermissionMonitor {
                 );
                 let store = GrantStore::load_or_default(dir);
                 let audit = dir.join("permission-audit.jsonl");
-                let monitor = Self::new(store, Some(audit));
+                let monitor = Self::from_arc(
+                    Arc::new(Mutex::new(store)),
+                    Some(audit),
+                    Some(dir.to_path_buf()),
+                );
+                monitor.restore_queue();
                 monitor.file_keychain_needs_you();
                 monitor.file_integrity_finding(finding);
                 super::integrity::mark_running(dir);
@@ -600,6 +605,7 @@ impl PermissionMonitor {
             }
         }
         let audit = dir.join("permission-audit.jsonl");
+        let mut rejected_audit_reason = None;
         if let Err(reason) = super::seal::verify_audit(&audit) {
             if super::host_key::is_key_unreadable(&reason) {
                 log::info!(
@@ -613,11 +619,11 @@ impl PermissionMonitor {
                     "permission_monitor: migrated legacy unsealed permission-audit.jsonl"
                 );
             } else {
-                super::seal::reject_untrusted_audit(&audit, &reason);
                 faults.push(super::seal::IntegrityFault {
                     file: "permission-audit.jsonl".to_string(),
-                    reason,
+                    reason: reason.clone(),
                 });
+                rejected_audit_reason = Some(reason);
             }
         }
         log::info!(
@@ -628,12 +634,16 @@ impl PermissionMonitor {
         );
         let monitor = Self::from_arc(
             Arc::new(Mutex::new(store)),
-            Some(audit),
+            Some(audit.clone()),
             Some(dir.to_path_buf()),
         );
-        // Restore before filing new seal faults so a persist of those faults
-        // cannot replace a queue left by the previous process.
+        // Restore before filing new seal faults or clearing an untrusted seal
+        // state so a persist of those faults cannot replace a queue left by the
+        // previous process.
         monitor.restore_queue();
+        if let Some(reason) = rejected_audit_reason {
+            super::seal::reject_untrusted_audit(&audit, &reason);
+        }
         for fault in &faults {
             monitor.raise_integrity(fault);
         }
@@ -682,31 +692,36 @@ impl PermissionMonitor {
     /// a bad MAC quarantines, the same as startup. Grants are loaded either way.
     fn reload_after_keychain_prompt(&self) -> Result<(), String> {
         let Some(dir) = self
-            .audit_path
-            .as_ref()
-            .and_then(|path| path.parent())
-            .map(|path| path.to_path_buf())
+            .profile_dir
+            .clone()
+            .or_else(|| {
+                self.audit_path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .map(|path| path.to_path_buf())
+            })
         else {
             return Err("permission profile directory is unknown".to_string());
         };
         super::host_key::with_keychain_interaction(|| {
-            match super::seal::existing_mac_key() {
+            match super::seal::existing_mac_key(&dir) {
                 Ok(Some(_)) => {
                     log::info!("permission_seal: interactive mac key read succeeded");
                 }
                 Ok(None) => {
-                    super::seal::mac_key_bytes()?;
+                    super::seal::mac_key_bytes(&dir)?;
                     log::info!("permission_seal: created permission mac key after keychain prompt");
                 }
                 Err(error) if super::host_key::is_key_unreadable(&error) => {
                     log::info!(
                         "permission_seal: interactive mac key read still failed; rotating ({error})"
                     );
-                    super::seal::rotate_unreadable_mac_key()?;
+                    super::seal::rotate_unreadable_mac_key(&dir)?;
                     super::seal::reset_unverified_profile(&dir)?;
                 }
                 Err(error) => return Err(error),
             }
+            self.restore_queue();
             let loaded = GrantStore::load_or_default(&dir);
             let mut faults = loaded.integrity_faults().to_vec();
             for fault in super::seal::take_integrity_faults(&dir) {
@@ -1323,7 +1338,9 @@ impl PermissionMonitor {
                 updated_at: now,
             });
         }
-        self.persist_queue();
+        if record.kind != NeedsYouKind::Keychain {
+            self.persist_queue();
+        }
         Ok((id, token))
     }
 
@@ -1657,10 +1674,20 @@ impl PermissionMonitor {
                 }
                 let resolution = final_resolution;
                 let decision = if approve { "approved" } else { "denied" };
+                let profile_dir = self
+                    .profile_dir
+                    .clone()
+                    .or_else(|| {
+                        self.audit_path
+                            .as_ref()
+                            .and_then(|path| path.parent())
+                            .map(|path| path.to_path_buf())
+                    })
+                    .unwrap_or_else(crate::config::config_dir);
                 let key_still_unreadable = !approve
-                    && super::seal::existing_mac_key().err().is_some_and(|error| {
-                        super::host_key::is_key_unreadable(&error)
-                    });
+                    && super::seal::existing_mac_key(&profile_dir)
+                        .err()
+                        .is_some_and(|error| super::host_key::is_key_unreadable(&error));
                 if key_still_unreadable {
                     self.dismiss_without_audit(id, resolution);
                 } else if !self.close_needs_you(id, resolution, decision, "") {
@@ -2113,20 +2140,28 @@ impl PermissionMonitor {
                 );
             }
             super::needs_you_store::LoadedQueue::Untrusted(reason) => {
-                log::error!(
-                    "needs_you: rejected queue in {}: {reason}",
-                    profile.display()
-                );
-                if super::needs_you_store::quarantine(&profile).is_some() {
-                    self.file_integrity(&reason);
-                } else if super::needs_you_store::queue_file_exists(&profile) {
-                    log::error!(
-                        "needs_you: left untrusted queue in place at {}",
+                if super::host_key::is_key_unreadable(&reason) {
+                    log::info!(
+                        "needs_you: mac key unreadable; left queue in place at {} ({reason})",
                         profile.display()
                     );
-                    self.file_integrity_memory_only(&reason);
+                    self.file_keychain_needs_you();
                 } else {
-                    self.file_integrity(&reason);
+                    log::error!(
+                        "needs_you: rejected queue in {}: {reason}",
+                        profile.display()
+                    );
+                    if super::needs_you_store::quarantine(&profile).is_some() {
+                        self.file_integrity(&reason);
+                    } else if super::needs_you_store::queue_file_exists(&profile) {
+                        log::error!(
+                            "needs_you: left untrusted queue in place at {}",
+                            profile.display()
+                        );
+                        self.file_integrity_memory_only(&reason);
+                    } else {
+                        self.file_integrity(&reason);
+                    }
                 }
             }
         }
@@ -2259,7 +2294,7 @@ impl PermissionMonitor {
             .clone();
         let mut items = Vec::new();
         for record in needs.values() {
-            if record.resolution.is_some() {
+            if record.resolution.is_some() || record.kind == NeedsYouKind::Keychain {
                 continue;
             }
             let origin = origins
@@ -4741,7 +4776,9 @@ mod tests {
             "the journal key lives in the host seal store"
         );
         let journal = std::fs::read(host.join("needs-you.json")).unwrap();
-        let key = super::super::seal::existing_mac_key().unwrap().unwrap();
+        let key = super::super::seal::existing_mac_key(dir.path())
+            .unwrap()
+            .unwrap();
         assert!(!journal.windows(key.len()).any(|window| window == key.as_slice()));
         assert!(!dir.path().join("needs-you.json").exists());
         assert!(!dir.path().join("secrets.json").exists());
@@ -4855,6 +4892,7 @@ mod tests {
             assert_legacy_grants_kept(&monitor.store());
 
             crate::broker::host_key::delete(crate::broker::host_key::MAC_ITEM).unwrap();
+            crate::broker::host_key::delete(&crate::broker::seal::mac_account(dir.path())).unwrap();
             strip_mac(&dir.path().join("grants.toml"));
             let tampered = PermissionMonitor::open_profile(dir.path());
             assert!(
@@ -5122,10 +5160,9 @@ mod tests {
     #[test]
     fn legacy_unsealed_file_is_reset_not_quarantined_when_the_mac_key_is_unreadable() {
         let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
-        let donor = tempfile::tempdir().unwrap();
-        GrantStore::load_or_default(donor.path()).save();
         let dir = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
+        GrantStore::load_or_default(dir.path()).save();
         write_legacy_grants(
             dir.path(),
             vec![GrantRecord::app_capability(
@@ -5163,6 +5200,142 @@ mod tests {
             "{:?}",
             monitor.open_needs_you()
         );
+    }
+
+    #[test]
+    fn startup_performs_at_most_one_keychain_lookup_for_profile() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        {
+            seal_profile_grant(dir.path(), ws.path());
+            super::super::integrity::mark_clean_shutdown(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            monitor
+                .file_needs_you(NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: "agent:test".to_string(),
+                    resource: "task-1".to_string(),
+                    summary: "Which branch?".to_string(),
+                    expires_at: None,
+                    run_tag: Some("q-1".to_string()),
+                })
+                .unwrap();
+            super::super::integrity::mark_clean_shutdown(dir.path());
+        }
+
+        // Simulate a fresh process start by clearing the in-memory session_mac cache
+        // and counting backend Keychain get calls during PermissionMonitor::open.
+        crate::broker::host_key::clear_session_mac_for_test();
+        crate::broker::host_key::reset_backend_get_calls();
+
+        let reopened = PermissionMonitor::open(dir.path());
+        assert_eq!(
+            crate::broker::host_key::backend_get_calls(),
+            1,
+            "expected at most 1 backend Keychain lookup during startup"
+        );
+        assert_eq!(reopened.open_needs_you().len(), 1);
+        assert_eq!(reopened.open_needs_you()[0].summary, "Which branch?");
+    }
+
+    #[test]
+    fn unreadable_mac_key_rotates_and_resets_needs_you_without_quarantine_or_integrity() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        {
+            seal_profile_grant(dir.path(), ws.path());
+            super::super::integrity::mark_clean_shutdown(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            monitor
+                .file_needs_you(NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: "agent:test".to_string(),
+                    resource: "task-rotate".to_string(),
+                    summary: "Question sealed with previous key".to_string(),
+                    expires_at: None,
+                    run_tag: Some("q-rotate".to_string()),
+                })
+                .unwrap();
+            super::super::integrity::mark_clean_shutdown(dir.path());
+        }
+
+        let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert!(
+            monitor.open_needs_you().is_empty(),
+            "key rotation must not file NeedsYouKind::Integrity or leave stale items: {:?}",
+            monitor.open_needs_you()
+        );
+        assert!(
+            dir.path()
+                .join("host")
+                .join("needs-you.json.before-key-rotation")
+                .is_file(),
+            "previous needs-you.json must be copied aside before rotation"
+        );
+        assert!(
+            dir.path().join("host").join("needs-you.json").is_file(),
+            "rotated profile must have a freshly sealed needs-you.json"
+        );
+        assert_no_untrusted(dir.path());
+        assert_no_untrusted(&dir.path().join("host"));
+    }
+
+    #[test]
+    fn unreadable_mac_key_with_delete_prompt_leaves_needs_you_in_place_and_restores_on_unlock() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        {
+            seal_profile_grant(dir.path(), ws.path());
+            super::super::integrity::mark_clean_shutdown(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            monitor
+                .file_needs_you(NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: "agent:test".to_string(),
+                    resource: "task-unlock".to_string(),
+                    summary: "Keep me across keychain prompt".to_string(),
+                    expires_at: None,
+                    run_tag: Some("q-unlock".to_string()),
+                })
+                .unwrap();
+            super::super::integrity::mark_clean_shutdown(dir.path());
+        }
+
+        let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(
+            monitor.open_needs_you().len(),
+            1,
+            "only the single Keychain item should be open while key is unreadable: {:?}",
+            monitor.open_needs_you()
+        );
+        assert_eq!(monitor.open_needs_you()[0].kind, NeedsYouKind::Keychain);
+        assert!(
+            dir.path().join("host").join("needs-you.json").is_file(),
+            "needs-you.json must stay in place when the key is unreadable"
+        );
+        assert_no_untrusted(dir.path());
+        assert_no_untrusted(&dir.path().join("host"));
+
+        let keychain_id = monitor.open_needs_you()[0].id.clone();
+        monitor
+            .resolve_needs_you(&keychain_id, true)
+            .expect("interactive unlock succeeds");
+
+        let open = monitor.open_needs_you();
+        assert_eq!(
+            open.len(),
+            1,
+            "persisted question must be restored after interactive keychain unlock: {open:?}"
+        );
+        assert_eq!(open[0].kind, NeedsYouKind::Question);
+        assert_eq!(open[0].summary, "Keep me across keychain prompt");
+        assert_no_untrusted(dir.path());
+        assert_no_untrusted(&dir.path().join("host"));
     }
 
     #[test]
