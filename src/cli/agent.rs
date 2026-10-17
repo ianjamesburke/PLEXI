@@ -273,6 +273,97 @@ impl AgentHarness {
     pub fn resume_command(self, session_id: &str) -> String {
         self.adapter().resume_command(session_id)
     }
+
+    pub fn restore_command(self, session_id: Option<&str>) -> String {
+        self.adapter().restore_command(session_id)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PI_SESSIONS_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+static NEXT_TEST_PI_SESSIONS_GUARD_TOKEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(test)]
+pub struct TestPiSessionsDirGuard {
+    token: u64,
+}
+
+#[cfg(test)]
+impl Drop for TestPiSessionsDirGuard {
+    fn drop(&mut self) {
+        let token = self.token;
+        TEST_PI_SESSIONS_DIR_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
+    }
+}
+
+#[cfg(test)]
+pub fn set_test_pi_sessions_dir(path: PathBuf) -> TestPiSessionsDirGuard {
+    let token = NEXT_TEST_PI_SESSIONS_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TEST_PI_SESSIONS_DIR_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
+    TestPiSessionsDirGuard { token }
+}
+
+fn pi_sessions_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(override_dir) =
+        TEST_PI_SESSIONS_DIR_OVERRIDE.with(|c| c.borrow().last().map(|(_, p)| p.clone()))
+    {
+        return Some(override_dir);
+    }
+    dirs::home_dir().map(|h| h.join(".pi").join("agent").join("sessions"))
+}
+
+/// Return true when `session_id` resolves to a persisted Pi session transcript on disk,
+/// either as a direct file path or matching `<sid>.jsonl` / `*_<sid>.jsonl` under
+/// `sessions_dir` (`~/.pi/agent/sessions/` and its project subdirectories).
+pub fn pi_session_exists_in(session_id: &str, sessions_dir: Option<&Path>) -> bool {
+    let Some(sid) = non_empty_string(session_id) else {
+        return false;
+    };
+    if Path::new(sid).is_file() {
+        return true;
+    }
+    let Some(root) = sessions_dir else {
+        return false;
+    };
+    if !root.is_dir() {
+        return false;
+    }
+    let exact_name = format!("{sid}.jsonl");
+    let suffix_name = format!("_{sid}.jsonl");
+    let matches_file = |path: &Path| -> bool {
+        if !path.is_file() {
+            return false;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return false;
+        };
+        name == exact_name || name.ends_with(&suffix_name)
+    };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                for sub in sub_entries.flatten() {
+                    if matches_file(&sub.path()) {
+                        return true;
+                    }
+                }
+            }
+        } else if matches_file(&path) {
+            return true;
+        }
+    }
+    false
 }
 
 /// First-class adapter mapping a CLI agent harness to its spawn, session-ID capture,
@@ -332,6 +423,33 @@ impl HarnessAdapter {
     pub fn resume_command(&self, session_id: &str) -> String {
         let sid = shell_quote_arg(session_id.trim());
         format!("{} {} {}", self.binary, self.resume_subcommand_or_flag, sid)
+    }
+
+    /// Build the CLI command to restore an agent pane on workspace startup or standby wake.
+    /// Falls back to a bare harness binary launch when `session_id` is absent or when a
+    /// `pi` session ID has no persisted session file on disk.
+    pub fn restore_command(&self, session_id: Option<&str>) -> String {
+        let dir = pi_sessions_dir();
+        self.restore_command_in(session_id, dir.as_deref())
+    }
+
+    pub fn restore_command_in(
+        &self,
+        session_id: Option<&str>,
+        pi_sessions_root: Option<&Path>,
+    ) -> String {
+        let Some(sid) = session_id.and_then(non_empty_string) else {
+            return self.binary.to_string();
+        };
+        if self.harness == AgentHarness::Pi && !pi_session_exists_in(sid, pi_sessions_root) {
+            log::warn!(
+                "agent_restore: Pi session '{}' has no persisted session file on disk; falling back to bare '{}' launch",
+                sid,
+                self.binary
+            );
+            return self.binary.to_string();
+        }
+        self.resume_command(sid)
     }
 
     /// Build the non-interactive / task-seeded CLI command to spawn a worker for `task`.
@@ -1417,27 +1535,55 @@ fn pi_extension_script(script_str: &str) -> String {
     format!(
         r#"// Plexi-managed agent state extension.
 import {{ spawn }} from "node:child_process";
+import {{ existsSync }} from "node:fs";
 import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
 
 const hookCommand = {script_json};
 const PLEXI_PI_PACKAGE_ACTIVE = "__PLEXI_PI_PACKAGE_ACTIVE__";
+let turnStarted = false;
 
 function isPiPlexiPackageActive(): boolean {{
   return Boolean((globalThis as Record<string, unknown>)[PLEXI_PI_PACKAGE_ACTIVE]) ||
     process.env.PLEXI_PI_PACKAGE_ACTIVE === "1";
 }}
 
-function sessionId(ctx: any): string {{
+function isSessionPersisted(ctx: any): boolean {{
+  if (turnStarted) return true;
   try {{
-    return ctx.sessionManager?.getSessionFile?.() ?? "";
+    const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
+    return typeof file === "string" && file.trim().length > 0 && existsSync(file.trim());
   }} catch {{
-    return "";
+    return false;
   }}
+}}
+
+function sessionId(ctx: any, requirePersisted = false): string {{
+  if (requirePersisted && !isSessionPersisted(ctx)) return "";
+  try {{
+    const id = ctx?.sessionManager?.getSessionId?.();
+    if (typeof id === "string" && id.trim()) return id.trim();
+    const file = ctx?.sessionManager?.getSessionFile?.();
+    if (typeof file === "string" && file.trim()) return file.trim();
+  }} catch {{
+  }}
+  return "";
 }}
 
 function report(eventName: string, payload: Record<string, unknown>, ctx: any) {{
   if (isPiPlexiPackageActive()) return;
   if (!process.env.PLEXI_SOCKET || !process.env.PLEXI_PANE_ID) return;
+  if (eventName === "session_start") {{
+    turnStarted = false;
+  }} else if (
+    eventName === "before_agent_start" ||
+    eventName === "agent_start" ||
+    eventName === "tool_call" ||
+    eventName === "tool_result" ||
+    eventName === "agent_end"
+  ) {{
+    turnStarted = true;
+  }}
+  const requirePersisted = eventName === "session_start" || eventName === "session_shutdown";
   try {{
     const child = spawn(hookCommand, [], {{
       env: {{ ...process.env, PLEXI_AGENT_NAME: "pi" }},
@@ -1447,7 +1593,7 @@ function report(eventName: string, payload: Record<string, unknown>, ctx: any) {
     child.stdin.on("error", () => {{}});
     child.stdin.end(JSON.stringify({{
       hook_event_name: eventName,
-      session_id: sessionId(ctx),
+      session_id: sessionId(ctx, requirePersisted),
       ...payload,
     }}));
   }} catch {{
@@ -2125,4 +2271,43 @@ type = "array"
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], serde_json::json!(["verdict", "findings"]));
     }
+
+    #[test]
+    fn pi_restore_command_falls_back_to_bare_launch_until_session_file_exists_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join(".pi").join("agent").join("sessions");
+        let proj_dir = sessions_dir.join("--Users-test-project--");
+        fs::create_dir_all(&proj_dir).unwrap();
+        let _pi_guard = super::set_test_pi_sessions_dir(sessions_dir.clone());
+
+        let pi = super::AgentHarness::Pi;
+        let claude = super::AgentHarness::Claude;
+
+        // 1. `session_id: None` dispatches bare binary launch for any harness.
+        assert_eq!(pi.restore_command(None), "pi");
+        assert_eq!(pi.restore_command(Some("   ")), "pi");
+        assert_eq!(claude.restore_command(None), "claude");
+        assert_eq!(claude.restore_command(Some("sess-claude-1")), "claude --resume sess-claude-1");
+
+        // 2. Unpersisted Pi session UUID (no matching file on disk) falls back to bare `pi`.
+        assert_eq!(pi.restore_command(Some("019dcdae-unpersisted")), "pi");
+
+        // 3. Once `*_019dcdae-persisted.jsonl` exists under `~/.pi/agent/sessions/`,
+        //    `restore_command` resumes via `pi --session 019dcdae-persisted`.
+        let persisted_jsonl =
+            proj_dir.join("2026-10-17T05-00-00-000Z_019dcdae-persisted.jsonl");
+        fs::write(&persisted_jsonl, "{\"role\":\"user\"}\n").unwrap();
+        assert_eq!(
+            pi.restore_command(Some("019dcdae-persisted")),
+            "pi --session 019dcdae-persisted"
+        );
+
+        // 4. Direct session file path that exists on disk also resumes via `pi --session <path>`.
+        let direct_path = persisted_jsonl.to_string_lossy().to_string();
+        assert_eq!(
+            pi.restore_command(Some(&direct_path)),
+            format!("pi --session {direct_path}")
+        );
+    }
 }
+

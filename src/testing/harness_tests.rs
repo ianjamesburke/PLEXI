@@ -11466,5 +11466,309 @@ mod agent_state_restoration_tests {
         );
         assert!(reopened_term.slots.contains_key("summary"));
     }
+
+    #[test]
+    fn pi_restore_and_standby_fall_back_to_bare_launch_until_session_file_exists_and_preserve_session_id_on_blank_report() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join(".pi").join("agent").join("sessions");
+        let proj_sessions = sessions_dir.join("--Users-test-workspace--");
+        std::fs::create_dir_all(&proj_sessions).unwrap();
+        let _pi_guard = crate::cli::agent::set_test_pi_sessions_dir(sessions_dir.clone());
+
+        // Write a persisted Pi session file for pane 12 (`pi-persisted-12`).
+        std::fs::write(
+            proj_sessions.join("2026-10-17T05-00-00-000Z_pi-persisted-12.jsonl"),
+            "{\"role\":\"user\",\"content\":\"hello\"}\n",
+        )
+        .unwrap();
+
+        let mut active_tiles = egui_tiles::Tiles::default();
+        let t10 = active_tiles.insert_pane(10);
+        let t11 = active_tiles.insert_pane(11);
+        let t12 = active_tiles.insert_pane(12);
+        let active_root = active_tiles.insert_horizontal_tile(vec![t10, t11, t12]);
+        let active_tree = egui_tiles::Tree::new("active_pi_tree", active_root, active_tiles);
+
+        let mut bg_tiles = egui_tiles::Tiles::default();
+        let t20 = bg_tiles.insert_pane(20);
+        let t21 = bg_tiles.insert_pane(21);
+        let bg_root = bg_tiles.insert_horizontal_tile(vec![t20, t21]);
+        let bg_tree = egui_tiles::Tree::new("bg_pi_tree", bg_root, bg_tiles);
+
+        let ws = WorkspaceFile {
+            version: 2,
+            active_context: 0,
+            sidebar_visible: true,
+            next_pane_id: 50,
+            contexts: vec![
+                Context {
+                    name: ContextName::custom("active-pi-ctx"),
+                    root: tmp.path().to_path_buf(),
+                    description: None,
+                    context_id: 1,
+                    parent_id: None,
+                    depth: 0,
+                    parked: false,
+                },
+                Context {
+                    name: ContextName::custom("bg-pi-subctx"),
+                    root: tmp.path().to_path_buf(),
+                    description: None,
+                    context_id: 2,
+                    parent_id: Some(1),
+                    depth: 1,
+                    parked: false,
+                },
+            ],
+            windows: vec![
+                SavedWindow {
+                    name: "main".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    tree: active_tree,
+                    panes: vec![
+                        // Pane 10: Pi agent pane with `session_id: None` -> bare `pi` launch.
+                        SavedPane {
+                            id: 10,
+                            kind: SavedPaneKind::Terminal,
+                            cwd: tmp.path().to_path_buf(),
+                            name: Some("pi-no-sid".to_string()),
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: Some(SavedAgentSession {
+                                harness: "pi".to_string(),
+                                config_name: None,
+                                session_id: None,
+                                last_state: AgentState::Idle,
+                                last_blocked_reason: None,
+                                last_detail: None,
+                                parent_pane_id: None,
+                                ephemeral: false,
+                                tail_preview: None,
+                            }),
+                        },
+                        // Pane 11: Pi agent pane with unpersisted `session_id` (no file on disk) -> bare `pi` launch.
+                        SavedPane {
+                            id: 11,
+                            kind: SavedPaneKind::Terminal,
+                            cwd: tmp.path().to_path_buf(),
+                            name: Some("pi-missing-sid".to_string()),
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: Some(SavedAgentSession {
+                                harness: "pi".to_string(),
+                                config_name: None,
+                                session_id: Some("pi-unpersisted-11".to_string()),
+                                last_state: AgentState::Idle,
+                                last_blocked_reason: None,
+                                last_detail: None,
+                                parent_pane_id: None,
+                                ephemeral: false,
+                                tail_preview: None,
+                            }),
+                        },
+                        // Pane 12: Pi agent pane with persisted `session_id` on disk -> `pi --session pi-persisted-12`.
+                        SavedPane {
+                            id: 12,
+                            kind: SavedPaneKind::Terminal,
+                            cwd: tmp.path().to_path_buf(),
+                            name: Some("pi-persisted".to_string()),
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: Some(SavedAgentSession {
+                                harness: "pi".to_string(),
+                                config_name: None,
+                                session_id: Some("pi-persisted-12".to_string()),
+                                last_state: AgentState::Idle,
+                                last_blocked_reason: None,
+                                last_detail: None,
+                                parent_pane_id: None,
+                                ephemeral: false,
+                                tail_preview: None,
+                            }),
+                        },
+                    ],
+                    focused_pane: Some(t10),
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: 1,
+                    context_id: 1,
+                },
+                SavedWindow {
+                    name: "bg".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    tree: bg_tree,
+                    panes: vec![
+                        // Pane 20: Standby Pi pane with `session_id: None` -> bare `pi` on wake.
+                        SavedPane {
+                            id: 20,
+                            kind: SavedPaneKind::Terminal,
+                            cwd: tmp.path().to_path_buf(),
+                            name: Some("standby-pi-none".to_string()),
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: Some(SavedAgentSession {
+                                harness: "pi".to_string(),
+                                config_name: None,
+                                session_id: None,
+                                last_state: AgentState::Idle,
+                                last_blocked_reason: None,
+                                last_detail: None,
+                                parent_pane_id: None,
+                                ephemeral: false,
+                                tail_preview: None,
+                            }),
+                        },
+                        // Pane 21: Standby Pi pane with missing `session_id` -> bare `pi` on wake.
+                        SavedPane {
+                            id: 21,
+                            kind: SavedPaneKind::Terminal,
+                            cwd: tmp.path().to_path_buf(),
+                            name: Some("standby-pi-missing".to_string()),
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: Some(SavedAgentSession {
+                                harness: "pi".to_string(),
+                                config_name: None,
+                                session_id: Some("pi-unpersisted-21".to_string()),
+                                last_state: AgentState::Idle,
+                                last_blocked_reason: None,
+                                last_detail: None,
+                                parent_pane_id: None,
+                                ephemeral: false,
+                                tail_preview: None,
+                            }),
+                        },
+                    ],
+                    focused_pane: Some(t20),
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: 2,
+                    context_id: 2,
+                },
+            ],
+            context_active_window: HashMap::from([(1, 1), (2, 2)]),
+        };
+
+        ws.save_to(profile_dir.path()).expect("save workspace");
+        let mut h = HostHarness::from_profile_dir(profile_dir.path());
+
+        let term10 = h.app.windows[0].panes[&10].as_terminal().expect("pane 10");
+        assert_eq!(term10.last_resumed_command.as_deref(), Some("pi"));
+        assert_eq!(term10.agent_session_id, None);
+
+        let term11 = h.app.windows[0].panes[&11].as_terminal().expect("pane 11");
+        assert_eq!(
+            term11.last_resumed_command.as_deref(),
+            Some("pi"),
+            "missing Pi session file must fall back to bare `pi` launch"
+        );
+        assert_eq!(
+            term11.agent_session_id, None,
+            "unpersisted Pi session_id must be cleared when falling back to bare `pi`"
+        );
+
+        let term12 = h.app.windows[0].panes[&12].as_terminal().expect("pane 12");
+        assert_eq!(
+            term12.last_resumed_command.as_deref(),
+            Some("pi --session pi-persisted-12"),
+            "persisted Pi session file must resume with `pi --session <id>`"
+        );
+        assert_eq!(
+            term12.agent_session_id.as_deref(),
+            Some("pi-persisted-12")
+        );
+
+        // Starting and immediately exiting a blank `pi` instance (reporting `idle` with `session_id: None`)
+        // on pane 12 must NOT clobber its previously persisted `agent_session_id`.
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: 12,
+            state: AgentState::Idle,
+            agent: "pi".to_string(),
+            detail: None,
+            session_id: None,
+            event: Some("session_start".to_string()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: 12,
+            state: AgentState::Idle,
+            agent: "pi".to_string(),
+            detail: None,
+            session_id: None,
+            event: Some("session_shutdown".to_string()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let term12_after = h.app.windows[0].panes[&12].as_terminal().expect("pane 12");
+        assert_eq!(
+            term12_after.agent_session_id.as_deref(),
+            Some("pi-persisted-12"),
+            "blank Pi startup/shutdown must not clobber a previously persisted session_id"
+        );
+        assert_eq!(
+            term12_after
+                .build_saved_agent_session()
+                .and_then(|s| s.session_id)
+                .as_deref(),
+            Some("pi-persisted-12")
+        );
+
+        // Waking standby panes 20 (`session_id: None`) and 21 (missing `session_id`) dispatches bare `pi`.
+        for pane_id in [20, 21] {
+            let send_resp = temp_response(tmp.path(), &format!("wake-{pane_id}"));
+            h.inject_ipc(AppRequest::SendToPane {
+                pane_id,
+                text: "\n".to_string(),
+                submit: false,
+                paste: false,
+                response_file: Some(send_resp),
+            });
+            h.hidden_frame();
+
+            let (win_idx, _) = h
+                .app
+                .find_pane_in_any_window(pane_id)
+                .expect("standby pane exists");
+            let term = h.app.windows[win_idx].panes[&pane_id]
+                .as_terminal()
+                .expect("terminal pane");
+            assert!(!term.is_standby());
+            assert_eq!(
+                term.last_resumed_command.as_deref(),
+                Some("pi"),
+                "standby pane {pane_id} must wake with bare `pi` launch"
+            );
+            assert_eq!(term.agent_session_id, None);
+        }
+    }
 }
+
 

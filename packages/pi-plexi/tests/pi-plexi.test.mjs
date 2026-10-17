@@ -362,3 +362,168 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
     "completing app tool call with operation_id should mark continuation completed",
   );
 });
+
+test("Stint 0815: session_start and session_shutdown omit sessionId until session file exists on disk or first turn starts", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "pi-plexi-sessions-"));
+  const missingSessionFile = join(tempDir, "2026-10-17_unpersisted-uuid.jsonl");
+  const persistedSessionFile = join(tempDir, "2026-10-17_persisted-uuid.jsonl");
+
+  const reportCalls = [];
+  const runner = async (_bin, args) => {
+    const cmd = args.slice(0, 2).join(" ");
+    if (cmd === "agent report") {
+      reportCalls.push(args);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (cmd === "pane list") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([{ id: 1, type: "terminal", context_id: 10 }]),
+        stderr: "",
+      };
+    }
+    if (cmd === "context list") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([{ context_id: 10, name: "Main", is_active: true }]),
+        stderr: "",
+      };
+    }
+    if (cmd === "app tools") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ ok: true, context_id: 10, tools: [] }),
+        stderr: "",
+      };
+    }
+    if (cmd === "needs-you reconcile") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ ok: true, items: [], continuations: [] }),
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+  };
+
+  const { pi } = makeFakePiHarness();
+  const ext = createPiPlexiExtension({
+    env: {
+      PLEXI_SOCKET: "/Users/u/.plexi-alpha/plexi.sock",
+      PLEXI_PANE_ID: "1",
+      PLEXI_CONTEXT_ID: "10",
+      PLEXI_CHANNEL: "alpha",
+    },
+    checkSocketExists: () => true,
+    runner,
+  });
+  ext(pi);
+
+  // 1. Fresh session whose getSessionFile() does not exist on disk:
+  //    session_start and session_shutdown report idle WITHOUT --session-id.
+  const freshCtx = {
+    hasUI: false,
+    sessionManager: {
+      getSessionId: () => "unpersisted-uuid",
+      getSessionFile: () => missingSessionFile,
+    },
+  };
+
+  await pi.emit("session_start", { reason: "startup" }, freshCtx);
+  assert.equal(reportCalls.length, 1);
+  assert.deepEqual(reportCalls[0], ["agent", "report", "--state", "idle", "--agent", "pi"]);
+
+  await pi.emit("session_shutdown", {}, freshCtx);
+  assert.equal(reportCalls.length, 2);
+  assert.deepEqual(reportCalls[1], ["agent", "report", "--state", "idle", "--agent", "pi"]);
+
+  // 2. Starting a turn (before_agent_start / agent_start) reports the sessionId,
+  //    and subsequent agent_end / session_shutdown also report the sessionId.
+  reportCalls.length = 0;
+  await pi.emit("session_start", { reason: "startup" }, freshCtx);
+  assert.deepEqual(reportCalls[0], ["agent", "report", "--state", "idle", "--agent", "pi"]);
+
+  await pi.emit("before_agent_start", {}, freshCtx);
+  assert.deepEqual(reportCalls[1], [
+    "agent",
+    "report",
+    "--state",
+    "working",
+    "--agent",
+    "pi",
+    "--session-id",
+    "unpersisted-uuid",
+  ]);
+
+  await pi.emit("agent_start", {}, freshCtx);
+  assert.deepEqual(reportCalls[2], [
+    "agent",
+    "report",
+    "--state",
+    "working",
+    "--agent",
+    "pi",
+    "--session-id",
+    "unpersisted-uuid",
+  ]);
+
+  await pi.emit("agent_end", {}, freshCtx);
+  assert.deepEqual(reportCalls[3], [
+    "agent",
+    "report",
+    "--state",
+    "idle",
+    "--agent",
+    "pi",
+    "--session-id",
+    "unpersisted-uuid",
+  ]);
+
+  await pi.emit("session_shutdown", {}, freshCtx);
+  assert.deepEqual(reportCalls[4], [
+    "agent",
+    "report",
+    "--state",
+    "idle",
+    "--agent",
+    "pi",
+    "--session-id",
+    "unpersisted-uuid",
+  ]);
+
+  // 3. Resumed session whose getSessionFile() exists on disk reports sessionId on session_start and session_shutdown.
+  writeFileSync(persistedSessionFile, '{"role":"user","content":"hello"}\n');
+  const persistedCtx = {
+    hasUI: false,
+    sessionManager: {
+      getSessionId: () => "persisted-uuid",
+      getSessionFile: () => persistedSessionFile,
+    },
+  };
+
+  reportCalls.length = 0;
+  await pi.emit("session_start", { reason: "resume" }, persistedCtx);
+  assert.deepEqual(reportCalls[0], [
+    "agent",
+    "report",
+    "--state",
+    "idle",
+    "--agent",
+    "pi",
+    "--session-id",
+    "persisted-uuid",
+  ]);
+
+  await pi.emit("session_shutdown", {}, persistedCtx);
+  assert.deepEqual(reportCalls[1], [
+    "agent",
+    "report",
+    "--state",
+    "idle",
+    "--agent",
+    "pi",
+    "--session-id",
+    "persisted-uuid",
+  ]);
+});
+

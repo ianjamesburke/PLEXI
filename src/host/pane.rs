@@ -580,11 +580,16 @@ impl Pane {
                     .agent_session_id
                     .clone()
                     .or_else(|| t.agent.as_ref().and_then(|a| a.session_id.clone()));
-                if let Some(ref a) = agent {
+                let mut agent = agent;
+                if let Some(ref mut a) = agent {
                     if let Some(ref sid) = a.session_id {
-                        if !sid.is_empty() {
+                        if !sid.trim().is_empty() {
                             t.agent_session_id = Some(sid.clone());
+                        } else {
+                            a.session_id = t.agent_session_id.clone();
                         }
+                    } else if t.agent_session_id.is_some() {
+                        a.session_id = t.agent_session_id.clone();
                     }
                     if t.agent_harness.is_none()
                         && crate::cli::AgentHarness::parse(&a.agent).is_some()
@@ -594,7 +599,7 @@ impl Pane {
                     if let Some(ref mut standby) = t.standby_session {
                         standby.last_state = a.state.clone();
                         standby.last_detail = a.detail.clone();
-                        if a.session_id.is_some() {
+                        if a.session_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
                             standby.session_id = a.session_id.clone();
                         }
                     }
@@ -850,14 +855,18 @@ impl TerminalPane {
     /// into the terminal's PTY in its restored `cwd`.
     pub fn resume_from_standby(&mut self) -> Option<String> {
         let standby = self.standby_session.take()?;
-        let cmd = standby
-            .session_id
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .and_then(|sid| {
-                crate::cli::AgentHarness::parse(&standby.harness).map(|h| h.resume_command(sid))
-            });
+        let harness = crate::cli::AgentHarness::parse(&standby.harness);
+        let cmd = harness.map(|h| h.restore_command(standby.session_id.as_deref()));
         if let Some(ref resume_cmd) = cmd {
+            if harness == Some(crate::cli::AgentHarness::Pi)
+                && resume_cmd == "pi"
+                && standby.session_id.is_some()
+            {
+                self.agent_session_id = None;
+                if let Some(ref mut a) = self.agent {
+                    a.session_id = None;
+                }
+            }
             let line = if standby.ephemeral {
                 format!("{resume_cmd}; exit $?\n")
             } else {
