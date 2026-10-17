@@ -360,10 +360,15 @@ def _canvas_size() -> tuple[float, float]:
 
 def _board_geometry(w: float | None = None, h: float | None = None) -> tuple[float, float, float, float]:
     w, h = (w, h) if w is not None and h is not None else _canvas_size()
-    board = max(MIN_CELL * 8, min(w - 24.0, h - 24.0))
-    board = min(board, w, h)
+    margin_left = 24.0
+    margin_top = 12.0
+    margin_bottom = 22.0
+    board = max(MIN_CELL * 8, min(w - margin_left - 16.0, h - margin_top - margin_bottom))
+    board = min(board, w, max(1.0, h - margin_bottom))
     cell = board / 8.0
-    return (w - board) / 2.0, (h - board) / 2.0, cell, board
+    ox = (w - board) / 2.0
+    oy = max(margin_top, (h - margin_top - margin_bottom - board) / 2.0 + margin_top)
+    return ox, oy, cell, board
 
 
 def _square_at(x: float, y: float) -> tuple[int, int] | None:
@@ -418,6 +423,7 @@ def _draw_board(pos: Position, ui: dict, w: float, h: float) -> list:
                     align="center_center",
                 ))
     for idx, file_name in enumerate(FILES):
-        commands.append(CanvasText(ox + idx * cell + 4, oy + board - 5, file_name,
-                                   size=max(8.0, cell * 0.18), color=pal["coord"]))
+        commands.append(CanvasText(ox + idx * cell + cell / 2.0, oy + board + 10.0, file_name,
+                                   size=max(9.0, min(12.0, cell * 0.18)), color=pal["coord"],
+                                   align="center_center"))
     return commands

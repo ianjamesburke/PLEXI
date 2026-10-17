@@ -189,9 +189,26 @@ def test_search_submit_releases_text_input_focus_and_starts_search():
 
 def test_escape_and_slash_toggle_search_focus_in_list_mode():
     app = _load_app_module()
-    _set_state(dict(app.DEFAULT_STATE, editing_search=True))
+    _set_state(dict(app.DEFAULT_STATE, editing_search=True, results=[]))
 
-    # Escape releases search focus.
+    # When results are empty, Escape and empty submit keep search focused so
+    # keyboard users are not stranded on an empty screen.
+    effects = app.update(KeyEvent("escape"))
+    state_empty_esc = next(e for e in effects if isinstance(e, SetState)).data
+    assert state_empty_esc["editing_search"] is True
+
+    effects = app.update(UiAction("wiki-submit"))
+    state_empty_submit = next(e for e in effects if isinstance(e, SetState)).data
+    assert state_empty_submit["editing_search"] is True
+
+    # Once results exist, Escape releases search focus.
+    _set_state(
+        dict(
+            app.DEFAULT_STATE,
+            editing_search=True,
+            results=[{"title": "Alan Turing", "snippet": "English mathematician"}],
+        )
+    )
     effects = app.update(KeyEvent("escape"))
     state_after_esc = next(e for e in effects if isinstance(e, SetState)).data
     assert state_after_esc["editing_search"] is False

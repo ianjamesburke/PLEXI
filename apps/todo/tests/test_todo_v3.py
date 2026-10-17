@@ -111,6 +111,9 @@ def test_selection_stays_in_range_after_delete() -> None:
     document = render_checklist(
         [ChecklistItem("a", False), ChecklistItem("b", False)]
     )
+    _set_state(_seeded(document, selected=0))
+    clicked = todo.update(UiAction("todo:select:1"))
+    assert _transient(clicked)["selected"] == 1
     _set_state(_seeded(document, selected=1))
     deleted = todo.update(KeyEvent("d"))
     assert _transient(deleted)["selected"] == 0

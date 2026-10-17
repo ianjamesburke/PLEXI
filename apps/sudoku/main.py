@@ -428,10 +428,10 @@ def _diff_button_rects(w, h):
     return [(bx, by_start + i * 80.0, bw, bh) for i in range(3)]
 
 def _draw_menu(d):
-    w = _canvas_width
-    h = _canvas_height
+    w = _canvas_width or 800.0
+    h = _canvas_height or 600.0
     diff_idx = int(d.get("diff_idx", 0))
-    cmds: list = []
+    cmds: list = [CanvasRect(0, 0, w, h, theme.bg)]
 
     title_y = h / 2 - 160.0
     cmds.append(CanvasText(w / 2, title_y, "SUDOKU", size=36.0, color=theme.fg, bold=True, align="center_center"))
@@ -525,6 +525,7 @@ def _draw_game(d):
     """Full game body: grid + sidebar on one canvas, sidebar flush right of grid."""
     sidebar_w, cell = _compute_layout()
     pane_w = _canvas_width or 800.0
+    pane_h = _canvas_height or 600.0
     gw = cell * 9
     pair_w = gw + 12.0 + sidebar_w
     ox = max(8.0, (pane_w - pair_w) / 2.0)
@@ -532,7 +533,7 @@ def _draw_game(d):
     sx = ox + gw + 12.0
 
     sidebar_cmds, _ = _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell)
-    return _draw_grid(d, cell, ox, oy) + sidebar_cmds
+    return [CanvasRect(0, 0, pane_w, pane_h, theme.bg)] + _draw_grid(d, cell, ox, oy) + sidebar_cmds
 
 
 def _draw_grid(d, cell=None, ox=6.0, oy=8.0):
