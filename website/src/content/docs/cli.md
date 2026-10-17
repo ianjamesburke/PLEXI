@@ -559,6 +559,8 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
+| `history` | Show closed agent runs and sessions from `~/.plexi-<channel>/agent_history.jsonl` |
+| `reopen` | Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory |
 | `hook` | Install or uninstall agent hook integrations |
 | `head` | Create or list an agent head stored under `.plexi/agents` |
 | `run` | Spawn, list, or finish a run of an agent head |
@@ -683,6 +685,31 @@ Example: plexi agent status Example: plexi agent status --blocked
 | `--blocked` | flag | no | Show only blocked panes |
 | `--working` | flag | no | Show only working panes |
 | `--idle` | flag | no | Show only idle panes |
+
+### `plexi agent history`
+
+Show closed agent runs and sessions from `~/.plexi-<channel>/agent_history.jsonl`.
+
+Example: plexi agent history Example: plexi agent history --limit 20 --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--limit` | string | no | Maximum number of recent closed runs to display (0 = all) Default: `50`. |
+| `--json` | flag | no | Print JSON array instead of a human-readable table |
+
+### `plexi agent reopen`
+
+Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory.
+
+Resolves the matching entry by `run_id` or harness `session_id` and spawns a new pane running the harness's resume command (`claude --resume <id>`, `codex resume <id>`, `pi --session <id>`, `agy --resume <id>`).
+
+Example: plexi agent reopen sess-claude-42 Example: plexi agent reopen run-7-1729100000000
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<target>` | string | yes | Run ID (`run-...`) or harness session ID to reopen |
+| `--subcontext` | string | no | Optional sub-context name to reopen the session into |
+| `--json` | flag | no | Print full JSON response instead of human-readable output |
 
 ### `plexi agent hook`
 

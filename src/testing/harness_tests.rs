@@ -959,6 +959,8 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                         text: "ping".to_string(),
                         while_idle_only: true,
                     }),
+                    slots: std::collections::HashMap::new(),
+                    agent_session: None,
                 }],
                 focused_pane: Some(tile_a),
                 grid_x: 0,
@@ -981,6 +983,8 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                     app_state: None,
                     hidden: false,
                     heartbeat: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: None,
                 }],
                 focused_pane: Some(tile_b),
                 grid_x: 1,
@@ -1183,6 +1187,8 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
         heartbeat: None,
         runtime_kind: None,
         launch: None,
+        slots: std::collections::HashMap::new(),
+        agent_session: None,
     };
     assert!(
         record.is_legacy_runtime_kind_id(),
@@ -11015,3 +11021,450 @@ mod pane_result_harness_tests {
         assert_eq!(waited_json, serde_json::json!({"verdict": "PASS"}));
     }
 }
+
+mod agent_state_restoration_tests {
+    use super::*;
+    use crate::host::context::{Context, ContextName};
+    use crate::protocol::{AgentBlockedReason, AgentState, AppRequest};
+    use crate::workspace::{
+        SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
+    };
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn single_pane_tree(pane_id: u64) -> (egui_tiles::Tree<u64>, egui_tiles::TileId) {
+        let mut tiles = egui_tiles::Tiles::default();
+        let root = tiles.insert_pane(pane_id);
+        (egui_tiles::Tree::new("test_tree", root, tiles), root)
+    }
+
+    #[test]
+    fn workspace_dirty_triggers_on_session_id_state_and_slot_mutations_and_builds_saved_agent_session() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        h.app.workspace_dirty = false;
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id,
+            state: AgentState::Working,
+            agent: "claude".to_string(),
+            detail: Some("Edit: src/workspace/mod.rs".to_string()),
+            session_id: Some("sess-claude-0803".to_string()),
+            event: Some("PreToolUse".to_string()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        assert!(
+            h.app.workspace_dirty,
+            "capturing a new session_id or state transition must mark workspace dirty immediately"
+        );
+
+        h.app.workspace_dirty = false;
+        let slot_resp = temp_response(tmp.path(), "slot-write");
+        h.inject_ipc(AppRequest::SlotWrite {
+            pane_id,
+            slot_name: "status".to_string(),
+            content: b"impl:working".to_vec(),
+            append: false,
+            replace: true,
+            response_file: slot_resp,
+        });
+        h.hidden_frame();
+        assert!(
+            h.app.workspace_dirty,
+            "mutating pane slots must mark workspace dirty immediately"
+        );
+
+        let term = h.app.windows[0].panes[&pane_id]
+            .as_terminal()
+            .expect("terminal pane");
+        let saved = term
+            .build_saved_agent_session()
+            .expect("saved agent session");
+        assert_eq!(saved.harness, "claude");
+        assert_eq!(saved.session_id.as_deref(), Some("sess-claude-0803"));
+        assert_eq!(saved.last_state, AgentState::Working);
+        assert_eq!(
+            saved.last_detail.as_deref(),
+            Some("Edit: src/workspace/mod.rs")
+        );
+        assert!(term.slots.contains_key("status"));
+    }
+
+    #[test]
+    fn lazy_standby_startup_restores_active_interrupted_skips_completed_ephemeral_and_keeps_background_standby() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let slot_file = tmp.path().join("question.txt");
+        std::fs::write(&slot_file, "Need API schema clarification").unwrap();
+        let mut bg_slots = HashMap::new();
+        bg_slots.insert("question".to_string(), slot_file.clone());
+
+        let (active_tree, active_root) = single_pane_tree(10);
+        let (bg_tree, bg_root) = single_pane_tree(20);
+        let (ephemeral_tree, ephemeral_root) = single_pane_tree(30);
+
+        let ws = WorkspaceFile {
+            version: 2,
+            active_context: 0,
+            sidebar_visible: true,
+            next_pane_id: 40,
+            contexts: vec![
+                Context {
+                    name: ContextName::custom("active-ctx"),
+                    root: tmp.path().to_path_buf(),
+                    description: None,
+                    context_id: 1,
+                    parent_id: None,
+                    depth: 0,
+                    parked: false,
+                },
+                Context {
+                    name: ContextName::custom("bg-subctx"),
+                    root: tmp.path().to_path_buf(),
+                    description: None,
+                    context_id: 2,
+                    parent_id: Some(1),
+                    depth: 1,
+                    parked: false,
+                },
+                Context {
+                    name: ContextName::custom("ephemeral-done-subctx"),
+                    root: tmp.path().to_path_buf(),
+                    description: None,
+                    context_id: 3,
+                    parent_id: Some(1),
+                    depth: 1,
+                    parked: false,
+                },
+            ],
+            windows: vec![
+                SavedWindow {
+                    name: "main".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    tree: active_tree,
+                    panes: vec![
+                        SavedPane {
+                            id: 10,
+                            kind: SavedPaneKind::Terminal,
+                            cwd: tmp.path().to_path_buf(),
+                            name: Some("lead-claude".to_string()),
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: Some(SavedAgentSession {
+                                harness: "claude".to_string(),
+                                config_name: Some("lead".to_string()),
+                                session_id: Some("sess-active-10".to_string()),
+                                last_state: AgentState::Working,
+                                last_blocked_reason: None,
+                                last_detail: Some("Cargo test running".to_string()),
+                                parent_pane_id: None,
+                                ephemeral: false,
+                                tail_preview: Some(
+                                    "Compiling plexi v0.9.0\nRunning tests...".to_string(),
+                                ),
+                            }),
+                        },
+                        SavedPane {
+                            id: 11,
+                            kind: SavedPaneKind::Portal { context_id: 2 },
+                            cwd: PathBuf::new(),
+                            name: None,
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: None,
+                        },
+                        SavedPane {
+                            id: 12,
+                            kind: SavedPaneKind::Portal { context_id: 3 },
+                            cwd: PathBuf::new(),
+                            name: None,
+                            app_id: None,
+                            app_state: None,
+                            hidden: false,
+                            heartbeat: None,
+                            runtime_kind: None,
+                            launch: None,
+                            slots: HashMap::new(),
+                            agent_session: None,
+                        },
+                    ],
+                    focused_pane: Some(active_root),
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: 1,
+                    context_id: 1,
+                },
+                SavedWindow {
+                    name: "bg".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    tree: bg_tree,
+                    panes: vec![SavedPane {
+                        id: 20,
+                        kind: SavedPaneKind::Terminal,
+                        cwd: tmp.path().to_path_buf(),
+                        name: Some("worker-codex".to_string()),
+                        app_id: None,
+                        app_state: None,
+                        hidden: false,
+                        heartbeat: None,
+                        runtime_kind: None,
+                        launch: None,
+                        slots: bg_slots,
+                        agent_session: Some(SavedAgentSession {
+                            harness: "codex".to_string(),
+                            config_name: Some("worker".to_string()),
+                            session_id: Some("thread-bg-20".to_string()),
+                            last_state: AgentState::Blocked,
+                            last_blocked_reason: Some(AgentBlockedReason::Unknown),
+                            last_detail: Some("Need API schema clarification".to_string()),
+                            parent_pane_id: Some(10),
+                            ephemeral: false,
+                            tail_preview: Some("Waiting on parent answer".to_string()),
+                        }),
+                    }],
+                    focused_pane: Some(bg_root),
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: 2,
+                    context_id: 2,
+                },
+                SavedWindow {
+                    name: "done".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    tree: ephemeral_tree,
+                    panes: vec![SavedPane {
+                        id: 30,
+                        kind: SavedPaneKind::Terminal,
+                        cwd: tmp.path().to_path_buf(),
+                        name: Some("ephemeral-pi".to_string()),
+                        app_id: None,
+                        app_state: None,
+                        hidden: false,
+                        heartbeat: None,
+                        runtime_kind: None,
+                        launch: None,
+                        slots: HashMap::new(),
+                        agent_session: Some(SavedAgentSession {
+                            harness: "pi".to_string(),
+                            config_name: Some("scout".to_string()),
+                            session_id: Some("pi-done-30".to_string()),
+                            last_state: AgentState::Completed,
+                            last_blocked_reason: None,
+                            last_detail: Some("Finished scouting".to_string()),
+                            parent_pane_id: Some(10),
+                            ephemeral: true,
+                            tail_preview: Some("Done.".to_string()),
+                        }),
+                    }],
+                    focused_pane: Some(ephemeral_root),
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: 3,
+                    context_id: 3,
+                },
+            ],
+            context_active_window: HashMap::from([(1, 1), (2, 2), (3, 3)]),
+        };
+
+        ws.save_to(profile_dir.path()).expect("save workspace");
+        let mut h = HostHarness::from_profile_dir(profile_dir.path());
+
+        // 1. Ephemeral Completed pane (30) and its empty sub-context (3) + portal (12) are pruned.
+        assert!(
+            h.app.find_pane_in_any_window(30).is_none(),
+            "ephemeral Completed worker pane must not respawn on startup"
+        );
+        assert!(
+            h.app.router.position(|c| c.context_id == 3).is_none(),
+            "sub-context containing only ephemeral Completed workers must be pruned on restore"
+        );
+        assert!(
+            h.app.find_pane_in_any_window(12).is_none(),
+            "PortalPane targeting pruned ephemeral sub-context must be removed"
+        );
+
+        // 2. Active-context pane (10) auto-resumed with `claude --resume sess-active-10`
+        //    and transitioned from mid-turn `Working` to `Interrupted` with its tail_preview.
+        let active_term = h.app.windows[0].panes[&10]
+            .as_terminal()
+            .expect("active terminal 10");
+        assert!(!active_term.is_standby(), "active context pane must auto-resume");
+        assert_eq!(
+            active_term.last_resumed_command.as_deref(),
+            Some("claude --resume sess-active-10")
+        );
+        assert_eq!(
+            active_term.agent.as_ref().map(|a| &a.state),
+            Some(&AgentState::Interrupted),
+            "mid-turn Working pane must restore as Interrupted"
+        );
+        assert_eq!(
+            active_term.tail_preview.as_deref(),
+            Some("Compiling plexi v0.9.0\nRunning tests...")
+        );
+
+        // 3. Background sub-context pane (20) is in lightweight `[Plexi Standby]` with slots,
+        //    Blocked state, and parent PortalPane (11) rolled up to `ContextStatus::Blocked`.
+        let bg_win_idx = h
+            .app
+            .find_pane_in_any_window(20)
+            .expect("background pane 20")
+            .0;
+        let bg_term = h.app.windows[bg_win_idx].panes[&20]
+            .as_terminal()
+            .expect("background terminal 20");
+        assert!(
+            bg_term.is_standby(),
+            "background context agent pane must restore in Standby under restore_mode = lazy"
+        );
+        assert_eq!(
+            bg_term.standby_banner().as_deref(),
+            Some("[Plexi Standby] codex session thread-bg-20 (blocked) — Press Enter or focus to resume")
+        );
+        assert_eq!(bg_term.slots.get("question"), Some(&slot_file));
+        assert_eq!(
+            bg_term.agent.as_ref().map(|a| &a.state),
+            Some(&AgentState::Blocked)
+        );
+
+        let portal_state = match &h.app.windows[0].panes[&11] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal 11 context_state")
+            }
+            _ => panic!("expected PortalPane 11"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::Blocked,
+            "Standby child pane's Blocked state must roll up onto parent PortalPane immediately on restore"
+        );
+
+        // 4. Focusing or sending input to the Standby pane resumes it via its Harness Adapter.
+        let send_resp = temp_response(tmp.path(), "send-standby");
+        h.inject_ipc(AppRequest::SendToPane {
+            pane_id: 20,
+            text: "Use BTreeMap\n".to_string(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp),
+        });
+        h.hidden_frame();
+
+        let bg_term_after = h.app.windows[bg_win_idx].panes[&20]
+            .as_terminal()
+            .expect("background terminal 20 after send");
+        assert!(
+            !bg_term_after.is_standby(),
+            "sending input to a Standby pane must resume it immediately"
+        );
+        assert_eq!(
+            bg_term_after.last_resumed_command.as_deref(),
+            Some("codex resume thread-bg-20")
+        );
+    }
+
+    #[test]
+    fn closing_agent_pane_appends_history_record_and_agent_reopen_spawns_resumed_session() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let _profile_guard =
+            crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let mut h = HostHarness::new();
+        let master_pane = h.add_focused_terminal();
+
+        let spawn_reply = temp_response(tmp.path(), "spawn-worker");
+        h.inject_ipc(AppRequest::AgentSpawn {
+            role: "auditor".into(),
+            harness: "pi".into(),
+            command: "sleep 30".into(),
+            task: Some("Audit auth".into()),
+            subcontext: None,
+            ephemeral: true,
+            parent_pane_id: Some(master_pane),
+            name: Some("auditor-worker".into()),
+            cwd: Some(tmp.path().to_string_lossy().to_string()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![("summary".into(), "Auth audit passed".into())],
+            no_focus: true,
+            response_file: spawn_reply.clone(),
+        });
+        h.hidden_frame();
+        let spawned = read_json_response(&spawn_reply);
+        let worker_id = spawned["pane_id"].as_u64().unwrap();
+
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: worker_id,
+            state: AgentState::Completed,
+            agent: "pi".into(),
+            detail: Some("Auth audit passed".into()),
+            session_id: Some("pi-sess-900".into()),
+            event: Some("SessionEnd".into()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        // Close the worker pane and verify `agent_history.jsonl` captured the closed run.
+        let close_reply = temp_response(tmp.path(), "close-worker");
+        h.inject_ipc(AppRequest::ClosePane {
+            pane_id: worker_id,
+            response_file: Some(close_reply),
+        });
+        h.hidden_frame();
+
+        let records = crate::workspace::load_agent_history();
+        assert_eq!(records.len(), 1, "closing an agent pane must append 1 history record");
+        let rec = &records[0];
+        assert_eq!(rec.pane_id, worker_id);
+        assert_eq!(rec.harness, "pi");
+        assert_eq!(rec.config_name.as_deref(), Some("auditor"));
+        assert_eq!(rec.session_id.as_deref(), Some("pi-sess-900"));
+        assert_eq!(rec.last_state, AgentState::Completed);
+        assert!(rec.ephemeral);
+        assert_eq!(rec.parent_pane_id, Some(master_pane));
+        assert_eq!(rec.summary.as_deref(), Some("Auth audit passed"));
+        assert!(rec.slots.contains_key("summary"));
+
+        // Reopen by session_id (`pi-sess-900`) via `AppRequest::AgentReopen`.
+        let reopen_reply = temp_response(tmp.path(), "reopen-worker");
+        h.inject_ipc(AppRequest::AgentReopen {
+            query: "pi-sess-900".into(),
+            subcontext: None,
+            response_file: reopen_reply.clone(),
+        });
+        h.hidden_frame();
+
+        let reopened = read_json_response(&reopen_reply);
+        assert_eq!(reopened["ok"], true);
+        assert_eq!(reopened["session_id"], "pi-sess-900");
+        assert_eq!(reopened["harness"], "pi");
+        assert_eq!(reopened["command"], "pi --session pi-sess-900");
+        let new_pane_id = reopened["pane_id"].as_u64().unwrap();
+        let reopened_term = h.app.windows[0].panes[&new_pane_id]
+            .as_terminal()
+            .expect("reopened terminal pane");
+        assert_eq!(
+            reopened_term.agent_session_id.as_deref(),
+            Some("pi-sess-900")
+        );
+        assert_eq!(
+            reopened_term.last_resumed_command.as_deref(),
+            Some("pi --session pi-sess-900")
+        );
+        assert!(reopened_term.slots.contains_key("summary"));
+    }
+}
+

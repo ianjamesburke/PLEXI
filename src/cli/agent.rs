@@ -781,9 +781,13 @@ pub fn agent_report_cli(
         "working" => "working",
         "blocked" => "blocked",
         "needs_you" | "needs-you" => "needs_you",
+        "interrupted" => "interrupted",
+        "completed" => "completed",
         "idle" => "idle",
         other => {
-            eprintln!("error: unknown state '{other}'; expected working, blocked, needs_you, or idle");
+            eprintln!(
+                "error: unknown state '{other}'; expected working, blocked, needs_you, interrupted, completed, or idle"
+            );
             return 1;
         }
     };
@@ -894,6 +898,90 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
             println!("{:<12} {:<16} {:<12} {}", pane_id, agent, state, session_id);
         }
     }
+    0
+}
+
+/// `plexi agent history [--limit <n>] [--json]` — list closed agent runs and sessions.
+pub fn agent_history_cli(limit: usize, json: bool) -> i32 {
+    log::info!("agent_history:cli: limit={limit} json={json}");
+    let mut records = crate::workspace::load_agent_history();
+    records.reverse();
+    if limit > 0 && records.len() > limit {
+        records.truncate(limit);
+    }
+    if json {
+        match serde_json::to_string_pretty(&records) {
+            Ok(out) => println!("{out}"),
+            Err(e) => {
+                eprintln!("error: failed to serialize agent history: {e}");
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if records.is_empty() {
+        println!("No closed agent runs recorded.");
+        return 0;
+    }
+    println!(
+        "{:<24} {:<10} {:<20} {:<12} {:<14} {:<22} SUMMARY",
+        "RUN_ID", "HARNESS", "SESSION_ID", "STATE", "ROLE", "CLOSED_AT"
+    );
+    for r in &records {
+        let session_id = r.session_id.as_deref().unwrap_or("-");
+        let role = r
+            .config_name
+            .as_deref()
+            .or(r.pane_name.as_deref())
+            .unwrap_or("-");
+        let summary = r.summary.as_deref().unwrap_or("-");
+        println!(
+            "{:<24} {:<10} {:<20} {:<12} {:<14} {:<22} {}",
+            r.run_id,
+            r.harness,
+            session_id,
+            r.last_state.as_str(),
+            role,
+            r.closed_at,
+            summary
+        );
+    }
+    0
+}
+
+/// `plexi agent reopen <run-id|session-id> [--subcontext <name>] [--json]` — reopen a closed agent run.
+pub fn agent_reopen_cli(target: &str, subcontext: Option<&str>, json: bool) -> i32 {
+    let Some(query) = non_empty_string(target) else {
+        eprintln!("error: run-id or session-id cannot be empty");
+        return 1;
+    };
+    log::info!("agent_reopen:cli: query={query} subcontext={subcontext:?} json={json}");
+    let mut payload = serde_json::json!({
+        "type": "agent_reopen",
+        "query": query,
+    });
+    if let Some(sub) = subcontext.and_then(non_empty_string) {
+        payload["subcontext"] = serde_json::Value::String(sub.to_string());
+    }
+    let content = match super::request(payload, "agent-reopen-response", "agent reopen") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    if json {
+        println!("{content}");
+        return 0;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+            let cmd = v.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            println!("Reopened in pane {pid}: {cmd}");
+            return 0;
+        }
+    }
+    println!("{content}");
     0
 }
 

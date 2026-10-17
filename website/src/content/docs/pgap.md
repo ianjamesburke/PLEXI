@@ -566,6 +566,16 @@ Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question a
 | `question` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `agent_reopen`
+
+Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl` (`plexi agent reopen <run-id|sessi...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `query` | `string` | yes |
+| `response_file` | `string` | yes |
+| `subcontext` | `string?` | no |
+
 ### `focus_pane`
 
 Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.

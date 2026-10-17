@@ -2677,6 +2677,36 @@ pub enum AgentCmd {
         #[arg(long)]
         idle: bool,
     },
+    /// Show closed agent runs and sessions from `~/.plexi-<channel>/agent_history.jsonl`.
+    ///
+    /// Example: plexi agent history
+    /// Example: plexi agent history --limit 20 --json
+    History {
+        /// Maximum number of recent closed runs to display (0 = all)
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Print JSON array instead of a human-readable table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory.
+    ///
+    /// Resolves the matching entry by `run_id` or harness `session_id` and spawns a new
+    /// pane running the harness's resume command (`claude --resume <id>`, `codex resume <id>`,
+    /// `pi --session <id>`, `agy --resume <id>`).
+    ///
+    /// Example: plexi agent reopen sess-claude-42
+    /// Example: plexi agent reopen run-7-1729100000000
+    Reopen {
+        /// Run ID (`run-...`) or harness session ID to reopen
+        target: String,
+        /// Optional sub-context name to reopen the session into
+        #[arg(long)]
+        subcontext: Option<String>,
+        /// Print full JSON response instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
     /// Install or uninstall agent hook integrations.
     ///
     /// install: patches the selected agent config with lifecycle hook

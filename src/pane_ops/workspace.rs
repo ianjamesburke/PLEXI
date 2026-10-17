@@ -7,7 +7,7 @@ use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
@@ -1201,6 +1201,15 @@ impl PlexiApp {
         // their host MCP credentials before dropping the panes: a context
         // delete bypasses close_tile and therefore has no terminal-exit
         // cleanup.
+        for window in self
+            .windows
+            .iter()
+            .filter(|window| deleted.contains(&window.context_id))
+        {
+            for pane in window.panes.values() {
+                self.record_closed_agent_pane(window.context_id, &window.path, pane);
+            }
+        }
         let doomed_pane_ids: Vec<crate::spatial::tiling::PaneId> = self
             .windows
             .iter()
@@ -1438,6 +1447,9 @@ impl PlexiApp {
         self.minimap_visible_per_context
             .insert(removed_ws_id, self.minimap.visible);
 
+        for pane in self.windows[index].panes.values() {
+            self.record_closed_agent_pane(removed_ws_id, &self.windows[index].path, pane);
+        }
         revoke_window_pane_credentials(&self.windows[index]);
         let removed_window = self.windows.remove(index);
         log::info!(
@@ -1602,6 +1614,7 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
 
         self.apply_context_transition_effects();
+        self.resume_focused_standby_pane();
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {
@@ -2108,6 +2121,39 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn record_closed_agent_pane(
+        &self,
+        context_id: u64,
+        win_path: &Path,
+        pane: &crate::host::pane::Pane,
+    ) {
+        let Some(t) = pane.as_terminal() else {
+            return;
+        };
+        if !t.is_agent_pane() {
+            return;
+        }
+        let context_name = self
+            .router
+            .iter()
+            .find(|c| c.context_id == context_id)
+            .map(|c| c.name.displayed().to_string())
+            .unwrap_or_default();
+        let cwd = t
+            .standby_cwd
+            .clone()
+            .or_else(|| shell::get_pid_cwd(t.backend.child_pid()))
+            .unwrap_or_else(|| win_path.to_path_buf());
+        if let Some(record) = t.build_history_record(context_id, &context_name, cwd) {
+            if let Err(e) = crate::workspace::append_agent_history(&record) {
+                log::warn!(
+                    "agent_history: failed to append closed run for pane {}: {e}",
+                    t.id
+                );
+            }
+        }
+    }
+
     pub(crate) fn save_workspace_now(&self) {
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -2126,7 +2172,10 @@ impl PlexiApp {
                 debug_assert_eq!(pane.id(), id);
                 let pane_hidden = pane.is_hidden();
                 if let Some(t) = pane.as_terminal() {
-                    let cwd = shell::get_pid_cwd(t.backend.child_pid())
+                    let cwd = t
+                        .standby_cwd
+                        .clone()
+                        .or_else(|| shell::get_pid_cwd(t.backend.child_pid()))
                         .unwrap_or_else(|| win.path.clone());
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
@@ -2149,6 +2198,8 @@ impl PlexiApp {
                         }),
                         runtime_kind: None,
                         launch: None,
+                        slots: t.slots.clone(),
+                        agent_session: t.build_saved_agent_session(),
                     });
                 } else if let Some(a) = pane.as_app() {
                     // A headless Assistant is hidden and absent from the tile
@@ -2189,6 +2240,8 @@ impl PlexiApp {
                         }),
                         runtime_kind: Some(a.runtime.type_id().to_string()),
                         launch: a.runtime.launch_spec(),
+                        slots: a.slots.clone(),
+                        agent_session: None,
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -2214,6 +2267,8 @@ impl PlexiApp {
                         }),
                         runtime_kind: None,
                         launch: None,
+                        slots: std::collections::HashMap::new(),
+                        agent_session: None,
                     });
                 }
             }
@@ -2268,6 +2323,8 @@ mod tests {
                     heartbeat: None,
                     runtime_kind: None,
                     launch: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: None,
                 })
                 .collect(),
             focused_pane: None,

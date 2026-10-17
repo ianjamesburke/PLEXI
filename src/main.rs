@@ -644,6 +644,18 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::History { limit, json } => {
+                            std::process::exit(cli::agent_history_cli(limit, json))
+                        }
+                        AgentCmd::Reopen {
+                            target,
+                            subcontext,
+                            json,
+                        } => std::process::exit(cli::agent_reopen_cli(
+                            &target,
+                            subcontext.as_deref(),
+                            json,
+                        )),
                         AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
                         AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
                         AgentCmd::Assign { head, input, json } => {

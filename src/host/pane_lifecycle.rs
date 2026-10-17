@@ -142,7 +142,9 @@ impl PaneLifecycleEvent {
             ) => Self::AgentWorking { provenance },
             Some(_) => Self::AgentReported { provenance },
             None => match state {
-                AgentState::Idle => Self::AgentIdle { provenance },
+                AgentState::Idle | AgentState::Interrupted | AgentState::Completed => {
+                    Self::AgentIdle { provenance }
+                }
                 AgentState::Working => Self::AgentWorking { provenance },
                 AgentState::Blocked | AgentState::NeedsYou => Self::AgentBlocked {
                     reason: reason.unwrap_or(AgentBlockedReason::Unknown),

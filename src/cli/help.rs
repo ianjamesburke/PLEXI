@@ -338,7 +338,9 @@ mod tests {
         let agent = visible_subs(cmd.find_subcommand("agent").unwrap());
         assert_eq!(
             agent,
-            ["spawn", "done", "ask", "report", "status", "hook"],
+            [
+                "spawn", "done", "ask", "report", "status", "history", "reopen", "hook"
+            ],
             "{agent:?}"
         );
         let app = visible_subs(cmd.find_subcommand("app").unwrap());
