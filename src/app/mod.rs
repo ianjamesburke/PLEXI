@@ -3204,6 +3204,73 @@ impl eframe::App for PlexiApp {
         // message(s)`) until the window was next uncovered.
         self.drain_hot_reload_requests();
 
+        // App state files (stint 0644): drain external-change notices and
+        // re-read the affected scope on the matching pane. Lives in `logic`,
+        // never `ui` — external CLI/agent edits must land even when the host
+        // window is hidden or occluded.
+        self.drain_state_change_requests();
+
+        // Crash-resilient dev reload (#1055): auto-restart watched panes that
+        // have crashed, after a 2s delay so the developer can read the traceback.
+        self.drain_crash_restarts();
+
+        // Reload configuration from disk when the user clicks
+        // "Reload Configuration" in the app menu. macOS-only: the hook is an
+        // NSMenu item. Elsewhere the command palette and the config file
+        // watcher below cover the same ground.
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform::macos_menu::apply_version_title_once();
+            if crate::platform::macos_menu::take_reload_config_flag() {
+                self.reload_config();
+            }
+            if crate::platform::macos_menu::take_open_config_flag() {
+                let path = crate::config::ensure_config_file();
+                self.open_config_in_editor(path);
+            }
+        }
+
+        // Config hot-reload (#1115): drain filesystem watcher signals.
+        let config_changed = self.config_reload_rx.as_ref().is_some_and(|rx| {
+            let hit = rx.try_recv().is_ok();
+            if hit {
+                while rx.try_recv().is_ok() {}
+            }
+            hit
+        });
+        if config_changed {
+            self.reload_config();
+        }
+
+        // App registry hot-reload (#1712, re-keyed per-root in stint 0724
+        // Phase B): drain filesystem watcher signals for EVERY live root, not
+        // just the active context's — an inactive context's registry must
+        // react to on-disk changes exactly like the active one's.
+        let changed_roots: Vec<std::path::PathBuf> = self
+            .registry_watchers
+            .iter()
+            .filter_map(|(root, (_watcher, rx))| {
+                let hit = rx.try_recv().is_ok();
+                if hit {
+                    while rx.try_recv().is_ok() {}
+                }
+                hit.then(|| root.clone())
+            })
+            .collect();
+        for root in changed_roots {
+            self.emit_scope_invalidation(
+                crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
+                    source_path: root,
+                },
+            );
+        }
+
+        // Registries are a synchronous per-root cache (stint 0724 Phase B) —
+        // resolving or rescanning a view happens at the point of use, so
+        // there is no background-load result to drain here anymore. Keep the
+        // watcher set in sync with whatever roots are now cached.
+        self.reconcile_registry_watchers();
+
         // One-shot notes migration off the pre-tier store. Here rather than in
         // `PlexiApp::new` because it needs the restored router to resolve the old
         // one-way-hashed directory names, and in `logic` rather than `ui` so an
@@ -4161,73 +4228,6 @@ impl eframe::App for PlexiApp {
                 }
             }
         }
-
-        // App state files (stint 0644): drain external-change notices and
-        // re-read the affected scope on the matching pane. Lives in `logic`,
-        // never `ui` — external CLI/agent edits must land even when the host
-        // window is hidden or occluded.
-        self.drain_state_change_requests();
-
-        // Crash-resilient dev reload (#1055): auto-restart watched panes that
-        // have crashed, after a 2s delay so the developer can read the traceback.
-        self.drain_crash_restarts();
-
-        // Reload configuration from disk when the user clicks
-        // "Reload Configuration" in the app menu. macOS-only: the hook is an
-        // NSMenu item. Elsewhere the command palette and the config file
-        // watcher below cover the same ground.
-        #[cfg(target_os = "macos")]
-        {
-            crate::platform::macos_menu::apply_version_title_once();
-            if crate::platform::macos_menu::take_reload_config_flag() {
-                self.reload_config();
-            }
-            if crate::platform::macos_menu::take_open_config_flag() {
-                let path = crate::config::ensure_config_file();
-                self.open_config_in_editor(path);
-            }
-        }
-
-        // Config hot-reload (#1115): drain filesystem watcher signals.
-        let config_changed = self.config_reload_rx.as_ref().is_some_and(|rx| {
-            let hit = rx.try_recv().is_ok();
-            if hit {
-                while rx.try_recv().is_ok() {}
-            }
-            hit
-        });
-        if config_changed {
-            self.reload_config();
-        }
-
-        // App registry hot-reload (#1712, re-keyed per-root in stint 0724
-        // Phase B): drain filesystem watcher signals for EVERY live root, not
-        // just the active context's — an inactive context's registry must
-        // react to on-disk changes exactly like the active one's.
-        let changed_roots: Vec<std::path::PathBuf> = self
-            .registry_watchers
-            .iter()
-            .filter_map(|(root, (_watcher, rx))| {
-                let hit = rx.try_recv().is_ok();
-                if hit {
-                    while rx.try_recv().is_ok() {}
-                }
-                hit.then(|| root.clone())
-            })
-            .collect();
-        for root in changed_roots {
-            self.emit_scope_invalidation(
-                crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
-                    source_path: root,
-                },
-            );
-        }
-
-        // Registries are a synchronous per-root cache (stint 0724 Phase B) —
-        // resolving or rescanning a view happens at the point of use, so
-        // there is no background-load result to drain here anymore. Keep the
-        // watcher set in sync with whatever roots are now cached.
-        self.reconcile_registry_watchers();
 
         // Handle window close request (X button or macOS Cmd+Q OS event).
         //
@@ -5562,3 +5562,46 @@ pub(crate) fn restore_workspace(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hidden_drain_tests {
+    use super::*;
+
+    #[test]
+    fn state_change_and_config_reload_watchers_drain_while_window_hidden() {
+        let mut h = crate::testing::HostHarness::new();
+        let wake = std::sync::Arc::clone(&h.app.ui_wake);
+
+        let (state_tx, state_rx) = ui_mailbox::UiMailbox::channel(
+            std::sync::Arc::clone(&wake),
+            "test_state_watch_hidden",
+        );
+        h.app.state_watch_rx = state_rx;
+        let _ = state_tx.send(crate::host::state_watch::StateChangedNotice {
+            pane_id: 999,
+            scope: crate::host::state_scope::StateScope::Global,
+        });
+
+        let (cfg_tx, cfg_rx) =
+            ui_mailbox::UiMailbox::channel(wake, "test_config_reload_hidden");
+        h.app.config_reload_rx = Some(cfg_rx);
+        let _ = cfg_tx.send(());
+
+        // Pump a logic-only hidden frame (no App::ui pass).
+        h.hidden_frame();
+
+        assert!(
+            h.app.state_watch_rx.try_recv().is_err(),
+            "state_watch_rx must be drained by App::logic during hidden_frame"
+        );
+        assert!(
+            h.app
+                .config_reload_rx
+                .as_ref()
+                .unwrap()
+                .try_recv()
+                .is_err(),
+            "config_reload_rx must be drained by App::logic during hidden_frame"
+        );
+    }
+}

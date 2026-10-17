@@ -129,6 +129,9 @@ pub struct TextEditorApp {
     /// claiming the pane's text surface so host pane-nav keys are no longer
     /// swallowed. Cleared when the user clicks back into the editor.
     input_released: bool,
+    /// Set by `handle_key` when `Enter` or `i` re-enters the body editor from
+    /// `input_released` so the next `ui` pass claims the editor surface.
+    reclaim_editor_focus: bool,
     last_save_result: Option<String>,
     last_drop_result: Option<serde_json::Value>,
     /// Result of the most recent link activation (kind, target, outcome).
@@ -263,6 +266,7 @@ impl TextEditorApp {
             find_bar: None,
             editor_focused: false,
             input_released: false,
+            reclaim_editor_focus: false,
             last_save_result: None,
             last_drop_result: None,
             last_link_activation: None,
@@ -1853,6 +1857,22 @@ impl App for TextEditorApp {
             }
         }
 
+        if self.input_released {
+            let enter_pressed =
+                input.key_pressed(egui::Key::Enter) && input.modifiers().is_none();
+            let i_pressed = (input.key_pressed(egui::Key::I) && input.modifiers().is_none())
+                || input
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(s) if s == "i"));
+            if enter_pressed || i_pressed {
+                log::info!("text_editor: keyboard re-entered edit mode");
+                self.input_released = false;
+                self.reclaim_editor_focus = true;
+                return KeyDisposition::Consumed;
+            }
+        }
+
         // Escape with no find bar releases the body editor to pane-level
         // navigation: the pane stays open and focused, but the editor stops
         // owning the keyboard so host pane-nav keys work. egui surrenders the
@@ -1921,6 +1941,25 @@ impl App for TextEditorApp {
         // pane-nav keys reach `poll_actions` instead of the editor.
         if !self.input_released {
             crate::ui::focus::register_default_text_surface(
+                ui.ctx(),
+                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                te_id,
+            );
+        }
+        if self.reclaim_editor_focus {
+            self.reclaim_editor_focus = false;
+            ui.input_mut(|i| {
+                i.events.retain(|e| {
+                    !matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::Enter | egui::Key::I,
+                            ..
+                        } | egui::Event::Text(_)
+                    )
+                });
+            });
+            crate::ui::focus::claim_text_surface(
                 ui.ctx(),
                 crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
                 te_id,
@@ -2171,14 +2210,13 @@ impl App for TextEditorApp {
                     };
 
                     let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut bar.query)
-                            .id(find_input_id)
-                            .desired_width(input_width)
-                            .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
-                            .hint_text("Find…")
-                            .frame(egui::Frame::NONE),
-                    );
+                    let response = crate::ui::text_field::TextField::singleline(
+                        find_input_id,
+                        "Find…",
+                    )
+                    .desired_width(input_width)
+                    .log_name("text_editor_find")
+                    .show(ui, &mut bar.query, colors);
 
                     crate::ui::focus::register_text_surface(
                         ui.ctx(),
@@ -2213,14 +2251,10 @@ impl App for TextEditorApp {
                     );
 
                     ui.add_space(crate::ui::style::SPACE_SM);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut bar.replace)
-                            .id(replace_input_id)
-                            .desired_width(input_width)
-                            .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
-                            .hint_text("Replace…")
-                            .frame(egui::Frame::NONE),
-                    );
+                    crate::ui::text_field::TextField::singleline(replace_input_id, "Replace…")
+                        .desired_width(input_width)
+                        .log_name("text_editor_replace")
+                        .show(ui, &mut bar.replace, colors);
                     // Registered under the pane so the post-frame focus
                     // reconciler keeps a clicked replace field focused instead
                     // of snapping focus back to the editor.
@@ -3958,6 +3992,65 @@ mod tests {
         let state = serde_json::json!({ "path": path.to_string_lossy() });
         crate::app::app_trait::App::restore_state(&mut app, &state);
         assert_eq!(app.font_size, FONT_SIZE_DEFAULT);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keyboard_re_enters_edit_mode_from_input_released_without_inserting_text() {
+        let dir = unique_temp_dir("notes-keyboard-reenter");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "hello").unwrap();
+
+        let mut app = TextEditorApp::new(path);
+        let key_ev = |key: egui::Key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+
+        // 1. Escape sets input_released = true
+        let esc_input =
+            crate::app::input_router::PlexiInput::synthetic(vec![key_ev(egui::Key::Escape)], egui::Modifiers::NONE);
+        assert_eq!(
+            crate::app::app_trait::App::handle_key(&mut app, &esc_input),
+            KeyDisposition::Consumed
+        );
+        assert!(app.input_released);
+
+        // 2. Enter clears input_released, sets reclaim_editor_focus, and does not insert "\n"
+        let enter_input =
+            crate::app::input_router::PlexiInput::synthetic(vec![key_ev(egui::Key::Enter)], egui::Modifiers::NONE);
+        assert_eq!(
+            crate::app::app_trait::App::handle_key(&mut app, &enter_input),
+            KeyDisposition::Consumed
+        );
+        assert!(!app.input_released);
+        assert!(app.reclaim_editor_focus);
+        assert_eq!(app.doc.text(), "hello");
+
+        // 3. Escape again, then `i` (with Event::Text("i")) clears input_released, sets reclaim_editor_focus, and does not insert "i"
+        app.reclaim_editor_focus = false;
+        assert_eq!(
+            crate::app::app_trait::App::handle_key(&mut app, &esc_input),
+            KeyDisposition::Consumed
+        );
+        assert!(app.input_released);
+
+        let i_input = crate::app::input_router::PlexiInput::synthetic(
+            vec![key_ev(egui::Key::I), egui::Event::Text("i".to_string())],
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(
+            crate::app::app_trait::App::handle_key(&mut app, &i_input),
+            KeyDisposition::Consumed
+        );
+        assert!(!app.input_released);
+        assert!(app.reclaim_editor_focus);
+        assert_eq!(app.doc.text(), "hello");
 
         let _ = std::fs::remove_dir_all(dir);
     }

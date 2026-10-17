@@ -80,6 +80,7 @@ enum FileBrowserAction {
     Refresh,
     CdTerminalAndClose,
     SelectAll,
+    NewFile,
     NewFolder,
     Rename,
     Copy,
@@ -178,6 +179,9 @@ fn classify_key(
         return Some(FileBrowserAction::SelectAll);
     }
     if cmd_key_pressed_no_repeat(input, egui::Key::N, false) {
+        return Some(FileBrowserAction::NewFile);
+    }
+    if cmd_key_pressed_no_repeat(input, egui::Key::N, true) {
         return Some(FileBrowserAction::NewFolder);
     }
     if cmd_key_pressed_no_repeat(input, egui::Key::K, false) {
@@ -2632,9 +2636,15 @@ impl FileBrowserApp {
                 // `plexi pane click --node` / `PendingPaneClick` bypasses
                 // (stint 0469).
                 let bar_id = ui.id().with("view_menu");
-                let menu_button = ui.add(egui::Button::new(
-                    egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
-                ));
+                let menu_button = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("View \u{2304}")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_secondary(colors.bg_elevated)),
+                    )
+                    .fill(colors.bg_elevated)
+                    .stroke(Stroke::new(1.0_f32, colors.border)),
+                );
                 let synthetic_open =
                     pending_click.is_some_and(|click| click.targets_id(menu_button.id));
                 if synthetic_open {
@@ -2860,8 +2870,9 @@ impl FileBrowserApp {
 
                 // Structured intent preview chip
                 ui.add_space(style::SPACE_XS);
-                if let Some(active) = candidates.get(self.palette_selected) {
-                    let is_ready = matches!(active.resolution, CandidateResolution::Ready(_));
+                if let Some((badge_label, chip_text, is_ready)) =
+                    self.palette_preview_chip(&candidates)
+                {
                     let chip_bg = if is_ready {
                         colors.accent.gamma_multiply(0.14)
                     } else {
@@ -2879,14 +2890,14 @@ impl FileBrowserApp {
                         .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let (badge_label, badge_fill) = if is_ready {
-                                    ("INTENT", colors.accent)
+                                let badge_fill = if is_ready {
+                                    colors.accent
                                 } else {
-                                    ("SLOT", colors.bg_hover)
+                                    colors.bg_hover
                                 };
                                 crate::ui::badge::badge(ui, badge_label, badge_fill, colors);
                                 ui.label(
-                                    egui::RichText::new(&active.preview_chip)
+                                    egui::RichText::new(chip_text)
                                         .size(style::TEXT_META)
                                         .monospace()
                                         .color(colors.text_primary),
@@ -2917,11 +2928,7 @@ impl FileBrowserApp {
                     );
                     let inner = row_rect.shrink2(egui::vec2(style::SPACE_SM, 0.0));
                     let cmd_font = egui::FontId::monospace(style::TEXT_META);
-                    let cmd_color = if selected {
-                        colors.text_primary
-                    } else {
-                        colors.accent
-                    };
+                    let cmd_color = colors.accent;
                     let cmd_galley = ui.fonts_mut(|f| {
                         f.layout_no_wrap(
                             candidate.slash_syntax.to_string(),
@@ -2937,21 +2944,38 @@ impl FileBrowserApp {
                     ui.painter().galley(cmd_pos, cmd_galley, cmd_color);
 
                     let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
-                    let title_rect = egui::Rect::from_min_max(
-                        egui::pos2(title_left, inner.top()),
-                        inner.max,
+                    let title_font = egui::FontId::proportional(style::TEXT_META);
+                    let title_color = colors.text_primary;
+                    let title_galley = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(
+                            candidate.title.to_string(),
+                            title_font.clone(),
+                            title_color,
+                        )
+                    });
+                    let title_pos = egui::pos2(
+                        title_left,
+                        inner.center().y - title_galley.size().y * 0.5,
                     );
-                    list::paint_table_cell_text(
-                        ui,
-                        title_rect,
-                        format!("{} \u{2014} {}", candidate.title, candidate.subtitle),
-                        egui::FontId::proportional(style::TEXT_META),
-                        if selected {
-                            colors.text_primary
-                        } else {
-                            colors.text_dim
-                        },
-                    );
+                    let title_w = title_galley.size().x;
+                    ui.painter()
+                        .with_clip_rect(inner)
+                        .galley(title_pos, title_galley, title_color);
+
+                    let subtitle_left = (title_left + title_w).min(inner.right());
+                    if subtitle_left < inner.right() {
+                        let subtitle_rect = egui::Rect::from_min_max(
+                            egui::pos2(subtitle_left, inner.top()),
+                            inner.max,
+                        );
+                        list::paint_table_cell_text(
+                            ui,
+                            subtitle_rect,
+                            format!(" \u{2014} {}", candidate.subtitle),
+                            title_font,
+                            colors.text_secondary(colors.bg_toolbar),
+                        );
+                    }
 
                     if resp.clicked() {
                         clicked_candidate = Some(idx);
@@ -2967,6 +2991,23 @@ impl FileBrowserApp {
         } else if submitted_from_widget && self.in_palette {
             self.submit_palette();
         }
+    }
+
+    pub(crate) fn palette_preview_chip<'a>(
+        &self,
+        candidates: &'a [PaletteCandidate],
+    ) -> Option<(&'static str, &'a str, bool)> {
+        if self.palette_query.trim() == "/" && self.palette_selected == 0 {
+            return Some((
+                "CMD",
+                "Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run",
+                false,
+            ));
+        }
+        let active = candidates.get(self.palette_selected)?;
+        let is_ready = matches!(active.resolution, CandidateResolution::Ready(_));
+        let badge_label = if is_ready { "INTENT" } else { "SLOT" };
+        Some((badge_label, active.preview_chip.as_str(), is_ready))
     }
 
     fn draw_status_bar(&mut self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
@@ -3395,6 +3436,10 @@ impl App for FileBrowserApp {
                 log::info!("file_browser: entering search mode");
                 KeyDisposition::Consumed
             }
+            (Mode::Palette, Some(FileBrowserAction::NewFile)) => {
+                self.open_palette("/new file ");
+                KeyDisposition::Consumed
+            }
             (Mode::Palette, Some(FileBrowserAction::NewFolder)) => {
                 self.open_palette("/new folder ");
                 KeyDisposition::Consumed
@@ -3459,6 +3504,10 @@ impl App for FileBrowserApp {
             }
             (Mode::Search, Some(FileBrowserAction::EnterPaletteCommand)) => {
                 self.open_palette("");
+                KeyDisposition::Consumed
+            }
+            (Mode::Search, Some(FileBrowserAction::NewFile)) => {
+                self.open_palette("/new file ");
                 KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::NewFolder)) => {
@@ -3571,6 +3620,10 @@ impl App for FileBrowserApp {
             }
             (Mode::Normal, Some(FileBrowserAction::SelectAll)) if !self.entries.is_empty() => {
                 self.select_all_visible();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::NewFile)) => {
+                self.open_palette("/new file ");
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::NewFolder)) => {
@@ -4769,16 +4822,20 @@ mod tests {
                 Key::N,
                 Modifiers {
                     command: true,
+                    shift: true,
                     ..Default::default()
                 },
             )],
         );
-        assert!(consumed_mkdir, "Cmd+N must work in an empty directory");
+        assert!(
+            consumed_mkdir,
+            "Cmd+Shift+N must work in an empty directory"
+        );
         assert!(empty_app2.in_palette);
         assert_eq!(empty_app2.palette_query, "/new folder ");
         assert!(
             !empty_dir2.path().join("Untitled Folder").exists(),
-            "Cmd+N must prompt for folder name without creating Untitled Folder on disk first"
+            "Cmd+Shift+N must prompt for folder name without creating Untitled Folder on disk first"
         );
         run_handle_key(
             &mut empty_app2,
@@ -5363,13 +5420,14 @@ mod tests {
     fn cmd_n_and_palette_new_folder_slot_prompt_do_not_create_untitled_folder_first() {
         let (mut app, dir) = make_three_file_app();
 
-        // 1. Pressing Cmd+N opens the palette pre-filled with `/new folder ` without touching disk.
+        // 1. Pressing Cmd+Shift+N opens the palette pre-filled with `/new folder ` without touching disk.
         let opened = run_handle_key(
             &mut app,
             vec![key_event(
                 Key::N,
                 Modifiers {
                     command: true,
+                    shift: true,
                     ..Default::default()
                 },
             )],
@@ -5379,7 +5437,7 @@ mod tests {
         assert_eq!(app.palette_query, "/new folder ");
         assert!(
             !dir.path().join("Untitled Folder").exists(),
-            "Cmd+N must not create Untitled Folder on disk before user enters a name"
+            "Cmd+Shift+N must not create Untitled Folder on disk before user enters a name"
         );
 
         // User types `specs` and presses Enter.
@@ -5425,6 +5483,104 @@ mod tests {
         );
         assert!(!app.in_palette);
         assert!(dir.path().join("design_docs").is_dir());
+    }
+
+    #[test]
+    fn bare_slash_palette_query_shows_neutral_command_mode_hint_chip() {
+        let (mut app, _dir) = make_three_file_app();
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        assert_eq!(app.palette_selected, 0);
+
+        let candidates = app.rank_palette_candidates();
+        let (badge_label, chip_text, is_ready) = app
+            .palette_preview_chip(&candidates)
+            .expect("palette preview chip");
+        assert_eq!(badge_label, "CMD");
+        assert!(
+            chip_text.contains("Type a command"),
+            "bare `/` at index 0 must show neutral command-mode hint instead of SLOT prompt, got: {chip_text}"
+        );
+        assert!(!is_ready);
+
+        // Moving down with ↓ switches the preview chip to the selected candidate's SLOT/INTENT preview.
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(app.palette_selected, 1);
+        let (moved_badge, _moved_text, _moved_ready) = app
+            .palette_preview_chip(&candidates)
+            .expect("palette preview chip after arrow down");
+        assert!(matches!(moved_badge, "INTENT" | "SLOT"));
+    }
+
+    #[test]
+    fn sort_candidates_have_concrete_slash_syntax_and_human_readable_subtitles() {
+        let (_app, dir) = make_three_file_app();
+        let ctx = intent::FileExplorerContext::new(dir.path(), None, &[], &[], false, true);
+        let candidates = intent::rank_file_explorer_candidates("/sort", &ctx);
+        assert!(!candidates.is_empty());
+
+        let size_desc = candidates
+            .iter()
+            .find(|c| c.slash_syntax == "/sort size desc")
+            .expect("expected `/sort size desc` candidate");
+        assert_eq!(size_desc.subtitle, "Largest files first");
+        assert_ne!(size_desc.subtitle, size_desc.slash_syntax);
+
+        for candidate in candidates
+            .iter()
+            .filter(|c| c.slash_syntax.starts_with("/sort"))
+        {
+            assert_ne!(
+                candidate.slash_syntax, "/sort <column> [asc|desc]",
+                "sort candidate must have concrete slash_syntax, not template placeholder"
+            );
+            assert_ne!(
+                candidate.subtitle, candidate.slash_syntax,
+                "sort candidate subtitle must be human-readable, not identical to slash_syntax"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_n_opens_new_file_prompt_and_cmd_shift_n_opens_new_folder_prompt() {
+        let (mut app, _dir) = make_three_file_app();
+
+        let opened_file = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    shift: false,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(opened_file);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/new file ");
+
+        app.exit_palette();
+        assert!(!app.in_palette);
+
+        let opened_folder = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(opened_folder);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/new folder ");
     }
 
     #[test]
