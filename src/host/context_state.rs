@@ -115,16 +115,49 @@ impl ContextState {
                             }
                         } else if t.exited {
                             PaneSummaryStatus::Idle
-                        } else if t.activity == Some(AgentState::Working) {
-                            active_agents += 1;
-                            PaneSummaryStatus::Active
+                        } else if let Some(ref act) = t.activity {
+                            match act {
+                                AgentState::NeedsYou => {
+                                    has_needs_you = true;
+                                    PaneSummaryStatus::NeedsYou
+                                }
+                                AgentState::Blocked => {
+                                    has_blocked = true;
+                                    PaneSummaryStatus::Blocked
+                                }
+                                AgentState::Working => {
+                                    active_agents += 1;
+                                    PaneSummaryStatus::Active
+                                }
+                                AgentState::Idle
+                                | AgentState::Interrupted
+                                | AgentState::Completed => PaneSummaryStatus::Idle,
+                            }
+                        } else if let Some(ref sb) = t.standby_session {
+                            match sb.last_state {
+                                AgentState::NeedsYou => {
+                                    has_needs_you = true;
+                                    PaneSummaryStatus::NeedsYou
+                                }
+                                AgentState::Blocked => {
+                                    has_blocked = true;
+                                    PaneSummaryStatus::Blocked
+                                }
+                                AgentState::Working => {
+                                    active_agents += 1;
+                                    PaneSummaryStatus::Active
+                                }
+                                AgentState::Idle
+                                | AgentState::Interrupted
+                                | AgentState::Completed => PaneSummaryStatus::Idle,
+                            }
                         } else {
                             PaneSummaryStatus::Idle
                         };
                         (name, status)
                     }
                     crate::host::pane::Pane::App(a) => {
-                        let status = if let Some(agent) = a.agent.as_ref() {
+                        let status = if let Some(agent) = pane.agent() {
                             match agent.state {
                                 AgentState::NeedsYou => {
                                     has_needs_you = true;
@@ -201,6 +234,85 @@ impl ContextState {
             status,
             pane_summaries,
             children,
+        }
+    }
+
+    /// Count of panes currently in `Active` (`Working`) state across this context and its children.
+    pub fn working_count(&self) -> u32 {
+        let own = self
+            .pane_summaries
+            .iter()
+            .filter(|s| s.status == PaneSummaryStatus::Active)
+            .count() as u32;
+        let children: u32 = self.children.iter().map(Self::working_count).sum();
+        (own + children).max(self.active_agents)
+    }
+
+    /// Count of panes currently in `Blocked` (Tier 1, master-owned) state across this context and its children.
+    pub fn blocked_count(&self) -> u32 {
+        let own = self
+            .pane_summaries
+            .iter()
+            .filter(|s| s.status == PaneSummaryStatus::Blocked)
+            .count() as u32;
+        let children: u32 = self.children.iter().map(Self::blocked_count).sum();
+        own + children
+    }
+
+    /// Count of panes currently in `NeedsYou` (Tier 2, human-owned) state across this context and its children.
+    pub fn needs_you_count(&self) -> u32 {
+        let own = self
+            .pane_summaries
+            .iter()
+            .filter(|s| s.status == PaneSummaryStatus::NeedsYou)
+            .count() as u32;
+        let children: u32 = self.children.iter().map(Self::needs_you_count).sum();
+        own + children
+    }
+
+    /// Count of panes currently in `Error` state across this context and its children.
+    pub fn error_count(&self) -> u32 {
+        let own = self
+            .pane_summaries
+            .iter()
+            .filter(|s| s.status == PaneSummaryStatus::Error)
+            .count() as u32;
+        let children: u32 = self.children.iter().map(Self::error_count).sum();
+        own + children
+    }
+
+    /// Format the rolled-up bracketed escalation badge for `PortalPane` cards
+    /// (e.g. `"[2 WORKING · 1 BLOCKED]"`, `"[1 NEEDS YOU]"`, `"[1 ERROR]"`).
+    pub fn status_summary_badge(&self) -> Option<String> {
+        let working = self.working_count();
+        let blocked = self.blocked_count();
+        let needs_you = self.needs_you_count();
+        let errors = self.error_count();
+
+        let mut parts = Vec::new();
+        if working > 0 {
+            parts.push(format!("{working} WORKING"));
+        }
+        if blocked > 0 {
+            parts.push(format!("{blocked} BLOCKED"));
+        }
+        if needs_you > 0 {
+            parts.push(format!("{needs_you} NEEDS YOU"));
+        }
+        if errors > 0 {
+            parts.push(format!("{errors} ERROR"));
+        }
+        if !parts.is_empty() {
+            return Some(format!("[{}]", parts.join(" \u{b7} ")));
+        }
+
+        match self.status {
+            ContextStatus::NeedsYou => Some("[1 NEEDS YOU]".to_string()),
+            ContextStatus::Blocked => Some("[1 BLOCKED]".to_string()),
+            ContextStatus::Error => Some("[1 ERROR]".to_string()),
+            ContextStatus::Working => Some(format!("[{} WORKING]", self.active_agents.max(1))),
+            ContextStatus::Done => Some("[DONE]".to_string()),
+            ContextStatus::Idle => None,
         }
     }
 }
@@ -320,20 +432,37 @@ mod tests {
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Working);
         assert_eq!(state.status, ContextStatus::Working);
+        assert_eq!(
+            state.children[0].status_summary_badge().as_deref(),
+            Some("[1 WORKING]")
+        );
 
         let mut windows = windows;
         windows[1]
             .panes
-            .insert(11, make_app_pane(11, AgentState::Blocked));
+            .insert(11, make_app_pane(11, AgentState::Working));
+        windows[1]
+            .panes
+            .insert(12, make_app_pane(12, AgentState::Blocked));
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Blocked);
         assert_eq!(state.status, ContextStatus::Blocked);
+        assert_eq!(
+            state.children[0].status_summary_badge().as_deref(),
+            Some("[2 WORKING \u{b7} 1 BLOCKED]")
+        );
 
-        windows[1]
+        let mut needs_you_win = make_empty_window(2, 101);
+        needs_you_win
             .panes
-            .insert(12, make_app_pane(12, AgentState::NeedsYou));
+            .insert(20, make_app_pane(20, AgentState::NeedsYou));
+        let windows = vec![make_empty_window(1, 100), needs_you_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::NeedsYou);
         assert_eq!(state.status, ContextStatus::NeedsYou);
+        assert_eq!(
+            state.children[0].status_summary_badge().as_deref(),
+            Some("[1 NEEDS YOU]")
+        );
     }
 }

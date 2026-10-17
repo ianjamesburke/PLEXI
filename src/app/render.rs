@@ -466,16 +466,38 @@ impl PlexiApp {
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
-                                    let activity = pane_ref
-                                        .and_then(|p| p.effective_activity())
-                                        .cloned();
+                                    let is_exited = pane_ref
+                                        .and_then(|p| p.as_terminal())
+                                        .is_some_and(|t| t.exited);
+                                    let is_error_exit = pane_ref
+                                        .and_then(|p| p.as_terminal())
+                                        .is_some_and(|t| {
+                                            t.exited
+                                                && t.exit_status
+                                                    .as_ref()
+                                                    .is_some_and(|s| s.is_failure())
+                                        });
+                                    let activity = if is_error_exit {
+                                        Some(crate::protocol::AgentState::Interrupted)
+                                    } else {
+                                        pane_ref
+                                            .and_then(|p| {
+                                                p.effective_activity().cloned().or_else(|| {
+                                                    p.as_terminal().and_then(|t| {
+                                                        t.standby_session.as_ref().map(|_| {
+                                                            crate::protocol::AgentState::NeedsYou
+                                                        })
+                                                    })
+                                                })
+                                            })
+                                    };
                                     crate::spatial::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
                                         focused,
                                         has_content: true,
                                         title,
-                                        active: true,
+                                        active: !is_exited,
                                         activity,
                                     }
                                 }).collect();
@@ -486,14 +508,43 @@ impl PlexiApp {
                                 })
                             })
                             .collect();
+                        let computed_state = crate::host::context_state::ContextState::compute(
+                            child_ctx_id,
+                            self.router.as_slice(),
+                            &self.windows,
+                        );
+                        let existing_state = self.windows[active_win]
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|p| p.as_portal())
+                            .and_then(|portal| portal.context_state.as_ref());
+                        let effective_state = if child_windows.is_empty()
+                            && computed_state.pane_count == 0
+                            && matches!(
+                                computed_state.status,
+                                crate::host::context_state::ContextStatus::Idle
+                            ) {
+                            existing_state.cloned().unwrap_or(computed_state)
+                        } else {
+                            computed_state
+                        };
+                        let status_summary = effective_state.status_summary_badge();
+                        let status = effective_state.status.clone();
+                        let effective_pane_count = if pane_count == 0 {
+                            effective_state.pane_count as usize
+                        } else {
+                            pane_count
+                        };
                         let window_count = child_windows.len();
                         map.insert(pane_id, crate::spatial::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
-                            pane_count,
+                            pane_count: effective_pane_count,
                             notification_count: notif_count,
                             windows: child_windows,
                             window_count,
+                            status,
+                            status_summary,
                         });
                     }
                     map
@@ -507,23 +558,38 @@ impl PlexiApp {
                 // the active window has no portal panes.
                 crate::platform::ui_profile::time("portal_state", || {
                     for &(pid, child_ctx_id) in &portal_panes {
-                        let state = crate::host::context_state::ContextState::compute(
+                        let computed = crate::host::context_state::ContextState::compute(
                             child_ctx_id,
                             self.router.as_slice(),
                             &self.windows,
                         );
+                        let has_child_windows =
+                            self.windows.iter().any(|w| w.context_id == child_ctx_id);
                         if let Some(portal) = self.windows[active_win].panes.get_mut(&pid)
                             .and_then(|p| p.as_portal_mut())
                         {
+                            if !has_child_windows
+                                && computed.pane_count == 0
+                                && matches!(
+                                    computed.status,
+                                    crate::host::context_state::ContextStatus::Idle
+                                )
+                                && portal.context_state.is_some()
+                            {
+                                continue;
+                            }
                             let old_status = portal.context_state.as_ref().map(|s| s.status.clone());
-                            let new_status = state.status.clone();
+                            let new_status = computed.status.clone();
                             if old_status.as_ref() != Some(&new_status) {
                                 log::info!(
-                                    "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} panes={} agents={}",
-                                    new_status, state.pane_count, state.active_agents,
+                                    "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} summary={:?} panes={} agents={}",
+                                    new_status,
+                                    computed.status_summary_badge(),
+                                    computed.pane_count,
+                                    computed.active_agents,
                                 );
                             }
-                            portal.context_state = Some(state);
+                            portal.context_state = Some(computed);
                         }
                     }
                 });

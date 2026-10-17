@@ -150,7 +150,54 @@ impl PlexiApp {
             if pane.is_some_and(|pane| pane.is_hidden()) {
                 hidden_set.insert(dot_idx);
             }
-            activities.push(pane.and_then(|pane| pane.effective_activity()).cloned());
+            let activity = pane.and_then(|pane| {
+                if let Some(act) = pane.effective_activity() {
+                    return Some(act.clone());
+                }
+                if let Some(t) = pane.as_terminal() {
+                    if t.standby_session.is_some() {
+                        return Some(crate::protocol::AgentState::NeedsYou);
+                    }
+                }
+                if let Some(portal) = pane.as_portal() {
+                    let status = crate::host::context_state::ContextState::compute(
+                        portal.target_context_id,
+                        self.router.as_slice(),
+                        &self.windows,
+                    )
+                    .status;
+                    let effective_status = if matches!(
+                        status,
+                        crate::host::context_state::ContextStatus::Idle
+                    ) {
+                        portal
+                            .context_state
+                            .as_ref()
+                            .map(|s| s.status.clone())
+                            .unwrap_or(status)
+                    } else {
+                        status
+                    };
+                    return match effective_status {
+                        crate::host::context_state::ContextStatus::NeedsYou => {
+                            Some(crate::protocol::AgentState::NeedsYou)
+                        }
+                        crate::host::context_state::ContextStatus::Blocked => {
+                            Some(crate::protocol::AgentState::Blocked)
+                        }
+                        crate::host::context_state::ContextStatus::Working => {
+                            Some(crate::protocol::AgentState::Working)
+                        }
+                        crate::host::context_state::ContextStatus::Done => {
+                            Some(crate::protocol::AgentState::Idle)
+                        }
+                        crate::host::context_state::ContextStatus::Error
+                        | crate::host::context_state::ContextStatus::Idle => None,
+                    };
+                }
+                None
+            });
+            activities.push(activity);
         }
         Some(PaneDots {
             count: pane_ids.len(),
@@ -159,6 +206,29 @@ impl PlexiApp {
             activities,
             windows,
         })
+    }
+
+    /// Rolled-up semantic indicator color for a sidebar context row when the
+    /// context (or one of its sub-contexts) is in `NeedsYou` (coral),
+    /// `Blocked` (amber), or `Error` (danger).
+    pub(crate) fn sidebar_context_indicator_color(&self, ctx_id: u64) -> Option<egui::Color32> {
+        let state = crate::host::context_state::ContextState::compute(
+            ctx_id,
+            self.router.as_slice(),
+            &self.windows,
+        );
+        match state.status {
+            crate::host::context_state::ContextStatus::NeedsYou => {
+                Some(crate::ui::activity::needs_you_color(&self.colors))
+            }
+            crate::host::context_state::ContextStatus::Blocked => {
+                Some(crate::ui::activity::blocked_color(&self.colors))
+            }
+            crate::host::context_state::ContextStatus::Error => Some(self.colors.danger),
+            crate::host::context_state::ContextStatus::Working
+            | crate::host::context_state::ContextStatus::Done
+            | crate::host::context_state::ContextStatus::Idle => None,
+        }
     }
 }
 
@@ -188,16 +258,17 @@ impl PlexiApp {
         if !waiting.is_empty() {
             let label = crate::overlays::attention::sidebar_label(waiting.len());
             let mut open_attention = false;
+            let attention_col = crate::ui::activity::needs_you_color(&self.colors);
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
                 let width = (ui.available_width() - 12.0).max(0.0);
                 let button = egui::Button::new(
                     RichText::new(label)
                         .size(crate::ui::style::TEXT_CAPTION)
-                        .color(self.colors.warning),
+                        .color(attention_col),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(Stroke::new(1.0_f32, self.colors.warning))
+                .stroke(Stroke::new(1.0_f32, attention_col))
                 .truncate()
                 .min_size(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H));
                 if ui
@@ -334,6 +405,7 @@ impl PlexiApp {
                         self.context_notification_count(i)
                     };
                     let subtitle = Some(self.router.get(i).root.display().to_string());
+                    let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
                     let (action, response) = SidebarRow {
                         is_active,
@@ -348,6 +420,17 @@ impl PlexiApp {
                         draggable: true,
                     }
                     .show(ui, egui::Id::new(("ctx", i)), &self.colors);
+
+                    if let Some(ind_col) = indicator_color {
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(
+                                response.rect.min,
+                                Vec2::new(3.0, response.rect.height()),
+                            ),
+                            CornerRadius::ZERO,
+                            ind_col,
+                        );
+                    }
 
                     active_rects.push(response.rect);
 
@@ -471,6 +554,7 @@ impl PlexiApp {
                             let subtitle = Some(ctx.root.display().to_string());
 
                             let pane_dots = self.sidebar_pane_dots(ctx_id, false);
+                            let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
                             let (action, response) = SidebarRow {
                                 is_active: false,
@@ -489,6 +573,17 @@ impl PlexiApp {
                                 egui::Id::new(("parked_ctx", i)),
                                 &self.colors,
                             );
+
+                            if let Some(ind_col) = indicator_color {
+                                ui.painter().rect_filled(
+                                    Rect::from_min_size(
+                                        response.rect.min,
+                                        Vec2::new(3.0, response.rect.height()),
+                                    ),
+                                    CornerRadius::ZERO,
+                                    ind_col,
+                                );
+                            }
 
                             parked_rects.push(response.rect);
 
