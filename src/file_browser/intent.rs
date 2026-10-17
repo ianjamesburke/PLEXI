@@ -956,11 +956,14 @@ fn describe_resolved_intent(
                 "Change directory in linked terminal pane".to_string(),
             )
         }
-        FileExplorerIntent::SortBy { column, direction } => (
-            "/sort <col> [asc|desc]",
-            format!("Sort by {} ({})", column.label(), direction.key()),
-            "Update active sort column and direction".to_string(),
-        ),
+        FileExplorerIntent::SortBy { column, direction } => {
+            let (syntax, subtitle) = sort_candidate_syntax_and_subtitle(*column, *direction);
+            (
+                syntax,
+                format!("Sort by {} ({})", column.label(), direction.key()),
+                subtitle.to_string(),
+            )
+        }
         FileExplorerIntent::ToggleHidden { enabled } => {
             let next = enabled.unwrap_or(!ctx.show_hidden);
             (
@@ -980,6 +983,42 @@ fn describe_resolved_intent(
     }
 }
 
+fn sort_candidate_syntax_and_subtitle(
+    column: ColumnId,
+    direction: SortDirection,
+) -> (&'static str, &'static str) {
+    match (column, direction) {
+        (ColumnId::Name, SortDirection::Asc) => {
+            ("/sort name asc", "Sort alphabetically A \u{2192} Z")
+        }
+        (ColumnId::Name, SortDirection::Desc) => {
+            ("/sort name desc", "Sort alphabetically Z \u{2192} A")
+        }
+        (ColumnId::Modified, SortDirection::Desc) => {
+            ("/sort modified desc", "Newest modified first")
+        }
+        (ColumnId::Modified, SortDirection::Asc) => {
+            ("/sort modified asc", "Oldest modified first")
+        }
+        (ColumnId::Size, SortDirection::Desc) => ("/sort size desc", "Largest files first"),
+        (ColumnId::Size, SortDirection::Asc) => ("/sort size asc", "Smallest files first"),
+        (ColumnId::Kind, SortDirection::Asc) => ("/sort kind asc", "Group by item kind"),
+        (ColumnId::Kind, SortDirection::Desc) => ("/sort kind desc", "Group by item kind (reverse)"),
+        (ColumnId::Extension, SortDirection::Asc) => {
+            ("/sort ext asc", "Group by file extension")
+        }
+        (ColumnId::Extension, SortDirection::Desc) => {
+            ("/sort ext desc", "Group by file extension (reverse)")
+        }
+        (ColumnId::Created, SortDirection::Desc) => ("/sort created desc", "Newest created first"),
+        (ColumnId::Created, SortDirection::Asc) => ("/sort created asc", "Oldest created first"),
+        (ColumnId::Permissions, SortDirection::Asc) => ("/sort perms asc", "Sort by permissions"),
+        (ColumnId::Permissions, SortDirection::Desc) => {
+            ("/sort perms desc", "Sort by permissions (reverse)")
+        }
+    }
+}
+
 fn build_catalog_candidates(ctx: &FileExplorerContext<'_>) -> Vec<PaletteCandidate> {
     let mut list = Vec::new();
 
@@ -987,7 +1026,8 @@ fn build_catalog_candidates(ctx: &FileExplorerContext<'_>) -> Vec<PaletteCandida
     list.push(PaletteCandidate {
         slash_syntax: "/new file <name>",
         title: "New File…".to_string(),
-        subtitle: "Create a file in the current directory and open it in the editor".to_string(),
+        subtitle: "Create a file in the current directory and open it in the editor (Cmd+N)"
+            .to_string(),
         preview_chip: "Create file: <name> — type filename and press Enter".to_string(),
         resolution: CandidateResolution::NeedsSlot {
             prompt_prefix: "/new file ",
@@ -1000,7 +1040,7 @@ fn build_catalog_candidates(ctx: &FileExplorerContext<'_>) -> Vec<PaletteCandida
     list.push(PaletteCandidate {
         slash_syntax: "/new folder <name>",
         title: "New Folder…".to_string(),
-        subtitle: "Create a directory in the current folder (Cmd+N)".to_string(),
+        subtitle: "Create a directory in the current folder (Cmd+Shift+N)".to_string(),
         preview_chip: "Create folder: <name> — type folder name and press Enter".to_string(),
         resolution: CandidateResolution::NeedsSlot {
             prompt_prefix: "/new folder ",
@@ -1068,10 +1108,11 @@ fn build_catalog_candidates(ctx: &FileExplorerContext<'_>) -> Vec<PaletteCandida
             column: col,
             direction: dir,
         };
+        let (slash_syntax, subtitle) = sort_candidate_syntax_and_subtitle(col, dir);
         list.push(PaletteCandidate {
-            slash_syntax: "/sort <col> [asc|desc]",
+            slash_syntax,
             title: format!("Sort by {} ({})", col.label(), dir.key()),
-            subtitle: format!("/sort {} {}", col.key(), dir.key()),
+            subtitle: subtitle.to_string(),
             preview_chip: intent.preview_chip(ctx),
             resolution: CandidateResolution::Ready(intent),
             score,

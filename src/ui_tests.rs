@@ -6172,7 +6172,8 @@ mod tests {
         std::fs::create_dir_all(root.join("docs")).expect("mkdir docs");
         std::fs::write(root.join("Cargo.toml"), b"[package]\nname = \"plexi\"\n")
             .expect("write Cargo.toml");
-        std::fs::write(root.join("main.rs"), b"fn main() {}\n").expect("write main.rs");
+        std::fs::write(root.join("main.rs"), b"fn main() { // todo: wire up }\n")
+            .expect("write main.rs");
 
         let mut h = PlexiUiHarness::new_sized_ppp(880.0, 560.0, 2.0);
         let root_clone = root.clone();
@@ -6189,19 +6190,47 @@ mod tests {
         });
         h.run_steps(3);
 
+        let tap_key = |h: &mut PlexiUiHarness, key: egui::Key, modifiers: egui::Modifiers| {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers,
+            });
+        };
+
         // Press `/` to open the inline action palette pre-filled with `/`.
-        h.harness().input_mut().events.push(egui::Event::Key {
-            key: egui::Key::Slash,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        });
+        tap_key(&mut h, egui::Key::Slash, egui::Modifiers::NONE);
         h.run_steps(2);
+        assert!(
+            h.host_has_label("Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run"),
+            "bare `/` palette open must show neutral command-mode hint chip"
+        );
         h.save_screenshot(&evidence_png!("_slash_open"))
             .expect("render file_browser action palette on `/`");
 
-        // Type `new file notes.md` so the structured INTENT preview chip resolves `CreateFile`.
+        // Type `sort by size` so `/sort by size` candidates and preview chip render.
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("sort by size".to_string()));
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_sort_by_size"))
+            .expect("render file_browser action palette on `/sort by size`");
+
+        // Escape and re-open `/` to type `new file notes.md` so the structured INTENT preview chip resolves `CreateFile`.
+        tap_key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        h.run_steps(2);
+        tap_key(&mut h, egui::Key::Slash, egui::Modifiers::NONE);
+        h.run_steps(2);
         h.harness()
             .input_mut()
             .events
@@ -6213,5 +6242,25 @@ mod tests {
         );
         h.save_screenshot(&evidence_png!("_resolved_intent"))
             .expect("render file_browser action palette with resolved intent preview chip");
+
+        // Escape palette, open `Cmd+F` search, and type `todo`.
+        tap_key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        h.run_steps(2);
+        tap_key(
+            &mut h,
+            egui::Key::F,
+            egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+        );
+        h.run_steps(2);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("todo".to_string()));
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_search_todo"))
+            .expect("render file_browser search with `todo`");
     }
 }
