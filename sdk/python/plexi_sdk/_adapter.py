@@ -324,7 +324,12 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
                         "type": "column",
                         "children": [
                             {"type": "text", "text": text, "bold": True},
-                            {"type": "text", "text": description, "size": 11.0},
+                            {
+                                "type": "text",
+                                "text": description,
+                                "size": 12.0,
+                                "color": "muted",
+                            },
                         ],
                         "gap": 2.0,
                     }
@@ -336,7 +341,14 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
                         row_children.append({"type": "text", "text": leading})
                     row_children.append(main)
                     if trailing:
-                        row_children.append({"type": "text", "text": trailing})
+                        row_children.append(
+                            {
+                                "type": "text",
+                                "text": trailing,
+                                "size": 12.0,
+                                "color": "muted",
+                            }
+                        )
                     item_node = {"type": "row", "children": row_children, "gap": 8.0}
                 else:
                     item_node = main

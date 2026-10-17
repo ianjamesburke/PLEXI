@@ -1509,11 +1509,45 @@ class EmptyState(Component):
     def to_node(self) -> dict:
         children: list[dict] = []
         if self.icon:
-            children.append({"type": "text", "text": self.icon, "size": float(TEXT_TITLE)})
-        children.append({"type": "text", "text": self.title, "bold": True})
+            children.append({
+                "type": "text",
+                "text": self.icon,
+                "size": float(TEXT_TITLE),
+                "color": "accent",
+                "align": "center",
+            })
+        else:
+            children.append({
+                "type": "badge",
+                "label": "empty",
+                "color": "neutral",
+            })
+        children.append({
+            "type": "text",
+            "text": self.title,
+            "bold": True,
+            "size": float(TEXT_HEADING),
+            "align": "center",
+        })
         if self.description:
-            children.append({"type": "text", "text": self.description})
-        return {"type": "column", "children": children, "gap": 4.0}
+            children.append({
+                "type": "text",
+                "text": self.description,
+                "color": "muted",
+                "align": "center",
+            })
+        return {
+            "type": "card",
+            "padding": float(SPACE_XL),
+            "child": {
+                "type": "column",
+                "children": children,
+                "gap": 6.0,
+                "align": "center",
+            },
+        }
+
+    to_dict = to_node
 
 
 class Modal(Component):
