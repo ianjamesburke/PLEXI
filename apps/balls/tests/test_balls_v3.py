@@ -11,7 +11,9 @@ def _one_ball(x: float, y: float, r: float) -> dict:
     return {"x": x, "y": y, "vx": 0.0, "vy": 0.0, "r": r, "color": "#ffffff"}
 
 
-def test_render_frame_steps_physics_and_view_is_bare_canvas() -> None:
+def test_render_frame_steps_physics_and_view_has_app_bar_canvas_and_footer() -> None:
+    from plexi_sdk import theme
+
     data = balls._initial(640.0, 360.0, 2)
     start_y = data["balls"][0]["y"]
     balls._runtime = data
@@ -21,11 +23,21 @@ def test_render_frame_steps_physics_and_view_is_bare_canvas() -> None:
 
     assert effects == []
     assert stepped["balls"][0]["y"] != start_y
-    canvas = balls.view().to_node()
+    node = balls.view().to_node()
+    assert node.get("padding") is None
+    header = node["children"][0]
+    assert header["type"] == "app_bar"
+    assert header["title"] == "Balls"
+    assert header["subtitle"] == "2 balls"
+    canvas = node["children"][1]
     assert canvas["type"] == "canvas"
     assert canvas["fit"] == "fill"
     assert canvas["width"] == 640.0 and canvas["height"] == 360.0
+    assert canvas["commands"][0]["fill"] == theme.bg_darkest
     assert any(cmd["type"] == "circle" for cmd in canvas["commands"])
+    footer = node["children"][-1]
+    assert footer["type"] == "pinned"
+    assert footer["child"]["type"] == "footer_keys"
 
 
 def test_init_uses_continuous_scheduler_not_timers() -> None:

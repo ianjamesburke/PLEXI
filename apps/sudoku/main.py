@@ -403,7 +403,7 @@ def view():
         AppBar("Sudoku"),
         body,
         footer,
-    ], padding=0, gap=0, grow=True)
+    ], gap=0, grow=True)
 
 
 # ── Shared drawing helpers ─────────────────────────────────────────────────

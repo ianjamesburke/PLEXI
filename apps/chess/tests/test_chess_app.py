@@ -202,5 +202,13 @@ def test_view_renders_revision_and_seats():
         tree = chess.view()
     finally:
         _v3_state._in_view = False
-    text = json.dumps(tree, default=lambda o: getattr(o, "__dict__", str(o)))
+    node = tree.to_node()
+    text = json.dumps(node)
     assert "rev 1" in text and WHITE in text
+    assert node.get("padding") is None
+    canvas = node["children"][1]
+    assert canvas["commands"][0]["fill"] == sdk.theme.bg_darkest
+    palette = chess.BOARD_PALETTE.resolve(sdk.theme)
+    assert any(cmd.get("fill") == palette["light_sq"] for cmd in canvas["commands"])
+    assert any(cmd.get("fill") == palette["dark_sq"] for cmd in canvas["commands"])
+

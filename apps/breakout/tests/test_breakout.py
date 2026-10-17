@@ -119,14 +119,21 @@ def test_ball_displacement_per_second_is_tick_rate_independent() -> None:
 
 
 def test_view_returns_canvas_with_correct_structure() -> None:
+    from plexi_sdk import theme
+
     _reset()
     node = breakout.view().to_node()
     assert node is not None
-    canvas = node["children"][0]
+    assert node.get("padding") is None
+    header = node["children"][0]
+    assert header["type"] == "app_bar"
+    assert header["title"] == "Breakout"
+    assert "score 0" in header["subtitle"]
+    canvas = node["children"][1]
     assert canvas["type"] == "canvas"
     assert canvas["width"] == 640.0
     assert canvas["height"] == 360.0
-    assert any(cmd["type"] == "rect" and cmd["fill"] == "#0d0d1a" for cmd in canvas["commands"])
+    assert any(cmd["type"] == "rect" and cmd["fill"] == theme.bg_darkest for cmd in canvas["commands"])
     assert any(cmd["type"] == "circle" for cmd in canvas["commands"])
     footer = node["children"][-1]
     assert footer["type"] == "pinned"
@@ -137,11 +144,12 @@ def test_initial_frame_batches_contiguous_bricks() -> None:
     data = _reset()
     commands = breakout._draw(data, breakout._canvas_width, breakout._canvas_height)
 
-    brick_colors = set(breakout.BRICK_COLORS)
+    brick_colors = set(breakout._brick_colors())
     brick_commands = [
         command
         for command in commands
-        if command.to_command().get("fill") in brick_colors
+        if command.to_command().get("type") == "rect"
+        and command.to_command().get("fill") in brick_colors
     ]
     assert len(brick_commands) == breakout.BRICK_ROWS
     assert len(commands) <= 20
@@ -153,7 +161,7 @@ def test_destroyed_brick_remains_a_hole_in_batched_row() -> None:
     missing["alive"] = False
 
     commands = breakout._draw(data, breakout._canvas_width, breakout._canvas_height)
-    row_color = breakout.BRICK_COLORS[0]
+    row_color = breakout._brick_colors()[0]
     row_rects = [
         command.to_command()
         for command in commands

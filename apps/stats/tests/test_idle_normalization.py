@@ -113,3 +113,30 @@ def test_focus_changed_event_appends_state_event():
             "cwd": None,
         }
     ]
+
+
+def test_loaded_view_renders_footer_keys():
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _v3_state._state = sdk.StateSnapshot(
+        {
+            "focus_events": [
+                {
+                    "kind": "focus_changed",
+                    "timestamp": now_iso,
+                    "duration_secs": 120,
+                    "reason": "pane_switch",
+                    "pane_id": 1,
+                    "context_name": "PLEXI",
+                    "context_root": "/Users/ianburke/Documents/GitHub/PLEXI",
+                    "cwd": "/Users/ianburke/Documents/GitHub/PLEXI",
+                }
+            ]
+        },
+        {},
+    )
+    _v3_state._in_view = False
+    node = stats_app.view().to_node()
+    footer = node["children"][-1]
+    assert footer["type"] == "pinned"
+    assert footer["child"]["type"] == "footer_keys"
+

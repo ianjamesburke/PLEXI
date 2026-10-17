@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import math
 
-from plexi_sdk import log
+from plexi_sdk import AppPalette, log, theme
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame, Resize
-from plexi_sdk.ui import Canvas, CanvasCircle, CanvasRect, CanvasText, Column, FooterKeys
+from plexi_sdk.ui import AppBar, Canvas, CanvasCircle, CanvasRect, CanvasText, Column, FooterKeys
 
 TARGET_FPS = 60
 TARGET_DT = 1.0 / TARGET_FPS
@@ -17,7 +17,28 @@ BRICK_COLS = 10
 BRICK_ROWS = 5
 BRICK_GAP = 4.0
 
-BRICK_COLORS = ["#f38ba8", "#fab387", "#f9e2af", "#a6e3a1", "#89b4fa"]
+BREAKOUT_PALETTE = AppPalette(
+    dark={
+        "row0": "#f7768e",
+        "row1": "#ff9e64",
+        "row2": "#e0af68",
+        "row3": "#9ece6a",
+        "row4": "#7aa2f7",
+    },
+    light={
+        "row0": "#f52a65",
+        "row1": "#b15c00",
+        "row2": "#8c6c3e",
+        "row3": "#587539",
+        "row4": "#2e7de9",
+    },
+)
+
+
+def _brick_colors() -> list[str]:
+    pal = BREAKOUT_PALETTE.resolve(theme)
+    return [pal[f"row{i}"] for i in range(BRICK_ROWS)]
+
 
 STARTING_LIVES = 3
 
@@ -73,8 +94,9 @@ def _make_bricks() -> list[dict]:
     total_width = BRICK_COLS * bw + (BRICK_COLS - 1) * BRICK_GAP
     offset_x = (_canvas_width - total_width) / 2.0
     bricks = []
+    colors = _brick_colors()
     for row in range(BRICK_ROWS):
-        color = BRICK_COLORS[row % len(BRICK_COLORS)]
+        color = colors[row % len(colors)]
         for col in range(BRICK_COLS):
             bricks.append({
                 "x": offset_x + col * (bw + BRICK_GAP),
@@ -319,15 +341,23 @@ def _step(data: dict, dt: float) -> list:
     return effects
 
 
+def _subtitle(data: dict) -> str:
+    if data["state"] == "gameover":
+        return f"game over · score {data['score']}"
+    if data["state"] == "win":
+        return f"you win! · score {data['score']}"
+    return f"score {data['score']} · lives {data['lives']}"
+
+
 def view():
     data = _sim()
     w, h = _canvas_width, _canvas_height
     return Column(
         [
+            AppBar("Breakout", _subtitle(data)),
             Canvas(_draw(data, w, h), width=w, height=h, grow=True),
             FooterKeys([("←/→", "move"), ("space", "launch / restart")]),
         ],
-        padding=0,
         gap=0,
         grow=True,
     )
@@ -337,43 +367,35 @@ def _draw(data: dict, w: float, h: float) -> list:
     pw = _paddle_width()
     ph = _paddle_height()
     br = _ball_radius()
-    commands: list = [CanvasRect(0, 0, w, h, "#0d0d1a")]
+    commands: list = [CanvasRect(0, 0, w, h, theme.bg_darkest)]
 
     commands.extend(_draw_bricks(data))
 
     commands.append(
-        CanvasRect(data["paddle_x"], data["paddle_y"], pw, ph, "#cdd6f4", radius=4.0)
+        CanvasRect(data["paddle_x"], data["paddle_y"], pw, ph, theme.fg, radius=4.0)
     )
 
     commands.append(
-        CanvasCircle(data["ball_x"], data["ball_y"], br, "#f5e0dc")
-    )
-
-    commands.append(
-        CanvasText(10.0, 14.0, f"Score: {data['score']}", size=14.0, color="#cdd6f4", bold=True)
-    )
-    lives_text = "❤ " * data["lives"]
-    commands.append(
-        CanvasText(w - 10.0, 14.0, lives_text.strip(), size=14.0, color="#f38ba8", align="right_top")
+        CanvasCircle(data["ball_x"], data["ball_y"], br, theme.accent)
     )
 
     if data["state"] == "gameover":
         commands.append(
-            CanvasText(w / 2, h / 2 - 10, "GAME OVER", size=32.0, color="#f38ba8", bold=True, align="center_center")
+            CanvasText(w / 2, h / 2 - 10, "GAME OVER", size=32.0, color=theme.danger, bold=True, align="center_center")
         )
         commands.append(
-            CanvasText(w / 2, h / 2 + 25, "Press SPACE to restart", size=14.0, color="#a6adc8", align="center_center")
+            CanvasText(w / 2, h / 2 + 25, "Press SPACE to restart", size=14.0, color=theme.muted, align="center_center")
         )
     elif data["state"] == "win":
         commands.append(
-            CanvasText(w / 2, h / 2 - 10, "YOU WIN!", size=32.0, color="#a6e3a1", bold=True, align="center_center")
+            CanvasText(w / 2, h / 2 - 10, "YOU WIN!", size=32.0, color=theme.success, bold=True, align="center_center")
         )
         commands.append(
-            CanvasText(w / 2, h / 2 + 25, "Press SPACE to restart", size=14.0, color="#a6adc8", align="center_center")
+            CanvasText(w / 2, h / 2 + 25, "Press SPACE to restart", size=14.0, color=theme.muted, align="center_center")
         )
     elif data["ball_attached"]:
         commands.append(
-            CanvasText(w / 2, h / 2, "Press SPACE to launch", size=14.0, color="#a6adc8", align="center_center")
+            CanvasText(w / 2, h / 2, "Press SPACE to launch", size=14.0, color=theme.muted, align="center_center")
         )
 
     return commands
@@ -414,6 +436,6 @@ def _draw_bricks(data: dict) -> list:
     for left, right in zip(first_row, first_row[1:]):
         gap_x = left["x"] + left["w"]
         gap_width = right["x"] - gap_x
-        commands.append(CanvasRect(gap_x, top, gap_width, bottom - top, "#0d0d1a"))
+        commands.append(CanvasRect(gap_x, top, gap_width, bottom - top, theme.bg_darkest))
 
     return commands

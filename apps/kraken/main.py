@@ -8,7 +8,7 @@ from typing import Any
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTimer, SetTitle
-from plexi_sdk.events import HttpResponse, KeyEvent, TimerFired
+from plexi_sdk.events import HttpResponse, KeyEvent, TimerFired, UiAction
 from plexi_sdk.ui import AppBar, Column, FooterKeys, SelectList, Spacer, Text
 
 API = "https://api.kraken.com/0/public/Ticker"
@@ -49,6 +49,13 @@ def update(event) -> list:
     if isinstance(event, HttpResponse):
         data.update(_handle_http(data, event))
         return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiAction) and event.handler_id.startswith("pair:"):
+        try:
+            idx = int(event.handler_id.split(":", 1)[1])
+        except ValueError:
+            return []
+        data["selected"] = _clamp(idx, len(data["pairs"]))
+        return [SetState(data), SetStatus(_status(data))]
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
     if event.key in ("down", "j", "ArrowDown"):
@@ -79,10 +86,11 @@ def view():
         f"high: {price.get('high', '-')}\n"
         f"low:  {price.get('low', '-')}"
     )
+    subtitle = "market ticker · refreshing…" if data["loading"] else "market ticker"
     return Column(
         [
-            AppBar("Kraken", "market ticker"),
-            SelectList(rows, selected_idx=data["selected"])
+            AppBar("Kraken", subtitle),
+            SelectList(rows, selected_idx=data["selected"], on_select="pair")
             if rows
             else Text("No pairs configured.", size=12.0),
             Text(detail, size=12.0),
@@ -100,6 +108,7 @@ def _state() -> dict:
     data["pairs"] = [str(pair).upper() for pair in data.get("pairs") or DEFAULT_PAIRS]
     data["prices"] = dict(data.get("prices") or {})
     data["selected"] = _clamp(int(data.get("selected") or 0), len(data["pairs"]))
+    data["loading"] = bool(data.get("loading"))
     data["error"] = str(data.get("error") or "")
     return data
 

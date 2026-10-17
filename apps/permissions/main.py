@@ -19,7 +19,7 @@ from plexi_sdk.effects import (
     SetTitle,
 )
 from plexi_sdk.events import KeyEvent, PermissionInventory, TimerFired, UiAction
-from plexi_sdk.ui import Button, Column, FooterKeys, SelectList, Spacer, Text
+from plexi_sdk.ui import Actions, AppBar, Button, Column, FooterKeys, SelectList, Spacer, Text
 
 POLL_TIMER = 1
 
@@ -163,13 +163,16 @@ def _list_view(data: dict):
         body = Text("No permission decisions.", size=12.0)
     return Column(
         [
-            Text("Permissions", bold=True, size=15.0),
-            Text("Live decisions from the permission monitor.", size=11.0),
+            AppBar("Permissions", "Live decisions from the permission monitor."),
             body,
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
             Spacer(grow=True),
-            Button("Open", "permissions:detail", disabled=not rows),
-            Button("Reload", "permissions:reload"),
+            Actions(
+                [
+                    Button("Open", "permissions:detail", disabled=not rows),
+                    Button("Reload", "permissions:reload"),
+                ]
+            ),
             FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "reload")]),
         ],
         gap=8.0,
@@ -192,7 +195,7 @@ def _detail_view(data: dict):
     buttons.append(Button("Back", "permissions:back"))
     return Column(
         [
-            Text("Permission", bold=True, size=15.0),
+            AppBar("Permissions", f"{entry['tool']}  {kind}"),
             Text(f"{entry['tool']}  {kind}", bold=True, size=16.0),
             Text(f"Who: {entry['actor_id'] or '-'}", size=12.0),
             Text(f"What: {entry['tool']}  {entry['duration']}", size=12.0),
@@ -203,7 +206,7 @@ def _detail_view(data: dict):
             Text(f"Workspace: {entry['workspace'] or '-'}", size=12.0),
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
             Spacer(grow=True),
-            *buttons,
+            Actions(buttons),
             FooterKeys([("x", "revoke"), ("esc", "back")]),
         ],
         gap=8.0,

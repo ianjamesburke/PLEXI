@@ -7,10 +7,10 @@ import json
 import math
 from typing import Any, Callable
 
-from plexi_sdk import log, state, tools
+from plexi_sdk import log, state, theme, tools
 from plexi_sdk.effects import SetState, SetStatus, SetTitle, ToolResult
 from plexi_sdk.events import KeyEvent, ToolCall, UiAction
-from plexi_sdk.ui import Button, Column, FooterKeys, HStack, Spacer, Text
+from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, HStack, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -116,8 +116,8 @@ def view():
     subtitle = f"{_format_number(data['pending'])} {data['op']}" if data["op"] else ""
     return Column(
         [
-            Text("Calculator", bold=True, size=15.0),
-            Text(subtitle or "ready", size=11.0),
+            AppBar("Calculator", subtitle or "ready"),
+            Text(subtitle or "ready", size=11.0, color=theme.muted, align="end"),
             Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
             *[_button_row(row) for row in BUTTON_ROWS],
             Spacer(grow=True),

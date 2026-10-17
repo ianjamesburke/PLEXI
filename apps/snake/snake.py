@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import random
 
-from plexi_sdk import log, state
+from plexi_sdk import dim, log, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, TimerFired
 from plexi_sdk.ui import (
@@ -169,7 +169,6 @@ def view():
             Spacer(8.0),
             FooterKeys(keys),
         ],
-        padding=0,
         gap=0,
         grow=True,
     )
@@ -180,9 +179,9 @@ def _draw(data: dict) -> list:
     oy = 24.0
     commands: list = [
         CanvasRect(
-            ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4, "#6c7086", radius=2.0
+            ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4, theme.border, radius=2.0
         ),
-        CanvasRect(ox, oy, COLS * CELL, ROWS * CELL, "#11111b"),
+        CanvasRect(ox, oy, COLS * CELL, ROWS * CELL, theme.bg_darkest),
     ]
     fx, fy = data["food"]
     commands.append(
@@ -191,12 +190,12 @@ def _draw(data: dict) -> list:
             oy + fy * CELL + 2,
             CELL - 4,
             CELL - 4,
-            "#f38ba8",
+            theme.danger,
             radius=4.0,
         )
     )
     for idx, (sx, sy) in enumerate(data["snake"]):
-        fill = "#89b4fa" if idx == 0 else "#a6e3a1"
+        fill = theme.accent if idx == 0 else theme.success
         commands.append(
             CanvasRect(
                 ox + sx * CELL + 1,
@@ -212,13 +211,20 @@ def _draw(data: dict) -> list:
         cy = CANVAS_H / 2
         commands.extend(
             [
-                CanvasRect(cx - 150, cy - 20, 300, 40, "#11111bcc", radius=6.0),
+                CanvasRect(
+                    cx - 150,
+                    cy - 20,
+                    300,
+                    40,
+                    dim(theme.bg_darkest, 204),
+                    radius=6.0,
+                ),
                 CanvasText(
                     cx,
                     cy,
                     "GAME OVER - press R",
                     size=14.0,
-                    color="#f38ba8",
+                    color=theme.danger,
                     bold=True,
                     align="center_center",
                 ),

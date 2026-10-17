@@ -10686,7 +10686,7 @@ execution = "cloud"
         assert!(view
             .nodes
             .iter()
-            .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text == "Calculator")));
+            .any(|node| matches!(&node.data, UiNodeData::AppBar(bar) if bar.title == "Calculator")));
 
         // Calc declares its connector tools on init; the bridge must carry the
         // whole set across with schemas re-serialized into the WIT string fields.
