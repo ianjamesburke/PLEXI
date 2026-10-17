@@ -466,3 +466,51 @@ def test_http_fetch_params_and_http_response_helpers_and_state_helpers() -> None
     assert state.patch(a=20) == SetState({"a": 20})
     assert state.patch({"b": [3]}, persist=True) == PersistState({"b": [3]})
 
+
+def test_select_list_mutes_secondary_and_trailing_and_empty_state_uses_card_chrome() -> None:
+    from plexi_sdk._adapter import _encode_uitree
+    from plexi_sdk.ui import EmptyState, SelectList
+
+    tree = _encode_uitree(
+        SelectList(
+            [
+                {
+                    "name": "Ship V1",
+                    "description": "High priority",
+                    "leading": "[ ]",
+                    "trailing": "#1",
+                }
+            ],
+            selected=0,
+        )
+    )
+    text_nodes = {
+        n["data"]["text"]: n["data"]
+        for n in tree["nodes"]
+        if n["data"].get("type") == "text"
+    }
+    assert text_nodes["Ship V1"].get("bold") is True
+    assert text_nodes["High priority"]["color"] == "muted"
+    assert text_nodes["High priority"]["size"] == 12.0
+    assert text_nodes["#1"]["color"] == "muted"
+    assert text_nodes["#1"]["size"] == 12.0
+
+    empty = EmptyState("Search Wikipedia", description="Type a query above and press Enter.")
+    empty_dict = empty.to_dict()
+    assert empty_dict["type"] == "card"
+    assert empty_dict["padding"] == 24.0
+    encoded_empty = _encode_uitree(empty)
+    root_node = encoded_empty["nodes"][encoded_empty["root"]]["data"]
+    assert root_node["type"] == "Card"
+    assert root_node["card"] is True
+    desc_nodes = [
+        n["data"]
+        for n in encoded_empty["nodes"]
+        if n["data"].get("type") == "text"
+        and n["data"].get("text") == "Type a query above and press Enter."
+    ]
+    assert len(desc_nodes) == 1
+    assert desc_nodes[0]["color"] == "muted"
+    assert desc_nodes[0]["align"] == "center"
+
+

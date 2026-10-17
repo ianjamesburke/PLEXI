@@ -76,6 +76,11 @@ def test_inventory_replaces_entries() -> None:
 def test_revoke_reset_and_allow_ask_the_host() -> None:
     _set_state(_sample_state())
 
+    effects = permissions.update(UiAction("permissions:select:1"))
+    data = _state_effect(effects)
+    assert data["selected"] == 1
+
+    _set_state(_sample_state())
     effects = permissions.update(KeyEvent("down"))
     data = _state_effect(effects)
     assert data["selected"] == 1

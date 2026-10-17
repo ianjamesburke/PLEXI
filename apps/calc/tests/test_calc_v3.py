@@ -168,8 +168,15 @@ def test_view_renders_app_bar_and_muted_pending_expression() -> None:
     assert header["type"] == "app_bar"
     assert header["title"] == "Calculator"
     assert header["subtitle"] == "7 +"
-    expr_line = node["children"][1]
+    calc_card = node["children"][1]
+    assert calc_card["type"] == "card"
+    readout_card = calc_card["children"][0]
+    assert readout_card["type"] == "card"
+    expr_line = readout_card["children"][0]
     assert expr_line["type"] == "text"
     assert expr_line["text"] == "7 +"
     assert expr_line["color"] in (sdk.theme.muted, "muted")
+    display_line = readout_card["children"][1]
+    assert display_line["type"] == "text"
+    assert display_line["text"] == "5"
 

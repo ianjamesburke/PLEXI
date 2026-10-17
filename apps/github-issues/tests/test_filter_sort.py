@@ -276,3 +276,50 @@ def test_app_harness_exercises_github_issues_tools_end_to_end():
             if n["data"].get("type") == "ListView"
         ]
         assert list_views and list_views[0]["selected"] == 1
+
+
+def test_no_repo_view_renders_interactive_input_and_detail_view_uses_card():
+    app = _load_app_module()
+    from plexi_sdk import _v3_state
+    from plexi_sdk._v3_state import StateSnapshot
+    from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
+
+    # No-repo view includes an interactive TextInput to enter owner/repo.
+    _v3_state._state = StateSnapshot(dict(app.DEFAULT_STATE), {})
+    no_repo_node = app.view().to_node()
+    repo_card = no_repo_node["children"][1]
+    assert repo_card["type"] == "card"
+    assert any(c.get("type") == "TextInput" for c in repo_card["children"])
+
+    # Submitting owner/repo updates repo state and starts loading.
+    effects = app.update(UiValueChange("issues-repo-change", "plexiapp/plexi"))
+    st = next(e for e in effects if isinstance(e, SetState)).data
+    _v3_state._state = StateSnapshot(st, {})
+    effects = app.update(UiAction("issues-repo-submit"))
+    st = next(e for e in effects if isinstance(e, SetState)).data
+    assert st["repo"] == "plexiapp/plexi"
+    assert st["loading"] is True
+
+    # Escape releases filter_autofocus, and "/" restores it.
+    seeded = dict(app.DEFAULT_STATE, repo="plexiapp/plexi", issues=_issues(), filter_autofocus=True)
+    _v3_state._state = StateSnapshot(seeded, {})
+    esc_effects = app.update(KeyEvent("escape"))
+    st_after_esc = next(e for e in esc_effects if isinstance(e, SetState)).data
+    assert st_after_esc["filter_autofocus"] is False
+    _v3_state._state = StateSnapshot(st_after_esc, {})
+    slash_effects = app.update(KeyEvent("/"))
+    st_after_slash = next(e for e in slash_effects if isinstance(e, SetState)).data
+    assert st_after_slash["filter_autofocus"] is True
+
+    # Clicking a row in SelectList opens detail view with Card chrome.
+    _v3_state._state = StateSnapshot(st_after_slash, {})
+    click_effects = app.update(UiAction("issues-select:1"))
+    st_detail = next(e for e in click_effects if isinstance(e, SetState)).data
+    assert st_detail["view"] == "detail"
+    assert st_detail["selected"] == 1
+    assert st_detail["detail"]["number"] == 5
+    _v3_state._state = StateSnapshot(st_detail, {})
+    detail_node = app.view().to_node()
+    scroll_node = detail_node["children"][1]
+    assert scroll_node["type"] == "scroll"
+    assert scroll_node["child"]["type"] == "card"

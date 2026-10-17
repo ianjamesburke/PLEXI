@@ -22,6 +22,7 @@ from plexi_sdk.ui import (
     AppBar,
     Badge,
     Banner,
+    Card,
     Column,
     Component,
     Divider,
@@ -199,9 +200,13 @@ def _submit_or_open(data: dict[str, Any]) -> list:
     query = data["query"].strip()
     if data["editing_search"] or query != data["searched_query"] or not data["results"]:
         if not query:
-            data["editing_search"] = False
-            data["blur_gen"] = int(data.get("blur_gen") or 0) + 1
-            log.info("wikipedia: empty search submit -> released search focus")
+            if data["results"]:
+                data["editing_search"] = False
+                data["blur_gen"] = int(data.get("blur_gen") or 0) + 1
+                log.info("wikipedia: empty search submit -> released search focus")
+            else:
+                data["editing_search"] = True
+                log.info("wikipedia: empty search submit with no results -> keeping search focus")
             return [SetState(data), SetStatus(_status(data))]
         return _start_search(data)
     return _start_article(data, data["selected"])
@@ -210,9 +215,13 @@ def _submit_or_open(data: dict[str, Any]) -> list:
 def _handle_list_key(data: dict[str, Any], key: str) -> list:
     if key == "escape":
         if data["editing_search"]:
-            data["editing_search"] = False
-            data["blur_gen"] = int(data.get("blur_gen") or 0) + 1
-            log.info("wikipedia: search focus released via escape")
+            if data["results"]:
+                data["editing_search"] = False
+                data["blur_gen"] = int(data.get("blur_gen") or 0) + 1
+                log.info("wikipedia: search focus released via escape")
+            else:
+                data["editing_search"] = True
+                log.info("wikipedia: escape with no results -> keeping search focus")
             return [SetState(data), SetStatus(_status(data))]
         return []
 
@@ -425,12 +434,22 @@ def _article_view(data: dict[str, Any]) -> Component:
         )
     else:
         summary_text = data["article"] or "No summary available."
+        paragraphs = [p.strip() for p in summary_text.split("\n\n") if p.strip()] or [
+            summary_text
+        ]
+        card_children: list[Component] = [
+            Text(title, size=18.0, bold=True, color=theme.fg),
+        ]
+        if subtitle and subtitle != "Article reader":
+            card_children.append(Text(subtitle, size=13.0, color=theme.muted))
+        card_children.append(Divider())
+        for para in paragraphs:
+            card_children.append(Text(para, size=14.0, color=theme.fg))
         reader_body = Scrollable(
-            Column(
-                [
-                    Text(summary_text, size=14.0, color=theme.fg),
-                ],
-                gap=8.0,
+            Card(
+                card_children,
+                padding=20.0,
+                gap=12.0,
             )
         )
         children.append(

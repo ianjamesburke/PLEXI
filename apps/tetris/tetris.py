@@ -317,6 +317,7 @@ def _draw(data: dict) -> list:
     px = bx + COLS * CELL + 28.0
     commands.extend(
         [
+            CanvasRect(px - 8.0, 0.0, CANVAS_W - (px - 8.0), CANVAS_H, theme.bg),
             CanvasText(px, by, "SCORE", size=10.0, color=theme.muted),
             CanvasText(
                 px, by + 18.0, str(data["score"]), size=18.0, color=theme.fg, bold=True

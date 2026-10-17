@@ -39,6 +39,7 @@ DRAFT = "todo:draft"
 START = "todo:start"
 TOGGLE = "todo:toggle"
 DELETE = "todo:delete"
+SELECT = "todo:select"
 
 
 def _items() -> list[dict]:
@@ -167,6 +168,15 @@ def update(event) -> list:
     if data["adding"]:
         return []
 
+    if action and action.startswith(f"{SELECT}:"):
+        try:
+            idx = int(action.removeprefix(f"{SELECT}:"))
+        except ValueError:
+            return []
+        data["selected"] = _clamp(data["items"], idx)
+        log.info(f"todo: selected item {data['selected']} via click")
+        return _ui_effects(data)
+
     if action == START or key == "a":
         data["adding"] = True
         data["draft"] = ""
@@ -212,7 +222,7 @@ def view():
     ]
     return Column([
         AppBar("Todo", _status(data)),
-        SelectList(rows, selected_idx=data["selected"]) if rows
+        SelectList(rows, selected_idx=data["selected"], on_select=SELECT) if rows
         else Text("Nothing yet — press a to add an item.", size=13.0),
         Spacer(grow=True),
         Actions([Button("Add item", START, style="primary"),
