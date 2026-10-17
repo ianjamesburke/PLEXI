@@ -9486,6 +9486,62 @@ mod sidebar_panel_width_tests {
              the context row is again allocating more than the panel's width"
         );
     }
+
+    #[test]
+    fn sidebar_clamps_to_preserve_content_floor_and_restores_on_widen() {
+        let mut h = HostHarness::new();
+        h.app.sidebar_visible = true;
+
+        let frame_at = |h: &mut HostHarness, width: f32| {
+            h.frame(RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 600.0),
+                )),
+                ..Default::default()
+            });
+        };
+
+        // Start at standard 1280pt: settles at SIDEBAR_DEFAULT_W (220pt).
+        frame_at(&mut h, 1280.0);
+        frame_at(&mut h, 1280.0);
+        assert_eq!(sidebar_width(&h), crate::ui::style::SIDEBAR_DEFAULT_W);
+
+        // Shrink to minimum window width 400pt: sidebar must clamp to 140pt so
+        // content area retains at least SIDEBAR_CONTENT_MIN_W (260pt).
+        frame_at(&mut h, 400.0);
+        frame_at(&mut h, 400.0);
+        let w_400 = sidebar_width(&h);
+        assert_eq!(
+            w_400,
+            crate::ui::style::SIDEBAR_MIN_W,
+            "at 400pt window width, sidebar must clamp to SIDEBAR_MIN_W (140pt)"
+        );
+        assert!(
+            400.0 - w_400 >= crate::ui::style::SIDEBAR_CONTENT_MIN_W,
+            "at 400pt window width, remaining content area ({}) must be >= SIDEBAR_CONTENT_MIN_W ({})",
+            400.0 - w_400,
+            crate::ui::style::SIDEBAR_CONTENT_MIN_W
+        );
+
+        // Widen back to 800pt and 1280pt: sidebar must restore to its desired
+        // default width (220pt) instead of staying stuck at 140pt.
+        for window_w in [520.0, 800.0, 1280.0] {
+            frame_at(&mut h, window_w);
+            frame_at(&mut h, window_w);
+            let sw = sidebar_width(&h);
+            assert_eq!(
+                sw,
+                crate::ui::style::SIDEBAR_DEFAULT_W,
+                "at {window_w}pt window width, sidebar must restore to SIDEBAR_DEFAULT_W"
+            );
+            assert!(
+                window_w - sw >= crate::ui::style::SIDEBAR_CONTENT_MIN_W,
+                "at {window_w}pt window width, content area ({}) must be >= SIDEBAR_CONTENT_MIN_W",
+                window_w - sw
+            );
+        }
+    }
 }
 
 /// Stint 0719: `TerminalView::ui` asks its backend to resize on every frame,

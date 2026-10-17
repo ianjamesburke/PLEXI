@@ -232,9 +232,112 @@ impl PlexiApp {
     }
 }
 
+const SIDEBAR_PANEL_ID: &str = "sidebar";
+const SIDEBAR_DESIRED_WIDTH_ID: &str = "sidebar_desired_width";
+const SIDEBAR_WAS_CLAMPED_ID: &str = "sidebar_was_clamped";
+static LAST_LOGGED_SIDEBAR_MAX_BITS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+const _: () = assert!(
+    crate::ui::style::SIDEBAR_MIN_W + crate::ui::style::SIDEBAR_CONTENT_MIN_W <= 400.0,
+    "sidebar minimum width plus content-area floor must fit inside the 400pt minimum window width"
+);
+
+/// Compute the responsive `(default_width, min_width..=max_width)` for the
+/// sidebar at `window_width`.
+///
+/// Expressed as a floor on the central content area
+/// (`style::SIDEBAR_CONTENT_MIN_W`, 260 pt) rather than an arbitrary sidebar
+/// fraction: `window_width - SIDEBAR_CONTENT_MIN_W` caps the sidebar's upper
+/// bound (clamped to `SIDEBAR_MIN_W..=SIDEBAR_MAX_W`), and the default width
+/// clamps into that range so even a 400-point window preserves 260 points for
+/// panes.
+pub(crate) fn sidebar_width_bounds(window_width: f32) -> (f32, std::ops::RangeInclusive<f32>) {
+    let min_w = crate::ui::style::SIDEBAR_MIN_W;
+    let max_for_content =
+        (window_width - crate::ui::style::SIDEBAR_CONTENT_MIN_W).max(min_w);
+    let max_w = max_for_content.min(crate::ui::style::SIDEBAR_MAX_W);
+    let default_w = crate::ui::style::SIDEBAR_DEFAULT_W.clamp(min_w, max_w);
+    (default_w, min_w..=max_w)
+}
+
 impl PlexiApp {
+    /// Render the left sidebar panel with a responsive width clamp that
+    /// preserves at least [`crate::ui::style::SIDEBAR_CONTENT_MIN_W`] for the
+    /// central content area, restoring the unclamped width when the window
+    /// widens again.
+    pub(crate) fn show_sidebar_panel(&mut self, ui: &mut egui::Ui) {
+        let window_width = ui.available_width();
+        let (default_w, size_range) = sidebar_width_bounds(window_width);
+        let min_w = *size_range.start();
+        let max_w = *size_range.end();
+        let max_bits = max_w.to_bits();
+        if LAST_LOGGED_SIDEBAR_MAX_BITS.swap(max_bits, std::sync::atomic::Ordering::Relaxed)
+            != max_bits
+        {
+            log::info!(
+                "sidebar: width_bounds default={default_w:.1} range={min_w:.1}..={max_w:.1} window_width={window_width:.1} content_min={:.1}",
+                crate::ui::style::SIDEBAR_CONTENT_MIN_W,
+            );
+        }
+
+        let panel_id = egui::Id::new(SIDEBAR_PANEL_ID);
+        let desired_id = egui::Id::new(SIDEBAR_DESIRED_WIDTH_ID);
+        let clamped_id = egui::Id::new(SIDEBAR_WAS_CLAMPED_ID);
+        let ctx = ui.ctx().clone();
+        let desired_w = ctx
+            .data(|d| d.get_temp::<f32>(desired_id))
+            .unwrap_or(crate::ui::style::SIDEBAR_DEFAULT_W)
+            .clamp(crate::ui::style::SIDEBAR_MIN_W, crate::ui::style::SIDEBAR_MAX_W);
+        let was_clamped = ctx
+            .data(|d| d.get_temp::<bool>(clamped_id))
+            .unwrap_or(false);
+
+        if let Some(mut state) = egui::containers::panel::PanelState::load(&ctx, panel_id) {
+            let current_w = state.rect.width();
+            let target_w = if was_clamped {
+                desired_w.clamp(min_w, max_w)
+            } else {
+                current_w.clamp(min_w, max_w)
+            };
+            if (current_w - target_w).abs() > f32::EPSILON {
+                state.rect.max.x = state.rect.min.x + target_w;
+                ctx.data_mut(|d| d.insert_persisted(panel_id, state));
+            }
+        }
+
+        egui::Panel::left(SIDEBAR_PANEL_ID)
+            .default_size(default_w)
+            .size_range(size_range)
+            .resizable(true)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .inner_margin(egui::Margin::same(0)),
+            )
+            .show_inside(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(max_w));
+                crate::platform::ui_profile::time("sidebar", || self.draw_sidebar(ui));
+            });
+
+        if let Some(state) = egui::containers::panel::PanelState::load(&ctx, panel_id) {
+            let actual_w = state.rect.width();
+            let is_clamped =
+                max_w < desired_w - f32::EPSILON && actual_w >= max_w - f32::EPSILON;
+            ctx.data_mut(|d| {
+                d.insert_temp(clamped_id, is_clamped);
+                if !is_clamped {
+                    d.insert_temp(desired_id, actual_w);
+                }
+            });
+        }
+    }
+
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
-        let sidebar_width = ui.available_width();
+        let (_, clamp_range) = sidebar_width_bounds(ui.ctx().content_rect().width());
+        let sidebar_width = ui.available_width().min(*clamp_range.end());
+        ui.set_max_width(sidebar_width);
         // Header
         ui.add_space(8.0);
         let mut add_clicked = false;
@@ -1000,5 +1103,44 @@ mod tests {
         assert_eq!(reorder_line_y(&rects, 1), 20.0); // between rows
         assert_eq!(reorder_line_y(&rects, 2), 40.0); // bottom edge
         assert_eq!(reorder_line_y(&rects, 99), 40.0); // past end clamps
+    }
+
+    #[test]
+    fn sidebar_width_bounds_preserves_content_floor_at_400pt_and_standard_widths() {
+        use crate::ui::style::{
+            SIDEBAR_CONTENT_MIN_W, SIDEBAR_DEFAULT_W, SIDEBAR_MAX_W, SIDEBAR_MIN_W,
+        };
+
+        // At the host's 400-point minimum window width, the sidebar clamps to
+        // SIDEBAR_MIN_W (140 pt) so at least SIDEBAR_CONTENT_MIN_W (260 pt)
+        // remains for the central content area.
+        let (default_400, range_400) = sidebar_width_bounds(400.0);
+        assert_eq!(default_400, SIDEBAR_MIN_W);
+        assert_eq!(*range_400.start(), SIDEBAR_MIN_W);
+        assert_eq!(*range_400.end(), 400.0 - SIDEBAR_CONTENT_MIN_W);
+        assert!(400.0 - *range_400.end() >= SIDEBAR_CONTENT_MIN_W);
+
+        // At an intermediate narrow width (460 pt), the sidebar cap is 200 pt
+        // and the default clamps to 200 pt, keeping the 260 pt content floor.
+        let (default_460, range_460) = sidebar_width_bounds(460.0);
+        assert_eq!(default_460, 200.0);
+        assert_eq!(*range_460.end(), 200.0);
+        assert!(460.0 - *range_460.end() >= SIDEBAR_CONTENT_MIN_W);
+
+        // At 520 pt (responsive narrow breakpoint), the default 220 pt fits
+        // while the user resize cap is 260 pt (520 - 260).
+        let (default_520, range_520) = sidebar_width_bounds(520.0);
+        assert_eq!(default_520, SIDEBAR_DEFAULT_W);
+        assert_eq!(*range_520.end(), 520.0 - SIDEBAR_CONTENT_MIN_W);
+
+        // At standard widths (800 pt, 1280 pt), the full SIDEBAR_MIN_W..=SIDEBAR_MAX_W
+        // range and SIDEBAR_DEFAULT_W are available.
+        for &w in &[800.0_f32, 1280.0, 1400.0] {
+            let (default_w, range) = sidebar_width_bounds(w);
+            assert_eq!(default_w, SIDEBAR_DEFAULT_W);
+            assert_eq!(*range.start(), SIDEBAR_MIN_W);
+            assert_eq!(*range.end(), SIDEBAR_MAX_W);
+            assert!(w - *range.end() >= SIDEBAR_CONTENT_MIN_W);
+        }
     }
 }

@@ -4653,6 +4653,220 @@ mod tests {
         // ends with '…' on a single line and does not push the tab bar taller.
     }
 
+    /// Stint 0755: when `outside_workspace` is active on a terminal pane,
+    /// `render_name_bar_and_tabs` must reserve the `outside workspace` badge's
+    /// width plus `SPACE_XS` on both single-tab and multi-tab paths and elide
+    /// the tab label in the remaining space so the label galley and badge rect
+    /// never intersect in narrow (~400px) tiles.
+    #[test]
+    fn outside_workspace_badge_does_not_overlap_tab_label_in_narrow_tile() {
+        let long_cwd_label =
+            "/Users/ianburke/Documents/GitHub/external-workspace/packages/core/src/components";
+
+        // 1. Single-tab path in a 400px-wide terminal tile.
+        {
+            let mut h = PlexiUiHarness::new_sized(400.0, 260.0);
+            h.step();
+            let workspace_root = h.workspace_root().to_path_buf();
+            let pane_id = h.with_app_mut(|app| {
+                app.sidebar_visible = false;
+                let id = app.host.alloc_pane_id();
+                let mut terminal = crate::host::pane::TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        working_directory: Some(workspace_root.clone()),
+                        ..Default::default()
+                    },
+                    14.0,
+                )
+                .expect("spawn terminal pane");
+                terminal.name = Some(long_cwd_label.to_string());
+                terminal.outside_workspace_cached = true;
+                terminal.outside_workspace_checked_at = Some(Instant::now());
+                terminal.outside_workspace_root = Some(workspace_root);
+
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+                let tile = win.tree.tiles.insert_pane(id);
+                win.tree.root = Some(tile);
+                win.focused_pane = Some(tile);
+                id
+            });
+
+            h.run_steps(2);
+            let single_shot = evidence_png!("_single_tab");
+            h.save_screenshot(&single_shot)
+                .expect("save single-tab outside_workspace screenshot");
+
+            let layout = h.with_app(|app| {
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
+            })
+            .expect("single-tab terminal pane must record tab-bar layout");
+            let label_rect = layout.label_rect.expect("single-tab label_rect");
+            let badge_rect = layout
+                .outside_workspace_badge_rect
+                .expect("single-tab outside_workspace_badge_rect");
+            assert!(
+                !label_rect.intersects(badge_rect),
+                "single-tab label_rect ({label_rect:?}) must not intersect outside_workspace badge_rect ({badge_rect:?}); screenshot: {single_shot}"
+            );
+            assert!(
+                label_rect.right() <= badge_rect.left() - crate::ui::style::SPACE_XS + 0.5,
+                "single-tab label right ({}) must leave at least SPACE_XS before badge left ({}); screenshot: {single_shot}",
+                label_rect.right(),
+                badge_rect.left()
+            );
+            assert!(
+                layout
+                    .elided_label
+                    .as_deref()
+                    .unwrap_or_default()
+                    .ends_with(crate::ui::text::ELLIPSIS),
+                "single-tab long cwd label must elide with '…', got {:?}",
+                layout.elided_label
+            );
+        }
+
+        // 2. Multi-tab path in a 400px-wide terminal tile (rightmost tab active
+        // directly adjacent to the right-pinned `outside workspace` badge).
+        {
+            let mut h = PlexiUiHarness::new_sized(400.0, 260.0);
+            h.step();
+            let workspace_root = h.workspace_root().to_path_buf();
+            let pane_id_b = h.with_app_mut(|app| {
+                app.sidebar_visible = false;
+                let id_a = app.host.alloc_pane_id();
+                let id_b = app.host.alloc_pane_id();
+                let mut term_a = crate::host::pane::TerminalPane::new(
+                    id_a,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        working_directory: Some(workspace_root.clone()),
+                        ..Default::default()
+                    },
+                    14.0,
+                )
+                .expect("spawn terminal pane A");
+                term_a.name = Some("~/Documents/GitHub/PLEXI/crates/daw-engine".to_string());
+                term_a.outside_workspace_cached = false;
+                term_a.outside_workspace_checked_at = Some(Instant::now());
+                term_a.outside_workspace_root = Some(workspace_root.clone());
+
+                let mut term_b = crate::host::pane::TerminalPane::new(
+                    id_b,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        working_directory: Some(workspace_root.clone()),
+                        ..Default::default()
+                    },
+                    14.0,
+                )
+                .expect("spawn terminal pane B");
+                term_b.name = Some(long_cwd_label.to_string());
+                term_b.outside_workspace_cached = true;
+                term_b.outside_workspace_checked_at = Some(Instant::now());
+                term_b.outside_workspace_root = Some(workspace_root);
+
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
+                win.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
+                let tile_a = win.tree.tiles.insert_pane(id_a);
+                let tile_b = win.tree.tiles.insert_pane(id_b);
+                let tab_tile = win.tree.tiles.insert_tab_tile(vec![tile_a, tile_b]);
+                if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+                    win.tree.tiles.get_mut(tab_tile)
+                {
+                    tabs.set_active(tile_b);
+                }
+                win.tree.root = Some(tab_tile);
+                win.focused_pane = Some(tile_b);
+                id_b
+            });
+
+            h.run_steps(2);
+            let multi_shot = evidence_png!("_multi_tab");
+            h.save_screenshot(&multi_shot)
+                .expect("save multi-tab outside_workspace screenshot");
+
+            let layout = h.with_app(|app| {
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id_b)
+            })
+            .expect("multi-tab active terminal pane must record tab-bar layout");
+            let label_rect = layout.label_rect.expect("multi-tab label_rect");
+            let badge_rect = layout
+                .outside_workspace_badge_rect
+                .expect("multi-tab outside_workspace_badge_rect");
+            assert!(
+                !label_rect.intersects(badge_rect),
+                "multi-tab label_rect ({label_rect:?}) must not intersect outside_workspace badge_rect ({badge_rect:?}); screenshot: {multi_shot}"
+            );
+            assert!(
+                label_rect.right() <= badge_rect.left() - crate::ui::style::SPACE_XS + 0.5,
+                "multi-tab label right ({}) must leave at least SPACE_XS before badge left ({}); screenshot: {multi_shot}",
+                label_rect.right(),
+                badge_rect.left()
+            );
+            assert!(
+                layout
+                    .elided_label
+                    .as_deref()
+                    .unwrap_or_default()
+                    .ends_with(crate::ui::text::ELLIPSIS),
+                "multi-tab long cwd label must elide with '…', got {:?}",
+                layout.elided_label
+            );
+        }
+    }
+
+    /// Stint 0713: at the minimum window width (400pt) and across standard
+    /// widths (520pt, 800pt, 1280pt), the sidebar must clamp so that at least
+    /// `style::SIDEBAR_CONTENT_MIN_W` (260pt) of usable content area remains.
+    #[test]
+    fn sidebar_preserves_content_area_floor_at_minimum_and_standard_window_widths() {
+        for (window_w, expected_sidebar_w) in [
+            (400.0, crate::ui::style::SIDEBAR_MIN_W),
+            (520.0, crate::ui::style::SIDEBAR_DEFAULT_W),
+            (800.0, crate::ui::style::SIDEBAR_DEFAULT_W),
+            (1280.0, crate::ui::style::SIDEBAR_DEFAULT_W),
+        ] {
+            let mut h = PlexiUiHarness::new_sized(window_w, 320.0);
+            h.step();
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                app.sidebar_visible = true;
+            });
+            h.run_steps(2);
+            if (window_w - 400.0).abs() < f32::EPSILON {
+                let shot = evidence_png!("_400pt");
+                h.save_screenshot(&shot)
+                    .expect("save 400pt sidebar clamp screenshot");
+            }
+            let sidebar_w = h.with_app(|app| {
+                egui::containers::panel::PanelState::load(&app.ctx, egui::Id::new("sidebar"))
+                    .expect("sidebar panel state must exist")
+                    .rect
+                    .width()
+            });
+            assert!(
+                (sidebar_w - expected_sidebar_w).abs() <= 1.0,
+                "at window_w={window_w}, expected sidebar width {expected_sidebar_w}, got {sidebar_w}"
+            );
+            let content_w = window_w - sidebar_w;
+            assert!(
+                content_w + 0.5 >= crate::ui::style::SIDEBAR_CONTENT_MIN_W,
+                "at window_w={window_w}, content width {content_w} must be >= SIDEBAR_CONTENT_MIN_W ({})",
+                crate::ui::style::SIDEBAR_CONTENT_MIN_W
+            );
+        }
+    }
+
     // ── s8 pixel-grid + typography evidence (stints 0527–0530) ──────────────
 
     /// Seeds a Notes pane with a multi-line document and screenshots it at the

@@ -84,8 +84,18 @@ pub const LIST_ROW_GAP: f32 = 8.0;
 /// Monospace line boxes sit optically low inside compact row chips.
 pub const LIST_CHIP_TEXT_OFFSET_Y: f32 = -1.0;
 pub const LIST_DROPDOWN_HEADER_H: f32 = 28.0;
+/// Minimum sidebar width: fits the context row's index gutter, elided title,
+/// close action, and pane-state pips without clipping their fixed chrome.
+pub const SIDEBAR_MIN_W: f32 = 140.0;
 /// Default width leaves room for a readable context headline beside its state.
 pub const SIDEBAR_DEFAULT_W: f32 = 220.0;
+/// Maximum sidebar width when the window is wide enough to allow it.
+pub const SIDEBAR_MAX_W: f32 = 400.0;
+/// Minimum usable width reserved for the central content area when the sidebar
+/// is open. At the host's 400-point minimum window width (`400 - 260 = 140`),
+/// this clamps the sidebar to [`SIDEBAR_MIN_W`] so the content area never drops
+/// below 260 points.
+pub const SIDEBAR_CONTENT_MIN_W: f32 = 260.0;
 pub const LIST_DROPDOWN_CHEVRON_W: f32 = 24.0;
 pub const TABLE_HEADER_H: f32 = 28.0;
 
