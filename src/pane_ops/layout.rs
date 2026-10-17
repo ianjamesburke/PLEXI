@@ -717,6 +717,7 @@ impl PlexiApp {
                 ctx.navigate_to(pane_tile);
             }
         }
+        self.resume_focused_standby_pane();
     }
 
     pub(crate) fn switch_to_tab(&mut self, container_tile: TileId, idx: usize) {
@@ -728,7 +729,7 @@ impl PlexiApp {
         let children = &tabs.children;
         if idx >= children.len() {
             return;
-        }
+        };
         let target = children[idx];
 
         let ctx = &mut self.windows[self.active_window];
@@ -744,6 +745,7 @@ impl PlexiApp {
                 ctx.navigate_to(pane_tile);
             }
         }
+        self.resume_focused_standby_pane();
         log::info!("tab_click: switched to tab index={idx} in container={container_tile:?}");
     }
 
@@ -984,12 +986,16 @@ impl PlexiApp {
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
             if let Some(ref pane) = removed_pane {
+                let win_context_id = self.windows[ctx_idx].context_id;
+                let win_path = self.windows[ctx_idx].path.clone();
+                self.record_closed_agent_pane(win_context_id, &win_path, pane);
                 if let Some(slots) = pane.slots() {
                     if !slots.is_empty() {
                         self.closed_pane_slots.insert(pane_id, slots.clone());
                     }
                 }
             }
+            self.mark_workspace_dirty();
             match crate::host::app_timeline::global().lock() {
                 Ok(mut timeline) => timeline.close_lifecycle_pane(pane_id),
                 Err(error) => log::error!("pane_lifecycle: closing pane {pane_id}: {error}"),
@@ -1098,7 +1104,7 @@ impl PlexiApp {
             .focused_pane
             .and_then(|focused| ctx.find_pane_in_direction_from(focused, dir));
 
-        if let Some(target) = pane_neighbor {
+        let moved = if let Some(target) = pane_neighbor {
             self.windows[self.active_window].navigate_to(target);
             // Signal the newly-focused pane so render_text_inputs auto-focuses
             // the first TextInput on the next frame.
@@ -1151,7 +1157,11 @@ impl PlexiApp {
             let old_active_window = self.active_window;
             self.navigate_page(dx, dy);
             self.active_window != old_active_window
+        };
+        if moved {
+            self.resume_focused_standby_pane();
         }
+        moved
     }
 
     pub(crate) fn swap_pane(&mut self, dir: Direction) -> SwapResult {

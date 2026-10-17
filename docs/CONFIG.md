@@ -160,6 +160,24 @@ A `context`- or `window`-scoped notification needs a sender to attach to. `plexi
 
 Host-raised config errors are the one deliberate exception: they are workspace-wide rather than a property of any one context, so they are explicitly `global`.
 
+## Agents
+
+```toml
+[agents]
+low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
+medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
+high   = "claude --dangerously-skip-permissions '{cmd}'"
+restore_mode = "lazy"
+```
+
+`restore_mode` controls how persisted agent sessions (`SavedAgentSession` in `workspace.toml`) are restored on host startup:
+
+- `"lazy"` (default): active-context agent panes with a `session_id` auto-resume in their restored `cwd` via their Harness Adapter (`claude --resume <id>`, `codex resume <id>`, `pi --session <id>`, `agy --resume <id>`), while background and sub-context agent panes restore their status dots, slots, and `Blocked` / `NeedsYou` badges into a lightweight `[Plexi Standby]` banner that resumes on focus, `Enter`, or `plexi pane send`.
+- `"eager"`: all persisted non-ephemeral agent panes with a `session_id` auto-resume immediately on startup.
+- `"off"`: persisted agent panes restore as plain shell terminals without running harness resume commands.
+
+In all modes, mid-turn `Working` panes restore as `Interrupted` with their `tail_preview`, and ephemeral `Completed` squad worker panes are skipped on startup.
+
 ## CLI
 
 ```toml
@@ -286,6 +304,7 @@ model_high   = "anthropic/claude-fable-5"
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
+# restore_mode = "lazy"        # "lazy" (active context resumes, background enters Standby), "eager", or "off"
 
 [cli]
 tips = true

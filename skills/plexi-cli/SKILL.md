@@ -203,7 +203,7 @@ plexi skill install --agent codex
 <!-- experiment: routines -->
   Scheduled commands: `plexi routine --help`.
 <!-- /experiment -->
-- **Agents** — install workspace definitions, spawn declarative squad workers, and report or inspect agent state:
+- **Agents** — install workspace definitions, spawn declarative squad workers, inspect closed runs, reopen historical sessions, and report or inspect agent state:
   `plexi agent --help`. `plexi agent spawn <config> --task "<brief>" [--subcontext <name>] [--ephemeral]`
   loads `.plexi/agents/<name>.toml` (or `<profile>/agents/<name>.toml`), creates or reuses
   a sub-context with a parent `PortalPane`, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL=1`,
@@ -214,7 +214,17 @@ plexi skill install --agent codex
   crashes keep the pane and sub-context open in `Error` state). Workers escalate to their
   parent master agent via `plexi agent ask "<question>"` (Tier 1 `Blocked`, waking the parent's
   `pane wait` without filing human `NeedsYou`), while `plexi needs-you` is Tier 2 human
-  escalation. `agent report --event` preserves
+  escalation. On startup (`[agents] restore_mode = "lazy"` by default), active-context agent
+  panes with a captured `session_id` auto-resume in their restored `cwd` via their Harness
+  Adapter (`claude --resume <id>`, `codex resume <id>`, `pi --session <id>`, `agy --resume <id>`),
+  mid-turn `Working` panes transition to `Interrupted` with their `tail_preview`, ephemeral
+  `Completed` workers are skipped, and background/sub-context agent panes restore in
+  `[Plexi Standby]` (preserving slots and `Blocked` / `NeedsYou` status rollups on parent
+  portals) until focused, `Enter`, or `plexi pane send`. Closing an agent pane appends a record
+  to `<profile>/agent_history.jsonl`; inspect closed runs with
+  `plexi agent history [--limit N] [--harness <name>] [--role <name>] [--json]` and reopen any
+  historical run into a live resumed pane with
+  `plexi agent reopen <run-id|session-id> [--subcontext <name>] [--json]`. `agent report --event` preserves
   a provider lifecycle event separately from its UI state; `--blocked-reason`
   supplies a typed reason. Read `agent report --help` before using these optional
   fields.

@@ -567,8 +567,14 @@ impl PlexiApp {
                         let (pane_type, title, cwd) = match pane {
                             crate::host::pane::Pane::Terminal(t) => {
                                 let name = t.name.clone().unwrap_or_else(|| "terminal".to_string());
-                                let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
+                                let cwd = t
+                                    .standby_cwd
+                                    .as_ref()
                                     .map(|p| p.to_string_lossy().into_owned())
+                                    .or_else(|| {
+                                        crate::host::shell::get_pid_cwd(t.backend.child_pid())
+                                            .map(|p| p.to_string_lossy().into_owned())
+                                    })
                                     .or_else(|| {
                                         self.pane_worktrees
                                             .get(pane_id)
@@ -604,6 +610,13 @@ impl PlexiApp {
                             entry["agent_session_id"] = serde_json::json!(t.agent_session_id);
                             entry["agent_role"] = serde_json::json!(t.agent_role);
                             entry["resume_command"] = serde_json::json!(t.resume_command());
+                            entry["standby"] = serde_json::json!(t.is_standby());
+                            entry["standby_banner"] = serde_json::json!(t.standby_banner());
+                            entry["last_resumed_command"] =
+                                serde_json::json!(t.last_resumed_command);
+                            entry["agent_completed"] = serde_json::json!(t.agent_completed);
+                            entry["agent_session"] =
+                                serde_json::json!(t.build_saved_agent_session());
                             entry["exited"] = serde_json::json!(t.exited);
                             entry["exit_status"] = serde_json::json!(t.exit_status);
                         }
@@ -670,8 +683,14 @@ impl PlexiApp {
                         let agent = pane.agent();
                         let info = match pane {
                             crate::host::pane::Pane::Terminal(t) => {
-                                let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
+                                let cwd = t
+                                    .standby_cwd
+                                    .as_ref()
                                     .map(|p| p.to_string_lossy().into_owned())
+                                    .or_else(|| {
+                                        crate::host::shell::get_pid_cwd(t.backend.child_pid())
+                                            .map(|p| p.to_string_lossy().into_owned())
+                                    })
                                     .or_else(|| {
                                         self.pane_worktrees
                                             .get(pane_id)
@@ -693,6 +712,11 @@ impl PlexiApp {
                                     "agent_session_id": t.agent_session_id,
                                     "agent_role": t.agent_role,
                                     "resume_command": t.resume_command(),
+                                    "standby": t.is_standby(),
+                                    "standby_banner": t.standby_banner(),
+                                    "last_resumed_command": t.last_resumed_command,
+                                    "agent_completed": t.agent_completed,
+                                    "agent_session": t.build_saved_agent_session(),
                                     "exited": t.exited,
                                     "exit_status": t.exit_status,
                                     "slots": pane_slots_json(pane),
@@ -1418,6 +1442,7 @@ impl PlexiApp {
                 } else {
                     false
                 };
+                self.mark_workspace_dirty();
                 write_json_response(
                     response_file,
                     serde_json::json!({
@@ -1999,6 +2024,7 @@ impl PlexiApp {
                         ))
                     }
                     Some("terminal") => {
+                        self.resume_standby_pane(*pane_id);
                         match self
                             .windows
                             .iter_mut()
@@ -2157,9 +2183,15 @@ impl PlexiApp {
                     }
                     Some(pane) => {
                         if let Some(term) = pane.as_terminal_mut() {
-                            let bytes = super::key_str_to_pty_bytes(key);
-                            term.backend
-                                .process_command(egui_term::BackendCommand::Write(bytes));
+                            let is_enter = key.eq_ignore_ascii_case("enter")
+                                || key.eq_ignore_ascii_case("return");
+                            if is_enter && term.is_standby() {
+                                self.resume_standby_pane(*pane_id);
+                            } else {
+                                let bytes = super::key_str_to_pty_bytes(key);
+                                term.backend
+                                    .process_command(egui_term::BackendCommand::Write(bytes));
+                            }
                             Ok(serde_json::json!({"ok": true}))
                         } else if pane.as_app_mut().is_some()
                             && text_input_focused
@@ -2663,7 +2695,23 @@ impl PlexiApp {
                             Err(format!("pane {pane_id} is not a terminal pane"))
                         }
                         Some(term) => {
-                            if let Some(cursor) = from_cursor {
+                            if let Some(banner) = term.standby_banner() {
+                                let mut captured_lines = vec![banner];
+                                if let Some(tail) = term
+                                    .tail_preview
+                                    .as_deref()
+                                    .filter(|s| !s.trim().is_empty())
+                                {
+                                    captured_lines.extend(tail.lines().map(ToString::to_string));
+                                }
+                                Ok(serde_json::json!({
+                                    "lines": captured_lines,
+                                    "cursor": 0,
+                                    "missed": false,
+                                    "standby": true,
+                                    "tail_preview": term.tail_preview,
+                                }))
+                            } else if let Some(cursor) = from_cursor {
                                 let (mut captured_lines, new_cursor, missed) =
                                     term.backend.capture_lines_since(*cursor);
                                 if !full_output {
@@ -2682,6 +2730,8 @@ impl PlexiApp {
                                     "lines": captured_lines,
                                     "cursor": new_cursor,
                                     "missed": missed,
+                                    "standby": false,
+                                    "tail_preview": term.tail_preview,
                                 }))
                             } else {
                                 let (mut captured, lw) =
@@ -2698,6 +2748,27 @@ impl PlexiApp {
                                         captured.len()
                                     );
                                 }
+                                if term
+                                    .agent
+                                    .as_ref()
+                                    .is_some_and(|a| a.state == crate::protocol::AgentState::Interrupted)
+                                {
+                                    if let Some(tail) = term
+                                        .tail_preview
+                                        .as_deref()
+                                        .filter(|s| !s.trim().is_empty())
+                                    {
+                                        let first_tail_line = tail.lines().next().unwrap_or("");
+                                        if !first_tail_line.is_empty()
+                                            && !captured.iter().any(|l| l.contains(first_tail_line))
+                                        {
+                                            let mut with_tail: Vec<String> =
+                                                tail.lines().map(ToString::to_string).collect();
+                                            with_tail.extend(captured);
+                                            captured = with_tail;
+                                        }
+                                    }
+                                }
                                 log::info!(
                                     "pane_ipc: capture_pane: lines={} cursor={lw}",
                                     captured.len()
@@ -2706,6 +2777,8 @@ impl PlexiApp {
                                     "lines": captured,
                                     "cursor": lw,
                                     "missed": false,
+                                    "standby": false,
+                                    "tail_preview": term.tail_preview,
                                 }))
                             }
                         }
@@ -3009,29 +3082,58 @@ impl PlexiApp {
                     detail.is_some()
                 );
                 let mut found = false;
+                let mut dirty = false;
                 let mut has_parent_pane = false;
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
                             has_parent_pane = t.parent_pane_id.is_some();
                             if let Some(sid) = session_id.as_ref().filter(|s| !s.is_empty()) {
-                                t.agent_session_id = Some(sid.clone());
+                                if t.agent_session_id.as_ref() != Some(sid) {
+                                    t.agent_session_id = Some(sid.clone());
+                                    dirty = true;
+                                }
                             }
                             if t.agent_harness.is_none() {
                                 if let Some(h) = crate::cli::AgentHarness::parse(agent) {
                                     t.agent_harness = Some(h.as_str().to_string());
+                                    dirty = true;
                                 }
                             }
+                            let new_reason = if matches!(
+                                state,
+                                crate::protocol::AgentState::Blocked
+                                    | crate::protocol::AgentState::NeedsYou
+                            ) {
+                                *blocked_reason
+                            } else {
+                                None
+                            };
+                            if t.last_blocked_reason != new_reason {
+                                t.last_blocked_reason = new_reason;
+                                dirty = true;
+                            }
+                            if *state == crate::protocol::AgentState::Completed && !t.agent_completed
+                            {
+                                t.agent_completed = true;
+                                dirty = true;
+                            }
                         }
-                        found = pane.set_agent(Some(crate::protocol::PaneAgentState {
-                            pane_id: *pane_id,
-                            state: state.clone(),
-                            agent: agent.clone(),
-                            detail: detail.clone(),
-                            session_id: session_id.clone(),
-                        }));
+                        let (set_ok, state_dirty) =
+                            pane.set_agent_with_dirty(Some(crate::protocol::PaneAgentState {
+                                pane_id: *pane_id,
+                                state: state.clone(),
+                                agent: agent.clone(),
+                                detail: detail.clone(),
+                                session_id: session_id.clone(),
+                            }));
+                        found = set_ok;
+                        dirty |= state_dirty;
                         break;
                     }
+                }
+                if dirty {
+                    self.mark_workspace_dirty();
                 }
                 if found {
                     let provenance = Provenance {
@@ -3893,6 +3995,8 @@ impl PlexiApp {
                         for win in &mut self.windows {
                             if let Some(pane) = win.panes.get_mut(pane_id) {
                                 if let Some(t) = pane.as_terminal_mut() {
+                                    t.agent_completed = true;
+                                    t.last_blocked_reason = None;
                                     if let Some(ref h) = t.agent_harness {
                                         agent_label = h.clone();
                                     } else if let Some(ref a) = t.agent {
@@ -3911,6 +4015,7 @@ impl PlexiApp {
                                 break;
                             }
                         }
+                        self.mark_workspace_dirty();
                         let provenance = Provenance {
                             source: Source::LegacyReport,
                             agent_label,
@@ -3983,6 +4088,8 @@ impl PlexiApp {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
                             parent_pane_id = t.parent_pane_id;
+                            t.last_blocked_reason =
+                                Some(crate::protocol::AgentBlockedReason::Unknown);
                             if let Some(ref h) = t.agent_harness {
                                 agent_label = h.clone();
                             } else if let Some(ref a) = t.agent {
@@ -4001,6 +4108,7 @@ impl PlexiApp {
                     }
                 }
                 if found {
+                    self.mark_workspace_dirty();
                     let question_payload = serde_json::json!({
                         "pane_id": pane_id,
                         "parent_pane_id": parent_pane_id,
@@ -4059,6 +4167,99 @@ impl PlexiApp {
                     });
                     write_json_response(response_file, payload);
                 }
+            }
+            crate::protocol::AppRequest::AgentReopen {
+                query,
+                subcontext,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=agent_reopen query={query} subcontext={subcontext:?}"
+                );
+                let history = crate::workspace::load_agent_history();
+                let matched = history.into_iter().rev().find(|r| {
+                    r.run_id == *query || r.session_id.as_deref() == Some(query.as_str())
+                });
+                let Some(record) = matched else {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "run_not_found",
+                            "error": format!("no closed agent run or session matching '{query}' in agent_history.jsonl"),
+                        }),
+                    );
+                    return;
+                };
+                let resume_cmd = match record.session_id.as_deref() {
+                    Some(sid) if !sid.trim().is_empty() => {
+                        if let Some(adapter) =
+                            crate::cli::agent::harness_adapter(&record.harness)
+                        {
+                            adapter.resume_command(sid)
+                        } else {
+                            format!("{} --resume {}", record.harness, sid.trim())
+                        }
+                    }
+                    _ => record.harness.clone(),
+                };
+                let role = record
+                    .config_name
+                    .clone()
+                    .or_else(|| record.pane_name.clone())
+                    .unwrap_or_else(|| record.harness.clone());
+                let result = self.spawn_agent_worker_pane(
+                    &role,
+                    &record.harness,
+                    &resume_cmd,
+                    record.summary.as_deref().unwrap_or_default(),
+                    subcontext.as_deref(),
+                    false,
+                    record.parent_pane_id,
+                    Some(record.cwd.clone()),
+                    None,
+                );
+                let payload = match result {
+                    Ok((new_pane_id, target_ctx_id)) => {
+                        for win in &mut self.windows {
+                            if let Some(pane) = win.panes.get_mut(&new_pane_id) {
+                                if let Some(t) = pane.as_terminal_mut() {
+                                    t.agent_session_id = record.session_id.clone();
+                                    t.last_resumed_command = Some(resume_cmd.clone());
+                                    t.slots = record.slots.clone();
+                                    if let Some(ref mut a) = t.agent {
+                                        a.session_id = record.session_id.clone();
+                                        a.state = crate::protocol::AgentState::Idle;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        self.mark_workspace_dirty();
+                        log::info!(
+                            "agent_reopen: reopened run_id={} session_id={:?} harness={} in pane {new_pane_id} cmd={resume_cmd}",
+                            record.run_id,
+                            record.session_id,
+                            record.harness
+                        );
+                        serde_json::json!({
+                            "ok": true,
+                            "pane_id": new_pane_id,
+                            "context_id": target_ctx_id,
+                            "run_id": record.run_id,
+                            "session_id": record.session_id,
+                            "harness": record.harness,
+                            "role": role,
+                            "command": resume_cmd,
+                            "cwd": record.cwd,
+                        })
+                    }
+                    Err(e) => serde_json::json!({
+                        "ok": false,
+                        "error": e,
+                    }),
+                };
+                write_json_response(response_file, payload);
             }
             crate::protocol::AppRequest::Wake => {
                 // No-op: the wake effect is the socket listener's repaint
@@ -4119,6 +4320,11 @@ impl PlexiApp {
         let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) else {
             return Err(format!("pane {pane_id} not found"));
         };
+        if slot_name == "completed" {
+            if let Some(t) = pane.as_terminal_mut() {
+                t.agent_completed = true;
+            }
+        }
         let Some(slots) = pane.slots_mut() else {
             return Err(format!("pane {pane_id} does not support slots"));
         };
@@ -4170,6 +4376,7 @@ impl PlexiApp {
             .canonicalize()
             .unwrap_or_else(|_| write_path.clone());
         slots.insert(slot_name.to_string(), absolute.clone());
+        self.mark_workspace_dirty();
         let size = std::fs::metadata(&absolute).map(|m| m.len()).unwrap_or(0);
         match std::fs::read(&absolute) {
             Ok(value) => self.emit_pane_lifecycle(
@@ -4374,11 +4581,15 @@ impl PlexiApp {
     pub(super) fn tick_terminal_activity(&mut self) {
         use crate::protocol::AgentState;
         let mut transitions = Vec::new();
+        let mut observed_dirty = false;
         for window in self.windows.iter_mut() {
             for (pane_id, pane) in window.panes.iter_mut() {
                 let Some(t) = pane.as_terminal_mut() else {
                     continue;
                 };
+                if t.is_standby() {
+                    continue;
+                }
                 let shell_pid = t.backend.child_pid();
                 let fg = t.backend.foreground_pid();
                 let new = if t.exited {
@@ -4482,8 +4693,12 @@ impl PlexiApp {
                         transitions.push((*pane_id, agent.clone()));
                     }
                     t.observed_agent = observed;
+                    observed_dirty = true;
                 }
             }
+        }
+        if observed_dirty {
+            self.mark_workspace_dirty();
         }
         for (pane_id, agent) in transitions {
             self.emit_observed_agent_transition(pane_id, &agent);

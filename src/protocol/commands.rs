@@ -2,7 +2,7 @@ use super::primitives::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Agent state reported by a hook script.
+/// Agent state reported by a hook script or restored by the workspace.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
@@ -10,6 +10,21 @@ pub enum AgentState {
     Blocked,
     NeedsYou,
     Idle,
+    Interrupted,
+    Completed,
+}
+
+impl AgentState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentState::Working => "working",
+            AgentState::Blocked => "blocked",
+            AgentState::NeedsYou => "needs_you",
+            AgentState::Idle => "idle",
+            AgentState::Interrupted => "interrupted",
+            AgentState::Completed => "completed",
+        }
+    }
 }
 
 /// A reported blocking condition. Unknown preserves legacy reports without guessing.
@@ -727,6 +742,17 @@ pub enum AppRequest {
     AgentAsk {
         pane_id: u64,
         question: String,
+        response_file: String,
+    },
+
+    /// Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl`
+    /// (`plexi agent reopen <run-id|session-id>`, stint 0803).
+    AgentReopen {
+        /// Run ID (`run-...`) or harness session ID to reopen.
+        query: String,
+        /// Optional child sub-context name override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subcontext: Option<String>,
         response_file: String,
     },
 

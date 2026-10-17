@@ -109,7 +109,9 @@ impl ContextState {
                                         PaneSummaryStatus::Active
                                     }
                                 }
-                                AgentState::Idle => PaneSummaryStatus::Idle,
+                                AgentState::Idle
+                                | AgentState::Interrupted
+                                | AgentState::Completed => PaneSummaryStatus::Idle,
                             }
                         } else if t.exited {
                             PaneSummaryStatus::Idle
@@ -136,7 +138,9 @@ impl ContextState {
                                     active_agents += 1;
                                     PaneSummaryStatus::Active
                                 }
-                                AgentState::Idle => PaneSummaryStatus::Idle,
+                                AgentState::Idle
+                                | AgentState::Interrupted
+                                | AgentState::Completed => PaneSummaryStatus::Idle,
                             }
                         } else {
                             PaneSummaryStatus::Idle

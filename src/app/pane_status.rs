@@ -29,12 +29,7 @@ pub(crate) fn composite_status(
         })
         .cloned();
 
-    let agent_state = agent.map(|state| match state.state {
-        AgentState::Working => "working",
-        AgentState::Idle => "idle",
-        AgentState::Blocked => "blocked",
-        AgentState::NeedsYou => "needs_you",
-    });
+    let agent_state = agent.map(|state| state.state.as_str());
     let detail = agent.and_then(|state| state.detail.clone());
 
     let (verdict, confidence) = if last_buffer_line.as_deref().is_some_and(is_tool_call_tail) {
@@ -42,6 +37,8 @@ pub(crate) fn composite_status(
     } else {
         match agent.map(|state| &state.state) {
             Some(AgentState::Working) => ("working", "high"),
+            Some(AgentState::Interrupted) => ("interrupted", "high"),
+            Some(AgentState::Completed) => ("completed", "high"),
             Some(AgentState::Blocked | AgentState::NeedsYou)
                 if detail
                     .as_deref()

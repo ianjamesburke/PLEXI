@@ -562,21 +562,67 @@ impl Pane {
     }
 
     pub fn set_agent(&mut self, agent: Option<crate::protocol::PaneAgentState>) -> bool {
+        self.set_agent_with_dirty(agent).0
+    }
+
+    /// Set the pane's agent state and return `(found, session_or_state_changed)`.
+    /// Callers on `PlexiApp` use the second boolean to trigger `mark_workspace_dirty()`
+    /// whenever `session_id` or `state` transitions so crashes never lose active
+    /// session IDs or states.
+    pub fn set_agent_with_dirty(
+        &mut self,
+        agent: Option<crate::protocol::PaneAgentState>,
+    ) -> (bool, bool) {
         match self {
             Pane::Terminal(t) => {
+                let prev_state = t.agent.as_ref().map(|a| a.state.clone());
+                let prev_session = t
+                    .agent_session_id
+                    .clone()
+                    .or_else(|| t.agent.as_ref().and_then(|a| a.session_id.clone()));
+                if let Some(ref a) = agent {
+                    if let Some(ref sid) = a.session_id {
+                        if !sid.is_empty() {
+                            t.agent_session_id = Some(sid.clone());
+                        }
+                    }
+                    if t.agent_harness.is_none()
+                        && crate::cli::AgentHarness::parse(&a.agent).is_some()
+                    {
+                        t.agent_harness = Some(a.agent.clone());
+                    }
+                    if let Some(ref mut standby) = t.standby_session {
+                        standby.last_state = a.state.clone();
+                        standby.last_detail = a.detail.clone();
+                        if a.session_id.is_some() {
+                            standby.session_id = a.session_id.clone();
+                        }
+                    }
+                }
+                let new_state = agent.as_ref().map(|a| a.state.clone());
+                let new_session = t
+                    .agent_session_id
+                    .clone()
+                    .or_else(|| agent.as_ref().and_then(|a| a.session_id.clone()));
+                let changed = prev_state != new_state || prev_session != new_session;
                 t.agent_reported_at = agent.as_ref().map(|_| std::time::Instant::now());
                 t.agent = agent;
-                true
+                (true, changed)
             }
             Pane::App(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
-                    replaced.set_agent(agent)
+                    replaced.set_agent_with_dirty(agent)
                 } else {
+                    let prev_state = a.agent.as_ref().map(|s| s.state.clone());
+                    let prev_session = a.agent.as_ref().and_then(|s| s.session_id.clone());
+                    let new_state = agent.as_ref().map(|s| s.state.clone());
+                    let new_session = agent.as_ref().and_then(|s| s.session_id.clone());
+                    let changed = prev_state != new_state || prev_session != new_session;
                     a.agent = agent;
-                    true
+                    (true, changed)
                 }
             }
-            Pane::Portal(_) => false,
+            Pane::Portal(_) => (false, false),
         }
     }
 
@@ -619,6 +665,18 @@ impl Pane {
             _ => None,
         }
     }
+
+    /// Resume a Standby agent pane, returning `true` if the pane was in Standby.
+    pub fn resume_from_standby(&mut self) -> bool {
+        match self {
+            Pane::Terminal(t) => t.resume_from_standby().is_some(),
+            Pane::App(a) => a
+                .overlay_replaced
+                .as_deref_mut()
+                .is_some_and(|r| r.resume_from_standby()),
+            Pane::Portal(_) => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +707,19 @@ pub struct TerminalPane {
     pub agent_session_id: Option<String>,
     /// Optional agent role config name (`.plexi/agents/<name>.toml`).
     pub agent_role: Option<String>,
+    /// Latest blocked reason reported by hook or `plexi agent ask`.
+    pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    /// Cached tail preview preserved across Standby / Interrupted restore.
+    pub tail_preview: Option<String>,
+    /// Set when the agent explicitly completed via `plexi agent done` or clean ephemeral exit.
+    pub agent_completed: bool,
+    /// When present, this background/sub-context agent pane was restored into lightweight
+    /// `[Plexi Standby]` and has not yet launched its agent CLI process.
+    pub standby_session: Option<crate::workspace::SavedAgentSession>,
+    /// Working directory captured when entering `[Plexi Standby]`.
+    pub standby_cwd: Option<PathBuf>,
+    /// Most recent CLI resume invocation dispatched by startup restore or Standby wake.
+    pub last_resumed_command: Option<String>,
     /// Last OSC 2 title string the process wrote, tracked independently of `name` and `name_locked`.
     /// Used by FocusChanged events to record what was running in the pane.
     pub pty_title: Option<String>,
@@ -704,6 +775,7 @@ impl TerminalPane {
             .and_then(|v| v.parse::<u64>().ok());
         let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
         let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
+        let last_resumed_command = settings.env.get("PLEXI_RESUME_COMMAND").cloned();
         #[cfg(test)]
         let spawn_env = settings.env.clone();
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
@@ -726,6 +798,12 @@ impl TerminalPane {
             agent_harness,
             agent_session_id: None,
             agent_role,
+            last_blocked_reason: None,
+            tail_preview: None,
+            agent_completed: false,
+            standby_session: None,
+            standby_cwd: None,
+            last_resumed_command,
             pty_title: None,
             outside_workspace_cached: false,
             outside_workspace_checked_at: None,
@@ -742,6 +820,218 @@ impl TerminalPane {
         })
     }
 
+    /// True if this terminal pane is or was an agent pane (configured harness/role,
+    /// hook-reported agent, host-observed agent, or restored Standby session).
+    pub fn is_agent_pane(&self) -> bool {
+        self.agent_harness.is_some()
+            || self.agent_role.is_some()
+            || self.agent.is_some()
+            || self.observed_agent.is_some()
+            || self.standby_session.is_some()
+    }
+
+    /// True when this agent pane is currently in lightweight `[Plexi Standby]`.
+    pub fn is_standby(&self) -> bool {
+        self.standby_session.is_some()
+    }
+
+    /// Formatted `[Plexi Standby]` banner line when this pane is in Standby.
+    pub fn standby_banner(&self) -> Option<String> {
+        let s = self.standby_session.as_ref()?;
+        let sid = s.session_id.as_deref().unwrap_or("untracked");
+        let state = s.last_state.as_str();
+        Some(format!(
+            "[Plexi Standby] {} session {} ({}) — Press Enter or focus to resume",
+            s.harness, sid, state
+        ))
+    }
+
+    /// Exit `[Plexi Standby]` and dispatch the Harness Adapter resume command
+    /// into the terminal's PTY in its restored `cwd`.
+    pub fn resume_from_standby(&mut self) -> Option<String> {
+        let standby = self.standby_session.take()?;
+        let cmd = standby
+            .session_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(|sid| {
+                crate::cli::AgentHarness::parse(&standby.harness).map(|h| h.resume_command(sid))
+            });
+        if let Some(ref resume_cmd) = cmd {
+            let line = if standby.ephemeral {
+                format!("{resume_cmd}; exit $?\n")
+            } else {
+                format!("{resume_cmd}\n")
+            };
+            self.backend
+                .process_command(egui_term::BackendCommand::Write(line.into_bytes()));
+            self.last_resumed_command = Some(resume_cmd.clone());
+        }
+        log::info!(
+            "standby: resumed agent pane {} harness={} session_id={:?} cmd={:?}",
+            self.id,
+            standby.harness,
+            standby.session_id,
+            cmd
+        );
+        Some(cmd.unwrap_or(standby.harness))
+    }
+
+    /// Capture a compact tail preview from the terminal buffer, falling back to
+    /// any previously preserved `tail_preview`.
+    pub fn capture_tail_preview(&self) -> Option<String> {
+        if self.is_standby() {
+            return self
+                .tail_preview
+                .clone()
+                .or_else(|| self.standby_session.as_ref().and_then(|s| s.tail_preview.clone()));
+        }
+        let lines: Vec<String> = self
+            .backend
+            .capture_lines(8)
+            .into_iter()
+            .map(|l| l.trim_end().to_string())
+            .filter(|l| !l.trim().is_empty() && !l.contains("[Plexi Standby]"))
+            .collect();
+        if lines.is_empty() {
+            self.tail_preview.clone()
+        } else {
+            let start = lines.len().saturating_sub(4);
+            Some(lines[start..].join("\n"))
+        }
+    }
+
+    /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
+    /// if it is an agent pane.
+    pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
+        if !self.is_agent_pane() {
+            return None;
+        }
+        if let Some(ref standby) = self.standby_session {
+            let mut s = standby.clone();
+            if let Some(ref sid) = self.agent_session_id {
+                s.session_id = Some(sid.clone());
+            }
+            if let Some(ref role) = self.agent_role {
+                s.config_name = Some(role.clone());
+            }
+            if let Some(ref a) = self.agent {
+                s.last_state = a.state.clone();
+                if a.detail.is_some() {
+                    s.last_detail = a.detail.clone();
+                }
+            }
+            if self.agent_completed || self.slots.contains_key("completed") {
+                s.last_state = crate::protocol::AgentState::Completed;
+            }
+            if self.last_blocked_reason.is_some() {
+                s.last_blocked_reason = self.last_blocked_reason;
+            }
+            if self.parent_pane_id.is_some() {
+                s.parent_pane_id = self.parent_pane_id;
+            }
+            s.ephemeral = self.ephemeral;
+            if s.tail_preview.is_none() {
+                s.tail_preview = self.tail_preview.clone();
+            }
+            return Some(s);
+        }
+
+        let harness = self
+            .agent_harness
+            .clone()
+            .or_else(|| self.agent.as_ref().map(|a| a.agent.clone()))
+            .or_else(|| self.observed_agent.as_ref().map(|a| a.agent.clone()))
+            .unwrap_or_else(|| "claude".to_string());
+        let session_id = self
+            .agent_session_id
+            .clone()
+            .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.clone()));
+        let active_agent = select_terminal_agent(
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            std::time::Instant::now(),
+        );
+        let last_state = if self.agent_completed || self.slots.contains_key("completed") {
+            crate::protocol::AgentState::Completed
+        } else if let Some(a) = active_agent {
+            a.state.clone()
+        } else {
+            crate::protocol::AgentState::Idle
+        };
+        let last_detail = self
+            .agent
+            .as_ref()
+            .and_then(|a| a.detail.clone())
+            .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
+
+        Some(crate::workspace::SavedAgentSession {
+            harness,
+            config_name: self.agent_role.clone(),
+            session_id,
+            last_state,
+            last_blocked_reason: self.last_blocked_reason,
+            last_detail,
+            parent_pane_id: self.parent_pane_id,
+            ephemeral: self.ephemeral,
+            tail_preview: self.capture_tail_preview(),
+        })
+    }
+
+    /// Build a closed-run [`crate::workspace::AgentHistoryRecord`] for this pane
+    /// if it is an agent pane.
+    pub fn build_history_record(
+        &self,
+        context_id: u64,
+        context_name: &str,
+        cwd: PathBuf,
+    ) -> Option<crate::workspace::AgentHistoryRecord> {
+        let mut session = self.build_saved_agent_session()?;
+        if self.agent_completed
+            || self.slots.contains_key("completed")
+            || (self.ephemeral
+                && self.exit_status == Some(crate::host::pane_lifecycle::ExitStatus::Code(0)))
+        {
+            session.last_state = crate::protocol::AgentState::Completed;
+        }
+        let summary = self
+            .slots
+            .get("summary")
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| session.last_detail.clone());
+        let result = self
+            .slots
+            .get("result")
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let closed_at = crate::platform::clock::now_secs();
+        let run_id = format!("run-{}-{closed_at}", self.id);
+        Some(crate::workspace::AgentHistoryRecord {
+            run_id,
+            pane_id: self.id,
+            context_id,
+            context_name: context_name.to_string(),
+            parent_pane_id: session.parent_pane_id,
+            pane_name: self.name.clone(),
+            harness: session.harness,
+            config_name: session.config_name,
+            session_id: session.session_id,
+            cwd,
+            ephemeral: session.ephemeral,
+            last_state: session.last_state,
+            last_blocked_reason: session.last_blocked_reason,
+            last_detail: session.last_detail,
+            summary,
+            result,
+            tail_preview: session.tail_preview,
+            slots: self.slots.clone(),
+            closed_at,
+        })
+    }
+
     /// Build the CLI resume invocation (`claude --resume <id>`, `codex resume <id>`,
     /// `pi --session <id>`, `agy --resume <id>`) when both a harness and session ID
     /// have been captured for this terminal pane.
@@ -749,12 +1039,18 @@ impl TerminalPane {
         let harness_str = self
             .agent_harness
             .as_deref()
+            .or_else(|| self.standby_session.as_ref().map(|s| s.harness.as_str()))
             .or_else(|| self.agent.as_ref().map(|a| a.agent.as_str()))
             .or_else(|| self.observed_agent.as_ref().map(|a| a.agent.as_str()))?;
         let harness = crate::cli::AgentHarness::parse(harness_str)?;
         let session_id = self
             .agent_session_id
             .as_deref()
+            .or_else(|| {
+                self.standby_session
+                    .as_ref()
+                    .and_then(|s| s.session_id.as_deref())
+            })
             .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.as_deref()))?;
         Some(harness.resume_command(session_id))
     }

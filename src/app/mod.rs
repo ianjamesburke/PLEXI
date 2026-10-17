@@ -1911,6 +1911,39 @@ impl PlexiApp {
         self.apply_context_transition_effects();
     }
 
+    /// Resume a Standby agent pane by ID, marking the workspace dirty when
+    /// a Standby pane wakes up.
+    pub(crate) fn resume_standby_pane(&mut self, pane_id: crate::spatial::tiling::PaneId) -> bool {
+        let mut resumed = false;
+        for win in &mut self.windows {
+            if let Some(pane) = win.panes.get_mut(&pane_id) {
+                if pane.resume_from_standby() {
+                    resumed = true;
+                }
+                break;
+            }
+        }
+        if resumed {
+            self.mark_workspace_dirty();
+        }
+        resumed
+    }
+
+    /// If the currently focused pane in the active window is in `[Plexi Standby]`,
+    /// resume it immediately.
+    pub(crate) fn resume_focused_standby_pane(&mut self) -> bool {
+        let Some(win) = self.windows.get(self.active_window) else {
+            return false;
+        };
+        let Some(tile_id) = win.focused_pane else {
+            return false;
+        };
+        let Some(pane_id) = Self::find_pane_in_tile(&win.tree, tile_id) else {
+            return false;
+        };
+        self.resume_standby_pane(pane_id)
+    }
+
     /// Search ALL windows (not just the active one) for a pane by ID.
     /// Returns (window_index, tile_id). O(n*m) but n is typically 1-3.
     pub(crate) fn find_pane_in_any_window(
@@ -4924,6 +4957,9 @@ pub(crate) fn restore_workspace(
         return None;
     }
     let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
+    let restore_mode = config.agent_restore_mode();
+    let initial_active_ctx = ws.active_context.min(ws.contexts.len().saturating_sub(1));
+    let initial_active_ctx_id = ws.contexts[initial_active_ctx].context_id;
     let mut windows = Vec::new();
     let mut restored_heartbeats = HashMap::new();
     let ctx_name_map: std::collections::HashMap<u64, String> = ws
@@ -4947,9 +4983,32 @@ pub(crate) fn restore_workspace(
         .map(|c| (c.context_id, c.depth))
         .collect();
 
-    for saved_win in ws.windows {
+    for mut saved_win in ws.windows {
         let mut panes = HashMap::new();
+        let mut non_skipped_pane_count = 0usize;
+        let ctx_depth = ctx_depth_map
+            .get(&saved_win.context_id)
+            .copied()
+            .unwrap_or(0);
         for saved_pane in &saved_win.panes {
+            // Do not respawn completed ephemeral agent panes on startup.
+            let is_completed_ephemeral = saved_pane.agent_session.as_ref().is_some_and(|s| {
+                s.ephemeral
+                    && (s.last_state == crate::protocol::AgentState::Completed
+                        || saved_pane.slots.contains_key("completed"))
+            });
+            if is_completed_ephemeral {
+                log::info!(
+                    "workspace_restore: skipping completed ephemeral agent pane {}",
+                    saved_pane.id
+                );
+                if let Some(tile_id) = saved_win.tree.tiles.find_pane(&saved_pane.id) {
+                    saved_win.tree.remove_recursively(tile_id);
+                }
+                continue;
+            }
+            non_skipped_pane_count += 1;
+
             if let Some(heartbeat) = &saved_pane.heartbeat {
                 restored_heartbeats.insert(
                     saved_pane.id,
@@ -5107,23 +5166,88 @@ pub(crate) fn restore_workspace(
                         .cloned()
                         .unwrap_or_default();
                     let ctx_root = ctx_root_map.get(&saved_win.context_id);
-                    let ctx_depth = ctx_depth_map
-                        .get(&saved_win.context_id)
-                        .copied()
-                        .unwrap_or(0);
-                    let (settings, pending_credential) =
+                    let effective_session = saved_pane
+                        .agent_session
+                        .as_ref()
+                        .filter(|_| restore_mode != config::AgentRestoreMode::Off)
+                        .map(|s| {
+                            let mut s = s.clone();
+                            if s.last_state == crate::protocol::AgentState::Working {
+                                s.last_state = crate::protocol::AgentState::Interrupted;
+                            }
+                            s
+                        });
+                    let is_active_top_context =
+                        saved_win.context_id == initial_active_ctx_id && ctx_depth == 0;
+                    let should_auto_resume = matches!(
+                        restore_mode,
+                        config::AgentRestoreMode::Eager
+                    ) || (matches!(
+                        restore_mode,
+                        config::AgentRestoreMode::Lazy
+                    ) && is_active_top_context);
+
+                    let (mut settings, pending_credential) =
                         PlexiApp::make_backend_settings_in_profile(
                             collaborators.profile_dir,
                             saved_pane.id,
-                            cwd,
+                            cwd.clone(),
                             collaborators.colors,
                             saved_win.context_id,
                             &ctx_name,
                             &ctx_desc,
                             ctx_root,
                             ctx_depth,
-                            false,
+                            effective_session.is_some(),
                         );
+                    if let Some(ref session) = effective_session {
+                        settings
+                            .env
+                            .insert("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone());
+                        if let Some(ref role) = session.config_name {
+                            settings
+                                .env
+                                .insert("PLEXI_AGENT_ROLE".to_string(), role.clone());
+                        }
+                        if let Some(parent_id) = session.parent_pane_id {
+                            settings
+                                .env
+                                .insert("PLEXI_PARENT_PANE".to_string(), parent_id.to_string());
+                        }
+                        if session.ephemeral {
+                            settings
+                                .env
+                                .insert("PLEXI_EPHEMERAL".to_string(), "1".to_string());
+                        }
+                        if should_auto_resume {
+                            if let Some(sid) =
+                                session.session_id.as_deref().filter(|s| !s.is_empty())
+                            {
+                                if let Some(harness) =
+                                    crate::cli::AgentHarness::parse(&session.harness)
+                                {
+                                    let resume_cmd = harness.resume_command(sid);
+                                    log::info!(
+                                        "workspace_restore: auto-resuming agent pane {} harness={} session_id={} state={} cmd={:?}",
+                                        saved_pane.id,
+                                        session.harness,
+                                        sid,
+                                        session.last_state.as_str(),
+                                        resume_cmd
+                                    );
+                                    settings.env.insert(
+                                        "PLEXI_RESUME_COMMAND".to_string(),
+                                        resume_cmd.clone(),
+                                    );
+                                    crate::pane_ops::apply_initial_cmd(
+                                        &mut settings,
+                                        &resume_cmd,
+                                        session.ephemeral,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if let Some(mut pane) = TerminalPane::new(
                         saved_pane.id,
                         egui_ctx.clone(),
@@ -5132,6 +5256,35 @@ pub(crate) fn restore_workspace(
                         default_font_size,
                     ) {
                         pane.name = saved_pane.name.clone();
+                        pane.slots = saved_pane.slots.clone();
+                        if let Some(session) = effective_session {
+                            pane.ephemeral = session.ephemeral;
+                            pane.parent_pane_id = session.parent_pane_id;
+                            pane.agent_harness = Some(session.harness.clone());
+                            pane.agent_session_id = session.session_id.clone();
+                            pane.agent_role = session.config_name.clone();
+                            pane.last_blocked_reason = session.last_blocked_reason;
+                            pane.tail_preview = session.tail_preview.clone();
+                            pane.agent_completed =
+                                session.last_state == crate::protocol::AgentState::Completed
+                                    || saved_pane.slots.contains_key("completed");
+                            pane.agent = Some(crate::protocol::PaneAgentState {
+                                pane_id: saved_pane.id,
+                                state: session.last_state.clone(),
+                                agent: session.harness.clone(),
+                                detail: session.last_detail.clone(),
+                                session_id: session.session_id.clone(),
+                            });
+                            if !should_auto_resume {
+                                pane.standby_session = Some(session);
+                                pane.standby_cwd = cwd.clone();
+                                log::info!(
+                                    "workspace_restore: restored agent pane {} into standby ({})",
+                                    saved_pane.id,
+                                    pane.standby_banner().unwrap_or_default()
+                                );
+                            }
+                        }
                         pane_entry = Some(Pane::Terminal(Box::new(pane)));
                         pending_credential.mark_live();
                     }
@@ -5144,20 +5297,29 @@ pub(crate) fn restore_workspace(
             }
 
             if let Some(mut pane) = pane_entry {
+                if let Some(slots) = pane.slots_mut() {
+                    if slots.is_empty() && !saved_pane.slots.is_empty() {
+                        *slots = saved_pane.slots.clone();
+                    }
+                }
                 if saved_pane.hidden {
                     pane.set_hidden(true);
                 }
                 panes.insert(saved_pane.id, pane);
             }
         }
-        // Skip only if there were saved panes that all failed to restore
-        // (corrupted state). An empty saved pane list means the user
-        // intentionally closed all panes — restore the empty window so
-        // the welcome screen appears on next launch.
-        if !saved_win.panes.is_empty() && panes.is_empty() {
+        // Skip if there were non-skipped saved panes that all failed to restore
+        // (corrupted state or headless restore without terminal spawner), or if
+        // a sub-context window had only completed ephemeral panes that were all
+        // skipped. Top-level windows whose panes were all completed ephemeral
+        // panes survive as an empty welcome window.
+        if non_skipped_pane_count > 0 && panes.is_empty() {
             continue;
         }
-        windows.push(Window {
+        if non_skipped_pane_count == 0 && !saved_win.panes.is_empty() && ctx_depth > 0 {
+            continue;
+        }
+        let mut win = Window {
             // Strip old auto-generated "Page X,Y" names — treat them as
             // unnamed so they don't pollute the command palette.
             name: if is_auto_window_name(&saved_win.name) {
@@ -5174,11 +5336,66 @@ pub(crate) fn restore_workspace(
             grid_y: saved_win.grid_y,
             window_id: saved_win.window_id,
             context_id: saved_win.context_id,
-        });
+        };
+        if win.panes.is_empty() {
+            win.tree = egui_tiles::Tree::empty("plexi");
+            win.focused_pane = None;
+        } else {
+            win.reconcile_stale_tiles();
+            if win
+                .focused_pane
+                .is_none_or(|fp| win.tree.tiles.get(fp).is_none())
+            {
+                win.focused_pane = win.tree.root.and_then(|root| win.find_first_pane_in(root));
+            }
+        }
+        windows.push(win);
     }
 
     if windows.is_empty() {
         return None;
+    }
+
+    // Prune any sub-contexts whose windows were all dropped (e.g. all panes were
+    // completed ephemeral workers), along with their Portal tiles in parent windows.
+    let surviving_ctx_ids: std::collections::HashSet<u64> =
+        windows.iter().map(|w| w.context_id).collect();
+    let pruned_subcontexts: std::collections::HashSet<u64> = ws
+        .contexts
+        .iter()
+        .filter(|c| c.parent_id.is_some() && !surviving_ctx_ids.contains(&c.context_id))
+        .map(|c| c.context_id)
+        .collect();
+    if !pruned_subcontexts.is_empty() {
+        for win in &mut windows {
+            let portal_ids: Vec<u64> = win
+                .panes
+                .iter()
+                .filter_map(|(id, p)| {
+                    p.portal_target()
+                        .filter(|target| pruned_subcontexts.contains(target))
+                        .map(|_| *id)
+                })
+                .collect();
+            for pid in portal_ids {
+                win.panes.remove(&pid);
+                if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
+                    win.tree.remove_recursively(tile_id);
+                }
+            }
+            if !win.panes.is_empty() {
+                win.reconcile_stale_tiles();
+                if win
+                    .focused_pane
+                    .is_none_or(|fp| win.tree.tiles.get(fp).is_none())
+                {
+                    win.focused_pane = win.tree.root.and_then(|root| win.find_first_pane_in(root));
+                }
+            } else {
+                win.tree = egui_tiles::Tree::empty("plexi");
+                win.focused_pane = None;
+            }
+        }
     }
 
     // Repair window_ids: old workspace files have window_id=0.
@@ -5192,13 +5409,62 @@ pub(crate) fn restore_workspace(
             next_id = next_id.max(win.window_id + 1);
         }
     }
-    let contexts = ws.contexts;
-    let active_ctx = ws.active_context.min(contexts.len().saturating_sub(1));
+    let mut target_active_ctx_id = initial_active_ctx_id;
+    while pruned_subcontexts.contains(&target_active_ctx_id) {
+        if let Some(parent_id) = ws
+            .contexts
+            .iter()
+            .find(|c| c.context_id == target_active_ctx_id)
+            .and_then(|c| c.parent_id)
+        {
+            target_active_ctx_id = parent_id;
+        } else {
+            break;
+        }
+    }
+    let contexts: Vec<crate::host::context::Context> = ws
+        .contexts
+        .into_iter()
+        .filter(|c| !pruned_subcontexts.contains(&c.context_id))
+        .collect();
+    if contexts.is_empty() {
+        return None;
+    }
+
+    // Populate initial `context_state` on restored Portal panes so parent portals
+    // immediately reflect child Blocked / NeedsYou / Idle states on startup.
+    let subcontext_states: std::collections::HashMap<u64, crate::host::context_state::ContextState> =
+        contexts
+            .iter()
+            .filter(|c| c.parent_id.is_some())
+            .map(|c| {
+                let state = crate::host::context_state::ContextState::compute(
+                    c.context_id,
+                    &contexts,
+                    &windows,
+                );
+                (c.context_id, state)
+            })
+            .collect();
+    for win in &mut windows {
+        for pane in win.panes.values_mut() {
+            if let Pane::Portal(portal) = pane {
+                if let Some(state) = subcontext_states.get(&portal.target_context_id) {
+                    portal.context_state = Some(state.clone());
+                }
+            }
+        }
+    }
+    let active_ctx = contexts
+        .iter()
+        .position(|c| c.context_id == target_active_ctx_id)
+        .unwrap_or(0);
     let active_ctx_id = contexts[active_ctx].context_id;
     let active = ws
         .context_active_window
         .get(&active_ctx_id)
         .and_then(|win_id| windows.iter().position(|w| w.window_id == *win_id))
+        .or_else(|| windows.iter().position(|w| w.context_id == active_ctx_id))
         .unwrap_or(0);
     let window_count = windows
         .iter()

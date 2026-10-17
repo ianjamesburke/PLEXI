@@ -89,7 +89,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
+const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
     "preset",
@@ -733,6 +733,21 @@ impl LocalBackendConfig {
     }
 }
 
+/// Startup restoration policy for saved agent sessions (`[agents] restore_mode`).
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentRestoreMode {
+    /// Active-context agent panes with a session ID auto-resume; background and
+    /// sub-context agent panes restore into lightweight Standby until focused,
+    /// pressed Enter, or sent input.
+    #[default]
+    Lazy,
+    /// All restored agent panes with a session ID auto-resume immediately on startup.
+    Eager,
+    /// Agent panes restore as plain terminal shells without auto-resuming.
+    Off,
+}
+
 /// Coding agent command templates for dispatch. Each field is a shell command template
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
 #[derive(Deserialize, Default, Clone)]
@@ -743,6 +758,8 @@ pub struct AgentsConfig {
     pub medium: Option<String>,
     /// Complex/autonomous tasks. Default: claude with --dangerously-skip-permissions.
     pub high: Option<String>,
+    /// Startup restoration mode for saved agent sessions: `"lazy"` (default), `"eager"`, or `"off"`.
+    pub restore_mode: Option<AgentRestoreMode>,
 }
 
 impl AgentsConfig {
@@ -755,6 +772,9 @@ impl AgentsConfig {
         }
         if other.high.is_some() {
             self.high = other.high;
+        }
+        if other.restore_mode.is_some() {
+            self.restore_mode = other.restore_mode;
         }
     }
 }
@@ -1545,6 +1565,13 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 impl PlexiConfig {
     pub fn osc_pane_title_enabled(&self) -> bool {
         self.osc_pane_title.unwrap_or(true)
+    }
+
+    pub fn agent_restore_mode(&self) -> AgentRestoreMode {
+        self.agents
+            .as_ref()
+            .and_then(|a| a.restore_mode)
+            .unwrap_or_default()
     }
 
     /// Load the global config only — no project-level merge. Most call sites

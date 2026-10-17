@@ -94,6 +94,60 @@ pub fn render(
         pane_title_font_size,
     );
 
+    if terminal.is_standby() {
+        let enter_pressed = is_focused
+            && input.keyboard_events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        if enter_pressed {
+            terminal.resume_from_standby();
+        }
+    }
+
+    if let Some(banner) = terminal.standby_banner() {
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
+        let tail = terminal.tail_preview.clone();
+        let response = ui.interact(
+            rect,
+            egui::Id::new(("plexi_standby_banner", *pane_id)),
+            egui::Sense::click(),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 12.0))),
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(&banner)
+                            .monospace()
+                            .size(terminal.font_size)
+                            .color(colors.accent),
+                    );
+                    if let Some(tail) = tail.as_deref().filter(|s| !s.trim().is_empty()) {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(tail)
+                                .monospace()
+                                .size((terminal.font_size - 1.0).max(9.0))
+                                .color(colors.text_dim),
+                        );
+                    }
+                });
+            },
+        );
+        if response.clicked() {
+            terminal.resume_from_standby();
+        }
+        return (false, tab_action);
+    }
+
     let font_size = terminal.font_size;
     LOG_TERMINAL_GLYPH_PADDING.call_once(|| {
         log::info!(

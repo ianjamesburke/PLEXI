@@ -258,6 +258,7 @@ impl HostHarness {
         let restored = crate::workspace::WorkspaceFile::load_from(&profile_path).and_then(|ws| {
             let cfg = app.config.clone();
             let colors = app.colors.clone();
+            let pty_event_tx = app.pty_event_tx.clone();
             crate::app::restore_workspace(
                 ws,
                 &cfg,
@@ -266,7 +267,7 @@ impl HostHarness {
                     colors: &colors,
                     hot_reload: &mut app.hot_reload,
                     state_watch: &mut app.state_watch,
-                    terminal_spawner: None,
+                    terminal_spawner: Some((&ctx, &pty_event_tx)),
                 },
             )
         });
@@ -572,7 +573,12 @@ impl HostHarness {
                 None
             }
         });
-        win.focused_pane = tile_id.copied();
+        if tile_id.is_some() {
+            win.focused_pane = tile_id.copied();
+            self.app.resume_standby_pane(pane_id);
+        } else {
+            win.focused_pane = None;
+        }
         self
     }
 

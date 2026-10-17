@@ -14,12 +14,14 @@
           "type": "string"
         },
         "AgentState": {
-          "description": "Agent state reported by a hook script.",
+          "description": "Agent state reported by a hook script or restored by the workspace.",
           "enum": [
             "working",
             "blocked",
             "needs_you",
-            "idle"
+            "idle",
+            "interrupted",
+            "completed"
           ],
           "type": "string"
         },
@@ -1992,6 +1994,36 @@
             "type",
             "pane_id",
             "question",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl`\n(`plexi agent reopen <run-id|session-id>`, stint 0803).",
+          "properties": {
+            "query": {
+              "description": "Run ID (`run-...`) or harness session ID to reopen.",
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "subcontext": {
+              "description": "Optional child sub-context name override.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "agent_reopen",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "query",
             "response_file"
           ],
           "type": "object"

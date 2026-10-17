@@ -72,6 +72,69 @@ pub struct SavedPane {
     /// existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<SavedAppLaunch>,
+    /// Named file-backed pane slots (`slot_name -> path`) persisted across restarts.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub slots: HashMap<String, PathBuf>,
+    /// Saved agent session state for agent terminal panes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<SavedAgentSession>,
+}
+
+/// Persisted agent session state for an agent terminal pane.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct SavedAgentSession {
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub last_state: crate::protocol::AgentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pane_id: Option<u64>,
+    #[serde(default)]
+    pub ephemeral: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_preview: Option<String>,
+}
+
+/// Closed-run history ledger record written to `~/.plexi-<channel>/agent_history.jsonl`
+/// whenever an agent pane or ephemeral squad worker closes.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct AgentHistoryRecord {
+    pub run_id: String,
+    pub pane_id: u64,
+    pub context_id: u64,
+    pub context_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pane_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_name: Option<String>,
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub cwd: PathBuf,
+    #[serde(default)]
+    pub ephemeral: bool,
+    pub last_state: crate::protocol::AgentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub slots: HashMap<String, PathBuf>,
+    pub closed_at: u64,
 }
 
 impl SavedPane {
@@ -128,6 +191,56 @@ pub enum SavedAppLaunch {
 
 pub fn workspace_path_in(profile_dir: &Path) -> PathBuf {
     profile_dir.join("workspaces").join("default.json")
+}
+
+pub fn agent_history_path_in(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("agent_history.jsonl")
+}
+
+pub fn append_agent_history(record: &AgentHistoryRecord) -> io::Result<()> {
+    append_agent_history_to(&crate::config::config_dir(), record)
+}
+
+pub fn append_agent_history_to(profile_dir: &Path, record: &AgentHistoryRecord) -> io::Result<()> {
+    let path = agent_history_path_in(profile_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut line = serde_json::to_string(record).map_err(io::Error::other)?;
+    line.push('\n');
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    file.write_all(line.as_bytes())?;
+    log::info!(
+        "agent_history: recorded closed run run_id={} pane_id={} harness={} session_id={:?} state={:?}",
+        record.run_id,
+        record.pane_id,
+        record.harness,
+        record.session_id,
+        record.last_state
+    );
+    Ok(())
+}
+
+pub fn load_agent_history() -> Vec<AgentHistoryRecord> {
+    load_agent_history_from(&crate::config::config_dir())
+}
+
+pub fn load_agent_history_from(profile_dir: &Path) -> Vec<AgentHistoryRecord> {
+    let path = agent_history_path_in(profile_dir);
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    data.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| match serde_json::from_str::<AgentHistoryRecord>(line) {
+            Ok(rec) => Some(rec),
+            Err(e) => {
+                log::warn!("agent_history: skipping malformed line in {}: {e}", path.display());
+                None
+            }
+        })
+        .collect()
 }
 
 /// Env switch for a hermetic host session, set by `plexi host start
@@ -528,6 +641,8 @@ mod tests {
                 heartbeat: None,
                 runtime_kind: None,
                 launch: None,
+                slots: HashMap::new(),
+                agent_session: None,
             };
             let json = serde_json::to_string(&pane).expect("serialize");
             let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
@@ -547,6 +662,8 @@ mod tests {
             heartbeat: None,
             runtime_kind: None,
             launch: None,
+            slots: HashMap::new(),
+            agent_session: None,
         };
         let json = serde_json::to_string(&portal_pane).expect("serialize portal");
         let restored: SavedPane = serde_json::from_str(&json).expect("deserialize portal");
@@ -672,5 +789,80 @@ mod tests {
         let error = serde_json::from_str::<Context>(corrupt_json)
             .expect_err("context without root or path must not deserialize");
         assert!(error.to_string().contains("broken-ctx"), "{error}");
+    }
+
+    #[test]
+    fn saved_pane_round_trips_slots_and_agent_session_and_append_load_agent_history() {
+        use crate::protocol::{AgentBlockedReason, AgentState};
+        let mut slots = HashMap::new();
+        slots.insert("summary".to_string(), PathBuf::from("/tmp/slot_summary"));
+        let pane = SavedPane {
+            id: 42,
+            kind: SavedPaneKind::Terminal,
+            cwd: PathBuf::from("/tmp/work"),
+            name: Some("worker-1".to_string()),
+            app_id: None,
+            app_state: None,
+            hidden: false,
+            heartbeat: None,
+            runtime_kind: None,
+            launch: None,
+            slots: slots.clone(),
+            agent_session: Some(SavedAgentSession {
+                harness: "claude".to_string(),
+                config_name: Some("implementer".to_string()),
+                session_id: Some("sess-42".to_string()),
+                last_state: AgentState::Blocked,
+                last_blocked_reason: Some(AgentBlockedReason::PermissionPrompt),
+                last_detail: Some("Bash: git push".to_string()),
+                parent_pane_id: Some(1),
+                ephemeral: true,
+                tail_preview: Some("Waiting for permission...".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&pane).expect("serialize SavedPane");
+        let restored: SavedPane = serde_json::from_str(&json).expect("deserialize SavedPane");
+        assert_eq!(restored.slots, slots);
+        let session = restored.agent_session.expect("restored agent_session");
+        assert_eq!(session.harness, "claude");
+        assert_eq!(session.config_name.as_deref(), Some("implementer"));
+        assert_eq!(session.session_id.as_deref(), Some("sess-42"));
+        assert_eq!(session.last_state, AgentState::Blocked);
+        assert_eq!(
+            session.last_blocked_reason,
+            Some(AgentBlockedReason::PermissionPrompt)
+        );
+        assert_eq!(session.parent_pane_id, Some(1));
+        assert!(session.ephemeral);
+        assert_eq!(
+            session.tail_preview.as_deref(),
+            Some("Waiting for permission...")
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rec = AgentHistoryRecord {
+            run_id: "run-42-100".to_string(),
+            pane_id: 42,
+            pane_name: Some("worker-1".to_string()),
+            context_id: 2,
+            context_name: "squad-ctx".to_string(),
+            cwd: PathBuf::from("/tmp/work"),
+            harness: "claude".to_string(),
+            config_name: Some("implementer".to_string()),
+            session_id: Some("sess-42".to_string()),
+            last_state: AgentState::Completed,
+            last_blocked_reason: None,
+            last_detail: Some("Done".to_string()),
+            parent_pane_id: Some(1),
+            ephemeral: true,
+            closed_at: 100,
+            summary: Some("Implemented feature".to_string()),
+            result: None,
+            slots,
+            tail_preview: Some("All tests passed.".to_string()),
+        };
+        append_agent_history_to(dir.path(), &rec).expect("append history");
+        let loaded = load_agent_history_from(dir.path());
+        assert_eq!(loaded, vec![rec]);
     }
 }
