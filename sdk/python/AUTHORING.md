@@ -20,6 +20,7 @@ place the how-to-build knowledge lives.
 
 ```sh
 plexi app init myapp          # or plexi-pr-<N> app init myapp on a PR build
+plexi app init --adopt <dir>  # backfill/refresh plexi.scaffold.toml for an existing app
 plexi app check myapp --png-dir /tmp/myapp-shots
 plexi app open myapp
 ```
@@ -28,6 +29,14 @@ plexi app open myapp
 `AGENTS.md`, `.gitignore`, and `plexi.scaffold.toml`. Never author a
 `manifest.toml` by hand — the scaffold sets the correct `schema_version` and a
 valid shape. Prune the unused SDK imports the template ships before finishing.
+
+For pre-existing or migrated apps that predate scaffold metadata, run
+`plexi app init --adopt <dir>` (or `plexi app init --adopt` inside the app
+directory) to write or refresh `plexi.scaffold.toml` without creating or
+modifying any source files. `plexi app check` uses `plexi.scaffold.toml` to
+verify drift across `plexi_cli_version`, `sdk_version`,
+`manifest_schema_version`, `python_runtime_version`, `template_version`, and
+the active `channel`/`profile_dir`.
 
 ## App Contract
 

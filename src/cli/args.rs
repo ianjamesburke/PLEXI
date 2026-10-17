@@ -1292,20 +1292,28 @@ pub enum AppCmd {
         #[command(subcommand)]
         cmd: AppStateCmd,
     },
-    /// Create a new app from a template.
+    /// Create a new app from a template, or adopt an existing app directory.
     ///
     /// Scaffolds the folder structure and files you need to build a Plexi app:
     /// manifest.toml, main.py, tests/test_app.py, AGENTS.md, .gitignore, and
     /// plexi.scaffold.toml drift metadata.
     ///
-    /// By default, the app is placed in your workspace's app directory. If no
-    /// workspace is detected, pass --global to scaffold into the global registry.
+    /// Pass `--adopt <dir>` (or `--adopt` inside an app directory) to write or
+    /// refresh `plexi.scaffold.toml` for a pre-existing app without creating or
+    /// modifying any source files.
+    ///
+    /// By default, a newly scaffolded app is placed in your workspace's app
+    /// directory. If no workspace is detected, pass --global to scaffold into
+    /// the global registry.
     ///
     /// Use --open to launch it in a split-right pane after scaffolding.
     /// See `sdk/python/AUTHORING.md` for the canonical authoring guide.
     Init {
-        #[arg(required_unless_present = "wasm")]
+        #[arg(required_unless_present_any = ["wasm", "adopt"])]
         name: Option<String>,
+        /// Write or refresh `plexi.scaffold.toml` for an existing app directory without altering source files.
+        #[arg(long, conflicts_with_all = ["wasm", "global", "open", "no_open", "from"])]
+        adopt: bool,
         /// Create a Rust WASM component app with the Plexi WASM SDK.
         #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
         wasm: Option<String>,
@@ -3334,6 +3342,25 @@ mod tests {
         assert_eq!(name, None);
         assert_eq!(wasm.as_deref(), Some("counter"));
         assert_eq!(lang, "python");
+    }
+
+    #[test]
+    fn app_init_adopt_accepts_dir_in_any_position_or_defaults_to_cwd() {
+        for (argv, expected_dir) in [
+            (vec!["plexi", "app", "init", "--adopt", "apps/calc"], Some("apps/calc")),
+            (vec!["plexi", "app", "init", "apps/calc", "--adopt"], Some("apps/calc")),
+            (vec!["plexi", "app", "init", "--adopt"], None),
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("app init --adopt parses");
+            let Some(Commands::App {
+                cmd: AppCmd::Init { name, adopt, .. },
+            }) = cli.command
+            else {
+                panic!("expected app init command");
+            };
+            assert!(adopt);
+            assert_eq!(name.as_deref(), expected_dir);
+        }
     }
 
     #[test]
