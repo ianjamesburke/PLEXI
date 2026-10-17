@@ -342,6 +342,8 @@ pub struct PortalPreview {
     pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
     pub window_count: usize,
+    pub status: crate::host::context_state::ContextStatus,
+    pub status_summary: Option<String>,
 }
 
 impl Default for PortalPreview {
@@ -353,6 +355,8 @@ impl Default for PortalPreview {
             notification_count: 0,
             windows: Vec::new(),
             window_count: 0,
+            status: crate::host::context_state::ContextStatus::Idle,
+            status_summary: None,
         }
     }
 }
@@ -580,17 +584,66 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 ui.painter()
                     .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
                 let preview = self.portal_info.get(pane_id).cloned().unwrap_or_default();
+                let colors_for_portal = self.colors;
+                let status_col = crate::ui::activity::context_status_color(
+                    &preview.status,
+                    &colors_for_portal,
+                );
+                let has_active_status = matches!(
+                    preview.status,
+                    crate::host::context_state::ContextStatus::NeedsYou
+                        | crate::host::context_state::ContextStatus::Blocked
+                        | crate::host::context_state::ContextStatus::Error
+                        | crate::host::context_state::ContextStatus::Working
+                );
+                let active_status_col = if has_active_status {
+                    status_col
+                } else {
+                    None
+                };
+                if let Some(sc) = active_status_col {
+                    let wash_rect = egui::Rect::from_min_size(
+                        pane_rect.min,
+                        egui::vec2(pane_rect.width(), 44.0_f32.min(pane_rect.height())),
+                    );
+                    let wash_col = egui::Color32::from_rgba_unmultiplied(
+                        sc.r(),
+                        sc.g(),
+                        sc.b(),
+                        24,
+                    );
+                    ui.painter().rect_filled(wash_rect, 0.0, wash_col);
+                }
                 let padding = style::SPACE_MD;
                 let inner = pane_rect.shrink(padding);
                 let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-                let colors_for_portal = self.colors;
                 portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.label(
-                        egui::RichText::new(&preview.context_name)
-                            .size(style::TEXT_BODY)
-                            .strong()
-                            .color(colors_for_portal.text_primary),
-                    );
+                    ui.horizontal(|ui| {
+                        if let Some(sc) = active_status_col {
+                            let (dot_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(8.0, style::TEXT_BODY),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().circle_filled(dot_rect.center(), 3.5, sc);
+                        }
+                        ui.label(
+                            egui::RichText::new(&preview.context_name)
+                                .size(style::TEXT_BODY)
+                                .strong()
+                                .color(colors_for_portal.text_primary),
+                        );
+                    });
+                    if let Some(ref summary) = preview.status_summary {
+                        let summary_col =
+                            status_col.unwrap_or(colors_for_portal.text_dim);
+                        ui.label(
+                            egui::RichText::new(summary)
+                                .monospace()
+                                .size(style::TEXT_HINT)
+                                .strong()
+                                .color(summary_col),
+                        );
+                    }
                     if !preview.context_description.is_empty() {
                         ui.scope(|ui| {
                             ui.set_max_width(inner.width());
@@ -656,6 +709,20 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         );
                     }
                 });
+                if let Some(sc) = active_status_col {
+                    let border_col = egui::Color32::from_rgba_unmultiplied(
+                        sc.r(),
+                        sc.g(),
+                        sc.b(),
+                        200,
+                    );
+                    ui.painter().rect_stroke(
+                        pane_rect,
+                        0.0,
+                        egui::Stroke::new(1.5_f32, border_col),
+                        egui::StrokeKind::Inside,
+                    );
+                }
             });
             // Double-click on portal pane to zoom into the sub-context.
             if let Some(target_ctx_id) = self.panes.get(pane_id).and_then(|p| p.portal_target()) {
@@ -1018,8 +1085,39 @@ pub(crate) fn paint_portal_minimap(
                 painter.rect_filled(cell, 2.0, dim_overlay);
             }
 
-            // Focused pane: accent tint + glow edge
-            if pane.focused {
+            let is_error_cell = !pane.active
+                && matches!(
+                    pane.activity,
+                    Some(crate::protocol::AgentState::Interrupted)
+                );
+            let cell_escalation_col = crate::ui::activity::escalation_color(
+                pane.activity.as_ref(),
+                is_error_cell,
+                colors,
+            );
+
+            // Focused pane or escalated pane: semantic tint + border
+            if let Some(esc_col) = cell_escalation_col {
+                let tint = egui::Color32::from_rgba_unmultiplied(
+                    esc_col.r(),
+                    esc_col.g(),
+                    esc_col.b(),
+                    24,
+                );
+                painter.rect_filled(cell, 2.0, tint);
+                let border_col = egui::Color32::from_rgba_unmultiplied(
+                    esc_col.r(),
+                    esc_col.g(),
+                    esc_col.b(),
+                    160,
+                );
+                painter.rect_stroke(
+                    cell,
+                    2.0,
+                    egui::Stroke::new(1.25_f32, border_col),
+                    egui::StrokeKind::Middle,
+                );
+            } else if pane.focused {
                 let tint = egui::Color32::from_rgba_unmultiplied(
                     colors.accent.r(),
                     colors.accent.g(),
@@ -1080,7 +1178,11 @@ pub(crate) fn paint_portal_minimap(
             let title_font_size: f32 = if cell.width() > 80.0 { 11.0 } else { 9.0 };
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
             if let Some(state) = activity_dot {
-                let color = crate::ui::activity::dot_color_from_time(state, colors, time, 0);
+                let color = if is_error_cell {
+                    colors.danger
+                } else {
+                    crate::ui::activity::dot_color_from_time(state, colors, time, 0)
+                };
                 painter.circle_filled(
                     egui::pos2(
                         cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R,

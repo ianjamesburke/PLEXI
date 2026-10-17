@@ -10146,6 +10146,178 @@ mod pane_lifecycle_events {
         );
     }
 
+    #[test]
+    fn visual_escalation_portal_summary_and_sidebar_indicators_distinguish_working_blocked_needs_you_and_error() {
+        let mut h = HostHarness::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let master_pane = h.add_focused_terminal();
+        let parent_ctx_id = h.app.router.active().context_id;
+
+        let spawn_worker = |h: &mut HostHarness, role: &str| -> (u64, u64) {
+            let reply = temp_response(dir.path(), &format!("spawn-{role}"));
+            h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+                role: role.into(),
+                harness: "codex".into(),
+                command: "sleep 30".into(),
+                task: Some(format!("Task for {role}")),
+                subcontext: Some("squad-visual".into()),
+                ephemeral: true,
+                parent_pane_id: Some(master_pane),
+                name: Some(role.into()),
+                cwd: None,
+                worktree: None,
+                result_schema: None,
+                initial_slots: vec![],
+                no_focus: true,
+                response_file: reply.clone(),
+            });
+            h.hidden_frame();
+            let spawned = read_json_response(&reply);
+            (
+                spawned["pane_id"].as_u64().unwrap(),
+                spawned["portal_pane_id"].as_u64().unwrap(),
+            )
+        };
+
+        let (w1, portal_id) = spawn_worker(&mut h, "worker-1");
+        let (w2, _) = spawn_worker(&mut h, "worker-2");
+        let (w3, _) = spawn_worker(&mut h, "worker-3");
+
+        // 1. Two Working + One Blocked -> [2 WORKING · 1 BLOCKED] and amber Blocked indicator.
+        for wid in [w1, w2] {
+            h.inject_ipc(
+                serde_json::from_value(serde_json::json!({
+                    "type": "set_agent_state",
+                    "pane_id": wid,
+                    "state": "working",
+                    "agent": "codex"
+                }))
+                .unwrap(),
+            );
+        }
+        h.inject_ipc(
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": w3,
+                "state": "blocked",
+                "agent": "codex",
+                "detail": "Waiting on schema decision"
+            }))
+            .unwrap(),
+        );
+        h.run_frames(2);
+
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::Blocked
+        );
+        assert_eq!(
+            portal_state.status_summary_badge().as_deref(),
+            Some("[2 WORKING \u{b7} 1 BLOCKED]")
+        );
+        assert_eq!(
+            h.app.sidebar_context_indicator_color(parent_ctx_id),
+            Some(crate::ui::activity::blocked_color(&h.app.colors)),
+            "Parent context sidebar indicator must render amber Blocked color"
+        );
+
+        // 2. NeedsYou -> [1 NEEDS YOU] and coral NeedsYou indicator.
+        for wid in [w1, w2] {
+            h.inject_ipc(
+                serde_json::from_value(serde_json::json!({
+                    "type": "set_agent_state",
+                    "pane_id": wid,
+                    "state": "completed",
+                    "agent": "codex"
+                }))
+                .unwrap(),
+            );
+        }
+        h.inject_ipc(
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": w3,
+                "state": "needs_you",
+                "agent": "codex",
+                "detail": "Approve production deploy"
+            }))
+            .unwrap(),
+        );
+        h.run_frames(2);
+
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::NeedsYou
+        );
+        assert_eq!(
+            portal_state.status_summary_badge().as_deref(),
+            Some("[1 NEEDS YOU]")
+        );
+        assert_eq!(
+            h.app.sidebar_context_indicator_color(parent_ctx_id),
+            Some(crate::ui::activity::needs_you_color(&h.app.colors)),
+            "Parent context sidebar indicator must render coral NeedsYou color"
+        );
+        assert_ne!(
+            crate::ui::activity::blocked_color(&h.app.colors),
+            crate::ui::activity::needs_you_color(&h.app.colors)
+        );
+
+        // 3. Error exit -> [1 ERROR] and danger indicator.
+        h.inject_ipc(
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": w3,
+                "state": "completed",
+                "agent": "codex"
+            }))
+            .unwrap(),
+        );
+        h.hidden_frame();
+        for win in &mut h.app.windows {
+            if let Some(crate::host::pane::Pane::Terminal(t)) = win.panes.get_mut(&w3) {
+                t.exited = true;
+                t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(1));
+                t.agent = None;
+                t.observed_agent = None;
+                t.activity = None;
+            }
+        }
+        h.run_frames(2);
+
+        let portal_state = match &h.app.windows[0].panes[&portal_id] {
+            crate::host::pane::Pane::Portal(p) => {
+                p.context_state.as_ref().expect("portal context_state")
+            }
+            _ => panic!("expected PortalPane"),
+        };
+        assert_eq!(
+            portal_state.status,
+            crate::host::context_state::ContextStatus::Error
+        );
+        assert_eq!(
+            portal_state.status_summary_badge().as_deref(),
+            Some("[1 ERROR]")
+        );
+        assert_eq!(
+            h.app.sidebar_context_indicator_color(parent_ctx_id),
+            Some(h.app.colors.danger),
+            "Parent context sidebar indicator must render danger color on Error"
+        );
+    }
+
 }
 mod flight_recorder_session {
     use super::*;

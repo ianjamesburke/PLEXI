@@ -61,14 +61,61 @@ pub fn render(
     pane_title_font_size: f32,
     input: TerminalInput,
 ) -> (bool, Option<(TileId, TabBarAction)>) {
+    let pane_rect = ui.max_rect();
+    let is_error = terminal.exited
+        && terminal
+            .exit_status
+            .as_ref()
+            .is_some_and(|s| s.is_failure());
+    let pane_agent_state = terminal
+        .agent
+        .as_ref()
+        .map(|a| a.state.clone())
+        .or_else(|| terminal.observed_agent.as_ref().map(|a| a.state.clone()))
+        .or_else(|| terminal.activity.clone())
+        .or_else(|| {
+            terminal
+                .standby_session
+                .as_ref()
+                .map(|_| AgentState::NeedsYou)
+        })
+        .or_else(|| tab_activities.get(pane_id).cloned());
+    let border_escalation_color =
+        crate::ui::activity::escalation_color(pane_agent_state.as_ref(), is_error, colors);
+
     if terminal.exited {
-        let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.painter().rect_filled(pane_rect, 0.0, colors.terminal_bg);
+        let tab_action = if is_error {
+            render_name_bar_and_tabs(
+                ui,
+                tile_id,
+                pane_id,
+                tab_info,
+                tab_labels,
+                tab_activities,
+                pane_names,
+                pane_agent_state.as_ref(),
+                true,
+                colors,
+                false,
+                pane_title_font_size,
+            )
+        } else {
+            None
+        };
+        let body_rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(body_rect, 0.0, colors.terminal_bg);
+        let exit_color = if is_error {
+            colors.danger
+        } else {
+            colors.text_dim
+        };
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
             ui.centered_and_justified(|ui| {
-                ui.colored_label(colors.text_dim, "[process exited]");
+                ui.colored_label(exit_color, "[process exited]");
             });
         });
+        paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
         // Auto-close on any keypress. Keyboard events were taken out of `ctx`
         // before the render pass (stint 0387), so read them from the
         // host-supplied buffer rather than `ui.input()`.
@@ -77,7 +124,7 @@ pub fn render(
                 .keyboard_events
                 .iter()
                 .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }));
-        return (close, None);
+        return (close, tab_action);
     }
 
     let outside_workspace = is_terminal_outside_workspace(terminal, workspace_root);
@@ -89,6 +136,8 @@ pub fn render(
         tab_labels,
         tab_activities,
         pane_names,
+        pane_agent_state.as_ref(),
+        is_error,
         colors,
         outside_workspace,
         pane_title_font_size,
@@ -145,6 +194,7 @@ pub fn render(
         if response.clicked() {
             terminal.resume_from_standby();
         }
+        paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
         return (false, tab_action);
     }
 
@@ -172,7 +222,25 @@ pub fn render(
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
+    paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+
     (false, tab_action)
+}
+
+fn paint_escalation_border(
+    painter: &egui::Painter,
+    pane_rect: egui::Rect,
+    escalation_color: Option<egui::Color32>,
+) {
+    if let Some(col) = escalation_color {
+        let stroke_col = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 200);
+        painter.rect_stroke(
+            pane_rect,
+            0.0,
+            egui::Stroke::new(1.5_f32, stroke_col),
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 // Arg-struct refactor is a design change tracked in stint 0661.
@@ -185,6 +253,8 @@ fn render_name_bar_and_tabs(
     tab_labels: &HashMap<PaneId, String>,
     tab_activities: &HashMap<PaneId, AgentState>,
     pane_names: &HashMap<PaneId, String>,
+    pane_agent_state: Option<&AgentState>,
+    is_error: bool,
     colors: &Colors,
     outside_workspace: bool,
     name_font_size: f32,
@@ -192,6 +262,19 @@ fn render_name_bar_and_tabs(
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
+    let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id));
+    let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors);
+    let escalation_lbl = crate::ui::activity::escalation_label(agent_state, is_error);
+    let has_escalation = is_error
+        || matches!(
+            agent_state,
+            Some(
+                AgentState::Working
+                    | AgentState::Blocked
+                    | AgentState::NeedsYou
+                    | AgentState::Interrupted
+            )
+        );
 
     if let Some(group) = tab_group {
         let bar_rect = egui::Rect::from_min_size(
@@ -213,10 +296,14 @@ fn render_name_bar_and_tabs(
             tab_action = Some((group.container_tile, action));
         }
 
+        let mut right_edge = bar_rect.right();
         if outside_workspace {
-            paint_outside_workspace_badge(ui.painter(), bar_rect, colors);
+            right_edge = paint_outside_workspace_badge(ui.painter(), bar_rect, right_edge, colors);
         }
-    } else if has_name || outside_workspace {
+        if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+            paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
+        }
+    } else if has_name || outside_workspace || has_escalation {
         let bar_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
@@ -224,33 +311,90 @@ fn render_name_bar_and_tabs(
         ui.advance_cursor_after_rect(bar_rect);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+        if let Some(esc_col) = escalation_col {
+            let header_wash =
+                egui::Color32::from_rgba_unmultiplied(esc_col.r(), esc_col.g(), esc_col.b(), 28);
+            ui.painter().rect_filled(bar_rect, 0.0, header_wash);
+            let divider_col =
+                egui::Color32::from_rgba_unmultiplied(esc_col.r(), esc_col.g(), esc_col.b(), 96);
+            ui.painter().line_segment(
+                [bar_rect.left_bottom(), bar_rect.right_bottom()],
+                egui::Stroke::new(1.0_f32, divider_col),
+            );
+        }
 
-        let agent_state = tab_activities.get(pane_id);
-        let pip_space = if agent_state.is_some() {
+        let pip_space = if agent_state.is_some() || is_error {
             TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0
         } else {
             0.0
         };
 
-        if let Some(state) = agent_state {
+        if is_error {
+            let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
+            ui.painter().circle_filled(
+                egui::pos2(cx, bar_rect.center().y),
+                TAB_PIP_RADIUS,
+                colors.danger,
+            );
+        } else if let Some(state) = agent_state {
             paint_activity_dot(ui, bar_rect, state, colors);
         }
 
-        if has_name {
-            let name = &pane_names[pane_id];
-            let center_x = bar_rect.center().x + pip_space / 2.0;
-            crate::ui::snap::text_snapped(
-                ui.painter(),
-                egui::pos2(center_x, bar_rect.center().y),
-                egui::Align2::CENTER_CENTER,
-                name,
-                egui::FontId::proportional(name_font_size),
-                colors.text_secondary(colors.bg_toolbar),
-            );
+        let mut right_edge = bar_rect.right();
+        if outside_workspace {
+            right_edge = paint_outside_workspace_badge(ui.painter(), bar_rect, right_edge, colors);
+        }
+        if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+            right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
         }
 
-        if outside_workspace {
-            paint_outside_workspace_badge(ui.painter(), bar_rect, colors);
+        let title_text = if has_name {
+            Some(pane_names[pane_id].as_str())
+        } else if has_escalation {
+            Some("Terminal")
+        } else {
+            None
+        };
+        if let Some(name) = title_text {
+            let left_edge = bar_rect.left() + pip_space + 6.0;
+            let max_right = (right_edge - 6.0).max(left_edge);
+            if max_right > left_edge + 8.0 {
+                let title_clip = egui::Rect::from_min_max(
+                    egui::pos2(left_edge, bar_rect.top()),
+                    egui::pos2(max_right, bar_rect.bottom()),
+                );
+                let clipped_painter = ui.painter().with_clip_rect(title_clip);
+                let title_col = if matches!(
+                    agent_state,
+                    Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted)
+                ) || is_error
+                {
+                    colors.text_primary
+                } else {
+                    colors.text_secondary(colors.bg_toolbar)
+                };
+                let has_right_badge = right_edge < bar_rect.right() - 1.0;
+                if has_right_badge {
+                    crate::ui::snap::text_snapped(
+                        &clipped_painter,
+                        egui::pos2(left_edge, bar_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        name,
+                        egui::FontId::proportional(name_font_size),
+                        title_col,
+                    );
+                } else {
+                    let center_x = bar_rect.center().x + pip_space / 2.0;
+                    crate::ui::snap::text_snapped(
+                        &clipped_painter,
+                        egui::pos2(center_x, bar_rect.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        egui::FontId::proportional(name_font_size),
+                        title_col,
+                    );
+                }
+            }
         }
     }
 
@@ -274,16 +418,43 @@ fn paint_activity_dot(
     }
 }
 
-fn paint_outside_workspace_badge(painter: &egui::Painter, bar_rect: egui::Rect, colors: &Colors) {
+fn paint_status_badge(
+    painter: &egui::Painter,
+    bar_rect: egui::Rect,
+    right_edge: f32,
+    label: &str,
+    fg: egui::Color32,
+) -> f32 {
+    let galley = painter.layout_no_wrap(label.to_string(), crate::ui::badge::badge_font(), fg);
+    let size = crate::ui::badge::badge_size(galley.size());
+    let badge_x = right_edge - size.x - crate::ui::style::SPACE_XS;
+    let badge_rect = egui::Rect::from_min_size(
+        egui::pos2(badge_x, bar_rect.center().y - size.y / 2.0),
+        size,
+    );
+    crate::ui::badge::paint_badge(
+        painter,
+        badge_rect,
+        galley,
+        egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 36),
+        fg,
+    );
+    badge_x
+}
+
+fn paint_outside_workspace_badge(
+    painter: &egui::Painter,
+    bar_rect: egui::Rect,
+    right_edge: f32,
+    colors: &Colors,
+) -> f32 {
     let label = "↗ outside workspace";
     let fg = colors.warning;
     let galley = painter.layout_no_wrap(label.to_string(), crate::ui::badge::badge_font(), fg);
     let size = crate::ui::badge::badge_size(galley.size());
+    let badge_x = right_edge - size.x - crate::ui::style::SPACE_XS;
     let badge_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            bar_rect.right() - size.x - crate::ui::style::SPACE_XS,
-            bar_rect.center().y - size.y / 2.0,
-        ),
+        egui::pos2(badge_x, bar_rect.center().y - size.y / 2.0),
         size,
     );
     // A tint, not a fill: the tag annotates the tab bar rather than
@@ -295,6 +466,7 @@ fn paint_outside_workspace_badge(painter: &egui::Painter, bar_rect: egui::Rect, 
         egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 28),
         fg,
     );
+    badge_x
 }
 
 /// True when the terminal's child PID has a CWD that is not an ancestor of

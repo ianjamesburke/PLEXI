@@ -1443,6 +1443,270 @@ mod tests {
             .expect("save screenshot");
     }
 
+    #[test]
+    fn screenshot_visual_escalation_panes_and_portals() {
+        let mut h = PlexiUiHarness::new_sized_ppp(1440.0, 900.0, 2.0);
+        let dir = tempfile::tempdir().expect("tempdir");
+        h.step();
+
+        let ws_root = h.workspace_root().to_path_buf();
+        let master_pane = h
+            .open_target(HarnessOpenTarget::Builtin {
+                id: "file_browser",
+                cwd: &ws_root,
+                args: &[],
+            })
+            .expect("open initial master pane");
+        h.step();
+
+        let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::AppRequest| {
+            h.with_app_mut(|app| {
+                app.handle_pane_ipc_request(req);
+            });
+            h.run_steps(2);
+        };
+
+        let spawn_in_subctx =
+            |h: &mut PlexiUiHarness, subctx: &str, name: &str| -> (u64, u64) {
+                let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
+                send_req(
+                    h,
+                    crate::protocol::AppRequest::AgentSpawn {
+                        role: name.into(),
+                        harness: "codex".into(),
+                        command: "sleep 30".into(),
+                        task: Some(format!("Task {name}")),
+                        subcontext: Some(subctx.into()),
+                        ephemeral: true,
+                        parent_pane_id: Some(master_pane),
+                        name: Some(name.into()),
+                        cwd: None,
+                        worktree: None,
+                        result_schema: None,
+                        initial_slots: vec![],
+                        no_focus: true,
+                        response_file: reply.to_string_lossy().into_owned(),
+                    },
+                );
+                let raw = std::fs::read_to_string(&reply).expect("read spawn response");
+                let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+                (
+                    json["pane_id"].as_u64().expect("pane_id"),
+                    json["portal_pane_id"].as_u64().expect("portal_pane_id"),
+                )
+            };
+
+        // Subcontext 1 ("squad-alpha"): 2 WORKING · 1 BLOCKED -> amber PortalPane card.
+        let (sq1_w1, portal_blocked) = spawn_in_subctx(&mut h, "squad-alpha", "worker-api");
+        let (sq1_w2, _) = spawn_in_subctx(&mut h, "squad-alpha", "worker-db");
+        let (sq1_b1, _) = spawn_in_subctx(&mut h, "squad-alpha", "worker-schema");
+        for wid in [sq1_w1, sq1_w2] {
+            send_req(
+                &mut h,
+                serde_json::from_value(serde_json::json!({
+                    "type": "set_agent_state",
+                    "pane_id": wid,
+                    "state": "working",
+                    "agent": "codex"
+                }))
+                .unwrap(),
+            );
+        }
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": sq1_b1,
+                "state": "blocked",
+                "agent": "codex",
+                "detail": "Needs master decision on index"
+            }))
+            .unwrap(),
+        );
+
+        // Subcontext 2 ("squad-deploy"): 1 NEEDS YOU -> coral PortalPane card.
+        let (sq2_ny, portal_needs_you) = spawn_in_subctx(&mut h, "squad-deploy", "release-gate");
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": sq2_ny,
+                "state": "needs_you",
+                "agent": "codex",
+                "detail": "Approve production deploy"
+            }))
+            .unwrap(),
+        );
+
+        // Subcontext 3 ("squad-ci"): 1 ERROR -> danger PortalPane card.
+        let (sq3_err, portal_error) = spawn_in_subctx(&mut h, "squad-ci", "ci-runner");
+        h.with_app_mut(|app| {
+            for win in &mut app.windows {
+                if let Some(crate::host::pane::Pane::Terminal(t)) = win.panes.get_mut(&sq3_err) {
+                    t.exited = true;
+                    t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(1));
+                    t.agent = None;
+                    t.observed_agent = None;
+                    t.activity = None;
+                }
+            }
+        });
+
+        // Split visible terminal panes in the active window so Working, Blocked,
+        // NeedsYou, and Error terminal headers/borders are all visible alongside
+        // the three PortalPane cards and the sidebar.
+        let split_pane = |h: &mut PlexiUiHarness, name: &str| -> u64 {
+            let reply = dir.path().join(format!("split-{name}.json"));
+            send_req(
+                h,
+                crate::protocol::AppRequest::AgentSpawn {
+                    role: name.into(),
+                    harness: "codex".into(),
+                    command: "sleep 30".into(),
+                    task: Some(format!("Task {name}")),
+                    subcontext: None,
+                    ephemeral: true,
+                    parent_pane_id: Some(master_pane),
+                    name: Some(name.into()),
+                    cwd: None,
+                    worktree: None,
+                    result_schema: None,
+                    initial_slots: vec![],
+                    no_focus: true,
+                    response_file: reply.to_string_lossy().into_owned(),
+                },
+            );
+            let raw = std::fs::read_to_string(&reply).expect("read split response");
+            let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+            json["pane_id"].as_u64().expect("pane_id")
+        };
+
+        let pane_working = split_pane(&mut h, "lane-working");
+        let pane_blocked = split_pane(&mut h, "lane-blocked");
+        let pane_needs_you = split_pane(&mut h, "lane-needs-you");
+        let pane_error = split_pane(&mut h, "lane-error");
+
+        // Set pane_working = Working, pane_blocked = Blocked, pane_needs_you = NeedsYou, pane_error = Error,
+        // and arrange the active window into a clean 2-row layout:
+        //   Top row:    [lane-working | lane-blocked | lane-needs-you | lane-error]
+        //   Bottom row: [squad-alpha  | squad-deploy | squad-ci]
+        let _ = h.close_pane(master_pane);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let win = &mut app.windows[app.active_window];
+            let mut tiles = egui_tiles::Tiles::default();
+            let t_work = tiles.insert_pane(pane_working);
+            let t_blk = tiles.insert_pane(pane_blocked);
+            let t_ny = tiles.insert_pane(pane_needs_you);
+            let t_err = tiles.insert_pane(pane_error);
+            let top_row = tiles.insert_horizontal_tile(vec![t_work, t_blk, t_ny, t_err]);
+
+            let p_blk = tiles.insert_pane(portal_blocked);
+            let p_ny = tiles.insert_pane(portal_needs_you);
+            let p_err = tiles.insert_pane(portal_error);
+            let bottom_row = tiles.insert_horizontal_tile(vec![p_blk, p_ny, p_err]);
+
+            let root = tiles.insert_vertical_tile(vec![top_row, bottom_row]);
+            win.tree = egui_tiles::Tree::new("escalation_grid", root, tiles);
+            win.focused_pane = Some(t_work);
+        });
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": pane_working,
+                "state": "working",
+                "agent": "codex"
+            }))
+            .unwrap(),
+        );
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": pane_blocked,
+                "state": "blocked",
+                "agent": "codex",
+                "detail": "Waiting on master"
+            }))
+            .unwrap(),
+        );
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state",
+                "pane_id": pane_needs_you,
+                "state": "needs_you",
+                "agent": "codex",
+                "detail": "Approve credentials"
+            }))
+            .unwrap(),
+        );
+        h.with_app_mut(|app| {
+            if let Some(crate::host::pane::Pane::Terminal(t)) =
+                app.windows[app.active_window].panes.get_mut(&pane_error)
+            {
+                t.exited = true;
+                t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(1));
+                t.agent = None;
+                t.observed_agent = None;
+                t.activity = None;
+            }
+        });
+
+        h.run_steps(4);
+
+        h.with_app(|app| {
+            let win = &app.windows[app.active_window];
+            let p_blocked = win.panes[&portal_blocked]
+                .as_portal()
+                .expect("portal_blocked")
+                .context_state
+                .as_ref()
+                .expect("context_state");
+            assert_eq!(
+                p_blocked.status,
+                crate::host::context_state::ContextStatus::Blocked
+            );
+            assert_eq!(
+                p_blocked.status_summary_badge().as_deref(),
+                Some("[2 WORKING \u{b7} 1 BLOCKED]")
+            );
+
+            let p_needs_you = win.panes[&portal_needs_you]
+                .as_portal()
+                .expect("portal_needs_you")
+                .context_state
+                .as_ref()
+                .expect("context_state");
+            assert_eq!(
+                p_needs_you.status,
+                crate::host::context_state::ContextStatus::NeedsYou
+            );
+            assert_eq!(
+                p_needs_you.status_summary_badge().as_deref(),
+                Some("[1 NEEDS YOU]")
+            );
+
+            let p_error = win.panes[&portal_error]
+                .as_portal()
+                .expect("portal_error")
+                .context_state
+                .as_ref()
+                .expect("context_state");
+            assert_eq!(
+                p_error.status,
+                crate::host::context_state::ContextStatus::Error
+            );
+            assert_eq!(
+                p_error.status_summary_badge().as_deref(),
+                Some("[1 ERROR]")
+            );
+        });
+
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+    }
+
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
     // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
 
