@@ -49,7 +49,7 @@ def init(size, args):
 
 
 def update(event):
-    if isinstance(event, KeyEvent) and event.key == "plus" and event.pressed:
+    if isinstance(event, KeyEvent) and event.key == "+" and event.pressed:
         return [SetState({"count": state.get("count", 0) + 1})]
     return []
 
@@ -96,10 +96,13 @@ state. `PersistState` writes the same snapshot **and** saves durable app state;
 use it only when a key must survive an app restart. Both take an optional
 `scope=` naming one of the app's declared state scopes (see `[state] scopes`
 in the Manifest section); omitted means the app's default scope, and an
-undeclared scope raises — never a silent fallback. `state.get`/`state.all`
+undeclared scope raises — never a silent fallback. `state.get`/`state.all`/`state.load`/`state.patch`
 accept the same `scope=` argument. There are no `LogInfo` /
 `LogWarn` / `LogError` effects — logging goes through the `log` module (below).
-Network fetches use `HttpFetch`, not `HttpRequest`.
+Network fetches use `HttpFetch`, not `HttpRequest`. `HttpFetch` accepts optional
+`params={...}` (query parameters), `tag="..."`, and `request_id="..."`; the reply
+is `events.HttpResponse` with `.status`, `.headers`, `.body`, `.error`,
+`.request_id`, `.tag`, `.truncated`, `.text()`, and `.json()`.
 
 File I/O is binary-exact: `effects.read_bytes(path)` / `effects.write_bytes(path,
 content)` round-trip arbitrary bytes (WAV, PNG, NULs) through the workspace jail
@@ -220,26 +223,29 @@ Import from `plexi_sdk.ui`. Read `sdk.md` (UI Components section) for the full
 API; the widgets you reach for most:
 
 <!-- drift-check:components -->
-`AppBar`, `ActionBar`, `Column`, `HStack`, `Label`, `Text`, `Heading`,
+`AppBar`, `ActionBar`, `Column`, `HStack`, `Row`, `Label`, `Text`, `Heading`,
 `Spacer`, `Divider`, `FooterKeys`, `SelectList`, `Pending`, `TextEdit`, `Card`,
-`Section`, `Tabs`, `Grid`, `Toggle`, `Scrollable`,
-`ButtonRow`, `Button`, `Badge`, `Actions`, `FormField`, `TextInput`,
-`ProgressBar`, `Canvas`, `CanvasRect`, `CanvasText`, `CanvasCircle`,
+`Section`, `Tabs`, `TabBar`, `Grid`, `Toggle`, `Switch`, `Scrollable`,
+`Button`, `Badge`, `Banner`, `Actions`, `FormField`, `TextInput`,
+`Checkbox`, `Radio`, `Slider`, `Select`, `DateTimePicker`, `Breadcrumb`,
+`Pagination`, `DataTable`, `Table`, `KeyValue`, `CodeBlock`, `Avatar`, `Icon`,
+`Tooltip`, `Accordion`, `EmptyState`, `Modal`, `Spinner`, `Skeleton`,
+`ProgressBar`, `Progress`, `Canvas`, `CanvasRect`, `CanvasText`, `CanvasCircle`,
 `CanvasLine`
 <!-- /drift-check:components -->
 
 Widget selection rules:
 
-- **List + detail navigation:** use `SelectList`. It handles j/k/arrow keys,
-  scrolling, and click hit-testing. Never reimplement this by hand.
+- **List + detail navigation:** use `SelectList` (and `SelectList.move_cursor(event, len(items), selected)` in `update()`). Set `on_select="pick"` to receive `UiAction("pick:<idx>")` when a row is clicked. Never reimplement list scrolling or hit-testing by hand.
+- **Tables:** use `DataTable(columns=[...], rows=[...], selected=idx, on_select="row")` (`Table` is an alias). Clicking row `i` dispatches `UiAction("row:<i>")`.
 - **Loading states:** wrap only the region whose fetch is in flight in
   `Pending(active=..., child=..., placeholder=Skeleton(rows=N))`. Placeholder
   is always explicit, sized to the eventual content so nothing jumps. Never
   thread a loading boolean through multiple view branches.
-- **Text entry:** use `TextEdit` in the component tree. Never read raw keys for
+- **Text entry:** use `TextInput` (`TextEdit` alias) in the component tree. Never read raw keys for
   text.
 - **Forms:** a labeled field is a `FormField`; a Save/Cancel pair is an
-  `Actions` row. Buttons declared as plain `Column` children each take the
+  `Actions` (`ActionBar` alias) row. Buttons declared as plain `Column` children each take the
   column's full width and stack, so an action pair written that way reads as
   two unrelated bars — `Actions` is the row.
 - **Focus:** the field that should hold the cursor declares
@@ -297,7 +303,9 @@ and reserve `dim()`/`theme.muted` for fills, or text fails contrast.
 
 `Badge`/`Banner` colors are the theme's SEMANTIC roles, not literal colors:
 `accent`, `success`, `warning`, `danger`, `neutral`, plus the alias roles
-`red`/`green`/`yellow` (== `danger`/`success`/`warning`). There is no `blue`.
+`red`/`green`/`yellow` (== `danger`/`success`/`warning`). `Text`/`Label`/`Heading`
+accept those semantic roles plus `"muted"` and `theme.*` hex tokens (e.g.
+`theme.text_muted`, `theme.red`). There is no `blue`.
 An invalid value raises `ValueError` at construction, not at host render. A
 bespoke color needs `AppPalette(dark=..., light=...)` — never a raw hex or
 CSS name inline.
@@ -305,7 +313,8 @@ CSS name inline.
 ## Keyboard Conventions
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase
-canonical — never match `"Enter"` or `"Escape"`.
+canonical — never match `"Enter"`, `"Escape"`, `"plus"`, `"minus"`, `"equals"`,
+`"slash"`, or `"asterisk"`.
 Command-key chords are host shortcuts and never reach apps. App shortcuts may
 use unmodified keys and the Ctrl, Shift, or Alt modifier fields.
 `event.pressed` is `True` on key-down and `False` on key-up. Track held keys by
@@ -316,12 +325,16 @@ adding on press and removing on release; do not toggle state on every event.
 | Enter / Return | `"enter"` |
 | Escape | `"escape"` |
 | Backspace | `"backspace"` |
+| Delete | `"delete"` |
 | Space | `"space"` |
 | Arrow keys | `"up"` / `"down"` / `"left"` / `"right"` |
+| Home / End | `"home"` / `"end"` |
+| Page Up / Page Down | `"pageup"` / `"pagedown"` |
+| Insert | `"insert"` |
 | Tab | `"tab"` |
 | Letters | `"a"`–`"z"` (lowercase) |
 | Digits (main row or numpad) | `"0"`–`"9"` |
-| Plus / Minus / Equals | `"plus"` / `"minus"` / `"equals"` |
+| Plus / Minus / Multiply / Divide / Equals | `"+"` / `"-"` / `"*"` / `"/"` / `"="` |
 | Function keys | `"f1"`–`"f12"` |
 
 Convention: Enter = open/confirm. Escape (+ optional Backspace) = exit/cancel.
@@ -330,12 +343,14 @@ Every focused sub-view must be escapable.
 ## State
 
 Keep state in `plexi_sdk.state` and update it by returning `SetState` /
-`state.set(...)` from `update(event)`:
+`state.set(...)` / `state.patch(...)` from `update(event)`:
 
 ```python
-state.get("key", default)   # read runtime state (also valid inside view())
-state.set("key", value)     # returns a SetState effect — does NOT mutate now
-state.all()                 # every key, decoded
+state.get("key", default)         # read runtime state (also valid inside view())
+state.load({"count": 0})          # merge defaults with stored state
+state.set("key", value)           # returns a SetState effect — does NOT mutate now
+state.patch(count=1)              # returns SetState({"count": 1}) (or PersistState with persist=True)
+state.all()                       # every key, decoded
 ```
 
 `view()` reads state but must never write it.

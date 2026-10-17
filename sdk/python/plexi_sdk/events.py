@@ -158,8 +158,26 @@ class FilePickCancelled:
 @dataclass
 class HttpResponse:
     status: int
-    headers: list
-    body: bytes
+    headers: list = field(default_factory=list)
+    body: bytes = b""
+    error: Optional[str] = None
+    request_id: Optional[str] = None
+    tag: Optional[str] = None
+    truncated: bool = False
+
+    def text(self, encoding: str = "utf-8", errors: str = "replace") -> str:
+        """Decode ``body`` as text (default UTF-8 with replacement)."""
+        if isinstance(self.body, (bytes, bytearray)):
+            return bytes(self.body).decode(encoding, errors=errors)
+        if isinstance(self.body, list):
+            return bytes(self.body).decode(encoding, errors=errors)
+        return str(self.body or "")
+
+    def json(self):
+        """Parse ``body`` as JSON."""
+        import json as _json
+
+        return _json.loads(self.text())
 
 
 @dataclass

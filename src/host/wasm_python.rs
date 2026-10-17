@@ -4571,70 +4571,75 @@ fn is_exception_record_line(line: &str) -> bool {
 }
 
 fn python_key_name(key: egui::Key) -> String {
-    match key {
-        egui::Key::ArrowDown => "down".to_string(),
-        egui::Key::ArrowUp => "up".to_string(),
-        egui::Key::ArrowLeft => "left".to_string(),
-        egui::Key::ArrowRight => "right".to_string(),
-        egui::Key::Enter => "enter".to_string(),
-        egui::Key::Backspace => "backspace".to_string(),
-        egui::Key::Escape => "escape".to_string(),
-        egui::Key::Space => "space".to_string(),
-        egui::Key::Num0 => "0".to_string(),
-        egui::Key::Num1 => "1".to_string(),
-        egui::Key::Num2 => "2".to_string(),
-        egui::Key::Num3 => "3".to_string(),
-        egui::Key::Num4 => "4".to_string(),
-        egui::Key::Num5 => "5".to_string(),
-        egui::Key::Num6 => "6".to_string(),
-        egui::Key::Num7 => "7".to_string(),
-        egui::Key::Num8 => "8".to_string(),
-        egui::Key::Num9 => "9".to_string(),
-        egui::Key::Slash => "/".to_string(),
-        egui::Key::Minus => "-".to_string(),
-        egui::Key::Equals => "=".to_string(),
-        egui::Key::Backslash => "\\".to_string(),
-        egui::Key::Semicolon => ";".to_string(),
-        egui::Key::Quote => "'".to_string(),
-        egui::Key::Backtick => "`".to_string(),
-        egui::Key::Comma => ",".to_string(),
-        egui::Key::Period => ".".to_string(),
-        other => format!("{other:?}").to_ascii_lowercase(),
+    super::wasm_pane::canonical_key_name(key)
+}
+
+fn python_key_name_for_event(key: egui::Key, modifiers: egui::Modifiers) -> String {
+    if key == egui::Key::Num8
+        && modifiers.shift
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.command
+    {
+        "*".to_string()
+    } else {
+        python_key_name(key)
     }
 }
 
 fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
-    events
-        .iter()
-        .filter_map(|event| {
-            let egui::Event::Key {
+    let has_key_asterisk = events.iter().any(|ev| {
+        matches!(
+            ev,
+            egui::Event::Key { key, modifiers, .. }
+                if python_key_name_for_event(*key, *modifiers) == "*"
+        )
+    });
+    let mut out = Vec::new();
+    for event in events {
+        match event {
+            egui::Event::Key {
                 key,
                 pressed,
                 modifiers,
                 ..
-            } = event
-            else {
-                return None;
-            };
-            // Command chords are host input, never guest input. This matches
-            // the WASM runtime and remains a defense-in-depth guard if host
-            // routing order changes. Bare Escape is also reserved for the host
-            // CloseApp binding; forwarding it would let `handle_key` claim it.
-            if modifiers.command || *key == egui::Key::Escape {
-                return None;
-            }
-            Some(json!({
-                "key": python_key_name(*key),
-                "pressed": pressed,
-                "modifiers": {
-                    "ctrl": modifiers.ctrl,
-                    "shift": modifiers.shift,
-                    "alt": modifiers.alt,
-                    "meta": modifiers.mac_cmd || modifiers.command,
+            } => {
+                // Command chords are host input, never guest input. This matches
+                // the WASM runtime and remains a defense-in-depth guard if host
+                // routing order changes. Bare Escape is also reserved for the host
+                // CloseApp binding; forwarding it would let `handle_key` claim it.
+                if modifiers.command || *key == egui::Key::Escape {
+                    continue;
                 }
-            }))
-        })
-        .collect()
+                out.push(json!({
+                    "key": python_key_name_for_event(*key, *modifiers),
+                    "pressed": pressed,
+                    "modifiers": {
+                        "ctrl": modifiers.ctrl,
+                        "shift": modifiers.shift,
+                        "alt": modifiers.alt,
+                        "meta": modifiers.mac_cmd || modifiers.command,
+                    }
+                }));
+            }
+            egui::Event::Text(t) if t == "*" && !has_key_asterisk => {
+                for pressed in [true, false] {
+                    out.push(json!({
+                        "key": "*",
+                        "pressed": pressed,
+                        "modifiers": {
+                            "ctrl": false,
+                            "shift": false,
+                            "alt": false,
+                            "meta": false,
+                        }
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Encode only a physical, unmodified Escape press for the TextInput
@@ -5696,11 +5701,124 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
     let data = value
         .get("data")
         .ok_or_else(|| WasmPythonError::BridgeJson("indexed node missing data".to_string()))?;
+    let raw_key = required_string(value, "key")?;
+    let kind = data.get("type").and_then(Value::as_str).unwrap_or("");
+    let is_card = matches!(kind, "Card" | "card")
+        || data.get("card").and_then(Value::as_bool).unwrap_or(false);
+    let key = if is_card {
+        if raw_key.starts_with(super::wasm_render::CARD_NODE_KEY_PREFIX) {
+            raw_key
+        } else {
+            format!("{}{raw_key}", super::wasm_render::CARD_NODE_KEY_PREFIX)
+        }
+    } else if matches!(kind, "DataTable" | "data_table" | "table" | "Table") {
+        encode_table_node_key(data)?
+    } else {
+        raw_key
+    };
     Ok(IndexedNode {
         id: required_u32(value, "id")?,
-        key: required_string(value, "key")?,
+        key,
         data: decode_node_data(data)?,
     })
+}
+
+fn encode_table_node_key(value: &Value) -> Result<String, WasmPythonError> {
+    let columns: Vec<String> = value
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|c| {
+                    c.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| c.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let rows: Vec<Vec<String>> = value
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|row| {
+                    row.as_array()
+                        .map(|cells| {
+                            cells
+                                .iter()
+                                .map(|cell| {
+                                    cell.as_str()
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| cell.to_string())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let selected = value
+        .get("selected")
+        .or_else(|| value.get("selected_idx"))
+        .and_then(Value::as_u64)
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|_| WasmPythonError::BridgeJson("field 'selected' out of range".to_string()))?;
+    let on_select = value
+        .get("on_select")
+        .or_else(|| value.get("on-select"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let meta = super::wasm_render::TableNodeMeta {
+        columns,
+        rows,
+        selected,
+        on_select,
+    };
+    let encoded =
+        serde_json::to_string(&meta).map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?;
+    Ok(format!(
+        "{}{encoded}",
+        super::wasm_render::TABLE_NODE_KEY_PREFIX
+    ))
+}
+
+fn decode_text_color(value: &Value) -> Result<Option<Color>, WasmPythonError> {
+    match value.get("color") {
+        None | Some(Value::Null) => {
+            if value.get("tone").and_then(Value::as_str) == Some("hint") {
+                return decode_semantic_or_hex_color("muted").map(Some);
+            }
+            Ok(None)
+        }
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(Value::String(s)) => decode_semantic_or_hex_color(s).map(Some),
+        Some(other) => decode_color(other).map(Some),
+    }
+}
+
+fn decode_semantic_or_hex_color(raw: &str) -> Result<Color, WasmPythonError> {
+    if raw.starts_with('#') {
+        return decode_hex_color(raw);
+    }
+    let hex = match raw {
+        "accent" => "#7aa2f7",
+        "success" | "green" => "#a6e3a1",
+        "warning" | "yellow" => "#f9e2af",
+        "danger" | "red" => "#f38ba8",
+        "neutral" | "muted" => "#6c7086",
+        "fg" => "#cdd6f4",
+        "text_section" => "#585b70",
+        other => {
+            return Err(WasmPythonError::BridgeJson(format!(
+                "unknown text color '{other}': expected semantic role or #rrggbb"
+            )))
+        }
+    };
+    decode_hex_color(hex)
 }
 
 fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
@@ -5712,9 +5830,9 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         "Empty" => Ok(UiNodeData::Empty),
         "Text" | "text" | "label" => Ok(UiNodeData::Text(TextNode {
             text: required_string(value, "text")?,
-            size: optional_f32(value, "size")?,
+            size: optional_f32(value, "size")?.or(optional_f32(value, "font_size")?),
             bold: value.get("bold").and_then(Value::as_bool).unwrap_or(false),
-            color: None,
+            color: decode_text_color(value)?,
             truncate: value
                 .get("truncate")
                 .and_then(Value::as_bool)
@@ -5781,6 +5899,19 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             )?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
+        "DataTable" | "data_table" | "table" | "Table" => {
+            let children = if value.get("children").is_some() {
+                u32_list(value, "children")?
+            } else {
+                Vec::new()
+            };
+            Ok(UiNodeData::Column(ColumnNode {
+                children,
+                gap: optional_f32(value, "gap")?.unwrap_or(4.0),
+                align: Alignment::Start,
+                grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
+            }))
+        }
         "Button" | "button" => Ok(UiNodeData::Button(ButtonNode {
             label: required_string(value, "label")?,
             on_click: required_string(value, "on_click")?,
@@ -5858,7 +5989,14 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         }
         "Badge" | "badge" => Ok(UiNodeData::Badge(
             super::wasm_app::bindings::plexi::platform::types::BadgeNode {
-                text: required_string(value, "text")?,
+                text: value
+                    .get("text")
+                    .or_else(|| value.get("label"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson("missing string field 'text'".to_string())
+                    })?,
                 color: decode_badge_color(
                     value
                         .get("color")
@@ -5890,13 +6028,26 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         })),
-        "Padding" | "padding" => Ok(UiNodeData::Padding(PaddingNode {
-            child: required_u32(value, "child")?,
-            top: optional_f32(value, "top")?.unwrap_or(0.0),
-            right: optional_f32(value, "right")?.unwrap_or(0.0),
-            bottom: optional_f32(value, "bottom")?.unwrap_or(0.0),
-            left: optional_f32(value, "left")?.unwrap_or(0.0),
-        })),
+        "Padding" | "padding" => {
+            let pad = optional_f32(value, "padding")?.unwrap_or(0.0);
+            Ok(UiNodeData::Padding(PaddingNode {
+                child: required_u32(value, "child")?,
+                top: optional_f32(value, "top")?.unwrap_or(pad),
+                right: optional_f32(value, "right")?.unwrap_or(pad),
+                bottom: optional_f32(value, "bottom")?.unwrap_or(pad),
+                left: optional_f32(value, "left")?.unwrap_or(pad),
+            }))
+        }
+        "Card" | "card" => {
+            let pad = optional_f32(value, "padding")?.unwrap_or(crate::ui::style::SPACE_MD);
+            Ok(UiNodeData::Padding(PaddingNode {
+                child: required_u32(value, "child")?,
+                top: optional_f32(value, "top")?.unwrap_or(pad),
+                right: optional_f32(value, "right")?.unwrap_or(pad),
+                bottom: optional_f32(value, "bottom")?.unwrap_or(pad),
+                left: optional_f32(value, "left")?.unwrap_or(pad),
+            }))
+        }
         "Canvas" | "canvas" => Ok(UiNodeData::Canvas(CanvasNode {
             width: optional_f32(value, "width")?.unwrap_or(640.0),
             height: optional_f32(value, "height")?.unwrap_or(360.0),
@@ -6190,9 +6341,9 @@ fn u32_list(value: &Value, field: &str) -> Result<Vec<u32>, WasmPythonError> {
 
 fn decode_alignment(value: &str) -> Result<Alignment, WasmPythonError> {
     match value {
-        "start" | "left_top" | "left_center" | "left_bottom" => Ok(Alignment::Start),
+        "start" | "left" | "left_top" | "left_center" | "left_bottom" => Ok(Alignment::Start),
         "center" | "center_top" | "center_center" | "center_bottom" => Ok(Alignment::Center),
-        "end" | "right_top" | "right_center" | "right_bottom" => Ok(Alignment::End),
+        "end" | "right" | "right_top" | "right_center" | "right_bottom" => Ok(Alignment::End),
         "stretch" => Ok(Alignment::Stretch),
         other => Err(WasmPythonError::BridgeJson(format!(
             "unknown alignment: {other}"
@@ -8252,24 +8403,87 @@ mod tests {
     }
 
     #[test]
-    fn python_key_name_fallback_matches_documented_punctuation_names() {
-        assert_eq!(python_key_name(egui::Key::Plus), "plus");
-    }
-
-    /// Stint 0462: punctuation keys must map to their literal characters, matching
-    /// `canonical_key_name()` in wasm_pane.rs, so PGAP apps comparing `key == "/"`
-    /// (e.g. logs.py's search shortcut) actually match.
-    #[test]
-    fn python_key_name_maps_punctuation_keys_to_literal_characters() {
+    fn python_key_name_maps_plus_and_punctuation_to_literal_glyphs() {
+        assert_eq!(python_key_name(egui::Key::Plus), "+");
         assert_eq!(python_key_name(egui::Key::Slash), "/");
         assert_eq!(python_key_name(egui::Key::Minus), "-");
         assert_eq!(python_key_name(egui::Key::Equals), "=");
         assert_eq!(python_key_name(egui::Key::Backslash), "\\");
         assert_eq!(python_key_name(egui::Key::Semicolon), ";");
+        assert_eq!(python_key_name(egui::Key::Colon), ":");
         assert_eq!(python_key_name(egui::Key::Quote), "'");
         assert_eq!(python_key_name(egui::Key::Backtick), "`");
         assert_eq!(python_key_name(egui::Key::Comma), ",");
         assert_eq!(python_key_name(egui::Key::Period), ".");
+        assert_eq!(python_key_name(egui::Key::OpenBracket), "[");
+        assert_eq!(python_key_name(egui::Key::CloseBracket), "]");
+    }
+
+    #[test]
+    fn authoring_key_table_round_trips_through_python_and_wasm_translators() {
+        let cases: &[(&str, &str)] = &[
+            ("enter", "enter"),
+            ("return", "enter"),
+            ("backspace", "backspace"),
+            ("delete", "delete"),
+            ("space", "space"),
+            ("tab", "tab"),
+            ("up", "up"),
+            ("down", "down"),
+            ("left", "left"),
+            ("right", "right"),
+            ("home", "home"),
+            ("end", "end"),
+            ("pageup", "pageup"),
+            ("pagedown", "pagedown"),
+            ("insert", "insert"),
+            ("+", "+"),
+            ("plus", "+"),
+            ("-", "-"),
+            ("minus", "-"),
+            ("*", "*"),
+            ("asterisk", "*"),
+            ("/", "/"),
+            ("slash", "/"),
+            ("=", "="),
+            ("equals", "="),
+            ("0", "0"),
+            ("5", "5"),
+            ("9", "9"),
+            ("a", "a"),
+            ("z", "z"),
+            ("f1", "f1"),
+            ("f12", "f12"),
+        ];
+        for &(input, expected) in cases {
+            let raw = crate::app::key_str_to_egui_raw_input(input)
+                .unwrap_or_else(|| panic!("key_str_to_egui_raw_input({input:?}) must succeed"));
+            let py_events = python_key_events(&raw.events);
+            assert_eq!(
+                py_events.len(),
+                2,
+                "python_key_events for {input:?} must emit press + release"
+            );
+            assert_eq!(py_events[0]["key"], expected, "python press for {input:?}");
+            assert_eq!(py_events[0]["pressed"], true);
+            assert_eq!(py_events[1]["key"], expected, "python release for {input:?}");
+            assert_eq!(py_events[1]["pressed"], false);
+
+            let wasm_events: Vec<_> = raw
+                .events
+                .iter()
+                .filter_map(crate::host::wasm_pane::translate_key_event)
+                .collect();
+            assert_eq!(
+                wasm_events.len(),
+                2,
+                "translate_key_event for {input:?} must emit press + release"
+            );
+            assert_eq!(wasm_events[0].key, expected, "wasm press for {input:?}");
+            assert!(wasm_events[0].pressed);
+            assert_eq!(wasm_events[1].key, expected, "wasm release for {input:?}");
+            assert!(!wasm_events[1].pressed);
+        }
     }
 
     #[test]
@@ -10765,5 +10979,119 @@ execution = "cloud"
             .expect("new file under existing subdir resolves");
         assert!(resolved.ends_with("media/out.wav"));
         assert!(resolved.starts_with(root.path().canonicalize().expect("canonical root")));
+    }
+
+    #[test]
+    fn decode_text_node_preserves_color_truncate_align_and_hint_tone() {
+        let hex_node = decode_node_data(&json!({
+            "type": "Text",
+            "text": "Alert",
+            "size": 16.0,
+            "bold": true,
+            "color": "#f38ba8",
+            "truncate": true,
+            "align": "end",
+        }))
+        .expect("hex Text decodes");
+        match hex_node {
+            UiNodeData::Text(t) => {
+                assert_eq!(t.text, "Alert");
+                assert_eq!(t.size, Some(16.0));
+                assert!(t.bold);
+                let c = t.color.expect("hex color");
+                assert_eq!((c.r, c.g, c.b, c.a), (0xf3, 0x8b, 0xa8, 0xff));
+                assert!(t.truncate);
+                assert!(matches!(t.align, Alignment::End));
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        let role_node = decode_node_data(&json!({
+            "type": "Text",
+            "text": "Accent role",
+            "color": "accent",
+            "align": "center",
+        }))
+        .expect("role Text decodes");
+        match role_node {
+            UiNodeData::Text(t) => {
+                let c = t.color.expect("accent color");
+                assert_eq!((c.r, c.g, c.b, c.a), (0x7a, 0xa2, 0xf7, 0xff));
+                assert!(matches!(t.align, Alignment::Center));
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        let hint_node = decode_node_data(&json!({
+            "type": "text",
+            "text": "Subtle caption",
+            "tone": "hint",
+        }))
+        .expect("hint tone Text decodes");
+        match hint_node {
+            UiNodeData::Text(t) => {
+                assert!(t.color.is_some(), "hint tone must populate muted color");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        let err = decode_node_data(&json!({
+            "type": "Text",
+            "text": "Bad color",
+            "color": "chartreuse",
+        }))
+        .expect_err("unknown color role must fail");
+        assert!(err.to_string().contains("chartreuse"));
+    }
+
+    #[test]
+    fn decode_card_and_data_table_preserve_surface_and_table_metadata() {
+        let tree = decode_ui_tree(
+            &json!({
+                "root": 0,
+                "nodes": [
+                    {
+                        "id": 0,
+                        "key": "root-card",
+                        "data": {
+                            "type": "Padding",
+                            "card": true,
+                            "top": 12.0,
+                            "right": 12.0,
+                            "bottom": 12.0,
+                            "left": 12.0,
+                            "child": 1
+                        }
+                    },
+                    {
+                        "id": 1,
+                        "key": "tbl",
+                        "data": {
+                            "type": "DataTable",
+                            "columns": ["Host", "State"],
+                            "rows": [["alpha", "up"], ["beta", "idle"]],
+                            "selected": 1,
+                            "on_select": "pick_host",
+                            "children": []
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("card + data table tree decodes");
+
+        assert!(
+            tree.nodes[0]
+                .key
+                .starts_with(crate::host::wasm_render::CARD_NODE_KEY_PREFIX),
+            "Card node must carry CARD_NODE_KEY_PREFIX"
+        );
+        let table_meta = crate::host::wasm_render::parse_table_node_key(&tree.nodes[1].key)
+            .expect("DataTable node must carry encoded TableNodeMeta");
+        assert_eq!(table_meta.columns, vec!["Host", "State"]);
+        assert_eq!(table_meta.rows.len(), 2);
+        assert_eq!(table_meta.selected, Some(1));
+        assert_eq!(table_meta.on_select.as_deref(), Some("pick_host"));
     }
 }

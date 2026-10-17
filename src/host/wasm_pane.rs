@@ -2365,6 +2365,13 @@ impl LiveWasmPane {
     /// are reserved for host shortcuts. See [`translate_key_event`].
     pub fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         let mut consumed = false;
+        let has_key_asterisk = input.events().iter().any(|ev| {
+            matches!(
+                ev,
+                egui::Event::Key { key, modifiers, .. }
+                    if canonical_key_name_for_event(*key, *modifiers) == "*"
+            )
+        });
         for event in input.events() {
             match event {
                 egui::Event::Key { key, modifiers, .. } => {
@@ -2386,9 +2393,26 @@ impl LiveWasmPane {
                 }
                 // Text composition (shift-resolved characters, IME) is reserved
                 // for a future text-input channel; game/command apps consume the
-                // raw key edges above. Swallow so stray text never leaks to host
-                // handlers while a WASM pane is focused.
-                egui::Event::Text(_) => consumed = true,
+                // raw key edges above. Physical NumpadMultiply emits only
+                // `Event::Text("*")` with no `Event::Key`, so synthesize a `*`
+                // key tap when no `Event::Key` already produced `"*"`.
+                egui::Event::Text(t) => {
+                    if t == "*" && !has_key_asterisk {
+                        for pressed in [true, false] {
+                            self.inner.push_input(InputEvent::Key(KeyEvent {
+                                key: "*".into(),
+                                modifiers: Modifiers {
+                                    ctrl: false,
+                                    shift: false,
+                                    alt: false,
+                                    meta: false,
+                                },
+                                pressed,
+                            }));
+                        }
+                    }
+                    consumed = true;
+                }
                 _ => {}
             }
         }
@@ -2440,13 +2464,13 @@ fn first_surface_dims(tree: &UiTree) -> Option<(u32, u32)> {
     })
 }
 
-/// Canonical guest key name for an egui key — the single source of truth for the
-/// WASM key dialect. Navigation and whitespace keys get short names
+/// Canonical guest key name for an egui key — the single source of truth for
+/// both Python and WASM guests. Navigation and whitespace keys get short names
 /// (`up`/`down`/`left`/`right`, `space`, `enter`, `escape`, …); digits and
 /// punctuation get their literal character; letters and any unmapped key fall
 /// back to the lowercased egui name (which is the bare character for letters).
 /// Guests match these strings directly, so this table IS the contract.
-fn canonical_key_name(key: egui::Key) -> String {
+pub(crate) fn canonical_key_name(key: egui::Key) -> String {
     use egui::Key::*;
     match key {
         ArrowUp => "up".into(),
@@ -2479,15 +2503,40 @@ fn canonical_key_name(key: egui::Key) -> String {
         Plus => "+".into(),
         OpenBracket => "[".into(),
         CloseBracket => "]".into(),
+        OpenCurlyBracket => "{".into(),
+        CloseCurlyBracket => "}".into(),
         Backslash => "\\".into(),
         Semicolon => ";".into(),
+        Colon => ":".into(),
         Quote => "'".into(),
         Backtick => "`".into(),
         Comma => ",".into(),
         Period => ".".into(),
         Slash => "/".into(),
-        other => format!("{other:?}").to_lowercase(),
+        Pipe => "|".into(),
+        Questionmark => "?".into(),
+        Exclamationmark => "!".into(),
+        other => format!("{other:?}").to_ascii_lowercase(),
     }
+}
+
+/// Resolve the canonical guest key name for a key event, accounting for
+/// shifted punctuation keys that `egui::Key` has no dedicated enum variant for
+/// (notably `Shift+8` → `"*"`).
+pub(crate) fn canonical_key_name_for_event(
+    key: egui::Key,
+    modifiers: egui::Modifiers,
+) -> String {
+    if key == egui::Key::Num8
+        && modifiers.shift
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.command
+        && !modifiers.mac_cmd
+    {
+        return "*".into();
+    }
+    canonical_key_name(key)
 }
 
 /// Translate a single egui event into a guest key edge, or `None` when it
@@ -2495,7 +2544,7 @@ fn canonical_key_name(key: egui::Key) -> String {
 /// (collapsed so a physical press fires once), or a Cmd-chord (reserved for host
 /// shortcuts). Both press and release edges are returned so apps can track held
 /// state — this is what makes hold-to-move game input work.
-fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
+pub(crate) fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
     let egui::Event::Key {
         key,
         pressed,
@@ -2510,7 +2559,7 @@ fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
         return None;
     }
     Some(KeyEvent {
-        key: canonical_key_name(*key),
+        key: canonical_key_name_for_event(*key, *modifiers),
         modifiers: Modifiers {
             ctrl: modifiers.ctrl,
             shift: modifiers.shift,

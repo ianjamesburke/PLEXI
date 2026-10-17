@@ -11,7 +11,7 @@ def init(_size, _args):
 
 
 def update(event):
-    if isinstance(event, KeyEvent) and event.pressed and event.key in ("plus", "equals"):
+    if isinstance(event, KeyEvent) and event.pressed and event.key in ("+", "="):
         return [SetState({"count": state.get("count", 0) + 1})]
     return []
 

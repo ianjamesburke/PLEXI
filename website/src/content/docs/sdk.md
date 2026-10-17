@@ -149,7 +149,7 @@ denied).
 ### `HttpFetch`
 
 ```python
-HttpFetch(url: str, method: str = 'GET', headers: dict = dict(), body: Optional[bytes] = None)
+HttpFetch(url: str, method: str = 'GET', headers: dict = dict(), body: Optional[bytes] = None, params: Optional[dict[str, Any]] = None, tag: Optional[str] = None, request_id: Optional[str] = None)
 ```
 
 ### `McpConnect`
@@ -432,7 +432,7 @@ created.
 ### `HttpResponse`
 
 ```python
-HttpResponse(status: int, headers: list, body: bytes)
+HttpResponse(status: int, headers: list = list(), body: bytes = b'', error: Optional[str] = None, request_id: Optional[str] = None, tag: Optional[str] = None, truncated: bool = False)
 ```
 
 ### `McpConnected`
@@ -612,7 +612,15 @@ StateSnapshot(values: Mapping[str, Any], raw_values: Mapping[str, bytes], scoped
 
 #### `all(scope: Optional[str] = None)`
 
+#### `load(defaults: Mapping[str, Any], scope: Optional[str] = None)`
+
+Return a fresh dict merging ``defaults`` with stored state in ``scope``.
+
 #### `set(key: str, value: Any, scope: Optional[str] = None)`
+
+#### `patch(updates: Optional[Mapping[str, Any]] = None, scope: Optional[str] = None, persist: bool = False, **kw)`
+
+Return a ``SetState`` (or ``PersistState`` when ``persist=True``) effect.
 
 #### `scopes()`
 
@@ -633,147 +641,183 @@ entry is the default scope.
 
 ## UI Components
 
-Declarative UI primitives.
+Plexi SDK — Declarative Host-Rendered UI Component Library (`plexi_sdk.ui`).
 
-Apps return a component tree from ``view()``. The host owns layout,
-theme, input, and rendering.
+All components in this module serialize to a declarative ``UiNode`` tree via
+``to_node()`` and are rendered natively by the Plexi host.
 
-### `HasToNode`
+Usage::
 
-Anything that can serialize itself to a UiNode wire dict.
+    from plexi_sdk import theme
+    from plexi_sdk.ui import (
+        AppBar, Badge, Button, Card, Column, DataTable, Divider,
+        FooterKeys, HStack, Heading, Label, Pending, Scrollable,
+        Section, SelectList, Skeleton, Spacer, Text, TextInput,
+        SPACE_SM, SPACE_MD,
+    )
+
+### `ensure_visible(scroll_offset: float, viewport_h: float, item_top: float, item_bottom: float, margin: float = 0.0)`
+
+Return a clamped scroll offset that keeps ``[item_top, item_bottom]`` visible.
+
+### `move_cursor(event_or_key: Any, count: int, selected: int = 0)`
+
+Compute the next 0-based cursor index for standard list navigation keys.
+
+Handles ``j`` / ``down``, ``k`` / ``up``, ``g`` / ``home``, and ``G`` / ``end``.
+Returns the new clamped index in ``0..count-1``, or ``None`` if ``event_or_key``
+is not a list navigation key or ``count <= 0``.
 
 ### `Component`
 
-Base class. Subclasses implement `measure` and `render`.
+Base class for all declarative UI components.
 
-### `Heading`
+Every concrete component implements :meth:`to_node` returning a JSON-serializable
+dictionary consumed by the host UI decoder.
 
-```python
-Heading(text: str, level: int = 1, color: 'str | None' = None, bold: bool = True)
-```
-
-Title-ish text. level 1 = TEXT_TITLE_XL, 2 = TEXT_TITLE, 3 = TEXT_HEADING.
-
-`ctx.text(x, y, ...)` treats `y` as the TOP of the text box (host renders
-with egui::Align2::LEFT_TOP). A Heading with font size `fs` occupies rows
-`y` .. `y + fs` plus descender padding.
-
-### `Label`
+### `Column`
 
 ```python
-Label(text: str, tone: str = 'body', color: Optional[str] = None, bold: bool = False, max_lines: int = 3)
+Column(children: list[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', grow: bool = False)
 ```
 
-Body/caption/hint text. Wraps up to `max_lines`, then truncates.
-
-Line height = font_size + `LINE_LEADING`; lines stack top-to-bottom with
-the first line's top at the component's `y`.
-
-### `Text`
-
-```python
-Text(text: str, tone: str = 'body', color: Optional[str] = None, bold: bool = False, max_lines: int = 3, size: Optional[float] = None, truncate: bool = False, align: str = 'start', key: str = '')
-```
-
-SDK v3 inline text node.
-
-### `Button`
-
-```python
-Button(label: str, on_click: str, style: str = 'secondary', disabled: bool = False, key: str = '')
-```
+Vertical stack of child components.
 
 ### `HStack`
 
 ```python
-HStack(children: Sequence[Component], gap: 'float | None' = None, grow: bool = False)
+HStack(children: list[Component] | None = None, gap: float | None = None, align: str = 'start', grow: bool = False)
 ```
 
-### `Sized`
+Horizontal stack of child components (`Row` alias).
+
+### `Card`
 
 ```python
-Sized(child: Component, width: float | None = None, height: float | None = None)
+Card(children: list[Component] | None = None, padding: float = SPACE_MD, gap: float | None = SPACE_SM, bg_color: str | None = None, border_color: str | None = None, radius: float = RADIUS_MD)
 ```
 
-Canvas-mode only (`measure()`/`render()`). There is no host-native
-fixed-size wrapper node — the WIT `ui-node-data` enum (`wit/plexi.wit`)
-has no `sized` variant, and none of `row`/`column`/`padding` carry a
-per-child width/height override. This class has no `to_node()` and
-cannot be placed in a declarative tree.
+Elevated surface container with rounded border and inner padding.
 
-### `ActionBar`
+### `Scrollable`
 
 ```python
-ActionBar(actions: Sequence[Button])
+Scrollable(child: Component, horizontal: bool = False)
 ```
+
+Scrollable viewport wrapping a single child component.
+
+### `Grid`
+
+```python
+Grid(columns: int, children: list[Component] | None = None, gap: float = SPACE_SM)
+```
+
+Multi-column grid layout composed onto rows and columns.
+
+### `AppBar`
+
+```python
+AppBar(title: str, subtitle: str = '', accent: str | None = None)
+```
+
+Top application header bar with title and optional subtitle.
+
+### `Section`
+
+```python
+Section(title: str, children: list[Component] | Component | None = None, *more_children, gap: float = SPACE_SM)
+```
+
+Titled section header with a divider, optionally wrapping body children.
+
+### `Heading`
+
+```python
+Heading(text: str = '', size: float = TEXT_HEADING, color: str | None = None, align: str = 'left', truncate: bool = False)
+```
+
+Bold section or view heading.
+
+### `Label`
+
+```python
+Label(text: str = '', size: float | None = None, color: str | None = None, bold: bool = False, elide: bool = False, tone: str = 'body', align: str = 'left', truncate: bool = False)
+```
+
+Single-line or body text label with optional semantic ``tone`` or ``color``.
+
+### `Text`
+
+```python
+Text(text: str = '', size: float = 13.0, color: str = '', bold: bool = False, italic: bool = False, monospace: bool = False, truncate: bool = False, align: str = 'left', tone: str = '')
+```
+
+Declarative text primitive with font size, styling, color, truncation, and alignment.
 
 ### `Spacer`
 
 ```python
-Spacer(size: float = SPACE_MD, grow: bool = False)
+Spacer(size: float = SPACE_MD, grow: bool = False, flex: bool = False)
 ```
 
-Fixed or flex gap. `grow=True` expands to consume remaining space.
+Fixed or flex gap. ``grow=True`` expands to consume remaining space.
+
+### `Divider`
+
+```python
+Divider(color: str | None = None)
+```
+
+Horizontal rule separating vertical sections.
 
 ### `Badge`
 
 ```python
-Badge(text: str, color: BadgeColor = 'neutral', tone: 'BadgeColor | None' = None, key: str = '')
+Badge(label: str = '', color: BadgeColor = 'neutral', text: str = '', tone: BadgeColor | None = None)
 ```
 
-### `Tooltip`
+Semantic status pill (`accent`, `success`, `warning`, `danger`, `neutral`).
+
+### `FooterKeys`
 
 ```python
-Tooltip(text: str, child: Component)
+FooterKeys(shortcuts: list[tuple[Any, str]] = list(), divider: bool = True)
 ```
 
-### `Avatar`
+Bottom-pinned keybinding hint bar.
+
+### `Button`
 
 ```python
-Avatar(label: str = '', size: float = 0.0)
+Button(label: str, on_click: str = '', style: str = 'secondary', disabled: bool = False)
 ```
 
-### `Icon`
+Interactive button dispatching ``UiAction(on_click)`` when activated.
+
+### `Actions`
 
 ```python
-Icon(name: str, size: float = 0.0, color: str = '')
+Actions(buttons: list[Button] | None = None, actions: list[Button] | None = None, gap: float = SPACE_SM, align: str = 'start')
 ```
 
-### `CodeBlock`
+Horizontal row of ``Button`` components (`ActionBar` alias).
+
+### `TextInput`
 
 ```python
-CodeBlock(code: str, language: str = '')
+TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '', multiline: bool = False, max_length: int | None = None, height: float = 0.0)
 ```
 
-### `Table`
+Editable text input rendered natively by the host (`TextEdit` alias).
+
+### `FormField`
 
 ```python
-Table(columns: list[str], rows: list[list[str]])
+FormField(id: str, label: str, value: str = '', placeholder: str = '', required: bool = False, password: bool = False, autofocus: bool = False, on_change: str = '', on_submit: str = '')
 ```
 
-### `KeyValue`
-
-```python
-KeyValue(rows: list[tuple[str, str]])
-```
-
-### `Breadcrumb`
-
-```python
-Breadcrumb(items: list[str])
-```
-
-### `Pagination`
-
-```python
-Pagination(node_id: str, page: int = 0, total: int = 0)
-```
-
-### `Accordion`
-
-```python
-Accordion(node_id: str, title: str, child: Component, open: bool = False)
-```
+Labeled ``TextInput`` column with optional required indicator.
 
 ### `Checkbox`
 
@@ -781,41 +825,125 @@ Accordion(node_id: str, title: str, child: Component, open: bool = False)
 Checkbox(node_id: str, label: str = '', checked: bool = False, disabled: bool = False)
 ```
 
+Boolean checkbox control dispatching ``UiAction(node_id)`` on click.
+
+### `Toggle`
+
+```python
+Toggle(node_id: str, value: bool | None = None, label: str = '', on: bool | None = None, disabled: bool = False)
+```
+
+Boolean toggle control (`Switch` alias).
+
 ### `Radio`
 
 ```python
-Radio(node_id: str, options: list[str], selected: int = 0, disabled: bool = False)
+Radio(node_id: str, options: list[str] | None = None, selected: int = 0, disabled: bool = False)
 ```
 
-### `Switch`
-
-```python
-Switch(node_id: str, label: str = '', on: bool = False, disabled: bool = False)
-```
+Single-choice radio group dispatching ``UiAction(f"{node_id}:{idx}")``.
 
 ### `Slider`
 
 ```python
-Slider(node_id: str, value: float = 0.0, min: float = 0.0, max: float = 1.0, disabled: bool = False)
+Slider(node_id: str, value: float = 0.0, min: float = 0.0, max: float = 1.0, step: float = 0.01, disabled: bool = False)
 ```
+
+Numeric range slider control with decrement/increment buttons and progress bar.
 
 ### `Select`
 
 ```python
-Select(node_id: str, options: list[str], selected: int = 0, placeholder: str = '')
+Select(node_id: str, options: list[str] | None = None, selected: int | None = None, placeholder: str = 'Select…', disabled: bool = False)
 ```
+
+Single-choice option selector.
 
 ### `DateTimePicker`
 
 ```python
-DateTimePicker(node_id: str, value: str = '', mode: str = 'datetime')
+DateTimePicker(node_id: str, value: str = '', mode: str = 'date', disabled: bool = False)
 ```
 
-### `Progress`
+Date/time input field.
+
+### `SelectList`
 
 ```python
-Progress(value: float = 0.0, label: str = '', indeterminate: bool = False)
+SelectList(items: list[Any], selected_idx: int = 0, scroll_height: float = 0, selected: int | None = None, on_select: str | None = None)
 ```
+
+Scrollable, selectable list view with keyboard and click navigation.
+
+``items`` may be:
+- ``list[dict]`` with ``name`` (or ``label``) and optional ``description``,
+  ``leading``, ``trailing``
+- ``list[str]`` of row labels
+- ``list[Component]`` of custom row components
+
+When ``on_select`` is set, clicking row ``i`` dispatches
+``UiAction(f"{on_select}:{i}")``. Use :meth:`SelectList.move_cursor` (or
+top-level :func:`move_cursor`) in ``update()`` to handle ``j``/``k``/arrow
+keys.
+
+### `Breadcrumb`
+
+```python
+Breadcrumb(items: list[str] | None = None)
+```
+
+Horizontal trail of path segments separated by ``/``.
+
+### `Tabs`
+
+```python
+Tabs(*args, tabs: list[Any] | None = None, active: int = 0, node_id: str = 'tabs')
+```
+
+Tabbed container or standalone tab bar (`TabBar` alias).
+
+Can be constructed either with ``(label, panel_component)`` pairs::
+
+    Tabs([("Overview", overview_panel), ("Logs", logs_panel)], active=0, node_id="tabs")
+
+or as a standalone tab bar::
+
+    TabBar("gallery-tabs", tabs=["Overview", "Details", "Logs"], active=0)
+
+### `Pagination`
+
+```python
+Pagination(node_id: str, page: int = 0, total: int = 1)
+```
+
+Prev / page-indicator / Next pagination bar.
+
+### `DataTable`
+
+```python
+DataTable(columns: list[str] | None = None, rows: list[list[Any]] | None = None, selected: int | None = None, selected_idx: int | None = None, on_select: str | None = None)
+```
+
+Structured multi-column table with header row, selection, and row-click action (`Table` alias).
+
+When ``on_select`` is set, clicking row ``i`` dispatches
+``UiAction(f"{on_select}:{i}")``.
+
+### `Banner`
+
+```python
+Banner(text: str, tone: BadgeColor = 'neutral', title: str = '', dismissible: bool = False, node_id: str = '')
+```
+
+Status banner with semantic ``tone`` badge and message.
+
+### `ProgressBar`
+
+```python
+ProgressBar(value: float = 0.0, max_value: float = 1.0, label: str = '', indeterminate: bool = False)
+```
+
+Horizontal progress indicator (`Progress` alias).
 
 ### `Spinner`
 
@@ -823,17 +951,71 @@ Progress(value: float = 0.0, label: str = '', indeterminate: bool = False)
 Spinner(label: str = '')
 ```
 
-### `Banner`
+Animated indeterminate loading spinner.
+
+### `Skeleton`
 
 ```python
-Banner(text: str, tone: "BadgeColor | Literal['']" = '', title: str = '')
+Skeleton(rows: int = 1, height: float = 14.0)
 ```
 
-### `TabBar`
+Placeholder loading lines.
+
+### `Pending`
 
 ```python
-TabBar(node_id: str, tabs: list[str], active: int = 0)
+Pending(active: bool, child: Component, placeholder: Component | None = None)
 ```
+
+Renders ``placeholder`` while ``active`` is true, otherwise ``child``.
+
+### `KeyValue`
+
+```python
+KeyValue(rows: list[tuple[str, str]] | None = None)
+```
+
+Two-column key/value metadata list.
+
+### `CodeBlock`
+
+```python
+CodeBlock(code: str = '', language: str = '')
+```
+
+Monospace code block with optional language badge.
+
+### `Avatar`
+
+```python
+Avatar(label: str = '', size: float = 28.0)
+```
+
+Initials badge derived from a display name.
+
+### `Icon`
+
+```python
+Icon(name: str = '', size: float = 16.0, tone: str = 'body')
+```
+
+Named icon glyph.
+
+### `Tooltip`
+
+```python
+Tooltip(text: str, child: Component)
+```
+
+Inline tooltip hint displayed alongside a child component.
+
+### `Accordion`
+
+```python
+Accordion(node_id: str, title: str, child: Component, open: bool = False)
+```
+
+Collapsible section header + body.
 
 ### `EmptyState`
 
@@ -841,41 +1023,15 @@ TabBar(node_id: str, tabs: list[str], active: int = 0)
 EmptyState(title: str, description: str = '', icon: str = '')
 ```
 
-### `Skeleton`
-
-```python
-Skeleton(rows: int = 3, height: float = 0.0)
-```
-
-### `Pending`
-
-```python
-Pending(active: bool, child: Component, placeholder: Component)
-```
-
-Declarative loading region: renders `placeholder` while `active`,
-otherwise `child`. One call site per pending region -- never thread a
-loading boolean through multiple view branches.
-
-Tree-mode counterpart of the canvas-mode `loading_pill`.
+Centered empty-state message with optional icon and description.
 
 ### `Modal`
 
 ```python
-Modal(node_id: str, title: str, child: Component)
+Modal(node_id: str, title: str, child: Component, open: bool = True)
 ```
 
-### `Divider`
-
-```python
-Divider(color: 'str | None' = None, margin_top: float = SPACE_SM, margin_bottom: float = SPACE_SM)
-```
-
-A horizontal 1px rule.
-
-``color`` only affects canvas-mode `render()`. The WIT `divider` variant
-(`wit/plexi.wit`) is a bare unit with no fields, so `to_node()` cannot
-carry a color to the host — it is not emitted in the wire dict.
+Framed modal dialog block.
 
 ### `CanvasRect`
 
@@ -892,516 +1048,22 @@ CanvasCircle(x: float, y: float, radius: float, fill: str)
 ### `CanvasLine`
 
 ```python
-CanvasLine(x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.0)
+CanvasLine(x1: float, y1: float, x2: float, y2: float, color: str = '#cdd6f4', width: float = 1.0)
 ```
 
 ### `CanvasText`
 
 ```python
-CanvasText(x: float, y: float, text: str, size: float = 14.0, color: str = '#ffffff', bold: bool = False, align: str = 'left_top')
+CanvasText(x: float, y: float, text: str, size: float = 14.0, color: str = '#ffffff', bold: bool = False, align: str = 'left_top', monospace: bool = False)
 ```
 
 ### `Canvas`
 
 ```python
-Canvas(commands: 'list | None' = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '')
+Canvas(commands: list[Any] | None = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '', on_click: str = '')
 ```
 
-SDK v3 CPU canvas node.
-
-Pass typed drawing commands for host-side rendering from ``view()``.
-
-### `AppBar`
-
-```python
-AppBar(title: str, subtitle: Optional[str] = None, accent: Optional[str] = None)
-```
-
-Thin top-of-pane app bar with optional subtitle.
-
-Single-line (title only): fixed BAND_H band, title vertically centred.
-Two-line (title + subtitle): taller BAND_H_DOUBLE band, title/subtitle
-stacked and centred together.
-
-### `Section`
-
-```python
-Section(title: str)
-```
-
-Section divider with a small uppercase label sitting above the rule.
-
-Vertical stack: SPACE_SM padding, label (TEXT_HINT), SPACE_XS, divider,
-SPACE_XS padding. The bottom padding is intentionally tight (SPACE_XS
-instead of SPACE_SM) so the section headline sits close to its
-associated content block below.
-
-### `KeyRow`
-
-```python
-KeyRow(key: Union[str, List[str]], description: str)
-```
-
-A keycap chip (or a chord of chips) followed by a description, left-aligned.
-
-Emits DrawCommand::KeyChipRow — the host measures each chip with real font
-metrics and flows them left-to-right. No Python-side width math.
-
-`key` accepts a single string (e.g. `"m"`) or a list (e.g. `["⌘", "K"]`).
-
-Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-declarative-tree node exists for a single key-chip row. Use
-`FooterKeys` for a tree-mode shortcuts row.
-
-### `ScrollLog`
-
-```python
-ScrollLog(lines: List[str], line_size: float = TEXT_CAPTION, empty_text: str = 'no events yet', max_pixel_height: Optional[float] = None)
-```
-
-Bounded text log. Shows the most recent lines that fit in the available
-space; older lines are hidden. Lines are rendered newest-at-top.
-
-Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-declarative-tree node exists for a bounded reversed-order text log.
-
-### `Scrollable`
-
-```python
-Scrollable(child: Component, scroll_offset: float = 0.0, align: str = 'top', key_step: float = 20.0)
-```
-
-A clip-bounded vertically-scrollable container.
-
-Renders its `child` component clipped to the allocated rect. If the child
-is taller than the available height the excess is hidden and a thin
-scrollbar indicator is drawn on the right edge.
-
-Scroll offset is persisted on the instance, so the `Scrollable` must be
-stable across renders — create it once at module level or in `init()`,
-not inside `view()`.
-
-Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
-Apps drive this by calling `handle_key(key)` from their `on_key` handler.
-
-Mouse-wheel scroll: call `handle_scroll(delta_y)` from the app's
-`on_scroll_delta` handler (receives `PlexiEvent::Scroll` from the host).
-
-### `ensure_visible(scroll_offset: float, viewport_h: float, top: float, bottom: float, margin: float = 0.0)`
-
-Solve 'selection follows scroll' in one call. Returns the new offset.
-
-The pattern: the user is navigating items with j/k. The cursor moves
-freely while it stays inside the visible viewport; the moment it would
-go off the top or bottom edge, the viewport scrolls just enough to
-keep it visible. Identical to every native list widget.
-
-Apps call this from their nav handler after mutating their
-selected_index — works whether the app uses a `Scrollable` component
-or hand-rolls its own scroll offset (commit-graph's clip-and-offset
-style):
-
-    new_sel = min(self._sel + 1, len(items) - 1)
-    item_top = new_sel * ROW_H
-    self._scroll_offset = ensure_visible(
-        self._scroll_offset, viewport_h,
-        top=item_top, bottom=item_top + ROW_H,
-    )
-    self._sel = new_sel
-
-Args:
-    scroll_offset: current scroll offset in the child's local space.
-    viewport_h:    visible height of the viewport.
-    top, bottom:   the item's top/bottom edges in the child's local space.
-    margin:        scrolloff equivalent. Set to one row-height to keep
-                   a row of breathing room above/below the cursor.
-
-Returns:
-    The new scroll_offset that keeps `[top, bottom]` visible. Identical
-    to the input if the cursor was already in view.
-
-### `Footer`
-
-```python
-Footer(text: str, color: 'str | None' = None, max_lines: int = 2)
-```
-
-Small caption row. Wraps instead of clipping. The parent `Column`
-provides the outer bottom padding, so no extra padding is needed here.
-
-Canvas-mode only (`measure()`/`render()`). There is no host-native node
-for a standalone footer band — the WIT `ui-node-data` enum
-(`wit/plexi.wit`) has no `footer` variant, only `footer-keys`. Use
-`FooterKeys` in a declarative tree instead; this class has no
-`to_node()` and cannot be placed in one.
-
-### `FooterKeys`
-
-```python
-FooterKeys(shortcuts: List[tuple], divider: bool = True)
-```
-
-Footer row that renders keyboard shortcuts as key chips + descriptions.
-
-Each shortcut is a ``(key_or_keys, description)`` tuple — the same shape
-as ``KeyRow``.  Chips are rendered inline (horizontal flow) separated by a
-small gap, identical in style to ``KeyRow`` but packed tightly so many
-shortcuts fit on one line.
-
-Example::
-
-    FooterKeys([
-        ("j", "down"),
-        ("k", "up"),
-        (["g", "G"], "ends"),
-        ("?", "help"),
-    ])
-
-``key_or_keys`` may be a single string or a list of strings (chord).
-Lists are joined with ``/`` as a single chip label so they stay compact
-in the footer context.
-
-### `ListItem`
-
-```python
-ListItem(title: str, subtitle: Optional[str] = None, leading: Optional[str] = None, trailing: Optional[str] = None, selected: bool = False, background: Optional[str] = None, radius: float = RADIUS_MD)
-```
-
-Single or double-line list item with optional leading icon and trailing text.
-
-Replaces the manual ``ctx.rect`` + y-offset pattern for list rows.
-All vertical centering is handled internally — no ``align=`` juggling or
-``h * 0.38`` / ``h * 0.72`` magic numbers needed.
-
-Example::
-
-    ListItem(
-        title=cmd["name"],
-        subtitle=cmd.get("description"),
-        trailing="›",
-        selected=(i == self._sel),
-    )
-
-Canvas-mode only (`measure()`/`render()`) — used internally by
-`SelectList.render()`. There is no `to_node()`; `SelectList.to_node()`
-synthesizes the equivalent tree shape itself
-(`_adapter.py::_normalize_node_data`'s `select_list` branch), it does not
-delegate to this class.
-
-### `Row`
-
-```python
-Row(label: str, leading: Optional[str] = None, trailing: Optional[str] = None, font_size: float = TEXT_BODY, color: 'str | None' = None, leading_color: Optional[str] = None, trailing_color: Optional[str] = None, height: Optional[float] = None, bold: bool = False)
-```
-
-Horizontal row: optional leading icon, main label, optional trailing text.
-
-Vertically centres all items automatically. Use instead of paired
-``ctx.text(x, y + h/2, ..., align="left_center")`` calls when building
-info rows with an icon, label, and badge or chevron.
-
-Example::
-
-    Row(label="Workspace", leading="⚡", trailing=f"{count}")
-
-Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-declarative-tree node exists for this leading/trailing text row. Compose
-a `"row"` of `Text` nodes yourself in tree mode.
-
-### `badge(ctx, x: float, y_center: float, label: str, fill: 'str | None' = None, fg: 'str | None' = None, font_size: float = TEXT_HINT, radius: float = RADIUS_BADGE)`
-
-Render a host-measured pill badge centred on ``y_center``.
-
-The host measures the label with real egui font metrics, sizes the pill
-(text_w + padding), and centres the text — no Python width math.
-
-Args:
-    ctx:       Canvas context.
-    x:         Left edge of the badge.
-    y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
-    label:     Text to display inside the pill.
-    fill:      Pill background colour.
-    fg:        Text colour (default: theme bg — dark text on light pill).
-    font_size: Label pt size (default ``TEXT_HINT``).
-    radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
-               ``RADIUS_BADGE`` (6 px, default) for rounded badges without
-               the perfect-stadium look of ``RADIUS_MD`` (8 px).
-
-### `loading_pill(ctx, x: float, y: float, label: str = 'Fetching…')`
-
-Canvas-mode only: render a small spinner+label pill at (x, y).
-Returns rendered width.
-
-For a declarative tree (`view()` returning a component tree), use
-`Pending` instead -- it is the tree-mode equivalent of this
-stale-while-revalidate pattern.
-
-The pill uses host-measured `badge()` rendering (so widths are
-correct), with a wall-clock-driven Braille spinner glyph that ticks
-at 8 fps regardless of how often `loading_pill` is called.
-
-Pattern: position this in the top-right of the region being
-refreshed. While `_fetching` is true, render it on top of the stale
-content. When the fetch completes, just stop calling it.
-
-Args:
-    ctx:   Canvas context.
-    x, y:  Top-left of the pill (NOT y-centre — easier to anchor).
-    label: Text shown after the spinner glyph.
-
-### `Card`
-
-```python
-Card(children: Sequence[Component], padding: float = SPACE_LG, gap: float = SPACE_XS, background: 'str | None' = None, border: Optional[str] = '__theme__', radius: float = RADIUS_MD)
-```
-
-Surface-colored container with inner padding. Stacks its children
-vertically with a configurable gap. A 1px border in `theme.highlight` separates
-it from the pane background — essential when surface and bg are close
-in brightness.
-
-### `TextInput`
-
-```python
-TextInput(id: str, placeholder: str = '', height: float = 48.0, multiline: bool = False, value: Optional[str] = None, on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False)
-```
-
-Layout-aware text input. Place inside a Column like any other child.
-
-Return it from ``view()`` inside a component tree. After the render pass,
-read ``.submitted`` to get the text the user submitted (pressed Enter), or
-``None`` if nothing was submitted this frame.
-
-Create once (in ``on_init``) and update ``placeholder`` as needed — the
-instance is stable across renders so the host can track focus state.
-
-When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
-
-In a declarative ``view()`` tree, typing delivers ``UiValueChange`` and
-Enter delivers ``UiAction``. Both handler ids default to this input's
-``id`` — pass ``on_change``/``on_submit`` only to route them elsewhere::
-
-    TextInput("guess", value=state.get("guess", ""))
-    # update():
-    #   UiValueChange(handler_id="guess", value=...)  → echo into state
-    #   UiAction(handler_id="guess")                  → Enter pressed
-
-### `TextEdit`
-
-```python
-TextEdit(node_id: str, placeholder: str = '', value: str = '', multiline: bool = False, max_length: int = 0, height: float = 48.0)
-```
-
-Host-rendered text editor. Use inside ``view()`` like any other component.
-
-The host maintains a persistent buffer keyed on ``node_id``. Typing fires
-``ComponentEvent`` with ``event_type="change"`` and ``payload={"value": "..."}``;
-Enter (single-line) or Cmd+Enter (multiline) fires ``event_type="submit"``.
-
-``height`` controls the allocated row height (pixels). Default ``48.0`` suits
-single-line use; set it larger for multiline (e.g. ``height=120.0``).
-
-Example::
-
-    def view(self):
-        return Column([
-            TextEdit("body", multiline=True, height=120.0, placeholder="Type here..."),
-            FooterKeys([("↩", "submit")]),
-        ])
-
-### `ChatBubble`
-
-```python
-ChatBubble(text: str, role: str = 'assistant', max_lines: int = 50)
-```
-
-A chat message bubble with left/right alignment and colored background.
-
-``align="right"`` for user messages (accent bg), ``"left"`` for
-assistant messages (surface bg). Error messages use ``role="error"``.
-
-Canvas-mode only (`measure()`/`render()`, which also draws markdown via
-`ctx.markdown()`). There is no `to_node()` — no declarative-tree node
-exists for a colored, markdown-rendering chat bubble.
-
-### `SelectList`
-
-```python
-SelectList(items: List[dict], selected_idx: int = 0)
-```
-
-Keyboard-navigable scrollable list. Stateful -- create at module level or in init().
-
-items: list of dicts with keys: name (str), description (str, optional),
-       leading (str, optional), trailing (str, optional)
-selected_idx: currently highlighted row index
-
-Call handle_key(key) from on_key. Call hit_index(click_y) from on_click.
-
-### `FormField`
-
-```python
-FormField(id: str, label: str, placeholder: str = '', required: bool = False, height: float = 48.0, value: Optional[str] = None, autofocus: bool = False, on_change: str = '', on_submit: str = '', LABEL_H: float = TEXT_HINT + SPACE_XS, LABEL_GAP: float = SPACE_SM, BOTTOM_PAD: float = SPACE_LG)
-```
-
-Label + TextInput, as one form row.
-
-In a declarative ``view()`` tree this composes to a column of a caption
-label and a text input, so a labeled field is one component instead of
-hand-stacked parts. ``value`` makes it a controlled input (the app owns the
-text and echoes ``UiValueChange`` back into state); ``autofocus`` hands it
-the cursor the frame it appears. Handler ids default to ``id``, matching
-:class:`TextInput`.
-
-In canvas mode (``measure()``/``render()``) it draws the same pair itself;
-read ``.submitted`` after the render pass for the text the user entered.
-
-### `Actions`
-
-```python
-Actions(buttons: Sequence[Button], gap: float = SPACE_SM)
-```
-
-A form's action row: buttons laid side by side, never stacked.
-
-Buttons declared as plain children of a ``Column`` each take the column's
-full width and stack vertically, which is how a Save/Cancel pair ends up
-reading as two unrelated full-bleed bars. ``Actions`` is the primitive for
-the pair: one row, standard button spacing, primary action first.
-
-    Actions([Button("Add", "add", style="primary"),
-             Button("Cancel", "cancel", style="ghost")])
-
-### `Column`
-
-```python
-Column(children: Sequence[Component], padding: float = SPACE_XL, padding_top: Optional[float] = None, gap: Optional[float] = None, align: str = 'start', grow: bool = False, key: str = '')
-```
-
-The root container. Stacks children vertically. Handles grow spacers:
-measures fixed-height children first, then distributes leftover space to
-any `Spacer(grow=True)` descendants at the top level.
-
-Spacing is good by default: leave `gap` unset and the host applies its
-standard inter-child spacing; pass an explicit `gap=` (including `gap=0`
-to pack children flush) to override. The root's *content padding* is owned
-by the host too — a declarative tree is inset automatically, and app bars /
-footers stay full-bleed — so apps need no layout code to look right.
-
-`padding` / `padding_top` only affect the legacy canvas-mode layout
-(`measure`/`render`); they are ignored by the declarative tree, whose inset
-the host owns.
-
-### `InfoTable`
-
-```python
-InfoTable(rows: List[tuple], key_width: float = 100.0, background: Optional[str] = None, border: Optional[str] = None, radius: float = RADIUS_MD)
-```
-
-Key-value table with surface background, border, and row dividers.
-
-Each row is a ``(key, value)`` tuple rendered in a fixed-width key column
-(monospace, green accent) and a value column (monospace, FG).
-
-Example::
-
-    InfoTable([
-        ("app_id", "my-app"),
-        ("workspace", "/path/to/ws"),
-    ])
-
-Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-declarative-tree node exists for a bordered key-value table with row
-dividers. Compose a `"column"` of `"row"`s of `Text` yourself in tree
-mode (see `KeyValue`, an unexported reference implementation earlier in
-this module).
-
-### `ButtonRow`
-
-```python
-ButtonRow(id: str, label: str, text_color: 'str | None' = None, fill: 'str | None' = None, hover_fill: 'str | None' = None, active_fill: 'str | None' = None, font_size: float = TEXT_BODY, radius: float = RADIUS_MD, height: float = 36.0, clicked: bool = False)
-```
-
-A clickable button rendered as a component in the declarative tree.
-
-Use this from ``view()``. Button presses arrive through
-``on_component_event(node_id, event_type, payload)``.
-
-Example::
-
-    self._btn = ButtonRow("action", "Click me")
-
-    def view(self):
-        return Column([self._btn])
-
-    def on_component_event(self, node_id, event_type, payload):
-        if node_id == "action" and event_type == "click":
-            handle_click()
-
-### `Tabs`
-
-```python
-Tabs(tabs: 'list[tuple[str, HasToNode]]', active: int = 0)
-```
-
-Tabbed container. Renders as a horizontal tab bar + active content area.
-
-Decomposes to a vertical Stack containing:
-- a horizontal Stack of Interactive(Text) tab buttons
-- the active tab's content node
-
-Example::
-
-    tabs = Tabs([
-        ("Overview", overview_node),
-        ("Details", details_node),
-    ], active=0)
-    return tabs.to_node()
-
-### `Grid`
-
-```python
-Grid(columns: int, children: 'list[HasToNode]', gap: float = 8.0)
-```
-
-Fixed-column grid layout.
-
-Decomposes to a vertical Stack of rows, where each row is a horizontal
-Stack of up to ``columns`` children.
-
-Example::
-
-    grid = Grid(2, [item_a, item_b, item_c, item_d], gap=8.0)
-    return grid.to_node()
-
-### `Toggle`
-
-```python
-Toggle(node_id: str, value: bool, label: str = '')
-```
-
-On/off toggle switch (L1 sugar).
-
-Renders as a Button whose label carries the on/off state; clicking it
-fires `node_id` as the on_click handler.
-
-Example::
-
-    toggle = Toggle("dark_mode", value=True, label="Dark mode")
-    return toggle.to_node()
-
-### `ProgressBar`
-
-```python
-ProgressBar(value: float, max_value: float = 1.0)
-```
-
-Horizontal progress bar backed by the host's native progress-bar node.
-
-Example::
-
-    bar = ProgressBar(0.75)
-    return bar.to_node()
+2D vector drawing surface rendered natively by the host.
 
 ## Testing
 

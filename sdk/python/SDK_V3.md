@@ -161,8 +161,11 @@ class HttpFetch:
     method: str = "GET"
     headers: dict = field(default_factory=dict)  # {name: value}
     body: Optional[bytes] = None
-    # → http-fetch-effect { url, method, headers: list<tuple<string,string>>, body: option<list<u8>> }
-    # adapter converts headers dict to list[tuple[str,str]]
+    params: Optional[dict[str, Any]] = None
+    tag: Optional[str] = None
+    request_id: Optional[str] = None
+    # → http-fetch-effect { url: resolved_url(), method, headers: list<tuple<string,string>>, body: option<list<u8>> }
+    # adapter encodes params onto url via resolved_url() and converts headers dict to list[tuple[str,str]]
 
 @dataclass
 class OpenUrl:
@@ -359,9 +362,15 @@ class FileWriteResult:
 
 @dataclass
 class HttpResponse:
-    status: int
-    headers: list               # list[tuple[str, str]]
-    body: bytes
+    status: int = 0
+    headers: list = field(default_factory=list)  # list[tuple[str, str]]
+    body: bytes = b""
+    error: Optional[str] = None
+    request_id: int = 0
+    tag: Optional[str] = None
+    truncated: bool = False
+    # .text(encoding="utf-8", errors="replace") -> str
+    # .json() -> Any
     # → input-event::http-response(http-response)
 
 @dataclass

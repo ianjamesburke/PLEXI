@@ -196,9 +196,6 @@ def test_textedit_is_component() -> None:
 
 
 def test_textedit_to_node_fields() -> None:
-    # TextEdit has no dedicated CPython-WASM decode arm (stint 0407); it
-    # composes onto the native TextInput node. multiline/max_length have no
-    # host-side equivalent yet and are dropped.
     te = TextEdit("notes", placeholder="Write here", value="hello", multiline=True, max_length=500)
     assert te.to_node() == {
         "type": "TextInput",
@@ -207,6 +204,7 @@ def test_textedit_to_node_fields() -> None:
         "on_change": "notes",
         "on_submit": "notes",
         "password": False,
+        "autofocus": False,
     }
 
 
@@ -220,19 +218,16 @@ def test_textedit_nested_in_column_is_native() -> None:
     assert child_node["on_change"] == "body"
 
 
-def test_textedit_measure() -> None:
-    te = TextEdit("x", height=80.0)
-    assert te.measure(400.0) == 80.0
+def test_textedit_accepts_node_id_keyword() -> None:
+    te = TextEdit(node_id="x", value="val")
+    assert te.id == "x"
+    assert te.to_node()["on_change"] == "x"
 
 
 # ── ActionBar ─────────────────────────────────────────────────────────────
 
 
 def test_action_bar_to_node_composes_row_of_buttons() -> None:
-    # ActionBar has no dedicated CPython-WASM decode arm; "action_bar" was
-    # never handled by decode_node_data, so it crashed the whole tree the
-    # first time a live app rendered it (discovered during stint 0407's
-    # component-gallery sweep). Composes onto a Row of Buttons instead.
     bar = ActionBar(
         [
             Button("Save", "save", style="primary"),
@@ -263,21 +258,17 @@ def test_action_bar_to_node_composes_row_of_buttons() -> None:
 
 def test_action_bar_rejects_non_button_actions() -> None:
     with pytest.raises(TypeError, match="ActionBar actions\\[0\\] must be a Button"):
-        ActionBar([TextEdit("not-a-button")])
+        ActionBar([TextEdit("not-a-button")])  # type: ignore[list-item]
 
 
 # ── CPython-WASM decoder drift guard ────────────────────────────────────────
 #
 # Mirrors the `match kind { ... }` arms of `decode_node_data` in
-# `src/host/wasm_python.rs` (stint 0402). A widget whose to_node() emits a
-# type outside this set crashes any live CPython-WASM app that uses it with
-# "unsupported CPython-WASM UINode type: <name>" — silent until run live.
-# Keep this set in sync with the Rust match by hand; it is deliberately not
-# derived from the SDK's own output, since that would make the guard
-# tautological.
+# `src/host/wasm_python.rs`.
 _DECODER_SUPPORTED_ROOT_TYPES = {
     "row", "column", "button", "text", "progress-bar", "badge",
-    "divider", "spinner", "TextInput",
+    "divider", "spinner", "TextInput", "card", "Card", "DataTable",
+    "data_table", "table", "Table",
 }
 
 
@@ -306,14 +297,6 @@ def test_v3_5_uinode_widgets_emit_decoder_supported_root_type(widget_factory) ->
     )
 
 
-# ── stint 0407: remaining component-gallery widgets ─────────────────────────
-#
-# These widgets had no CPython-WASM decode arm at all (Checkbox, Switch,
-# Radio, Slider, Select, DateTimePicker, TextEdit, Breadcrumb, TabBar,
-# Pagination, Banner, Progress, Skeleton, KeyValue, Table, CodeBlock, Card,
-# Avatar, Icon, Tooltip, Accordion, EmptyState, Modal, Section) plus ActionBar
-# (discovered live-blocking the whole gallery tree). Each now composes onto
-# an already-decoder-supported root type.
 @pytest.mark.parametrize(
     "widget_factory",
     [
@@ -365,3 +348,121 @@ def test_stint_0407_widgets_emit_decoder_supported_root_type(widget_factory) -> 
         "src/host/wasm_python.rs decode_node_data — this widget will crash "
         "any live Python-WASM app that renders it"
     )
+
+
+# ── Stint 0816: Text / Card / Section / SelectList / DataTable / HTTP / State ──
+
+
+def test_text_emits_color_truncate_and_align_and_validates_color() -> None:
+    from plexi_sdk import theme
+    from plexi_sdk.ui import Heading, Label, TEXT_COLORS
+
+    for role in TEXT_COLORS:
+        node = Text("status", color=role, truncate=True, align="center").to_node()
+        assert node["color"] == role
+        assert node["truncate"] is True
+        assert node["align"] == "center"
+
+    hex_node = Text("hex", color=theme.red, align="right").to_node()
+    assert hex_node["color"] == theme.red
+    assert hex_node["align"] == "right"
+
+    hint_label = Label("subtle", tone="hint").to_node()
+    assert hint_label["color"] == "muted"
+
+    with pytest.raises(ValueError, match="Text color"):
+        Text("bad", color="blue")
+    with pytest.raises(ValueError, match="Label color"):
+        Label("bad", color="blue")
+    with pytest.raises(ValueError, match="Heading color"):
+        Heading("bad", color="blue")
+
+
+def test_card_and_section_and_datatable_and_select_list_wire_encoding() -> None:
+    from plexi_sdk._adapter import _encode_uitree
+    from plexi_sdk.events import KeyEvent
+    from plexi_sdk.ui import DataTable, Label, SelectList, move_cursor
+
+    card_tree = _encode_uitree(Card([Text("inside card")], padding=16.0))
+    root_card = card_tree["nodes"][card_tree["root"]]["data"]
+    assert root_card["type"] == "Card"
+    assert root_card["card"] is True
+    assert root_card["top"] == 16.0
+
+    sec_with_children = Section("Group", [Text("one"), Text("two")]).to_node()
+    assert sec_with_children is not None
+    assert len(sec_with_children["children"]) == 4
+
+    sec_varargs = Section("Group", Text("one"), Text("two")).to_node()
+    assert sec_varargs is not None
+    assert len(sec_varargs["children"]) == 4
+
+    dt = DataTable(
+        columns=["ID", "Name"],
+        rows=[["1", "Alpha"], ["2", "Beta"]],
+        selected=1,
+        on_select="pick_row",
+    )
+    dt_tree = _encode_uitree(dt)
+    dt_root = dt_tree["nodes"][dt_tree["root"]]["data"]
+    assert dt_root["type"] == "DataTable"
+    assert dt_root["columns"] == ["ID", "Name"]
+    assert dt_root["rows"] == [["1", "Alpha"], ["2", "Beta"]]
+    assert dt_root["selected"] == 1
+    assert dt_root["on_select"] == "pick_row"
+
+    sl = SelectList(["Alpha", Label("Beta"), {"name": "Gamma"}], selected=2, on_select="pick_item")
+    sl_tree = _encode_uitree(sl)
+    sl_root = sl_tree["nodes"][sl_tree["root"]]["data"]
+    assert sl_root["type"] == "ListView"
+    assert sl_root["selected"] == 2
+    assert sl_root["on_select"] == "pick_item"
+    assert len(sl_root["items"]) == 3
+
+    assert move_cursor(KeyEvent("j"), 3, 0) == 1
+    assert move_cursor(KeyEvent("down"), 3, 2) == 2
+    assert move_cursor(KeyEvent("k"), 3, 2) == 1
+    assert move_cursor(KeyEvent("G"), 3, 0) == 2
+    assert move_cursor(KeyEvent("g"), 3, 2) == 0
+    assert SelectList.move_cursor("up", 3, 1) == 0
+    assert SelectList.move_cursor("x", 3, 1) is None
+
+
+def test_http_fetch_params_and_http_response_helpers_and_state_helpers() -> None:
+    import json
+    import plexi_sdk as sdk
+    from plexi_sdk import _v3_state, state
+    from plexi_sdk._adapter import _decode_event, _encode_effect
+    from plexi_sdk.effects import HttpFetch, PersistState, SetState
+    from plexi_sdk.events import HttpResponse
+
+    fetch = HttpFetch("https://api.example.test/search", params={"q": "plexi", "limit": 5}, tag="search")
+    assert fetch.resolved_url() == "https://api.example.test/search?q=plexi&limit=5"
+    encoded = _encode_effect(fetch)
+    assert encoded["url"] == "https://api.example.test/search?q=plexi&limit=5"
+    assert encoded["tag"] == "search"
+
+    resp: HttpResponse = _decode_event({
+        "type": "HttpResponse",
+        "status": 201,
+        "headers": [["content-type", "application/json"]],
+        "body": list(b'{"ok": true}'),
+        "error": None,
+        "request_id": 7,
+        "tag": "search",
+        "truncated": False,
+    })
+    assert resp.status == 201
+    assert resp.headers == [("content-type", "application/json")]
+    assert resp.text() == '{"ok": true}'
+    assert resp.json() == {"ok": True}
+    assert resp.request_id == 7
+    assert resp.tag == "search"
+
+    _v3_state._state = sdk.StateSnapshot({"a": 10}, {"a": json.dumps(10).encode()})
+    _v3_state._in_view = False
+    loaded = state.load({"a": 1, "b": [1, 2]})
+    assert loaded == {"a": 10, "b": [1, 2]}
+    assert state.patch(a=20) == SetState({"a": 20})
+    assert state.patch({"b": [3]}, persist=True) == PersistState({"b": [3]})
+

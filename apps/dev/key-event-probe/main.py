@@ -22,9 +22,9 @@ def init(size, args):
 
 def update(event):
     if isinstance(event, KeyEvent) and event.pressed:
-        if event.key in ("equals", "plus"):
+        if event.key in ("=", "+"):
             return [SetState({"count": state.get("count", 0) + 1})]
-        if event.key == "minus":
+        if event.key == "-":
             return [SetState({"count": state.get("count", 0) - 1})]
         if event.key == "r":
             return [SetState({"count": 0})]
