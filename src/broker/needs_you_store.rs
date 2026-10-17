@@ -132,7 +132,7 @@ pub(crate) fn load(profile: &Path) -> LoadedQueue {
     if is_symlink(&journal) || is_symlink(&legacy_path) || is_symlink(&host_private_dir(profile)) {
         return LoadedQueue::Untrusted("host queue path is a symlink".to_string());
     }
-    let host_key = match super::seal::existing_mac_key() {
+    let host_key = match super::seal::existing_mac_key(profile) {
         Ok(key) => key,
         Err(error) => return LoadedQueue::Untrusted(error),
     };
@@ -233,7 +233,7 @@ fn parse_journal(body: &[u8]) -> LoadedQueue {
 
 pub(crate) fn save(profile: &Path, items: &[RestoredItem]) -> Result<(), String> {
     let host = ensure_host_dir(profile)?;
-    let key = super::seal::mac_key_bytes()?;
+    let key = super::seal::mac_key_bytes(profile)?;
     log::info!("needs_you: sealing journal with the host seal key");
     let disk: Vec<DiskItem> = items.iter().map(DiskItem::from).collect();
     let body = serde_json::to_vec(&DiskQueue {
@@ -255,6 +255,25 @@ pub(crate) fn save(profile: &Path, items: &[RestoredItem]) -> Result<(), String>
         "needs_you: persisted {} open items to {}",
         items.len(),
         journal.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn reset_after_key_rotation(profile: &Path) -> Result<(), String> {
+    let journal = journal_path(profile);
+    if journal.is_file() {
+        super::seal::copy_aside(&journal, "needs-you.json.before-key-rotation");
+    }
+    let continuations = continuations_path(profile);
+    if continuations.is_file() {
+        super::seal::copy_aside(&continuations, "continuations.json.before-key-rotation");
+        fs::remove_file(&continuations)
+            .map_err(|error| format!("remove {}: {error}", continuations.display()))?;
+    }
+    save(profile, &[])?;
+    log::info!(
+        "needs_you: reset unverified queue in {} after seal-key rotation",
+        profile.display()
     );
     Ok(())
 }
@@ -375,7 +394,7 @@ impl From<&RestoredItem> for DiskItem {
 
 pub(crate) fn save_continuations(profile: &Path, records: &[ContinuationRecord]) -> Result<(), String> {
     let host = ensure_host_dir(profile)?;
-    let key = super::seal::mac_key_bytes()?;
+    let key = super::seal::mac_key_bytes(profile)?;
     let body = serde_json::to_vec(&DiskContinuations {
         schema: SCHEMA,
         records,
@@ -403,7 +422,7 @@ pub(crate) fn load_continuations(profile: &Path) -> Vec<ContinuationRecord> {
     if is_symlink(&path) || !journal_is_file(&path) {
         return Vec::new();
     }
-    let Ok(Some(key)) = super::seal::existing_mac_key() else {
+    let Ok(Some(key)) = super::seal::existing_mac_key(profile) else {
         return Vec::new();
     };
     let Ok(raw) = fs::read(&path) else {
@@ -443,25 +462,20 @@ fn legacy_key_path(profile: &Path) -> PathBuf {
 }
 
 pub(super) fn tip_account(profile: &Path) -> String {
-    let host = host_private_dir(profile);
-    let canon = if host.exists() {
-        crate::platform::path::canonical_or_self(&host)
-    } else {
-        crate::platform::path::canonical_or_self(profile).join("host")
-    };
+    let canon = super::seal::canonical_profile_dir(profile).join("host");
     let hash = hex_encode(&Sha256::digest(canon.to_string_lossy().as_bytes()));
     format!("{TIP_PREFIX}{hash}")
 }
 
 fn read_tip(profile: &Path) -> Result<Option<[u8; MAC_LEN]>, String> {
-    match super::host_key::get(&tip_account(profile))? {
+    match super::seal::needs_you_tip_lookup(profile)? {
         None => Ok(None),
         Some(text) => decode_mac(text.trim()),
     }
 }
 
 fn store_tip(profile: &Path, mac: &[u8; MAC_LEN]) -> Result<(), String> {
-    super::host_key::set(&tip_account(profile), &hex_encode(mac))
+    super::seal::store_needs_you_tip(profile, Some(&hex_encode(mac)))
 }
 
 fn tip_is_set(tip: &Option<[u8; MAC_LEN]>) -> bool {
@@ -716,7 +730,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let item = sample_item();
         save(dir.path(), &[item]).unwrap();
-        let key = crate::broker::seal::existing_mac_key().unwrap().unwrap();
+        let key = crate::broker::seal::existing_mac_key(dir.path())
+            .unwrap()
+            .unwrap();
         let forged = br#"{"schema":1,"items":[{"id":"req_forged","kind":"approval_click","actor":"agent:chess","resource":"game-1","summary":"forged","created_at":1,"origin_session":"sess-forged","resolution":"approved","pending":null}]}"#;
         let mac = hmac_sha256(&key, forged);
         let mut file = forged.to_vec();
@@ -739,7 +755,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         save(dir.path(), &[sample_item()]).unwrap();
         assert!(!legacy_key_path(dir.path()).exists());
-        let key = crate::broker::seal::existing_mac_key().unwrap().unwrap();
+        let key = crate::broker::seal::existing_mac_key(dir.path())
+            .unwrap()
+            .unwrap();
         let raw = fs::read(journal_path(dir.path())).unwrap();
         let (body, mac) = split_mac(&raw).unwrap();
         assert!(ct_eq(&hmac_sha256(&key, body), &mac));
@@ -759,7 +777,9 @@ mod tests {
             other => panic!("legacy journal must migrate: {other:?}"),
         }
         assert!(!legacy_key_path(dir.path()).exists());
-        let key = crate::broker::seal::existing_mac_key().unwrap().unwrap();
+        let key = crate::broker::seal::existing_mac_key(dir.path())
+            .unwrap()
+            .unwrap();
         assert_ne!(key.as_slice(), legacy.as_slice());
         match load(dir.path()) {
             LoadedQueue::Items(items) => assert_eq!(items[0].id, "req_1"),

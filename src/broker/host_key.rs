@@ -37,7 +37,6 @@
 //! - Windows stores it in Credential Manager under `plexi-host-seal/`, which
 //!   `plexi secret get` does not read.
 
-#[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 #[cfg(any(test, target_os = "macos"))]
@@ -78,8 +77,16 @@ fn join_abandoned_keychain_calls() {
 
 use crate::workspace::secrets::system_store;
 
-/// Item name of the MAC key inside the host store. Not a user-secret account.
+/// Legacy unscoped item name of the MAC key inside the host store.
+/// New seals use [`MAC_ACCOUNT_PREFIX`] plus the sha256 of the canonical profile dir.
 pub(crate) const MAC_ITEM: &str = "permission-mac";
+
+/// Per-profile MAC key account prefix (`plexi:host:permission-mac:<sha256(canonical_profile_dir)>`).
+pub(crate) const MAC_ACCOUNT_PREFIX: &str = "plexi:host:permission-mac:";
+
+pub(crate) fn is_mac_account(account: &str) -> bool {
+    account == MAC_ITEM || account.starts_with(MAC_ACCOUNT_PREFIX)
+}
 
 /// Prefix on a host-store read that did not return the secret.
 ///
@@ -149,9 +156,9 @@ pub(crate) fn scrub_user_secret_host_namespace() {
 }
 
 pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-    if account == MAC_ITEM {
-        if let Some(cached) = session_mac() {
-            return Ok(Some(cached));
+    if is_mac_account(account) && !pr_isolation_active() {
+        if let Some(cached) = session_mac(account) {
+            return Ok(cached);
         }
     }
     let account = account.to_string();
@@ -159,17 +166,15 @@ pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
 }
 
 fn get_direct(account: &str) -> Result<Option<Zeroizing<String>>, String> {
-    if account == MAC_ITEM {
-        if let Some(cached) = session_mac() {
-            return Ok(Some(cached));
+    if is_mac_account(account) && !pr_isolation_active() {
+        if let Some(cached) = session_mac(account) {
+            return Ok(cached);
         }
     }
     match backend().get(account) {
         Ok(value) => {
-            if account == MAC_ITEM && interaction_allowed() {
-                if let Some(value) = &value {
-                    remember_session_mac(value);
-                }
+            if is_mac_account(account) && !pr_isolation_active() {
+                remember_session_mac(account, value.clone());
             }
             Ok(value)
         }
@@ -199,28 +204,41 @@ thread_local! {
     static KEYCHAIN_INTERACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn session_mac_slot() -> &'static Mutex<Option<Zeroizing<String>>> {
-    static SLOT: std::sync::OnceLock<Mutex<Option<Zeroizing<String>>>> = std::sync::OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
+type SessionMacMap = BTreeMap<String, Option<Zeroizing<String>>>;
+
+fn session_mac_slot() -> &'static Mutex<SessionMacMap> {
+    static SLOT: std::sync::OnceLock<Mutex<SessionMacMap>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn session_mac() -> Option<Zeroizing<String>> {
+fn session_mac(account: &str) -> Option<Option<Zeroizing<String>>> {
     session_mac_slot()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .clone()
+        .get(account)
+        .cloned()
 }
 
-fn remember_session_mac(value: &Zeroizing<String>) {
-    *session_mac_slot()
+fn remember_session_mac(account: &str, value: Option<Zeroizing<String>>) {
+    session_mac_slot()
         .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(value.clone());
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(account.to_string(), value);
 }
 
-fn clear_session_mac() {
-    *session_mac_slot()
+fn forget_session_mac(account: &str) {
+    session_mac_slot()
         .lock()
-        .unwrap_or_else(|error| error.into_inner()) = None;
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(account);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_session_mac() {
+    session_mac_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
 }
 
 pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
@@ -230,18 +248,29 @@ pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
 }
 
 fn add_new_direct(account: &str, value: &str) -> Result<(), String> {
-    backend().add_new(account, value)
+    backend().add_new(account, value)?;
+    if is_mac_account(account) && !pr_isolation_active() {
+        remember_session_mac(account, Some(Zeroizing::new(value.to_string())));
+    }
+    Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn set(account: &str, value: &str) -> Result<(), String> {
     let account = account.to_string();
     let value = value.to_string();
     dispatch_keychain(move || set_direct(&account, &value))
 }
 
+#[cfg(test)]
 fn set_direct(account: &str, value: &str) -> Result<(), String> {
     match backend().set(account, value) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            if is_mac_account(account) && !pr_isolation_active() {
+                remember_session_mac(account, Some(Zeroizing::new(value.to_string())));
+            }
+            Ok(())
+        }
         Err(error) if is_key_unreadable(&error) => {
             log::info!("permission_seal: replacing unreadable host item {account}");
             delete_direct(account)?;
@@ -257,8 +286,8 @@ pub(crate) fn delete(account: &str) -> Result<(), String> {
 }
 
 fn delete_direct(account: &str) -> Result<(), String> {
-    if account == MAC_ITEM {
-        clear_session_mac();
+    if is_mac_account(account) {
+        forget_session_mac(account);
     }
     backend().delete(account)
 }
@@ -425,26 +454,31 @@ impl Drop for ExclusiveHostKey {
 
 #[cfg(test)]
 struct MacProcessSnapshot {
-    item: Option<StoredItem>,
+    values: BTreeMap<String, StoredItem>,
     fault: MacFault,
-    session: Option<Zeroizing<String>>,
+    session: SessionMacMap,
     gave_up: bool,
 }
 
 #[cfg(test)]
 fn snapshot_mac_process() -> MacProcessSnapshot {
-    let item = memory_backend().and_then(|memory| {
-        memory
-            .values
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(MAC_ITEM)
-            .cloned()
-    });
+    let values = memory_backend()
+        .map(|memory| {
+            memory
+                .values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        })
+        .unwrap_or_default();
+    let session = session_mac_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
     MacProcessSnapshot {
-        item,
+        values,
         fault: lock_fault().clone(),
-        session: session_mac(),
+        session,
         gave_up: keychain_gave_up().load(std::sync::atomic::Ordering::Relaxed),
     }
 }
@@ -452,18 +486,10 @@ fn snapshot_mac_process() -> MacProcessSnapshot {
 #[cfg(test)]
 fn restore_mac_process(snapshot: &MacProcessSnapshot) {
     if let Some(memory) = memory_backend() {
-        let mut map = memory
+        *memory
             .values
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        match &snapshot.item {
-            Some(item) => {
-                map.insert(MAC_ITEM.to_string(), item.clone());
-            }
-            None => {
-                map.remove(MAC_ITEM);
-            }
-        }
+            .unwrap_or_else(|error| error.into_inner()) = snapshot.values.clone();
     }
     *lock_fault() = snapshot.fault.clone();
     *session_mac_slot()
@@ -480,19 +506,15 @@ fn restore_mac_process(snapshot: &MacProcessSnapshot) {
 #[cfg(test)]
 pub(crate) fn without_mac_key<T>(body: impl FnOnce() -> T) -> T {
     let _exclusive = ExclusiveHostKey::acquire();
-    let previous = get(MAC_ITEM).expect("read permission mac");
-    if previous.is_some() {
-        delete(MAC_ITEM).expect("clear permission mac");
+    if let Some(memory) = memory_backend() {
+        memory
+            .values
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|account, _| !is_mac_account(account));
     }
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-    match &previous {
-        Some(value) => set(MAC_ITEM, value.as_str()).expect("restore permission mac"),
-        None => delete(MAC_ITEM).expect("clear permission mac created by the test"),
-    }
-    match result {
-        Ok(value) => value,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
+    clear_session_mac();
+    body()
 }
 
 #[cfg(test)]
@@ -541,6 +563,7 @@ struct MacFault {
     /// Deleting an unreadable item would raise a keychain prompt.
     delete_unreadable_needs_prompt: bool,
     interactive_reads: u32,
+    backend_gets: u32,
     block: KeychainBlock,
     /// Times startup entered an ACL-mutating API (`note_rebuild_stable_access`).
     acl_mutations: u32,
@@ -555,11 +578,22 @@ fn mac_fault() -> &'static Mutex<MacFault> {
         stable_feasible: true,
         delete_unreadable_needs_prompt: false,
         interactive_reads: 0,
+        backend_gets: 0,
         block: KeychainBlock::None,
         acl_mutations: 0,
         block_expired: false,
     });
     &FAULT
+}
+
+#[cfg(test)]
+pub(crate) fn backend_get_calls() -> u32 {
+    lock_fault().backend_gets
+}
+
+#[cfg(test)]
+pub(crate) fn reset_backend_get_calls() {
+    lock_fault().backend_gets = 0;
 }
 
 #[cfg(test)]
@@ -638,6 +672,7 @@ impl BlockingKeychain {
 
     fn arm(block: KeychainBlock) -> Self {
         let exclusive = ExclusiveHostKey::acquire();
+        clear_session_mac();
         let mut fault = lock_fault();
         let previous = fault.block;
         fault.block = block;
@@ -661,6 +696,7 @@ impl Drop for BlockingKeychain {
         }
         block_var().notify_all();
         keychain_gave_up().store(false, std::sync::atomic::Ordering::Relaxed);
+        clear_session_mac();
         join_abandoned_keychain_calls();
     }
 }
@@ -792,7 +828,7 @@ pub(crate) fn simulate_new_code_identity() {
 }
 
 #[cfg(test)]
-fn mark_mac_item(update: impl FnOnce(&mut StoredItem)) {
+fn mark_mac_item(mut update: impl FnMut(&mut StoredItem)) {
     let Some(memory) = memory_backend() else {
         return;
     };
@@ -800,9 +836,27 @@ fn mark_mac_item(update: impl FnOnce(&mut StoredItem)) {
         .values
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if let Some(item) = map.get_mut(MAC_ITEM) {
-        update(item);
+    for (account, item) in map.iter_mut() {
+        if is_mac_account(account) {
+            update(item);
+        }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn mark_profile_mac_unreadable(dir: &std::path::Path) {
+    let account = crate::broker::seal::mac_account(dir);
+    if let Some(memory) = memory_backend() {
+        if let Some(item) = memory
+            .values
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&account)
+        {
+            item.silent_unreadable = true;
+        }
+    }
+    clear_session_mac();
 }
 
 #[cfg(test)]
@@ -853,7 +907,78 @@ fn memory_backend() -> Option<&'static MemoryBackend> {
     Some(MEMORY.get_or_init(MemoryBackend::default))
 }
 
+/// True when running under an ephemeral `pr-<N>` test channel without an
+/// explicit `PLEXI_KEYCHAIN_PATH`, so host-seal items must stay in
+/// `<profile>/host/pr-host-seal.json` and never touch the user's login Keychain.
+pub(crate) fn should_use_pr_profile_seal_store(
+    compiled_test_channel: Option<&str>,
+    runtime_channel: Option<&str>,
+    keychain_path_env: Option<&str>,
+) -> bool {
+    if keychain_path_env.is_some_and(|p| !p.trim().is_empty()) {
+        return false;
+    }
+    let Some(compiled) = compiled_test_channel else {
+        return false;
+    };
+    compiled == runtime_channel.unwrap_or_default()
+        && compiled
+            .strip_prefix("pr-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+fn test_pr_isolation_slot() -> &'static Mutex<Option<String>> {
+    static SLOT: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn with_pr_channel_seal_isolation<T>(
+    profile_dir: &std::path::Path,
+    pr_channel: &str,
+    body: impl FnOnce() -> T,
+) -> T {
+    let _exclusive = ExclusiveHostKey::acquire();
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.to_path_buf());
+    let _channel_guard = crate::config::set_test_channel(pr_channel);
+    *test_pr_isolation_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(pr_channel.to_string());
+    clear_session_mac();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    *test_pr_isolation_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    clear_session_mac();
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn pr_isolation_active() -> bool {
+    #[cfg(test)]
+    let compiled = test_pr_isolation_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    #[cfg(not(test))]
+    let compiled = option_env!("PLEXI_BUILD_TEST_CHANNEL").map(str::to_string);
+    let runtime = crate::config::build_channel();
+    let keychain_path = std::env::var("PLEXI_KEYCHAIN_PATH").ok();
+    should_use_pr_profile_seal_store(
+        compiled.as_deref(),
+        runtime.as_deref(),
+        keychain_path.as_deref(),
+    )
+}
+
 fn backend() -> &'static dyn HostKeyBackend {
+    static PR_BACKEND: PrProfileBackend = PrProfileBackend;
+    if pr_isolation_active() {
+        return &PR_BACKEND;
+    }
     #[cfg(test)]
     {
         memory_backend().expect("test host-key backend")
@@ -880,9 +1005,88 @@ fn backend() -> &'static dyn HostKeyBackend {
     }
 }
 
+struct PrProfileBackend;
+
+impl PrProfileBackend {
+    fn store_path() -> Result<std::path::PathBuf, String> {
+        let profile = crate::config::config_dir();
+        let host_dir = profile.join("host");
+        if std::fs::symlink_metadata(&host_dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(format!(
+                "pr host directory {} is a symlink",
+                host_dir.display()
+            ));
+        }
+        std::fs::create_dir_all(&host_dir)
+            .map_err(|error| format!("create {}: {error}", host_dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&host_dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("chmod 700 {}: {error}", host_dir.display()))?;
+        }
+        let path = host_dir.join("pr-host-seal.json");
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(format!("pr host seal store {} is a symlink", path.display()));
+        }
+        Ok(path)
+    }
+
+    fn load_map() -> Result<BTreeMap<String, String>, String> {
+        let path = Self::store_path()?;
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("parse {}: {error}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(error) => Err(format!("read {}: {error}", path.display())),
+        }
+    }
+
+    fn save_map(map: &BTreeMap<String, String>) -> Result<(), String> {
+        let path = Self::store_path()?;
+        let bytes = serde_json::to_vec_pretty(map).map_err(|error| error.to_string())?;
+        crate::platform::fs::atomic_write_with_mode(&path, &bytes, 0o600)
+    }
+}
+
+impl HostKeyBackend for PrProfileBackend {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        let map = Self::load_map()?;
+        Ok(map.get(account).cloned().map(Zeroizing::new))
+    }
+
+    fn add_new(&self, account: &str, value: &str) -> Result<(), String> {
+        let mut map = Self::load_map()?;
+        if map.contains_key(account) {
+            return Err(format!("host key already exists: {account}"));
+        }
+        map.insert(account.to_string(), value.to_string());
+        Self::save_map(&map)?;
+        log::info!("permission_seal: stored pr-isolated host item {account}");
+        Ok(())
+    }
+
+    fn set(&self, account: &str, value: &str) -> Result<(), String> {
+        let mut map = Self::load_map()?;
+        map.insert(account.to_string(), value.to_string());
+        Self::save_map(&map)?;
+        log::info!("permission_seal: updated pr-isolated host item {account}");
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        let mut map = Self::load_map()?;
+        if map.remove(account).is_some() {
+            Self::save_map(&map)?;
+        }
+        Ok(())
+    }
+}
+
 trait HostKeyBackend: Sync + Send {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String>;
     fn add_new(&self, account: &str, value: &str) -> Result<(), String>;
+    #[cfg_attr(not(test), allow(dead_code))]
     fn set(&self, account: &str, value: &str) -> Result<(), String>;
     /// Remove the item without reading its secret. An ACL that blocks the
     /// password must not, by itself, block deletion.
@@ -924,6 +1128,9 @@ impl MemoryBackend {
 #[cfg(test)]
 impl HostKeyBackend for MemoryBackend {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        {
+            lock_fault().backend_gets += 1;
+        }
         wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
@@ -1553,11 +1760,11 @@ mod mac {
         }
     }
 
+    // errSecDuplicateItem.
+    const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
+
     pub(super) fn add_new(account: &str, value: &str) -> Result<(), String> {
         let _prompts = PromptScope::enter();
-        if get(account)?.is_some() {
-            return Err(format!("host key already exists: {account}"));
-        }
         let chain = keychain()?;
         // The creating binary is the trusted application. `security` is not,
         // so a direct keychain read does not return the secret. The ACL is
@@ -1567,6 +1774,7 @@ mod mac {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
@@ -1722,10 +1930,13 @@ mod mac {
         if !item.is_null() {
             drop(unsafe { SecKeychainItem::wrap_under_create_rule(item) });
         }
+        if status == ERR_SEC_DUPLICATE_ITEM {
+            return Err(format!("host key already exists: {account}"));
+        }
         if status != errSecSuccess {
             return Err(map_keychain_error(account, Error::from_code(status)));
         }
-        if access.is_ok() && account == super::MAC_ITEM {
+        if access.is_ok() && super::is_mac_account(account) {
             log::info!(
                 "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
             );
@@ -1738,7 +1949,7 @@ mod mac {
     fn trust_designated_requirement(account: &str, item: &SecKeychainItem) {
         let status = unsafe { set_designated_requirement_acl(item) };
         if status == errSecSuccess {
-            if account == super::MAC_ITEM {
+            if super::is_mac_account(account) {
                 log::info!(
                     "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
                 );
@@ -1916,6 +2127,11 @@ impl Drop for RestoreMacItem {
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_session_mac_for_test() {
+    clear_session_mac();
 }
 
 #[cfg(test)]
