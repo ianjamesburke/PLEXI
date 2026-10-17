@@ -500,6 +500,15 @@ impl PlexiApp {
     /// anchoring on the pane's own window, so the split stays in the caller's
     /// context.
     fn open_text_file_in_split(&mut self, anchor_pane_id: PaneId, path: &str) {
+        if let Some(existing_pane_id) =
+            self.find_open_text_editor_pane_any_window(std::path::Path::new(path))
+        {
+            log::info!(
+                "open: '{path}' already open in text-editor pane {existing_pane_id}, focusing"
+            );
+            self.pane_navigate(existing_pane_id);
+            return;
+        }
         let original_active_window = self.active_window;
         match self.find_pane_in_any_window(anchor_pane_id) {
             Some((win_idx, tile)) => {

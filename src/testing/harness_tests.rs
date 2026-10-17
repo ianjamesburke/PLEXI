@@ -6434,6 +6434,78 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
     assert_eq!(opened.manifest_id, "text-editor");
 }
 
+#[test]
+fn explorer_open_deduplicates_already_open_text_editor_pane() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let doc = tmp.path().join("readme.md");
+    std::fs::write(&doc, "# hello").expect("seed doc");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(
+            tmp.path().to_path_buf(),
+        )),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let explorer = h.state().open_panes[0];
+    h.focus_pane(explorer);
+    h.run_frames(2);
+    assert_eq!(h.pane_count(), 1);
+
+    // First Enter opens `readme.md` in a new text-editor split.
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+    h.run_frames(2);
+    assert_eq!(h.pane_count(), 2);
+    let editor_id = *h
+        .app
+        .windows[0]
+        .panes
+        .keys()
+        .find(|&&id| id != explorer)
+        .expect("opened text-editor pane");
+    let focused_id = |h: &HostHarness| {
+        let win = &h.app.windows[0];
+        win.focused_pane
+            .and_then(|t| match win.tree.tiles.get(t) {
+                Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                _ => None,
+            })
+    };
+    assert_eq!(focused_id(&h), Some(editor_id));
+
+    // Focus the explorer again and press Enter on the same `readme.md`: must
+    // focus the existing editor pane rather than spawning a third pane.
+    h.focus_pane(explorer);
+    h.run_frames(1);
+    assert_eq!(focused_id(&h), Some(explorer));
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert_eq!(
+        h.pane_count(),
+        2,
+        "opening an already-open text file from File Explorer must not spawn a duplicate split"
+    );
+    assert_eq!(
+        focused_id(&h),
+        Some(editor_id),
+        "opening an already-open text file from File Explorer must focus the existing editor pane"
+    );
+}
+
 /// Opening a file from the File Explorer must split the editor next to the
 /// explorer that requested it. The explorer emits `sender_pane_id: 0`; the
 /// drain has to stamp the real pane id. Without that stamp the host logs
