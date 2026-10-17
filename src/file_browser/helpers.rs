@@ -56,8 +56,8 @@ impl MediaKind {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct Entry {
+#[derive(Debug, Clone)]
+pub struct Entry {
     pub name: String,
     pub path: std::path::PathBuf,
     pub is_dir: bool,
@@ -69,8 +69,8 @@ pub(crate) struct Entry {
     pub permissions: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ColumnId {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ColumnId {
     Name,
     Kind,
     Size,
@@ -81,7 +81,7 @@ pub(crate) enum ColumnId {
 }
 
 impl ColumnId {
-    pub(crate) const ALL: [Self; 7] = [
+    pub const ALL: [Self; 7] = [
         Self::Name,
         Self::Kind,
         Self::Size,
@@ -91,7 +91,7 @@ impl ColumnId {
         Self::Permissions,
     ];
 
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Name => "name",
             Self::Kind => "kind",
@@ -103,7 +103,7 @@ impl ColumnId {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
             Self::Kind => "Kind",
@@ -137,7 +137,7 @@ impl ColumnId {
         }
     }
 
-    pub(crate) fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "name" => Some(Self::Name),
             "kind" => Some(Self::Kind),
@@ -151,28 +151,28 @@ impl ColumnId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SortDirection {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SortDirection {
     Asc,
     Desc,
 }
 
 impl SortDirection {
-    pub(crate) fn toggled(self) -> Self {
+    pub fn toggled(self) -> Self {
         match self {
             Self::Asc => Self::Desc,
             Self::Desc => Self::Asc,
         }
     }
 
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Asc => "asc",
             Self::Desc => "desc",
         }
     }
 
-    pub(crate) fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "asc" => Some(Self::Asc),
             "desc" => Some(Self::Desc),
@@ -462,7 +462,7 @@ pub(crate) fn read_text_preview(path: &Path) -> Result<TextPreview, String> {
     })
 }
 
-fn default_direction_for(column: ColumnId) -> SortDirection {
+pub(crate) fn default_direction_for(column: ColumnId) -> SortDirection {
     match column {
         ColumnId::Name | ColumnId::Kind | ColumnId::Extension | ColumnId::Permissions => {
             SortDirection::Asc

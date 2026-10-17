@@ -1,9 +1,15 @@
 mod helpers;
 mod icons;
+pub mod intent;
 
 /// Re-exported so the host open resolver (`app::canvas_bindings`) can use the
 /// same media classification the File Explorer does (#2283).
 pub(crate) use helpers::MediaKind;
+pub use helpers::{ColumnId, Entry, SortDirection};
+pub use intent::{
+    CandidateResolution, FileExplorerContext, FileExplorerIntent, PaletteCandidate,
+    parse_file_explorer_intent, rank_file_explorer_candidates,
+};
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
@@ -19,8 +25,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use helpers::{
-    format_modified, format_size, is_text_preview_candidate, read_text_preview, sort_entries,
-    ColumnConfig, ColumnId, ColumnModel, DirStats, Entry, SortDirection, TextPreview,
+    ColumnConfig, ColumnModel, DirStats, TextPreview, format_modified, format_size,
+    is_text_preview_candidate, read_text_preview, sort_entries,
 };
 use icons::paint_entry_icon;
 
@@ -42,11 +48,13 @@ const INSPECTOR_DEFAULT_WIDTH: f32 = 280.0;
 const INSPECTOR_MIN_PANEL_WIDTH: f32 = 220.0;
 const INSPECTOR_SPLITTER_W: f32 = 7.0;
 const QUICK_LOOK_TEXT_LINES: usize = 24;
+const PALETTE_MAX_VISIBLE_CANDIDATES: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Normal,
     Search,
+    Palette,
 }
 
 #[derive(Debug)]
@@ -62,6 +70,9 @@ enum FileBrowserAction {
     Backspace,
     Escape,
     EnterSearch,
+    EnterPaletteSlash,
+    EnterPaletteCommand,
+    TabComplete,
     ToggleSort,
     ToggleInspector,
     ToggleQuickLook,
@@ -125,69 +136,88 @@ fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui
     )
 }
 
-// in_search gates all letter keys so that j/k/h/l/s/r/slash fall through
-// to AppendText instead of firing navigation/action commands while the user
-// is typing a query. Arrow keys, Enter, Escape, and Backspace always work.
+fn cmd_key_pressed_no_repeat(
+    input: &crate::app::input_router::PlexiInput,
+    key: egui::Key,
+    shift: bool,
+) -> bool {
+    input.events().iter().any(|e| {
+        matches!(
+            e,
+            egui::Event::Key {
+                key: k,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if *k == key
+                && (modifiers.command || input.modifiers().command)
+                && (modifiers.shift || input.modifiers().shift) == shift
+        )
+    })
+}
+
+// text_entry_active (search or palette) gates all letter keys so that
+// j/k/h/l/s/r/slash fall through to AppendText instead of firing navigation or
+// action commands while the user is typing a query. Arrow keys, Enter, Escape,
+// and Backspace always work.
 fn classify_key(
     input: &crate::app::input_router::PlexiInput,
-    in_search: bool,
+    text_entry_active: bool,
 ) -> Option<FileBrowserAction> {
-    if !in_search
-        && input.modifiers().command
-        && input.modifiers().shift
-        && key_pressed_no_repeat(input, egui::Key::Period)
-    {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Period, true) {
         return Some(FileBrowserAction::ToggleHidden);
     }
-    if !in_search
-        && input.modifiers().command
-        && input.modifiers().shift
-        && key_pressed_no_repeat(input, egui::Key::R)
-    {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::R, true) {
         return Some(FileBrowserAction::Refresh);
     }
-    if !in_search
-        && input.modifiers().command
-        && input.modifiers().shift
-        && key_pressed_no_repeat(input, egui::Key::C)
-    {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::C, true) {
         return Some(FileBrowserAction::CopyPath);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::A) {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::A, false) {
         return Some(FileBrowserAction::SelectAll);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::N) {
+    if cmd_key_pressed_no_repeat(input, egui::Key::N, false) {
         return Some(FileBrowserAction::NewFolder);
+    }
+    if cmd_key_pressed_no_repeat(input, egui::Key::K, false) {
+        return Some(FileBrowserAction::EnterPaletteCommand);
+    }
+    if cmd_key_pressed_no_repeat(input, egui::Key::F, false) {
+        return Some(FileBrowserAction::EnterSearch);
     }
     // Command chords belong to the host shortcut router. F2 and bare `r` are
     // the file-manager rename keys and cannot collide with pane rename (Cmd+R).
-    if !in_search
+    if !text_entry_active
         && !input.modifiers().any()
         && (key_pressed_no_repeat(input, egui::Key::F2)
             || key_pressed_no_repeat(input, egui::Key::R))
     {
         return Some(FileBrowserAction::Rename);
     }
-    if !in_search && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Y) {
+    if !text_entry_active
+        && !input.modifiers().any()
+        && key_pressed_no_repeat(input, egui::Key::Y)
+    {
         return Some(FileBrowserAction::CopyPath);
     }
-    if !in_search
+    if !text_entry_active
         && !input.modifiers().shift
-        && ((input.modifiers().command && key_pressed_no_repeat(input, egui::Key::C))
+        && (cmd_key_pressed_no_repeat(input, egui::Key::C, false)
             || input.events().iter().any(|e| matches!(e, egui::Event::Copy)))
     {
         return Some(FileBrowserAction::Copy);
     }
-    if !in_search
+    if !text_entry_active
         && !input.modifiers().shift
-        && ((input.modifiers().command && key_pressed_no_repeat(input, egui::Key::X))
+        && (cmd_key_pressed_no_repeat(input, egui::Key::X, false)
             || input.events().iter().any(|e| matches!(e, egui::Event::Cut)))
     {
         return Some(FileBrowserAction::Cut);
     }
-    if !in_search
+    if !text_entry_active
         && !input.modifiers().shift
-        && ((input.modifiers().command && key_pressed_no_repeat(input, egui::Key::V))
+        && (cmd_key_pressed_no_repeat(input, egui::Key::V, false)
             || input
                 .events()
                 .iter()
@@ -197,29 +227,34 @@ fn classify_key(
     }
     // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
     // File Browser unless the full shortcut map is reviewed.
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Backspace)
-    {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Backspace, false) {
         return Some(FileBrowserAction::MoveToTrash);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::O) {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::O, false) {
         return Some(FileBrowserAction::OpenWithDefault);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Enter) {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Enter, false) {
         return Some(FileBrowserAction::Reveal);
     }
     if key_pressed_no_repeat(input, egui::Key::Escape) {
         return Some(FileBrowserAction::Escape);
     }
+    if text_entry_active
+        && !input.modifiers().any()
+        && key_pressed_no_repeat(input, egui::Key::Tab)
+    {
+        return Some(FileBrowserAction::TabComplete);
+    }
     if key_pressed_no_repeat(input, egui::Key::Backspace) {
         return Some(FileBrowserAction::Backspace);
     }
     if input.key_pressed(egui::Key::ArrowDown)
-        || (!in_search && input.key_pressed(egui::Key::J) && !input.modifiers().any())
+        || (!text_entry_active && input.key_pressed(egui::Key::J) && !input.modifiers().any())
     {
         return Some(FileBrowserAction::SelectNext);
     }
     if input.key_pressed(egui::Key::ArrowUp)
-        || (!in_search && input.key_pressed(egui::Key::K) && !input.modifiers().any())
+        || (!text_entry_active && input.key_pressed(egui::Key::K) && !input.modifiers().any())
     {
         return Some(FileBrowserAction::SelectPrev);
     }
@@ -237,53 +272,52 @@ fn classify_key(
     }
     if !input.modifiers().command
         && (key_pressed_no_repeat(input, egui::Key::Enter)
-            || (!in_search && key_pressed_no_repeat(input, egui::Key::ArrowRight))
-            || (!in_search && key_pressed_no_repeat(input, egui::Key::L)))
+            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::ArrowRight))
+            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::L)))
     {
         return Some(FileBrowserAction::Activate);
     }
     if !input.modifiers().command
-        && ((!in_search && key_pressed_no_repeat(input, egui::Key::ArrowLeft))
-            || (!in_search && key_pressed_no_repeat(input, egui::Key::H)))
+        && ((!text_entry_active && key_pressed_no_repeat(input, egui::Key::ArrowLeft))
+            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::H)))
     {
         return Some(FileBrowserAction::NavigateUp);
     }
-    if !in_search
-        && ((key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers().command)
-            || input.events().iter().any(|e| {
-                matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::F,
-                        pressed: true,
-                        repeat: false,
-                        modifiers,
-                        ..
-                    } if (modifiers.command || input.modifiers().command)
-                        && !modifiers.shift
-                        && !input.modifiers().shift
-                )
-            }))
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::Slash)
+        && !input.modifiers().command
     {
-        return Some(FileBrowserAction::EnterSearch);
+        return Some(FileBrowserAction::EnterPaletteSlash);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any() {
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::S)
+        && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::ToggleSort);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers().any() {
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::I)
+        && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::ToggleInspector);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::Space) && !input.modifiers().any() {
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::Space)
+        && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::ToggleQuickLook);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any() {
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::T)
+        && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::CdTerminalAndClose);
     }
     let mut text = String::new();
     for event in input.events() {
         match event {
             egui::Event::Text(t) => text.push_str(t),
-            egui::Event::Paste(p) if in_search => text.push_str(p),
+            egui::Event::Paste(p) if text_entry_active => text.push_str(p),
             _ => {}
         }
     }
@@ -334,6 +368,13 @@ pub struct FileBrowserApp {
     search_indices: Vec<usize>, // indices into `entries` that match the query
     search_session: crate::search::SearchSession,
     search_focus_pending: bool,
+    // Action palette (`/` and `Cmd+K`, stint 0813)
+    in_palette: bool,
+    palette_query: String,
+    palette_selected: usize,
+    palette_focus_pending: bool,
+    palette_cursor_to_end: bool,
+    palette_suppress_initial_slash: bool,
     should_close: bool,
     /// Watch on `cwd`, armed lazily from `service_external` and re-armed when
     /// `cwd` moves, so files an agent creates, deletes or renames show up.
@@ -414,6 +455,12 @@ impl FileBrowserApp {
             search_indices: Vec::new(),
             search_session: crate::search::SearchSession::new(),
             search_focus_pending: false,
+            in_palette: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            palette_focus_pending: false,
+            palette_cursor_to_end: false,
+            palette_suppress_initial_slash: false,
             should_close: false,
             watch: None,
             #[cfg(test)]
@@ -832,6 +879,227 @@ impl FileBrowserApp {
         self.pending_scroll = true;
     }
 
+    pub fn open_palette(&mut self, initial_query: &str) {
+        if self.in_search {
+            self.exit_search();
+        }
+        self.in_palette = true;
+        self.palette_query = initial_query.to_string();
+        self.palette_selected = 0;
+        self.palette_focus_pending = true;
+        self.palette_cursor_to_end = true;
+        self.palette_suppress_initial_slash = initial_query == "/";
+        log::info!(
+            "file_browser: entering action palette initial_query={:?}",
+            initial_query
+        );
+    }
+
+    pub fn exit_palette(&mut self) {
+        self.in_palette = false;
+        self.palette_focus_pending = false;
+        self.palette_cursor_to_end = false;
+        self.palette_suppress_initial_slash = false;
+        self.palette_query.clear();
+        self.palette_selected = 0;
+    }
+
+    pub fn intent_context<'a>(&'a self, selected_paths: &'a [PathBuf]) -> FileExplorerContext<'a> {
+        FileExplorerContext::new(
+            &self.cwd,
+            self.selected_entry(),
+            selected_paths,
+            &self.entries,
+            self.columns.show_hidden,
+            self.columns.folders_on_top,
+        )
+    }
+
+    pub fn parse_intent(&self, input: &str) -> Option<FileExplorerIntent> {
+        let selected_paths = self.selected_paths();
+        let ctx = self.intent_context(&selected_paths);
+        parse_file_explorer_intent(input, &ctx)
+    }
+
+    pub fn rank_palette_candidates(&self) -> Vec<PaletteCandidate> {
+        let selected_paths = self.selected_paths();
+        let ctx = self.intent_context(&selected_paths);
+        rank_file_explorer_candidates(&self.palette_query, &ctx)
+    }
+
+    fn tab_complete_palette(&mut self) {
+        let candidates = self.rank_palette_candidates();
+        let Some(chosen) = candidates
+            .get(self.palette_selected)
+            .or_else(|| candidates.first())
+        else {
+            return;
+        };
+        match &chosen.resolution {
+            CandidateResolution::NeedsSlot { prompt_prefix, .. } => {
+                self.palette_query = (*prompt_prefix).to_string();
+                self.palette_selected = 0;
+                self.palette_focus_pending = true;
+                self.palette_cursor_to_end = true;
+            }
+            CandidateResolution::Ready(_) => {
+                let cmd = chosen
+                    .slash_syntax
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(chosen.slash_syntax);
+                self.palette_query = cmd.to_string();
+                self.palette_selected = 0;
+                self.palette_focus_pending = true;
+                self.palette_cursor_to_end = true;
+            }
+        }
+    }
+
+    fn submit_palette(&mut self) {
+        let candidates = self.rank_palette_candidates();
+        if let Some(chosen) = candidates
+            .get(self.palette_selected)
+            .or_else(|| candidates.first())
+            .cloned()
+        {
+            match chosen.resolution {
+                CandidateResolution::Ready(intent) => {
+                    self.exit_palette();
+                    if let Err(err) = self.execute_intent(intent) {
+                        self.error = Some(err);
+                    }
+                }
+                CandidateResolution::NeedsSlot { prompt_prefix, .. } => {
+                    self.palette_query = prompt_prefix.to_string();
+                    self.palette_selected = 0;
+                    self.palette_focus_pending = true;
+                    self.palette_cursor_to_end = true;
+                    log::info!(
+                        "file_browser: palette prompting for slot prefix={:?}",
+                        prompt_prefix
+                    );
+                }
+            }
+            return;
+        }
+
+        if let Some(intent) = self.parse_intent(&self.palette_query) {
+            self.exit_palette();
+            if let Err(err) = self.execute_intent(intent) {
+                self.error = Some(err);
+            }
+        }
+    }
+
+    pub fn execute_intent(&mut self, intent: FileExplorerIntent) -> Result<(), String> {
+        log::info!("file_browser: palette intent={:?}", intent);
+        match intent {
+            FileExplorerIntent::CreateFile {
+                name,
+                open_in_editor,
+            } => {
+                self.create_named_file(&name, open_in_editor)?;
+                Ok(())
+            }
+            FileExplorerIntent::CreateFolder { name } => {
+                self.create_named_folder(&name)?;
+                Ok(())
+            }
+            FileExplorerIntent::Rename { target, new_name } => {
+                self.rename_path = Some(target);
+                let result = self.rename_selected(&new_name);
+                self.rename_path = None;
+                self.rename_buffer.clear();
+                result.map(|_| ())
+            }
+            FileExplorerIntent::MoveToTrash { targets } => {
+                if targets.is_empty() {
+                    return Err("No items selected to move to Trash".to_string());
+                }
+                log::info!(
+                    "file_browser: requested move to trash confirmation count={}",
+                    targets.len()
+                );
+                self.pending_operation = Some(PendingFileOperation::MoveToTrash { paths: targets });
+                Ok(())
+            }
+            FileExplorerIntent::OpenInEditor { path } => {
+                if path.is_dir() {
+                    self.navigate_into(path);
+                } else {
+                    self.open_file(&path);
+                }
+                Ok(())
+            }
+            FileExplorerIntent::OpenWithDefault { path } => {
+                log::info!("file_browser: open with default '{}'", path.display());
+                self.pending_cmds.push(AppCommand::OpenArtifact {
+                    sender_pane_id: 0,
+                    path: path.to_string_lossy().to_string(),
+                    mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+                });
+                Ok(())
+            }
+            FileExplorerIntent::Reveal { path } => {
+                log::info!("file_browser: reveal '{}'", path.display());
+                self.pending_cmds.push(AppCommand::OpenArtifact {
+                    sender_pane_id: 0,
+                    path: path.to_string_lossy().to_string(),
+                    mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+                });
+                Ok(())
+            }
+            FileExplorerIntent::CdTerminal { path } => {
+                let target_dir = if path.is_dir() {
+                    path
+                } else {
+                    path.parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| self.cwd.clone())
+                };
+                log::info!(
+                    "file_browser: explicit cd handoff to linked terminal: '{}'",
+                    target_dir.display()
+                );
+                self.pending_cmds.push(AppCommand::CdRequest {
+                    cwd: target_dir.to_string_lossy().to_string(),
+                    sender_pane_id: 0,
+                });
+                self.should_close = true;
+                Ok(())
+            }
+            FileExplorerIntent::SortBy { column, direction } => {
+                self.columns.sort = helpers::SortDescriptor { column, direction };
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: sort changed to {} {}",
+                    column.key(),
+                    direction.key()
+                );
+                Ok(())
+            }
+            FileExplorerIntent::ToggleHidden { enabled } => {
+                self.columns.show_hidden = enabled.unwrap_or(!self.columns.show_hidden);
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: show_hidden toggled to {}",
+                    self.columns.show_hidden
+                );
+                Ok(())
+            }
+            FileExplorerIntent::ToggleFoldersFirst { enabled } => {
+                self.columns.folders_on_top = enabled.unwrap_or(!self.columns.folders_on_top);
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: folders_on_top changed to {}",
+                    self.columns.folders_on_top
+                );
+                Ok(())
+            }
+        }
+    }
+
     /// Called by the host when the linked terminal's CWD changes.
     pub fn sync_cwd(&mut self, new_cwd: PathBuf) {
         if new_cwd == self.cwd {
@@ -999,8 +1267,15 @@ impl FileBrowserApp {
         }
     }
 
-    fn create_new_folder(&mut self) -> Result<PathBuf, String> {
-        let path = Self::unique_child_path(&self.cwd, "Untitled Folder", None);
+    fn create_named_folder(&mut self, name: &str) -> Result<PathBuf, String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains('/') {
+            return Err("Folder name must be a non-empty single name".to_string());
+        }
+        if trimmed.starts_with('.') && !self.columns.show_hidden {
+            self.columns.show_hidden = true;
+        }
+        let path = self.cwd.join(trimmed);
         fs::create_dir(&path).map_err(|err| {
             let msg = format!("Unable to create folder '{}': {err}", path.display());
             log::warn!("file_browser: {msg}");
@@ -1009,6 +1284,43 @@ impl FileBrowserApp {
         log::info!("file_browser: created folder '{}'", path.display());
         self.refresh_preserving_filter();
         self.select_path(&path);
+        Ok(path)
+    }
+
+    fn create_named_file(&mut self, name: &str, open_in_editor: bool) -> Result<PathBuf, String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains('/') {
+            return Err("File name must be a non-empty single name".to_string());
+        }
+        if trimmed.starts_with('.') && !self.columns.show_hidden {
+            self.columns.show_hidden = true;
+        }
+        let path = self.cwd.join(trimmed);
+        if path.is_dir() {
+            let msg = format!(
+                "Unable to create file '{}': a folder with that name already exists",
+                path.display()
+            );
+            log::warn!("file_browser: {msg}");
+            return Err(msg);
+        }
+        if !path.exists() {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|err| {
+                    let msg = format!("Unable to create file '{}': {err}", path.display());
+                    log::warn!("file_browser: {msg}");
+                    msg
+                })?;
+        }
+        log::info!("file_browser: created file '{}'", path.display());
+        self.refresh_preserving_filter();
+        self.select_path(&path);
+        if open_in_editor {
+            self.open_file(&path);
+        }
         Ok(path)
     }
 
@@ -2430,6 +2742,233 @@ impl FileBrowserApp {
         }
     }
 
+    fn draw_action_palette(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        pane_id: u64,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let claim = std::mem::take(&mut self.palette_focus_pending);
+        let cursor_to_end = std::mem::take(&mut self.palette_cursor_to_end);
+        let suppress_slash = std::mem::take(&mut self.palette_suppress_initial_slash);
+        let input_id = ui.make_persistent_id(("file_browser_palette", pane_id));
+
+        let set_cursor_end = |ctx: &egui::Context, text: &str| {
+            let mut state = egui::TextEdit::load_state(ctx, input_id).unwrap_or_default();
+            let end = egui::text::CCursor::new(text.chars().count());
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(end)));
+            state.store(ctx, input_id);
+        };
+
+        let mut clicked_candidate: Option<usize> = None;
+        let mut close_clicked = false;
+        let mut submitted_from_widget = false;
+
+        ui.add_space(style::SPACE_XS);
+        egui::Frame::new()
+            .fill(colors.bg_toolbar)
+            .stroke(Stroke::new(1.0_f32, colors.accent.gamma_multiply(0.65)))
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    crate::ui::badge::badge(ui, "ACTION", colors.accent, colors);
+
+                    if self.rename_path.is_none() {
+                        crate::ui::focus::register_default_text_surface(
+                            ui.ctx(),
+                            crate::ui::focus::SurfaceKey::Pane(pane_id),
+                            input_id,
+                        );
+                        if claim {
+                            crate::ui::focus::claim_text_surface(
+                                ui.ctx(),
+                                crate::ui::focus::SurfaceKey::Pane(pane_id),
+                                input_id,
+                            );
+                        }
+                    }
+                    if cursor_to_end {
+                        set_cursor_end(ui.ctx(), &self.palette_query);
+                    }
+
+                    let before = self.palette_query.clone();
+                    let clear_reserve = 28.0;
+                    let field_w = (ui.available_width() - clear_reserve).max(80.0);
+                    let resp = ui
+                        .allocate_ui(egui::vec2(field_w, 28.0), |ui| {
+                            TextField::singleline(
+                                input_id,
+                                "Type a /command or intent (e.g. /new file notes.md, /hidden, rename to \u{2026})",
+                            )
+                            .log_name("file_browser_palette")
+                            .show(ui, &mut self.palette_query, colors)
+                        })
+                        .inner;
+
+                    if suppress_slash && self.palette_query.starts_with("//") {
+                        self.palette_query =
+                            format!("/{}", self.palette_query.trim_start_matches('/'));
+                        set_cursor_end(ui.ctx(), &self.palette_query);
+                    } else if cursor_to_end {
+                        set_cursor_end(ui.ctx(), &self.palette_query);
+                    }
+
+                    if self.palette_query != before {
+                        self.palette_selected = 0;
+                    }
+
+                    let enter_event = ui.input(|i| {
+                        i.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::Enter,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        })
+                    });
+                    if resp.lost_focus() && enter_event {
+                        submitted_from_widget = true;
+                    }
+
+                    let close_btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{00d7}")
+                                .size(self.font_size)
+                                .color(colors.text_dim),
+                        )
+                        .frame(false),
+                    );
+                    let synthetic_close =
+                        pending_click.is_some_and(|c| c.targets_id(close_btn.id));
+                    if close_btn.clicked() || synthetic_close {
+                        close_clicked = true;
+                    }
+                });
+
+                let candidates = self.rank_palette_candidates();
+                if !candidates.is_empty() {
+                    self.palette_selected =
+                        self.palette_selected.min(candidates.len().saturating_sub(1));
+                }
+
+                // Structured intent preview chip
+                ui.add_space(style::SPACE_XS);
+                if let Some(active) = candidates.get(self.palette_selected) {
+                    let is_ready = matches!(active.resolution, CandidateResolution::Ready(_));
+                    let chip_bg = if is_ready {
+                        colors.accent.gamma_multiply(0.14)
+                    } else {
+                        colors.bg_sidebar
+                    };
+                    let chip_border = if is_ready {
+                        colors.accent.gamma_multiply(0.55)
+                    } else {
+                        colors.border
+                    };
+                    egui::Frame::new()
+                        .fill(chip_bg)
+                        .stroke(Stroke::new(1.0_f32, chip_border))
+                        .corner_radius(style::RADIUS_SM)
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (badge_label, badge_fill) = if is_ready {
+                                    ("INTENT", colors.accent)
+                                } else {
+                                    ("SLOT", colors.bg_hover)
+                                };
+                                crate::ui::badge::badge(ui, badge_label, badge_fill, colors);
+                                ui.label(
+                                    egui::RichText::new(&active.preview_chip)
+                                        .size(style::TEXT_META)
+                                        .monospace()
+                                        .color(colors.text_primary),
+                                );
+                            });
+                        });
+                }
+
+                // Ranked candidate list
+                ui.add_space(style::SPACE_XS);
+                let row_h = (22.0 * self.font_scale()).round().max(20.0);
+                for (idx, candidate) in candidates
+                    .iter()
+                    .take(PALETTE_MAX_VISIBLE_CANDIDATES)
+                    .enumerate()
+                {
+                    let (row_rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_h),
+                        egui::Sense::click(),
+                    );
+                    let selected = idx == self.palette_selected;
+                    list::paint_table_row_background(
+                        ui,
+                        row_rect,
+                        selected,
+                        resp.hovered(),
+                        colors,
+                    );
+                    let inner = row_rect.shrink2(egui::vec2(style::SPACE_SM, 0.0));
+                    let cmd_font = egui::FontId::monospace(style::TEXT_META);
+                    let cmd_color = if selected {
+                        colors.text_primary
+                    } else {
+                        colors.accent
+                    };
+                    let cmd_galley = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(
+                            candidate.slash_syntax.to_string(),
+                            cmd_font.clone(),
+                            cmd_color,
+                        )
+                    });
+                    let cmd_pos = egui::pos2(
+                        inner.left(),
+                        inner.center().y - cmd_galley.size().y * 0.5,
+                    );
+                    let cmd_w = cmd_galley.size().x;
+                    ui.painter().galley(cmd_pos, cmd_galley, cmd_color);
+
+                    let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
+                    let title_rect = egui::Rect::from_min_max(
+                        egui::pos2(title_left, inner.top()),
+                        inner.max,
+                    );
+                    list::paint_table_cell_text(
+                        ui,
+                        title_rect,
+                        format!("{} \u{2014} {}", candidate.title, candidate.subtitle),
+                        egui::FontId::proportional(style::TEXT_META),
+                        if selected {
+                            colors.text_primary
+                        } else {
+                            colors.text_dim
+                        },
+                    );
+
+                    if resp.clicked() {
+                        clicked_candidate = Some(idx);
+                    }
+                }
+            });
+
+        if close_clicked {
+            self.exit_palette();
+        } else if let Some(idx) = clicked_candidate {
+            self.palette_selected = idx;
+            self.submit_palette();
+        } else if submitted_from_widget && self.in_palette {
+            self.submit_palette();
+        }
+    }
+
     fn draw_status_bar(&mut self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
         ui.add_space(style::SPACE_XS);
         ui.separator();
@@ -2469,7 +3008,7 @@ impl FileBrowserApp {
                 // the width left over after the item-count label.
                 let rem = ui.available_width();
                 let all = [
-                    HintGroup::new(&["/"], "search"),
+                    HintGroup::new(&["/"], "actions"),
                     HintGroup::new(&["s"], "sort"),
                     HintGroup::new(&["i"], "inspector"),
                     HintGroup::new(&["Space"], "quick look"),
@@ -2485,7 +3024,7 @@ impl FileBrowserApp {
                 let mut start = 0;
                 while start < all.len() - 1 && !fits(&all[start..]) {
                     start += 1;
-                }
+                };
                 let hint_resp = HintBar::new(&all[start..])
                     .inline_status_bar()
                     .show_measured(ui, colors);
@@ -2604,6 +3143,9 @@ impl App for FileBrowserApp {
                 let show_inspector = self.should_show_inspector(ui.available_width());
                 self.draw_toolbar(ui, colors, pending_click);
 
+                if self.in_palette {
+                    self.draw_action_palette(ui, colors, ctx.pane_id, pending_click);
+                }
                 if self.in_search {
                     self.draw_search_bar(ui, colors, ctx.pane_id, pending_click);
                 }
@@ -2731,12 +3273,14 @@ impl App for FileBrowserApp {
         input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         use crate::app::app_trait::KeyDisposition;
-        let mode = if self.in_search {
+        let mode = if self.in_palette {
+            Mode::Palette
+        } else if self.in_search {
             Mode::Search
         } else {
             Mode::Normal
         };
-        let action = classify_key(input, self.in_search);
+        let action = classify_key(input, self.in_search || self.in_palette);
         log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
 
         if self.pending_operation.is_some() {
@@ -2791,6 +3335,71 @@ impl App for FileBrowserApp {
         }
 
         match (mode, action) {
+            // Palette mode actions
+            (Mode::Palette, Some(FileBrowserAction::Escape)) => {
+                self.exit_palette();
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::Activate)) => {
+                for event in input.events() {
+                    match event {
+                        egui::Event::Text(t) => self.palette_query.push_str(t),
+                        egui::Event::Paste(p) => self.palette_query.push_str(p),
+                        _ => {}
+                    }
+                }
+                self.submit_palette();
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::TabComplete)) => {
+                self.tab_complete_palette();
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::SelectNext)) => {
+                let count = self
+                    .rank_palette_candidates()
+                    .len()
+                    .min(PALETTE_MAX_VISIBLE_CANDIDATES);
+                if count > 0 {
+                    self.palette_selected = (self.palette_selected + 1).min(count - 1);
+                }
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::SelectPrev)) => {
+                self.palette_selected = self.palette_selected.saturating_sub(1);
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::Backspace)) => {
+                self.palette_query.pop();
+                self.palette_selected = 0;
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::AppendText(text))) => {
+                if std::mem::take(&mut self.palette_suppress_initial_slash) && text == "/" {
+                    return KeyDisposition::Consumed;
+                }
+                self.palette_query.push_str(&text);
+                if self.palette_query.starts_with("//") {
+                    self.palette_query =
+                        format!("/{}", self.palette_query.trim_start_matches('/'));
+                }
+                self.palette_selected = 0;
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::EnterSearch)) => {
+                self.exit_palette();
+                self.in_search = true;
+                self.search_focus_pending = true;
+                self.search_query.clear();
+                self.refilter();
+                log::info!("file_browser: entering search mode");
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::NewFolder)) => {
+                self.open_palette("/new folder ");
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, _) => KeyDisposition::Consumed,
             // Escape: closes browser in normal mode, exits search in search mode
             (Mode::Search, Some(FileBrowserAction::Escape)) => {
                 self.exit_search();
@@ -2848,6 +3457,14 @@ impl App for FileBrowserApp {
                 self.refilter();
                 KeyDisposition::Consumed
             }
+            (Mode::Search, Some(FileBrowserAction::EnterPaletteCommand)) => {
+                self.open_palette("");
+                KeyDisposition::Consumed
+            }
+            (Mode::Search, Some(FileBrowserAction::NewFolder)) => {
+                self.open_palette("/new folder ");
+                KeyDisposition::Consumed
+            }
             // Search mode consumes all unhandled input
             (Mode::Search, _) => KeyDisposition::Consumed,
             // Normal mode actions
@@ -2857,6 +3474,14 @@ impl App for FileBrowserApp {
                 self.search_query.clear();
                 self.refilter();
                 log::info!("file_browser: entering search mode");
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::EnterPaletteSlash)) => {
+                self.open_palette("/");
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::EnterPaletteCommand)) => {
+                self.open_palette("");
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectNext)) if !self.entries.is_empty() => {
@@ -2949,9 +3574,7 @@ impl App for FileBrowserApp {
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::NewFolder)) => {
-                if let Err(err) = self.create_new_folder() {
-                    self.error = Some(err);
-                }
+                self.open_palette("/new folder ");
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Rename)) if !self.entries.is_empty() => {
@@ -3001,7 +3624,9 @@ impl App for FileBrowserApp {
     }
 
     fn submit_on_focused_text_input_enter(&self) -> bool {
-        self.in_search && self.rename_path.is_none() && self.pending_operation.is_none()
+        (self.in_search || self.in_palette)
+            && self.rename_path.is_none()
+            && self.pending_operation.is_none()
     }
 
     fn wants_close(&self) -> bool {
@@ -3182,7 +3807,16 @@ mod tests {
     #[test]
     fn t_in_search_mode_is_not_a_handoff() {
         let (mut app, _dir) = make_populated_dir_app();
-        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
         assert!(app.in_search);
 
         let consumed = run_handle_key(&mut app, vec![key_event(Key::T, Modifiers::default())]);
@@ -3297,9 +3931,24 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_slash_enters_search() {
+    fn normal_mode_slash_enters_palette_and_cmd_f_enters_search() {
         let (mut app, _dir) = make_populated_dir_app();
         run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(!app.in_palette);
+
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
         assert!(app.in_search);
     }
 
@@ -3708,9 +4357,18 @@ mod tests {
     #[test]
     fn search_enter_on_file_opens_and_exits_search() {
         let (mut app, _dir) = make_file_only_dir_app();
-        // enter search mode
-        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
-        assert!(app.in_search, "slash must enter search mode");
+        // enter search mode via Cmd+F
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(app.in_search, "Cmd+F must enter search mode");
         // press Enter to open the (only) filtered result
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
@@ -4116,7 +4774,20 @@ mod tests {
             )],
         );
         assert!(consumed_mkdir, "Cmd+N must work in an empty directory");
-        assert!(empty_dir2.path().join("Untitled Folder").is_dir());
+        assert!(empty_app2.in_palette);
+        assert_eq!(empty_app2.palette_query, "/new folder ");
+        assert!(
+            !empty_dir2.path().join("Untitled Folder").exists(),
+            "Cmd+N must prompt for folder name without creating Untitled Folder on disk first"
+        );
+        run_handle_key(
+            &mut empty_app2,
+            vec![
+                Event::Text("created_dir".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(empty_dir2.path().join("created_dir").is_dir());
     }
 
     #[test]
@@ -4295,7 +4966,16 @@ mod tests {
             paths: vec![dir.path().join("parent_file.txt")],
         });
 
-        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
         assert!(app.in_search);
 
         let pasted = run_handle_key(&mut app, vec![Event::Paste("alp".to_string())]);
@@ -4492,5 +5172,353 @@ mod tests {
                 layout.row_rect.max.x,
             );
         }
+    }
+
+    #[test]
+    fn parse_file_explorer_intent_resolves_slash_and_natural_language_phrases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main_rs = dir.path().join("main.rs");
+        let docs_dir = dir.path().join("docs");
+        std::fs::write(&main_rs, b"fn main() {}\n").expect("write main.rs");
+        std::fs::create_dir(&docs_dir).expect("mkdir docs");
+
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        // Select main.rs explicitly for selection-contextual phrases like "rename to main_v2.rs".
+        let main_idx = app
+            .entries
+            .iter()
+            .position(|e| e.path == main_rs)
+            .expect("main.rs entry");
+        app.selected = main_idx;
+
+        let selected_paths = app.selected_paths();
+        let ctx = app.intent_context(&selected_paths);
+
+        assert_eq!(
+            parse_file_explorer_intent("/hidden", &ctx),
+            Some(FileExplorerIntent::ToggleHidden { enabled: None })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/new file notes.md", &ctx),
+            Some(FileExplorerIntent::CreateFile {
+                name: "notes.md".to_string(),
+                open_in_editor: true,
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/new folder specs", &ctx),
+            Some(FileExplorerIntent::CreateFolder {
+                name: "specs".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("rename to main_v2.rs", &ctx),
+            Some(FileExplorerIntent::Rename {
+                target: main_rs.clone(),
+                new_name: "main_v2.rs".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/sort size asc", &ctx),
+            Some(FileExplorerIntent::SortBy {
+                column: ColumnId::Size,
+                direction: SortDirection::Asc,
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("show hidden files", &ctx),
+            Some(FileExplorerIntent::ToggleHidden {
+                enabled: Some(true),
+            })
+        );
+
+        // Verify additional variants and serde round-trip on FileExplorerIntent.
+        assert_eq!(
+            parse_file_explorer_intent("/trash", &ctx),
+            Some(FileExplorerIntent::MoveToTrash {
+                targets: vec![main_rs.clone()],
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/open", &ctx),
+            Some(FileExplorerIntent::OpenInEditor {
+                path: main_rs.clone(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/default", &ctx),
+            Some(FileExplorerIntent::OpenWithDefault {
+                path: main_rs.clone(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/reveal", &ctx),
+            Some(FileExplorerIntent::Reveal {
+                path: main_rs.clone(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/cd", &ctx),
+            Some(FileExplorerIntent::CdTerminal {
+                path: dir.path().to_path_buf(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/folders-first", &ctx),
+            Some(FileExplorerIntent::ToggleFoldersFirst { enabled: None })
+        );
+
+        let intent = FileExplorerIntent::CreateFile {
+            name: "hello.rs".to_string(),
+            open_in_editor: true,
+        };
+        let encoded = serde_json::to_string(&intent).expect("serialize intent");
+        let decoded: FileExplorerIntent =
+            serde_json::from_str(&encoded).expect("deserialize intent");
+        assert_eq!(decoded, intent);
+    }
+
+    #[test]
+    fn execute_create_file_intent_creates_selects_and_queues_open_artifact() {
+        let (mut app, dir) = make_three_file_app();
+        app.take_pending_commands();
+
+        app.execute_intent(FileExplorerIntent::CreateFile {
+            name: "hello.rs".to_string(),
+            open_in_editor: true,
+        })
+        .expect("CreateFile intent must execute cleanly");
+
+        let expected_path = dir.path().join("hello.rs");
+        assert!(expected_path.is_file(), "hello.rs must be created in cwd");
+        assert_eq!(
+            app.selected_entry().map(|e| &e.path),
+            Some(&expected_path),
+            "created file must be selected in FileBrowserApp"
+        );
+        assert_eq!(app.opened_files.last(), Some(&expected_path));
+
+        let cmds = app.take_pending_commands();
+        assert_eq!(cmds.len(), 1, "CreateFile with open_in_editor must queue OpenArtifact");
+        assert!(matches!(
+            &cmds[0],
+            AppCommand::OpenArtifact {
+                path,
+                mode: crate::protocol::ArtifactOpenMode::OpenInPane,
+                ..
+            } if path == &expected_path.display().to_string()
+        ));
+    }
+
+    #[test]
+    fn palette_slash_hidden_toggles_show_hidden_and_claims_text_surface() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("visible.rs"), b"fn main() {}\n").expect("write visible");
+        std::fs::write(dir.path().join(".env"), b"SECRET=1\n").expect("write hidden");
+
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        assert!(!app.columns.show_hidden);
+
+        // Press `/` to open the action palette pre-filled with `/`.
+        let entered = run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(entered);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        assert!(app.submit_on_focused_text_input_enter());
+
+        // Render one UI pass of the action palette and verify SurfaceKey::Pane(pane_id) is claimed.
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            app.draw_action_palette(ui, &colors, 77, None);
+        });
+        let registry = crate::ui::focus::drain_text_surfaces(&ctx);
+        let key = crate::ui::focus::SurfaceKey::Pane(77);
+        assert!(
+            registry.default_for(key).is_some() && registry.claim_for(key).is_some(),
+            "Action palette must register its TextInput under SurfaceKey::Pane(pane_id) and claim focus"
+        );
+
+        // Type `hidden` (completing `/hidden`) and press Enter.
+        let toggled = run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("hidden".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(toggled);
+        assert!(!app.in_palette, "palette must close after executing /hidden");
+        assert!(
+            app.columns.show_hidden,
+            "/hidden + Enter must toggle columns.show_hidden on"
+        );
+        assert!(
+            app.entries.iter().any(|e| e.name == ".env"),
+            "hidden file must appear in entries after /hidden executes"
+        );
+    }
+
+    #[test]
+    fn cmd_n_and_palette_new_folder_slot_prompt_do_not_create_untitled_folder_first() {
+        let (mut app, dir) = make_three_file_app();
+
+        // 1. Pressing Cmd+N opens the palette pre-filled with `/new folder ` without touching disk.
+        let opened = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(opened);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/new folder ");
+        assert!(
+            !dir.path().join("Untitled Folder").exists(),
+            "Cmd+N must not create Untitled Folder on disk before user enters a name"
+        );
+
+        // User types `specs` and presses Enter.
+        let created = run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("specs".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(created);
+        assert!(!app.in_palette);
+        assert!(dir.path().join("specs").is_dir());
+        assert!(!dir.path().join("Untitled Folder").exists());
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("specs")
+        );
+
+        // 2. Selecting `/new folder` without a name argument and pressing Enter pre-fills `/new folder `.
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert_eq!(app.palette_query, "/");
+        run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("new folder".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(
+            app.in_palette,
+            "selecting /new folder without an argument must stay in palette for slot entry"
+        );
+        assert_eq!(app.palette_query, "/new folder ");
+        assert!(!dir.path().join("Untitled Folder").exists());
+
+        run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("design_docs".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(!app.in_palette);
+        assert!(dir.path().join("design_docs").is_dir());
+    }
+
+    #[test]
+    fn host_harness_file_browser_palette_executes_hidden_and_create_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("existing.rs"), b"pub fn existing() {}\n")
+            .expect("write existing.rs");
+        std::fs::write(dir.path().join(".secret"), b"hidden\n").expect("write .secret");
+
+        let mut h = crate::testing::HostHarness::new();
+        h.app.open_builtin_app_pane(
+            Box::new(FileBrowserApp::new(dir.path().to_path_buf())),
+            crate::app::permissions::AppPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            None,
+            None,
+        );
+        h.run_frames(2);
+
+        let tap_key = |h: &mut crate::testing::HostHarness, key: Key, modifiers: Modifiers| {
+            h.frame(RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                modifiers,
+                events: vec![
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    },
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers,
+                    },
+                ],
+                ..Default::default()
+            });
+        };
+
+        // 1. Press `/` in the File Explorer pane, type `hidden`, and press Enter.
+        tap_key(&mut h, Key::Slash, Modifiers::NONE);
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Text("hidden".to_string())],
+            ..Default::default()
+        });
+        tap_key(&mut h, Key::Enter, Modifiers::NONE);
+        h.run_frames(1);
+
+        let show_hidden = h.app.windows[0]
+            .panes
+            .values_mut()
+            .find_map(|p| {
+                let crate::host::pane::AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    return None;
+                };
+                b.as_any_mut().downcast_ref::<FileBrowserApp>()
+            })
+            .map(|fb| fb.columns.show_hidden)
+            .expect("file_browser runtime");
+        assert!(
+            show_hidden,
+            "HostHarness `/` -> `hidden` -> `Enter` must toggle columns.show_hidden"
+        );
+
+        // 2. Press `/` again, type `new file hello.rs`, and press Enter: creates hello.rs, selects it, and opens in editor.
+        tap_key(&mut h, Key::Slash, Modifiers::NONE);
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Text("new file hello.rs".to_string())],
+            ..Default::default()
+        });
+        tap_key(&mut h, Key::Enter, Modifiers::NONE);
+        h.run_frames(2);
+
+        let hello_path = dir.path().join("hello.rs");
+        assert!(hello_path.is_file(), "hello.rs must exist on disk");
+        assert!(
+            h.pane_count() >= 2,
+            "CreateFile with open_in_editor must open hello.rs in a sibling editor pane"
+        );
     }
 }
