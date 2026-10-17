@@ -111,6 +111,9 @@ def test_selection_stays_in_range_after_delete() -> None:
     document = render_checklist(
         [ChecklistItem("a", False), ChecklistItem("b", False)]
     )
+    _set_state(_seeded(document, selected=0))
+    clicked = todo.update(UiAction("todo:select:1"))
+    assert _transient(clicked)["selected"] == 1
     _set_state(_seeded(document, selected=1))
     deleted = todo.update(KeyEvent("d"))
     assert _transient(deleted)["selected"] == 0
@@ -202,3 +205,23 @@ def test_state_file_error_surfaces_without_crashing() -> None:
         StateChanged(scope="context", values={}, error="not valid UTF-8")
     )
     assert not any(isinstance(e, PersistState) for e in effects)
+
+
+def test_seeded_todos_list_renders_with_trailing_status() -> None:
+    _set_state(
+        {
+            "todos": [
+                {"id": 1, "text": "Ship V1", "done": False},
+                {"id": 2, "text": "Audit UX", "done": True},
+            ],
+            "selected": 0,
+        }
+    )
+    root = todo.view().to_node()
+    select_list = next(n for n in _flatten(todo.view()) if n.get("type") == "select_list")
+    assert select_list["items"] == [
+        {"name": "Ship V1", "leading": "○", "trailing": "open"},
+        {"name": "Audit UX", "leading": "✓", "trailing": "done"},
+    ]
+    assert root["children"][0]["subtitle"] == "1 open · 2 total"
+

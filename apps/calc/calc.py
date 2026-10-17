@@ -10,7 +10,7 @@ from typing import Any, Callable
 from plexi_sdk import log, state, theme, tools
 from plexi_sdk.effects import SetState, SetStatus, SetTitle, ToolResult
 from plexi_sdk.events import KeyEvent, ToolCall, UiAction
-from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, HStack, Spacer, Text
+from plexi_sdk.ui import AppBar, Button, Card, Column, FooterKeys, HStack, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -40,7 +40,10 @@ BINARY_OPS: dict[str, Callable[[float, float], float]] = {
 
 def _button_row(labels: list[str]) -> HStack:
     return HStack(
-        [Button(label, f"calc:key:{label}", style=_button_style(label)) for label in labels],
+        [
+            Button(label, f"calc:key:{label}", style=_button_style(label))
+            for label in labels
+        ],
         gap=8.0,
     )
 
@@ -114,12 +117,30 @@ def update(event) -> list:
 def view():
     data = _state()
     subtitle = f"{_format_number(data['pending'])} {data['op']}" if data["op"] else ""
+    expr_line = subtitle or "ready"
+    readout = Card(
+        [
+            Text(expr_line, size=11.0, color=theme.muted, align="end"),
+            Text(data["display"], size=28.0, bold=True, truncate=True, align="end"),
+        ],
+        padding=12.0,
+        gap=4.0,
+    )
+    keypad = Column(
+        [_button_row(row) for row in BUTTON_ROWS],
+        gap=8.0,
+    )
     return Column(
         [
-            AppBar("Calculator", subtitle or "ready"),
-            Text(subtitle or "ready", size=11.0, color=theme.muted, align="end"),
-            Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
-            *[_button_row(row) for row in BUTTON_ROWS],
+            AppBar("Calculator", expr_line),
+            Card(
+                [
+                    readout,
+                    keypad,
+                ],
+                padding=16.0,
+                gap=12.0,
+            ),
             Spacer(grow=True),
             FooterKeys(
                 [

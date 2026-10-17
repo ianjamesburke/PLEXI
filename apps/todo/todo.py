@@ -39,11 +39,29 @@ DRAFT = "todo:draft"
 START = "todo:start"
 TOGGLE = "todo:toggle"
 DELETE = "todo:delete"
+SELECT = "todo:select"
 
 
 def _items() -> list[dict]:
     document = str(state.get("document", "") or "")
-    return [{"text": item.text, "done": item.done} for item in parse_checklist(document)]
+    if document:
+        return [{"text": item.text, "done": item.done} for item in parse_checklist(document)]
+    raw = state.get("todos")
+    if raw is None:
+        raw = state.get("items")
+    if isinstance(raw, list):
+        items: list[dict] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                text = str(
+                    entry.get("text") or entry.get("title") or entry.get("name") or ""
+                ).strip()
+                if text:
+                    items.append({"text": text, "done": bool(entry.get("done"))})
+            elif isinstance(entry, str) and entry.strip():
+                items.append({"text": entry.strip(), "done": False})
+        return items
+    return []
 
 
 def _data() -> dict:
@@ -167,6 +185,15 @@ def update(event) -> list:
     if data["adding"]:
         return []
 
+    if action and action.startswith(f"{SELECT}:"):
+        try:
+            idx = int(action.removeprefix(f"{SELECT}:"))
+        except ValueError:
+            return []
+        data["selected"] = _clamp(data["items"], idx)
+        log.info(f"todo: selected item {data['selected']} via click")
+        return _ui_effects(data)
+
     if action == START or key == "a":
         data["adding"] = True
         data["draft"] = ""
@@ -207,12 +234,16 @@ def view():
         ], grow=True)
 
     rows = [
-        {"name": item["text"], "leading": "✓" if item["done"] else "○"}
+        {
+            "name": item["text"],
+            "leading": "✓" if item["done"] else "○",
+            "trailing": "done" if item["done"] else "open",
+        }
         for item in data["items"]
     ]
     return Column([
         AppBar("Todo", _status(data)),
-        SelectList(rows, selected_idx=data["selected"]) if rows
+        SelectList(rows, selected_idx=data["selected"], on_select=SELECT) if rows
         else Text("Nothing yet — press a to add an item.", size=13.0),
         Spacer(grow=True),
         Actions([Button("Add item", START, style="primary"),

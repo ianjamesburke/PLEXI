@@ -48,8 +48,33 @@ def test_select_list_mouse_selection_and_refresh_subtitle():
     assert header["subtitle"] == "market ticker · refreshing…"
     select_list = node["children"][1]
     assert select_list["on_select"] == "pair"
+    detail_card = node["children"][2]
+    assert detail_card["type"] == "card"
 
     effects = app.update(UiAction("pair:2"))
     updated = next(effect for effect in effects if isinstance(effect, SetState)).data
     assert updated["selected"] == 2
+
+    # Pre-seeded ticker state is preserved by init() without forcing loading=True.
+    _v3_state._state = sdk.StateSnapshot(
+        {
+            "pairs": [
+                {
+                    "pair": "XBTUSD",
+                    "label": "BTC/USD",
+                    "last": "65000.1",
+                    "change": "+2.1%",
+                    "high": "66000.0",
+                    "low": "64000.0",
+                    "volume": "1234.5",
+                }
+            ],
+            "selected": 0,
+        },
+        {},
+    )
+    init_effects = app.init((800, 600), [])
+    init_state = next(e for e in init_effects if isinstance(e, SetState)).data
+    assert init_state["loading"] is False
+    assert init_state["prices"]["XBTUSD"]["last"] == "65000.1"
 

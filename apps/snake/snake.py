@@ -178,6 +178,7 @@ def _draw(data: dict) -> list:
     ox = 24.0
     oy = 24.0
     commands: list = [
+        CanvasRect(0, 0, CANVAS_W, CANVAS_H, theme.bg),
         CanvasRect(
             ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4, theme.border, radius=2.0
         ),
