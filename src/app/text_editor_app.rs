@@ -232,8 +232,8 @@ impl TextEditorApp {
                 .unwrap_or_else(|| "untitled".to_string()),
         );
         let disk_hash = (load_error.is_none() && path.exists()).then(|| fnv1a64(raw.as_bytes()));
-        let (note_header, content, note_title) = split_note(is_note, raw);
         let mode = detect_mode(&path, is_note);
+        let (note_header, content, note_title) = split_note(mode.is_markdown(), raw);
         log::info!(
             "notes_editor: mode selected {} for {:?}",
             mode.describe(),
@@ -505,7 +505,7 @@ impl TextEditorApp {
     }
 
     fn replace_body(&mut self, full_text: &str) {
-        if self.is_note {
+        if self.mode.is_markdown() {
             let (header, content, title) = split_note(true, full_text.to_string());
             self.note_header = header;
             self.note_title = title;
@@ -790,7 +790,7 @@ impl TextEditorApp {
     fn reload_from(&mut self, raw: String, hash: u64) {
         let caret = self.caret_byte();
         let scroll = self.view.scroll_y;
-        let (note_header, content, note_title) = split_note(self.is_note, raw);
+        let (note_header, content, note_title) = split_note(self.mode.is_markdown(), raw);
         self.note_header = note_header;
         self.note_title = note_title;
         self.doc = Document::new(&content).succeeding(self.doc.revision());
@@ -1627,7 +1627,7 @@ impl TextEditorApp {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "untitled".to_string());
         let title = self.note_title.trim();
-        let title = (self.is_note && !title.is_empty()).then(|| title.to_string());
+        let title = (self.mode.is_markdown() && !title.is_empty()).then(|| title.to_string());
         EditorChrome {
             title,
             file_name,
@@ -2364,8 +2364,8 @@ impl App for TextEditorApp {
                     .then(|| fnv1a64(raw.as_bytes()));
                 self.external = None;
                 self.prompt = None;
-                let (note_header, content, note_title) = split_note(self.is_note, raw);
                 self.mode = detect_mode(&new_path, self.is_note);
+                let (note_header, content, note_title) = split_note(self.mode.is_markdown(), raw);
                 log::info!(
                     "notes_editor: mode selected {} for {:?}",
                     self.mode.describe(),
@@ -3007,6 +3007,66 @@ mod tests {
         assert_eq!(file.editor_chrome().save_indicator, "Unsaved");
         file.last_save_result = Some("error: disk full".to_string());
         assert_eq!(file.editor_chrome().save_indicator, "Save failed");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn non_note_markdown_strips_frontmatter_and_preserves_on_save_and_close() {
+        let dir = unique_temp_dir("editor-non-note-frontmatter");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let md_path = dir.join("skill.md");
+        std::fs::write(
+            &md_path,
+            "---\nname: test-skill\ntitle: \"Skill Guide\"\n---\n\n# Overview\nBody text.\n",
+        )
+        .unwrap();
+
+        let mut app = TextEditorApp::new(md_path.clone());
+        assert!(
+            !app.is_note,
+            "a Markdown file outside a notes tier is not a note"
+        );
+        assert!(app.mode.is_markdown());
+        assert_eq!(
+            app.doc.text(),
+            "# Overview\nBody text.\n",
+            "YAML frontmatter must be held out of the editable body buffer"
+        );
+        assert_eq!(
+            app.editor_chrome().title.as_deref(),
+            Some("Skill Guide"),
+            "parsed frontmatter title must surface in editor_chrome for any Markdown file"
+        );
+
+        app.doc.apply(EditorCommand::Move {
+            movement: crate::editor::commands::Movement::DocEnd,
+            extend: false,
+        });
+        app.doc.apply(EditorCommand::InsertText("More.\n".into()));
+        app.last_edit = Some(Instant::now());
+        app.explicit_save();
+        assert_eq!(
+            std::fs::read_to_string(&md_path).unwrap(),
+            "---\nname: test-skill\ntitle: \"Skill Guide\"\n---\n\n# Overview\nBody text.\nMore.\n",
+            "saving must recompose frontmatter + body losslessly"
+        );
+        drop(app);
+
+        // Frontmatter-only Markdown file outside a note tier must never be auto-deleted on close.
+        let empty_body_md = dir.join("frontmatter-only.md");
+        let raw_fm = "---\nname: empty-skill\ntitle: \"Empty Skill\"\n---\n\n";
+        std::fs::write(&empty_body_md, raw_fm).unwrap();
+        let app = TextEditorApp::new(empty_body_md.clone());
+        assert!(!app.is_note);
+        assert_eq!(app.doc.text(), "");
+        drop(app);
+        assert!(
+            empty_body_md.exists(),
+            "a frontmatter-only Markdown file outside a note tier must never be auto-deleted"
+        );
+        assert_eq!(std::fs::read_to_string(&empty_body_md).unwrap(), raw_fm);
 
         let _ = std::fs::remove_dir_all(dir);
     }
