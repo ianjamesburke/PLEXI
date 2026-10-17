@@ -3421,19 +3421,18 @@ impl LivePythonPane {
             .and_then(Value::as_str)
             .map(str::to_string);
         let tx = self.http_tx.clone();
-        std::thread::spawn(move || {
-            use crate::host::services::NetService;
-            let response = crate::host::services::UreqNetService::new().http(
-                &method,
-                &url,
-                &headers,
-                body.as_deref(),
-                crate::host::services::DEFAULT_MAX_HTTP_BODY_BYTES,
-            );
-            if tx.send((request_id, response)).is_err() {
-                log::debug!("CPython WASM HTTP response dropped after pane closed");
-            }
-        });
+        super::wasm_pane::spawn_http_fetch_worker(
+            std::sync::Arc::new(crate::host::services::UreqNetService::new()),
+            method,
+            url,
+            headers,
+            body,
+            move |response| {
+                if tx.send((request_id, response)).is_err() {
+                    log::debug!("CPython WASM HTTP response dropped after pane closed");
+                }
+            },
+        );
     }
 
     /// Open a connection to a server the *user* configured. `server_id` is
@@ -4730,40 +4729,9 @@ fn commit_python_frame(
     Some(sent_at)
 }
 
-/// Resolve an app-supplied relative path inside `root`, rejecting absolute
-/// paths, `..` components, and symlink escapes. `for_write` permits a
-/// not-yet-existing final component as long as its parent resolves inside the
-/// jail. Shared by `file_read` and `file_write`; 0508's granted scopes will
-/// extend the allowed roots here once they land.
-fn resolve_jailed_path(root: &Path, raw: &str, for_write: bool) -> Result<PathBuf, String> {
-    let path = Path::new(raw);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return Err(format!("path escapes workspace: {raw}"));
-    }
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|error| format!("canonicalize workspace {}: {error}", root.display()))?;
-    let candidate = root.join(path);
-    let resolved = if for_write && !candidate.exists() {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| "path has no parent".to_string())?;
-        parent
-            .canonicalize()
-            .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
-    } else {
-        candidate.canonicalize()
-    }
-    .map_err(|error| format!("resolve workspace path {raw}: {error}"))?;
-    if !resolved.starts_with(&canonical_root) {
-        return Err(format!("path escapes workspace through symlink: {raw}"));
-    }
-    Ok(resolved)
-}
+use super::wasm_pane::{canonicalize_picked_path, resolve_app_fs_path};
+#[cfg(test)]
+use super::wasm_pane::resolve_jailed_path;
 
 /// Extract the payload of a `file_write` message: binary via `content_b64`
 /// (base64, the binary-safe bridge encoding) or text via `content`. Exactly one
@@ -4829,58 +4797,6 @@ fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
         }
     }
     Ok(text)
-}
-
-/// Resolve an app-supplied fs path against the workspace jail and picker
-/// grants (stint 0508). This is the single chokepoint for CPython-WASM app fs
-/// access: relative paths stay jailed to `workspace_root` via
-/// `resolve_jailed_path` (stint 0509) exactly as before; absolute paths are
-/// accepted only when they resolve under a picker-granted root, with the same
-/// canonicalize + symlink-escape discipline, so a symlink inside either scope
-/// cannot reach outside it.
-fn resolve_app_fs_path(
-    workspace_root: &Path,
-    granted_roots: &[PathBuf],
-    raw: &str,
-    for_write: bool,
-) -> Result<PathBuf, String> {
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        let resolved = resolve_concrete_path(path.to_path_buf(), for_write)?;
-        if granted_roots.iter().any(|root| resolved.starts_with(root)) {
-            return Ok(resolved);
-        }
-        return Err(format!(
-            "absolute path is outside every picker-granted scope: {raw}"
-        ));
-    }
-    resolve_jailed_path(workspace_root, raw, for_write)
-}
-
-/// Canonicalize a candidate path; for a write target that does not exist yet,
-/// canonicalize its parent and re-attach the file name (same discipline the
-/// workspace jail has always used for new files).
-fn resolve_concrete_path(candidate: PathBuf, for_write: bool) -> Result<PathBuf, String> {
-    let display = candidate.display().to_string();
-    if for_write && !candidate.exists() {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| format!("path has no parent: {display}"))?;
-        let name = candidate
-            .file_name()
-            .ok_or_else(|| format!("path has no file name: {display}"))?
-            .to_os_string();
-        parent.canonicalize().map(|parent| parent.join(name))
-    } else {
-        candidate.canonicalize()
-    }
-    .map_err(|error| format!("resolve path {display}: {error}"))
-}
-
-/// Canonicalize a picker-returned path for grant registration. Save-as
-/// targets may not exist yet, so a missing path resolves through its parent.
-fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
-    resolve_concrete_path(path.to_path_buf(), true)
 }
 
 /// Manifest capability a Python guest must declare before the host executes

@@ -7,6 +7,11 @@ use crossbeam_queue::ArrayQueue;
 use crate::app::app_trait::{App, AppRenderContext};
 use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::protocol::VideoState;
+use crate::ui::{
+    app_chrome::AppChrome,
+    button::{self, ButtonKind},
+    style,
+};
 
 pub struct VideoPlayerApp {
     path: PathBuf,
@@ -191,7 +196,7 @@ impl App for VideoPlayerApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        _ctx: &AppRenderContext<'_>,
+        ctx: &AppRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.tick_position();
@@ -199,16 +204,21 @@ impl App for VideoPlayerApp {
         if self.playing {
             ui.ctx().request_repaint();
         }
+        let colors = ctx.colors;
+        let subtitle = self
+            .frame_size
+            .map(|[w, h]| format!("{w}×{h}"))
+            .unwrap_or_else(|| "Video Player".to_string());
+        AppChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
 
-        ui.label(self.filename());
         let available = ui.available_size();
-        let viewport_height = (available.y - 40.0).max(160.0);
+        let viewport_height = (available.y - 48.0).max(160.0);
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(available.x.max(1.0), viewport_height),
             egui::Sense::hover(),
         );
         ui.painter()
-            .rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+            .rect_filled(rect, style::RADIUS_SM, colors.bg_sidebar);
         if let (Some(texture), Some([w, h])) = (&self.frame_texture, self.frame_size) {
             let tex_size = egui::vec2(w as f32, h as f32);
             let scale = (rect.width() / tex_size.x)
@@ -230,16 +240,18 @@ impl App for VideoPlayerApp {
                 } else {
                     "Press Play"
                 },
-                egui::TextStyle::Body.resolve(ui.style()),
-                ui.visuals().weak_text_color(),
+                egui::FontId::proportional(style::TEXT_BODY),
+                colors.text_dim,
             );
         }
-        ui.add_space(8.0);
+        ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
+            ui.add_space(style::SPACE_MD);
             let label = if self.playing { "Pause" } else { "Play" };
-            if ui.button(label).clicked() {
+            if button::chrome_button(ui, label, ButtonKind::Accent, colors, 64.0).clicked() {
                 self.set_playing(!self.playing);
             }
+            ui.add_space(style::SPACE_SM);
             let duration = self.duration_ms.unwrap_or(0).max(self.position_ms);
             let mut pos = self.position_ms.min(duration);
             let response = ui.add(egui::Slider::new(&mut pos, 0..=duration).show_value(false));
@@ -249,16 +261,29 @@ impl App for VideoPlayerApp {
                     ui.ctx().request_repaint();
                 }
             }
-            ui.label(format!(
-                "{} / {}",
-                format_time(self.position_ms),
-                self.duration_ms
-                    .map(format_time)
-                    .unwrap_or_else(|| "--:--".to_string())
-            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} / {}",
+                    format_time(self.position_ms),
+                    self.duration_ms
+                        .map(format_time)
+                        .unwrap_or_else(|| "--:--".to_string())
+                ))
+                .size(style::TEXT_CAPTION)
+                .color(colors.text_dim)
+                .monospace(),
+            );
         });
         if let Some(error) = &self.error {
-            ui.label(error);
+            ui.add_space(style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_MD);
+                ui.label(
+                    egui::RichText::new(error)
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.danger),
+                );
+            });
         }
     }
 

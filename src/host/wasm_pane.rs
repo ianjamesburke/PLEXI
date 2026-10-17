@@ -297,7 +297,7 @@ impl WasmAccessPolicy {
     }
 }
 
-fn canonicalize_scope(path: PathBuf, require_existing: bool) -> Result<PathBuf, String> {
+pub(crate) fn canonicalize_scope(path: PathBuf, require_existing: bool) -> Result<PathBuf, String> {
     if require_existing {
         return std::fs::canonicalize(&path)
             .map_err(|e| format!("resolve {}: {e}", path.display()));
@@ -311,7 +311,7 @@ fn canonicalize_scope(path: PathBuf, require_existing: bool) -> Result<PathBuf, 
 /// save-as into a folder the user just named — inside a grant whose directories
 /// do not exist on disk yet. Callers must have already rejected `..`/prefix
 /// components, so every tail segment is a plain name.
-fn canonicalize_for_create(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn canonicalize_for_create(path: &Path) -> Result<PathBuf, String> {
     if path.exists() {
         return std::fs::canonicalize(path).map_err(|e| format!("resolve {}: {e}", path.display()));
     }
@@ -333,6 +333,81 @@ fn canonicalize_for_create(path: &Path) -> Result<PathBuf, String> {
         }
         node = parent;
     }
+}
+
+/// Canonicalize a picker-returned path for grant registration. Save-as
+/// targets may not exist yet, so a missing path resolves through its parent.
+pub(crate) fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
+    canonicalize_scope(path.to_path_buf(), false)
+}
+
+/// Resolve an app-supplied relative path inside `root`, rejecting absolute
+/// paths, `..` components, and symlink escapes. `for_write` permits a
+/// not-yet-existing final component as long as its parent resolves inside the
+/// jail. Shared across WASM and Python guest runtimes.
+pub(crate) fn resolve_jailed_path(
+    root: &Path,
+    raw: &str,
+    for_write: bool,
+) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(format!("path escapes workspace: {raw}"));
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("canonicalize workspace {}: {error}", root.display()))?;
+    let candidate = root.join(path);
+    let resolved = if for_write && !candidate.exists() {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| "path has no parent".to_string())?;
+        parent
+            .canonicalize()
+            .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
+            .map_err(|error| format!("resolve workspace path {raw}: {error}"))?
+    } else {
+        candidate
+            .canonicalize()
+            .map_err(|error| format!("resolve workspace path {raw}: {error}"))?
+    };
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!("path escapes workspace through symlink: {raw}"));
+    }
+    Ok(resolved)
+}
+
+/// Resolve an app-supplied fs path against the workspace jail and picker
+/// grants (stint 0508). Relative paths stay jailed to `workspace_root` via
+/// [`resolve_jailed_path`]; absolute paths are accepted only when they resolve
+/// under a picker-granted root with canonicalize + symlink-escape discipline.
+pub(crate) fn resolve_app_fs_path(
+    workspace_root: &Path,
+    granted_roots: &[PathBuf],
+    raw: &str,
+    for_write: bool,
+) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        if path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        {
+            return Err(format!("path escapes granted scope: {raw}"));
+        }
+        let resolved = canonicalize_scope(path.to_path_buf(), !for_write)?;
+        if granted_roots.iter().any(|root| resolved.starts_with(root)) {
+            return Ok(resolved);
+        }
+        return Err(format!(
+            "absolute path is outside every picker-granted scope: {raw}"
+        ));
+    }
+    resolve_jailed_path(workspace_root, raw, for_write)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1637,18 +1712,11 @@ impl WasmPane {
         }
         let net = Arc::clone(&self.net);
         let tx = self.http_tx.clone();
-        std::thread::spawn(move || {
-            let headers: HashMap<String, String> = req.headers.into_iter().collect();
-            let body = req
-                .body
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-            let response = net.http(
-                &req.method,
-                &req.url,
-                &headers,
-                body.as_deref(),
-                crate::host::services::DEFAULT_MAX_HTTP_BODY_BYTES,
-            );
+        let headers: HashMap<String, String> = req.headers.into_iter().collect();
+        let body = req
+            .body
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        spawn_http_fetch_worker(net, req.method, req.url, headers, body, move |response| {
             let _ = tx.send(InputEvent::HttpResponse(host_http_to_wit(response)));
         });
     }
@@ -1661,6 +1729,27 @@ impl WasmPane {
                 body: message.into_bytes(),
             }));
     }
+}
+
+/// Shared background HTTP worker dispatcher for WASM and Python guest runtimes.
+pub(crate) fn spawn_http_fetch_worker(
+    net: Arc<dyn NetService>,
+    method: String,
+    url: String,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+    on_done: impl FnOnce(HostHttpResponse) + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        let response = net.http(
+            &method,
+            &url,
+            &headers,
+            body.as_deref(),
+            crate::host::services::DEFAULT_MAX_HTTP_BODY_BYTES,
+        );
+        on_done(response);
+    });
 }
 
 fn host_http_to_wit(response: HostHttpResponse) -> WitHttpResponse {

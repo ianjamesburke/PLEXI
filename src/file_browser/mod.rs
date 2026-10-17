@@ -344,6 +344,18 @@ pub struct FileBrowserApp {
     /// In tests: records the most recent path string copied via `CopyPath`.
     #[cfg(test)]
     pub(crate) last_copied_path: Option<String>,
+    /// In tests: captures the last rendered status-bar geometry for alignment assertions.
+    #[cfg(test)]
+    pub(crate) last_status_bar_layout: Option<StatusBarLayout>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct StatusBarLayout {
+    pub(crate) row_rect: egui::Rect,
+    pub(crate) item_count_rect: egui::Rect,
+    pub(crate) chip_rects: Vec<egui::Rect>,
+    pub(crate) label_rects: Vec<egui::Rect>,
 }
 
 /// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
@@ -408,6 +420,8 @@ impl FileBrowserApp {
             opened_files: Vec::new(),
             #[cfg(test)]
             last_copied_path: None,
+            #[cfg(test)]
+            last_status_bar_layout: None,
         };
         app.refresh();
         app
@@ -2416,38 +2430,43 @@ impl FileBrowserApp {
         }
     }
 
-    fn draw_status_bar(&self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
+    fn draw_status_bar(&mut self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
         ui.add_space(style::SPACE_XS);
         ui.separator();
-        // Single non-wrapping row. The old `horizontal_wrapped` let the hint
-        // bar wrap to a second line at narrow widths, overflowing the
-        // STATUS_BAR_H reservation and colliding with the list rows above it.
-        ui.horizontal(|ui| {
-            ui.set_min_height(STATUS_BAR_ROW_H);
-            let selected_label = self.selected_count().to_string();
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} items \u{00b7} selected: {}",
-                    self.visible_entry_count(),
-                    selected_label
-                ))
-                .size(style::TEXT_HINT)
-                .color(colors.text_dim),
-            );
-            if show_inspector {
-                ui.label(
-                    egui::RichText::new("\u{00b7} inspector visible")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
+        // Single non-wrapping row. Allocate a fixed STATUS_BAR_ROW_H rect so
+        // both the left item-count label and the right-aligned inline hint bar
+        // share the exact same vertical center and baseline without nested
+        // modal top spacing or horizontal centering.
+        let row_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), STATUS_BAR_ROW_H),
+        );
+        ui.allocate_rect(row_rect, egui::Sense::hover());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(row_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                let selected_label = self.selected_count().to_string();
+                let item_count_resp = ui.label(
+                    egui::RichText::new(format!(
+                        "{} items \u{00b7} selected: {}",
+                        self.visible_entry_count(),
+                        selected_label
+                    ))
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
                 );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if show_inspector {
+                    ui.label(
+                        egui::RichText::new("\u{00b7} inspector visible")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                }
                 // Hints are measured, not breakpointed: drop the least
                 // important groups (front of the list) until the rest fit in
-                // the width left over after the item-count label. Guessed
-                // width tiers kept landing wrong, and a right-to-left layout
-                // that overflows extends past the pane's LEFT edge — egui
-                // then shifts every sibling row off-screen with it.
+                // the width left over after the item-count label.
                 let rem = ui.available_width();
                 let all = [
                     HintGroup::new(&["/"], "search"),
@@ -2467,9 +2486,22 @@ impl FileBrowserApp {
                 while start < all.len() - 1 && !fits(&all[start..]) {
                     start += 1;
                 }
-                HintBar::new(&all[start..]).show(ui, colors);
-            });
-        });
+                let hint_resp = HintBar::new(&all[start..])
+                    .inline_status_bar()
+                    .show_measured(ui, colors);
+                #[cfg(test)]
+                {
+                    self.last_status_bar_layout = Some(StatusBarLayout {
+                        row_rect,
+                        item_count_rect: item_count_resp.rect,
+                        chip_rects: hint_resp.chip_rects,
+                        label_rects: hint_resp.label_rects,
+                    });
+                }
+                #[cfg(not(test))]
+                let _ = (item_count_resp, hint_resp);
+            },
+        );
     }
 
     /// Read `show_hidden` from outside the module (cross-module host tests
@@ -4387,5 +4419,78 @@ mod tests {
         assert!(entered_file);
         assert!(!app.in_search, "activating file/content result must exit search mode");
         assert_eq!(app.opened_files.last(), Some(&content_file));
+    }
+
+    #[test]
+    fn status_bar_hints_align_on_item_count_baseline_at_wide_and_narrow_widths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("alpha.rs"), b"fn main() {}\n").expect("write alpha.rs");
+        std::fs::write(dir.path().join("beta.toml"), b"[package]\n").expect("write beta.toml");
+
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+
+        for (w, h) in [(1100.0_f32, 720.0_f32), (640.0_f32, 520.0_f32)] {
+            let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h))),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    let render_ctx = AppRenderContext {
+                        colors: &colors,
+                        pane_id: 1,
+                    };
+                    app.ui(ui, &render_ctx, None);
+                });
+            });
+
+            let layout = app
+                .last_status_bar_layout
+                .as_ref()
+                .expect("status bar layout recorded");
+            assert!(
+                !layout.chip_rects.is_empty() && !layout.label_rects.is_empty(),
+                "status bar must render key chips and labels at {w}x{h}"
+            );
+            for label_rect in &layout.label_rects {
+                assert!(
+                    (label_rect.center().y - layout.item_count_rect.center().y).abs() <= 0.5,
+                    "hint label center y ({}) must align with item count center y ({}) at {w}x{h}",
+                    label_rect.center().y,
+                    layout.item_count_rect.center().y,
+                );
+                assert!(
+                    (label_rect.max.y - layout.item_count_rect.max.y).abs() <= 0.5,
+                    "hint label baseline ({}) must align with item count baseline ({}) at {w}x{h}",
+                    label_rect.max.y,
+                    layout.item_count_rect.max.y,
+                );
+            }
+            for chip_rect in &layout.chip_rects {
+                assert!(
+                    (chip_rect.center().y - layout.item_count_rect.center().y).abs() <= 0.5,
+                    "key chip center y ({}) must align with item count center y ({}) at {w}x{h}",
+                    chip_rect.center().y,
+                    layout.item_count_rect.center().y,
+                );
+            }
+            let first_chip = layout.chip_rects.first().unwrap();
+            let last_label = layout.label_rects.last().unwrap();
+            assert!(
+                first_chip.min.x >= layout.item_count_rect.max.x + style::SPACE_MD,
+                "first hint chip ({}) must not collide with item count label ({}) at {w}x{h}",
+                first_chip.min.x,
+                layout.item_count_rect.max.x,
+            );
+            assert!(
+                (layout.row_rect.max.x - last_label.max.x).abs() <= 2.0,
+                "rightmost hint label ({}) must sit flush with status bar right edge ({}) at {w}x{h}",
+                last_label.max.x,
+                layout.row_rect.max.x,
+            );
+        }
     }
 }

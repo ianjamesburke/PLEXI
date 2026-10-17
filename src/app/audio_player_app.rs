@@ -3,6 +3,11 @@ use std::time::Duration;
 
 use crate::app::app_trait::{App, AppRenderContext};
 use crate::media::audio::{PlaybackRequest, PlaybackSession};
+use crate::ui::{
+    app_chrome::AppChrome,
+    button::{self, ButtonKind},
+    style,
+};
 
 pub struct AudioPlayerApp {
     path: PathBuf,
@@ -112,35 +117,51 @@ impl App for AudioPlayerApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        _ctx: &AppRenderContext<'_>,
+        ctx: &AppRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.sync_position();
         if self.playing {
             ui.ctx().request_repaint();
         }
-        ui.heading(self.filename());
+        let colors = ctx.colors;
+        AppChrome::new(colors).paint_app_bar(ui, &self.filename(), "Audio Player");
+
+        ui.add_space(style::SPACE_MD);
         ui.horizontal(|ui| {
+            ui.add_space(style::SPACE_MD);
             let label = if self.playing { "Pause" } else { "Play" };
-            if ui.button(label).clicked() {
+            if button::chrome_button(ui, label, ButtonKind::Accent, colors, 64.0).clicked() {
                 self.set_playing(!self.playing);
             }
+            ui.add_space(style::SPACE_SM);
             let duration = self.duration_ms.unwrap_or(0).max(self.position_ms);
             let mut pos = self.position_ms.min(duration);
             let response = ui.add(egui::Slider::new(&mut pos, 0..=duration).show_value(false));
             if response.changed() {
                 self.seek(pos);
             }
-            ui.label(format!(
-                "{} / {}",
-                format_time(self.position_ms),
-                self.duration_ms
-                    .map(format_time)
-                    .unwrap_or_else(|| "--:--".to_string())
-            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} / {}",
+                    format_time(self.position_ms),
+                    self.duration_ms
+                        .map(format_time)
+                        .unwrap_or_else(|| "--:--".to_string())
+                ))
+                .size(style::TEXT_CAPTION)
+                .color(colors.text_dim)
+                .monospace(),
+            );
         });
+        ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
-            ui.label("Volume");
+            ui.add_space(style::SPACE_MD);
+            ui.label(
+                egui::RichText::new("Volume")
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+            );
             if ui
                 .add(egui::Slider::new(&mut self.volume, 0.0..=2.0))
                 .changed()
@@ -151,7 +172,15 @@ impl App for AudioPlayerApp {
             }
         });
         if let Some(error) = &self.error {
-            ui.label(error);
+            ui.add_space(style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_MD);
+                ui.label(
+                    egui::RichText::new(error)
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.danger),
+                );
+            });
         }
     }
 

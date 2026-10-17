@@ -1,6 +1,7 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::ui::button::{self, ButtonKind};
 use crate::ui::hints::{HintBar, HintGroup};
-use crate::ui::{labels, row, shortcuts, style};
+use crate::ui::{labels, row, style};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -463,7 +464,7 @@ impl App for SecretsApp {
         // ── Header ──────────────────────────────────────────────────────────
         let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER_H));
         ui.painter()
-            .rect_filled(header_rect, 0.0, colors.bg_sidebar);
+            .rect_filled(header_rect, 0.0, colors.bg_toolbar);
         ui.painter().line_segment(
             [
                 egui::pos2(header_rect.left(), header_rect.bottom()),
@@ -472,28 +473,32 @@ impl App for SecretsApp {
             egui::Stroke::new(1.0_f32, colors.border),
         );
 
-        let mut header_ui = ui.new_child(
-            egui::UiBuilder::new().max_rect(header_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0))),
-        );
-        header_ui.horizontal_centered(|ui| {
-            ui.label(
-                egui::RichText::new("Secrets")
-                    .color(colors.accent)
-                    .size(style::TEXT_BODY)
-                    .strong(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.mode == Mode::Adding {
-                    shortcuts::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
+        let header_inner = header_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(header_inner)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.label(
+                    egui::RichText::new("Secrets")
+                        .color(colors.text_primary)
+                        .font(crate::ui::theme::font_medium(style::TEXT_TITLE)),
+                );
+                let header_hints: &[HintGroup<'_>] = if self.mode == Mode::Adding {
+                    &[HintGroup::new(&["Esc"], "cancel")]
                 } else {
-                    // RTL: emit rightmost first → visual L→R: [n] new [d] del [c] copy [r] refresh
-                    shortcuts::key_combo_list(ui, &[&["r"]], Some("refresh"), colors);
-                    shortcuts::key_combo_list(ui, &[&["c"]], Some("copy"), colors);
-                    shortcuts::key_combo_list(ui, &[&["d"]], Some("del"), colors);
-                    shortcuts::key_combo_list(ui, &[&["n"]], Some("new"), colors);
-                }
-            });
-        });
+                    &[
+                        HintGroup::new(&["n"], "new"),
+                        HintGroup::new(&["d"], "del"),
+                        HintGroup::new(&["c"], "copy"),
+                        HintGroup::new(&["r"], "refresh"),
+                    ]
+                };
+                HintBar::new(header_hints)
+                    .inline_status_bar()
+                    .show(ui, colors);
+            },
+        );
 
         // ── Status message ───────────────────────────────────────────────────
         let status_h = if let Some(msg) = &self.status_msg {
@@ -639,23 +644,12 @@ impl App for SecretsApp {
                 ui.add_space(style::SPACE_SM);
 
                 ui.horizontal(|ui| {
-                    if ui
-                        .button(
-                            egui::RichText::new("Save")
-                                .color(colors.accent)
-                                .size(style::TEXT_CAPTION),
-                        )
-                        .clicked()
+                    if button::chrome_button(ui, "Save", ButtonKind::Accent, colors, 64.0).clicked()
                     {
                         self.commit_add();
                     }
                     ui.add_space(style::SPACE_SM);
-                    if ui
-                        .button(
-                            egui::RichText::new("Cancel")
-                                .color(colors.text_dim)
-                                .size(style::TEXT_CAPTION),
-                        )
+                    if button::chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 64.0)
                         .clicked()
                     {
                         self.cancel_add();
@@ -751,17 +745,20 @@ impl SecretsApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         let label = if env_enabled { "env on" } else { "env off" };
-                                        if ui
-                                            .button(
-                                                egui::RichText::new(label)
-                                                    .color(if env_enabled {
-                                                        colors.accent
-                                                    } else {
-                                                        colors.text_dim
-                                                    })
-                                                    .size(style::TEXT_CAPTION),
-                                            )
-                                            .clicked()
+                                        let kind = if env_enabled {
+                                            ButtonKind::Accent
+                                        } else {
+                                            ButtonKind::Secondary
+                                        };
+                                        if button::chrome_button_sized(
+                                            ui,
+                                            label,
+                                            kind,
+                                            colors,
+                                            56.0,
+                                            24.0,
+                                        )
+                                        .clicked()
                                         {
                                             toggle_terminal_env = Some(entry.name.clone());
                                         }

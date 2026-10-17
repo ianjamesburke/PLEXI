@@ -8,7 +8,9 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, ROOT_COMMAND_NAME};
 use crate::ui::{
+    app_chrome::AppChrome,
     button::{self, ButtonKind},
+    hints::{HintBar, HintGroup},
     style,
 };
 use egui::{self, RichText};
@@ -92,6 +94,10 @@ pub struct CliRendererApp {
     /// Set when a leaf form opens so the first text field grabs keyboard
     /// focus on the next frame; cleared once focus is requested.
     pending_focus: bool,
+    #[cfg(test)]
+    pub(crate) last_header_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub(crate) last_footer_chip_rects: Vec<egui::Rect>,
 }
 
 impl CliRendererApp {
@@ -143,6 +149,10 @@ impl CliRendererApp {
             binary_name,
             focused_field: None,
             pending_focus: false,
+            #[cfg(test)]
+            last_header_rect: None,
+            #[cfg(test)]
+            last_footer_chip_rects: Vec::new(),
         }
     }
 
@@ -407,36 +417,18 @@ impl CliRendererApp {
         };
         let has_path = !self.cmd_path.is_empty();
 
-        // Title bar
-        ui.add_space(style::SPACE_SM);
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            ui.label(
-                RichText::new(&title)
-                    .size(style::TEXT_BODY)
-                    .color(colors.text_primary)
-                    .strong(),
-            );
-        });
-
-        if let Some(desc) = &top_desc {
-            if !desc.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.add_space(style::SPACE_MD);
-                    ui.label(
-                        RichText::new(desc)
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim),
-                    );
-                });
-            }
+        // Shared AppBar header
+        let header_rect = AppChrome::new(colors).paint_app_bar(
+            ui,
+            &title,
+            top_desc.as_deref().unwrap_or(""),
+        );
+        #[cfg(test)]
+        {
+            self.last_header_rect = Some(header_rect);
         }
-
-        ui.add_space(style::SPACE_SM);
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            ui.separator();
-        });
+        #[cfg(not(test))]
+        let _ = header_rect;
 
         // Back button if navigated deep
         if has_path && Self::back_row(ui, colors) {
@@ -444,31 +436,50 @@ impl CliRendererApp {
             return;
         }
 
+        let hint_groups: &[HintGroup<'_>] = if has_path {
+            &[
+                HintGroup::new(&["↑", "↓"], "navigate"),
+                HintGroup::new(&["⏎"], "open"),
+                HintGroup::new(&["Esc"], "back"),
+            ]
+        } else {
+            &[
+                HintGroup::new(&["↑", "↓"], "navigate"),
+                HintGroup::new(&["⏎"], "open"),
+            ]
+        };
+        let footer_h = HintBar::new(hint_groups).band_height(ui, true);
+        let list_max_h = (ui.available_height() - footer_h).max(0.0);
+
         // Command list — rendered with the shared host ListRow so it matches
         // the command palette, sidebar, and PGAP list views exactly.
         let mut clicked_idx: Option<usize> = None;
         let selection_changed = self.selected != self.last_selected;
-        egui::ScrollArea::vertical().animated(false).show(ui, |ui| {
-            for (i, row) in rows.iter().enumerate() {
-                let is_selected = i == self.selected;
-                // A trailing "›" marks command groups (rows that drill into
-                // a sub-list rather than open a form).
-                let mut list_row = crate::ui::list::ListRow::new(&row.name).selected(is_selected);
-                if let Some(desc) = &row.description {
-                    list_row = list_row.secondary(desc);
+        egui::ScrollArea::vertical()
+            .animated(false)
+            .max_height(list_max_h)
+            .show(ui, |ui| {
+                for (i, row) in rows.iter().enumerate() {
+                    let is_selected = i == self.selected;
+                    // A trailing "›" marks command groups (rows that drill into
+                    // a sub-list rather than open a form).
+                    let mut list_row =
+                        crate::ui::list::ListRow::new(&row.name).selected(is_selected);
+                    if let Some(desc) = &row.description {
+                        list_row = list_row.secondary(desc);
+                    }
+                    if row.has_children {
+                        list_row = list_row.chip("›");
+                    }
+                    let resp = list_row.show(ui, colors);
+                    if is_selected {
+                        resp.scroll_into_view(ui, selection_changed);
+                    }
+                    if resp.row_clicked() {
+                        clicked_idx = Some(i);
+                    }
                 }
-                if row.has_children {
-                    list_row = list_row.chip("›");
-                }
-                let resp = list_row.show(ui, colors);
-                if is_selected {
-                    resp.scroll_into_view(ui, selection_changed);
-                }
-                if resp.row_clicked() {
-                    clicked_idx = Some(i);
-                }
-            }
-        });
+            });
         self.last_selected = self.selected;
 
         if let Some(i) = clicked_idx {
@@ -477,23 +488,20 @@ impl CliRendererApp {
             return;
         }
 
-        // Footer hints
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.add_space(style::SPACE_SM);
-            ui.horizontal(|ui| {
-                ui.add_space(style::SPACE_MD);
-                let hints = if has_path {
-                    "↑↓ navigate  ⏎ open  esc back"
-                } else {
-                    "↑↓ navigate  ⏎ open"
-                };
-                ui.label(
-                    RichText::new(hints)
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-            });
-        });
+        // Footer hints band
+        let remaining = (ui.available_height() - footer_h).max(0.0);
+        if remaining > 0.0 {
+            ui.add_space(remaining);
+        }
+        let hint_resp = HintBar::new(hint_groups)
+            .pane_footer_band(true)
+            .show_measured(ui, colors);
+        #[cfg(test)]
+        {
+            self.last_footer_chip_rects = hint_resp.chip_rects;
+        }
+        #[cfg(not(test))]
+        let _ = hint_resp;
     }
 
     fn render_form(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors, pane_key: u64) {
@@ -517,38 +525,24 @@ impl CliRendererApp {
             d.name.clone()
         } else {
             format!("{} {path}", d.name)
-        };
+        } ;
         let cmd_desc = cmd.description.clone();
         let args: Vec<ArgSpec> = cmd.args.clone();
         let flags: Vec<ArgSpec> = cmd.flags.clone();
         let has_fields = !args.is_empty() || !flags.is_empty();
 
-        // Title
-        ui.add_space(style::SPACE_SM);
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            ui.label(
-                RichText::new(&title)
-                    .size(style::TEXT_BODY)
-                    .color(colors.text_primary)
-                    .strong(),
-            );
-        });
-
-        if let Some(desc) = &cmd_desc {
-            if !desc.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.add_space(style::SPACE_MD);
-                    ui.label(
-                        RichText::new(desc)
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim),
-                    );
-                });
-            }
+        // Shared AppBar header
+        let header_rect = AppChrome::new(colors).paint_app_bar(
+            ui,
+            &title,
+            cmd_desc.as_deref().unwrap_or(""),
+        );
+        #[cfg(test)]
+        {
+            self.last_header_rect = Some(header_rect);
         }
-
-        ui.add_space(style::SPACE_SM);
+        #[cfg(not(test))]
+        let _ = header_rect;
 
         // Back button (same ListRow affordance as the list view)
         if Self::back_row(ui, colors) {
@@ -563,93 +557,108 @@ impl CliRendererApp {
         });
         ui.add_space(style::SPACE_SM);
 
-        // Arg fields. On a freshly opened form, the first text field grabs
-        // keyboard focus so the user can type immediately.
-        if has_fields {
-            let mut want_focus = self.pending_focus;
-            egui::ScrollArea::vertical()
-                .max_height(ui.available_height() - 80.0)
-                .show(ui, |ui| {
+        let form_hints = [
+            HintGroup::new(&["⏎"], "run"),
+            HintGroup::new(&["Esc"], "back"),
+        ];
+        let footer_h = HintBar::new(&form_hints).band_height(ui, true);
+
+        let mut should_execute = false;
+        let mut want_focus = self.pending_focus;
+        egui::ScrollArea::vertical()
+            .max_height((ui.available_height() - footer_h).max(40.0))
+            .show(ui, |ui| {
+                // Arg fields. On a freshly opened form, the first text field grabs
+                // keyboard focus so the user can type immediately.
+                if has_fields {
                     for arg in args.iter().chain(flags.iter()) {
                         if self.render_field(ui, colors, arg, want_focus, pane_key) {
                             want_focus = false;
                         }
                     }
+                    ui.add_space(style::SPACE_SM);
+                }
+
+                // Command preview
+                let cmd_str = self.build_command_string();
+                ui.horizontal(|ui| {
+                    ui.add_space(style::SPACE_MD);
+                    ui.label(
+                        RichText::new(format!("$ {cmd_str}"))
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim)
+                            .monospace(),
+                    );
                 });
-            self.pending_focus = false;
 
-            ui.add_space(style::SPACE_SM);
+                ui.add_space(style::SPACE_SM);
+
+                // Run button
+                ui.horizontal(|ui| {
+                    ui.add_space(style::SPACE_MD);
+                    let run_text = if self.terminal_link_failed {
+                        "▶  Run  (terminal unavailable)"
+                    } else if self.terminal_pane_id == 0 {
+                        "▶  Run  (connecting terminal…)"
+                    } else {
+                        "▶  Run"
+                    };
+                    if button::chrome_button(ui, run_text, ButtonKind::Accent, colors, 120.0)
+                        .clicked()
+                    {
+                        should_execute = true;
+                    }
+                });
+
+                // Surface a visible error when the terminal link hard-failed, so the Run
+                // affordance is not silently inert (#2246).
+                if self.terminal_link_failed {
+                    ui.add_space(style::SPACE_SM);
+                    ui.horizontal(|ui| {
+                        ui.add_space(style::SPACE_MD);
+                        ui.label(
+                            RichText::new(
+                                "Could not open a linked terminal — reopen this tool to retry.",
+                            )
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.danger),
+                        );
+                    });
+                }
+
+                // Last run hint
+                if !self.last_run.is_empty() {
+                    ui.add_space(style::SPACE_SM);
+                    ui.horizontal(|ui| {
+                        ui.add_space(style::SPACE_MD);
+                        ui.label(
+                            RichText::new(format!("last: $ {}", self.last_run))
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim)
+                                .monospace(),
+                        );
+                    });
+                }
+            });
+        self.pending_focus = false;
+        if should_execute {
+            self.execute();
         }
 
-        // Command preview
-        let cmd_str = self.build_command_string();
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            ui.label(
-                RichText::new(format!("$ {cmd_str}"))
-                    .size(style::TEXT_HINT)
-                    .color(colors.text_dim)
-                    .monospace(),
-            );
-        });
-
-        ui.add_space(style::SPACE_SM);
-
-        // Run button
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            let run_text = if self.terminal_link_failed {
-                "▶  Run  (terminal unavailable)"
-            } else if self.terminal_pane_id == 0 {
-                "▶  Run  (connecting terminal…)"
-            } else {
-                "▶  Run"
-            };
-            if button::chrome_button(ui, run_text, ButtonKind::Accent, colors, 120.0).clicked() {
-                self.execute();
-            }
-        });
-
-        // Surface a visible error when the terminal link hard-failed, so the Run
-        // affordance is not silently inert (#2246).
-        if self.terminal_link_failed {
-            ui.add_space(style::SPACE_SM);
-            ui.horizontal(|ui| {
-                ui.add_space(style::SPACE_MD);
-                ui.label(
-                    RichText::new("Could not open a linked terminal — reopen this tool to retry.")
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.danger),
-                );
-            });
+        // Shared footer hints band
+        let remaining = (ui.available_height() - footer_h).max(0.0);
+        if remaining > 0.0 {
+            ui.add_space(remaining);
         }
-
-        // Last run hint
-        if !self.last_run.is_empty() {
-            ui.add_space(style::SPACE_SM);
-            ui.horizontal(|ui| {
-                ui.add_space(style::SPACE_MD);
-                ui.label(
-                    RichText::new(format!("last: $ {}", self.last_run))
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim)
-                        .monospace(),
-                );
-            });
+        let hint_resp = HintBar::new(&form_hints)
+            .pane_footer_band(true)
+            .show_measured(ui, colors);
+        #[cfg(test)]
+        {
+            self.last_footer_chip_rects = hint_resp.chip_rects;
         }
-
-        // Footer
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.add_space(style::SPACE_SM);
-            ui.horizontal(|ui| {
-                ui.add_space(style::SPACE_MD);
-                ui.label(
-                    RichText::new("⏎ run  esc back")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-            });
-        });
+        #[cfg(not(test))]
+        let _ = hint_resp;
     }
 
     /// Renders one arg/flag field. When `want_focus` is true and this field is
@@ -1188,10 +1197,27 @@ mod tests {
         // First frame transitions Loading → List and requests a terminal.
         render_once(&mut app);
         assert_eq!(app.view, View::List);
+        assert!(
+            app.last_header_rect.is_some(),
+            "list view must render shared AppChrome header"
+        );
+        assert!(
+            app.last_footer_chip_rects.len() >= 3,
+            "list view must render key chips (↑, ↓, ⏎) via HintBar"
+        );
         // Drill into the form view and render again.
         app.navigate_into(0);
         render_once(&mut app);
         assert_eq!(app.view, View::Form);
+        assert!(
+            app.last_header_rect.is_some(),
+            "form view must render shared AppChrome header"
+        );
+        assert_eq!(
+            app.last_footer_chip_rects.len(),
+            2,
+            "form view must render ⏎ and Esc key chips via HintBar"
+        );
     }
 
     /// Drive `handle_key` with a single key event through a real egui frame.
