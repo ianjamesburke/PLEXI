@@ -1228,12 +1228,6 @@ const MAX_LINE_CHARS: usize = 2000;
 /// Hard cap on grep matches per call; the default is lower.
 const MAX_GREP_MATCHES: usize = 200;
 const DEFAULT_GREP_MATCHES: usize = 50;
-/// Directory names never descended into by grep/list walks: the shared
-/// scaffold/check artifact list (`package::is_generated_dev_dir_name`) plus
-/// VCS and JS dependency trees that packaging never encounters.
-fn is_skipped_walk_dir(name: &str) -> bool {
-    crate::app::package::is_generated_dev_dir_name(name) || matches!(name, ".git" | "node_modules")
-}
 /// Caps on the grep/list directory walk so a runaway tree fails visibly
 /// instead of hanging the tool call.
 const MAX_WALK_DEPTH: usize = 8;
@@ -1473,58 +1467,26 @@ fn truncate_line(line: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(text::head_tail(line, MAX_LINE_CHARS, text::Style::Head))
 }
 
-/// Walk `start` depth-first in sorted order, yielding files. Skips the
-/// well-known junk directories, and stops at the walk caps. Symlinks are
-/// never followed (same rule as packaging): grep/list are read-only
+/// Walk `start` in sorted order via [`crate::search::ScopedWalker`], yielding
+/// files. Skips [`crate::search::DEFAULT_PRUNE_DIRS`], stops at the walk caps,
+/// and never follows symlinks (same rule as packaging): grep/list are read-only
 /// auto-allowed tools, so a symlink inside an apps directory must not widen
 /// their reach beyond the scoped roots. Returns `(files, hit_file_cap)`.
 fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool) {
-    let mut files = Vec::new();
     if start.is_file() {
-        files.push(start.to_path_buf());
-        return (files, false);
+        return (vec![start.to_path_buf()], false);
     }
-    let mut stack = vec![(start.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
-        if depth > MAX_WALK_DEPTH {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut children: Vec<(std::path::PathBuf, std::fs::FileType)> = entries
-            .flatten()
-            .filter_map(|entry| entry.file_type().ok().map(|kind| (entry.path(), kind)))
-            .collect();
-        children.sort_by(|(a, _), (b, _)| a.cmp(b));
-        let mut subdirs = Vec::new();
-        for (child, kind) in children {
-            // DirEntry::file_type does not follow symlinks — a link to a
-            // directory or file outside the roots is skipped entirely.
-            if kind.is_symlink() {
-                continue;
-            }
-            let name = child
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if kind.is_dir() {
-                if !is_skipped_walk_dir(&name) {
-                    subdirs.push(child);
-                }
-            } else if kind.is_file() {
-                if files.len() >= MAX_WALK_FILES {
-                    return (files, true);
-                }
-                files.push(child);
-            }
-        }
-        // Reverse so the stack pops subdirectories in sorted order.
-        for subdir in subdirs.into_iter().rev() {
-            stack.push((subdir, depth + 1));
-        }
-    }
-    (files, false)
+    let cfg = crate::search::WalkConfig::new(start)
+        .with_hidden(crate::search::HiddenPolicy::IncludeHidden)
+        .with_include_dirs(false)
+        .with_include_files(true)
+        .with_max_depth(MAX_WALK_DEPTH + 1)
+        .with_max_files(MAX_WALK_FILES)
+        .with_max_dirs(usize::MAX);
+    let outcome = crate::search::ScopedWalker::walk(&cfg);
+    let mut files: Vec<std::path::PathBuf> = outcome.entries.into_iter().map(|e| e.path).collect();
+    files.sort();
+    (files, outcome.budget_hit)
 }
 
 /// Resolve the search start points for grep/list: an explicit scoped path, or

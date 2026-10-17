@@ -67,32 +67,39 @@ impl PlexiApp {
     }
 
     /// Indices into `notes_picker_entries` matching the current query, ranked:
-    /// title substring, then title fuzzy, then full-text fuzzy. Empty query
-    /// returns every entry in stored order (by tier, then by mtime).
+    /// title substring, then title fuzzy, then full-text fuzzy, with
+    /// [`crate::search::score_candidate`] breaking ties within each tier.
+    /// Empty query returns every entry in stored order (by tier, then by mtime).
     pub(crate) fn notes_picker_filtered(&self) -> Vec<usize> {
         let query = self.notes_picker_query.trim().to_lowercase();
         if query.is_empty() {
             return (0..self.notes_picker_entries.len()).collect();
         }
-        let mut ranked: Vec<(u8, usize)> = self
+        let now = std::time::SystemTime::now();
+        let mut ranked: Vec<(u8, i64, usize)> = self
             .notes_picker_entries
             .iter()
             .enumerate()
             .filter_map(|(i, e)| {
                 let title = e.title.to_lowercase();
+                let candidate = crate::search::CandidateInput::new(&e.title)
+                    .with_secondary(&e.search_text);
+                let score = crate::search::score_candidate(&query, &candidate, now)
+                    .map(|m| m.total)
+                    .unwrap_or(0);
                 if title.contains(&query) {
-                    Some((0u8, i))
+                    Some((0u8, -score, i))
                 } else if crate::notes::fuzzy_match(&query, &title) {
-                    Some((1, i))
+                    Some((1, -score, i))
                 } else if crate::notes::fuzzy_match(&query, &e.search_text) {
-                    Some((2, i))
+                    Some((2, -score, i))
                 } else {
                     None
                 }
             })
             .collect();
-        ranked.sort_by_key(|(rank, i)| (*rank, *i));
-        ranked.into_iter().map(|(_, i)| i).collect()
+        ranked.sort_by_key(|(rank, neg_score, i)| (*rank, *neg_score, *i));
+        ranked.into_iter().map(|(_, _, i)| i).collect()
     }
 
     /// Resolve the selected row in the filtered view to an entry index.

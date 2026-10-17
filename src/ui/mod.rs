@@ -11,6 +11,7 @@ pub mod list;
 pub mod markdown;
 pub mod overlay;
 pub mod row;
+pub mod search_bar;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod sidebar_row;

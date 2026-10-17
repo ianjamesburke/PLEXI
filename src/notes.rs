@@ -145,16 +145,18 @@ impl NotePickerEntry {
     }
 }
 
-/// Case-insensitive fuzzy subsequence match: every character of `query`
-/// (whitespace ignored) must appear in `haystack` in order. `haystack` must
-/// already be lowercased.
+/// Case-insensitive fuzzy subsequence match delegated to [`crate::search::score_candidate`].
 pub(crate) fn fuzzy_match(query: &str, haystack: &str) -> bool {
-    let mut chars = haystack.chars();
-    query
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(|c| c.to_lowercase())
-        .all(|q| chars.any(|h| h == q))
+    let compact_query: String = query.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact_query.is_empty() {
+        return true;
+    }
+    crate::search::score_candidate(
+        &compact_query,
+        &crate::search::CandidateInput::new(haystack),
+        std::time::SystemTime::UNIX_EPOCH,
+    )
+    .is_some()
 }
 
 // ─── Notes tiers ─────────────────────────────────────────────────────────────
@@ -192,31 +194,8 @@ const PLEXI_DIR: &str = ".plexi";
 /// descended into when scanning.
 const ASSETS_DIR: &str = "assets";
 
-/// Directory names the rollup walk never enters. Large, machine-generated, or
-/// (on macOS) the per-user `Library` tree — never a place a user keeps notes.
-/// Hidden directories are also skipped, except `.plexi` itself, which is an
-/// anchor. `.git` is both hidden and listed here so the prune set is explicit.
-pub(crate) const NOTES_WALK_PRUNE: &[&str] = &[
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "vendor",
-    ".venv",
-    "venv",
-    ".git",
-    "Library",
-    "Applications",
-    "Containers",
-    "Caches",
-    "Pods",
-    "DerivedData",
-    "Carthage",
-    "__pycache__",
-    "bower_components",
-    "coverage",
-    "site-packages",
-];
+/// Canonical prune list re-exported from [`crate::search::DEFAULT_PRUNE_DIRS`].
+pub(crate) const NOTES_WALK_PRUNE: &[&str] = crate::search::DEFAULT_PRUNE_DIRS;
 
 /// How far below a tier root the rollup walk looks for nested tiers.
 const WALK_MAX_DEPTH: usize = 8;
@@ -393,53 +372,35 @@ fn nested_tiers_below(root: &Path) -> Vec<PathBuf> {
         return Vec::new();
     }
     let mut found = Vec::new();
-    let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
-    let mut visited = 0usize;
+    let root_notes_cmp = comparable_scope_path(&context_notes_dir(root));
+    let walk_cfg = crate::search::WalkConfig::new(root)
+        .with_hidden(crate::search::HiddenPolicy::AllowAnchors(&[PLEXI_DIR]))
+        .with_max_depth(WALK_MAX_DEPTH)
+        .with_max_dirs(WALK_DIR_BUDGET);
 
-    while let Some((dir, depth)) = queue.pop_front() {
-        if depth >= WALK_MAX_DEPTH {
-            continue;
-        }
-        visited += 1;
-        record_dir_visit();
-        if visited > WALK_DIR_BUDGET {
-            record_budget_hit();
-            log::warn!(
-                "notes: rollup walk hit its {WALK_DIR_BUDGET}-directory budget under {root:?} — \
-                 nested tiers below {dir:?} were not scanned"
-            );
-            break;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.filter_map(Result::ok) {
-            // `file_type` does not follow symlinks, which is what we want: a
-            // symlinked directory is skipped rather than walked.
-            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-                continue;
-            }
-            let name = entry.file_name();
-            let path = entry.path();
+    let outcome =
+        crate::search::ScopedWalker::walk_dirs_filtered(&walk_cfg, |path, name, _depth| {
             if name == PLEXI_DIR {
-                // Found an anchor. Take its tier if present; never walk deeper
-                // into a `.plexi` directory.
                 let tier = path.join(TIER_DIR);
-                if tier.is_dir()
-                    && comparable_scope_path(&tier)
-                        != comparable_scope_path(&context_notes_dir(root))
-                {
+                if tier.is_dir() && comparable_scope_path(&tier) != root_notes_cmp {
                     found.push(tier);
                 }
-                continue;
+                crate::search::DirVisit::SkipChildren
+            } else {
+                crate::search::DirVisit::Descend
             }
-            let name = name.to_string_lossy();
-            // Hidden dirs (except `.plexi`, handled above) and heavy trees.
-            if name.starts_with('.') || name_is_pruned(&name) {
-                continue;
-            }
-            queue.push_back((path, depth + 1));
-        }
+        });
+
+    for _ in 0..outcome.dirs_visited {
+        record_dir_visit();
+    }
+    if outcome.budget_hit {
+        record_dir_visit();
+        record_budget_hit();
+        log::warn!(
+            "notes: rollup walk hit its {WALK_DIR_BUDGET}-directory budget under {root:?} — \
+             some nested tiers were not scanned"
+        );
     }
     found.sort();
     found

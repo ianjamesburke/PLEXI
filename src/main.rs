@@ -43,6 +43,7 @@ mod scenes;
 // macOS-only — no other platform ever wrote a pre-#322 Keychain record.
 #[cfg(all(target_os = "macos", not(test)))]
 mod secrets;
+mod search;
 mod spatial;
 #[cfg(test)]
 mod testing;
