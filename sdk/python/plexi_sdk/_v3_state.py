@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-from .effects import SetState
+from .effects import PersistState, SetState
 
 
 @dataclass(frozen=True)
@@ -32,12 +32,44 @@ class StateProxy:
     def all(self, scope: Optional[str] = None) -> dict[str, Any]:
         return dict(_scope_values(scope))
 
+    def load(
+        self,
+        defaults: Mapping[str, Any],
+        *,
+        scope: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Return a fresh dict merging ``defaults`` with stored state in ``scope``."""
+        stored = _scope_values(scope)
+        return {key: stored.get(key, default) for key, default in defaults.items()}
+
     def set(self, key: str, value: Any, scope: Optional[str] = None) -> SetState:
         if _in_view:
             raise RuntimeError("state.set() called inside view() - return SetState from update() instead")
         if scope is not None:
             _require_declared(scope)
         return SetState({key: value}, scope=scope)
+
+    def patch(
+        self,
+        updates: Optional[Mapping[str, Any]] = None,
+        *,
+        scope: Optional[str] = None,
+        persist: bool = False,
+        **kw: Any,
+    ) -> SetState | PersistState:
+        """Return a ``SetState`` (or ``PersistState`` when ``persist=True``) effect."""
+        if _in_view:
+            raise RuntimeError("state.patch() called inside view() - return SetState from update() instead")
+        if scope is not None:
+            _require_declared(scope)
+        merged: dict[str, Any] = {}
+        if updates is not None:
+            merged.update(updates)
+        if kw:
+            merged.update(kw)
+        if persist:
+            return PersistState(merged, scope=scope)
+        return SetState(merged, scope=scope)
 
     def scopes(self) -> tuple[str, ...]:
         """The scopes this app declared in its manifest, ordered; the first

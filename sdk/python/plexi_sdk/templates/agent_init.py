@@ -4,28 +4,28 @@
 from __future__ import annotations
 
 from plexi_sdk import state
-from plexi_sdk.effects import AiMessage, AiQuery, CloseSelf, SetState, SetStatus, SetTitle
+from plexi_sdk.effects import AiMessage, AiQuery, CloseSelf, SetStatus, SetTitle
 from plexi_sdk.events import AiResponse, KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import AppBar, Card, Column, Component, FooterKeys, Text, TextEdit
 
 
 REQUEST_ID = "agent-query"
+DEFAULTS = {"messages": [], "draft": "", "waiting": False}
 
 
 def init(size, args):
     return [
         SetTitle("__DISPLAY_NAME__"),
-        SetState({"messages": [], "draft": "", "waiting": False}),
+        state.patch(state.load(DEFAULTS)),
         SetStatus("Ready"),
     ]
 
 
 def update(event):
-    data = state.all()
+    data = state.load(DEFAULTS)
 
     if isinstance(event, UiValueChange) and event.handler_id == "agent-input":
-        data["draft"] = event.value
-        return [SetState(data)]
+        return [state.patch(draft=event.value)]
 
     if isinstance(event, UiAction) and event.handler_id == "agent-input":
         text = str(data.get("draft", "")).strip()
@@ -33,9 +33,8 @@ def update(event):
             return []
         messages = list(data.get("messages", []))
         messages.append({"role": "user", "content": text})
-        data.update({"messages": messages, "draft": "", "waiting": True})
         return [
-            SetState(data),
+            state.patch(messages=messages, draft="", waiting=True),
             SetStatus("Asking"),
             AiQuery(
                 request_id=REQUEST_ID,
@@ -49,8 +48,7 @@ def update(event):
         messages = list(data.get("messages", []))
         content = event.content if event.content is not None else f"error: {event.error}"
         messages.append({"role": "agent", "content": content or ""})
-        data.update({"messages": messages, "waiting": False})
-        return [SetState(data), SetStatus("Ready")]
+        return [state.patch(messages=messages, waiting=False), SetStatus("Ready")]
 
     if isinstance(event, KeyEvent) and event.pressed and event.key == "escape":
         return [CloseSelf()]
@@ -59,19 +57,20 @@ def update(event):
 
 
 def view():
-    messages = list(state.get("messages", []))
-    draft = str(state.get("draft", ""))
-    waiting = bool(state.get("waiting", False))
+    data = state.load(DEFAULTS)
+    messages = list(data.get("messages", []))
+    draft = str(data.get("draft", ""))
+    waiting = bool(data.get("waiting", False))
     rows: list[Component] = [
         Text(f"{m.get('role', 'agent')}: {m.get('content', '')}")
         for m in messages[-12:]
         if isinstance(m, dict)
     ]
     if waiting:
-        rows.append(Text("agent: ...", tone="hint"))
+        rows.append(Text("agent: ...", color="muted"))
     return Column([
         AppBar(title="__DISPLAY_NAME__", subtitle="ai.query agent"),
-        Card(rows or [Text("No messages yet.", tone="hint")]),
+        Card(rows or [Text("No messages yet.", color="muted")]),
         TextEdit("agent-input", value=draft, placeholder="Type a message and press Enter"),
         FooterKeys([("enter", "send"), ("esc", "close")]),
     ], grow=True)

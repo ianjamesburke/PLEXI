@@ -4745,8 +4745,15 @@ pub(crate) fn clipboard_chord(
 }
 
 pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
-    let mut parts: Vec<&str> = key.split('+').collect();
-    let key_part = parts.pop().unwrap_or(key);
+    let (parts, key_part): (Vec<&str>, &str) = if key == "+" {
+        (Vec::new(), "+")
+    } else if let Some(prefix) = key.strip_suffix("++") {
+        (prefix.split('+').filter(|s| !s.is_empty()).collect(), "+")
+    } else {
+        let mut parts: Vec<&str> = key.split('+').collect();
+        let key_part = parts.pop().unwrap_or(key);
+        (parts, key_part)
+    };
     let mut modifiers = egui::Modifiers::default();
     for m in &parts {
         match m.to_lowercase().as_str() {
@@ -4766,6 +4773,9 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
         }
     }
     let lower = key_part.to_lowercase();
+    if matches!(lower.as_str(), "*" | "asterisk") {
+        modifiers.shift = true;
+    }
     // Named keys use egui's `Key::from_name` vocabulary; single printable
     // chars ("a", "/", "1") and F-keys ("f5") pass through — `from_name`
     // accepts lowercase letters and punctuation chars directly.
@@ -4776,6 +4786,7 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
         "backspace" => "Backspace".into(),
         "tab" => "Tab".into(),
         "delete" => "Delete".into(),
+        "insert" => "Insert".into(),
         "home" => "Home".into(),
         "end" => "End".into(),
         "pageup" => "PageUp".into(),
@@ -4784,10 +4795,11 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
         "down" | "arrowdown" => "ArrowDown".into(),
         "left" | "arrowleft" => "ArrowLeft".into(),
         "right" | "arrowright" => "ArrowRight".into(),
-        "plus" => "Plus".into(),
-        "minus" => "Minus".into(),
-        "equals" => "Equals".into(),
-        "slash" => "Slash".into(),
+        "+" | "plus" => "Plus".into(),
+        "-" | "minus" => "Minus".into(),
+        "=" | "equals" => "Equals".into(),
+        "/" | "slash" => "Slash".into(),
+        "*" | "asterisk" => "8".into(),
         f if f.starts_with('f') && f.len() > 1 && f[1..].chars().all(|c| c.is_ascii_digit()) => {
             f.to_uppercase()
         }
@@ -4843,17 +4855,23 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
     // (search fields and text inputs read Text, not Key). Mirror that unless
     // a chord modifier is held.
     if !modifiers.ctrl && !modifiers.command && !modifiers.mac_cmd && !modifiers.alt {
-        let text = if lower == "space" {
-            Some(" ".to_string())
-        } else {
-            let mut chars = key_part.chars();
-            match (chars.next(), chars.next()) {
-                (Some(ch), None) if !ch.is_control() => Some(if modifiers.shift {
-                    ch.to_uppercase().to_string()
-                } else {
-                    ch.to_string()
-                }),
-                _ => None,
+        let text = match lower.as_str() {
+            "space" => Some(" ".to_string()),
+            "*" | "asterisk" => Some("*".to_string()),
+            "plus" => Some("+".to_string()),
+            "minus" => Some("-".to_string()),
+            "equals" => Some("=".to_string()),
+            "slash" => Some("/".to_string()),
+            _ => {
+                let mut chars = key_part.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if !ch.is_control() => Some(if modifiers.shift {
+                        ch.to_uppercase().to_string()
+                    } else {
+                        ch.to_string()
+                    }),
+                    _ => None,
+                }
             }
         };
         if let Some(t) = text {

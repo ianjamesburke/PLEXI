@@ -1,1544 +1,584 @@
-"""Declarative UI primitives.
+"""Plexi SDK — Declarative Host-Rendered UI Component Library (`plexi_sdk.ui`).
 
-Apps return a component tree from ``view()``. The host owns layout,
-theme, input, and rendering.
+All components in this module serialize to a declarative ``UiNode`` tree via
+``to_node()`` and are rendered natively by the Plexi host.
+
+Usage::
+
+    from plexi_sdk import theme
+    from plexi_sdk.ui import (
+        AppBar, Badge, Button, Card, Column, DataTable, Divider,
+        FooterKeys, HStack, Heading, Label, Pending, Scrollable,
+        Section, SelectList, Skeleton, Spacer, Text, TextInput,
+        SPACE_SM, SPACE_MD,
+    )
 """
 
+from __future__ import annotations
+
+import math
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Protocol, Sequence, Union, runtime_checkable
+from typing import Any, Literal
+
+from ._keys import normalize_key
+
+# ── Design Tokens ─────────────────────────────────────────────────────────────
+
+SPACE_XS: int = 4
+SPACE_SM: int = 8
+SPACE_MD: int = 12
+SPACE_LG: int = 16
+SPACE_XL: int = 24
+
+TEXT_HINT: int = 10
+TEXT_CAPTION: int = 11
+TEXT_BODY: int = 13
+TEXT_HEADING: int = 15
+TEXT_TITLE: int = 18
+TEXT_TITLE_XL: int = 22
+
+RADIUS_SM: int = 3
+RADIUS_MD: int = 6
+RADIUS_LG: int = 8
+RADIUS_BADGE: int = 10
+
+# Semantic color roles accepted by Badge / Banner (`decode_badge_color` in
+# `src/host/wasm_python.rs`).
+BadgeColor = Literal[
+    "accent", "success", "warning", "danger", "neutral",
+    "red", "green", "yellow",
+]
+BADGE_COLORS: tuple[str, ...] = (
+    "accent", "success", "warning", "danger", "neutral",
+    "red", "green", "yellow",
+)
+
+# Semantic color roles accepted by Text / Label / Heading (Badge roles + "muted"),
+# in addition to `#rrggbb` / `#rrggbbaa` hex strings from `plexi_sdk.theme`.
+TextColor = Literal[
+    "accent", "success", "warning", "danger", "neutral", "muted",
+    "red", "green", "yellow",
+]
+TEXT_COLORS: tuple[str, ...] = BADGE_COLORS + ("muted",)
 
 
-@runtime_checkable
-class HasToNode(Protocol):
-    """Anything that can serialize itself to a UiNode wire dict."""
-
-    def to_node(self) -> dict: ...
-
-# ── Style tokens ──────────────────────────────────────────────────────────
-# Keep these in sync with Rust's src/ui/style.rs. Adding a token here without
-# a matching Rust constant is fine (pure Python), but overlap should match.
-
-# Spacing (pixels). 4-based scale.
-SPACE_XS = 4.0
-SPACE_SM = 8.0
-SPACE_MD = 12.0
-SPACE_LG = 16.0
-SPACE_XL = 24.0
-
-# Typography (pt).
-TEXT_HINT = 11.0
-TEXT_CAPTION = 12.0
-TEXT_BODY = 14.0
-TEXT_HEADING = 16.0
-TEXT_TITLE = 20.0
-TEXT_TITLE_XL = 28.0
-
-# Radii.
-RADIUS_SM = 4.0
-RADIUS_MD = 8.0
-RADIUS_LG = 12.0
-# Badge-specific radius — between tag-chip (4) and full-stadium (8). At
-# TEXT_HINT size the pill height is ~17 px; RADIUS_MD makes it 94% of
-# max-oval (cliché). 6.0 gives visible corners while staying clearly rounded.
-# Keep in sync with src/ui/style.rs RADIUS_BADGE.
-RADIUS_BADGE = 6.0
-
-# Live host theme — populated from the Init payload (light/dark + user overrides).
-# Components read theme.<role> at render time so they track the active theme.
-from ._theme import theme  # noqa: E402
-
-# ── Utilities ──────────────────────────────────────────────────────────────
+def _validate_badge_color(color: str, *, widget: str = "Badge") -> str:
+    if color not in BADGE_COLORS:
+        valid = ", ".join(repr(c) for c in BADGE_COLORS[:5])
+        raise ValueError(
+            f"{widget} color must be one of {valid} "
+            f"(or theme alias 'red'/'green'/'yellow'), got {color!r}. "
+            "Badge colors are semantic theme roles, not literal CSS colors."
+        )
+    return color
 
 
-def _wrap_to_width(text: str, avail_px: float, font_size: float,
-                   mono: bool = False, max_lines: int = 3) -> List[str]:
-    """Word-wrap `text` into up to `max_lines` lines. Final line gets an
-    ellipsis if content was truncated.
+def _validate_text_color(color: str | None, *, widget: str = "Text") -> str:
+    if color is None or color == "":
+        return ""
+    if not isinstance(color, str):
+        raise TypeError(f"{widget} color must be a str or None, got {type(color).__name__}")
+    if color in TEXT_COLORS or color.startswith("#"):
+        return color
+    valid = ", ".join(repr(c) for c in ("accent", "success", "warning", "danger", "neutral", "muted"))
+    raise ValueError(
+        f"{widget} color must be a semantic role ({valid}, or 'red'/'green'/'yellow') "
+        f"or a hex token from plexi_sdk.theme (e.g. theme.red, theme.text_muted), got {color!r}."
+    )
 
-    Uses approximate character-width ratios (0.60 mono, 0.55 proportional)
-    for layout arithmetic only. Actual clip/elision at render time is handled
-    by the host via `max_width` on `ctx.text()`.
+
+# ── Scroll & Cursor Helpers ───────────────────────────────────────────────────
+
+
+def ensure_visible(
+    scroll_offset: float,
+    viewport_h: float,
+    item_top: float,
+    item_bottom: float,
+    margin: float = 0.0,
+) -> float:
+    """Return a clamped scroll offset that keeps ``[item_top, item_bottom]`` visible."""
+    if viewport_h <= 0:
+        return scroll_offset
+    lo = item_top - margin
+    hi = item_bottom + margin
+    if lo < scroll_offset:
+        return max(0.0, lo)
+    if hi > scroll_offset + viewport_h:
+        return max(0.0, hi - viewport_h)
+    return scroll_offset
+
+
+def move_cursor(event_or_key: Any, count: int, selected: int = 0) -> int | None:
+    """Compute the next 0-based cursor index for standard list navigation keys.
+
+    Handles ``j`` / ``down``, ``k`` / ``up``, ``g`` / ``home``, and ``G`` / ``end``.
+    Returns the new clamped index in ``0..count-1``, or ``None`` if ``event_or_key``
+    is not a list navigation key or ``count <= 0``.
     """
-    if avail_px <= 0 or not text:
-        return []
-    char_w = font_size * (0.60 if mono else 0.55)
-    max_chars = max(1, int(avail_px / char_w))
-
-    words = text.split()
-    lines: List[str] = []
-    current = ""
-    for word in words:
-        candidate = word if not current else f"{current} {word}"
-        if len(candidate) <= max_chars:
-            current = candidate
-            continue
-        if current:
-            lines.append(current)
-            current = word
-        else:
-            # Single word longer than line — hard-break.
-            lines.append(word[: max_chars - 1] + "…")
-            current = ""
-        if len(lines) >= max_lines:
-            break
-    if current and len(lines) < max_lines:
-        lines.append(current)
-
-    if len(lines) == max_lines and (
-        sum(len(line) for line in lines) + len(lines) - 1 < len(text)
-    ):
-        last = lines[-1]
-        if not last.endswith("…"):
-            if len(last) >= max_chars:
-                last = last[: max_chars - 1] + "…"
-            else:
-                last = last + "…"
-            lines[-1] = last
-    return lines
-
-
-def _markdown_measure_lines(text: str, avail_px: float, font_size: float,
-                            max_lines: int) -> int:
-    """Conservative line estimate for host-rendered markdown blocks.
-
-    The real markdown renderer lives in Rust/egui, so the Python SDK cannot
-    know exact glyph metrics or list indentation. This estimator intentionally
-    errs tall: chat bubbles should have a little breathing room, not clip the
-    final markdown row outside the bubble.
-    """
-    if avail_px <= 0 or not text:
+    if count <= 0:
+        return None
+    raw_key = getattr(event_or_key, "key", event_or_key)
+    if not isinstance(raw_key, str):
+        return None
+    cur = max(0, min(int(selected), count - 1))
+    if raw_key in ("j", "down", "Down"):
+        return min(count - 1, cur + 1)
+    if raw_key in ("k", "up", "Up"):
+        return max(0, cur - 1)
+    if raw_key in ("g", "home", "Home"):
         return 0
-
-    char_w = font_size * 0.55
-    base_chars = max(1, int(avail_px / char_w))
-    total = 0
-
-    for raw in text.splitlines() or [text]:
-        line = raw.strip()
-        if not line:
-            total += 1
-            continue
-
-        # CommonMark lists/code blocks reserve horizontal space for markers
-        # and indentation; reduce the wrapping budget to match that shape.
-        budget = base_chars
-        if line.startswith(("- ", "* ", "+ ")) or line[:3].isdigit():
-            budget = max(1, budget - 4)
-            line = line[2:].strip() if not line[:3].isdigit() else line
-        elif line.startswith(("```", "    ")):
-            budget = max(1, int(budget * 0.82))
-
-        # Markdown headings/lists get extra vertical rhythm in egui_commonmark.
-        block_extra = 1 if line.startswith(("#", "- ", "* ", "+ ", "```")) else 0
-        wrapped = _wrap_to_width(line, avail_px=budget * char_w,
-                                 font_size=font_size, max_lines=max_lines)
-        total += max(1, len(wrapped)) + block_extra
-        if total >= max_lines:
-            return max_lines
-
-    return min(total, max_lines)
+    if raw_key in ("G", "end", "End"):
+        return count - 1
+    return None
 
 
-# ── Component base ─────────────────────────────────────────────────────────
+# ── Component Base ────────────────────────────────────────────────────────────
 
 
 class Component:
-    """Base class. Subclasses implement `measure` and `render`."""
+    """Base class for all declarative UI components.
 
-    def measure(self, _avail_w: float) -> float:
-        """Return pixel height this component needs within `avail_w`."""
-        return 0.0
+    Every concrete component implements :meth:`to_node` returning a JSON-serializable
+    dictionary consumed by the host UI decoder.
+    """
 
-    def is_grow(self) -> bool:
-        """True if the component grows to fill remaining space."""
-        return False
-
-    def render(self, _ctx, _x: float, _y: float, _w: float, _h: float) -> None:
-        """Emit draw commands. Implementations should stay within (x, y, w, h)."""
-        raise NotImplementedError
-
-    def to_node(self) -> "dict | None":
-        """Return a UiNode dict for host-side rendering."""
+    def to_node(self) -> dict | None:
         return None
 
-    def render_into(self, ctx, x: float, y: float, w: float) -> float:
-        """Measure, render, and return the consumed height.
 
-        Enables flow layout without manual y-coordinate arithmetic::
-
-            y = 0.0
-            y += appbar.render_into(ctx, 0, y, ctx.w)
-            y += section.render_into(ctx, 0, y, ctx.w)
-        """
-        h = self.measure(w)
-        self.render(ctx, x, y, w, h)
-        return h
-
-    def _render_clipped(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        """Render this component clipped to its allocated rect.
-
-        Container components (Column, Card) call this instead of `render` when
-        descending into children so each child's draws are bounded to its rect.
-        The PushClip/PopClip pair is emitted unconditionally; the host intersects
-        the new rect with the current clip stack top (only ever tightens).
-        """
-        ctx.push_clip(x, y, w, h)
-        try:
-            self.render(ctx, x, y, w, h)
-        finally:
-            ctx.pop_clip()
-
-
-# ── Leaf components ────────────────────────────────────────────────────────
-
-
-@dataclass
-class Heading(Component):
-    """Title-ish text. level 1 = TEXT_TITLE_XL, 2 = TEXT_TITLE, 3 = TEXT_HEADING.
-
-    `ctx.text(x, y, ...)` treats `y` as the TOP of the text box (host renders
-    with egui::Align2::LEFT_TOP). A Heading with font size `fs` occupies rows
-    `y` .. `y + fs` plus descender padding.
-    """
-    text: str
-    level: int = 1
-    color: "str | None" = None
-    bold: bool = True
-
-    DESCENDER_PAD = 3.0
-
-    def __post_init__(self):
-        if not isinstance(self.text, str):
+def _validate_component_list(items: Any, container_name: str) -> None:
+    if not isinstance(items, list):
+        raise TypeError(
+            f"{container_name} children must be a list of Component instances, "
+            f"got {type(items).__name__}"
+        )
+    for i, item in enumerate(items):
+        if not isinstance(item, Component):
             raise TypeError(
-                f"Heading text must be a string, got {type(self.text).__name__}: {self.text!r}. "
-                f"Convert with str(): Heading(text=str(value))"
-            )
-        if self.level not in (1, 2, 3):
-            raise ValueError(
-                f"Heading level must be 1, 2, or 3, got {self.level!r}. "
-                "1 = TEXT_TITLE_XL (28pt), 2 = TEXT_TITLE (20pt), 3 = TEXT_HEADING (16pt)."
+                f"{container_name} children[{i}] must subclass Component, "
+                f"got {type(item).__name__}: {item!r}"
             )
 
-    def _font_size(self) -> float:
-        return {
-            1: TEXT_TITLE_XL,
-            2: TEXT_TITLE,
-            3: TEXT_HEADING,
-        }.get(self.level, TEXT_TITLE)
 
-    def measure(self, _avail_w: float) -> float:
-        return self._font_size() + self.DESCENDER_PAD
-
-    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
-        fs = self._font_size()
-        ctx.text(x, y, self.text, size=fs, color=self.color or theme.fg, bold=self.bold,
-                 max_width=w, elide=True)
-
-    def to_node(self) -> dict:
-        return {"type": "label", "text": self.text,
-                "size": self._font_size(), "bold": self.bold,
-                "color": self.color or "", "tone": ""}
+# ── Layout Containers ─────────────────────────────────────────────────────────
 
 
-@dataclass
-class Label(Component):
-    """Body/caption/hint text. Wraps up to `max_lines`, then truncates.
+class Column(Component):
+    """Vertical stack of child components."""
 
-    Line height = font_size + `LINE_LEADING`; lines stack top-to-bottom with
-    the first line's top at the component's `y`.
-    """
-    text: str
-    tone: str = "body"  # "body" | "caption" | "hint"
-    color: Optional[str] = None
-    bold: bool = False
-    max_lines: int = 3
+    def __init__(
+        self,
+        children: list[Component] | None = None,
+        gap: float | None = None,
+        padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0,
+        *,
+        align: str = "start",
+        grow: bool = False,
+    ) -> None:
+        items = list(children) if children is not None else []
+        _validate_component_list(items, "Column")
+        self.children = items
+        self.gap: float | None = float(gap) if gap is not None else None
+        self.padding = padding
+        self.align = align
+        self.grow = bool(grow)
 
-    LINE_LEADING = 4.0
-    # Extra space below the last line's baseline to avoid clipping
-    # descenders (g, y, p, q). Roughly 20% of body font size.
-    DESCENDER_PAD = 3.0
-
-    def __post_init__(self):
-        if not isinstance(self.text, str):
-            raise TypeError(
-                f"Label text must be a string, got {type(self.text).__name__}: {self.text!r}. "
-                f"Convert with str(): Label(text=str(value))"
-            )
-        if self.tone not in ("body", "caption", "hint"):
-            raise ValueError(
-                f"Label tone must be 'body', 'caption', or 'hint', got {self.tone!r}. "
-                "Use color= for custom colors instead of an arbitrary tone string."
-            )
-
-    def _font_size(self) -> float:
-        return {
-            "body": TEXT_BODY,
-            "caption": TEXT_CAPTION,
-            "hint": TEXT_HINT,
-        }.get(self.tone, TEXT_BODY)
-
-    def _color(self) -> str:
-        if self.color:
-            return self.color
-        return {
-            "body": theme.fg,
-            "caption": theme.fg,
-            "hint": theme.muted,
-        }.get(self.tone, theme.fg)
-
-    def _lines(self, avail_w: float) -> List[str]:
-        return _wrap_to_width(self.text, avail_w, self._font_size(),
-                              max_lines=self.max_lines)
-
-    def _line_h(self) -> float:
-        return self._font_size() + self.LINE_LEADING
-
-    def measure(self, avail_w: float) -> float:
-        lines = self._lines(avail_w)
-        if not lines:
-            return 0.0
-        # n lines = n-1 leadings + n font heights; equivalently n*line_h - leading.
-        # Add descender padding so the last line's descenders aren't clipped.
-        return len(lines) * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
-
-    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
-        fs = self._font_size()
-        color = self._color()
-        line_h = self._line_h()
-        for i, line in enumerate(self._lines(w)):
-            ctx.text(x, y + i * line_h, line,
-                     size=fs, color=color, bold=self.bold)
-
-    def to_node(self) -> dict:
-        return {"type": "label", "text": self.text,
-                "size": self._font_size(), "bold": self.bold,
-                "color": self.color or "", "tone": self.tone,
-                "max_lines": self.max_lines, "monospace": False}
-
-
-@dataclass
-class Text(Label):
-    """SDK v3 inline text node."""
-
-    size: Optional[float] = None
-    truncate: bool = False
-    align: str = "start"
-    key: str = ""
-
-    def _font_size(self) -> float:
-        return self.size if self.size is not None else super()._font_size()
-
-    def to_node(self) -> dict:
-        return {
-            "type": "text",
-            "text": self.text,
-            "size": self._font_size(),
-            "color": self.color or "",
-            "bold": self.bold,
-            "monospace": False,
+    def to_node(self) -> dict | None:
+        children = []
+        for c in self.children:
+            n = c.to_node()
+            if n is None:
+                return None
+            children.append(n)
+        out: dict[str, Any] = {
+            "type": "column",
+            "children": children,
+            "align": self.align,
+            "grow": self.grow,
         }
-
-
-@dataclass
-class Button(Component):
-    label: str
-    on_click: str
-    style: str = "secondary"
-    disabled: bool = False
-    key: str = ""
-
-    def measure(self, _avail_w: float) -> float:
-        return 28.0
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        fill = theme.accent if self.style == "primary" else theme.surface
-        ctx.rect(x, y, w, h, fill=fill, radius=RADIUS_SM)
-        ctx.text(x + SPACE_SM, y + 7.0, self.label, size=TEXT_BODY, color=theme.fg, bold=False)
-
-    def to_node(self) -> dict:
-        return {
-            "type": "button",
-            "label": self.label,
-            "on_click": self.on_click,
-            "style": self.style,
-            "disabled": self.disabled,
-            "key": self.key,
-        }
+        if self.gap is not None:
+            out["gap"] = self.gap
+        return out
 
 
 class HStack(Component):
-    def __init__(self, children: Sequence[Component], gap: "float | None" = None, grow: bool = False) -> None:
-        if any(not isinstance(child, Component) for child in children):
-            raise TypeError("HStack children must be Component instances")
-        self.children = list(children)
-        self.gap = gap
-        self.grow = grow
+    """Horizontal stack of child components (`Row` alias)."""
 
-    def is_grow(self) -> bool:
-        return self.grow
+    def __init__(
+        self,
+        children: list[Component] | None = None,
+        gap: float | None = None,
+        *,
+        align: str = "start",
+        grow: bool = False,
+    ) -> None:
+        items = list(children) if children is not None else []
+        _validate_component_list(items, "HStack")
+        self.children = items
+        self.gap: float | None = float(gap) if gap is not None else None
+        self.align = align
+        self.grow = bool(grow)
 
-    def measure(self, avail_w: float) -> float:
-        return max((child.measure(avail_w) for child in self.children), default=0.0)
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        return None
-
-    def to_node(self) -> "dict | None":
+    def to_node(self) -> dict | None:
         children = []
+        for c in self.children:
+            n = c.to_node()
+            if n is None:
+                return None
+            children.append(n)
+        out: dict[str, Any] = {
+            "type": "row",
+            "children": children,
+            "align": self.align,
+            "grow": self.grow,
+        }
+        if self.gap is not None:
+            out["gap"] = self.gap
+        return out
+
+
+Row = HStack
+
+
+class Card(Component):
+    """Elevated surface container with rounded border and inner padding."""
+
+    def __init__(
+        self,
+        children: list[Component] | None = None,
+        padding: float = SPACE_MD,
+        gap: float | None = SPACE_SM,
+        *,
+        bg_color: str | None = None,
+        border_color: str | None = None,
+        radius: float = RADIUS_MD,
+    ) -> None:
+        items = list(children) if children is not None else []
+        _validate_component_list(items, "Card")
+        self.children = items
+        self.padding = float(padding)
+        self.gap: float | None = float(gap) if gap is not None else None
+        self.bg_color = bg_color
+        self.border_color = border_color
+        self.radius = float(radius)
+
+    def to_node(self) -> dict | None:
+        children = []
+        for c in self.children:
+            n = c.to_node()
+            if n is None:
+                return None
+            children.append(n)
+        out: dict[str, Any] = {
+            "type": "card",
+            "padding": self.padding,
+            "children": children,
+        }
+        if self.gap is not None:
+            out["gap"] = self.gap
+        return out
+
+
+class Scrollable(Component):
+    """Scrollable viewport wrapping a single child component."""
+
+    def __init__(
+        self,
+        child: Component,
+        *,
+        horizontal: bool = False,
+    ) -> None:
+        if not isinstance(child, Component):
+            raise TypeError(
+                f"Scrollable child must subclass Component, got {type(child).__name__}: {child!r}"
+            )
+        self.child = child
+        self.horizontal = bool(horizontal)
+        self.scroll_offset: float = 0.0
+
+    def to_node(self) -> dict | None:
+        child_node = self.child.to_node()
+        if child_node is None:
+            return None
+        return {
+            "type": "scroll",
+            "child": child_node,
+            "horizontal": self.horizontal,
+        }
+
+
+class Grid(Component):
+    """Multi-column grid layout composed onto rows and columns."""
+
+    def __init__(
+        self,
+        columns: int,
+        children: list[Component] | None = None,
+        gap: float = SPACE_SM,
+    ) -> None:
+        self.columns = max(1, int(columns))
+        self.children = list(children) if children is not None else []
+        self.gap = float(gap)
+
+    def to_node(self) -> dict:
+        child_nodes = [
+            c.to_node() if hasattr(c, "to_node") else c
+            for c in self.children
+        ]
+        rows = []
+        for i in range(0, len(child_nodes), self.columns):
+            chunk = child_nodes[i : i + self.columns]
+            rows.append({
+                "type": "row",
+                "children": chunk,
+                "gap": self.gap,
+            })
+        return {
+            "type": "column",
+            "children": rows,
+            "gap": self.gap,
+        }
+
+
+# ── Chrome & Typography ───────────────────────────────────────────────────────
+
+
+class AppBar(Component):
+    """Top application header bar with title and optional subtitle."""
+
+    BAND_H: float = 34.0
+    DIVIDER_H: float = 1.0
+    TITLE_SIZE: float = 16.0
+
+    def __init__(
+        self,
+        title: str,
+        subtitle: str = "",
+        *,
+        accent: str | None = None,
+    ) -> None:
+        self.title = title
+        self.subtitle = subtitle
+        self.accent = accent
+
+    def to_node(self) -> dict:
+        return {
+            "type": "app_bar",
+            "title": self.title,
+            "subtitle": self.subtitle,
+        }
+
+
+class Section(Component):
+    """Titled section header with a divider, optionally wrapping body children."""
+
+    def __init__(
+        self,
+        title: str,
+        children: list[Component] | Component | None = None,
+        *more_children: Component,
+        gap: float = SPACE_SM,
+    ) -> None:
+        self.title = title
+        self.gap = float(gap)
+        collected: list[Component] = []
+        if isinstance(children, list):
+            collected.extend(children)
+        elif children is not None:
+            collected.append(children)
+        if more_children:
+            collected.extend(more_children)
+        _validate_component_list(collected, "Section")
+        self.children = collected
+
+    def to_node(self) -> dict | None:
+        nodes: list[dict] = [
+            {"type": "text", "text": self.title, "bold": True},
+            {"type": "divider"},
+        ]
         for child in self.children:
             child_node = child.to_node()
             if child_node is None:
                 return None
-            children.append(child_node)
-        row_node: dict = {"type": "row", "children": children, "grow": self.grow}
-        # Emit gap only when set so the host can distinguish "unset" (apply the
-        # default row spacing) from an explicit "gap=0" (pack flush).
-        if self.gap is not None:
-            row_node["gap"] = self.gap
-        return row_node
+            nodes.append(child_node)
+        return {
+            "type": "column",
+            "children": nodes,
+            "gap": self.gap if self.children else 4.0,
+        }
 
 
-class Sized(Component):
-    """Canvas-mode only (`measure()`/`render()`). There is no host-native
-    fixed-size wrapper node — the WIT `ui-node-data` enum (`wit/plexi.wit`)
-    has no `sized` variant, and none of `row`/`column`/`padding` carry a
-    per-child width/height override. This class has no `to_node()` and
-    cannot be placed in a declarative tree.
-    """
+class Heading(Component):
+    """Bold section or view heading."""
 
-    def __init__(self, child: Component, width: float | None = None, height: float | None = None) -> None:
-        if not isinstance(child, Component):
-            raise TypeError("Sized child must be a Component")
-        self.child = child
-        self.width = width
-        self.height = height
-
-    def is_grow(self) -> bool:
-        return False
-
-    def measure(self, avail_w: float) -> float:
-        return self.height if self.height is not None else self.child.measure(self.width or avail_w)
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self.child.render(ctx, x, y, self.width or w, self.height or h)
-
-
-class ActionBar(Component):
-    def __init__(self, actions: Sequence[Button]) -> None:
-        for index, action in enumerate(actions):
-            if not isinstance(action, Button):
-                raise TypeError(f"ActionBar actions[{index}] must be a Button")
-        self.actions = list(actions)
+    def __init__(
+        self,
+        text: str = "",
+        size: float = TEXT_HEADING,
+        color: str | None = None,
+        *,
+        align: str = "left",
+        truncate: bool = False,
+    ) -> None:
+        self.text = text
+        self.size = float(size)
+        self.color = _validate_text_color(color, widget="Heading") or None
+        self.align = align
+        self.truncate = bool(truncate)
 
     def to_node(self) -> dict:
-        # No native action-bar node — composes onto a Row of Buttons, same as
-        # any other button group. Discovered blocking live component-gallery
-        # verification during stint 0407; `action_bar` was previously
-        # aspirational (see test history) and never had a decode arm.
-        return {
-            "type": "row",
-            "children": [
-                {
-                    "type": "button",
-                    "label": action.label,
-                    "on_click": action.on_click,
-                    "style": action.style,
-                    "disabled": action.disabled,
-                }
-                for action in self.actions
-            ],
-            "gap": SPACE_SM,
+        node: dict[str, Any] = {
+            "type": "text",
+            "text": self.text,
+            "size": self.size,
+            "bold": True,
+            "truncate": self.truncate,
+            "align": self.align,
         }
+        if self.color:
+            node["color"] = self.color
+        return node
+
+
+class Label(Component):
+    """Single-line or body text label with optional semantic ``tone`` or ``color``."""
+
+    def __init__(
+        self,
+        text: str = "",
+        size: float | None = None,
+        color: str | None = None,
+        bold: bool = False,
+        elide: bool = False,
+        *,
+        tone: str = "body",
+        align: str = "left",
+        truncate: bool = False,
+    ) -> None:
+        self.text = text
+        self.size = float(size) if size is not None else None
+        self.color = _validate_text_color(color, widget="Label") or None
+        self.bold = bool(bold)
+        self.elide = bool(elide or truncate)
+        self.tone = tone
+        self.align = align
+
+    def to_node(self) -> dict:
+        node: dict[str, Any] = {
+            "type": "label",
+            "text": self.text,
+            "tone": self.tone,
+            "size": self.size,
+            "bold": self.bold,
+            "truncate": self.elide,
+            "align": self.align,
+        }
+        if self.color:
+            node["color"] = self.color
+        elif self.tone == "hint":
+            node["color"] = "muted"
+        return node
+
+
+@dataclass
+class Text(Component):
+    """Declarative text primitive with font size, styling, color, truncation, and alignment."""
+
+    text: str = ""
+    size: float = 13.0
+    color: str = ""
+    bold: bool = False
+    italic: bool = False
+    monospace: bool = False
+    truncate: bool = False
+    align: str = "left"
+    tone: str = ""
+
+    def __post_init__(self) -> None:
+        self.color = _validate_text_color(self.color, widget="Text")
+        if not self.color and self.tone == "hint":
+            self.color = "muted"
+        if self.align not in ("left", "start", "center", "right", "end"):
+            raise ValueError(
+                f"Text align must be 'left', 'start', 'center', 'right', or 'end', got {self.align!r}"
+            )
+
+    def to_node(self) -> dict:
+        node: dict[str, Any] = {
+            "type": "text",
+            "text": self.text,
+            "size": self.size,
+            "bold": self.bold,
+            "italic": self.italic,
+            "monospace": self.monospace,
+            "truncate": self.truncate,
+            "align": self.align,
+        }
+        if self.color:
+            node["color"] = self.color
+        if self.tone:
+            node["tone"] = self.tone
+        return node
 
 
 @dataclass
 class Spacer(Component):
-    """Fixed or flex gap. `grow=True` expands to consume remaining space."""
+    """Fixed or flex gap. ``grow=True`` expands to consume remaining space."""
+
     size: float = SPACE_MD
     grow: bool = False
-
-    def is_grow(self) -> bool:
-        return self.grow
-
-    def measure(self, _avail_w: float) -> float:
-        return 0.0 if self.grow else self.size
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        return
+    flex: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "spacer", "size": self.size, "grow": self.grow}
+        return {"type": "spacer", "size": float(self.size), "grow": bool(self.grow or self.flex)}
 
 
-# ── CPython-WASM decode-arm composition helpers ─────────────────────────────
-#
-# `src/host/wasm_python.rs::decode_node_data` only understands the WIT
-# `ui-node-data` variant set (row, column, button, text, progress-bar, badge,
-# text_input, ...). Widgets below have no dedicated variant, so their
-# `to_node()` composes an equivalent tree out of already-supported primitives
-# instead of emitting a bespoke `"type"` the decoder rejects with
-# "unsupported CPython-WASM UINode type: <name>" (stint 0402, 0407).
-
-
-def _toggle_row(node_id: str, label: str, active: bool,
-                 active_label: str, inactive_label: str, disabled: bool) -> dict:
-    """Single on/off control: a state-carrying Button, optionally preceded by
-    a label. Clicking fires `node_id` as an on_click UiAction — callers flip
-    their own boolean state, the same pattern `Toggle`/`Accordion` already use."""
-    chip = {
-        "type": "button",
-        "label": active_label if active else inactive_label,
-        "on_click": node_id,
-        "style": "primary" if active else "secondary",
-        "disabled": disabled,
-    }
-    if not label:
-        return chip
-    return {
-        "type": "row",
-        "children": [{"type": "text", "text": label}, chip],
-        "gap": SPACE_SM,
-    }
-
-
-def _option_row(node_id: str, options: List[str], selected: int, disabled: bool) -> dict:
-    """Single-select control: a Row of Buttons, one per option. Clicking
-    option `i` fires `f"{node_id}:{i}"` as an on_click UiAction."""
-    buttons = [
-        {
-            "type": "button",
-            "label": option,
-            "on_click": f"{node_id}:{i}",
-            "style": "primary" if i == selected else "secondary",
-            "disabled": disabled,
-        }
-        for i, option in enumerate(options)
-    ]
-    return {"type": "row", "children": buttons, "gap": SPACE_SM}
-
-
-def _initials(label: str) -> str:
-    parts = [p for p in label.split() if p]
-    if not parts:
-        return "?"
-    if len(parts) == 1:
-        return parts[0][:2].upper()
-    return (parts[0][0] + parts[-1][0]).upper()
-
-
-# Badge/status color vocabulary: the theme's SEMANTIC roles, not literal
-# colors. `accent`/`success`/`warning`/`danger`/`neutral` are canonical;
-# `red`/`green`/`yellow` are the theme's status-role aliases (see
-# `_theme.py`). There is intentionally no "blue" — `accent` is the
-# accent/blue-ish role. Keep in sync with the host decoder
-# `decode_badge_color` in `src/host/wasm_python.rs`.
-BadgeColor = Literal[
-    "accent", "success", "warning", "danger", "neutral", "red", "green", "yellow"
-]
-BADGE_COLORS: "tuple[str, ...]" = (
-    "accent", "success", "warning", "danger", "neutral", "red", "green", "yellow",
-)
-
-
-def _validate_badge_color(color: str, *, who: str) -> None:
-    if color not in BADGE_COLORS:
-        raise ValueError(
-            f"{who}: color must be one of {BADGE_COLORS}, got {color!r}. "
-            f"For a bespoke color, define an AppPalette(dark=..., light=...) "
-            f"token instead of a raw hex or CSS name."
-        )
-
-
-@dataclass
-class Badge(Component):
-    text: str
-    color: BadgeColor = "neutral"
-    tone: "BadgeColor | None" = None
-    key: str = ""
-
-    def __post_init__(self) -> None:
-        if self.tone is not None:
-            self.color = self.tone
-        _validate_badge_color(self.color, who="Badge")
-
-    def measure(self, _avail_w: float) -> float:
-        return 18.0
-
-    def render(self, ctx, x: float, y: float, _w: float, _h: float) -> None:
-        fill = theme.accent if self.color == "accent" else theme.surface
-        ctx.rect(x, y, max(18.0, len(self.text) * 7.0 + 12.0), 18.0,
-                 fill=fill, radius=RADIUS_SM)
-        ctx.text(x + 6.0, y + 4.0, self.text, size=TEXT_HINT, color=theme.fg)
-
-    def to_node(self) -> dict:
-        return {"type": "badge", "text": self.text,
-                "color": self.color, "key": self.key}
-
-
-@dataclass
-class Tooltip(Component):
-    text: str
-    child: Component
-
-    def to_node(self) -> dict:
-        # No native hover/tooltip node — the hint is shown as a small caption
-        # under the child instead of appearing on hover.
-        return {
-            "type": "column",
-            "children": [
-                self.child.to_node(),
-                {"type": "text", "text": self.text, "size": TEXT_HINT},
-            ],
-            "gap": SPACE_XS,
-        }
-
-
-@dataclass
-class Avatar(Component):
-    label: str = ""
-    size: float = 0.0
-
-    def to_node(self) -> dict:
-        return {"type": "badge", "text": _initials(self.label), "color": "neutral"}
-
-
-@dataclass
-class Icon(Component):
-    name: str
-    size: float = 0.0
-    color: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "text", "text": f"[{self.name}]", "size": self.size or TEXT_BODY}
-
-
-@dataclass
-class CodeBlock(Component):
-    code: str
-    language: str = ""
-
-    def to_node(self) -> dict:
-        children = []
-        if self.language:
-            children.append({"type": "text", "text": self.language, "bold": True, "size": TEXT_HINT})
-        children.append({"type": "text", "text": self.code})
-        return {"type": "column", "children": children, "gap": SPACE_XS}
-
-
-@dataclass
-class Table(Component):
-    columns: list[str]
-    rows: list[list[str]]
-
-    def to_node(self) -> dict:
-        header = {
-            "type": "row",
-            "children": [{"type": "text", "text": col, "bold": True} for col in self.columns],
-            "gap": SPACE_SM,
-        }
-        body_rows = [
-            {
-                "type": "row",
-                "children": [{"type": "text", "text": str(cell)} for cell in row],
-                "gap": SPACE_SM,
-            }
-            for row in self.rows
-        ]
-        return {
-            "type": "column",
-            "children": [header, {"type": "divider"}, *body_rows],
-            "gap": SPACE_XS,
-        }
-
-
-@dataclass
-class KeyValue(Component):
-    rows: list[tuple[str, str]]
-
-    def to_node(self) -> dict:
-        return {
-            "type": "column",
-            "children": [
-                {
-                    "type": "row",
-                    "children": [
-                        {"type": "text", "text": key, "bold": True},
-                        {"type": "text", "text": value},
-                    ],
-                    "gap": SPACE_SM,
-                }
-                for key, value in self.rows
-            ],
-            "gap": SPACE_XS,
-        }
-
-
-@dataclass
-class Breadcrumb(Component):
-    items: list[str]
-
-    def to_node(self) -> dict:
-        children = []
-        for i, item in enumerate(self.items):
-            if i > 0:
-                children.append({"type": "text", "text": "›"})
-            children.append({"type": "text", "text": item})
-        return {"type": "row", "children": children, "gap": SPACE_XS}
-
-
-@dataclass
-class Pagination(Component):
-    node_id: str
-    page: int = 0
-    total: int = 0
-
-    def to_node(self) -> dict:
-        at_start = self.page <= 0
-        at_end = self.page >= max(0, self.total - 1)
-        return {
-            "type": "row",
-            "children": [
-                {
-                    "type": "button", "label": "‹", "on_click": f"{self.node_id}:prev",
-                    "style": "secondary", "disabled": at_start,
-                },
-                {"type": "text", "text": f"{self.page + 1} / {max(self.total, 1)}"},
-                {
-                    "type": "button", "label": "›", "on_click": f"{self.node_id}:next",
-                    "style": "secondary", "disabled": at_end,
-                },
-            ],
-            "gap": SPACE_SM,
-        }
-
-
-@dataclass
-class Accordion(Component):
-    node_id: str
-    title: str
-    child: Component
-    open: bool = False
-
-    def to_node(self) -> dict:
-        header = {
-            "type": "button",
-            "label": f"{'▾' if self.open else '▸'} {self.title}",
-            "on_click": self.node_id,
-            "style": "secondary",
-            "disabled": False,
-        }
-        children: list = [header]
-        if self.open:
-            children.append(self.child.to_node())
-        return {"type": "column", "children": children, "gap": SPACE_XS}
-
-
-@dataclass
-class Checkbox(Component):
-    node_id: str
-    label: str = ""
-    checked: bool = False
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return _toggle_row(self.node_id, self.label, self.checked, "☑", "☐", self.disabled)
-
-
-@dataclass
-class Radio(Component):
-    node_id: str
-    options: list[str]
-    selected: int = 0
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return _option_row(self.node_id, self.options, self.selected, self.disabled)
-
-
-@dataclass
-class Switch(Component):
-    node_id: str
-    label: str = ""
-    on: bool = False
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return _toggle_row(self.node_id, self.label, self.on, "on", "off", self.disabled)
-
-
-@dataclass
-class Slider(Component):
-    node_id: str
-    value: float = 0.0
-    min: float = 0.0
-    max: float = 1.0
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        span = self.max - self.min
-        fraction = max(0.0, min(1.0, (self.value - self.min) / span)) if span > 0 else 0.0
-        return {
-            "type": "row",
-            "children": [
-                {
-                    "type": "button", "label": "-", "on_click": f"{self.node_id}:dec",
-                    "style": "secondary", "disabled": self.disabled,
-                },
-                {"type": "progress-bar", "value": fraction, "max": 1.0,
-                 "label": f"{self.value:.2f}"},
-                {
-                    "type": "button", "label": "+", "on_click": f"{self.node_id}:inc",
-                    "style": "secondary", "disabled": self.disabled,
-                },
-            ],
-            "gap": SPACE_SM,
-        }
-
-
-@dataclass
-class Select(Component):
-    node_id: str
-    options: list[str]
-    selected: int = 0
-    placeholder: str = ""
-
-    def to_node(self) -> dict:
-        row = _option_row(self.node_id, self.options, self.selected, False)
-        if not self.placeholder:
-            return row
-        return {
-            "type": "column",
-            "children": [{"type": "text", "text": self.placeholder, "size": TEXT_HINT}, row],
-            "gap": SPACE_XS,
-        }
-
-
-@dataclass
-class DateTimePicker(Component):
-    node_id: str
-    value: str = ""
-    mode: str = "datetime"
-
-    def to_node(self) -> dict:
-        return {
-            "type": "TextInput",
-            "value": self.value,
-            "placeholder": self.mode,
-            "on_change": self.node_id,
-            "on_submit": self.node_id,
-            "password": False,
-        }
-
-
-@dataclass
-class Progress(Component):
-    value: float = 0.0
-    label: str = ""
-    indeterminate: bool = False
-
-    def to_node(self) -> dict:
-        if self.indeterminate:
-            return {"type": "spinner", "label": self.label}
-        return {"type": "progress-bar", "value": self.value, "max": 1.0, "label": self.label}
-
-
-@dataclass
-class Spinner(Component):
-    label: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "spinner", "label": self.label}
-
-
-@dataclass
-class Banner(Component):
-    text: str
-    tone: "BadgeColor | Literal['']" = ""
-    title: str = ""
-
-    def __post_init__(self) -> None:
-        # "" means untoned (renders as a neutral "info" pill); any other
-        # value must be a valid badge color, validated loudly rather than
-        # silently coerced to neutral.
-        if self.tone != "":
-            _validate_badge_color(self.tone, who="Banner")
-
-    def to_node(self) -> dict:
-        badge_color = self.tone or "neutral"
-        children = []
-        if self.title:
-            children.append({"type": "text", "text": self.title, "bold": True})
-        children.append({"type": "text", "text": self.text})
-        return {
-            "type": "row",
-            "children": [
-                {"type": "badge", "text": self.tone or "info", "color": badge_color},
-                {"type": "column", "children": children, "gap": 0.0},
-            ],
-            "gap": SPACE_SM,
-        }
-
-
-@dataclass
-class TabBar(Component):
-    node_id: str
-    tabs: list[str]
-    active: int = 0
-
-    def to_node(self) -> dict:
-        return _option_row(self.node_id, self.tabs, self.active, False)
-
-
-@dataclass
-class EmptyState(Component):
-    title: str
-    description: str = ""
-    icon: str = ""
-
-    def to_node(self) -> dict:
-        children = []
-        if self.icon:
-            children.append({"type": "text", "text": self.icon, "size": TEXT_TITLE})
-        children.append({"type": "text", "text": self.title, "bold": True})
-        if self.description:
-            children.append({"type": "text", "text": self.description})
-        return {"type": "column", "children": children, "gap": SPACE_XS, "align": "center"}
-
-
-@dataclass
-class Skeleton(Component):
-    rows: int = 3
-    height: float = 0.0
-
-    def to_node(self) -> dict:
-        return {
-            "type": "column",
-            "children": [
-                {"type": "badge", "text": "", "color": "neutral"} for _ in range(max(0, self.rows))
-            ],
-            "gap": SPACE_XS,
-        }
-
-
-@dataclass
-class Pending(Component):
-    """Declarative loading region: renders `placeholder` while `active`,
-    otherwise `child`. One call site per pending region -- never thread a
-    loading boolean through multiple view branches.
-
-    Tree-mode counterpart of the canvas-mode `loading_pill`.
-    """
-    active: bool
-    child: Component
-    placeholder: Component
-
-    def __post_init__(self) -> None:
-        for name, value in (("child", self.child), ("placeholder", self.placeholder)):
-            if not isinstance(value, Component):
-                raise TypeError(
-                    f"Pending {name} must be a Component, got {type(value).__name__}. "
-                    "Example: Pending(active=data['loading'], child=Text(...), "
-                    "placeholder=Skeleton(rows=5))"
-                )
-
-    def to_node(self) -> "dict | None":
-        return (self.placeholder if self.active else self.child).to_node()
-
-
-@dataclass
-class Modal(Component):
-    node_id: str
-    title: str
-    child: Component
-
-    def to_node(self) -> dict:
-        # No native overlay node — renders inline, framed by its title and a
-        # divider, in the position the app places it in the tree.
-        return {
-            "type": "column",
-            "children": [
-                {"type": "text", "text": self.title, "bold": True},
-                {"type": "divider"},
-                self.child.to_node(),
-            ],
-            "gap": SPACE_SM,
-        }
-
-
-@dataclass
 class Divider(Component):
-    """A horizontal 1px rule.
+    """Horizontal rule separating vertical sections."""
 
-    ``color`` only affects canvas-mode `render()`. The WIT `divider` variant
-    (`wit/plexi.wit`) is a bare unit with no fields, so `to_node()` cannot
-    carry a color to the host — it is not emitted in the wire dict.
-    """
-    color: "str | None" = None
-    margin_top: float = SPACE_SM
-    margin_bottom: float = SPACE_SM
-
-    def measure(self, avail_w: float) -> float:
-        return 1.0 + self.margin_top + self.margin_bottom
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y + self.margin_top, w, 1.0, self.color or theme.highlight)
+    def __init__(self, color: str | None = None) -> None:
+        self.color = color
 
     def to_node(self) -> dict:
         return {"type": "divider"}
 
 
-#: Canvas wire policy: geometry is emitted rounded to this many decimal places.
-#:
-#: Canvas coordinates are pixel-scale units — a canvas declares its logical
-#: width/height in the same order of magnitude as the pane it draws into, and
-#: the host scales that space to the pane rect. A hundredth of a logical unit is
-#: therefore a hundredth of a pixel at ``fit="fill"`` (scale ~1), and still far
-#: below one device pixel for a ``fit="contain"`` canvas magnified onto a large
-#: pane. Full float precision on the wire buys nothing visible and costs bytes
-#: on every coordinate of every command at the app's full frame rate.
-#:
-#: This policy assumes a pixel-scale coordinate space. A normalised (0..1)
-#: canvas space, where one logical unit spans the whole pane, would quantise
-#: visibly at this precision and is not supported.
-CANVAS_WIRE_DECIMALS = 2
-
-_WIRE_SCALE = 10.0 ** CANVAS_WIRE_DECIMALS
-
-
-def _wire(value: float) -> float:
-    """Quantize one canvas geometry value to the wire precision policy.
-
-    Round-half-up via float arithmetic rather than ``round(value, 2)``: this
-    runs on every coordinate of every command at the app's full frame rate,
-    and ``round()``'s correctly-rounded decimal path measures ~3.5x the cost
-    of the multiply/floor-divide. Tie-breaking direction is not part of the
-    policy — anything within half a wire step is equally correct.
-    """
-    return (value * _WIRE_SCALE + 0.5) // 1.0 / _WIRE_SCALE
-
-
 @dataclass
-class CanvasRect:
-    x: float
-    y: float
-    width: float
-    height: float
-    fill: str
-    radius: float = 0.0
+class Badge(Component):
+    """Semantic status pill (`accent`, `success`, `warning`, `danger`, `neutral`)."""
 
-    def to_command(self) -> dict:
-        return {"type": "rect", "x": _wire(self.x), "y": _wire(self.y),
-                "w": _wire(self.width), "h": _wire(self.height),
-                "fill": self.fill, "radius": _wire(self.radius)}
+    label: str = ""
+    color: BadgeColor = "neutral"
+    text: str = ""
+    tone: BadgeColor | None = None
 
-
-@dataclass
-class CanvasCircle:
-    x: float
-    y: float
-    radius: float
-    fill: str
-
-    def to_command(self) -> dict:
-        return {"type": "circle", "cx": _wire(self.x), "cy": _wire(self.y),
-                "r": _wire(self.radius), "fill": self.fill}
-
-
-@dataclass
-class CanvasLine:
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-    color: str
-    width: float = 1.0
-
-    def to_command(self) -> dict:
-        return {"type": "line", "x1": _wire(self.x1), "y1": _wire(self.y1),
-                "x2": _wire(self.x2), "y2": _wire(self.y2),
-                "color": self.color, "width": _wire(self.width)}
-
-
-@dataclass
-class CanvasText:
-    x: float
-    y: float
-    text: str
-    size: float = 14.0
-    color: str = "#ffffff"
-    bold: bool = False
-    align: str = "left_top"
-
-    def to_command(self) -> dict:
-        return {"type": "text", "x": _wire(self.x), "y": _wire(self.y),
-                "text": self.text, "size": _wire(self.size),
-                "color": self.color, "bold": self.bold,
-                "align": self.align, "monospace": False,
-                "max_width": None, "elide": True, "selectable": False}
-
-
-class Canvas(Component):
-    """SDK v3 CPU canvas node.
-
-    Pass typed drawing commands for host-side rendering from ``view()``.
-    """
-
-    def __init__(
-        self,
-        commands: "list | None" = None,
-        *,
-        width: float = 640.0,
-        height: float = 360.0,
-        grow: bool = True,
-        fit: str = "fill",
-        key: str = "",
-    ) -> None:
-        if callable(commands):
-            raise TypeError("Canvas expects typed canvas commands, not a draw callback")
-        if fit not in ("fill", "contain"):
-            raise ValueError("Canvas fit must be 'fill' or 'contain'")
-        self.commands = list(commands or [])
-        self.width = width
-        self.height = height
-        self.grow = grow
-        self.fit = fit
-        self.key = key
-
-    def measure(self, _avail_w: float) -> float:
-        return self.height
-
-    def is_grow(self) -> bool:
-        return self.grow
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        raise RuntimeError("Canvas renders only through the SDK v3 component-tree path")
+    def __post_init__(self) -> None:
+        if self.text and not self.label:
+            self.label = self.text
+        elif self.label and not self.text:
+            self.text = self.label
+        if self.tone is not None:
+            self.color = self.tone
+        _validate_badge_color(self.color, widget="Badge")
 
     def to_node(self) -> dict:
         return {
-            "type": "canvas",
-            "width": self.width,
-            "height": self.height,
-            "grow": self.grow,
-            "fit": self.fit,
-            "commands": [c.to_command() for c in self.commands],
+            "type": "badge",
+            "text": self.label,
+            "label": self.label,
+            "color": self.color,
         }
-
-
-@dataclass
-class AppBar(Component):
-    """Thin top-of-pane app bar with optional subtitle.
-
-    Single-line (title only): fixed BAND_H band, title vertically centred.
-    Two-line (title + subtitle): taller BAND_H_DOUBLE band, title/subtitle
-    stacked and centred together.
-    """
-    title: str
-    subtitle: Optional[str] = None
-    accent: Optional[str] = None  # default: theme.fg (resolved at render time)
-
-    TITLE_SIZE = 16.0
-    SUBTITLE_SIZE = TEXT_HINT
-    BAND_H = 34.0
-    # Two-line band = SPACE_SM top + title + SPACE_XS + subtitle + SPACE_SM
-    # bottom = 8 + 16 + 4 + 12 + 8 = 48. Snug, symmetric padding.
-    BAND_H_DOUBLE = 48.0
-    DIVIDER_H = 1.0
-
-    def _band(self) -> float:
-        return self.BAND_H_DOUBLE if self.subtitle else self.BAND_H
-
-    def measure(self, avail_w: float) -> float:
-        return self._band() + self.DIVIDER_H
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y, w, h, theme.bg)
-        accent = self.accent or theme.fg
-        band = self._band()
-        text_x = x + SPACE_MD
-        text_w = w - 2 * SPACE_MD
-        if self.subtitle:
-            block_h = self.TITLE_SIZE + SPACE_XS + self.SUBTITLE_SIZE
-            title_y = y + (band - block_h) / 2.0
-            sub_y = title_y + self.TITLE_SIZE + SPACE_XS
-            ctx.text(text_x, title_y, self.title,
-                     size=self.TITLE_SIZE, color=accent, bold=True,
-                     max_width=text_w, elide=True)
-            ctx.text(text_x, sub_y, self.subtitle,
-                     size=self.SUBTITLE_SIZE, color=theme.muted,
-                     max_width=text_w, elide=True)
-        else:
-            text_y = y + (band - self.TITLE_SIZE) / 2.0
-            ctx.text(text_x, text_y, self.title,
-                     size=self.TITLE_SIZE, color=accent, bold=True,
-                     max_width=text_w, elide=True)
-        ctx.rect(x, y + band, w, self.DIVIDER_H, theme.highlight)
-
-    def to_node(self) -> dict:
-        return {"type": "app_bar", "title": self.title,
-                "subtitle": self.subtitle or ""}
-
-
-@dataclass
-class Section(Component):
-    """Section divider with a small uppercase label sitting above the rule.
-
-    Vertical stack: SPACE_SM padding, label (TEXT_HINT), SPACE_XS, divider,
-    SPACE_XS padding. The bottom padding is intentionally tight (SPACE_XS
-    instead of SPACE_SM) so the section headline sits close to its
-    associated content block below.
-    """
-    title: str
-
-    def measure(self, avail_w: float) -> float:
-        return SPACE_SM + TEXT_HINT + SPACE_XS + 1.0 + SPACE_XS
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        label_y = y + SPACE_SM
-        ctx.text(x, label_y, self.title.upper(),
-                 size=TEXT_HINT, color=theme.muted, bold=True,
-                 max_width=w, elide=True)
-        line_y = label_y + TEXT_HINT + SPACE_XS
-        ctx.rect(x, line_y, w, 1.0, theme.highlight)
-
-    def to_node(self) -> dict:
-        return {
-            "type": "column",
-            "children": [
-                {"type": "text", "text": self.title.upper(), "bold": True, "size": TEXT_HINT},
-                {"type": "divider"},
-            ],
-            "gap": SPACE_XS,
-        }
-
-
-@dataclass
-class KeyRow(Component):
-    """A keycap chip (or a chord of chips) followed by a description, left-aligned.
-
-    Emits DrawCommand::KeyChipRow — the host measures each chip with real font
-    metrics and flows them left-to-right. No Python-side width math.
-
-    `key` accepts a single string (e.g. `"m"`) or a list (e.g. `["⌘", "K"]`).
-
-    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-    declarative-tree node exists for a single key-chip row. Use
-    `FooterKeys` for a tree-mode shortcuts row.
-    """
-    key: Union[str, List[str]]
-    description: str
-
-    HEIGHT = 28.0
-    CHIP_PAD_V = 3.0  # used for measure() height only; keep in sync with KEYCHIP_PAD_V in style.rs
-
-    def _keys(self) -> List[str]:
-        if isinstance(self.key, list):
-            return self.key
-        return [self.key]
-
-    def measure(self, avail_w: float) -> float:
-        return self.HEIGHT
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        # Vertical offset so the chip row is centred within HEIGHT.
-        chip_h = TEXT_HINT + self.CHIP_PAD_V * 2
-        chip_y = y + (self.HEIGHT - chip_h) / 2.0
-        ctx.key_chip_row(x=x, y=chip_y, keys=self._keys(),
-                         description=self.description, font_size=TEXT_HINT)
-
-
-@dataclass
-class ScrollLog(Component):
-    """Bounded text log. Shows the most recent lines that fit in the available
-    space; older lines are hidden. Lines are rendered newest-at-top.
-
-    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-    declarative-tree node exists for a bounded reversed-order text log.
-    """
-    lines: List[str]
-    line_size: float = TEXT_CAPTION
-    empty_text: str = "no events yet"
-    max_pixel_height: Optional[float] = None
-    _assigned_h: float = field(default=0.0, repr=False)
-
-    def is_grow(self) -> bool:
-        # ScrollLog takes what it's given — typically follows a Spacer(grow=True).
-        # Marking it grow=False means it won't expand past its content unless
-        # explicitly sized. See `flex=True` variant below if we ever want that.
-        return False
-
-    def measure(self, avail_w: float) -> float:
-        if not self.lines:
-            return self.line_size + 6.0
-        line_h = self.line_size + 4.0
-        content_h = len(self.lines) * line_h
-        if self.max_pixel_height is not None:
-            return min(content_h, self.max_pixel_height)
-        return content_h
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        if not self.lines:
-            ctx.text(x, y, self.empty_text,
-                     size=self.line_size, color=theme.muted)
-            return
-        line_h = self.line_size + 4.0
-        visible = max(1, int(h / line_h))
-        recent = list(reversed(self.lines[-visible:]))
-        for i, line in enumerate(recent):
-            ctx.text(x, y + i * line_h, line,
-                     size=self.line_size, color=theme.fg, monospace=True,
-                     max_width=w, elide=True)
-
-
-@dataclass
-class Scrollable(Component):
-    """A clip-bounded vertically-scrollable container.
-
-    Renders its `child` component clipped to the allocated rect. If the child
-    is taller than the available height the excess is hidden and a thin
-    scrollbar indicator is drawn on the right edge.
-
-    Scroll offset is persisted on the instance, so the `Scrollable` must be
-    stable across renders — create it once at module level or in `init()`,
-    not inside `view()`.
-
-    Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
-    Apps drive this by calling `handle_key(key)` from their `on_key` handler.
-
-    Mouse-wheel scroll: call `handle_scroll(delta_y)` from the app's
-    `on_scroll_delta` handler (receives `PlexiEvent::Scroll` from the host).
-    """
-    child: Component
-    scroll_offset: float = field(default=0.0, repr=False)
-    align: str = "top"
-    # How many pixels j/k advances per keypress.
-    key_step: float = 20.0
-
-    def __post_init__(self):
-        if not isinstance(self.child, Component):
-            raise TypeError(
-                f"Scrollable child must subclass Component, got {type(self.child).__name__}. "
-                "Ad-hoc widget classes missing _render_clipped will crash at render time."
-            )
-        if self.align not in ("top", "bottom"):
-            raise ValueError("Scrollable align must be 'top' or 'bottom'")
-
-    # Width of the scrollbar indicator drawn when content overflows.
-    _SCROLLBAR_W: float = field(default=3.0, init=False, repr=False)
-    # Stored child height from last measure (used for scrollbar sizing).
-    _child_h: float = field(default=0.0, repr=False)
-    # Stored allocated height from last render (used for scroll clamping).
-    _avail_h: float = field(default=0.0, repr=False)
-
-    def measure(self, avail_w: float) -> float:
-        """Scrollable reports 0 so it grows to consume available space."""
-        return 0.0
-
-    def is_grow(self) -> bool:
-        return True
-
-    def _clamp_offset(self, avail_h: float) -> None:
-        max_offset = max(0.0, self._child_h - avail_h)
-        self.scroll_offset = max(0.0, min(self.scroll_offset, max_offset))
-
-    def handle_key(self, key: str) -> bool:
-        """Update scroll_offset for j/k/ArrowDown/ArrowUp keys.
-
-        Returns True if the key was consumed. Call from the app's on_key handler:
-
-            if self._scrollable.handle_key(key):
-                return  # consumed
-        """
-        if key in ("j", "ArrowDown", "down"):
-            self.scroll_offset += self.key_step
-            self._clamp_offset(self._avail_h)
-            return True
-        if key in ("k", "ArrowUp", "up"):
-            self.scroll_offset = max(0.0, self.scroll_offset - self.key_step)
-            return True
-        return False
-
-    def handle_scroll(self, delta_y: float) -> bool:
-        """Update scroll_offset from a mouse-wheel delta.
-
-        Returns True (always consumes the event). Call from the app's
-        on_scroll_delta handler:
-
-            def on_scroll_delta(self, _ctx, delta_y):
-                self._scrollable.handle_scroll(delta_y)
-                self.emit.schedule_render()
-
-        `delta_y` is positive when scrolling up (matches egui's
-        smooth_scroll_delta convention). The offset is clamped to
-        [0, content_height - viewport_height].
-        """
-        self.scroll_offset = max(0.0, self.scroll_offset - delta_y)
-        self._clamp_offset(self._avail_h)
-        return True
-
-    def ensure_visible(self, top: float, bottom: float, margin: float = 0.0) -> None:
-        """See `ensure_visible(...)` free function. Wrapper for Scrollable's
-        own offset + cached viewport height. Use this from inside an app
-        that's wrapped its content in a Scrollable instance:
-
-            self._sel_idx = min(self._sel_idx + 1, len(items) - 1)
-            self._scrollable.ensure_visible(self._sel_idx * ROW_H,
-                                            self._sel_idx * ROW_H + ROW_H)
-        """
-        if self._avail_h <= 0:
-            return
-        self.scroll_offset = ensure_visible(
-            self.scroll_offset, self._avail_h, top, bottom, margin=margin
-        )
-        self._clamp_offset(self._avail_h)
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.register_scroll_consumer(self)
-        self._avail_h = h
-        # Measure child at our width (less scrollbar gutter).
-        content_w = w - self._SCROLLBAR_W - 2.0
-        self._child_h = self.child.measure(content_w)
-        self._clamp_offset(h)
-
-        # Clip to our allocated rect, then render child offset upward.
-        ctx.push_clip(x, y, w, h)
-        try:
-            short_content_offset = (
-                max(0.0, h - self._child_h) if self.align == "bottom" else 0.0
-            )
-            child_y = y + short_content_offset - self.scroll_offset
-            self.child.render(ctx, x, child_y, content_w, self._child_h)
-        finally:
-            ctx.pop_clip()
-
-        # Scrollbar indicator (only when content overflows).
-        if self._child_h > h and h > 0:
-            track_h = h
-            thumb_ratio = h / self._child_h
-            thumb_h = max(16.0, track_h * thumb_ratio)
-            thumb_y = y + (self.scroll_offset / self._child_h) * track_h
-            # Clamp thumb to track
-            thumb_y = min(thumb_y, y + track_h - thumb_h)
-            bar_x = x + w - self._SCROLLBAR_W
-            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, theme.highlight)
-            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, theme.muted)
-
-    def to_node(self) -> "dict | None":
-        child_node = self.child.to_node()
-        if child_node is None:
-            return None
-        return {"type": "scroll", "child": child_node, "horizontal": False}
-
-
-def ensure_visible(scroll_offset: float, viewport_h: float,
-                   top: float, bottom: float, margin: float = 0.0) -> float:
-    """Solve 'selection follows scroll' in one call. Returns the new offset.
-
-    The pattern: the user is navigating items with j/k. The cursor moves
-    freely while it stays inside the visible viewport; the moment it would
-    go off the top or bottom edge, the viewport scrolls just enough to
-    keep it visible. Identical to every native list widget.
-
-    Apps call this from their nav handler after mutating their
-    selected_index — works whether the app uses a `Scrollable` component
-    or hand-rolls its own scroll offset (commit-graph's clip-and-offset
-    style):
-
-        new_sel = min(self._sel + 1, len(items) - 1)
-        item_top = new_sel * ROW_H
-        self._scroll_offset = ensure_visible(
-            self._scroll_offset, viewport_h,
-            top=item_top, bottom=item_top + ROW_H,
-        )
-        self._sel = new_sel
-
-    Args:
-        scroll_offset: current scroll offset in the child's local space.
-        viewport_h:    visible height of the viewport.
-        top, bottom:   the item's top/bottom edges in the child's local space.
-        margin:        scrolloff equivalent. Set to one row-height to keep
-                       a row of breathing room above/below the cursor.
-
-    Returns:
-        The new scroll_offset that keeps `[top, bottom]` visible. Identical
-        to the input if the cursor was already in view.
-    """
-    if viewport_h <= 0:
-        return scroll_offset
-    cursor_top = scroll_offset + margin
-    cursor_bottom = scroll_offset + viewport_h - margin
-    if top < cursor_top:
-        return max(0.0, top - margin)
-    if bottom > cursor_bottom:
-        return bottom - viewport_h + margin
-    return scroll_offset
-
-
-@dataclass
-class Footer(Component):
-    """Small caption row. Wraps instead of clipping. The parent `Column`
-    provides the outer bottom padding, so no extra padding is needed here.
-
-    Canvas-mode only (`measure()`/`render()`). There is no host-native node
-    for a standalone footer band — the WIT `ui-node-data` enum
-    (`wit/plexi.wit`) has no `footer` variant, only `footer-keys`. Use
-    `FooterKeys` in a declarative tree instead; this class has no
-    `to_node()` and cannot be placed in one.
-    """
-    text: str
-    color: "str | None" = None
-    max_lines: int = 2
-
-    TOP_GAP = SPACE_MD
-    LINE_H = TEXT_HINT + 5.0
-
-    def _lines(self, avail_w: float) -> List[str]:
-        return _wrap_to_width(self.text, avail_w, TEXT_HINT,
-                              max_lines=self.max_lines)
-
-    def measure(self, avail_w: float) -> float:
-        lines = self._lines(avail_w)
-        count = max(1, len(lines))
-        return self.TOP_GAP + 1.0 + self.TOP_GAP + count * self.LINE_H
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        line_y = y + self.TOP_GAP
-        ctx.rect(x, line_y, w, 1.0, theme.highlight)
-        text_y = line_y + 1.0 + self.TOP_GAP
-        for i, line in enumerate(self._lines(w)):
-            ctx.text(x, text_y + i * self.LINE_H, line,
-                     size=TEXT_HINT, color=self.color or theme.muted)
 
 
 @dataclass
 class FooterKeys(Component):
-    """Footer row that renders keyboard shortcuts as key chips + descriptions.
+    """Bottom-pinned keybinding hint bar."""
 
-    Each shortcut is a ``(key_or_keys, description)`` tuple — the same shape
-    as ``KeyRow``.  Chips are rendered inline (horizontal flow) separated by a
-    small gap, identical in style to ``KeyRow`` but packed tightly so many
-    shortcuts fit on one line.
-
-    Example::
-
-        FooterKeys([
-            ("j", "down"),
-            ("k", "up"),
-            (["g", "G"], "ends"),
-            ("?", "help"),
-        ])
-
-    ``key_or_keys`` may be a single string or a list of strings (chord).
-    Lists are joined with ``/`` as a single chip label so they stay compact
-    in the footer context.
-    """
-    shortcuts: List[tuple]  # list of (key_or_keys, description)
-    # Draw the separating rule above the chip row. True for true footers
-    # (bottom of a pane). Set False when this row sits directly under an
-    # AppBar, whose own bottom divider already separates it — otherwise the
-    # two rules stack with dead space between them.
+    shortcuts: list[tuple[Any, str]] = field(default_factory=list)
     divider: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for i, item in enumerate(self.shortcuts):
             if not isinstance(item, (tuple, list)) or len(item) != 2:
                 raise TypeError(
@@ -1546,46 +586,6 @@ class FooterKeys(Component):
                     f"got {type(item).__name__}: {item!r}. "
                     f"Example: FooterKeys([(\"j\", \"down\"), ([\"g\", \"G\"], \"ends\")])"
                 )
-
-    # TOP_GAP reduced from SPACE_MD (12px) to SPACE_SM (8px) — trimmer chrome.
-    TOP_GAP = SPACE_SM
-    CHIP_H = TEXT_HINT + 2.0 * 3.0   # TEXT_HINT + 2*KEYCHIP_PAD_V (style.rs)
-    # Single-row height. The host wraps the row to multiple lines when
-    # `max_width` can't fit everything; very narrow panes may render past
-    # this measurement. Apps wanting exact bounded footers should put
-    # FooterKeys in a fixed-height region or constrain the shortcut count.
-    ROW_H = CHIP_H + 2.0  # reduced from +4.0 — tighter without cramping chips
-
-    def measure(self, avail_w: float) -> float:
-        if not self.divider:
-            # Symmetric padding above and below the chip row.
-            return self.TOP_GAP + self.ROW_H + self.TOP_GAP
-        return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H + self.TOP_GAP
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        # Opaque BG backdrop so any content scrolled behind the footer doesn't
-        # bleed through the divider line.
-        ctx.rect(x, y, w, h, theme.bg)
-        if self.divider:
-            line_y = y + self.TOP_GAP
-            ctx.rect(x, line_y, w, 1.0, theme.highlight)
-            chip_row_y = line_y + 1.0 + self.TOP_GAP + (self.ROW_H - self.CHIP_H) / 2.0
-        else:
-            # Center the chip row vertically within its symmetric band.
-            chip_row_y = y + self.TOP_GAP + (self.ROW_H - self.CHIP_H) / 2.0
-
-        # Single host-measured shortcuts row — host owns ALL geometry:
-        # chip widths from real font metrics, inter-group flow, and
-        # multi-line wrap when `max_width` is exceeded. SDK does no
-        # width math, no truncation, no overlap. This is the whole
-        # point of the host-measured layout primitives (#312).
-        ctx.shortcuts(
-            x=x + SPACE_MD,
-            y=chip_row_y,
-            max_width=w - 2 * SPACE_MD,
-            pairs=list(self.shortcuts),
-            font_size=TEXT_HINT,
-        )
 
     def to_node(self) -> dict:
         entries = []
@@ -1599,1221 +599,1149 @@ class FooterKeys(Component):
         return {"type": "pinned", "edge": "bottom", "child": inner}
 
 
-# ── Composite list components ──────────────────────────────────────────────
+# ── Buttons & Form Controls ───────────────────────────────────────────────────
 
 
 @dataclass
-class ListItem(Component):
-    """Single or double-line list item with optional leading icon and trailing text.
+class Button(Component):
+    """Interactive button dispatching ``UiAction(on_click)`` when activated."""
 
-    Replaces the manual ``ctx.rect`` + y-offset pattern for list rows.
-    All vertical centering is handled internally — no ``align=`` juggling or
-    ``h * 0.38`` / ``h * 0.72`` magic numbers needed.
-
-    Example::
-
-        ListItem(
-            title=cmd["name"],
-            subtitle=cmd.get("description"),
-            trailing="›",
-            selected=(i == self._sel),
-        )
-
-    Canvas-mode only (`measure()`/`render()`) — used internally by
-    `SelectList.render()`. There is no `to_node()`; `SelectList.to_node()`
-    synthesizes the equivalent tree shape itself
-    (`_adapter.py::_normalize_node_data`'s `select_list` branch), it does not
-    delegate to this class.
-    """
-    title: str
-    subtitle: Optional[str] = None
-    leading: Optional[str] = None   # icon character or short label
-    trailing: Optional[str] = None  # chevron, badge text
-    selected: bool = False
-    background: Optional[str] = None  # default: theme.surface (or theme.highlight when selected)
-    radius: float = RADIUS_MD
-
-    HEIGHT_SINGLE = 36.0
-    HEIGHT_DOUBLE = 48.0
-    _LEAD_SLOT = SPACE_XL    # fixed slot width for leading icon
-    _TRAIL_SLOT = SPACE_LG   # fixed slot width for trailing text
-    _PAD_H = SPACE_MD        # inner horizontal padding
-
-    def _h(self) -> float:
-        return self.HEIGHT_DOUBLE if self.subtitle else self.HEIGHT_SINGLE
-
-    def measure(self, avail_w: float) -> float:
-        return self._h()
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        bg = theme.highlight if self.selected else (self.background or theme.surface)
-        ctx.rect(x, y, w, h, bg, radius=self.radius)
-
-        inner_x = x + self._PAD_H
-        inner_w = w - self._PAD_H * 2
-
-        if self.leading:
-            ctx.text(inner_x, y + h / 2.0, self.leading,
-                     size=TEXT_BODY, color=theme.muted, align="left_center")
-            inner_x += self._LEAD_SLOT
-            inner_w -= self._LEAD_SLOT
-
-        if self.trailing:
-            ctx.text(x + w - self._PAD_H, y + h / 2.0, self.trailing,
-                     size=TEXT_HINT, color=theme.muted, align="right_center")
-            inner_w -= self._TRAIL_SLOT
-
-        title_color = theme.accent if self.selected else theme.fg
-        if self.subtitle:
-            ctx.text(inner_x, y + h * 0.35, self.title,
-                     size=TEXT_BODY, color=title_color, bold=True,
-                     align="left_center", max_width=inner_w, elide=True)
-            ctx.text(inner_x, y + h * 0.70, self.subtitle,
-                     size=TEXT_HINT, color=theme.muted,
-                     align="left_center", max_width=inner_w, elide=True)
-        else:
-            ctx.text(inner_x, y + h / 2.0, self.title,
-                     size=TEXT_BODY, color=title_color, bold=True,
-                     align="left_center", max_width=inner_w, elide=True)
-
-
-@dataclass
-class Row(Component):
-    """Horizontal row: optional leading icon, main label, optional trailing text.
-
-    Vertically centres all items automatically. Use instead of paired
-    ``ctx.text(x, y + h/2, ..., align="left_center")`` calls when building
-    info rows with an icon, label, and badge or chevron.
-
-    Example::
-
-        Row(label="Workspace", leading="⚡", trailing=f"{count}")
-
-    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-    declarative-tree node exists for this leading/trailing text row. Compose
-    a `"row"` of `Text` nodes yourself in tree mode.
-    """
     label: str
-    leading: Optional[str] = None           # icon / short text, left slot
-    trailing: Optional[str] = None          # badge / chevron, right slot
-    font_size: float = TEXT_BODY
-    color: "str | None" = None
-    leading_color: Optional[str] = None     # default: theme.muted
-    trailing_color: Optional[str] = None    # default: theme.muted
-    height: Optional[float] = None          # default: font_size + SPACE_MD
-    bold: bool = False
-
-    _LEAD_SLOT = SPACE_XL
-    _TRAIL_SLOT = SPACE_XL
-
-    def _h(self) -> float:
-        return self.height if self.height is not None else self.font_size + SPACE_MD
-
-    def measure(self, avail_w: float) -> float:
-        return self._h()
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        yc = y + h / 2.0
-        inner_x = x
-        inner_w = w
-
-        if self.leading:
-            ctx.text(inner_x, yc, self.leading,
-                     size=self.font_size,
-                     color=self.leading_color or theme.muted,
-                     align="left_center")
-            inner_x += self._LEAD_SLOT
-            inner_w -= self._LEAD_SLOT
-
-        if self.trailing:
-            ctx.text(x + w, yc, self.trailing,
-                     size=self.font_size,
-                     color=self.trailing_color or theme.muted,
-                     align="right_center")
-            inner_w -= self._TRAIL_SLOT
-
-        ctx.text(inner_x, yc, self.label,
-                 size=self.font_size, color=self.color or theme.fg, bold=self.bold,
-                 align="left_center", max_width=inner_w, elide=True)
-
-
-# ── Badge primitive ────────────────────────────────────────────────────────
-
-
-def badge(
-    ctx,
-    x: float,
-    y_center: float,
-    label: str,
-    fill: "str | None" = None,
-    fg: "str | None" = None,
-    font_size: float = TEXT_HINT,
-    radius: float = RADIUS_BADGE,
-) -> None:
-    """Render a host-measured pill badge centred on ``y_center``.
-
-    The host measures the label with real egui font metrics, sizes the pill
-    (text_w + padding), and centres the text — no Python width math.
-
-    Args:
-        ctx:       Canvas context.
-        x:         Left edge of the badge.
-        y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
-        label:     Text to display inside the pill.
-        fill:      Pill background colour.
-        fg:        Text colour (default: theme bg — dark text on light pill).
-        font_size: Label pt size (default ``TEXT_HINT``).
-        radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
-                   ``RADIUS_BADGE`` (6 px, default) for rounded badges without
-                   the perfect-stadium look of ``RADIUS_MD`` (8 px).
-    """
-    ctx.badge(x=x, y_center=y_center, label=label,
-              fill=fill or theme.accent, fg=fg or theme.bg,
-              font_size=font_size, radius=radius)
-
-
-# ── Loading pill (suspense indicator) ──────────────────────────────────────
-#
-# A small chip that apps overlay on top of stale content while a refresh
-# is in flight. The point: don't full-swap the pane to a spinner card on
-# every refresh — keep the existing UI mounted, surface a localised
-# loading indicator only over the region that's being refreshed.
-#
-# Pattern in the calling app:
-#     1. Track `_fetching: bool` separately from `_mode`.
-#     2. On first-ever fetch, show `_render_loading()` (full-pane spinner).
-#     3. On every subsequent fetch, set `_fetching = True` and re-render —
-#        the existing _render_ready stays up; loading_pill renders on top.
-#     4. When the fetch completes: set `_fetching = False`, update data,
-#        re-render. Pill disappears, content updates in place.
-#
-# This is the SDK-level equivalent of React Suspense with stale-while-
-# revalidate: the boundary stays mounted with current content; the only
-# visual signal is a small pill instead of a destructive remount.
-
-import time as _ct_time  # noqa: E402  # `time` collides with some example apps' imports
-
-
-def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
-    """Canvas-mode only: render a small spinner+label pill at (x, y).
-    Returns rendered width.
-
-    For a declarative tree (`view()` returning a component tree), use
-    `Pending` instead -- it is the tree-mode equivalent of this
-    stale-while-revalidate pattern.
-
-    The pill uses host-measured `badge()` rendering (so widths are
-    correct), with a wall-clock-driven Braille spinner glyph that ticks
-    at 8 fps regardless of how often `loading_pill` is called.
-
-    Pattern: position this in the top-right of the region being
-    refreshed. While `_fetching` is true, render it on top of the stale
-    content. When the fetch completes, just stop calling it.
-
-    Args:
-        ctx:   Canvas context.
-        x, y:  Top-left of the pill (NOT y-centre — easier to anchor).
-        label: Text shown after the spinner glyph.
-    """
-    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    idx = int(_ct_time.monotonic() * 8) % len(spinner)
-    text = f"{spinner[idx]}  {label}"
-    # Use the host-measured badge; subtle styling (surface fill, muted fg).
-    # Pill is anchored top-left here; convert to y_center for badge().
-    ctx.badge(x=x, y_center=y + 9.0, label=text,
-              fill=theme.highlight, fg=theme.fg, font_size=TEXT_HINT,
-              radius=RADIUS_SM)
-    # Approx width — not measured here because we don't need it for
-    # placement (callers anchor by top-right of the parent region).
-    return len(text) * TEXT_HINT * 0.62 + 16.0
-
-
-# ── Container components ───────────────────────────────────────────────────
-
-
-@dataclass
-class Card(Component):
-    """Surface-colored container with inner padding. Stacks its children
-    vertically with a configurable gap. A 1px border in `theme.highlight` separates
-    it from the pane background — essential when surface and bg are close
-    in brightness."""
-    children: Sequence[Component]
-    padding: float = SPACE_LG
-    gap: float = SPACE_XS
-    background: "str | None" = None
-    border: Optional[str] = "__theme__"
-    radius: float = RADIUS_MD
-
-    def __post_init__(self):
-        self.children = list(self.children)
-        for child in self.children:
-            if not isinstance(child, Component):
-                raise TypeError(
-                    f"Card children must subclass Component, got {type(child).__name__}. "
-                    "Ad-hoc widget classes missing _render_clipped will crash at render time."
-                )
-
-    def _inner_w(self, outer_w: float) -> float:
-        return outer_w - 2 * self.padding
-
-    def measure(self, avail_w: float) -> float:
-        inner_w = self._inner_w(avail_w)
-        if not self.children:
-            return 2 * self.padding
-        child_heights = [c.measure(inner_w) for c in self.children]
-        total = sum(child_heights) + self.gap * max(0, len(self.children) - 1)
-        return total + 2 * self.padding
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius)
-        border_color = theme.highlight if self.border == "__theme__" else self.border
-        if border_color:
-            # Top + bottom + left + right 1px strokes. Drawn as four thin
-            # rects because `ctx.rect` doesn't support a separate stroke.
-            ctx.rect(x, y, w, 1.0, border_color)
-            ctx.rect(x, y + h - 1.0, w, 1.0, border_color)
-            ctx.rect(x, y, 1.0, h, border_color)
-            ctx.rect(x + w - 1.0, y, 1.0, h, border_color)
-        inner_x = x + self.padding
-        inner_y = y + self.padding
-        inner_w = w - 2 * self.padding
-        cursor = inner_y
-        for i, child in enumerate(self.children):
-            ch = child.measure(inner_w)
-            child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
-            cursor += ch
-            if i < len(self.children) - 1:
-                cursor += self.gap
-
-    def to_node(self) -> "dict | None":
-        children = []
-        for child in self.children:
-            node = child.to_node()
-            if node is None:
-                return None
-            children.append(node)
-        # No native bordered/padded container node — renders as a plain
-        # Column; background/border/padding styling is dropped.
-        return {"type": "column", "children": children, "gap": self.gap}
-
-
-@dataclass
-class TextInput(Component):
-    """Layout-aware text input. Place inside a Column like any other child.
-
-    Return it from ``view()`` inside a component tree. After the render pass,
-    read ``.submitted`` to get the text the user submitted (pressed Enter), or
-    ``None`` if nothing was submitted this frame.
-
-    Create once (in ``on_init``) and update ``placeholder`` as needed — the
-    instance is stable across renders so the host can track focus state.
-
-    When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
-
-    In a declarative ``view()`` tree, typing delivers ``UiValueChange`` and
-    Enter delivers ``UiAction``. Both handler ids default to this input's
-    ``id`` — pass ``on_change``/``on_submit`` only to route them elsewhere::
-
-        TextInput("guess", value=state.get("guess", ""))
-        # update():
-        #   UiValueChange(handler_id="guess", value=...)  → echo into state
-        #   UiAction(handler_id="guess")                  → Enter pressed
-    """
-    id: str
-    placeholder: str = ""
-    height: float = 48.0
-    multiline: bool = False
-    value: Optional[str] = None
-    on_change: str = ""
-    on_submit: str = ""
-    password: bool = False
-    autofocus: bool = False
-
-    _submitted: Optional[str] = field(default=None, init=False, repr=False)
-
-    def measure(self, avail_w: float) -> float:
-        return self.height
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
-                                         placeholder=self.placeholder, h=h,
-                                         multiline=self.multiline,
-                                         value=self.value)
-        self.value = None
-
-    @property
-    def submitted(self) -> Optional[str]:
-        """Text submitted this frame (user pressed Enter), else None."""
-        return self._submitted
+    on_click: str = ""
+    style: str = "secondary"
+    disabled: bool = False
 
     def to_node(self) -> dict:
-        # Handler ids default to the input's own id: the natural app code
-        # (`event.handler_id == "<my-input-id>"`) works without wiring
-        # on_change/on_submit explicitly (stint 0456).
         return {
-            "type": "TextInput",
-            "value": self.value or "",
-            "placeholder": self.placeholder,
-            "on_change": self.on_change or self.id,
-            "on_submit": self.on_submit or self.id,
-            "password": self.password,
-            # Declaring focus beats commanding it: the field that should hold
-            # the cursor says so, and the host grants it whenever the pane owns
-            # input and nothing else is focused — including the frame a form
-            # first appears (stint 0674).
-            "autofocus": self.autofocus,
-        }
-
-
-@dataclass
-class TextEdit(Component):
-    """Host-rendered text editor. Use inside ``view()`` like any other component.
-
-    The host maintains a persistent buffer keyed on ``node_id``. Typing fires
-    ``ComponentEvent`` with ``event_type="change"`` and ``payload={"value": "..."}``;
-    Enter (single-line) or Cmd+Enter (multiline) fires ``event_type="submit"``.
-
-    ``height`` controls the allocated row height (pixels). Default ``48.0`` suits
-    single-line use; set it larger for multiline (e.g. ``height=120.0``).
-
-    Example::
-
-        def view(self):
-            return Column([
-                TextEdit("body", multiline=True, height=120.0, placeholder="Type here..."),
-                FooterKeys([("↩", "submit")]),
-            ])
-    """
-
-    node_id: str
-    placeholder: str = ""
-    value: str = ""
-    multiline: bool = False
-    max_length: int = 0
-    height: float = 48.0
-
-    _submitted: Optional[str] = field(default=None, init=False, repr=False)
-
-    def measure(self, _avail_w: float) -> float:
-        return self.height
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self._submitted = ctx.text_input(self.node_id, x=x, y=y, w=w,
-                                         placeholder=self.placeholder,
-                                         h=h, multiline=self.multiline)
-
-    @property
-    def submitted(self) -> Optional[str]:
-        """Text submitted this frame (user pressed Enter), else None."""
-        return self._submitted
-
-    def to_node(self) -> dict:
-        # No native multiline text-editor node — composes onto the single-line
-        # TextInput primitive. `multiline`/`max_length` have no host-side
-        # equivalent yet and are dropped.
-        return {
-            "type": "TextInput",
-            "value": self.value,
-            "placeholder": self.placeholder,
-            "on_change": self.node_id,
-            "on_submit": self.node_id,
-            "password": False,
-        }
-
-
-@dataclass
-class ChatBubble(Component):
-    """A chat message bubble with left/right alignment and colored background.
-
-    ``align="right"`` for user messages (accent bg), ``"left"`` for
-    assistant messages (surface bg). Error messages use ``role="error"``.
-
-    Canvas-mode only (`measure()`/`render()`, which also draws markdown via
-    `ctx.markdown()`). There is no `to_node()` — no declarative-tree node
-    exists for a colored, markdown-rendering chat bubble.
-    """
-    text: str
-    role: str = "assistant"
-    max_lines: int = 50
-
-    LINE_LEADING = 5.0
-
-    def __post_init__(self):
-        if self.role not in ("user", "assistant", "error"):
-            raise ValueError(
-                f"ChatBubble role must be 'user', 'assistant', or 'error', got {self.role!r}. "
-                "'user' = right-aligned accent, 'assistant' = left-aligned surface, "
-                "'error' = left-aligned danger."
-            )
-    DESCENDER_PAD = 5.0
-    BUBBLE_PAD = SPACE_MD
-    BUBBLE_MAX_FRAC = 0.78
-    BUBBLE_MIN_W = 38.0
-
-    def _font_size(self) -> float:
-        return TEXT_BODY
-
-    def _bubble_colors(self) -> tuple:
-        if self.role == "user":
-            return (theme.accent, theme.bg)
-        if self.role == "error":
-            # Error background derived from theme.danger with darkening — no direct theme role.
-            return ("#45171e", theme.danger)
-        return (theme.surface, theme.fg)
-
-    def _plain_text(self) -> str:
-        text = self.text
-        for marker in ("**", "__", "`"):
-            text = text.replace(marker, "")
-        return text
-
-    def _natural_text_w(self) -> float:
-        char_w = self._font_size() * 0.55
-        lines = self._plain_text().splitlines() or [self._plain_text()]
-        longest = max((len(line.strip()) for line in lines), default=0)
-        return longest * char_w
-
-    def _bubble_w(self, avail_w: float) -> float:
-        max_w = max(self.BUBBLE_MIN_W, avail_w * self.BUBBLE_MAX_FRAC)
-        natural_w = self._natural_text_w() + 2 * self.BUBBLE_PAD
-        return min(avail_w, max(self.BUBBLE_MIN_W, min(max_w, natural_w)))
-
-    def _text_w(self, avail_w: float) -> float:
-        return self._bubble_w(avail_w) - 2 * self.BUBBLE_PAD
-
-    def _lines(self, avail_w: float) -> List[str]:
-        return _wrap_to_width(self.text, self._text_w(avail_w),
-                              self._font_size(), max_lines=self.max_lines)
-
-    def _line_h(self) -> float:
-        return self._font_size() + self.LINE_LEADING
-
-    def measure(self, avail_w: float) -> float:
-        text_w = self._text_w(avail_w)
-        line_count = _markdown_measure_lines(
-            self.text, text_w, self._font_size(), self.max_lines
-        )
-        if line_count <= 0:
-            return 0.0
-        text_h = line_count * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
-        # egui_commonmark adds small margins around paragraphs and list blocks.
-        return text_h + 2 * self.BUBBLE_PAD + SPACE_XS
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        bg, fg = self._bubble_colors()
-        bubble_w = self._bubble_w(w)
-        bx = x + w - bubble_w if self.role == "user" else x
-        ctx.rect(bx, y, bubble_w, h, fill=bg, radius=RADIUS_LG)
-        fs = self._font_size()
-        text_x = bx + self.BUBBLE_PAD
-        text_y = y + self.BUBBLE_PAD
-        text_w = bubble_w - 2 * self.BUBBLE_PAD
-        ctx.markdown(text_x, text_y, text_w, self.text, base_size=fs, color=fg)
-
-
-class SelectList(Component):
-    """Keyboard-navigable scrollable list. Stateful -- create at module level or in init().
-
-    items: list of dicts with keys: name (str), description (str, optional),
-           leading (str, optional), trailing (str, optional)
-    selected_idx: currently highlighted row index
-
-    Call handle_key(key) from on_key. Call hit_index(click_y) from on_click.
-    """
-
-    def __init__(self, items: List[dict], selected_idx: int = 0) -> None:
-        if not isinstance(items, list):
-            raise TypeError(
-                f"SelectList items must be a list of dicts, got {type(items).__name__}. "
-                "Each dict needs at least a 'name' key: [{\"name\": \"Item 1\"}, ...]"
-            )
-        for i, item in enumerate(items):
-            if not isinstance(item, dict):
-                raise TypeError(
-                    f"SelectList items[{i}] must be a dict with a 'name' key, "
-                    f"got {type(item).__name__}: {item!r}. "
-                    "Example: [{\"name\": \"Item 1\", \"description\": \"optional\"}]"
-                )
-            if "name" not in item:
-                raise ValueError(
-                    f"SelectList items[{i}] is missing required 'name' key. "
-                    f"Got keys: {list(item.keys())}. "
-                    "Each item dict must have at least: {\"name\": \"...\"}"
-                )
-        self.items = items
-        self.selected_idx = selected_idx
-        self._scroll_px: float = 0.0
-        self._viewport_h: float = 0.0
-        self._rendered_rects: List[tuple] = []  # (y_top, y_bot, idx) populated each render
-
-    def is_grow(self) -> bool:
-        return True
-
-    def measure(self, avail_w: float) -> float:
-        return 0.0  # is_grow — allocated by parent
-
-    def _item_h(self, i: int) -> float:
-        item = self.items[i]
-        return ListItem.HEIGHT_DOUBLE if item.get("description") else ListItem.HEIGHT_SINGLE
-
-    def _item_top(self, idx: int) -> float:
-        """Item's y position in content-local space (before scroll)."""
-        y = 0.0
-        for i in range(idx):
-            y += self._item_h(i) + SPACE_XS
-        return y
-
-    def _total_content_h(self) -> float:
-        if not self.items:
-            return 0.0
-        return sum(self._item_h(i) for i in range(len(self.items))) + SPACE_XS * (len(self.items) - 1)
-
-    def _clamp_scroll(self) -> None:
-        max_scroll = max(0.0, self._total_content_h() - self._viewport_h)
-        self._scroll_px = max(0.0, min(self._scroll_px, max_scroll))
-
-    def handle_key(self, key: str) -> bool:
-        """Update selection and scroll for j/k/arrows. Returns True if consumed."""
-        total = len(self.items)
-        if total == 0:
-            return False
-        if key in ("j", "ArrowDown", "down"):
-            self.selected_idx = min(self.selected_idx + 1, total - 1)
-        elif key in ("k", "ArrowUp", "up"):
-            self.selected_idx = max(self.selected_idx - 1, 0)
-        else:
-            return False
-        # Scroll to keep selected item visible
-        item_top = self._item_top(self.selected_idx)
-        item_bot = item_top + self._item_h(self.selected_idx)
-        self._scroll_px = ensure_visible(self._scroll_px, self._viewport_h, item_top, item_bot)
-        self._clamp_scroll()
-        return True
-
-    def hit_index(self, click_y: float) -> Optional[int]:
-        """Return item index at click_y (screen coords from last render), or None."""
-        for (yt, yb, idx) in self._rendered_rects:
-            if yt <= click_y < yb:
-                return idx
-        return None
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self._viewport_h = h
-        self._rendered_rects = []
-        self._clamp_scroll()
-
-        if not self.items:
-            ctx.text(x + w / 2, y + h / 2, "No items",
-                     size=TEXT_HINT, color=theme.muted, align="center_center")
-            return
-
-        ctx.push_clip(x, y, w, h)
-        try:
-            cursor_y = y - self._scroll_px
-            for i, item in enumerate(self.items):
-                ih = self._item_h(i)
-                yt = cursor_y
-                yb = cursor_y + ih
-                if yb > y and yt < y + h:
-                    self._rendered_rects.append((yt, yb, i))
-                    li = ListItem(
-                        title=item["name"],
-                        subtitle=item.get("description") or None,
-                        leading=item.get("leading"),
-                        trailing=item.get("trailing"),
-                        selected=(i == self.selected_idx),
-                    )
-                    li.render(ctx, x, cursor_y, w, ih)
-                cursor_y += ih + SPACE_XS
-        finally:
-            ctx.pop_clip()
-
-        # Scrollbar indicator when content overflows
-        total_h = self._total_content_h()
-        if total_h > h and h > 0:
-            sb_w = 3.0
-            thumb_ratio = h / total_h
-            thumb_h = max(16.0, h * thumb_ratio)
-            thumb_y = y + (self._scroll_px / total_h) * h
-            thumb_y = min(thumb_y, y + h - thumb_h)
-            bar_x = x + w - sb_w
-            ctx.rect(bar_x, y, sb_w, h, theme.highlight)
-            ctx.rect(bar_x, thumb_y, sb_w, thumb_h, theme.muted)
-
-    def to_node(self) -> dict:
-        items = []
-        for item in self.items:
-            items.append({
-                "name": item.get("name", ""),
-                "description": item.get("description", ""),
-                "leading": item.get("leading", ""),
-                "trailing": item.get("trailing", ""),
-            })
-        return {"type": "select_list", "items": items,
-                "selected_idx": self.selected_idx}
-
-
-@dataclass
-class FormField(Component):
-    """Label + TextInput, as one form row.
-
-    In a declarative ``view()`` tree this composes to a column of a caption
-    label and a text input, so a labeled field is one component instead of
-    hand-stacked parts. ``value`` makes it a controlled input (the app owns the
-    text and echoes ``UiValueChange`` back into state); ``autofocus`` hands it
-    the cursor the frame it appears. Handler ids default to ``id``, matching
-    :class:`TextInput`.
-
-    In canvas mode (``measure()``/``render()``) it draws the same pair itself;
-    read ``.submitted`` after the render pass for the text the user entered.
-    """
-    id: str
-    label: str
-    placeholder: str = ""
-    required: bool = False
-    height: float = 48.0
-    value: Optional[str] = None
-    autofocus: bool = False
-    on_change: str = ""
-    on_submit: str = ""
-
-    LABEL_H: float = TEXT_HINT + SPACE_XS  # 11 + 4 = 15px
-    LABEL_GAP: float = SPACE_SM            # 8px gap between label and input
-    BOTTOM_PAD: float = SPACE_LG          # 16px below input before next item
-
-    def __post_init__(self) -> None:
-        self._input: TextInput = TextInput(self.id, placeholder=self.placeholder, height=self.height)
-
-    @property
-    def submitted(self) -> Optional[str]:
-        """Text submitted this frame (Enter pressed), or None."""
-        return self._input.submitted
-
-    def measure(self, avail_w: float) -> float:
-        return self.LABEL_H + self.LABEL_GAP + self.height + self.BOTTOM_PAD
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        req_suffix = " *" if self.required else ""
-        ctx.text(x, y, f"{self.label}{req_suffix}",
-                 size=TEXT_HINT, color=theme.muted)
-        input_y = y + self.LABEL_H + self.LABEL_GAP
-        self._input.render(ctx, x, input_y, w, self.height)
-
-    def to_node(self) -> dict:
-        req_suffix = " *" if self.required else ""
-        label = Text(f"{self.label}{req_suffix}", size=TEXT_HINT, color=theme.muted)
-        field_input = TextInput(
-            self.id,
-            placeholder=self.placeholder,
-            height=self.height,
-            value=self.value,
-            on_change=self.on_change,
-            on_submit=self.on_submit,
-            autofocus=self.autofocus,
-        )
-        return {
-            "type": "column",
-            "children": [label.to_node(), field_input.to_node()],
-            "gap": self.LABEL_GAP,
-            "align": "stretch",
-            "grow": False,
+            "type": "button",
+            "label": self.label,
+            "on_click": self.on_click,
+            "style": self.style,
+            "disabled": self.disabled,
         }
 
 
 class Actions(Component):
-    """A form's action row: buttons laid side by side, never stacked.
+    """Horizontal row of ``Button`` components (`ActionBar` alias)."""
 
-    Buttons declared as plain children of a ``Column`` each take the column's
-    full width and stack vertically, which is how a Save/Cancel pair ends up
-    reading as two unrelated full-bleed bars. ``Actions`` is the primitive for
-    the pair: one row, standard button spacing, primary action first.
-
-        Actions([Button("Add", "add", style="primary"),
-                 Button("Cancel", "cancel", style="ghost")])
-    """
-
-    def __init__(self, buttons: Sequence[Button], gap: float = SPACE_SM) -> None:
-        if any(not isinstance(b, Button) for b in buttons):
-            raise TypeError("Actions children must be Button instances")
-        self.buttons = list(buttons)
-        self.gap = gap
-
-    def measure(self, _avail_w: float) -> float:
-        return max((b.measure(_avail_w) for b in self.buttons), default=0.0)
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        if not self.buttons:
-            return
-        each_w = (w - self.gap * (len(self.buttons) - 1)) / len(self.buttons)
-        for i, button in enumerate(self.buttons):
-            button.render(ctx, x + i * (each_w + self.gap), y, each_w, h)
+    def __init__(
+        self,
+        buttons: list[Button] | None = None,
+        *,
+        actions: list[Button] | None = None,
+        gap: float = SPACE_SM,
+        align: str = "start",
+    ) -> None:
+        items = actions if actions is not None else (buttons if buttons is not None else [])
+        if not isinstance(items, list):
+            raise TypeError(
+                f"ActionBar actions must be a list of Button instances, got {type(items).__name__}"
+            )
+        for i, item in enumerate(items):
+            if not isinstance(item, Button):
+                raise TypeError(
+                    f"ActionBar actions[{i}] must be a Button, got {type(item).__name__}"
+                )
+        self.buttons = list(items)
+        self.actions = self.buttons
+        self.gap = float(gap)
+        self.align = align
 
     def to_node(self) -> dict:
         return {
             "type": "row",
             "children": [b.to_node() for b in self.buttons],
             "gap": self.gap,
-            "align": "start",
-            "grow": False,
-        }
-
-
-@dataclass
-class Column(Component):
-    """The root container. Stacks children vertically. Handles grow spacers:
-    measures fixed-height children first, then distributes leftover space to
-    any `Spacer(grow=True)` descendants at the top level.
-
-    Spacing is good by default: leave `gap` unset and the host applies its
-    standard inter-child spacing; pass an explicit `gap=` (including `gap=0`
-    to pack children flush) to override. The root's *content padding* is owned
-    by the host too — a declarative tree is inset automatically, and app bars /
-    footers stay full-bleed — so apps need no layout code to look right.
-
-    `padding` / `padding_top` only affect the legacy canvas-mode layout
-    (`measure`/`render`); they are ignored by the declarative tree, whose inset
-    the host owns.
-    """
-    children: Sequence[Component]
-    padding: float = SPACE_XL
-    padding_top: Optional[float] = None
-    gap: Optional[float] = None
-    align: str = "start"
-    grow: bool = False
-    key: str = ""
-
-    def __post_init__(self):
-        self.children = list(self.children)
-        for child in self.children:
-            if not isinstance(child, Component):
-                raise TypeError(
-                    f"Column children must subclass Component, got {type(child).__name__}. "
-                    "Ad-hoc widget classes missing _render_clipped will crash at render time."
-                )
-
-    @property
-    def _pad_top(self) -> float:
-        return self.padding_top if self.padding_top is not None else SPACE_SM
-
-    @property
-    def _gap(self) -> float:
-        """Resolved gap for canvas-mode layout math. The declarative tree omits
-        gap when unset so the host applies its default; canvas-mode has no host,
-        so it falls back to `SPACE_MD` here."""
-        return self.gap if self.gap is not None else SPACE_MD
-
-    def measure(self, avail_w: float) -> float:
-        inner_w = avail_w - 2 * self.padding
-        total = 0.0
-        for i, c in enumerate(self.children):
-            total += c.measure(inner_w)
-            if i < len(self.children) - 1:
-                total += self._gap
-        return total + self._pad_top + self.padding
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        inner_x = x + self.padding
-        inner_y = y + self._pad_top
-        inner_w = w - 2 * self.padding
-        inner_h = h - self._pad_top - self.padding
-
-        heights = [c.measure(inner_w) for c in self.children]
-        gap_total = self._gap * max(0, len(self.children) - 1)
-        fixed_used = sum(heights) + gap_total
-
-        grow_indices = [i for i, c in enumerate(self.children) if c.is_grow()]
-        slack = max(0.0, inner_h - fixed_used)
-        if grow_indices and slack > 0:
-            share = slack / len(grow_indices)
-            for i in grow_indices:
-                heights[i] += share
-
-        cursor = inner_y
-        for i, child in enumerate(self.children):
-            ch = heights[i]
-            if cursor + ch > inner_y + inner_h:
-                # Clamp to remaining space; prevents overdraw on a too-small pane.
-                ch = max(0.0, inner_y + inner_h - cursor)
-                if ch <= 0:
-                    break
-            child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
-            cursor += ch
-            if i < len(self.children) - 1:
-                cursor += self._gap
-
-    def to_node(self) -> "dict | None":
-        children = []
-        for child in self.children:
-            child_node = child.to_node()
-            if child_node is None:
-                return None
-            children.append(child_node)
-        column_node: dict = {
-            "type": "column",
-            "children": children,
             "align": self.align,
-            "grow": self.grow,
         }
-        # Emit gap only when the app set one, so the host can tell "unset"
-        # (apply the default) from an explicit "gap=0" (pack flush).
-        if self.gap is not None:
-            column_node["gap"] = self.gap
-        return column_node
 
 
-@dataclass
-class InfoTable(Component):
-    """Key-value table with surface background, border, and row dividers.
-
-    Each row is a ``(key, value)`` tuple rendered in a fixed-width key column
-    (monospace, green accent) and a value column (monospace, FG).
-
-    Example::
-
-        InfoTable([
-            ("app_id", "my-app"),
-            ("workspace", "/path/to/ws"),
-        ])
-
-    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-    declarative-tree node exists for a bordered key-value table with row
-    dividers. Compose a `"column"` of `"row"`s of `Text` yourself in tree
-    mode (see `KeyValue`, an unexported reference implementation earlier in
-    this module).
-    """
-    rows: List[tuple]  # list of (key_label, value_text)
-    key_width: float = 100.0
-    background: Optional[str] = None  # default: theme.surface
-    border: Optional[str] = None      # default: theme.highlight
-    radius: float = RADIUS_MD
-
-    ROW_H = 30.0
-    PAD_H = SPACE_MD
-
-    def __post_init__(self):
-        for i, row in enumerate(self.rows):
-            if not isinstance(row, (tuple, list)) or len(row) != 2:
-                raise TypeError(
-                    f"InfoTable rows[{i}] must be a (key, value) tuple, "
-                    f"got {type(row).__name__}: {row!r}. "
-                    f"Example: InfoTable([(\"app_id\", \"my-app\"), (\"version\", \"1.0\")])"
-                )
-
-    def measure(self, avail_w: float) -> float:
-        if not self.rows:
-            return 0.0
-        return self.ROW_H * len(self.rows)
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        # Background + border
-        background = self.background or theme.surface
-        border = self.border or theme.highlight
-        ctx.rect(x, y, w, h, background, radius=self.radius)
-        ctx.rect(x, y, w, 1.0, border)
-        ctx.rect(x, y + h - 1.0, w, 1.0, border)
-        ctx.rect(x, y, 1.0, h, border)
-        ctx.rect(x + w - 1.0, y, 1.0, h, border)
-
-        val_x = x + self.PAD_H + self.key_width + self.PAD_H
-        val_w = w - self.PAD_H - self.key_width - self.PAD_H * 2
-
-        for i, (key, value) in enumerate(self.rows):
-            row_y = y + i * self.ROW_H
-            cy = row_y + self.ROW_H / 2.0
-
-            # Key (green, monospace)
-            ctx.text(x + self.PAD_H, cy, str(key),
-                     size=TEXT_CAPTION, color=theme.success, monospace=True,
-                     align="left_center", max_width=self.key_width, elide=True)
-
-            # Value (FG, monospace)
-            ctx.text(val_x, cy, str(value),
-                     size=TEXT_CAPTION, color=theme.fg, monospace=True,
-                     align="left_center", max_width=val_w, elide=True)
-
-            # Row divider (skip last row)
-            if i < len(self.rows) - 1:
-                div_y = row_y + self.ROW_H
-                ctx.rect(x + 1.0, div_y, w - 2.0, 1.0, theme.bg)
+ActionBar = Actions
 
 
-@dataclass
-class ButtonRow(Component):
-    """A clickable button rendered as a component in the declarative tree.
-
-    Use this from ``view()``. Button presses arrive through
-    ``on_component_event(node_id, event_type, payload)``.
-
-    Example::
-
-        self._btn = ButtonRow("action", "Click me")
-
-        def view(self):
-            return Column([self._btn])
-
-        def on_component_event(self, node_id, event_type, payload):
-            if node_id == "action" and event_type == "click":
-                handle_click()
-    """
-    id: str
-    label: str
-    text_color: "str | None" = None
-    fill: "str | None" = None
-    hover_fill: "str | None" = None
-    active_fill: "str | None" = None
-    font_size: float = TEXT_BODY
-    radius: float = RADIUS_MD
-    height: float = 36.0
-    clicked: bool = field(default=False, init=False, repr=False)
-
-    def measure(self, avail_w: float) -> float:
-        return self.height
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self.clicked = ctx.button(
-            id=self.id,
-            x=x, y=y, w=w, h=h,
-            label=self.label,
-            fill=self.fill or theme.surface,
-            hover_fill=self.hover_fill or theme.highlight,
-            active_fill=self.active_fill or theme.text_section,
-            text_color=self.text_color or theme.accent,
-            font_size=self.font_size,
-            radius=self.radius,
-        )
-
-    def to_node(self) -> dict:
-        # `on_click` is required by the host's Button decode arm
-        # (`decode_node_data` in `src/host/wasm_python.rs`); ButtonRow's own
-        # `id` doubles as the click action, matching how canvas-mode
-        # `on_component_event(node_id, ...)` already keys clicks off `id`.
-        return {"type": "button", "label": self.label,
-                "on_click": self.id, "disabled": False}
-
-
-# ── UiNode component tree (PGAP v3.5) ─────────────────────────────────────
-#
-# These classes produce ``dict`` values matching the ``UiNode`` wire format
-# defined in ``src/protocol/``.  ``to_node()`` returns a plain dict
-# with a ``"type"`` field, returned from ``view()`` and serialised to the
-# host.  All ``UiNode`` classes serialise to the single ``ui-node-data``
-# variant set; sugar types decompose to base nodes and are rendered natively by
-# the host.
-
-
-class Tabs:
-    """Tabbed container. Renders as a horizontal tab bar + active content area.
-
-    Decomposes to a vertical Stack containing:
-    - a horizontal Stack of Interactive(Text) tab buttons
-    - the active tab's content node
-
-    Example::
-
-        tabs = Tabs([
-            ("Overview", overview_node),
-            ("Details", details_node),
-        ], active=0)
-        return tabs.to_node()
-    """
+class TextInput(Component):
+    """Editable text input rendered natively by the host (`TextEdit` alias)."""
 
     def __init__(
         self,
-        tabs: "list[tuple[str, HasToNode]]",
-        active: int = 0,
+        id: str = "",
+        value: str = "",
+        placeholder: str = "",
+        on_change: str = "",
+        on_submit: str = "",
+        password: bool = False,
+        *,
+        autofocus: bool = False,
+        node_id: str = "",
+        multiline: bool = False,
+        max_length: int | None = None,
+        height: float = 0.0,
     ) -> None:
-        for i, item in enumerate(tabs):
-            if not isinstance(item, (tuple, list)) or len(item) != 2:
-                raise TypeError(
-                    f"Tabs entries[{i}] must be a (label, content) tuple, "
-                    f"got {type(item).__name__}: {item!r}. "
-                    f"Example: Tabs([(\"Tab1\", my_node), (\"Tab2\", other_node)])"
-                )
-            label, content = item
-            if not isinstance(label, str):
-                raise TypeError(
-                    f"Tabs entries[{i}] label must be a str, got {type(label).__name__}. "
-                    f"Example: Tabs([(\"Tab1\", my_node)])"
-                )
-        self.tabs = tabs
-        self.active = active
-
-    def to_node(self) -> dict:
-        tab_buttons = []
-        for i, (label, _content) in enumerate(self.tabs):
-            bold = i == self.active
-            tab_buttons.append({
-                "type": "button",
-                "label": label,
-                "on_click": f"tab_{i}",
-                "style": "primary" if bold else "secondary",
-                "disabled": False,
-            })
-
-        tab_bar: dict = {
-            "type": "row",
-            "children": tab_buttons,
-            "gap": SPACE_SM,
-        }
-
-        active_content = None
-        if self.tabs:
-            idx = max(0, min(self.active, len(self.tabs) - 1))
-            content = self.tabs[idx][1]
-            active_content = content.to_node() if hasattr(content, "to_node") else content
-
-        children: list = [tab_bar]
-        if active_content is not None:
-            children.append(active_content)
-
-        return {
-            "type": "column",
-            "children": children,
-            "gap": 0.0,
-        }
-
-
-class Grid:
-    """Fixed-column grid layout.
-
-    Decomposes to a vertical Stack of rows, where each row is a horizontal
-    Stack of up to ``columns`` children.
-
-    Example::
-
-        grid = Grid(2, [item_a, item_b, item_c, item_d], gap=8.0)
-        return grid.to_node()
-    """
-
-    def __init__(
-        self,
-        columns: int,
-        children: "list[HasToNode]",
-        gap: float = 8.0,
-    ) -> None:
-        if columns < 1:
-            raise ValueError(f"Grid columns must be >= 1, got {columns}")
-        if not isinstance(columns, int):
-            raise TypeError(
-                f"Grid columns must be an int, got {type(columns).__name__}. "
-                f"Example: Grid(2, [child1, child2])"
-            )
-        for i, child in enumerate(children):
-            if not isinstance(child, (dict, HasToNode)):
-                raise TypeError(
-                    f"Grid children[{i}] must implement to_node() (HasToNode) or be a dict, "
-                    f"got {type(child).__name__}. "
-                    "Grid children need a to_node() method for host-side rendering."
-                )
-        self.columns = columns
-        self.children = children
-        self.gap = gap
-
-    def to_node(self) -> dict:
-        rows: list = []
-        for row_start in range(0, max(1, len(self.children)), self.columns):
-            row_items = self.children[row_start:row_start + self.columns]
-            row_nodes = []
-            for child in row_items:
-                row_nodes.append(child.to_node() if hasattr(child, "to_node") else child)
-            rows.append({
-                "type": "row",
-                "children": row_nodes,
-                "gap": self.gap,
-            })
-
-        return {
-            "type": "column",
-            "children": rows,
-            "gap": self.gap,
-        }
-
-
-class Toggle:
-    """On/off toggle switch (L1 sugar).
-
-    Renders as a Button whose label carries the on/off state; clicking it
-    fires `node_id` as the on_click handler.
-
-    Example::
-
-        toggle = Toggle("dark_mode", value=True, label="Dark mode")
-        return toggle.to_node()
-    """
-
-    def __init__(self, node_id: str, value: bool, label: str = "") -> None:
-        self.node_id = node_id
+        resolved_id = id or node_id
+        self.id = resolved_id
+        self.node_id = resolved_id
         self.value = value
-        self.label = label
+        self.placeholder = placeholder
+        self.on_change = on_change or resolved_id
+        self.on_submit = on_submit or resolved_id
+        self.password = bool(password)
+        self.autofocus = bool(autofocus)
+        self.multiline = bool(multiline)
+        self.max_length = max_length
+        self.height = float(height)
 
     def to_node(self) -> dict:
-        state_button: dict = {
+        return {
+            "type": "TextInput",
+            "value": self.value,
+            "placeholder": self.placeholder,
+            "on_change": self.on_change or self.id,
+            "on_submit": self.on_submit or self.id,
+            "password": self.password,
+            "autofocus": self.autofocus,
+        }
+
+
+TextEdit = TextInput
+
+
+class FormField(Component):
+    """Labeled ``TextInput`` column with optional required indicator."""
+
+    def __init__(
+        self,
+        id: str,
+        label: str,
+        *,
+        value: str = "",
+        placeholder: str = "",
+        required: bool = False,
+        password: bool = False,
+        autofocus: bool = False,
+        on_change: str = "",
+        on_submit: str = "",
+    ) -> None:
+        self.id = id
+        self.label = label
+        self.value = value
+        self.placeholder = placeholder
+        self.required = bool(required)
+        self.password = bool(password)
+        self.autofocus = bool(autofocus)
+        self.on_change = on_change or id
+        self.on_submit = on_submit or id
+
+    def to_node(self) -> dict:
+        label_text = f"{self.label} *" if self.required else self.label
+        return {
+            "type": "column",
+            "children": [
+                {"type": "text", "text": label_text, "bold": True},
+                TextInput(
+                    self.id,
+                    value=self.value,
+                    placeholder=self.placeholder,
+                    on_change=self.on_change,
+                    on_submit=self.on_submit,
+                    password=self.password,
+                    autofocus=self.autofocus,
+                ).to_node(),
+            ],
+            "gap": 4.0,
+        }
+
+
+class Checkbox(Component):
+    """Boolean checkbox control dispatching ``UiAction(node_id)`` on click."""
+
+    def __init__(
+        self,
+        node_id: str,
+        label: str = "",
+        checked: bool = False,
+        disabled: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        self.label = label
+        self.checked = bool(checked)
+        self.disabled = bool(disabled)
+
+    def to_node(self) -> dict:
+        mark = "[x]" if self.checked else "[ ]"
+        text = f"{mark} {self.label}" if self.label else mark
+        return {
+            "type": "button",
+            "label": text,
+            "on_click": self.node_id,
+            "style": "primary" if self.checked else "secondary",
+            "disabled": self.disabled,
+        }
+
+
+class Toggle(Component):
+    """Boolean toggle control (`Switch` alias)."""
+
+    def __init__(
+        self,
+        node_id: str,
+        value: bool | None = None,
+        label: str = "",
+        *,
+        on: bool | None = None,
+        disabled: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        resolved = on if on is not None else (value if value is not None else False)
+        self.value = bool(resolved)
+        self.on = self.value
+        self.label = label
+        self.disabled = bool(disabled)
+
+    def to_node(self) -> dict:
+        state_button = {
             "type": "button",
             "label": "on" if self.value else "off",
             "on_click": self.node_id,
             "style": "primary" if self.value else "secondary",
-            "disabled": False,
+            "disabled": self.disabled,
         }
-        if not self.label:
-            return state_button
+        if self.label:
+            return {
+                "type": "row",
+                "children": [
+                    {"type": "text", "text": self.label},
+                    state_button,
+                ],
+                "gap": 8.0,
+            }
+        return state_button
+
+
+Switch = Toggle
+
+
+class Radio(Component):
+    """Single-choice radio group dispatching ``UiAction(f"{node_id}:{idx}")``."""
+
+    def __init__(
+        self,
+        node_id: str,
+        options: list[str] | None = None,
+        selected: int = 0,
+        disabled: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        self.options = list(options) if options is not None else []
+        self.selected = int(selected)
+        self.disabled = bool(disabled)
+
+    def to_node(self) -> dict:
+        children = [
+            {
+                "type": "button",
+                "label": f"({'*' if i == self.selected else ' '}) {opt}",
+                "on_click": f"{self.node_id}:{i}",
+                "style": "primary" if i == self.selected else "secondary",
+                "disabled": self.disabled,
+            }
+            for i, opt in enumerate(self.options)
+        ]
+        return {"type": "column", "children": children, "gap": 4.0}
+
+
+class Slider(Component):
+    """Numeric range slider control with decrement/increment buttons and progress bar."""
+
+    def __init__(
+        self,
+        node_id: str,
+        value: float = 0.0,
+        min: float = 0.0,
+        max: float = 1.0,
+        step: float = 0.01,
+        disabled: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        self.value = float(value)
+        self.min = float(min)
+        self.max = float(max)
+        self.step = float(step)
+        self.disabled = bool(disabled)
+
+    def to_node(self) -> dict:
+        span = self.max - self.min
+        ratio = (self.value - self.min) / span if span > 0 else 0.0
+        ratio = max(0.0, min(1.0, ratio))
         return {
             "type": "row",
             "children": [
-                {"type": "text", "text": self.label},
-                state_button,
+                {
+                    "type": "button",
+                    "label": "-",
+                    "on_click": f"{self.node_id}:dec",
+                    "style": "secondary",
+                    "disabled": self.disabled,
+                },
+                {"type": "progress-bar", "value": ratio, "max": 1.0},
+                {
+                    "type": "button",
+                    "label": "+",
+                    "on_click": f"{self.node_id}:inc",
+                    "style": "secondary",
+                    "disabled": self.disabled,
+                },
+                {"type": "text", "text": f"{self.value:.2f}"},
             ],
-            "gap": SPACE_SM,
+            "gap": 6.0,
         }
 
 
-class ProgressBar:
-    """Horizontal progress bar backed by the host's native progress-bar node.
+class Select(Component):
+    """Single-choice option selector."""
 
-    Example::
+    def __init__(
+        self,
+        node_id: str,
+        options: list[str] | None = None,
+        selected: int | None = None,
+        placeholder: str = "Select…",
+        disabled: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        self.options = list(options) if options is not None else []
+        self.selected = selected
+        self.placeholder = placeholder
+        self.disabled = bool(disabled)
 
-        bar = ProgressBar(0.75)
-        return bar.to_node()
+    def to_node(self) -> dict:
+        if not self.options:
+            return {
+                "type": "button",
+                "label": self.placeholder,
+                "on_click": self.node_id,
+                "style": "secondary",
+                "disabled": True,
+            }
+        children = [
+            {
+                "type": "button",
+                "label": opt,
+                "on_click": f"{self.node_id}:{i}",
+                "style": "primary" if i == self.selected else "secondary",
+                "disabled": self.disabled,
+            }
+            for i, opt in enumerate(self.options)
+        ]
+        return {"type": "row", "children": children, "gap": 4.0}
+
+
+class DateTimePicker(Component):
+    """Date/time input field."""
+
+    def __init__(
+        self,
+        node_id: str,
+        value: str = "",
+        mode: str = "date",
+        disabled: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        self.value = value
+        self.mode = mode
+        self.disabled = bool(disabled)
+
+    def to_node(self) -> dict:
+        placeholder = {
+            "date": "YYYY-MM-DD",
+            "time": "HH:MM",
+            "datetime": "YYYY-MM-DD HH:MM",
+        }.get(self.mode, "YYYY-MM-DD")
+        return {
+            "type": "TextInput",
+            "value": self.value,
+            "placeholder": placeholder,
+            "on_change": self.node_id,
+            "on_submit": self.node_id,
+            "password": False,
+        }
+
+
+# ── Lists, Navigation & Tables ────────────────────────────────────────────────
+
+
+class SelectList(Component):
+    """Scrollable, selectable list view with keyboard and click navigation.
+
+    ``items`` may be:
+    - ``list[dict]`` with ``name`` (or ``label``) and optional ``description``,
+      ``leading``, ``trailing``
+    - ``list[str]`` of row labels
+    - ``list[Component]`` of custom row components
+
+    When ``on_select`` is set, clicking row ``i`` dispatches
+    ``UiAction(f"{on_select}:{i}")``. Use :meth:`SelectList.move_cursor` (or
+    top-level :func:`move_cursor`) in ``update()`` to handle ``j``/``k``/arrow
+    keys.
+    """
+
+    move_cursor = staticmethod(move_cursor)
+
+    def __init__(
+        self,
+        items: list[Any],
+        selected_idx: int = 0,
+        scroll_height: float = 0,
+        *,
+        selected: int | None = None,
+        on_select: str | None = None,
+    ) -> None:
+        if not isinstance(items, list):
+            raise TypeError(
+                f"SelectList items must be a list, got {type(items).__name__}."
+            )
+        for i, item in enumerate(items):
+            if isinstance(item, (str, Component)):
+                continue
+            if isinstance(item, dict):
+                if "name" not in item and "label" not in item and "type" not in item and "kind" not in item:
+                    raise ValueError(
+                        f"SelectList items[{i}] dict is missing required 'name' key. "
+                        f"Got keys: {list(item.keys())}."
+                    )
+                continue
+            raise TypeError(
+                f"SelectList items[{i}] must be a dict, str, or Component, "
+                f"got {type(item).__name__}: {item!r}"
+            )
+        self.items = items
+        resolved_sel = selected if selected is not None else selected_idx
+        self.selected_idx = int(resolved_sel) if resolved_sel is not None else 0
+        self.scroll_height = float(scroll_height)
+        self.on_select = on_select
+
+    def handle_key(self, event_or_key: Any, count: int | None = None, selected: int = 0) -> Any:
+        """Move selection for ``j``/``k``/``up``/``down``/``g``/``G``/``home``/``end``.
+
+        When called on an instance as ``list_widget.handle_key(key)``, mutates
+        ``self.selected_idx`` and returns ``True`` if the cursor moved.
+        When called with ``(event_or_key, count, selected)``, acts like
+        :func:`move_cursor` and returns the new index or ``None``.
+        """
+        if count is not None:
+            return move_cursor(event_or_key, count, selected)
+        nxt = move_cursor(event_or_key, len(self.items), self.selected_idx)
+        if nxt is None or nxt == self.selected_idx:
+            return False
+        self.selected_idx = nxt
+        return True
+
+    def to_node(self) -> dict:
+        return {
+            "type": "select_list",
+            "items": self.items,
+            "selected_idx": self.selected_idx,
+            "on_select": self.on_select,
+        }
+
+
+class Breadcrumb(Component):
+    """Horizontal trail of path segments separated by ``/``."""
+
+    def __init__(self, items: list[str] | None = None) -> None:
+        self.items = list(items) if items is not None else []
+
+    def to_node(self) -> dict:
+        children: list[dict] = []
+        for i, seg in enumerate(self.items):
+            if i > 0:
+                children.append({"type": "text", "text": "/"})
+            children.append({
+                "type": "text",
+                "text": str(seg),
+                "bold": i == len(self.items) - 1,
+            })
+        return {"type": "row", "children": children, "gap": 6.0}
+
+
+class Tabs(Component):
+    """Tabbed container or standalone tab bar (`TabBar` alias).
+
+    Can be constructed either with ``(label, panel_component)`` pairs::
+
+        Tabs([("Overview", overview_panel), ("Logs", logs_panel)], active=0, node_id="tabs")
+
+    or as a standalone tab bar::
+
+        TabBar("gallery-tabs", tabs=["Overview", "Details", "Logs"], active=0)
     """
 
     def __init__(
         self,
-        value: float,
-        max_value: float = 1.0,
+        *args: Any,
+        tabs: list[Any] | None = None,
+        active: int = 0,
+        node_id: str = "tabs",
     ) -> None:
-        self.value = value
-        self.max_value = max_value
+        raw_tabs: list[Any] = []
+        resolved_active = active
+        resolved_node_id = node_id
+
+        if args:
+            first = args[0]
+            if isinstance(first, str):
+                resolved_node_id = first
+                if len(args) >= 2 and isinstance(args[1], list):
+                    raw_tabs = list(args[1])
+                    if len(args) >= 3:
+                        resolved_active = int(args[2])
+                elif tabs is not None:
+                    raw_tabs = list(tabs)
+                    if len(args) >= 2:
+                        resolved_active = int(args[1])
+            else:
+                raw_tabs = list(first)
+                if len(args) >= 2:
+                    resolved_active = int(args[1])
+                if len(args) >= 3:
+                    resolved_node_id = str(args[2])
+        elif tabs is not None:
+            raw_tabs = list(tabs)
+
+        self.node_id = resolved_node_id
+        self.active = int(resolved_active)
+        self.tabs: list[tuple[str, Component | None]] = [
+            (str(t[0]), t[1]) if isinstance(t, tuple) else (str(t), None)
+            for t in raw_tabs
+        ]
+        self._bar_only = bool(self.tabs) and all(panel is None for _, panel in self.tabs)
 
     def to_node(self) -> dict:
-        safe_max = self.max_value if self.max_value > 0 else 1.0
+        tab_buttons = [
+            {
+                "type": "button",
+                "label": label,
+                "on_click": f"{self.node_id}:{i}",
+                "style": "primary" if i == self.active else "secondary",
+                "disabled": False,
+            }
+            for i, (label, _) in enumerate(self.tabs)
+        ]
+        tab_bar = {
+            "type": "row",
+            "children": tab_buttons,
+            "gap": 4.0,
+        }
+        if self._bar_only:
+            return tab_bar
+        children: list[Any] = [tab_bar]
+        if self.tabs:
+            idx = max(0, min(self.active, len(self.tabs) - 1))
+            active_panel = self.tabs[idx][1]
+            if active_panel is not None:
+                panel_node = active_panel.to_node() if hasattr(active_panel, "to_node") else active_panel
+                if panel_node is not None:
+                    children.append(panel_node)
         return {
-            "type": "progress-bar",
-            "value": self.value,
-            "max": safe_max,
+            "type": "column",
+            "children": children,
+            "gap": 8.0,
         }
 
 
+TabBar = Tabs
+
+
+class Pagination(Component):
+    """Prev / page-indicator / Next pagination bar."""
+
+    def __init__(self, node_id: str, page: int = 0, total: int = 1) -> None:
+        self.node_id = node_id
+        self.page = int(page)
+        self.total = max(1, int(total))
+
+    def to_node(self) -> dict:
+        return {
+            "type": "row",
+            "children": [
+                {
+                    "type": "button",
+                    "label": "‹ Prev",
+                    "on_click": f"{self.node_id}:prev",
+                    "style": "secondary",
+                    "disabled": self.page <= 0,
+                },
+                {
+                    "type": "text",
+                    "text": f"{self.page + 1} / {self.total}",
+                },
+                {
+                    "type": "button",
+                    "label": "Next ›",
+                    "on_click": f"{self.node_id}:next",
+                    "style": "secondary",
+                    "disabled": self.page + 1 >= self.total,
+                },
+            ],
+            "gap": 8.0,
+        }
+
+
+class DataTable(Component):
+    """Structured multi-column table with header row, selection, and row-click action (`Table` alias).
+
+    When ``on_select`` is set, clicking row ``i`` dispatches
+    ``UiAction(f"{on_select}:{i}")``.
+    """
+
+    def __init__(
+        self,
+        columns: list[str] | None = None,
+        rows: list[list[Any]] | None = None,
+        *,
+        selected: int | None = None,
+        selected_idx: int | None = None,
+        on_select: str | None = None,
+    ) -> None:
+        self.columns = [str(c) for c in (columns or [])]
+        self.rows = [[str(cell) for cell in r] for r in (rows or [])]
+        resolved_sel = selected if selected is not None else selected_idx
+        self.selected = int(resolved_sel) if resolved_sel is not None else None
+        self.on_select = on_select
+
+    def to_node(self) -> dict:
+        header = {
+            "type": "row",
+            "children": [
+                {"type": "text", "text": str(col), "bold": True}
+                for col in self.columns
+            ],
+            "gap": 12.0,
+        }
+        body = [
+            {
+                "type": "row",
+                "children": [{"type": "text", "text": str(cell)} for cell in r],
+                "gap": 12.0,
+            }
+            for r in self.rows
+        ]
+        return {
+            "type": "DataTable",
+            "columns": list(self.columns),
+            "rows": [list(r) for r in self.rows],
+            "selected": self.selected,
+            "on_select": self.on_select,
+            "children": [header, *body],
+            "gap": 4.0,
+        }
+
+
+Table = DataTable
+
+
+# ── Feedback & Status ─────────────────────────────────────────────────────────
+
+
+class Banner(Component):
+    """Status banner with semantic ``tone`` badge and message."""
+
+    def __init__(
+        self,
+        text: str,
+        tone: BadgeColor = "neutral",
+        title: str = "",
+        dismissible: bool = False,
+        node_id: str = "",
+    ) -> None:
+        self.text = text
+        self.tone: BadgeColor = _validate_badge_color(tone, widget="Banner")  # type: ignore[assignment]
+        self.title = title
+        self.dismissible = bool(dismissible)
+        self.node_id = node_id
+
+    def to_node(self) -> dict:
+        badge_label = self.title or self.tone
+        children: list[dict] = [
+            {"type": "badge", "label": badge_label, "color": self.tone},
+            {"type": "text", "text": self.text},
+        ]
+        if self.dismissible and self.node_id:
+            children.append({
+                "type": "button",
+                "label": "×",
+                "on_click": self.node_id,
+                "style": "ghost",
+                "disabled": False,
+            })
+        return {"type": "row", "children": children, "gap": 8.0}
+
+
+class ProgressBar(Component):
+    """Horizontal progress indicator (`Progress` alias)."""
+
+    def __init__(
+        self,
+        value: float = 0.0,
+        max_value: float = 1.0,
+        *,
+        label: str = "",
+        indeterminate: bool = False,
+    ) -> None:
+        self.value = float(value)
+        self.max_value = float(max_value) if max_value > 0 else 1.0
+        self.label = label
+        self.indeterminate = bool(indeterminate)
+
+    def to_node(self) -> dict:
+        if self.indeterminate:
+            return {"type": "spinner", "label": self.label}
+        bar = {
+            "type": "progress-bar",
+            "value": self.value,
+            "max": self.max_value,
+        }
+        if self.label:
+            return {
+                "type": "column",
+                "children": [
+                    {"type": "text", "text": self.label},
+                    bar,
+                ],
+                "gap": 4.0,
+            }
+        return bar
+
+
+Progress = ProgressBar
+
+
+@dataclass
+class Spinner(Component):
+    """Animated indeterminate loading spinner."""
+
+    label: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "spinner", "label": self.label}
+
+
+class Skeleton(Component):
+    """Placeholder loading lines."""
+
+    def __init__(self, rows: int = 1, height: float = 14.0) -> None:
+        self.rows = max(1, int(rows))
+        self.height = float(height)
+
+    def to_node(self) -> dict:
+        bar = "▬" * 16
+        return {
+            "type": "column",
+            "children": [
+                {"type": "text", "text": bar}
+                for _ in range(self.rows)
+            ],
+            "gap": 6.0,
+        }
+
+
+class Pending(Component):
+    """Renders ``placeholder`` while ``active`` is true, otherwise ``child``."""
+
+    def __init__(
+        self,
+        active: bool,
+        child: Component,
+        placeholder: Component | None = None,
+    ) -> None:
+        if not isinstance(child, Component):
+            raise TypeError(
+                f"Pending child must subclass Component, got {type(child).__name__}"
+            )
+        if placeholder is not None and not isinstance(placeholder, Component):
+            raise TypeError(
+                f"Pending placeholder must subclass Component, got {type(placeholder).__name__}"
+            )
+        self.active = bool(active)
+        self.child = child
+        self.placeholder = placeholder if placeholder is not None else Skeleton(rows=3)
+
+    def to_node(self) -> dict | None:
+        target = self.placeholder if self.active else self.child
+        return target.to_node()
+
+
+# ── Data Display & Overlays ───────────────────────────────────────────────────
+
+
+class KeyValue(Component):
+    """Two-column key/value metadata list."""
+
+    def __init__(self, rows: list[tuple[str, str]] | None = None) -> None:
+        self.rows = list(rows) if rows is not None else []
+
+    def to_node(self) -> dict:
+        children = [
+            {
+                "type": "row",
+                "children": [
+                    {"type": "text", "text": f"{k}:", "bold": True},
+                    {"type": "text", "text": str(v)},
+                ],
+                "gap": 8.0,
+            }
+            for k, v in self.rows
+        ]
+        return {"type": "column", "children": children, "gap": 4.0}
+
+
+class CodeBlock(Component):
+    """Monospace code block with optional language badge."""
+
+    def __init__(self, code: str = "", language: str = "") -> None:
+        self.code = code
+        self.language = language
+
+    def to_node(self) -> dict:
+        children: list[dict] = []
+        if self.language:
+            children.append({
+                "type": "badge",
+                "label": self.language,
+                "color": "neutral",
+            })
+        children.append({
+            "type": "text",
+            "text": self.code,
+            "monospace": True,
+        })
+        return {"type": "column", "children": children, "gap": 4.0}
+
+
+class Avatar(Component):
+    """Initials badge derived from a display name."""
+
+    def __init__(self, label: str = "", size: float = 28.0) -> None:
+        self.label = label
+        self.size = float(size)
+
+    def to_node(self) -> dict:
+        parts = [p for p in self.label.strip().split() if p]
+        initials = "".join(p[0].upper() for p in parts[:2]) or "?"
+        return {"type": "badge", "label": initials, "color": "accent"}
+
+
+class Icon(Component):
+    """Named icon glyph."""
+
+    def __init__(self, name: str = "", size: float = 16.0, tone: str = "body") -> None:
+        self.name = name
+        self.size = float(size)
+        self.tone = tone
+
+    def to_node(self) -> dict:
+        return {"type": "text", "text": f"[{self.name}]", "size": self.size}
+
+
+class Tooltip(Component):
+    """Inline tooltip hint displayed alongside a child component."""
+
+    def __init__(self, text: str, child: Component) -> None:
+        self.text = text
+        self.child = child
+
+    def to_node(self) -> dict:
+        child_node = self.child.to_node() if hasattr(self.child, "to_node") else self.child
+        return {
+            "type": "row",
+            "children": [
+                child_node,
+                {"type": "text", "text": f"({self.text})", "size": float(TEXT_CAPTION)},
+            ],
+            "gap": 6.0,
+        }
+
+
+class Accordion(Component):
+    """Collapsible section header + body."""
+
+    def __init__(
+        self,
+        node_id: str,
+        title: str,
+        child: Component,
+        open: bool = False,
+    ) -> None:
+        self.node_id = node_id
+        self.title = title
+        self.child = child
+        self.open = bool(open)
+
+    def to_node(self) -> dict:
+        glyph = "▾" if self.open else "▸"
+        header = {
+            "type": "button",
+            "label": f"{glyph} {self.title}",
+            "on_click": self.node_id,
+            "style": "ghost",
+            "disabled": False,
+        }
+        children: list[Any] = [header]
+        if self.open:
+            child_node = self.child.to_node() if hasattr(self.child, "to_node") else self.child
+            if child_node is not None:
+                children.append(child_node)
+        return {"type": "column", "children": children, "gap": 4.0}
+
+
+class EmptyState(Component):
+    """Centered empty-state message with optional icon and description."""
+
+    def __init__(
+        self,
+        title: str,
+        description: str = "",
+        icon: str = "",
+    ) -> None:
+        self.title = title
+        self.description = description
+        self.icon = icon
+
+    def to_node(self) -> dict:
+        children: list[dict] = []
+        if self.icon:
+            children.append({"type": "text", "text": self.icon, "size": float(TEXT_TITLE)})
+        children.append({"type": "text", "text": self.title, "bold": True})
+        if self.description:
+            children.append({"type": "text", "text": self.description})
+        return {"type": "column", "children": children, "gap": 4.0}
+
+
+class Modal(Component):
+    """Framed modal dialog block."""
+
+    def __init__(
+        self,
+        node_id: str,
+        title: str,
+        child: Component,
+        open: bool = True,
+    ) -> None:
+        self.node_id = node_id
+        self.title = title
+        self.child = child
+        self.open = bool(open)
+
+    def to_node(self) -> dict:
+        if not self.open:
+            return {"type": "column", "children": [], "gap": 0.0}
+        child_node = self.child.to_node() if hasattr(self.child, "to_node") else self.child
+        return {
+            "type": "column",
+            "children": [
+                {"type": "divider"},
+                {
+                    "type": "row",
+                    "children": [
+                        {"type": "text", "text": self.title, "bold": True},
+                        {
+                            "type": "button",
+                            "label": "×",
+                            "on_click": self.node_id,
+                            "style": "ghost",
+                            "disabled": False,
+                        },
+                    ],
+                    "gap": 8.0,
+                },
+                child_node,
+                {"type": "divider"},
+            ],
+            "gap": 8.0,
+        }
+
+
+# ── 2D Canvas Primitives ──────────────────────────────────────────────────────
+
+CANVAS_WIRE_DECIMALS: int = 2
+
+
+def _wire_float(v: float) -> float:
+    return round(float(v), CANVAS_WIRE_DECIMALS)
+
+
+def _require_finite(name: str, value: float) -> float:
+    f = float(value)
+    if not math.isfinite(f):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return f
+
+
+def _require_non_negative(name: str, value: float) -> float:
+    f = _require_finite(name, value)
+    if f < 0.0:
+        raise ValueError(f"{name} must be >= 0, got {value!r}")
+    return f
+
+
+@dataclass
+class CanvasRect:
+    x: float
+    y: float
+    width: float
+    height: float
+    fill: str
+    radius: float = 0.0
+
+    def to_command(self) -> dict:
+        return {
+            "type": "rect",
+            "x": _wire_float(self.x),
+            "y": _wire_float(self.y),
+            "w": _wire_float(self.width),
+            "h": _wire_float(self.height),
+            "fill": self.fill,
+            "radius": _wire_float(self.radius),
+        }
+
+
+@dataclass
+class CanvasCircle:
+    x: float
+    y: float
+    radius: float
+    fill: str
+
+    def to_command(self) -> dict:
+        return {
+            "type": "circle",
+            "cx": _wire_float(self.x),
+            "cy": _wire_float(self.y),
+            "r": _wire_float(self.radius),
+            "fill": self.fill,
+        }
+
+
+@dataclass
+class CanvasLine:
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    color: str = "#cdd6f4"
+    width: float = 1.0
+
+    def to_command(self) -> dict:
+        return {
+            "type": "line",
+            "x1": _wire_float(self.x1),
+            "y1": _wire_float(self.y1),
+            "x2": _wire_float(self.x2),
+            "y2": _wire_float(self.y2),
+            "color": self.color,
+            "width": _wire_float(self.width),
+        }
+
+
+@dataclass
+class CanvasText:
+    x: float
+    y: float
+    text: str
+    size: float = 14.0
+    color: str = "#ffffff"
+    bold: bool = False
+    align: str = "left_top"
+    monospace: bool = False
+
+    def to_command(self) -> dict:
+        return {
+            "type": "text",
+            "x": _wire_float(self.x),
+            "y": _wire_float(self.y),
+            "text": self.text,
+            "size": _wire_float(self.size),
+            "color": self.color,
+            "bold": self.bold,
+            "align": self.align,
+            "monospace": self.monospace,
+            "max_width": None,
+            "elide": True,
+            "selectable": False,
+        }
+
+
+class Canvas(Component):
+    """2D vector drawing surface rendered natively by the host."""
+
+    def __init__(
+        self,
+        commands: list[Any] | None = None,
+        width: float = 640.0,
+        height: float = 360.0,
+        grow: bool = True,
+        fit: str = "fill",
+        key: str = "",
+        on_click: str = "",
+    ) -> None:
+        if callable(commands):
+            raise TypeError("Canvas expects typed canvas commands, not a draw callback")
+        if fit not in ("fill", "contain"):
+            raise ValueError("Canvas fit must be 'fill' or 'contain'")
+        self.commands = list(commands or [])
+        self.width = float(width)
+        self.height = float(height)
+        self.grow = bool(grow)
+        self.fit = fit
+        self.key = key
+        self.on_click = on_click
+
+    def to_node(self) -> dict:
+        serialized = [
+            cmd.to_command() if hasattr(cmd, "to_command") else cmd
+            for cmd in self.commands
+        ]
+        node: dict[str, Any] = {
+            "type": "canvas",
+            "width": self.width,
+            "height": self.height,
+            "grow": self.grow,
+            "fit": self.fit,
+            "commands": serialized,
+        }
+        if self.on_click:
+            node["on_click"] = self.on_click
+        return node
+
+
 __all__ = [
-    # tokens
+    # Design tokens
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
     "TEXT_HINT", "TEXT_CAPTION", "TEXT_BODY", "TEXT_HEADING",
     "TEXT_TITLE", "TEXT_TITLE_XL",
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
-    # badge/status semantic color vocabulary
     "BadgeColor", "BADGE_COLORS",
-    # components (declarative-tree surface only -- every exported class here
-    # must produce a UiNode dict the host's decode_node_data actually
-    # understands; see sdk/python/tests/test_ui_tree_widget_contract.py)
-    "Component", "Column", "Card", "HStack", "ActionBar",
-    "AppBar", "Section", "Heading", "Label",
-    "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
-    "CanvasText", "Scrollable", "FooterKeys",
-    "TextInput", "TextEdit",
-    "SelectList", "Pending",
-    "ButtonRow",
-    # badge primitive
-    "badge",
-    # scroll helpers
+    "TextColor", "TEXT_COLORS",
+    "CANVAS_WIRE_DECIMALS",
+    # Base & helpers
+    "Component",
     "ensure_visible",
-    # UiNode component tree (PGAP v3.5)
-    "Tabs", "Grid", "Toggle", "ProgressBar",
+    "move_cursor",
+    # Layout containers
+    "Column", "HStack", "Row", "Card", "Scrollable", "Grid",
+    # Chrome & typography
+    "AppBar", "Section", "Heading", "Label", "Text", "Spacer", "Divider",
+    "Badge", "FooterKeys",
+    # Buttons & form controls
+    "Button", "Actions", "ActionBar", "TextInput", "TextEdit", "FormField",
+    "Checkbox", "Toggle", "Switch", "Radio", "Slider", "Select", "DateTimePicker",
+    # Lists, navigation & tables
+    "SelectList", "Breadcrumb", "Tabs", "TabBar", "Pagination",
+    "DataTable", "Table",
+    # Feedback & status
+    "Banner", "ProgressBar", "Progress", "Spinner", "Skeleton", "Pending",
+    # Data display & overlays
+    "KeyValue", "CodeBlock", "Avatar", "Icon", "Tooltip",
+    "Accordion", "EmptyState", "Modal",
+    # 2D Canvas
+    "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
 ]

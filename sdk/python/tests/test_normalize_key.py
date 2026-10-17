@@ -1,26 +1,56 @@
 """Unit tests for plexi_sdk._keys.normalize_key."""
 
+import pytest
+
 from plexi_sdk._keys import normalize_key
 
 
-def test_named_keys_map_to_words():
-    assert normalize_key("ArrowLeft") == "left"
-    assert normalize_key("Enter") == "return"
-    assert normalize_key("Escape") == "escape"
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Enter", "enter"),
+        ("Return", "enter"),
+        ("enter", "enter"),
+        ("return", "enter"),
+        ("Escape", "escape"),
+        ("Esc", "escape"),
+        ("Backspace", "backspace"),
+        ("Delete", "delete"),
+        ("Space", "space"),
+        (" ", "space"),
+        ("Tab", "tab"),
+        ("ArrowUp", "up"),
+        ("ArrowDown", "down"),
+        ("ArrowLeft", "left"),
+        ("ArrowRight", "right"),
+        ("Home", "home"),
+        ("End", "end"),
+        ("PageUp", "pageup"),
+        ("PageDown", "pagedown"),
+        ("Insert", "insert"),
+        ("+", "+"),
+        ("plus", "+"),
+        ("Plus", "+"),
+        ("-", "-"),
+        ("minus", "-"),
+        ("Minus", "-"),
+        ("=", "="),
+        ("equals", "="),
+        ("Equals", "="),
+        ("/", "/"),
+        ("slash", "/"),
+        ("Slash", "/"),
+        ("*", "*"),
+        ("asterisk", "*"),
+        ("Asterisk", "*"),
+        ("F1", "f1"),
+        ("F12", "f12"),
+        ("A", "a"),
+        ("z", "z"),
+        ("0", "0"),
+        ("9", "9"),
+    ],
+)
+def test_normalize_key_canonical_table(raw: str, expected: str) -> None:
+    assert normalize_key(raw) == expected
 
-
-def test_minus_and_equals_still_alias_to_words():
-    # Apps that only check "minus"/"equals" (e.g. apps/dev/counter) rely on this.
-    assert normalize_key("-") == "minus"
-    assert normalize_key("=") == "equals"
-
-
-def test_slash_passes_through_unchanged():
-    # Stint 0462: the host sends "/" (python_key_name() in wasm_python.rs).
-    # Aliasing it to "slash" here would re-break apps checking `key == "/"`
-    # (e.g. apps/logs/logs.py's search shortcut).
-    assert normalize_key("/") == "/"
-
-
-def test_unmapped_key_passes_through_unchanged():
-    assert normalize_key("z") == "z"

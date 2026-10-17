@@ -1,17 +1,6 @@
 """Guardrail: every widget `plexi_sdk.ui` exports must produce a UiNode tree
 the host's `decode_node_data` (`src/host/wasm_python.rs`) can actually decode.
 
-An SDK audit found a whole class of exported widgets that crashed or
-silently no-op'd in the only shipped rendering mode -- the v3 declarative
-tree (`Markdown`/`Clickable` emitted node types with no host decode arm;
-`Footer`'s own node likewise; `ButtonRow` omitted a required field;
-`InfoTable`/`Row`/`FormField`/`KeyRow`/`ScrollLog`/`ChatBubble`/`ListItem`/
-`Sized` had no `to_node()` at all, so encoding raised
-`TypeError: X.to_node() returned None`; `SelectList` silently dropped
-`leading`/`trailing`; `Divider(color=...)` silently dropped `color`). Each
-is now either fixed or removed from `plexi_sdk.ui.__all__` -- see the
-docstring of each affected class in `ui.py` for the reasoning.
-
 This test enumerates *every* declarative-tree widget class currently
 exported and asserts its `to_node()` output survives real encoding via
 `_adapter._encode_uitree` -- the exact function the CPython-WASM bridge
@@ -29,10 +18,7 @@ from plexi_sdk._adapter import _encode_uitree
 
 # Every literal "type" string `decode_node_data` in `src/host/wasm_python.rs`
 # matches (its match arms accept both PascalCase and lower-case/kebab
-# aliases). Keep in sync with that match by hand -- same convention as
-# `_DECODER_SUPPORTED_ROOT_TYPES` in `test_new_components.py` and
-# `BADGE_COLORS` mirroring `decode_badge_color` in `ui.py`. Deliberately not
-# derived from the SDK's own output, or this guard would be tautological.
+# aliases). Keep in sync with that match by hand.
 ACCEPTED_NODE_TYPES = frozenset({
     "Empty",
     "Text", "text", "label",
@@ -41,6 +27,7 @@ ACCEPTED_NODE_TYPES = frozenset({
     "Pinned", "pinned",
     "Spinner", "spinner",
     "Column", "column",
+    "DataTable", "data_table", "table", "Table",
     "Button", "button",
     "TextInput", "text_input", "text-input",
     "Row", "row",
@@ -51,6 +38,7 @@ ACCEPTED_NODE_TYPES = frozenset({
     "ListView", "list_view", "list-view",
     "Scroll", "scroll",
     "Padding", "padding",
+    "Card", "card",
     "Canvas", "canvas",
 })
 
@@ -61,14 +49,16 @@ _TOKENS = {
     "TEXT_TITLE", "TEXT_TITLE_XL",
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
     "BadgeColor", "BADGE_COLORS",
+    "TextColor", "TEXT_COLORS",
+    "CANVAS_WIRE_DECIMALS",
 }
 
 # Exported symbols that are not themselves tree-node widgets -- each has a
 # documented reason they can't/shouldn't go through `to_node()`.
 _NOT_A_WIDGET = {
     "Component",  # abstract base; never instantiated directly, to_node() is None by design
-    "badge",  # canvas-mode drawing helper function, not a Component
     "ensure_visible",  # scroll-math helper function
+    "move_cursor",  # list-cursor helper function
     "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
     # ^ Canvas draw commands -- to_command(), not to_node(); only meaningful
     # nested inside a Canvas(commands=[...]) node, never as a tree node.
@@ -82,30 +72,57 @@ _FACTORIES = {
     "Column": lambda: ui.Column([]),
     "Card": lambda: ui.Card([]),
     "HStack": lambda: ui.HStack([]),
+    "Row": lambda: ui.Row([]),
+    "Actions": lambda: ui.Actions([]),
     "ActionBar": lambda: ui.ActionBar([]),
     "AppBar": lambda: ui.AppBar("Title"),
     "Section": lambda: ui.Section("Title"),
     "Heading": lambda: ui.Heading("Title"),
     "Label": lambda: ui.Label("Body"),
+    "Text": lambda: ui.Text("Body"),
     "Spacer": lambda: ui.Spacer(),
     "Divider": lambda: ui.Divider(),
     "Badge": lambda: ui.Badge("tag"),
-    "Canvas": lambda: ui.Canvas(),
-    "Scrollable": lambda: ui.Scrollable(ui.Label("content")),
-    "FooterKeys": lambda: ui.FooterKeys([("k", "desc")]),
+    "Banner": lambda: ui.Banner("Saved", tone="success"),
+    "Button": lambda: ui.Button("Click", "btn-id"),
+    "Checkbox": lambda: ui.Checkbox("chk-id", label="Agree"),
+    "Toggle": lambda: ui.Toggle("toggle-id", value=True, label="Enabled"),
+    "Switch": lambda: ui.Switch("switch-id", on=False, label="Enabled"),
+    "Radio": lambda: ui.Radio("radio-id", options=["A", "B"]),
+    "Slider": lambda: ui.Slider("slider-id", value=0.5),
+    "Select": lambda: ui.Select("select-id", options=["A", "B"], selected=0),
+    "DateTimePicker": lambda: ui.DateTimePicker("dt-id", value="2026-01-01"),
+    "FormField": lambda: ui.FormField("field-id", "Label"),
     "TextInput": lambda: ui.TextInput("field-id"),
     "TextEdit": lambda: ui.TextEdit("field-id"),
     "SelectList": lambda: ui.SelectList(
         [{"name": "one", "leading": "*", "trailing": ">"}]
     ),
+    "Breadcrumb": lambda: ui.Breadcrumb(["Home", "Sub"]),
+    "Tabs": lambda: ui.Tabs([("Tab", ui.Label("content"))]),
+    "TabBar": lambda: ui.TabBar("tb", tabs=["One", "Two"], active=0),
+    "Pagination": lambda: ui.Pagination("page-id", page=0, total=3),
+    "DataTable": lambda: ui.DataTable(columns=["Col"], rows=[["Val"]]),
+    "Table": lambda: ui.Table(columns=["Col"], rows=[["Val"]]),
+    "Grid": lambda: ui.Grid(2, [ui.Label("a"), ui.Label("b")]),
+    "ProgressBar": lambda: ui.ProgressBar(0.5),
+    "Progress": lambda: ui.Progress(value=0.5, label="Loading"),
+    "Spinner": lambda: ui.Spinner("Loading"),
+    "Skeleton": lambda: ui.Skeleton(rows=2),
     "Pending": lambda: ui.Pending(
         active=True, child=ui.Label("content"), placeholder=ui.Skeleton(rows=3)
     ),
-    "ButtonRow": lambda: ui.ButtonRow("btn-id", "Click"),
-    "Tabs": lambda: ui.Tabs([("Tab", ui.Label("content"))]),
-    "Grid": lambda: ui.Grid(2, [ui.Label("a"), ui.Label("b")]),
-    "Toggle": lambda: ui.Toggle("toggle-id", value=True, label="Enabled"),
-    "ProgressBar": lambda: ui.ProgressBar(0.5),
+    "KeyValue": lambda: ui.KeyValue([("Key", "Val")]),
+    "CodeBlock": lambda: ui.CodeBlock("x = 1", language="python"),
+    "Avatar": lambda: ui.Avatar("Ian Burke"),
+    "Icon": lambda: ui.Icon("gear"),
+    "Tooltip": lambda: ui.Tooltip("hint", ui.Label("target")),
+    "Accordion": lambda: ui.Accordion("acc-id", "More", ui.Label("body"), open=True),
+    "EmptyState": lambda: ui.EmptyState("Empty", description="Nothing here"),
+    "Modal": lambda: ui.Modal("modal-id", "Confirm", ui.Label("Sure?")),
+    "Scrollable": lambda: ui.Scrollable(ui.Label("content")),
+    "FooterKeys": lambda: ui.FooterKeys([("k", "desc")]),
+    "Canvas": lambda: ui.Canvas(),
 }
 
 
@@ -170,13 +187,6 @@ def test_divider_color_is_not_emitted_on_the_wire() -> None:
     to_node() must not emit one at all."""
     node = ui.Divider(color="#ff0000").to_node()
     assert node == {"type": "divider"}
-
-
-def test_button_row_emits_required_on_click() -> None:
-    """Regression: decode_node_data's Button arm requires "on_click"
-    (required_string) -- ButtonRow used to omit it entirely."""
-    node = ui.ButtonRow("action-id", "Go").to_node()
-    assert node["on_click"] == "action-id"
 
 
 def test_pending_renders_placeholder_or_child_by_active() -> None:

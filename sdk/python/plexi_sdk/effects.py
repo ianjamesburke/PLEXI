@@ -141,6 +141,25 @@ class HttpFetch:
     method: str = "GET"
     headers: dict = field(default_factory=dict)
     body: Optional[bytes] = None
+    params: Optional[dict[str, Any]] = None
+    tag: Optional[str] = None
+    request_id: Optional[str] = None
+
+    def resolved_url(self) -> str:
+        """Return ``url`` with ``params`` encoded into its query string."""
+        if not self.params:
+            return self.url
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        parts = urlsplit(self.url)
+        existing = parse_qsl(parts.query, keep_blank_values=True)
+        extra = [
+            (str(k), str(v))
+            for k, v in self.params.items()
+            if v is not None
+        ]
+        query = urlencode(existing + extra)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 @dataclass

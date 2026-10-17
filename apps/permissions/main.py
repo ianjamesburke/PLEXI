@@ -156,7 +156,7 @@ def _list_view(data: dict):
         for entry in data["entries"]
     ]
     if rows:
-        body = SelectList(rows, selected_idx=data["selected"])
+        body: Any = SelectList(rows, selected_idx=data["selected"])
     elif not data["inventory_seen"]:
         body = Text("Waiting for permission decisions…", size=12.0)
     else:

@@ -35,18 +35,15 @@ def test_keyboard_math_uses_v3_set_state_effects() -> None:
     assert data["fresh"] is True
 
 
-def test_keyboard_math_accepts_canonical_operator_key_names() -> None:
-    # The host's documented canonical key names ("plus"/"minus"/"equals") are
-    # not always normalized to their glyph before reaching the app — accept
-    # both forms.
+def test_keyboard_math_accepts_canonical_operator_glyphs() -> None:
     _set_state(dict(calc.DEFAULT_STATE))
 
-    for key in ["7", "plus", "5", "equals"]:
+    for key in ["6", "*", "7", "="]:
         effects = calc.update(KeyEvent(key))
         data = _state_effect(effects)
         _set_state(data)
 
-    assert data["display"] == "12"
+    assert data["display"] == "42"
     assert data["pending"] is None
     assert data["op"] is None
 

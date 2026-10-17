@@ -210,17 +210,7 @@ def _event_label(event) -> str | None:
         return key
     if key in {".", "+", "-", "*", "/", "%"}:
         return key
-    # AUTHORING.md's key table documents canonical names ("plus", "minus",
-    # "equals", "slash") for these physical keys; accept both the canonical
-    # name and the literal glyph so the operator keys work regardless of
-    # which form a given input path delivers.
-    if key in {"plus"}:
-        return "+"
-    if key in {"minus"}:
-        return "-"
-    if key in {"slash"}:
-        return "/"
-    if key in {"=", "equals", "return", "enter"}:
+    if key in {"=", "enter"}:
         return "="
     if key == "backspace":
         return "backspace"

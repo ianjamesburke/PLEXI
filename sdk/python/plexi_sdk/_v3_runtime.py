@@ -115,6 +115,7 @@ class V3AppRuntime:
         self._app_id = ""
         self._workspace_root = ""
         self._capabilities: list[str] = []
+        self._http_tags: dict[str, str] = {}
         self._running = True
 
     def run(self) -> None:
@@ -527,14 +528,50 @@ class V3AppRuntime:
             self._dispatch(events.UiValueChange(handler_id=tid, value=value))
 
     def _handle_http_response(self, ev: dict) -> None:
+        req_id = ev.get("request_id")
+        tag = ev.get("tag")
+        if tag is None and isinstance(req_id, str):
+            tag = self._http_tags.pop(req_id, req_id)
         error = ev.get("error")
-        if error:
-            body = error.encode("utf-8")
-            status = 0
+        raw_status = ev.get("status")
+        if isinstance(raw_status, int):
+            status = raw_status
         else:
-            body = ev.get("body", "").encode("utf-8")
-            status = 200
-        self._dispatch(events.HttpResponse(status=status, headers=[], body=body))
+            status = 0 if error else 200
+        raw_body = ev.get("body")
+        if isinstance(raw_body, (bytes, bytearray)):
+            body = bytes(raw_body)
+        elif isinstance(raw_body, list):
+            body = bytes(raw_body)
+        elif isinstance(raw_body, str) and raw_body:
+            body = raw_body.encode("utf-8")
+        elif error:
+            body = str(error).encode("utf-8")
+        else:
+            body = b""
+        raw_headers = ev.get("headers")
+        headers: list[tuple[str, str]] = []
+        if isinstance(raw_headers, dict):
+            for k, v in raw_headers.items():
+                if isinstance(v, list):
+                    for item in v:
+                        headers.append((str(k), str(item)))
+                else:
+                    headers.append((str(k), str(v)))
+        elif isinstance(raw_headers, list):
+            for item in raw_headers:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    headers.append((str(item[0]), str(item[1])))
+        truncated = bool(ev.get("truncated", False))
+        self._dispatch(events.HttpResponse(
+            status=status,
+            headers=headers,
+            body=body,
+            error=str(error) if error is not None else None,
+            request_id=str(req_id) if req_id is not None else None,
+            tag=str(tag) if tag is not None else None,
+            truncated=truncated,
+        ))
 
     def _handle_mcp_message(self, ev: dict) -> None:
         """Parse one server line. A server that emits non-JSON is a protocol
@@ -644,16 +681,23 @@ class V3AppRuntime:
                     payload["fps"] = int(effect.fps)
                 _emit(payload)
             elif isinstance(effect, effects.HttpFetch):
+                req_id = effect.request_id or effect.tag or str(uuid.uuid4())
+                if effect.tag:
+                    self._http_tags[req_id] = effect.tag
                 payload = {
                     "type": "http_request",
-                    "request_id": str(uuid.uuid4()),
+                    "request_id": req_id,
                     "method": effect.method,
-                    "url": effect.url,
+                    "url": effect.resolved_url(),
                 }
                 if effect.headers:
                     payload["headers"] = effect.headers
                 if effect.body is not None:
-                    payload["body"] = effect.body.decode("utf-8")
+                    payload["body"] = (
+                        effect.body.decode("utf-8", errors="replace")
+                        if isinstance(effect.body, (bytes, bytearray))
+                        else str(effect.body)
+                    )
                 _emit(payload)
             elif isinstance(effect, effects.McpConnect):
                 _emit({

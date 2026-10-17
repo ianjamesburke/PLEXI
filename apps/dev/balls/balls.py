@@ -85,9 +85,9 @@ def init(size, args) -> list:
 
 def update(event) -> list:
     if isinstance(event, KeyEvent):
-        if event.key in ("+", "plus", "equals"):
+        if event.key in ("+", "="):
             _sim()["balls"].extend(_initial(1)["balls"])
-        elif event.key in ("-", "minus") and len(_sim()["balls"]) > 1:
+        elif event.key == "-" and len(_sim()["balls"]) > 1:
             _sim()["balls"].pop()
         return []
     if not isinstance(event, RenderFrame):

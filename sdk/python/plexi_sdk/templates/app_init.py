@@ -33,9 +33,9 @@ def update(event):
     if tool_effects is not None:
         return tool_effects
     if isinstance(event, KeyEvent) and event.pressed:
-        if event.key in ("equals", "plus"):
+        if event.key in ("=", "+"):
             return [SetState({"count": state.get("count", 0) + 1})]
-        if event.key == "minus":
+        if event.key == "-":
             return [SetState({"count": state.get("count", 0) - 1})]
         if event.key == "r":
             return [SetState({"count": 0})]
