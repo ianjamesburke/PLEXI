@@ -6163,4 +6163,55 @@ mod tests {
         h.save_screenshot(&evidence_png!("_form"))
             .expect("render cli_renderer form chrome");
     }
+
+    #[test]
+    fn screenshot_file_browser_action_palette_and_intent_preview_chip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace-root");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::create_dir_all(root.join("docs")).expect("mkdir docs");
+        std::fs::write(root.join("Cargo.toml"), b"[package]\nname = \"plexi\"\n")
+            .expect("write Cargo.toml");
+        std::fs::write(root.join("main.rs"), b"fn main() {}\n").expect("write main.rs");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(880.0, 560.0, 2.0);
+        let root_clone = root.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
+                AppPermissions::builtin(),
+                root_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(3);
+
+        // Press `/` to open the inline action palette pre-filled with `/`.
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Slash,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_slash_open"))
+            .expect("render file_browser action palette on `/`");
+
+        // Type `new file notes.md` so the structured INTENT preview chip resolves `CreateFile`.
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("new file notes.md".to_string()));
+        h.run_steps(2);
+        assert!(
+            h.host_has_label("Create file: notes.md \u{2014} open in editor [Enter]"),
+            "structured intent preview chip must render resolved CreateFile preview"
+        );
+        h.save_screenshot(&evidence_png!("_resolved_intent"))
+            .expect("render file_browser action palette with resolved intent preview chip");
+    }
 }
