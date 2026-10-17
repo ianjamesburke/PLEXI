@@ -205,3 +205,23 @@ def test_state_file_error_surfaces_without_crashing() -> None:
         StateChanged(scope="context", values={}, error="not valid UTF-8")
     )
     assert not any(isinstance(e, PersistState) for e in effects)
+
+
+def test_seeded_todos_list_renders_with_trailing_status() -> None:
+    _set_state(
+        {
+            "todos": [
+                {"id": 1, "text": "Ship V1", "done": False},
+                {"id": 2, "text": "Audit UX", "done": True},
+            ],
+            "selected": 0,
+        }
+    )
+    root = todo.view().to_node()
+    select_list = next(n for n in _flatten(todo.view()) if n.get("type") == "select_list")
+    assert select_list["items"] == [
+        {"name": "Ship V1", "leading": "○", "trailing": "open"},
+        {"name": "Audit UX", "leading": "✓", "trailing": "done"},
+    ]
+    assert root["children"][0]["subtitle"] == "1 open · 2 total"
+

@@ -44,7 +44,24 @@ SELECT = "todo:select"
 
 def _items() -> list[dict]:
     document = str(state.get("document", "") or "")
-    return [{"text": item.text, "done": item.done} for item in parse_checklist(document)]
+    if document:
+        return [{"text": item.text, "done": item.done} for item in parse_checklist(document)]
+    raw = state.get("todos")
+    if raw is None:
+        raw = state.get("items")
+    if isinstance(raw, list):
+        items: list[dict] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                text = str(
+                    entry.get("text") or entry.get("title") or entry.get("name") or ""
+                ).strip()
+                if text:
+                    items.append({"text": text, "done": bool(entry.get("done"))})
+            elif isinstance(entry, str) and entry.strip():
+                items.append({"text": entry.strip(), "done": False})
+        return items
+    return []
 
 
 def _data() -> dict:
@@ -217,7 +234,11 @@ def view():
         ], grow=True)
 
     rows = [
-        {"name": item["text"], "leading": "✓" if item["done"] else "○"}
+        {
+            "name": item["text"],
+            "leading": "✓" if item["done"] else "○",
+            "trailing": "done" if item["done"] else "open",
+        }
         for item in data["items"]
     ]
     return Column([

@@ -550,6 +550,132 @@ fn grow_spacer_index(nodes: &[IndexedNode], children: &[u32]) -> Option<usize> {
     )
 }
 
+const KEYPAD_BUTTON_W: f32 = 64.0;
+const KEYPAD_BUTTON_H: f32 = 42.0;
+
+fn mix_rgb(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
+fn is_button_row(nodes: &[IndexedNode], row_id: u32) -> Option<(usize, f32)> {
+    let Some(UiNodeData::Row(r)) = find_node(nodes, row_id).map(|n| &n.data) else {
+        return None;
+    };
+    if r.children.is_empty() {
+        return None;
+    }
+    let all_buttons = r
+        .children
+        .iter()
+        .all(|cid| matches!(find_node(nodes, *cid).map(|n| &n.data), Some(UiNodeData::Button(_))));
+    all_buttons.then_some((r.children.len(), r.gap))
+}
+
+fn column_button_grid_spec(nodes: &[IndexedNode], col_id: u32) -> Option<(usize, f32)> {
+    let Some(UiNodeData::Column(c)) = find_node(nodes, col_id).map(|n| &n.data) else {
+        return None;
+    };
+    if c.children.len() < 2 {
+        return None;
+    }
+    let mut max_cols = 0usize;
+    let mut row_gap = 0.0f32;
+    for (idx, &child_id) in c.children.iter().enumerate() {
+        let (cols, gap) = is_button_row(nodes, child_id)?;
+        max_cols = max_cols.max(cols);
+        if idx == 0 {
+            row_gap = gap;
+        }
+    }
+    (max_cols >= 2).then(|| {
+        let width =
+            max_cols as f32 * KEYPAD_BUTTON_W + (max_cols.saturating_sub(1)) as f32 * row_gap;
+        (max_cols, width)
+    })
+}
+
+fn row_parent_button_grid_cols(nodes: &[IndexedNode], row_id: u32) -> Option<usize> {
+    let parent = nodes.iter().find(|n| match &n.data {
+        UiNodeData::Column(c) => c.children.contains(&row_id),
+        _ => false,
+    })?;
+    column_button_grid_spec(nodes, parent.id).map(|(cols, _)| cols)
+}
+
+fn card_keypad_width(nodes: &[IndexedNode], card_child_id: u32) -> Option<f32> {
+    if let Some((_, w)) = column_button_grid_spec(nodes, card_child_id) {
+        return Some(w);
+    }
+    let Some(UiNodeData::Column(c)) = find_node(nodes, card_child_id).map(|n| &n.data) else {
+        return None;
+    };
+    c.children
+        .iter()
+        .find_map(|&cid| column_button_grid_spec(nodes, cid).map(|(_, w)| w))
+}
+
+fn subtree_contains(nodes: &[IndexedNode], root_id: u32, target_id: u32) -> bool {
+    if root_id == target_id {
+        return true;
+    }
+    let Some(node) = find_node(nodes, root_id) else {
+        return false;
+    };
+    match &node.data {
+        UiNodeData::Row(r) => r.children.iter().any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::Column(c) => c.children.iter().any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::ListView(l) => l.items.iter().any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::Scroll(s) => subtree_contains(nodes, s.child, target_id),
+        UiNodeData::Padding(p) => subtree_contains(nodes, p.child, target_id),
+        UiNodeData::Pinned(p) => subtree_contains(nodes, p.child, target_id),
+        _ => false,
+    }
+}
+
+fn is_nested_card(nodes: &[IndexedNode], card_id: u32) -> bool {
+    nodes.iter().any(|n| {
+        n.id != card_id
+            && n.key.starts_with(CARD_NODE_KEY_PREFIX)
+            && match &n.data {
+                UiNodeData::Padding(p) => subtree_contains(nodes, p.child, card_id),
+                _ => false,
+            }
+    })
+}
+
+fn render_button_node(
+    ui: &mut egui::Ui,
+    id: u32,
+    b: &super::wasm_app::bindings::plexi::platform::types::ButtonNode,
+    min_size: egui::Vec2,
+    colors: &Colors,
+    out: &mut RenderResult,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
+) {
+    let fill = match b.style {
+        ButtonStyle::Primary => colors.accent,
+        ButtonStyle::Secondary => mix_rgb(colors.bg_active, colors.text_primary, 0.14),
+        ButtonStyle::Danger => colors.danger,
+        ButtonStyle::Ghost => Color32::TRANSPARENT,
+    };
+    let label = RichText::new(&b.label).color(colors.text_on(fill));
+    let mut btn = egui::Button::new(label)
+        .fill(fill)
+        .corner_radius(style::RADIUS_SM)
+        .min_size(min_size);
+    if matches!(b.style, ButtonStyle::Secondary) {
+        btn = btn.stroke(egui::Stroke::new(
+            1.0_f32,
+            mix_rgb(colors.border, colors.text_dim, 0.45),
+        ));
+    }
+    let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
+    if ui.add_enabled(!b.disabled, btn).clicked() || synthetic_click {
+        out.actions.push(b.on_click.clone());
+    }
+}
+
 /// Lay out a column's children, honoring a grow spacer as a bottom-pin split
 /// (stint 0674).
 ///
@@ -711,24 +837,15 @@ fn render_node(
         }
 
         UiNodeData::Button(b) => {
-            let fill = match b.style {
-                ButtonStyle::Primary => colors.accent,
-                ButtonStyle::Secondary => colors.bg_active,
-                ButtonStyle::Danger => colors.danger,
-                ButtonStyle::Ghost => Color32::TRANSPARENT,
-            };
-            let label = RichText::new(&b.label).color(colors.text_on(fill));
-            let btn = egui::Button::new(label)
-                .fill(fill)
-                .corner_radius(style::RADIUS_SM)
-                // Comfortable minimum click/touch target so single-glyph
-                // buttons (calculator keys, toolbar chips) aren't cramped.
-                // Content-sized labels grow past this floor as usual.
-                .min_size(egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD));
-            let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
-            if ui.add_enabled(!b.disabled, btn).clicked() || synthetic_click {
-                out.actions.push(b.on_click.clone());
-            }
+            render_button_node(
+                ui,
+                id,
+                b,
+                egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD),
+                colors,
+                out,
+                pending_click,
+            );
         }
 
         UiNodeData::TextInput(ti) => {
@@ -828,9 +945,33 @@ fn render_node(
         }
 
         UiNodeData::Row(r) => {
+            let grid_cols = row_parent_button_grid_cols(nodes, id);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
-                for child in &r.children {
+                for (idx, child) in r.children.iter().enumerate() {
+                    if let Some(cols) = grid_cols {
+                        if let Some(UiNodeData::Button(b)) =
+                            find_node(nodes, *child).map(|n| &n.data)
+                        {
+                            let span = if idx == 0 && r.children.len() < cols {
+                                cols - r.children.len() + 1
+                            } else {
+                                1
+                            };
+                            let btn_w = span as f32 * KEYPAD_BUTTON_W
+                                + (span.saturating_sub(1)) as f32 * r.gap;
+                            render_button_node(
+                                ui,
+                                *child,
+                                b,
+                                egui::vec2(btn_w, KEYPAD_BUTTON_H),
+                                colors,
+                                out,
+                                pending_click,
+                            );
+                            continue;
+                        }
+                    }
                     render_node(
                         ui,
                         nodes,
@@ -1056,6 +1197,10 @@ fn render_node(
 
         UiNodeData::Padding(p) => {
             let is_card = node.key.starts_with(CARD_NODE_KEY_PREFIX);
+            let nested_card = is_card && is_nested_card(nodes, id);
+            let keypad_w = is_card
+                .then(|| card_keypad_width(nodes, p.child))
+                .flatten();
             let mut frame = egui::Frame::new().inner_margin(egui::Margin {
                 left: p.left as i8,
                 right: p.right as i8,
@@ -1064,12 +1209,24 @@ fn render_node(
             });
             if is_card {
                 frame = frame
-                    .fill(colors.bg_active)
+                    .fill(if nested_card {
+                        colors.bg_darkest
+                    } else {
+                        colors.bg_active
+                    })
                     .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                    .corner_radius(style::RADIUS_MD);
+                    .corner_radius(if nested_card {
+                        style::RADIUS_SM
+                    } else {
+                        style::RADIUS_MD
+                    });
             }
             frame.show(ui, |ui| {
-                if is_card {
+                if let Some(w) = keypad_w {
+                    let target_w = w.min(ui.available_width());
+                    ui.set_min_width(target_w);
+                    ui.set_max_width(target_w);
+                } else if is_card {
                     ui.set_min_width(ui.available_width());
                 }
                 render_node(
@@ -2820,6 +2977,191 @@ mod tests {
             color_of("Muted Trailing"),
             colors.accent,
             "explicit muted color on secondary/trailing text must stay muted inside selected row"
+        );
+    }
+
+    #[test]
+    fn nested_card_and_keypad_grid_align_and_contrast_secondary_buttons() {
+        let tree = crate::host::wasm_python::decode_ui_tree(
+            &serde_json::json!({
+                "root": 0,
+                "nodes": [
+                    {
+                        "id": 0,
+                        "key": "__plexi_card__:outer",
+                        "data": {
+                            "type": "Padding",
+                            "card": true,
+                            "top": 16.0,
+                            "right": 16.0,
+                            "bottom": 16.0,
+                            "left": 16.0,
+                            "child": 1
+                        }
+                    },
+                    {
+                        "id": 1,
+                        "key": "outer-col",
+                        "data": {
+                            "type": "Column",
+                            "children": [2, 4],
+                            "gap": 12.0,
+                            "align": "start",
+                            "grow": false
+                        }
+                    },
+                    {
+                        "id": 2,
+                        "key": "__plexi_card__:readout",
+                        "data": {
+                            "type": "Padding",
+                            "card": true,
+                            "top": 12.0,
+                            "right": 12.0,
+                            "bottom": 12.0,
+                            "left": 12.0,
+                            "child": 3
+                        }
+                    },
+                    {
+                        "id": 3,
+                        "key": "display",
+                        "data": {
+                            "type": "Text",
+                            "text": "0",
+                            "size": 28.0,
+                            "bold": true,
+                            "align": "end"
+                        }
+                    },
+                    {
+                        "id": 4,
+                        "key": "keypad",
+                        "data": {
+                            "type": "Column",
+                            "children": [5, 10],
+                            "gap": 8.0,
+                            "align": "start",
+                            "grow": false
+                        }
+                    },
+                    {
+                        "id": 5,
+                        "key": "row-top",
+                        "data": {
+                            "type": "Row",
+                            "children": [6, 7, 8, 9],
+                            "gap": 8.0
+                        }
+                    },
+                    {
+                        "id": 6,
+                        "key": "btn-1",
+                        "data": { "type": "Button", "label": "1", "on_click": "k1", "style": "secondary" }
+                    },
+                    {
+                        "id": 7,
+                        "key": "btn-2",
+                        "data": { "type": "Button", "label": "2", "on_click": "k2", "style": "secondary" }
+                    },
+                    {
+                        "id": 8,
+                        "key": "btn-3",
+                        "data": { "type": "Button", "label": "3", "on_click": "k3", "style": "secondary" }
+                    },
+                    {
+                        "id": 9,
+                        "key": "btn-plus",
+                        "data": { "type": "Button", "label": "+", "on_click": "k+", "style": "primary" }
+                    },
+                    {
+                        "id": 10,
+                        "key": "row-bot",
+                        "data": {
+                            "type": "Row",
+                            "children": [11, 12, 13],
+                            "gap": 8.0
+                        }
+                    },
+                    {
+                        "id": 11,
+                        "key": "btn-0",
+                        "data": { "type": "Button", "label": "0", "on_click": "k0", "style": "secondary" }
+                    },
+                    {
+                        "id": 12,
+                        "key": "btn-dot",
+                        "data": { "type": "Button", "label": ".", "on_click": "k.", "style": "secondary" }
+                    },
+                    {
+                        "id": 13,
+                        "key": "btn-eq",
+                        "data": { "type": "Button", "label": "=", "on_click": "k=", "style": "primary" }
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("decode keypad card tree");
+
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        crate::ui::theme::setup_style(&ctx, &colors, true);
+
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+            });
+        });
+
+        let mut rects = Vec::new();
+        for clipped in &output.shapes {
+            if let egui::Shape::Rect(r) = &clipped.shape {
+                rects.push(r.clone());
+            }
+        }
+
+        // Outer Card uses bg_active and stays compact (< 400px in a wide panel).
+        let outer_card = rects
+            .iter()
+            .find(|r| r.fill == colors.bg_active && r.stroke.color == colors.border)
+            .expect("outer Card rect");
+        assert!(
+            outer_card.rect.width() < 360.0,
+            "keypad Card must wrap keypad width compactly, got {}",
+            outer_card.rect.width()
+        );
+
+        // Nested readout Card uses bg_darkest for dark inset contrast.
+        assert!(
+            rects
+                .iter()
+                .any(|r| r.fill == colors.bg_darkest && r.stroke.color == colors.border),
+            "nested Card must paint dark inset bg_darkest surface"
+        );
+
+        // Secondary buttons must NOT use bg_active (which would blend into the outer Card).
+        let secondary_fill = mix_rgb(colors.bg_active, colors.text_primary, 0.14);
+        assert_ne!(secondary_fill, colors.bg_active);
+        let zero_btn = rects
+            .iter()
+            .find(|r| r.fill == secondary_fill && r.rect.width() > 100.0)
+            .expect("double-wide '0' button rect");
+        let primary_btns: Vec<_> = rects
+            .iter()
+            .filter(|r| r.fill == colors.accent && (r.rect.height() - KEYPAD_BUTTON_H).abs() < 1.0)
+            .collect();
+        assert_eq!(primary_btns.len(), 2, "expected '+' and '=' primary buttons");
+        assert!(
+            (primary_btns[0].rect.left() - primary_btns[1].rect.left()).abs() < 1.0,
+            "'=' button in 3-button bottom row must align with '+' in column 4"
+        );
+        assert!(
+            zero_btn.rect.width() > KEYPAD_BUTTON_W * 1.8,
+            "'0' button must span 2 columns"
         );
     }
 }

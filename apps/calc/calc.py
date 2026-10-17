@@ -38,18 +38,10 @@ BINARY_OPS: dict[str, Callable[[float, float], float]] = {
 }
 
 
-def _button_label(label: str) -> str:
-    if label == "0":
-        return "       0       "
-    if len(label) == 1:
-        return f"   {label}   "
-    return f" {label} "
-
-
 def _button_row(labels: list[str]) -> HStack:
     return HStack(
         [
-            Button(_button_label(label), f"calc:key:{label}", style=_button_style(label))
+            Button(label, f"calc:key:{label}", style=_button_style(label))
             for label in labels
         ],
         gap=8.0,
@@ -128,8 +120,8 @@ def view():
     expr_line = subtitle or "ready"
     readout = Card(
         [
-            Text(expr_line, size=11.0, color=theme.muted),
-            Text(data["display"], size=28.0, bold=True, truncate=True),
+            Text(expr_line, size=11.0, color=theme.muted, align="end"),
+            Text(data["display"], size=28.0, bold=True, truncate=True, align="end"),
         ],
         padding=12.0,
         gap=4.0,
