@@ -91,6 +91,15 @@ def update(event) -> list:
         data["mode"] = "list"
         return _commit(data)
 
+    if action.startswith("select:"):
+        try:
+            idx = int(action.removeprefix("select:"))
+        except ValueError:
+            return []
+        data["selected"] = _clamp(idx, len(data["entries"]))
+        log.info(f"permissions: selected row {data['selected']}")
+        return _commit(data)
+
     if action == "up":
         data["selected"] = _clamp(data["selected"] - 1, len(data["entries"]))
         return _commit(data)
@@ -156,7 +165,11 @@ def _list_view(data: dict):
         for entry in data["entries"]
     ]
     if rows:
-        body: Any = SelectList(rows, selected_idx=data["selected"])
+        body: Any = SelectList(
+            rows,
+            selected_idx=data["selected"],
+            on_select="permissions:select",
+        )
     elif not data["inventory_seen"]:
         body = Text("Waiting for permission decisions…", size=12.0)
     else:
