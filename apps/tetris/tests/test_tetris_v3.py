@@ -29,16 +29,21 @@ def test_key_moves_piece_and_view_has_canvas() -> None:
     _with_state(moved)
 
     assert moved["current"]["col"] == data["current"]["col"] - 1
+    view_node = tetris.view().to_node()
+    assert view_node.get("padding") is None
     canvas = tetris.view().children[1].to_node()
     assert canvas["type"] == "canvas"
     assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
 
 
 def test_playfield_has_a_distinct_backdrop() -> None:
-    commands = tetris._draw(tetris._initial())
+    from plexi_sdk import theme
 
-    assert commands[0].fill == tetris.PLAYFIELD_BG
-    assert tetris.PLAYFIELD_BG == "#24243a"
+    commands = tetris._draw(tetris._initial())
+    pal = tetris.TETRIS_PALETTE.resolve(theme)
+
+    assert commands[0].fill == pal["playfield_bg"]
+    assert commands[0].fill != theme.bg
 
 
 def test_init_uses_the_continuous_ten_hz_clock() -> None:

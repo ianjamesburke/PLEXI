@@ -12,10 +12,10 @@ from __future__ import annotations
 import math
 import random
 
-from plexi_sdk import dim, log, theme
+from plexi_sdk import AppPalette, dim, log, theme
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import MouseEvent, RenderFrame, Resize
-from plexi_sdk.ui import Canvas, CanvasCircle, CanvasRect, CanvasText
+from plexi_sdk.ui import AppBar, Canvas, CanvasCircle, CanvasRect, Column, FooterKeys
 
 TARGET_FPS = 60
 TARGET_DT = 1.0 / TARGET_FPS
@@ -24,21 +24,43 @@ GRAVITY = 300.0  # px/s^2
 DAMPING = 0.78  # energy retained on wall bounce
 FRICTION = 0.995  # per-frame horizontal friction on floor contact
 MAX_BALLS = 50
-BG = "#0d0d1a"
-PALETTE = [
-    "#f38ba8",
-    "#a6e3a1",
-    "#89b4fa",
-    "#f9e2af",
-    "#cba6f7",
-    "#94e2d5",
-    "#fab387",
-    "#74c7ec",
-    "#b4befe",
-    "#eba0ac",
-    "#a6adc8",
-    "#cdd6f4",
-]
+
+BALL_PALETTE = AppPalette(
+    dark={
+        "c0": "#f7768e",
+        "c1": "#9ece6a",
+        "c2": "#7aa2f7",
+        "c3": "#e0af68",
+        "c4": "#bb9af7",
+        "c5": "#7dcfff",
+        "c6": "#ff9e64",
+        "c7": "#2ac3de",
+        "c8": "#b4f9f8",
+        "c9": "#db4b4b",
+        "c10": "#73daca",
+        "c11": "#c0caf5",
+    },
+    light={
+        "c0": "#f52a65",
+        "c1": "#587539",
+        "c2": "#2e7de9",
+        "c3": "#8c6c3e",
+        "c4": "#7847bd",
+        "c5": "#007197",
+        "c6": "#b15c00",
+        "c7": "#188092",
+        "c8": "#387068",
+        "c9": "#c64343",
+        "c10": "#118c74",
+        "c11": "#3760bf",
+    },
+)
+
+
+def _palette() -> list[str]:
+    pal = BALL_PALETTE.resolve(theme)
+    return [pal[f"c{i}"] for i in range(12)]
+
 
 _runtime: dict | None = None
 
@@ -51,13 +73,14 @@ def _new_ball(
     vy: float | None = None,
 ) -> dict:
     radius = random.uniform(14.0, 44.0)
+    colors = _palette()
     return {
         "x": x,
         "y": y,
         "vx": random.uniform(-180.0, 180.0) if vx is None else vx,
         "vy": random.uniform(-250.0, -60.0) if vy is None else vy,
         "r": radius,
-        "color": PALETTE[idx % len(PALETTE)],
+        "color": colors[idx % len(colors)],
     }
 
 
@@ -204,17 +227,28 @@ def view():
     data = _sim()
     w = data["w"]
     h = data["h"]
-    return Canvas(_draw(data), width=w, height=h, grow=True)
+    balls = data["balls"]
+    return Column(
+        [
+            AppBar("Balls", f"{len(balls)} balls"),
+            Canvas(_draw(data), width=w, height=h, grow=True),
+            FooterKeys([("click", "add ball"), ("click ball", "remove")]),
+        ],
+        gap=0,
+        grow=True,
+    )
 
 
 def _draw(data: dict) -> list:
     w = data["w"]
     h = data["h"]
     balls = data["balls"]
-    commands: list = [CanvasRect(0.0, 0.0, w, h, BG)]
+    commands: list = [CanvasRect(0.0, 0.0, w, h, theme.bg_darkest)]
+    shadow = dim(theme.bg_darkest, 160)
+    glint = dim(theme.fg, 90)
     for ball in balls:
         commands.append(
-            CanvasCircle(ball["x"] + 3.0, ball["y"] + 4.0, ball["r"], dim("#000000", 60))
+            CanvasCircle(ball["x"] + 3.0, ball["y"] + 4.0, ball["r"], shadow)
         )
     for ball in balls:
         commands.append(CanvasCircle(ball["x"], ball["y"], ball["r"], ball["color"]))
@@ -223,16 +257,8 @@ def _draw(data: dict) -> list:
                 ball["x"] - ball["r"] * 0.28,
                 ball["y"] - ball["r"] * 0.28,
                 max(3.0, ball["r"] * 0.28),
-                dim("#ffffff", 90),
+                glint,
             )
         )
-    commands.append(
-        CanvasText(
-            12.0,
-            18.0,
-            f"{len(balls)} balls — click to add · click ball to remove",
-            size=12.0,
-            color=theme.fg,
-        )
-    )
     return commands
+

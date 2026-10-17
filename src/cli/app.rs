@@ -323,19 +323,21 @@ fn app_test_pythonpath(app_dir: &std::path::Path) -> String {
 /// Streams pytest output live and returns its exit code so CI and ship
 /// scripts can gate on it.
 pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
-    let app_dir = std::path::Path::new(path);
-    let tests_dir = app_dir.join("tests");
+    let raw_dir = std::path::Path::new(path);
+    let tests_dir = raw_dir.join("tests");
     if !tests_dir.is_dir() {
         log::warn!("app_test:cli: no tests/ dir at {}", tests_dir.display());
         eprintln!(
             "error: no tests/ directory in {} — expected {}",
-            app_dir.display(),
-            app_dir.join("tests").join("test_app.py").display()
+            raw_dir.display(),
+            raw_dir.join("tests").join("test_app.py").display()
         );
         eprintln!("  `plexi app init` scaffolds tests/test_app.py for new apps.");
         return 1;
     }
 
+    let app_dir_buf = std::fs::canonicalize(raw_dir).unwrap_or_else(|_| raw_dir.to_path_buf());
+    let app_dir = app_dir_buf.as_path();
     let (app_id, deps) = app_test_identity(app_dir);
     let python = match crate::app::python_env::ensure_app_venv(&app_id, app_dir, &deps) {
         Ok(python) => python,
@@ -460,9 +462,25 @@ fn write_python_scaffold_support_files(app_dir: &std::path::Path, name: &str) ->
     let gitignore = include_str!("../../sdk/python/plexi_sdk/templates/gitignore");
     std::fs::write(app_dir.join(".gitignore"), gitignore)?;
 
+    write_scaffold_metadata_file(app_dir, "plexi app init")?;
+
+    Ok(())
+}
+
+pub(super) fn write_scaffold_metadata_file(
+    app_dir: &std::path::Path,
+    generated_by: &str,
+) -> io::Result<()> {
+    let sdk_version = python_sdk_version();
+    let (channel, profile_dir) = current_scaffold_channel();
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let manifest_schema_version = crate::app::registry::MANIFEST_SCHEMA_VERSION;
+    let python_runtime_version = crate::app::python_env::PYTHON_APP_VENV_VERSION;
+    let template_version = PYTHON_SCAFFOLD_TEMPLATE_VERSION;
+
     let metadata = format!(
         "schema_version = {schema}\n\
-         generated_by = \"plexi app init\"\n\
+         generated_by = \"{generated_by}\"\n\
          plexi_cli_version = \"{cli_version}\"\n\
          sdk_version = \"{sdk_version}\"\n\
          manifest_schema_version = {manifest_schema_version}\n\
@@ -472,13 +490,53 @@ fn write_python_scaffold_support_files(app_dir: &std::path::Path, name: &str) ->
          profile_dir = \"{profile_dir}\"\n",
         schema = SCAFFOLD_METADATA_SCHEMA_VERSION,
     );
-    std::fs::write(app_dir.join(SCAFFOLD_METADATA_FILE), metadata)?;
+    let metadata_path = app_dir.join(SCAFFOLD_METADATA_FILE);
+    std::fs::write(&metadata_path, metadata)?;
     log::info!(
-        "app_init: wrote scaffold support files metadata={} template_version={template_version} sdk_version={sdk_version} channel={channel} profile_dir={profile_dir}",
-        app_dir.join(SCAFFOLD_METADATA_FILE).display()
+        "app_init: wrote scaffold metadata={} generated_by={generated_by} template_version={template_version} sdk_version={sdk_version} channel={channel} profile_dir={profile_dir}",
+        metadata_path.display()
     );
-
     Ok(())
+}
+
+/// Write or refresh `plexi.scaffold.toml` for an existing app directory without
+/// creating or modifying any source files (`plexi app init --adopt <dir>`).
+pub fn app_adopt(path: &str) -> i32 {
+    let raw_path = std::path::Path::new(path);
+    let (manifest, _entry_path) = match crate::cli::app_check::load_local_app(raw_path) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            log::error!("app_adopt: invalid app directory '{}': {err}", raw_path.display());
+            eprintln!("error: {err}");
+            return 1;
+        }
+    };
+    let app_dir = std::fs::canonicalize(raw_path).unwrap_or_else(|_| raw_path.to_path_buf());
+    match write_scaffold_metadata_file(&app_dir, "plexi app init --adopt") {
+        Ok(()) => {
+            let metadata_path = app_dir.join(SCAFFOLD_METADATA_FILE);
+            log::info!(
+                "app_adopt: adopted app '{}' at {}",
+                manifest.app.id,
+                metadata_path.display()
+            );
+            println!(
+                "Adopted app '{}' — wrote {}",
+                manifest.app.id,
+                metadata_path.display()
+            );
+            0
+        }
+        Err(e) => {
+            log::error!(
+                "app_adopt: failed to write {} in {}: {e}",
+                SCAFFOLD_METADATA_FILE,
+                app_dir.display()
+            );
+            eprintln!("error: could not write {SCAFFOLD_METADATA_FILE}: {e}");
+            1
+        }
+    }
 }
 
 /// `chmod +x` a scaffolded entry point.

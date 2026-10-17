@@ -6,7 +6,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from plexi_sdk import log, state
+from plexi_sdk import AppPalette, dim, log, state, theme
 from plexi_sdk.effects import SetSchedulerMode, SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame
 from plexi_sdk.ui import AppBar, Canvas, CanvasRect, CanvasText, Column, FooterKeys
@@ -17,11 +17,34 @@ CELL = 20.0
 CANVAS_W = 360.0
 CANVAS_H = 440.0
 TARGET_FPS = 10
-PLAYFIELD_BG = "#24243a"
+
+TETRIS_PALETTE = AppPalette(
+    dark={
+        "playfield_bg": "#16161e",
+        "highlight": dim("#ffffff", 68),
+        "I": "#7dcfff",
+        "O": "#e0af68",
+        "T": "#bb9af7",
+        "S": "#9ece6a",
+        "Z": "#f7768e",
+        "J": "#7aa2f7",
+        "L": "#ff9e64",
+    },
+    light={
+        "playfield_bg": "#e9e9ed",
+        "highlight": dim("#ffffff", 110),
+        "I": "#007197",
+        "O": "#8c6c3e",
+        "T": "#7847bd",
+        "S": "#587539",
+        "Z": "#f52a65",
+        "J": "#2e7de9",
+        "L": "#b15c00",
+    },
+)
 
 PIECES: dict[str, dict[str, Any]] = {
     "I": {
-        "color": "#94e2d5",
         "shapes": [
             [(1, 0), (1, 1), (1, 2), (1, 3)],
             [(0, 2), (1, 2), (2, 2), (3, 2)],
@@ -29,9 +52,8 @@ PIECES: dict[str, dict[str, Any]] = {
             [(0, 1), (1, 1), (2, 1), (3, 1)],
         ],
     },
-    "O": {"color": "#f9e2af", "shapes": [[(0, 0), (0, 1), (1, 0), (1, 1)]] * 4},
+    "O": {"shapes": [[(0, 0), (0, 1), (1, 0), (1, 1)]] * 4},
     "T": {
-        "color": "#cba6f7",
         "shapes": [
             [(0, 1), (1, 0), (1, 1), (1, 2)],
             [(0, 1), (1, 1), (1, 2), (2, 1)],
@@ -40,7 +62,6 @@ PIECES: dict[str, dict[str, Any]] = {
         ],
     },
     "S": {
-        "color": "#a6e3a1",
         "shapes": [
             [(0, 1), (0, 2), (1, 0), (1, 1)],
             [(0, 1), (1, 1), (1, 2), (2, 2)],
@@ -49,7 +70,6 @@ PIECES: dict[str, dict[str, Any]] = {
         ],
     },
     "Z": {
-        "color": "#f38ba8",
         "shapes": [
             [(0, 0), (0, 1), (1, 1), (1, 2)],
             [(0, 2), (1, 1), (1, 2), (2, 1)],
@@ -58,7 +78,6 @@ PIECES: dict[str, dict[str, Any]] = {
         ],
     },
     "J": {
-        "color": "#89b4fa",
         "shapes": [
             [(0, 0), (1, 0), (1, 1), (1, 2)],
             [(0, 1), (0, 2), (1, 1), (2, 1)],
@@ -67,7 +86,6 @@ PIECES: dict[str, dict[str, Any]] = {
         ],
     },
     "L": {
-        "color": "#fab387",
         "shapes": [
             [(0, 2), (1, 0), (1, 1), (1, 2)],
             [(0, 1), (1, 1), (2, 1), (2, 2)],
@@ -233,10 +251,10 @@ def _soft_drop(data: dict, score: bool) -> dict:
 
 
 def _lock(data: dict) -> dict:
-    color = PIECES[data["current"]["key"]]["color"]
+    piece_key = data["current"]["key"]
     for row, col in _cells(data["current"]):
         if row >= 0:
-            data["board"][row][col] = color
+            data["board"][row][col] = piece_key
     full = [row for row in range(ROWS) if all(data["board"][row])]
     for row in reversed(full):
         del data["board"][row]
@@ -267,7 +285,6 @@ def view():
             Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
             FooterKeys(keys),
         ],
-        padding=0,
         gap=0,
         grow=True,
     )
@@ -276,39 +293,40 @@ def view():
 def _draw(data: dict) -> list:
     bx = 28.0
     by = 20.0
+    pal = TETRIS_PALETTE.resolve(theme)
     commands: list = [
         CanvasRect(
             bx - 2,
             by - 2,
             COLS * CELL + 4,
             ROWS * CELL + 4,
-            PLAYFIELD_BG,
+            pal["playfield_bg"],
             radius=2.0,
         )
     ]
     for row in range(ROWS):
         for col in range(COLS):
-            fill = data["board"][row][col]
-            if fill:
-                _cell(commands, bx, by, row, col, fill)
+            cell_val = data["board"][row][col]
+            if cell_val:
+                _cell(commands, bx, by, row, col, pal.get(cell_val, cell_val), pal["highlight"])
     if data["alive"]:
+        piece_color = pal[data["current"]["key"]]
         for row, col in _cells(data["current"]):
             if row >= 0:
-                _cell(
-                    commands, bx, by, row, col, PIECES[data["current"]["key"]]["color"]
-                )
+                _cell(commands, bx, by, row, col, piece_color, pal["highlight"])
     px = bx + COLS * CELL + 28.0
     commands.extend(
         [
-            CanvasText(px, by, "SCORE", size=10.0, color="#a6adc8"),
+            CanvasText(px, by, "SCORE", size=10.0, color=theme.muted),
             CanvasText(
-                px, by + 18.0, str(data["score"]), size=18.0, color="#cdd6f4", bold=True
+                px, by + 18.0, str(data["score"]), size=18.0, color=theme.fg, bold=True
             ),
-            CanvasText(px, by + 52.0, "LINES", size=10.0, color="#a6adc8"),
-            CanvasText(px, by + 70.0, str(data["lines"]), size=16.0, color="#cdd6f4"),
-            CanvasText(px, by + 108.0, "NEXT", size=10.0, color="#a6adc8"),
+            CanvasText(px, by + 52.0, "LINES", size=10.0, color=theme.muted),
+            CanvasText(px, by + 70.0, str(data["lines"]), size=16.0, color=theme.fg),
+            CanvasText(px, by + 108.0, "NEXT", size=10.0, color=theme.muted),
         ]
     )
+    next_color = pal[data["next"]]
     for row, col in PIECES[data["next"]]["shapes"][0]:
         commands.append(
             CanvasRect(
@@ -316,20 +334,21 @@ def _draw(data: dict) -> list:
                 by + 126.0 + row * 14.0,
                 12.0,
                 12.0,
-                PIECES[data["next"]]["color"],
+                next_color,
                 radius=2.0,
             )
         )
+    overlay_bg = dim(theme.bg_darkest, 204)
     if not data["alive"]:
         commands.extend(
             [
-                CanvasRect(bx + 12.0, by + 160.0, 176.0, 54.0, "#000000cc", radius=4.0),
+                CanvasRect(bx + 12.0, by + 160.0, 176.0, 54.0, overlay_bg, radius=4.0),
                 CanvasText(
                     bx + 100.0,
                     by + 187.0,
                     "GAME OVER",
                     size=18.0,
-                    color="#f38ba8",
+                    color=theme.danger,
                     bold=True,
                     align="center_center",
                 ),
@@ -338,13 +357,13 @@ def _draw(data: dict) -> list:
     elif data["paused"]:
         commands.extend(
             [
-                CanvasRect(bx + 34.0, by + 176.0, 132.0, 40.0, "#000000cc", radius=4.0),
+                CanvasRect(bx + 34.0, by + 176.0, 132.0, 40.0, overlay_bg, radius=4.0),
                 CanvasText(
                     bx + 100.0,
                     by + 196.0,
                     "PAUSED",
                     size=16.0,
-                    color="#f9e2af",
+                    color=theme.warning,
                     bold=True,
                     align="center_center",
                 ),
@@ -353,8 +372,17 @@ def _draw(data: dict) -> list:
     return commands
 
 
-def _cell(commands: list, bx: float, by: float, row: int, col: int, fill: str) -> None:
+def _cell(
+    commands: list,
+    bx: float,
+    by: float,
+    row: int,
+    col: int,
+    fill: str,
+    highlight: str,
+) -> None:
     x = bx + col * CELL + 1.0
     y = by + row * CELL + 1.0
     commands.append(CanvasRect(x, y, CELL - 2.0, CELL - 2.0, fill, radius=2.0))
-    commands.append(CanvasRect(x + 1.5, y + 1.5, CELL - 5.0, 2.0, "#ffffff44"))
+    commands.append(CanvasRect(x + 1.5, y + 1.5, CELL - 5.0, 2.0, highlight))
+

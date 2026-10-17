@@ -1016,7 +1016,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `test` | Run an app's AppHarness tests with `uv run --with pytest pytest tests/` |
 | `info` | Show details about an installed app: manifest fields and tool status |
 | `state` | Read or replace a file-backed app's state document |
-| `init` | Create a new app from a template |
+| `init` | Create a new app from a template, or adopt an existing app directory |
 | `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
 | `inspect` | Show the trust sheet for a local app directory or .plexipkg package |
 | `package` | Build a distributable .plexipkg package from an app directory |
@@ -1174,17 +1174,20 @@ Replace an app's state document, reading from a file or stdin
 
 ### `plexi app init`
 
-Create a new app from a template.
+Create a new app from a template, or adopt an existing app directory.
 
 Scaffolds the folder structure and files you need to build a Plexi app: manifest.toml, main.py, tests/test_app.py, AGENTS.md, .gitignore, and plexi.scaffold.toml drift metadata.
 
-By default, the app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
+Pass `--adopt <dir>` (or `--adopt` inside an app directory) to write or refresh `plexi.scaffold.toml` for a pre-existing app without creating or modifying any source files.
+
+By default, a newly scaffolded app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
 
 Use --open to launch it in a split-right pane after scaffolding. See `sdk/python/AUTHORING.md` for the canonical authoring guide.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | no |  |
+| `--adopt` | flag | no | Write or refresh `plexi.scaffold.toml` for an existing app directory without altering source files |
 | `--wasm` | string | no | Create a Rust WASM component app with the Plexi WASM SDK |
 | `--lang` | string | no | App language/template: `python` (declarative UI) or `python_agent` (agent-loop app). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |

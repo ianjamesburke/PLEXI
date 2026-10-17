@@ -159,3 +159,17 @@ def test_tool_calls_do_not_mutate_calculator_state() -> None:
     assert not any(isinstance(e, SetState) for e in effects), (
         "read-only tools must never emit SetState"
     )
+
+
+def test_view_renders_app_bar_and_muted_pending_expression() -> None:
+    _set_state(dict(calc.DEFAULT_STATE, display="5", pending=7.0, op="+", fresh=False))
+    node = calc.view().to_node()
+    header = node["children"][0]
+    assert header["type"] == "app_bar"
+    assert header["title"] == "Calculator"
+    assert header["subtitle"] == "7 +"
+    expr_line = node["children"][1]
+    assert expr_line["type"] == "text"
+    assert expr_line["text"] == "7 +"
+    assert expr_line["color"] in (sdk.theme.muted, "muted")
+

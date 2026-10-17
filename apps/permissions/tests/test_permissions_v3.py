@@ -151,3 +151,26 @@ def test_seeded_entries_show_before_inventory() -> None:
     texts = _texts(permissions.view())
     assert "Waiting for permission decisions…" not in texts
     assert "No permission decisions." not in texts
+
+
+def test_list_and_detail_views_use_app_bar_and_actions() -> None:
+    from plexi_sdk.ui import Actions, AppBar
+
+    _set_state(_sample_state())
+    list_view = permissions.view()
+    assert isinstance(list_view.children[0], AppBar)
+    assert any(isinstance(child, Actions) for child in list_view.children)
+    list_node = list_view.to_node()
+    header = list_node["children"][0]
+    assert header["type"] == "app_bar"
+    assert header["title"] == "Permissions"
+
+    _set_state({**_sample_state(), "mode": "detail"})
+    detail_view = permissions.view()
+    assert isinstance(detail_view.children[0], AppBar)
+    assert any(isinstance(child, Actions) for child in detail_view.children)
+    detail_node = detail_view.to_node()
+    detail_header = detail_node["children"][0]
+    assert detail_header["type"] == "app_bar"
+    assert detail_header["title"] == "Permissions"
+

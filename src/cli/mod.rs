@@ -1390,8 +1390,8 @@ pub use agents_api::{
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_call_cli, app_tools_cli, assistant_permission_cli, assistant_send_cli,
-    assistant_tool_cli, needs_you_api_cli, needs_you_cli, app_info, app_init,
+    app_action_cli, app_adopt, app_call_cli, app_tools_cli, assistant_permission_cli,
+    assistant_send_cli, assistant_tool_cli, needs_you_api_cli, needs_you_cli, app_info, app_init,
     app_inspect_cli, app_install_package, app_install_with_pin, app_list, app_package_cli,
     app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };

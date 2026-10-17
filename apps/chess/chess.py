@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import chess_domain as domain
 from chess_engine import FILES, Position, sq_name
-from plexi_sdk import log, state, tools
+from plexi_sdk import AppPalette, log, state, theme, tools
 from plexi_sdk.effects import (
     DeclareEventStreams,
     EmitEvent,
@@ -348,7 +348,6 @@ def view():
             FooterKeys([("click", "move"), ("arrows", "cursor"), ("enter", "select"),
                         ("n", "new game")]),
         ],
-        padding=0,
         gap=4.0,
         grow=True,
     )
@@ -376,9 +375,28 @@ def _square_at(x: float, y: float) -> tuple[int, int] | None:
     return max(0, min(7, file_idx)), max(0, min(7, rank))
 
 
+BOARD_PALETTE = AppPalette(
+    dark={
+        "light_sq": "#565f89",
+        "dark_sq": "#292e42",
+        "white_piece": "#c0caf5",
+        "black_piece": "#16161e",
+        "coord": "#c0caf5",
+    },
+    light={
+        "light_sq": "#d5d6db",
+        "dark_sq": "#8990b3",
+        "white_piece": "#ffffff",
+        "black_piece": "#1f2335",
+        "coord": "#1f2335",
+    },
+)
+
+
 def _draw_board(pos: Position, ui: dict, w: float, h: float) -> list:
     ox, oy, cell, board = _board_geometry(w, h)
-    commands: list = [CanvasRect(0, 0, w, h, "#11111b")]
+    pal = BOARD_PALETTE.resolve(theme)
+    commands: list = [CanvasRect(0, 0, w, h, theme.bg_darkest)]
     selected = tuple(ui["selected"]) if ui["selected"] is not None else None
     cursor = tuple(ui["cursor"])
     for rank in range(8):
@@ -386,20 +404,20 @@ def _draw_board(pos: Position, ui: dict, w: float, h: float) -> list:
             square = (file_idx, rank)
             x = ox + file_idx * cell
             y = oy + (7 - rank) * cell
-            fill = "#a6adc8" if (file_idx + rank) % 2 == 1 else "#45475a"
+            fill = pal["light_sq"] if (file_idx + rank) % 2 == 1 else pal["dark_sq"]
             if square == selected:
-                fill = "#f9e2af"
+                fill = theme.warning
             elif square == cursor:
-                fill = "#89b4fa"
+                fill = theme.accent
             commands.append(CanvasRect(x, y, cell, cell, fill))
             piece = pos.board.get(square)
             if piece:
                 commands.append(CanvasText(
                     x + cell / 2, y + cell / 2, PIECE_GLYPHS[piece], size=cell * 0.7,
-                    color="#f5f5f5" if piece.isupper() else "#11111b",
+                    color=pal["white_piece"] if piece.isupper() else pal["black_piece"],
                     align="center_center",
                 ))
     for idx, file_name in enumerate(FILES):
         commands.append(CanvasText(ox + idx * cell + 4, oy + board - 5, file_name,
-                                   size=max(8.0, cell * 0.18), color="#11111b"))
+                                   size=max(8.0, cell * 0.18), color=pal["coord"]))
     return commands

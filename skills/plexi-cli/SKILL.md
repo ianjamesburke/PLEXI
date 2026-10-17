@@ -90,8 +90,11 @@ plexi skill install --agent codex
   with zero polling (exits 0 on messages, 2 on timeout, 1 on error).
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
-- **Apps** — scaffold, check, test, open, package, install, and inspect apps:
-  `plexi app --help`. `plexi app info <id>` prints the manifest and populates
+- **Apps** — scaffold, adopt, check, test, open, package, install, and inspect apps:
+  `plexi app --help`. `plexi app init --adopt <dir>` writes or refreshes
+  `plexi.scaffold.toml` for an existing app directory without altering source
+  files so `plexi app check` can enforce version, template, and channel drift.
+  `plexi app info <id>` prints the manifest and populates
   its tools field from the live tool registry when a pane of `<id>` is running
   in the context, or explicitly labels its static `@tools.tool` source scan
   `manifest-only` when not running.
