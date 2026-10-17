@@ -122,12 +122,21 @@ impl PaletteEntry {
         }
     }
 
-    fn query_rank(&self, query: &str) -> usize {
-        if query.is_empty() {
-            return self.group_rank();
+    fn primary_label(&self) -> &str {
+        match self {
+            PaletteEntry::Command { name, .. } | PaletteEntry::Builtin { name, .. } => name,
+            PaletteEntry::Context { name, .. }
+            | PaletteEntry::UnavailableContext { name, .. }
+            | PaletteEntry::App { name, .. }
+            | PaletteEntry::UserCommand { name, .. } => name.as_str(),
+            PaletteEntry::Agent { agent_name, .. } => agent_name.as_str(),
+            PaletteEntry::Note { title, .. } => title.as_str(),
         }
-        let search_text = match self {
-            PaletteEntry::Command { search_text, .. } => *search_text,
+    }
+
+    fn search_text_str(&self) -> &str {
+        match self {
+            PaletteEntry::Command { search_text, .. } => search_text,
             PaletteEntry::Context { search_text, .. }
             | PaletteEntry::UnavailableContext { search_text, .. }
             | PaletteEntry::Agent { search_text, .. }
@@ -135,36 +144,35 @@ impl PaletteEntry {
             | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
             | PaletteEntry::UserCommand { search_text, .. } => search_text.as_str(),
-        };
-        if search_text.starts_with(query) {
-            return 0;
         }
-        if search_text
-            .split_whitespace()
-            .any(|part| part.starts_with(query))
+    }
+
+    fn query_rank(&self, query: &str) -> i64 {
+        if query.is_empty() {
+            return self.group_rank() as i64;
+        }
+        let search_text = self.search_text_str();
+        let candidate = crate::search::CandidateInput::new(self.primary_label())
+            .with_secondary(search_text);
+        if let Some(m) =
+            crate::search::score_candidate(query, &candidate, std::time::SystemTime::UNIX_EPOCH)
         {
-            return 1;
+            return -m.total;
         }
-        search_text
-            .find(query)
-            .map(|idx| idx + 2)
-            .unwrap_or(usize::MAX)
+        i64::MAX
     }
 
     fn matches_query(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
         }
-        match self {
-            PaletteEntry::Command { search_text, .. } => search_text.contains(query),
-            PaletteEntry::Context { search_text, .. }
-            | PaletteEntry::UnavailableContext { search_text, .. }
-            | PaletteEntry::Agent { search_text, .. }
-            | PaletteEntry::App { search_text, .. }
-            | PaletteEntry::Builtin { search_text, .. }
-            | PaletteEntry::Note { search_text, .. }
-            | PaletteEntry::UserCommand { search_text, .. } => search_text.contains(query),
-        }
+        self.search_text_str().contains(query)
+            || crate::search::score_candidate(
+                query,
+                &crate::search::CandidateInput::new(self.primary_label()),
+                std::time::SystemTime::UNIX_EPOCH,
+            )
+            .is_some()
     }
 }
 

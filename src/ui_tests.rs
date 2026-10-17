@@ -5859,4 +5859,100 @@ mod tests {
             assert_eq!(fb.cwd, parent_dir, "clicking breadcrumb must navigate to ancestor");
         });
     }
+
+    #[test]
+    fn screenshot_file_browser_deep_search_narrow_and_wide() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace-root");
+        let src_dir = root.join("src").join("search");
+        let docs_dir = root.join("docs");
+        std::fs::create_dir_all(&src_dir).expect("mkdir src/search");
+        std::fs::create_dir_all(&docs_dir).expect("mkdir docs");
+        std::fs::write(
+            src_dir.join("search_session.rs"),
+            b"pub struct SearchSession;\n",
+        )
+        .expect("write search_session.rs");
+        std::fs::write(
+            src_dir.join("search_bar_widget.rs"),
+            b"pub struct SearchBar;\n",
+        )
+        .expect("write search_bar_widget.rs");
+        std::fs::write(
+            docs_dir.join("architecture.md"),
+            b"# Architecture\nUnified upstream search primitive for path and content discovery.\n",
+        )
+        .expect("write architecture.md");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(440.0, 480.0, 2.0);
+        let root_clone = root.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
+                AppPermissions::builtin(),
+                root_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(2);
+
+        // Press Cmd+F to open the SearchBar and focus its TextInput, then type "search".
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+        });
+        h.run_steps(2);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("search".to_string()));
+        h.run_steps(2);
+
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        let mut found_all = false;
+        while std::time::Instant::now() < deadline {
+            h.step();
+            let done = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .values_mut()
+                    .find_map(|p| {
+                        let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                            return None;
+                        };
+                        b.as_any_mut()
+                            .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                    })
+                    .is_some_and(|fb| fb.search_result_count() >= 3)
+            });
+            if done {
+                found_all = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        assert!(
+            found_all,
+            "Cmd+F + typing 'search' must enter search mode and populate deep path + content hits"
+        );
+
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("narrow"))
+            .expect("render narrow deep search");
+
+        h.harness().set_size(egui::vec2(880.0, 480.0));
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("wide"))
+            .expect("render wide deep search");
+    }
 }
