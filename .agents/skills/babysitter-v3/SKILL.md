@@ -63,7 +63,7 @@ Labels: `worker-<batch>`, `tester-<batch>-r<round>`.
 | `verdict` | Tester only: `PASS` or `FAIL` |
 | `last_error` | One line when `blocked`/`failed`: the question or the reason |
 
-Write: `plexi pane slot write <name> <value> --replace`. Workers' steps: `impl` → `pr` (PR open, local gate green, waiting for a verdict) → `merge`. Testers' steps: `test`. A question is `blocked` plus `last_error`, never prose at an idle prompt.
+Write: `plexi pane slot write <name> <value> --pane-id $PLEXI_PANE_ID --replace`. Every pane writes `plexi pane slot write status <step>:working --pane-id $PLEXI_PANE_ID --replace` immediately on starting, and every later slot write keeps both `--pane-id $PLEXI_PANE_ID` and `--replace`. This targets the caller's own pane even when `PLEXI_SOCKET` is overridden. Workers' steps: `impl` → `pr` (PR open, local gate green, waiting for a verdict) → `merge`. Testers' steps: `test`. A question is `blocked` plus `last_error`, never prose at an idle prompt.
 
 ## The loop (per batch, up to `max_concurrent_lanes` at once)
 
@@ -127,4 +127,4 @@ The head rots too. After every **two** merges, or whenever your own context feel
 - Pass criteria come only from the stint's Done-When.
 - Name the exact skill in every brief (`/implement-stint-v2`, never "implement it"). agy also sees the `disabled.*` skills.
 - No sounds, no dialogs, no `security` Keychain commands, no file deletion (`rm -rf` or any other spelling) in any brief.
-- Every `plexi pane slot write` you run names `--pane-id`; a bare write lands on your own pane.
+- Every `plexi pane slot write` you run passes `--pane-id $PLEXI_PANE_ID --replace`, including the initial `status=<step>:working` write; this keeps the write on the caller pane even when its target socket is overridden.

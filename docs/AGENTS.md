@@ -31,6 +31,7 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
 | `notes-editor.md` | Native Notes editor, Live Preview, links, attachments, and agent validation | see file |
 | `realtime-app-runtime.md` | Stable frame pacing and presentation across Python and native WASM apps | 0553 |
+| `search-primitive.md` | Unified upstream host search engine (`src/search/`) + `SearchBar` UI primitive (`src/ui/search_bar.rs`) for File Explorer, Notes Picker, Command Palette, and host tools | 0814 |
 | `search-results-detail-pattern.md` | Search→results→detail SDK vocabulary: `SelectList` usage, `Pending` wrapper for declarative loading state, canvas `ListRow` deletion — decision doc, taste call pending | 0728 |
 | `wasm-runtime.md` | WASM runtime architecture | see file |
 | `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
