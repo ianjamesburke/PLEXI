@@ -1,6 +1,21 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.0] — 2026-10-17
+
+### Changes
+- feat(workspace): all-over agent state restoration (SavedAgentSession, lazy Standby startup restore, and agent_history.jsonl) (0803) (#2789)
+- feat(agents): multi-CLI harness adapters, .plexi/agents/*.toml configs, self-closing sub-context squads, and 2-tier Blocked->NeedsYou escalation (0802) (#2788)
+- feat(pane): add schema-validated structured pane results (0666) (#2787)
+- feat(agents): Pi package with live workspace UI and durable Needs you continuation (0796) (#2786)
+- feat(cli): add plexi pane new --worktree isolation via wtp (0668) (#2785)
+- feat(cli): add plexi pane message send/recv mailbox on slot-wait mechanics (0625) (#2784)
+- fix(terminal): retain actual PTY exit status for pane lifecycle events (#2782)
+- feat(cli): live tool registry via plexi app tools & pane agent help signposts (0594, 0656) (#2781)
+- fix(broker): break AB/BA lock-order deadlock between PermissionMonitor::for_profile and ExclusiveHostKey (#2780)
+- fix(context): default squad layout from pane count and name squad panes (#2779)
+- feat(apps): expose assistant tools on logs and github-issues (0763) (#2778)
+- feat(broker,ui): centralize surface-aware needs-you resolve and add sidebar actions (0788 Part 2a) (#2776)
 ## [0.3.5] — 2026-10-04
 
 ### Changes
