@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 
 use crate::app::app_trait::{App, AppRenderContext};
+use crate::ui::{
+    app_chrome::AppChrome,
+    button::{self, ButtonKind},
+    style,
+};
 
 pub struct ImageViewerApp {
     path: PathBuf,
@@ -83,19 +88,44 @@ impl App for ImageViewerApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        _ctx: &AppRenderContext<'_>,
+        ctx: &AppRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.load_texture(ui.ctx());
+        let colors = ctx.colors;
+        let subtitle = self
+            .image_size
+            .map(|[w, h]| format!("{w}×{h}"))
+            .unwrap_or_default();
+        AppChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
 
+        ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.fit_to_view, "Fit").clicked() {
+            ui.add_space(style::SPACE_MD);
+            let fit_kind = if self.fit_to_view {
+                ButtonKind::Accent
+            } else {
+                ButtonKind::Secondary
+            };
+            if button::chrome_button_sized(ui, "Fit", fit_kind, colors, 48.0, style::BUTTON_H_MD)
+                .clicked()
+            {
                 self.fit_to_view = true;
             }
-            if ui.button("100%").clicked() {
+            ui.add_space(style::SPACE_XS);
+            let one_to_one = !self.fit_to_view && (self.zoom - 1.0).abs() < f32::EPSILON;
+            let one_kind = if one_to_one {
+                ButtonKind::Accent
+            } else {
+                ButtonKind::Secondary
+            };
+            if button::chrome_button_sized(ui, "100%", one_kind, colors, 52.0, style::BUTTON_H_MD)
+                .clicked()
+            {
                 self.fit_to_view = false;
                 self.zoom = 1.0;
             }
+            ui.add_space(style::SPACE_SM);
             let zoom_response = ui.add(
                 egui::Slider::new(&mut self.zoom, 0.1..=8.0)
                     .logarithmic(true)
@@ -105,14 +135,31 @@ impl App for ImageViewerApp {
                 self.fit_to_view = false;
             }
         });
+        ui.add_space(style::SPACE_SM);
 
         ui.separator();
         if let Some(error) = &self.error {
-            ui.label(error);
+            ui.add_space(style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_MD);
+                ui.label(
+                    egui::RichText::new(error)
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.danger),
+                );
+            });
             return;
         }
         let Some(texture) = &self.texture else {
-            ui.label("Loading image...");
+            ui.add_space(style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_MD);
+                ui.label(
+                    egui::RichText::new("Loading image...")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_dim),
+                );
+            });
             return;
         };
         let tex_size = texture.size_vec2();

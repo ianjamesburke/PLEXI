@@ -5955,4 +5955,212 @@ mod tests {
         h.save_screenshot(&evidence_png!("wide"))
             .expect("render wide deep search");
     }
+
+    #[test]
+    fn screenshot_file_browser_status_bar_shortcuts_wide_and_narrow() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace-root");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::create_dir_all(root.join("docs")).expect("mkdir docs");
+        std::fs::write(root.join("Cargo.toml"), b"[package]\nname = \"plexi\"\n")
+            .expect("write Cargo.toml");
+        std::fs::write(root.join("README.md"), b"# Plexi\n").expect("write README.md");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 720.0, 2.0);
+        let root_clone = root.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
+                AppPermissions::builtin(),
+                root_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let fb = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .expect("FileBrowserApp pane");
+            let layout = fb
+                .last_status_bar_layout
+                .as_ref()
+                .expect("wide status bar layout");
+            assert_eq!(
+                layout.label_rects.len(),
+                7,
+                "wide 1100x720 pane must fit all 7 status bar hint groups"
+            );
+            for label_rect in &layout.label_rects {
+                assert!(
+                    (label_rect.max.y - layout.item_count_rect.max.y).abs() <= 0.5,
+                    "wide hint label baseline must match item count baseline"
+                );
+            }
+            for chip_rect in &layout.chip_rects {
+                assert!(
+                    (chip_rect.center().y - layout.item_count_rect.center().y).abs() <= 0.5,
+                    "wide chip vertical center must match item count vertical center"
+                );
+            }
+            let last_label = layout.label_rects.last().unwrap();
+            assert!(
+                (layout.row_rect.max.x - last_label.max.x).abs() <= 2.0,
+                "wide rightmost hint label must sit flush with status bar right edge"
+            );
+        });
+        h.save_screenshot(&evidence_png!("_wide_1100x720"))
+            .expect("render wide 1100x720 status bar");
+
+        h.harness().set_size(egui::vec2(640.0, 520.0));
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let fb = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .expect("FileBrowserApp pane");
+            let layout = fb
+                .last_status_bar_layout
+                .as_ref()
+                .expect("narrow status bar layout");
+            assert!(
+                !layout.label_rects.is_empty() && layout.label_rects.len() < 7,
+                "narrow 640x520 pane must drop leading low-priority hints to fit cleanly"
+            );
+            for label_rect in &layout.label_rects {
+                assert!(
+                    (label_rect.max.y - layout.item_count_rect.max.y).abs() <= 0.5,
+                    "narrow hint label baseline must match item count baseline"
+                );
+            }
+            for chip_rect in &layout.chip_rects {
+                assert!(
+                    (chip_rect.center().y - layout.item_count_rect.center().y).abs() <= 0.5,
+                    "narrow chip vertical center must match item count vertical center"
+                );
+            }
+            let first_chip = layout.chip_rects.first().unwrap();
+            let last_label = layout.label_rects.last().unwrap();
+            assert!(
+                first_chip.min.x >= layout.item_count_rect.max.x + crate::ui::style::SPACE_MD,
+                "narrow first chip must not collide with item count label"
+            );
+            assert!(
+                (layout.row_rect.max.x - last_label.max.x).abs() <= 2.0,
+                "narrow rightmost hint label must sit flush with status bar right edge"
+            );
+        });
+        h.save_screenshot(&evidence_png!("_narrow_640x520"))
+            .expect("render narrow 640x520 status bar");
+    }
+
+    #[test]
+    fn screenshot_cli_renderer_shared_chrome() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let desc_path = tmp.path().join("descriptor.json");
+        std::fs::write(
+            &desc_path,
+            r#"{
+                "plexi_version": "0.1",
+                "name": "cargo",
+                "version": "1.84.0",
+                "description": "Rust's package manager and build tool",
+                "default_view": "list",
+                "commands": [
+                    {
+                        "name": "build",
+                        "description": "Compile a local package and all of its dependencies",
+                        "args": [
+                            {"name": "package", "type": "string", "required": false, "placeholder": "plexi"}
+                        ],
+                        "flags": [
+                            {"name": "--release", "type": "bool", "description": "Build artifacts in release mode"}
+                        ]
+                    },
+                    {
+                        "name": "test",
+                        "description": "Execute all unit and integration tests"
+                    }
+                ]
+            }"#,
+        )
+        .expect("write descriptor.json");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(720.0, 680.0, 2.0);
+        let desc_str = desc_path.to_string_lossy().into_owned();
+        let cwd = tmp.path().to_path_buf();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::render::cli_renderer_app::CliRendererApp::new(desc_str)),
+                AppPermissions::builtin(),
+                cwd,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let cli = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererApp>()
+                })
+                .expect("CliRendererApp pane");
+            assert!(cli.last_header_rect.is_some());
+            assert!(cli.last_footer_chip_rects.len() >= 3);
+        });
+        h.save_screenshot(&evidence_png!("_list"))
+            .expect("render cli_renderer list chrome");
+
+        // Press Enter to open the `build` command form.
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let cli = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererApp>()
+                })
+                .expect("CliRendererApp pane");
+            assert!(cli.last_header_rect.is_some());
+            assert_eq!(cli.last_footer_chip_rects.len(), 2);
+        });
+        h.save_screenshot(&evidence_png!("_form"))
+            .expect("render cli_renderer form chrome");
+    }
 }

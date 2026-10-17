@@ -36,6 +36,14 @@ pub(crate) fn chip_size(text_size: Vec2) -> Vec2 {
     Vec2::new(w, h)
 }
 
+pub(crate) fn chip_row_height(ui: &egui::Ui) -> f32 {
+    let text_size = ui.fonts_mut(|f| {
+        f.layout_no_wrap("M".to_string(), combo_chip_font(), Color32::PLACEHOLDER)
+            .size()
+    });
+    chip_size(text_size).y
+}
+
 pub(crate) fn key_chip(
     ui: &mut egui::Ui,
     label: &str,
@@ -44,14 +52,14 @@ pub(crate) fn key_chip(
 ) -> egui::Response {
     let fg = shortcut_key_color(colors);
     let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), font_id, fg));
-    let text_w = galley.size().x;
-    let size = chip_size(galley.size());
+    let text_size = galley.size();
+    let size = chip_size(text_size);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
     let text_pos = Pos2::new(
-        rect.center().x - text_w / 2.0,
-        rect.min.y + style::KEYCHIP_PAD_V,
+        rect.center().x - text_size.x / 2.0,
+        rect.center().y - text_size.y / 2.0,
     );
     crate::ui::snap::galley_snapped(painter, text_pos, galley, fg);
     response
@@ -81,7 +89,10 @@ pub(crate) fn key_combo_list(
 ) {
     key_combo_list_with_body(ui, combos, colors, |ui| {
         if let Some(text) = trailing {
-            ui.label(shortcut_hint_label(text, colors));
+            ui.add(
+                egui::Label::new(shortcut_hint_label(text, colors))
+                    .wrap_mode(egui::TextWrapMode::Extend),
+            );
         }
     });
 }
@@ -92,7 +103,9 @@ pub(crate) fn key_combo_list_with_body<R>(
     colors: &Colors,
     add_trailing: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
+    let row_h = chip_row_height(ui);
     ui.horizontal(|ui| {
+        ui.set_min_height(row_h);
         ui.spacing_mut().item_spacing.x = 0.0;
         for (i, keys) in combos.iter().enumerate() {
             if i > 0 {
@@ -108,6 +121,62 @@ pub(crate) fn key_combo_list_with_body<R>(
         ui.add_space(style::KEYCHIP_DESC_GAP);
         add_trailing(ui)
     })
+}
+
+/// Render a key-combo group directly into an existing horizontal row (caller sets
+/// `item_spacing.x = 0.0`), returning the painted chip rects and trailing label rect.
+pub(crate) fn key_combo_list_inline(
+    ui: &mut egui::Ui,
+    combos: &[&[&str]],
+    trailing: Option<&str>,
+    colors: &Colors,
+) -> (Vec<egui::Rect>, Option<egui::Rect>) {
+    let mut chip_rects = Vec::new();
+    for (i, keys) in combos.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(INTER_COMBO_GAP);
+        }
+        for (j, key) in keys.iter().enumerate() {
+            if j > 0 {
+                ui.add_space(style::KEYCHIP_GAP);
+            }
+            chip_rects.push(key_chip(ui, key, colors, combo_chip_font()).rect);
+        }
+    }
+    let label_rect = trailing.filter(|t| !t.is_empty()).map(|text| {
+        ui.add_space(style::KEYCHIP_DESC_GAP);
+        ui.add(
+            egui::Label::new(shortcut_hint_label(text, colors))
+                .wrap_mode(egui::TextWrapMode::Extend),
+        )
+        .rect
+    });
+    (chip_rects, label_rect)
+}
+
+/// Render an owned-string key combo directly into an existing horizontal row.
+pub(crate) fn key_combo_owned_inline(
+    ui: &mut egui::Ui,
+    keys: &[String],
+    trailing: Option<&str>,
+    colors: &Colors,
+) -> (Vec<egui::Rect>, Option<egui::Rect>) {
+    let mut chip_rects = Vec::with_capacity(keys.len());
+    for (j, key) in keys.iter().enumerate() {
+        if j > 0 {
+            ui.add_space(style::KEYCHIP_GAP);
+        }
+        chip_rects.push(key_chip(ui, key, colors, combo_chip_font()).rect);
+    }
+    let label_rect = trailing.filter(|t| !t.is_empty()).map(|text| {
+        ui.add_space(style::KEYCHIP_DESC_GAP);
+        ui.add(
+            egui::Label::new(shortcut_hint_label(text, colors))
+                .wrap_mode(egui::TextWrapMode::Extend),
+        )
+        .rect
+    });
+    (chip_rects, label_rect)
 }
 
 /// Paint one key chip with its left edge at `left`, vertically centered on
@@ -183,7 +252,30 @@ pub(crate) fn key_combo_list_width(
             w += chip_size(measure(key, combo_chip_font())).x;
         }
     }
-    if let Some(text) = trailing {
+    if let Some(text) = trailing.filter(|t| !t.is_empty()) {
+        w += style::KEYCHIP_DESC_GAP;
+        w += measure(text, egui::FontId::proportional(style::TEXT_HINT)).x;
+    }
+    w
+}
+
+pub(crate) fn key_combo_owned_width(
+    ui: &egui::Ui,
+    keys: &[String],
+    trailing: Option<&str>,
+) -> f32 {
+    let measure = |text: &str, font: egui::FontId| {
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER))
+            .size()
+    };
+    let mut w = 0.0;
+    for (j, key) in keys.iter().enumerate() {
+        if j > 0 {
+            w += style::KEYCHIP_GAP;
+        }
+        w += chip_size(measure(key, combo_chip_font())).x;
+    }
+    if let Some(text) = trailing.filter(|t| !t.is_empty()) {
         w += style::KEYCHIP_DESC_GAP;
         w += measure(text, egui::FontId::proportional(style::TEXT_HINT)).x;
     }
