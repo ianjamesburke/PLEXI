@@ -8,13 +8,12 @@
 # were the first to cap; they are last-resort entries. Run `/usage` in any agy
 # pane to see remaining quota. Workers are chosen by batch size = the largest
 # stint size in the batch.
-# Testers must be a different model family from the batch's worker: with agy
-# workers the default tester is com (Codex); skip any entry in the worker's family.
+# Plain agy (Gemini) is the default across all roles tonight (including tester).
 [roles]
 head          = ["agy", "cm", "agym", "agyl"]  # router; needs background tasks + wake (agy and claude both have it)
 worker        = ["agy", "com", "agym", "agyl"] # batches whose largest stint is S or M
 worker_large  = ["agy", "col", "cl", "agyl"]   # batches containing an L stint, or after a hard reject
-tester        = ["com", "cs", "agy", "agym"]   # skip any entry in the same model family as the batch's worker
+tester        = ["agy", "com", "cs", "agym"]   # default to agy first tonight; falls back to com/cs/agym on quota limit
 
 # How each engine takes an initial prompt on its command line. {alias} and
 # {prompt} are substituted; {prompt} is always single-quoted by the head.
