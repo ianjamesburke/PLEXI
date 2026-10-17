@@ -3,7 +3,6 @@
 use super::{ClickFlash, PlexiApp};
 use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
-use crate::ui::style;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
@@ -310,19 +309,7 @@ impl PlexiApp {
                     }
                 }
             });
-            egui::Panel::left("sidebar")
-                .default_size(style::SIDEBAR_DEFAULT_W)
-                .size_range(140.0..=400.0)
-                .resizable(true)
-                .show_separator_line(false)
-                .frame(
-                    egui::Frame::new()
-                        .fill(self.colors.bg_sidebar)
-                        .inner_margin(egui::Margin::same(0)),
-                )
-                .show_inside(ui, |ui| {
-                    crate::platform::ui_profile::time("sidebar", || self.draw_sidebar(ui));
-                });
+            self.show_sidebar_panel(ui);
         }
 
         // Central panel — terminal tiles (or welcome screen when context is empty)

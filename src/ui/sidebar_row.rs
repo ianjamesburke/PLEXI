@@ -826,7 +826,7 @@ mod tests {
     /// combination of badge, pips, and close zone may exceed the budget.
     #[test]
     fn context_row_never_exceeds_available_width() {
-        for &panel_w in &[160.0_f32, 220.0, 320.0, 400.0] {
+        for &panel_w in &[style::SIDEBAR_MIN_W, 160.0_f32, 220.0, 320.0, 400.0] {
             for &action_enabled in &[false, true] {
                 for &badge_count in &[0_usize, 3, 42] {
                     for &pane_count in &[0_usize, 1, PANE_DOT_MAX + 3] {
