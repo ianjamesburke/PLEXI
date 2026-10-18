@@ -120,8 +120,15 @@ impl StateStore {
     pub fn persistent(path: PathBuf) -> std::io::Result<Self> {
         let data = if path.exists() {
             let bytes = std::fs::read(&path)?;
-            serde_json::from_slice(&bytes).map_err(std::io::Error::other)?
+            let parsed: HashMap<String, Vec<u8>> =
+                serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+            log::info!(
+                "{}",
+                Self::format_load_trace(&path, Some((bytes.len(), parsed.len())))
+            );
+            parsed
         } else {
+            log::info!("{}", Self::format_load_trace(&path, None));
             HashMap::new()
         };
         Ok(StateStore {
@@ -130,15 +137,38 @@ impl StateStore {
         })
     }
 
+    pub(crate) fn format_load_trace(path: &Path, hit: Option<(usize, usize)>) -> String {
+        match hit {
+            Some((bytes, entries)) => format!(
+                "wasm_state: loaded state scope=context bytes={bytes} entries={entries} from {}",
+                path.display()
+            ),
+            None => format!(
+                "wasm_state: no state found for scope=context at {} (fallback=none)",
+                path.display()
+            ),
+        }
+    }
+
+    pub(crate) fn format_persist_trace(path: &Path, bytes: usize, replaced: bool) -> String {
+        format!(
+            "wasm_state: persisted state scope=context bytes={bytes} replaced={replaced} to {}",
+            path.display()
+        )
+    }
+
     fn persist(&self) -> Result<(), String> {
         let Some(path) = &self.path else {
             return Ok(());
         };
+        let replaced = path.exists();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let bytes = serde_json::to_vec(&self.data).map_err(|e| e.to_string())?;
-        std::fs::write(path, bytes).map_err(|e| e.to_string())
+        std::fs::write(path, &bytes).map_err(|e| e.to_string())?;
+        log::info!("{}", Self::format_persist_trace(path, bytes.len(), replaced));
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
@@ -1344,6 +1374,66 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
         );
 
         let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn state_store_traces_load_miss_hit_and_persist_replacement() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sysmon").join("workspace.json");
+
+        assert_eq!(
+            StateStore::format_load_trace(&path, None),
+            format!(
+                "wasm_state: no state found for scope=context at {} (fallback=none)",
+                path.display()
+            )
+        );
+        assert!(
+            !StateStore::format_load_trace(&path, None).contains('\n'),
+            "load miss trace must be one line"
+        );
+
+        let mut store = StateStore::persistent(path.clone())?;
+        assert!(store.snapshot().entries.is_empty());
+        assert!(!path.exists(), "opening a missing store does not create a file");
+
+        store.set("interval".to_string(), b"5000".to_vec()).unwrap();
+        let first_bytes = std::fs::read(&path)?;
+        assert_eq!(
+            StateStore::format_persist_trace(&path, first_bytes.len(), false),
+            format!(
+                "wasm_state: persisted state scope=context bytes={} replaced=false to {}",
+                first_bytes.len(),
+                path.display()
+            )
+        );
+
+        store.set("interval".to_string(), b"6000".to_vec()).unwrap();
+        let second_bytes = std::fs::read(&path)?;
+        assert_eq!(
+            StateStore::format_persist_trace(&path, second_bytes.len(), true),
+            format!(
+                "wasm_state: persisted state scope=context bytes={} replaced=true to {}",
+                second_bytes.len(),
+                path.display()
+            )
+        );
+        assert!(
+            !StateStore::format_persist_trace(&path, second_bytes.len(), true).contains('\n'),
+            "persist trace must be one line"
+        );
+
+        let reloaded = StateStore::persistent(path.clone())?;
+        assert_eq!(reloaded.get("interval").as_deref(), Some(&b"6000"[..]));
+        assert_eq!(
+            StateStore::format_load_trace(&path, Some((second_bytes.len(), 1))),
+            format!(
+                "wasm_state: loaded state scope=context bytes={} entries=1 from {}",
+                second_bytes.len(),
+                path.display()
+            )
+        );
         Ok(())
     }
 }
