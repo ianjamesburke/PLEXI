@@ -966,13 +966,15 @@ impl PlexiApp {
                                 if let Some(action) = crate::spatial::tiling::paint_tab_bar(
                                     ui.ctx(),
                                     ui.painter(),
-                                    bar_rect,
-                                    group,
-                                    &zoomed_tab_labels,
-                                    &zoomed_tab_activities,
-                                    &self.colors,
-                                    self.config.pane_title_font_size.unwrap_or(12.0),
-                                    is_overtaken_app,
+                                    crate::spatial::tiling::TabBarPaintParams {
+                                        bar_rect,
+                                        group,
+                                        tab_labels: &zoomed_tab_labels,
+                                        tab_activities: &zoomed_tab_activities,
+                                        colors: &self.colors,
+                                        font_size: self.config.pane_title_font_size.unwrap_or(12.0),
+                                        overtake_hint: is_overtaken_app,
+                                    },
                                 ) {
                                     zoomed_tab_action = Some((group.container_tile, action));
                                 }

@@ -103,18 +103,29 @@ pub fn minimap_panel_rect(
     ))
 }
 
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
+pub struct MinimapRenderParams<'a> {
+    pub content_rect: egui::Rect,
+    pub windows: &'a [Window],
+    pub active_window: usize,
+    pub last_visited: &'a std::collections::HashMap<u32, u32>,
+    pub colors: &'a Colors,
+    pub workspace_id: u64,
+    pub workspace_name: &'a str,
+}
+
 pub fn render_minimap(
     ui: &mut egui::Ui,
-    content_rect: egui::Rect,
-    windows: &[Window],
-    active_window: usize,
-    last_visited: &std::collections::HashMap<u32, u32>,
-    colors: &Colors,
-    workspace_id: u64,
-    workspace_name: &str,
+    params: MinimapRenderParams<'_>,
 ) -> Option<usize> {
+    let MinimapRenderParams {
+        content_rect,
+        windows,
+        active_window,
+        last_visited,
+        colors,
+        workspace_id,
+        workspace_name,
+    } = params;
     // Only windows belonging to the current workspace.
     let visible: Vec<(usize, &Window)> = windows
         .iter()

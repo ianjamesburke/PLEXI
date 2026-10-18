@@ -70,6 +70,17 @@ pub fn render_ui_tree_with_surface(
     render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None, surface_key, tree_seq)
 }
 
+#[derive(Clone, Copy)]
+struct TreeRenderEnv<'a> {
+    nodes: &'a [IndexedNode],
+    colors: &'a Colors,
+    surface: Option<egui::TextureId>,
+    canvas_fits: Option<&'a HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_ui_tree_with_canvas_fits(
     ui: &mut egui::Ui,
@@ -82,20 +93,17 @@ pub fn render_ui_tree_with_canvas_fits(
     tree_seq: u64,
 ) -> RenderResult {
     let mut out = RenderResult::default();
+    let env = TreeRenderEnv {
+        nodes: &tree.nodes,
+        colors,
+        surface,
+        canvas_fits,
+        pending_click,
+        surface_key,
+        tree_seq,
+    };
     let render_root = |ui: &mut egui::Ui, out: &mut RenderResult| {
-        render_node(
-            ui,
-            &tree.nodes,
-            tree.root,
-            colors,
-            out,
-            0,
-            surface,
-            canvas_fits,
-            pending_click,
-            surface_key,
-            tree_seq,
-        );
+        render_node(ui, env, tree.root, out, 0);
     };
     // Good-by-default spacing (stint 0445): a declarative app with no layout
     // code should not render flush against the pane edge. Wrap the whole tree
@@ -114,17 +122,7 @@ pub fn render_ui_tree_with_canvas_fits(
         // insetting them floats the title bar off the pane's top-left corner
         // with a strip of background above and beside it. Render those bands
         // against the pane rect and inset only the body between them.
-        if !render_root_with_chrome_bands(
-            ui,
-            tree,
-            colors,
-            &mut out,
-            surface,
-            canvas_fits,
-            pending_click,
-            surface_key,
-            tree_seq,
-        ) {
+        if !render_root_with_chrome_bands(ui, tree.root, env, &mut out) {
             egui::Frame::NONE
                 .inner_margin(root_content_inset())
                 .show(ui, |ui| render_root(ui, &mut out));
@@ -139,21 +137,14 @@ pub fn render_ui_tree_with_canvas_fits(
 /// paint full-bleed while its body carries the standard content inset.
 /// Returns false when the tree is not a column (the caller then insets the
 /// whole tree, which is correct for a bare root widget).
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
 fn render_root_with_chrome_bands(
     ui: &mut egui::Ui,
-    tree: &UiTree,
-    colors: &Colors,
+    root: u32,
+    env: TreeRenderEnv<'_>,
     out: &mut RenderResult,
-    surface: Option<egui::TextureId>,
-    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
-    surface_key: Option<crate::ui::focus::SurfaceKey>,
-    tree_seq: u64,
 ) -> bool {
-    let nodes = &tree.nodes;
-    let Some(UiNodeData::Column(c)) = find_node(nodes, tree.root).map(|n| &n.data) else {
+    let nodes = env.nodes;
+    let Some(UiNodeData::Column(c)) = find_node(nodes, root).map(|n| &n.data) else {
         return false;
     };
 
@@ -185,19 +176,7 @@ fn render_root_with_chrome_bands(
             ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for &child in &c.children[..leading] {
-                    render_node(
-                        ui,
-                        nodes,
-                        child,
-                        colors,
-                        out,
-                        1,
-                        surface,
-                        canvas_fits,
-                        pending_click,
-                        surface_key,
-                        tree_seq,
-                    );
+                    render_node(ui, env, child, out, 1);
                 }
             });
         })
@@ -227,21 +206,7 @@ fn render_root_with_chrome_bands(
             ui.set_clip_rect(body_inner);
             ui.set_min_height(body_inner.height());
             ui.set_max_height(body_inner.height());
-            render_column_children(
-                ui,
-                nodes,
-                &c.children[leading..body_end],
-                c.gap,
-                c.align,
-                colors,
-                out,
-                0,
-                surface,
-                canvas_fits,
-                pending_click,
-                surface_key,
-                tree_seq,
-            );
+            render_column_children(ui, env, &c.children[leading..body_end], c.gap, c.align, out, 0);
         });
     }
 
@@ -252,19 +217,7 @@ fn render_root_with_chrome_bands(
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
             ui.set_clip_rect(footer_rect);
-            render_node(
-                ui,
-                nodes,
-                footer_id,
-                colors,
-                out,
-                1,
-                surface,
-                canvas_fits,
-                pending_click,
-                surface_key,
-                tree_seq,
-            );
+            render_node(ui, env, footer_id, out, 1);
         });
     }
     true
@@ -699,43 +652,23 @@ fn render_button_node(
 /// the tail bottom-up puts those children flush against the bottom with no
 /// measurement pass, and they can never overlap the head: the two layouts grow
 /// toward each other and stop.
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
 fn render_column_children(
     ui: &mut egui::Ui,
-    nodes: &[IndexedNode],
+    env: TreeRenderEnv<'_>,
     children: &[u32],
     gap: f32,
     align: Alignment,
-    colors: &Colors,
     out: &mut RenderResult,
     depth: u32,
-    surface: Option<egui::TextureId>,
-    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
-    surface_key: Option<crate::ui::focus::SurfaceKey>,
-    tree_seq: u64,
 ) {
     let render_span = |ui: &mut egui::Ui, span: &[u32], out: &mut RenderResult| {
         ui.spacing_mut().item_spacing.y = gap;
         for &child in span {
-            render_node(
-                ui,
-                nodes,
-                child,
-                colors,
-                out,
-                depth + 1,
-                surface,
-                canvas_fits,
-                pending_click,
-                surface_key,
-                tree_seq,
-            );
+            render_node(ui, env, child, out, depth + 1);
         }
     };
 
-    let Some(split) = grow_spacer_index(nodes, children) else {
+    let Some(split) = grow_spacer_index(env.nodes, children) else {
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
             render_span(ui, children, out)
         });
@@ -786,21 +719,22 @@ fn render_column_children(
     });
 }
 
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
 fn render_node(
     ui: &mut egui::Ui,
-    nodes: &[IndexedNode],
+    env: TreeRenderEnv<'_>,
     id: u32,
-    colors: &Colors,
     out: &mut RenderResult,
     depth: u32,
-    surface: Option<egui::TextureId>,
-    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
-    surface_key: Option<crate::ui::focus::SurfaceKey>,
-    tree_seq: u64,
 ) {
+    let TreeRenderEnv {
+        nodes,
+        colors,
+        surface,
+        canvas_fits,
+        pending_click,
+        surface_key,
+        tree_seq,
+    } = env;
     if depth > MAX_DEPTH {
         return;
     }
@@ -985,19 +919,7 @@ fn render_node(
                             continue;
                         }
                     }
-                    render_node(
-                        ui,
-                        nodes,
-                        *child,
-                        colors,
-                        out,
-                        depth + 1,
-                        surface,
-                        canvas_fits,
-                        pending_click,
-                        surface_key,
-                        tree_seq,
-                    );
+                    render_node(ui, env, *child, out, depth + 1);
                 }
             });
         }
@@ -1029,18 +951,12 @@ fn render_node(
                     ui.set_max_height(body_h);
                     render_column_children(
                         ui,
-                        nodes,
+                        env,
                         &c.children[..c.children.len() - 1],
                         c.gap,
                         c.align,
-                        colors,
                         out,
                         depth,
-                        surface,
-                        canvas_fits,
-                        pending_click,
-                        surface_key,
-                        tree_seq,
                     );
                 });
 
@@ -1052,36 +968,10 @@ fn render_node(
                     ui.set_clip_rect(footer_rect);
                     ui.set_min_height(footer_h);
                     ui.set_max_height(footer_h);
-                    render_node(
-                        ui,
-                        nodes,
-                        footer_id,
-                        colors,
-                        out,
-                        depth + 1,
-                        surface,
-                        canvas_fits,
-                        pending_click,
-                        surface_key,
-                        tree_seq,
-                    );
+                    render_node(ui, env, footer_id, out, depth + 1);
                 });
             } else {
-                render_column_children(
-                    ui,
-                    nodes,
-                    &c.children,
-                    c.gap,
-                    c.align,
-                    colors,
-                    out,
-                    depth,
-                    surface,
-                    canvas_fits,
-                    pending_click,
-                    surface_key,
-                    tree_seq,
-                );
+                render_column_children(ui, env, &c.children, c.gap, c.align, out, depth);
             }
         }
 
@@ -1130,19 +1020,7 @@ fn render_node(
                                 if selected {
                                     ui.visuals_mut().override_text_color = Some(colors.accent);
                                 }
-                                render_node(
-                                    ui,
-                                    nodes,
-                                    *item_id,
-                                    colors,
-                                    out,
-                                    depth + 1,
-                                    surface,
-                                    canvas_fits,
-                                    pending_click,
-                                    surface_key,
-                                    tree_seq,
-                                );
+                                render_node(ui, env, *item_id, out, depth + 1);
                             });
                         let row_rect = inner_resp.response.rect;
                         let resp = inner_resp.response.interact(egui::Sense::click());
@@ -1192,19 +1070,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(
-                    ui,
-                    nodes,
-                    s.child,
-                    colors,
-                    out,
-                    depth + 1,
-                    surface,
-                    canvas_fits,
-                    pending_click,
-                    surface_key,
-                    tree_seq,
-                );
+                render_node(ui, env, s.child, out, depth + 1);
             });
         }
 
@@ -1242,19 +1108,7 @@ fn render_node(
                 } else if is_card {
                     ui.set_min_width(ui.available_width());
                 }
-                render_node(
-                    ui,
-                    nodes,
-                    p.child,
-                    colors,
-                    out,
-                    depth + 1,
-                    surface,
-                    canvas_fits,
-                    pending_click,
-                    surface_key,
-                    tree_seq,
-                );
+                render_node(ui, env, p.child, out, depth + 1);
             });
         }
 
@@ -1459,19 +1313,7 @@ fn render_node(
         // `Column` (see `column_bottom_pin`). When `Pinned` appears outside a
         // `Column` (e.g. at the tree root), render its child inline.
         UiNodeData::Pinned(p) => {
-            render_node(
-                ui,
-                nodes,
-                p.child,
-                colors,
-                out,
-                depth + 1,
-                surface,
-                canvas_fits,
-                pending_click,
-                surface_key,
-                tree_seq,
-            );
+            render_node(ui, env, p.child, out, depth + 1);
         }
 
         UiNodeData::Spinner(sp) => {
@@ -1497,11 +1339,13 @@ fn render_node(
                     AppChrome::new(colors).text_label(
                         ui,
                         &sp.label,
-                        style::TEXT_CAPTION,
-                        colors.text_dim,
-                        false,
-                        false,
-                        false,
+                        app_chrome::TextLabelStyle {
+                            size: style::TEXT_CAPTION,
+                            color: colors.text_dim,
+                            bold: false,
+                            monospace: false,
+                            wrap: false,
+                        },
                     );
                 }
             });

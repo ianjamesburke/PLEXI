@@ -38,13 +38,15 @@ impl PlexiApp {
             .show(ctx, |ui| {
                 if let Some(clicked_idx) = crate::render::minimap::render_minimap(
                     ui,
-                    content_rect,
-                    &self.windows,
-                    active_context,
-                    &self.last_page_x_per_row,
-                    &colors,
-                    ws_id,
-                    &ws_name,
+                    crate::render::minimap::MinimapRenderParams {
+                        content_rect,
+                        windows: &self.windows,
+                        active_window: active_context,
+                        last_visited: &self.last_page_x_per_row,
+                        colors: &colors,
+                        workspace_id: ws_id,
+                        workspace_name: &ws_name,
+                    },
                 ) {
                     let old = &self.windows[self.active_window];
                     self.last_page_x_per_row.insert(old.grid_y, old.grid_x);

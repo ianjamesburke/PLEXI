@@ -770,7 +770,12 @@ fn spawn_pane_seeds_root_in_empty_window() {
         let ft = crate::platform::logging::new_frame_tick();
         let (mut probe, _tx) = PlexiApp::new_for_test(ctx, ft);
         let before = probe.windows.len();
-        probe.create_page_at(9, 9, 1, None, false, None, false, true);
+        probe.create_page_at(
+            9,
+            9,
+            1,
+            crate::pane_ops::create::TerminalSpawnOptions::default(),
+        );
         probe.windows.len() > before
     };
     if !pty_available {

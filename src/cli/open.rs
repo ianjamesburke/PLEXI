@@ -134,28 +134,31 @@ fn wait_for_agent_boot(response_file: &str, agent: &AgentBootRequest) -> i32 {
     outcome.exit_code
 }
 
+/// Arguments for [`pane_new_cli`].
+#[derive(Default)]
+pub struct PaneNewCliArgs<'a> {
+    pub cmd: Option<&'a str>,
+    pub name: Option<&'a str>,
+    pub layout: Option<&'a str>,
+    pub from_pane_id: Option<u64>,
+    pub cwd: Option<&'a str>,
+    pub ephemeral: bool,
+    pub no_focus: bool,
+    pub app: Option<&'a str>,
+    pub mcp: &'a [String],
+    pub extra_args: &'a [String],
+    pub context_name: Option<&'a str>,
+    pub agent: Option<&'a AgentBootRequest>,
+    pub worktree: Option<&'a str>,
+    pub result_schema: Option<&'a str>,
+}
+
 /// Unified pane spawning. All CLI spawn paths funnel through here.
 /// `context_name` targets the named context wherever it is (terminal spawns
 /// only — the host resolves the name and errors back when it does not exist);
 /// `None` keeps the caller-derived targeting.
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
-pub fn pane_new_cli(
-    cmd: Option<&str>,
-    name: Option<&str>,
-    layout: Option<&str>,
-    from_pane_id: Option<u64>,
-    cwd: Option<&str>,
-    ephemeral: bool,
-    no_focus: bool,
-    app: Option<&str>,
-    mcp: &[String],
-    extra_args: &[String],
-    context_name: Option<&str>,
-    agent: Option<&AgentBootRequest>,
-    worktree: Option<&str>,
-) -> i32 {
-    pane_new_with_schema_cli(
+pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
+    let PaneNewCliArgs {
         cmd,
         name,
         layout,
@@ -169,27 +172,8 @@ pub fn pane_new_cli(
         context_name,
         agent,
         worktree,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn pane_new_with_schema_cli(
-    cmd: Option<&str>,
-    name: Option<&str>,
-    layout: Option<&str>,
-    from_pane_id: Option<u64>,
-    cwd: Option<&str>,
-    ephemeral: bool,
-    no_focus: bool,
-    app: Option<&str>,
-    mcp: &[String],
-    extra_args: &[String],
-    context_name: Option<&str>,
-    agent: Option<&AgentBootRequest>,
-    worktree: Option<&str>,
-    result_schema: Option<&str>,
-) -> i32 {
+        result_schema,
+    } = args;
     let parsed_result_schema = match result_schema {
         Some(spec) => {
             let base = cwd
@@ -436,21 +420,15 @@ fn open_descriptor_in_renderer(
     }
     let path = tmp.to_string_lossy().to_string();
     log::info!("open:cli: launching cli-renderer for `{name}` with descriptor at {path}");
-    pane_new_cli(
-        None,
-        Some(name),
+    pane_new_cli(PaneNewCliArgs {
+        name: Some(name),
         layout,
         from_pane_id,
         cwd,
-        false,
-        false,
-        Some("cli-renderer"),
-        &[],
-        &[path],
-        None,
-        None,
-        None,
-    )
+        app: Some("cli-renderer"),
+        extra_args: &[path],
+        ..Default::default()
+    })
 }
 
 /// Open a named CLI tool via the full Tier 1/2/3 resolution chain (native
@@ -494,21 +472,15 @@ pub fn open_mcp_by_name(
                 entry.command
             );
             let title = mcp_pane_title(&entry.command);
-            pane_new_cli(
-                None,
-                Some(&title),
+            pane_new_cli(PaneNewCliArgs {
+                name: Some(&title),
                 layout,
                 from_pane_id,
                 cwd,
-                false,
-                false,
-                Some("mcp-renderer"),
-                &entry.command,
-                &[],
-                None,
-                None,
-                None,
-            )
+                app: Some("mcp-renderer"),
+                mcp: &entry.command,
+                ..Default::default()
+            })
         }
         None => {
             eprintln!("error: MCP server `{name}` not found in registry");
@@ -777,21 +749,14 @@ pub fn open_cli(
         return open_app_by_path(&abs_path, args, layout, from_pane_id);
     }
 
-    pane_new_cli(
-        None,
-        None,
+    pane_new_cli(PaneNewCliArgs {
         layout,
         from_pane_id,
         cwd,
-        false,
-        false,
-        Some(type_id),
-        &[],
-        args,
-        None,
-        None,
-        None,
-    )
+        app: Some(type_id),
+        extra_args: args,
+        ..Default::default()
+    })
 }
 
 /// Open an app from a local directory path (replaces the old `app run` command).
@@ -1186,7 +1151,7 @@ mod tests {
 
 #[cfg(test)]
 mod agent_boot_tests {
-    use super::{agent_boot_outcome, pane_new_cli, AgentBootRequest};
+    use super::{agent_boot_outcome, pane_new_cli, AgentBootRequest, PaneNewCliArgs};
     use crate::cli::test_env::socket_env_guard;
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
@@ -1256,21 +1221,11 @@ mod agent_boot_tests {
             command: "c-large".to_string(),
             timeout_secs: None,
         };
-        let code = pane_new_cli(
-            None,
-            None,
-            Some("split_h"),
-            None,
-            None,
-            false,
-            false,
-            None,
-            &[],
-            &[],
-            None,
-            Some(&agent),
-            None,
-        );
+        let code = pane_new_cli(PaneNewCliArgs {
+            layout: Some("split_h"),
+            agent: Some(&agent),
+            ..Default::default()
+        });
 
         assert_eq!(code, 1);
     }
@@ -1310,21 +1265,13 @@ mod agent_boot_tests {
             command: "c-large".to_string(),
             timeout_secs: Some(5.0),
         };
-        let code = pane_new_cli(
-            None,
-            Some("worker"),
-            Some("split_h"),
-            None,
-            None,
-            false,
-            false,
-            None,
-            &[],
-            &[],
-            None,
-            Some(&agent),
-            Some("feature/0668-test"),
-        );
+        let code = pane_new_cli(PaneNewCliArgs {
+            name: Some("worker"),
+            layout: Some("split_h"),
+            agent: Some(&agent),
+            worktree: Some("feature/0668-test"),
+            ..Default::default()
+        });
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("spawn listener did not receive a connection within 5s");
@@ -1368,21 +1315,10 @@ mod agent_boot_tests {
             command: "codex-small".to_string(),
             timeout_secs: None,
         };
-        let code = pane_new_cli(
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            None,
-            &[],
-            &[],
-            None,
-            Some(&agent),
-            None,
-        );
+        let code = pane_new_cli(PaneNewCliArgs {
+            agent: Some(&agent),
+            ..Default::default()
+        });
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("spawn listener did not receive a connection within 5s");

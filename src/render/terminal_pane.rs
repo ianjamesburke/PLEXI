@@ -11,7 +11,9 @@
 
 use crate::protocol::AgentState;
 use crate::host::pane::TerminalPane;
-use crate::spatial::tiling::{paint_tab_bar, PaneId, TabBarAction, TabGroupInfo, TAB_BAR_HEIGHT};
+use crate::spatial::tiling::{
+    paint_tab_bar, PaneId, TabBarAction, TabBarPaintParams, TabGroupInfo, TAB_BAR_HEIGHT,
+};
 use crate::ui::theme::{self, Colors};
 use egui::Vec2;
 use egui_term::{TerminalTheme, TerminalView};
@@ -88,17 +90,19 @@ pub fn render(
         let tab_action = if is_error {
             render_name_bar_and_tabs(
                 ui,
-                tile_id,
-                pane_id,
-                tab_info,
-                tab_labels,
-                tab_activities,
-                pane_names,
-                pane_agent_state.as_ref(),
-                true,
-                colors,
-                false,
-                pane_title_font_size,
+                NameBarParams {
+                    tile_id,
+                    pane_id,
+                    tab_info,
+                    tab_labels,
+                    tab_activities,
+                    pane_names,
+                    pane_agent_state: pane_agent_state.as_ref(),
+                    is_error: true,
+                    colors,
+                    outside_workspace: false,
+                    name_font_size: pane_title_font_size,
+                },
             )
         } else {
             None
@@ -130,17 +134,19 @@ pub fn render(
     let outside_workspace = is_terminal_outside_workspace(terminal, workspace_root);
     let tab_action = render_name_bar_and_tabs(
         ui,
-        tile_id,
-        pane_id,
-        tab_info,
-        tab_labels,
-        tab_activities,
-        pane_names,
-        pane_agent_state.as_ref(),
-        is_error,
-        colors,
-        outside_workspace,
-        pane_title_font_size,
+        NameBarParams {
+            tile_id,
+            pane_id,
+            tab_info,
+            tab_labels,
+            tab_activities,
+            pane_names,
+            pane_agent_state: pane_agent_state.as_ref(),
+            is_error,
+            colors,
+            outside_workspace,
+            name_font_size: pane_title_font_size,
+        },
     );
 
     if terminal.is_standby() {
@@ -265,22 +271,37 @@ pub(crate) fn last_rendered_tab_bar_layout(
 static LOG_OUTSIDE_WORKSPACE_BADGE_RESERVE: Once = Once::new();
 static LOG_WORKING_NO_ESCALATION: Once = Once::new();
 
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
-fn render_name_bar_and_tabs(
-    ui: &mut egui::Ui,
+struct NameBarParams<'a> {
     tile_id: TileId,
-    pane_id: &PaneId,
-    tab_info: &HashMap<TileId, TabGroupInfo>,
-    tab_labels: &HashMap<PaneId, String>,
-    tab_activities: &HashMap<PaneId, AgentState>,
-    pane_names: &HashMap<PaneId, String>,
-    pane_agent_state: Option<&AgentState>,
+    pane_id: &'a PaneId,
+    tab_info: &'a HashMap<TileId, TabGroupInfo>,
+    tab_labels: &'a HashMap<PaneId, String>,
+    tab_activities: &'a HashMap<PaneId, AgentState>,
+    pane_names: &'a HashMap<PaneId, String>,
+    pane_agent_state: Option<&'a AgentState>,
     is_error: bool,
-    colors: &Colors,
+    colors: &'a Colors,
     outside_workspace: bool,
     name_font_size: f32,
+}
+
+fn render_name_bar_and_tabs(
+    ui: &mut egui::Ui,
+    params: NameBarParams<'_>,
 ) -> Option<(TileId, TabBarAction)> {
+    let NameBarParams {
+        tile_id,
+        pane_id,
+        tab_info,
+        tab_labels,
+        tab_activities,
+        pane_names,
+        pane_agent_state,
+        is_error,
+        colors,
+        outside_workspace,
+        name_font_size,
+    } = params;
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
@@ -396,13 +417,15 @@ fn render_name_bar_and_tabs(
         if let Some(action) = paint_tab_bar(
             ui.ctx(),
             ui.painter(),
-            tabs_bar_rect,
-            group,
-            &elided_tab_labels,
-            tab_activities,
-            colors,
-            name_font_size,
-            false,
+            TabBarPaintParams {
+                bar_rect: tabs_bar_rect,
+                group,
+                tab_labels: &elided_tab_labels,
+                tab_activities,
+                colors,
+                font_size: name_font_size,
+                overtake_hint: false,
+            },
         ) {
             tab_action = Some((group.container_tile, action));
         }

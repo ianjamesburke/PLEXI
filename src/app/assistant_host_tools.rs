@@ -204,6 +204,16 @@ fn truncate_fetch_body(body: &str) -> (String, bool) {
     )
 }
 
+struct AssistantSpawnPaneSpec<'a> {
+    origin_pane_id: u64,
+    origin_context_id: u64,
+    type_id: &'a str,
+    layout: Option<String>,
+    args: Vec<String>,
+    cwd: Option<std::path::PathBuf>,
+    target_pane_id: Option<u64>,
+}
+
 impl PlexiApp {
     pub(super) fn handle_assistant_host_tool(
         &mut self,
@@ -348,7 +358,7 @@ impl PlexiApp {
                         "message": "this pane already has the file open; edit it with host.files.edit using the absolute path",
                     }));
                 }
-                match self.assistant_spawn_pane(
+                match self.assistant_spawn_pane(AssistantSpawnPaneSpec {
                     origin_pane_id,
                     origin_context_id,
                     type_id,
@@ -356,7 +366,7 @@ impl PlexiApp {
                     args,
                     cwd,
                     target_pane_id,
-                ) {
+                }) {
                     Ok(pane_id) => ToolCallResult::ok_value(
                         serde_json::json!({"ok": true, "pane_id": pane_id, "type_id": type_id}),
                     ),
@@ -422,15 +432,15 @@ impl PlexiApp {
                         "message": "this pane already has the file open; edit it with host.files.edit using the absolute path",
                     }));
                 }
-                match self.assistant_spawn_pane(
+                match self.assistant_spawn_pane(AssistantSpawnPaneSpec {
                     origin_pane_id,
                     origin_context_id,
-                    app,
+                    type_id: app,
                     layout,
                     args,
-                    None,
+                    cwd: None,
                     target_pane_id,
-                ) {
+                }) {
                     Ok(pane_id) => ToolCallResult::ok_value(
                         serde_json::json!({"ok": true, "pane_id": pane_id, "app": app}),
                     ),
@@ -446,15 +456,15 @@ impl PlexiApp {
                     .get("cwd")
                     .and_then(serde_json::Value::as_str)
                     .map(std::path::PathBuf::from);
-                match self.assistant_spawn_pane(
+                match self.assistant_spawn_pane(AssistantSpawnPaneSpec {
                     origin_pane_id,
                     origin_context_id,
-                    "terminal",
+                    type_id: "terminal",
                     layout,
-                    Vec::new(),
+                    args: Vec::new(),
                     cwd,
-                    None,
-                ) {
+                    target_pane_id: None,
+                }) {
                     Ok(pane_id) => {
                         if let Err(error) =
                             self.assistant_bind_terminal(origin_pane_id, origin_context_id, pane_id)
@@ -794,18 +804,16 @@ impl PlexiApp {
     /// avoids reassigning a live pane's id, which would orphan any
     /// subscriptions, watchers, or WASM runtime handles already registered
     /// under the id the new pane launched with.
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
-    fn assistant_spawn_pane(
-        &mut self,
-        origin_pane_id: u64,
-        origin_context_id: u64,
-        type_id: &str,
-        layout: Option<String>,
-        args: Vec<String>,
-        cwd: Option<std::path::PathBuf>,
-        target_pane_id: Option<u64>,
-    ) -> Result<u64, String> {
+    fn assistant_spawn_pane(&mut self, spec: AssistantSpawnPaneSpec<'_>) -> Result<u64, String> {
+        let AssistantSpawnPaneSpec {
+            origin_pane_id,
+            origin_context_id,
+            type_id,
+            layout,
+            args,
+            cwd,
+            target_pane_id,
+        } = spec;
         if !self.windows.iter().any(|window| {
             window.context_id == origin_context_id && window.panes.contains_key(&origin_pane_id)
         }) {

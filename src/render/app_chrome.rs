@@ -1,4 +1,4 @@
-pub(crate) use crate::ui::app_chrome::{AppChrome, footer_keys_height};
+pub(crate) use crate::ui::app_chrome::{footer_keys_height, AppChrome, TextLabelStyle};
 
 #[cfg(test)]
 mod tests {

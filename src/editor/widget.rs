@@ -365,6 +365,29 @@ pub struct EditorOutput {
     pub link_activation: Option<LinkTarget>,
 }
 
+struct LineGalleyParams<'a> {
+    font_id: &'a egui::FontId,
+    line: usize,
+    text: &'a str,
+    text_color: Color32,
+    theme: &'a CodeTheme,
+    md_active: Option<&'a std::ops::Range<usize>>,
+    wrap_width: f32,
+    display: &'a DisplayGalley,
+}
+
+struct PaintParams<'a> {
+    widget_id: egui::Id,
+    font_id: &'a egui::FontId,
+    rect: Rect,
+    gutter_width: f32,
+    md_active: Option<std::ops::Range<usize>>,
+    image_rows: &'a [(usize, String)],
+    geometry_galleys: &'a [DisplayGalley],
+    caret_visual_row: Option<usize>,
+    caret_visible: bool,
+}
+
 /// Renders a [`Document`] and translates egui input into [`EditorCommand`]s.
 ///
 /// The widget processes keyboard/IME input every frame it is shown; callers
@@ -866,15 +889,17 @@ impl<'a> EditorWidget<'a> {
 
         self.paint(
             ui,
-            id,
-            &font_id,
-            rect,
-            gutter_width,
-            md_active,
-            &image_rows,
-            &line_galleys,
-            visual_row,
-            caret_visible,
+            PaintParams {
+                widget_id: id,
+                font_id: &font_id,
+                rect,
+                gutter_width,
+                md_active,
+                image_rows: &image_rows,
+                geometry_galleys: &line_galleys,
+                caret_visual_row: visual_row,
+                caret_visible,
+            },
         );
         EditorOutput {
             response,
@@ -1199,21 +1224,21 @@ impl<'a> EditorWidget<'a> {
     /// Lays out one line's galley: syntax-colored via the span provider in
     /// code mode, single-color otherwise (and as the unknown-language
     /// fallback).
-    // Argument-struct refactor is a design change tracked in stint 0661;
-    // this is the narrow exception, not a pattern to copy.
-    #[allow(clippy::too_many_arguments)]
     fn line_galley(
         &mut self,
         ui: &Ui,
-        font_id: &egui::FontId,
-        line: usize,
-        text: &str,
-        text_color: Color32,
-        theme: &CodeTheme,
-        md_active: Option<&std::ops::Range<usize>>,
-        wrap_width: f32,
-        display: &DisplayGalley,
+        params: LineGalleyParams<'_>,
     ) -> std::sync::Arc<egui::Galley> {
+        let LineGalleyParams {
+            font_id,
+            line,
+            text,
+            text_color,
+            theme,
+            md_active,
+            wrap_width,
+            display,
+        } = params;
         // Markdown Live Preview: inactive blocks render styled per-line
         // LayoutJobs; the active block (and everything in source mode) shows
         // raw source. Same font everywhere, so galley metrics — and with them
@@ -1292,22 +1317,18 @@ impl<'a> EditorWidget<'a> {
         })
     }
 
-    // Argument-struct refactor is a design change tracked in stint 0661;
-    // this is the narrow exception, not a pattern to copy.
-    #[allow(clippy::too_many_arguments)]
-    fn paint(
-        &mut self,
-        ui: &Ui,
-        widget_id: egui::Id,
-        font_id: &egui::FontId,
-        rect: Rect,
-        gutter_width: f32,
-        md_active: Option<std::ops::Range<usize>>,
-        image_rows: &[(usize, String)],
-        geometry_galleys: &[DisplayGalley],
-        caret_visual_row: Option<usize>,
-        caret_visible: bool,
-    ) {
+    fn paint(&mut self, ui: &Ui, params: PaintParams<'_>) {
+        let PaintParams {
+            widget_id,
+            font_id,
+            rect,
+            gutter_width,
+            md_active,
+            image_rows,
+            geometry_galleys,
+            caret_visual_row,
+            caret_visible,
+        } = params;
         let visuals = ui.visuals();
         let text_color = visuals.text_color();
         let code_theme = self
@@ -1346,14 +1367,16 @@ impl<'a> EditorWidget<'a> {
             };
             let galley = self.line_galley(
                 ui,
-                font_id,
-                line,
-                &text,
-                text_color,
-                &code_theme,
-                md_active.as_ref(),
-                wrap_width,
-                display,
+                LineGalleyParams {
+                    font_id,
+                    line,
+                    text: &text,
+                    text_color,
+                    theme: &code_theme,
+                    md_active: md_active.as_ref(),
+                    wrap_width,
+                    display,
+                },
             );
             let origin = egui::pos2(content_left - scroll_x, top);
 

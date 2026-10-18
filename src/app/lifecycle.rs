@@ -1705,16 +1705,20 @@ impl PlexiApp {
                             spec.ephemeral
                         );
                         response_pane_id = self.spawn_terminal_pane_at(
-                            target_win,
-                            target_tile,
-                            vertical,
-                            new_pane_first,
-                            initial_cmd.as_deref(),
-                            spec.ephemeral,
-                            cwd_override,
-                            spec.no_focus,
-                            spec.agent.is_some(),
-                            inject_folder_secrets,
+                            crate::pane_ops::create::SpawnTerminalAtSpec {
+                                win_idx: target_win,
+                                target_tile,
+                                vertical,
+                                new_pane_first,
+                                keep_focus: spec.no_focus,
+                                options: crate::pane_ops::create::TerminalSpawnOptions {
+                                    initial_cmd: initial_cmd.as_deref(),
+                                    close_on_exit: spec.ephemeral,
+                                    cwd_override,
+                                    agent_pane: spec.agent.is_some(),
+                                    inject_folder_secrets,
+                                },
+                            },
                         );
                     } else if layout_str == "new_window" {
                         // Derive context from the calling pane's window; fall back to active.
@@ -1740,11 +1744,13 @@ impl PlexiApp {
                             new_x,
                             active_y,
                             ws_id,
-                            initial_cmd.as_deref(),
-                            spec.ephemeral,
-                            cwd_override,
-                            spec.agent.is_some(),
-                            inject_folder_secrets,
+                            crate::pane_ops::create::TerminalSpawnOptions {
+                                initial_cmd: initial_cmd.as_deref(),
+                                close_on_exit: spec.ephemeral,
+                                cwd_override,
+                                agent_pane: spec.agent.is_some(),
+                                inject_folder_secrets,
+                            },
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1816,16 +1822,20 @@ impl PlexiApp {
                                 spec.ephemeral
                             );
                             response_pane_id = self.spawn_terminal_pane_at(
-                                target_win,
-                                target_tile,
-                                vertical,
-                                new_pane_first,
-                                initial_cmd.as_deref(),
-                                spec.ephemeral,
-                                cwd_override,
-                                keep_focus,
-                                spec.agent.is_some(),
-                                inject_folder_secrets,
+                                crate::pane_ops::create::SpawnTerminalAtSpec {
+                                    win_idx: target_win,
+                                    target_tile,
+                                    vertical,
+                                    new_pane_first,
+                                    keep_focus,
+                                    options: crate::pane_ops::create::TerminalSpawnOptions {
+                                        initial_cmd: initial_cmd.as_deref(),
+                                        close_on_exit: spec.ephemeral,
+                                        cwd_override,
+                                        agent_pane: spec.agent.is_some(),
+                                        inject_folder_secrets,
+                                    },
+                                },
                             );
                             if spec.no_focus {
                                 self.active_window = active;
@@ -3574,11 +3584,10 @@ impl PlexiApp {
                             new_x,
                             active_y,
                             new_ctx_id,
-                            Some(cmd.as_str()),
-                            false,
-                            None,
-                            false,
-                            true,
+                            crate::pane_ops::create::TerminalSpawnOptions {
+                                initial_cmd: Some(cmd.as_str()),
+                                ..Default::default()
+                            },
                         );
                     }
                 }
@@ -4895,18 +4904,19 @@ impl PlexiApp {
         let spawned = self.context_spawn_target(target_ctx_id).map(|(win, tile)| {
             // vertical=true → side-by-side, matching the previous
             // split_focused(false, ..) behavior (its LinearDir is inverted).
-            self.spawn_terminal_pane_at(
-                win,
-                tile,
-                true,
-                false,
-                Some(command),
-                ephemeral,
-                cwd,
-                false,
-                false,
-                true,
-            )
+            self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
+                win_idx: win,
+                target_tile: tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: false,
+                options: crate::pane_ops::create::TerminalSpawnOptions {
+                    initial_cmd: Some(command),
+                    close_on_exit: ephemeral,
+                    cwd_override: cwd,
+                    ..Default::default()
+                },
+            })
         });
 
         if spawned.is_none() {

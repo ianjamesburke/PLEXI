@@ -2070,7 +2070,15 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None, false, true);
+        app.create_page_at(
+            new_x,
+            active_y,
+            ctx_id,
+            crate::pane_ops::create::TerminalSpawnOptions {
+                initial_cmd: Some(cmd.as_str()),
+                ..Default::default()
+            },
+        );
         new_x += 1;
     }
 
@@ -2948,15 +2956,18 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let context_env = crate::pane_ops::create::PaneContextEnv {
+        context_id: 4242,
+        name: "agentsquad".to_string(),
+        description: String::new(),
+        root: Some(std::path::PathBuf::from("/tmp/squad")),
+        depth: 3,
+    };
     let (settings, _pending_credential) = PlexiApp::make_backend_settings(
         7,
         Some(std::path::PathBuf::from("/tmp")),
         &app.colors,
-        4242,
-        "agentsquad",
-        "",
-        Some(&std::path::PathBuf::from("/tmp/squad")),
-        3,
+        &context_env,
         false,
     );
     assert_eq!(
