@@ -44,15 +44,23 @@ pub(crate) fn chrome_button_sized(
         },
     );
 
-    tactile_button(
+    let display_label = crate::ui::text::elide(
+        ui,
+        label,
+        egui::FontId::proportional(style::TEXT_CAPTION),
+        (ui.available_width() - ui.spacing().button_padding.x * 2.0).max(0.0),
+        crate::ui::text::Side::Trailing,
+    );
+    let response = tactile_button(
         ui,
         egui::Button::new(
-            RichText::new(label)
+            RichText::new(display_label)
                 .size(style::TEXT_CAPTION)
                 .color(visuals.text),
         )
         .fill(visuals.fill)
-        .min_size(egui::vec2(min_width, height)),
+        .min_size(egui::vec2(min_width.min(ui.available_width()), height))
+        .wrap_mode(egui::TextWrapMode::Extend),
         chrome_button_visuals(
             kind,
             colors,
@@ -63,7 +71,11 @@ pub(crate) fn chrome_button_sized(
         )
         .fill,
     )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response
 }
 
 #[derive(Clone, Copy)]
@@ -173,23 +185,38 @@ pub(crate) fn choice_button(
         rect.size() * (1.0 - (1.0 - style::PRESS_SCALE) * amount),
     );
     let actual_bg = actual_bg.lerp_to_gamma(actual_bg.gamma_multiply(0.85), amount);
-    let painter = ui.painter();
-    painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
-    crate::ui::snap::text_snapped(
-        painter,
-        rect.center(),
-        Align2::CENTER_CENTER,
+    let padding = style::SPACE_MD;
+    let hint = crate::ui::text::elided_galley(
+        ui,
+        shortcut_hint,
+        egui::FontId::proportional(style::TEXT_CAPTION),
+        (rect.width() - padding * 2.0).max(0.0) / 3.0,
+        crate::ui::text::Side::Trailing,
+    );
+    let hint_reserved = if shortcut_hint.is_empty() {
+        0.0
+    } else {
+        hint.size().x + style::SPACE_SM
+    };
+    // Symmetric reservation retains the centered label without colliding with the hint.
+    let label = crate::ui::text::elided_galley(
+        ui,
         label,
         egui::FontId::proportional(style::TEXT_BODY),
-        fg,
+        (rect.width() - (padding + hint_reserved) * 2.0).max(0.0),
+        crate::ui::text::Side::Trailing,
     );
+    let painter = ui.painter();
+    painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
+    crate::ui::snap::galley_snapped(painter, rect.center() - label.size() / 2.0, label, fg);
     if !shortcut_hint.is_empty() {
-        crate::ui::snap::text_snapped(
+        crate::ui::snap::galley_snapped(
             painter,
-            egui::pos2(rect.right() - 18.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            shortcut_hint,
-            egui::FontId::proportional(style::TEXT_CAPTION),
+            egui::pos2(
+                rect.right() - padding - hint.size().x,
+                rect.center().y - hint.size().y / 2.0,
+            ),
+            hint,
             hint_color,
         );
     }

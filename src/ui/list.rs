@@ -402,7 +402,7 @@ impl<'a> ListRow<'a> {
     fn text_right(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
         let action_left = self.action_left(ui, rect);
         let has_trailing = self.trailing.is_some();
-        let metadata_width = self.metadata_lane_width(ui);
+        let metadata_width = self.bounded_metadata_width(ui, rect);
         if metadata_width > 0.0 {
             action_left - style::LIST_ROW_GAP - metadata_width - style::LIST_ROW_GAP
         } else if has_trailing {
@@ -417,9 +417,19 @@ impl<'a> ListRow<'a> {
         let pip_width = self
             .pane_pips
             .as_ref()
-            .map(|pips| pane_pips_width(pips.count))
+            .map(|pips| pane_pips_width(ui, pips.count))
             .unwrap_or(0.0);
         chip_width.max(pip_width)
+    }
+
+    // Preserve a readable title lane and the action before admitting metadata.
+    fn bounded_metadata_width(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
+        let available = (self.action_left(ui, rect)
+            - rect.left()
+            - style::LIST_ROW_PAD_H
+            - style::LIST_ROW_GAP * 2.0)
+            .max(0.0);
+        self.metadata_lane_width(ui).min(available * 0.45)
     }
 
     fn draw_metadata(
@@ -430,7 +440,7 @@ impl<'a> ListRow<'a> {
         trailing_rect: Option<egui::Rect>,
         text_metrics: TextBlockMetrics,
     ) {
-        let lane_width = self.metadata_lane_width(ui);
+        let lane_width = self.bounded_metadata_width(ui, rect);
         if lane_width <= 0.0 {
             return;
         }
@@ -456,7 +466,14 @@ impl<'a> ListRow<'a> {
         };
 
         if !self.metadata_chips.is_empty() {
-            draw_chip_row(ui, self.metadata_chips, colors, lane_right, chip_center_y);
+            draw_chip_row(
+                ui,
+                self.metadata_chips,
+                colors,
+                lane_left,
+                lane_right,
+                chip_center_y,
+            );
         }
 
         if let Some(pips) = &self.pane_pips {
@@ -704,12 +721,35 @@ fn metadata_chip_row_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
         + style::SPACE_XS * labels.len().saturating_sub(1) as f32
 }
 
-fn draw_chip_row(ui: &egui::Ui, labels: &[&str], colors: &Colors, right: f32, center_y: f32) {
-    let total_w = metadata_chip_row_width(ui, labels);
-    let mut x = right - total_w;
-    for label in labels {
-        draw_chip(ui, label, colors, x, center_y);
-        x += chip_size(ui, label).x + style::SPACE_XS;
+fn draw_chip_row(
+    ui: &egui::Ui,
+    labels: &[&str],
+    colors: &Colors,
+    left: f32,
+    right: f32,
+    center_y: f32,
+) {
+    let budget = (right - left).max(0.0);
+    let mut visible = labels.len();
+    loop {
+        let overflow = format!("+{}", labels.len() - visible);
+        let mut shown = labels[..visible].to_vec();
+        if visible < labels.len() {
+            shown.push(&overflow);
+        }
+        let width = metadata_chip_row_width(ui, &shown);
+        if width <= budget {
+            let mut x = right - width;
+            for label in shown {
+                draw_chip(ui, label, colors, x, center_y);
+                x += chip_size(ui, label).x + style::SPACE_XS;
+            }
+            break;
+        }
+        if visible == 0 {
+            break;
+        }
+        visible -= 1;
     }
 }
 
@@ -719,14 +759,23 @@ const PANE_PIP_MAX: usize = 8;
 const COMPACT_METADATA_CHIP_OFFSET_Y: f32 = 10.0;
 const COMPACT_METADATA_PIP_OFFSET_Y: f32 = 10.0;
 
-fn pane_pips_width(count: usize) -> f32 {
+fn pane_pips_width(ui: &egui::Ui, count: usize) -> f32 {
     if count == 0 {
         return 0.0;
     }
     let capped = count.min(PANE_PIP_MAX);
     let base = (capped.saturating_sub(1) as f32) * PANE_PIP_SPACING + PANE_PIP_RADIUS * 2.0;
     if count > PANE_PIP_MAX {
-        base + style::SPACE_XS + 16.0
+        base + style::SPACE_XS
+            + ui.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    format!("+{}", count - capped),
+                    egui::FontId::proportional(style::TEXT_HINT),
+                    Color32::PLACEHOLDER,
+                )
+            })
+            .size()
+            .x
     } else {
         base
     }
@@ -744,9 +793,37 @@ fn draw_pips(
     if pips.count == 0 {
         return;
     }
-    let width = pane_pips_width(pips.count);
-    let start_x = (lane_right - width).max(lane_left);
-    let capped = pips.count.min(PANE_PIP_MAX);
+    let budget = (lane_right - lane_left).max(0.0);
+    let mut capped = pips.count.min(PANE_PIP_MAX);
+    let overflow_width = |count: usize| {
+        if count == pips.count {
+            return 0.0;
+        }
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(
+                format!("+{}", pips.count - count),
+                egui::FontId::proportional(style::TEXT_HINT),
+                Color32::PLACEHOLDER,
+            )
+        })
+        .size()
+        .x + style::SPACE_XS
+    };
+    let dots_width = |count: usize| {
+        if count == 0 {
+            0.0
+        } else {
+            (count - 1) as f32 * PANE_PIP_SPACING + PANE_PIP_RADIUS * 2.0
+        }
+    };
+    while capped > 0 && dots_width(capped) + overflow_width(capped) > budget {
+        capped -= 1;
+    }
+    let width = dots_width(capped) + overflow_width(capped);
+    if width > budget {
+        return;
+    }
+    let start_x = lane_right - width;
     for dot_i in 0..capped {
         let center = Pos2::new(
             start_x + PANE_PIP_RADIUS + dot_i as f32 * PANE_PIP_SPACING,
@@ -768,9 +845,9 @@ fn draw_pips(
             ui.painter().circle_filled(center, PANE_PIP_RADIUS, color);
         }
     }
-    if pips.count > PANE_PIP_MAX {
-        let overflow_x = start_x + PANE_PIP_RADIUS + capped as f32 * PANE_PIP_SPACING;
-        let overflow_color = if pips.focused_idx.is_some_and(|idx| idx >= PANE_PIP_MAX) {
+    if pips.count > capped {
+        let overflow_x = start_x + dots_width(capped) + style::SPACE_XS;
+        let overflow_color = if pips.focused_idx.is_some_and(|idx| idx >= capped) {
             colors.accent
         } else {
             colors.text_dim.gamma_multiply(0.55)
@@ -779,7 +856,7 @@ fn draw_pips(
             ui.painter(),
             Pos2::new(overflow_x, center_y),
             Align2::LEFT_CENTER,
-            format!("+{}", pips.count - PANE_PIP_MAX),
+            format!("+{}", pips.count - capped),
             egui::FontId::proportional(style::TEXT_HINT),
             overflow_color,
         );

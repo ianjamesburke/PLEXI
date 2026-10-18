@@ -3499,6 +3499,249 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
+    fn gallery_text_shapes(shape: &egui::Shape, texts: &mut Vec<(egui::Rect, String)>) {
+        match shape {
+            egui::Shape::Text(text) if !text.galley.text().is_empty() => {
+                texts.push((
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                    text.galley.text().to_owned(),
+                ));
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    gallery_text_shapes(shape, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn ui_gallery_worst_case_actions() {
+        use crate::overlays::ui_gallery::UiGalleryDataMode;
+        use crate::ui::{button, style, surface};
+        for mode in UiGalleryDataMode::ALL {
+            let data = mode.fixture();
+            for width in [760.0, 320.0, 280.0] {
+                for kind in 0..5 {
+                    let ctx = egui::Context::default();
+                    crate::ui::theme::setup_fonts(&ctx);
+                    let _ = ctx.run_ui(Default::default(), |_| {});
+                    let colors = crate::ui::theme::Colors::from_config(
+                        &crate::ui::theme::preset_colors("catppuccin-mocha").unwrap(),
+                    );
+                    let mut bounds = egui::Rect::NOTHING;
+                    let output = ctx.run_ui(Default::default(), |ui| {
+                        ui.set_width(width);
+                        let response = match kind {
+                            0 => button::choice_button(ui, data.detail, "⌘Enter", false, &colors),
+                            1 => button::chrome_button(
+                                ui,
+                                data.detail,
+                                button::ButtonKind::Primary,
+                                &colors,
+                                80.0,
+                            ),
+                            2 => surface::copyable_command(
+                                ui,
+                                egui::Id::new("copy"),
+                                data.command,
+                                &colors,
+                            ),
+                            3 => surface::compact_copyable_command(
+                                ui,
+                                egui::Id::new("compact"),
+                                data.command,
+                                &colors,
+                            ),
+                            _ => surface::trust_decision_panel(
+                                ui,
+                                data.names.first().copied().unwrap_or(""),
+                                data.detail,
+                                surface::TrustTone::Warning,
+                                &colors,
+                            ),
+                        };
+                        bounds = response.rect;
+                    });
+                    assert!(
+                        bounds.width() <= width + 0.1,
+                        "action overflow {mode:?} {width} kind={kind}: {bounds:?}"
+                    );
+                    if kind < 2 {
+                        assert_eq!(
+                            bounds.height(),
+                            if kind == 0 {
+                                style::BUTTON_H_LG
+                            } else {
+                                style::BUTTON_H_MD
+                            }
+                        );
+                    }
+                    let mut texts = vec![];
+                    for clipped in &output.shapes {
+                        let painted = clipped.shape.visual_bounding_rect();
+                        if painted.is_positive() {
+                            assert!(
+                                bounds.expand(1.0).contains_rect(painted),
+                                "paint outside action {mode:?} {width} kind={kind}: {painted:?} in {bounds:?}"
+                            );
+                        }
+                        gallery_text_shapes(&clipped.shape, &mut texts);
+                    }
+                    for (i, (rect, text)) in texts.iter().enumerate() {
+                        for (other, label) in &texts[i + 1..] {
+                            assert!(
+                                !rect.shrink(0.5).intersects(other.shrink(0.5)),
+                                "action text overlap {mode:?} {width} kind={kind}: {text:?} / {label:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ui_gallery_worst_case() {
+        use crate::overlays::ui_gallery::{UiGalleryDataMode, UiGalleryPreview, gallery_rows};
+        for mode in UiGalleryDataMode::ALL {
+            for width in [760.0, 320.0, 280.0] {
+                // Inspect actual painted galleys, not copies of the layout arithmetic.
+                let ctx = egui::Context::default();
+                crate::ui::theme::setup_fonts(&ctx);
+                let _ = ctx.run_ui(Default::default(), |_| {});
+                let colors = crate::ui::theme::Colors::from_config(
+                    &crate::ui::theme::preset_colors("catppuccin-mocha").unwrap(),
+                );
+                let mut bounds = egui::Rect::NOTHING;
+                let mut height = 0.0;
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000.0, 2000.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        ui.set_width(width);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let start = ui.cursor().min;
+                        gallery_rows(ui, &mode.fixture(), &colors);
+                        height = ui.cursor().min.y - start.y;
+                        bounds = egui::Rect::from_min_size(start, egui::vec2(width, height));
+                    },
+                );
+                assert!(
+                    (height
+                        - mode.fixture().names.len() as f32
+                            * (crate::ui::style::LIST_ROW_H + crate::ui::style::LIST_ROW_DENSE_H))
+                        .abs()
+                        < 0.1,
+                    "row-height blowout: {mode:?} {width}: {height}"
+                );
+                let mut texts = vec![];
+                for shape in &output.shapes {
+                    gallery_text_shapes(&shape.shape, &mut texts);
+                }
+                assert_eq!(
+                    texts
+                        .iter()
+                        .filter(|(_, text)| text == "Open" || text == "Delete")
+                        .count(),
+                    mode.fixture().names.len() * 2
+                );
+                for (i, (rect, label)) in texts.iter().enumerate() {
+                    assert!(
+                        bounds.expand(1.0).contains_rect(*rect),
+                        "out of bounds {mode:?} {width}: {label:?} {rect:?} in {bounds:?}"
+                    );
+                    for (other, other_label) in &texts[i + 1..] {
+                        assert!(
+                            !rect.shrink(0.5).intersects(other.shrink(0.5)),
+                            "text/chip overlap {mode:?} {width}: {label:?} and {other_label:?}"
+                        );
+                    }
+                }
+            }
+            for narrow in [false, true] {
+                let mut h = PlexiUiHarness::new_sized(1100.0, 1000.0);
+                add_focused_pane(&mut h);
+                h.with_app_mut(|app| {
+                    app.show_ui_gallery = true;
+                });
+                h.run_steps(3);
+                h.harness().get_by_label(mode.label()).click();
+                h.run_steps(2);
+                if narrow {
+                    h.harness().get_by_label("Narrow 320px").click();
+                    h.run_steps(2);
+                }
+                let preview = h.with_app(|app| {
+                    app.ctx.data_mut(|d| {
+                        d.get_temp::<UiGalleryPreview>(UiGalleryPreview::id())
+                            .unwrap()
+                    })
+                });
+                assert_eq!(preview.mode, mode);
+                assert_eq!(preview.narrow, narrow);
+                for label in [
+                    "Demo",
+                    "Worst case",
+                    "Empty",
+                    "1 item",
+                    "Full width",
+                    "Narrow 320px",
+                ] {
+                    assert!(
+                        h.harness().get_all_by_label(label).count() > 0,
+                        "missing {label}"
+                    );
+                }
+                for section in [
+                    "Code and toast surfaces",
+                    "Trust and confirmations",
+                    "Rows",
+                    "Sidebar rows",
+                    "Text fields",
+                    "Buttons and chips",
+                    "Empty states",
+                ] {
+                    h.harness().get_by_label(section).scroll_to_me();
+                    h.run_steps(4);
+                    let mut texts = vec![];
+                    let mut in_gallery = false;
+                    for clipped in &h.harness().output().shapes {
+                        let mut painted = vec![];
+                        gallery_text_shapes(&clipped.shape, &mut painted);
+                        in_gallery |= painted.iter().any(|(_, text)| text == "Host UI Gallery");
+                        if in_gallery {
+                            texts.extend(
+                                painted
+                                    .into_iter()
+                                    .filter(|(r, _)| clipped.clip_rect.contains_rect(*r)),
+                            );
+                        }
+                    }
+                    assert!(texts.len() > 5, "gallery paint guard must inspect content");
+                    for (i, (rect, label)) in texts.iter().enumerate() {
+                        for (other, other_label) in &texts[i + 1..] {
+                            assert!(
+                                !rect.shrink(1.0).intersects(other.shrink(1.0)),
+                                "gallery overlap {mode:?} narrow={narrow}: {label:?} and {other_label:?}"
+                            );
+                        }
+                    }
+                    if mode == UiGalleryDataMode::WorstCase {
+                        h.save_screenshot(&evidence_png!(&format!("_{narrow}_{section}")))
+                            .expect("gallery screenshot");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
@@ -3510,7 +3753,7 @@ mod tests {
         h.run_steps(2);
         h.harness().get_by_label("Code and toast surfaces");
         h.harness().get_by_label("Shell completions aren't set up.");
-        h.harness().get_by_label("plexi completions zsh");
+        assert_eq!(h.harness().get_all_by_label("plexi completions zsh").count(), 2, "both copy surfaces render the demo fixture");
         assert!(
             h.harness()
                 .get_all_by_role(egui::accesskit::Role::MultilineTextInput)

@@ -57,6 +57,8 @@ pub const RADIUS_BADGE: f32 = 6.0;
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
 // NOT better — oversized modals feel empty and force eye travel.
+pub const GALLERY_NARROW_W: f32 = 320.0;
+
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.

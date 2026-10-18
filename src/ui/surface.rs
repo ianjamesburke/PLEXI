@@ -25,20 +25,7 @@ pub(crate) fn copyable_command(
     colors: &Colors,
 ) -> egui::Response {
     code_block(ui, colors, |ui| {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(command)
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_primary)
-                        .monospace(),
-                )
-                .wrap(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                crate::ui::button::copy_button(ui, id, command);
-            });
-        });
+        command_row(ui, id, command, style::TEXT_CAPTION, colors);
     })
     .response
 }
@@ -57,17 +44,51 @@ pub(crate) fn compact_copyable_command(
             ui.spacing_mut().interact_size.y = crate::ui::toast::TOAST_CONTROL_H - 6.0;
             ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
             ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(command)
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_primary)
-                        .monospace(),
-                );
-                crate::ui::button::copy_button(ui, id, command);
-            });
+            let text_width = ui
+                .fonts_mut(|f| {
+                    f.layout_no_wrap(
+                        command.to_owned(),
+                        egui::FontId::monospace(style::TEXT_HINT),
+                        colors.text_primary,
+                    )
+                })
+                .size()
+                .x;
+            let copy_width =
+                (style::BUTTON_H_MD - style::SPACE_SM).max(ui.spacing().interact_size.x);
+            ui.set_width(
+                ui.available_width()
+                    .min(text_width + copy_width + style::SPACE_SM),
+            );
+            command_row(ui, id, command, style::TEXT_HINT, colors);
         })
         .response
+}
+
+// Allocate the copy action first; the command owns only the remaining lane.
+fn command_row(ui: &mut egui::Ui, id: egui::Id, command: &str, size: f32, colors: &Colors) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::ui::button::copy_button(ui, id, command);
+            let label = crate::ui::text::elide(
+                ui,
+                command,
+                egui::FontId::monospace(size),
+                ui.available_width(),
+                crate::ui::text::Side::Middle,
+            );
+            ui.add(
+                egui::Label::new(
+                    RichText::new(label)
+                        .size(size)
+                        .color(colors.text_primary)
+                        .monospace(),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
+            )
+            .on_hover_text(command);
+        });
+    });
 }
 
 pub(crate) fn color_swatch(
