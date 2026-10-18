@@ -425,6 +425,7 @@ fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
 
 impl FileBrowserApp {
     pub fn new(cwd: PathBuf) -> Self {
+        log::info!("file_browser: opened with middle-elided filenames and tabular counts");
         let mut app = Self {
             cwd,
             entries: Vec::new(),
@@ -3034,20 +3035,38 @@ impl FileBrowserApp {
             |ui| {
                 let selected_label =
                     crate::ui::text::tabular_count(self.selected_count(), 3, style::TEXT_HINT);
-                let item_count_resp = ui.label(
-                    egui::RichText::new(format!(
-                        "{} \u{00b7} selected: {}",
+                let mut count_job = egui::text::LayoutJob::default();
+                count_job.append(
+                    &format!(
+                        "{} · selected: ",
                         crate::ui::text::format_count_plural(
                             self.visible_entry_count(),
                             "item",
                             "items"
-                        ),
-                        selected_label.text()
-                    ))
-                    .size(style::TEXT_HINT)
-                    .monospace()
-                    .color(colors.text_dim),
+                        )
+                    ),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::proportional(style::TEXT_HINT),
+                        color: colors.text_dim,
+                        ..Default::default()
+                    },
                 );
+                count_job.append(
+                    selected_label.text(),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::monospace(style::TEXT_HINT),
+                        // Keep the footer's established line box when mixing
+                        // the counter font with proportional labels and hints.
+                        line_height: Some(ui.fonts_mut(|fonts| {
+                            fonts.row_height(&egui::FontId::proportional(style::TEXT_HINT))
+                        })),
+                        color: colors.text_dim,
+                        ..Default::default()
+                    },
+                );
+                let item_count_resp = ui.label(count_job);
                 if show_inspector {
                     ui.label(
                         egui::RichText::new("\u{00b7} inspector visible")

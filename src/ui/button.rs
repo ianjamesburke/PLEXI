@@ -216,6 +216,9 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
         )))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("Copy `{text}`"));
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Copy")
+    });
     for (icon, opacity, color) in [
         ("\u{f0c5}", 1.0 - feedback, ui.visuals().text_color()),
         ("✓", feedback, ui.visuals().selection.stroke.color),

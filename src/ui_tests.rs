@@ -783,6 +783,26 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_micro_motion_floating_shells() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 900.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.show_ui_gallery = true;
+            app.quit_press_count = 1;
+            app.quit_last_press = None;
+        });
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Host UI Gallery").is_some());
+        assert!(
+            h.harness()
+                .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
+                .is_some()
+        );
+        h.save_screenshot(&evidence_png!())
+            .expect("floating shells screenshot");
+    }
+
+    #[test]
     fn screenshot_file_browser_middle_elision_distinguishes_suffixes() {
         let dir = tempfile::tempdir().unwrap();
         let prefix = "Q3 Board Deck — FINAL (revised) v12 [approved by legal]";
