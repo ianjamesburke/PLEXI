@@ -57,7 +57,7 @@ do_cleanup() {
     local WORKTREE_PATH="$ROOT/worktrees/$BRANCH"
     echo "==> Cleaning up PR #$PR artifacts"
     rm -f "test_pr${PR}.py"
-    just channel-clean "pr-${PR}" 2>/dev/null || true
+    just channel-clean "pr-${PR}" || echo "warn: channel-clean pr-${PR} returned non-zero (continuing)" >&2
 
     # `git worktree remove --force` routinely fails with "Directory not empty" —
     # it deregisters the worktree but leaves files (build artifacts, untracked
@@ -100,6 +100,8 @@ do_cleanup() {
     just reap-merged-worktrees 2>/dev/null || true
     echo "==> Sweeping stale worktree build artifacts"
     just clean-stale-targets 2>/dev/null || true
+    echo "==> Sweeping closed/merged PR channel installs"
+    just channel-clean-merged 2>/dev/null || true
 }
 
 do_close() {
@@ -206,15 +208,7 @@ do_close_stints() {
         stint done "$STINT"
     done
 
-    if git diff --quiet -- .stint/tasks; then
-        echo "==> No stint task changes to commit"
-        return
-    fi
-
-    git add .stint/tasks
-    git commit -m "chore(stint): close tasks $STINTS after PR #$PR"
-    git push
-    echo "==> Closed stint task(s) $STINTS on alpha (current version v$VERSION)"
+    echo "==> Closed stint task(s) $STINTS (current alpha v$VERSION)"
 }
 
 resolve_issue() {

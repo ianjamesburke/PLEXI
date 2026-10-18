@@ -69,9 +69,10 @@ Write: `plexi pane slot write <name> <value> --pane-id $PLEXI_PANE_ID --replace`
 
 **1. Worker.** Pick the role by batch size, meaning the largest `Size` among the batch's stints (`stint show <id>`). If every stint is S or M, use `worker`. If the batch contains an L stint, or follows a hard reject, use `worker_large`. Brief:
 
-> /implement-stint-v2 <ids...>. You are being run by babysitter-v3: Ian is not watching. Publish the slot contract in `.agents/skills/babysitter-v3/SKILL.md`. Do the full local gate from `src/testing/TESTING.md` (`just build`, `cargo test --bin plexi`, `cargo clippy --bin plexi -- -D warnings`, plus the scene/screenshot test for UI changes). Run every gate in the foreground: if your turn ends while a job runs in the background, nothing wakes you. Open the PR and let its checks run; do **not** run `just pr-install` (the tester does). When the PR is open and the local gate is green, write `pr` and `status=pr:done`, post the `[IMPLEMENTED]` block, and wait. Answers to your questions arrive as `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`. On FOLLOW-UP, write `status=impl:working` before anything else. On PASS, merge with `just merge-pr <PR>` from the alpha root, confirm the stints are done, then write `status=merge:done`. Pre-existing defects outside your diff: note them in the PR body and file them as stints; don't fix them here. Never use `rm -rf`. <run-specific facts only>
+> /implement-stint-v2 <ids...>. You are being run by babysitter-v3: Ian is not watching. Start the lane with `just bs-start <ids...>` from the alpha root so the worktree is `worktrees/feature/stint-<id>[-<id>...]-<slug>` and all stints are claimed. Publish the slot contract in `.agents/skills/babysitter-v3/SKILL.md`. Do the full local gate from `src/testing/TESTING.md` (`just build`, `cargo test --bin plexi`, `cargo clippy --bin plexi -- -D warnings`, plus the scene/screenshot test for UI changes). Run every gate in the foreground: if your turn ends while a job runs in the background, nothing wakes you. Open the PR (with `Stint: <id>` in the body) and let its checks run; do **not** run `just pr-install` (the tester does). When the PR is open and the local gate is green, write `pr` and `status=pr:done`, post the `[IMPLEMENTED]` block, and wait. Answers to your questions arrive as `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`. On FOLLOW-UP, write `status=impl:working` before anything else. On PASS, merge with `just bs-merge <PR>` from the alpha root, confirm the stints are done, then write `status=merge:done`. Pre-existing defects outside your diff: note them in the PR body and file them as stints; don't fix them here. Never use `rm -rf`. <run-specific facts only>
 
-Wait: `plexi pane slot wait status --pane-id <id> --until '^(pr|merge):(done|blocked|failed)$|:(blocked|failed)$' --timeout <heartbeat_seconds>`.
+Wait (note `<id>` is positional on `slot wait`, `slot read`, and `slot list`; only `slot write` takes `--pane-id`):
+`plexi pane slot wait status <id> --until '^(pr|impl|merge|merged|done)(:done|:pr-opened|:blocked|:failed)?$|:(blocked|failed)$' --timeout <heartbeat_seconds>`.
 
 **2. Tester.** As soon as `pr` is set, spawn a fresh `tester` pane. Choose the brief by `gh pr diff <PR> --name-only`:
 
@@ -87,7 +88,7 @@ If the stints touch the assistant or `ai.query`, add: `export PLEXI_TEST_OPENROU
 - **PASS** and `gh pr checks <PR>` green → first check the Done-When yourself. List each item in `LOG.md` as met, overruled with a reason, or unmet. Any unmet item that isn't overruled → treat it as a FAIL caused by the PR. If it can't be met in this run (blocked by something outside the batch), send the worker `PASS`, but also file the remainder as a follow-up stint and name it in `REPORT.md`. Never let a stint close as done with silent gaps. Then send the worker `PASS` (`plexi pane send <worker> "PASS" --submit`) if `auto_merge` is on; otherwise add the PR to `RUN_STATE.md` as awaiting Ian and move on. A red check is not the PR's if it fails the same way on alpha, or passes on one `gh run rerun <run-id> --failed`: overrule it on the record and file a stint (or add the evidence to an existing flake stint).
 - **FAIL caused by the PR** → send the worker `FOLLOW-UP: <tester's numbered list, verbatim>. Write status=impl:working now. Find the root cause, not a patch. Push to the same PR, write status=pr:done again.` Confirm the slot has left `pr:done` before you wait on it again. Then spawn a new tester (`r<round+1>`) to re-check only what changed, plus a one-line smoke of what already passed.
 - **FAIL from a pre-existing alpha defect, or a criterion not in the Done-When** → your call: overrule it on the record in `LOG.md`, file a follow-up stint, treat it as PASS.
-- **Rounds exceed `max_fix_rounds`** → send `FAIL: <summary>`, park the batch in `RUN_STATE.md`, keep the worktree, move on.
+- **Rounds exceed `max_fix_rounds`** → send `FAIL: <summary>`, park the batch in `RUN_STATE.md` (the worker runs `just channel-clean pr-<PR>` and `stint unclaim`), keep the worktree for inspection, move on.
 
 **4. After merge** (`status=merge:done`): check it yourself with `gh pr view <PR> --json state` (MERGED) and `stint show <id>` (done). Close the worker. Append the merge to `TRUTH.md` at the repo root, as `AGENTS.md` requires for every merge. Overwrite `RUN_STATE.md`, start the next batch.
 
@@ -108,7 +109,7 @@ The head rots too. After every **two** merges, or whenever your own context feel
 ## Stop conditions and close-out
 
 - **Done** = every batch is merged or parked with a written reason. Then, in order:
-  1. Reap orphaned worktrees through a fresh small worker (`wtp rm` only for merged or superseded work, never unpushed commits; list the rest in `RUN_STATE.md`). Close `caffeinate`.
+  1. Reap orphaned worktrees, stale build targets, and leftover PR channels through a fresh small worker (`just reap-merged-worktrees`, `just clean-stale-targets`, `just channel-clean-merged`; never delete unpushed commits; list kept worktrees in `RUN_STATE.md`). Close `caffeinate`.
   2. Write `REPORT.md`, the only thing Ian needs to read. Keep it short and lead with the state:
      - **Landed:** each PR → stints, rounds, wall time, the worker and tester alias.
      - **Not landed / gaps:** parked batches and why; Done-When items overruled or carried into follow-up stints (by id).
@@ -125,6 +126,6 @@ The head rots too. After every **two** merges, or whenever your own context feel
 - Never code, run git, build or merge. Route.
 - One worker per batch, for the whole batch. Testers are single-use: one per round.
 - Pass criteria come only from the stint's Done-When.
-- Name the exact skill in every brief (`/implement-stint-v2`, never "implement it"). agy also sees the `disabled.*` skills.
+- Name the exact skill in every brief (`/implement-stint-v2`, never "implement it").
 - No sounds, no dialogs, no `security` Keychain commands, no file deletion (`rm -rf` or any other spelling) in any brief.
-- Every `plexi pane slot write` you run passes `--pane-id $PLEXI_PANE_ID --replace`, including the initial `status=<step>:working` write; this keeps the write on the caller pane even when its target socket is overridden.
+- Every `plexi pane slot write` you run passes `--pane-id $PLEXI_PANE_ID --replace`, including the initial `status=<step>:working` write; this keeps the write on the caller pane even when its target socket is overridden. `plexi pane slot wait`, `read`, and `list` take `<pane_id>` positionally.

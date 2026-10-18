@@ -91,7 +91,13 @@ EOF
 ## Phase 4 — Cleanup
 
 ```bash
-# Re-label: remove in-progress, add ready
+# Uninstall the PR build and remove its ~/.plexi-pr-<PR> and ~/.local/share/plexi/pr-<PR> directories
+just channel-clean "pr-<PR_NUMBER>"
+
+# Unclaim any linked stint task so the next agent can claim it cleanly
+stint unclaim <stint-id>
+
+# Re-label (if GitHub issue-backed): remove in-progress, add ready
 gh issue edit <N> --remove-label "in progress" --add-label "ready"
 
 # Delete the remote branch

@@ -180,6 +180,6 @@ Invoke `/validate-pr <pr-number>` inline in the same pane — **unless the calle
 - PR always targets `alpha` — never `beta` or `main`
 - Never push to `alpha`, `beta`, or `main` directly
 - Idempotency: re-running on an already-open PR advances labels, never errors
-- open-pr runs no review. AI diff review is owned solely by `/implement-stint` Phase 4 (pre-push) — see "Who reviews what" there. `/validate-pr` does not review either.
+- open-pr runs no review. AI diff review is owned solely by `/implement-stint-v2` (pre-push). `/validate-pr` does not review either.
 
 

@@ -286,7 +286,7 @@ sdk-smoke:
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Resolves the PR head via gh and builds THAT tree — run from anywhere inside
 # the repo: just pr-install 123
-# Removes the previous managed PR installation first; user data is retained.
+# Removes the previous managed PR installation and profile first.
 pr-install number:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -405,10 +405,10 @@ pr-install number:
 channel-install channel="": regen-if-stale
     bash scripts/install.sh --from-source {{channel}}
 
-# Remove a channel through its receipt, retaining user data.
+# Remove a channel installation (retains user data for main/alpha/beta; removes ephemeral profile & keychain for pr-*/hex/test channels).
 # Works for any channel name: main, alpha, beta, pr-123, gpui, etc.
 #   just channel-clean gpui       — remove plexi-gpui artifacts
-#   just channel-clean pr-123     — remove PR 123 artifacts
+#   just channel-clean pr-123     — remove PR 123 installation, ~/.plexi-pr-123, and PR keychain items
 #   just channel-clean rc-010     — remove local release candidate artifacts
 channel-clean channel:
     bash scripts/channel-clean.sh {{channel}}

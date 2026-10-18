@@ -35,46 +35,47 @@ pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" merging "" ""
 ## Step 1 — Run the Merge Script
 
 ```bash
-just merge-pr <PR_NUMBER>
+just bs-merge <PR_NUMBER>
+# or: just merge-pr <PR_NUMBER>
 ```
 
-Handles: rebase, squash-merge, alpha sync, artifact cleanup, issue close, ship log.
+Handles: rebase, squash-merge, alpha sync, PR channel + profile uninstall (`just channel-clean pr-<PR>` and `just channel-clean-merged`), worktree & stale-target sweep (`just reap-merged-worktrees` and `just clean-stale-targets`), automatic `stint done` on linked stints, issue close, and ship log.
 
 **If it exits non-zero**, read the error and recover with sub-steps:
 
 | Error | Recovery |
 |-------|----------|
 | Rebase conflict | Resolve in `worktrees/$BRANCH`, then: `just merge-rebase $BRANCH` → `just merge-squash $PR` → continue below |
-| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-close $ISSUE $PR` |
+| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
 | Dirty root worktree | Commit or restore changed files, re-run `just merge-pr $PR` |
 | `>1 unexpected commits` on local alpha | Investigate before proceeding; do not force-reset blindly |
-| `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR no-issue`. Otherwise fix the PR body's closing keyword first. |
+| `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR no-issue`. Otherwise fix the PR body's `Stint: <id>` or closing keyword first. |
 
 **Available sub-steps:**
 ```bash
 just merge-rebase <BRANCH>       # fetch + rebase feature branch on origin/alpha + force-push
 just merge-squash <PR>           # squash-merge only
 just merge-sync                  # reset local alpha to origin/alpha (safe: fails if >1 unexpected commit)
-just merge-cleanup <PR> <BRANCH> # channel-clean + wtp remove + remote branch delete
-just merge-close <ISSUE> <PR>    # strip pipeline labels + close issue + append ship log
+just merge-cleanup <PR> <BRANCH> # channel-clean pr-<PR> + channel-clean-merged + wtp remove + remote branch delete
+just merge-close-targets <PR> "<ISSUES>" "<STINTS>"  # close issues + mark stints done + append ship log
 ```
 
 ---
 
-## Step 2 — Close Linked Stint Tasks
+## Step 2 — Verify Linked Stints & Update `TRUTH.md`
+
+`just merge-pr` automatically runs `stint done <id>` for stints resolved from the PR body (`Stint: <id>`), branch name (`feature/stint-<id>-*`), or `gh_issue:` frontmatter. Confirm they are marked `done`:
 
 ```bash
-rg -l 'gh_issue: .*"<issue>"|gh_issue: .*\[<issue>\]' .stint/tasks
-stint done <task-id>
+stint show <task-id>
 ```
 
-If estimate was off >2x, add one sentence to the task body explaining why. If no linked task exists, note it in the ship log.
-
-Do not maintain a separate priority projection after merge. `.stint/` is the live graph; `stint status`, `stint next`, and the task bodies own current state and ordering.
+If estimate was off >2x, add one sentence to the task body explaining why.
+Update `TRUTH.md` at the repo root with the merged PR and stint status (per `AGENTS.md`).
 
 ---
 
-## Step 3 — Unblock Downstream Issues
+## Step 3 — Unblock Downstream Issues (if GitHub issue-backed)
 
 ```bash
 gh issue-ext blocking list $ISSUE --json number,title,state 2>/dev/null
@@ -108,7 +109,8 @@ Output exactly this block — nothing after it, no RECOMMENDATION:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · done"
 pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" done "" ""
-plexi pane close
+plexi pane slot write status merge:done --pane-id $PLEXI_PANE_ID --replace
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane close
 ```
 
 **Soft exit** (deferred threads): use `needs-you` pane status instead of `done`; do not call `plexi pane close`.

@@ -237,5 +237,5 @@ Return the task ID, file path, and GitHub issue URL if created.
 
 ```
 RECOMMENDATION:
-1. <one call -- either "dispatch via /implement-stint <NNNN>" or "park it -- task is filed and will surface in stint next by priority">
+1. <one call -- either "dispatch via /implement-stint-v2 <NNNN>" or "park it -- task is filed and will surface in stint next by priority">
 ```

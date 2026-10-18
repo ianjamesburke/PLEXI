@@ -1,6 +1,6 @@
 ---
 name: testing
-description: "Agent self-validation before push. Classifies the diff (host logic / host UI / PGAP app), runs the matching harness tests, generates headless render screenshots as evidence, and writes a Test Evidence block for the Ship Log that validate-pr uses to decide whether binary install can be skipped. Invoked inline by implement-issue and implement-stint after cargo build passes, before git push."
+description: "Agent self-validation before push. Classifies the diff (host logic / host UI / PGAP app), runs the matching harness tests, generates headless render screenshots as evidence, and writes a Test Evidence block for the Ship Log that validate-pr uses to decide whether binary install can be skipped. Invoked inline by implement-issue and implement-stint-v2 after cargo build passes, before git push."
 ---
 
 # Testing — Self-Validation Evidence
@@ -156,7 +156,7 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 - Conclusion: install skippable — full coverage | binary install required — <why>
 ```
 
-**These conclusion rules are the single source of truth for install-skip.** `/implement-stint` and `/validate-pr` consume the conclusion this block produces — they never re-derive it against their own criteria. If you are editing skip criteria anywhere else, you are editing the wrong file.
+**These conclusion rules are the single source of truth for install-skip.** `/implement-stint-v2` and `/validate-pr` consume the conclusion this block produces — they never re-derive it against their own criteria. If you are editing skip criteria anywhere else, you are editing the wrong file.
 
 Conclusion rules:
 - `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes pure-logic and docs-only changes with direct `HostHarness`/`PlexiUiHarness`/scene coverage of the full user-visible behavior — coverage is the test, not cosmetic-ness.

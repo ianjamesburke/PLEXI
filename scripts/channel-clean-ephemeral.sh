@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
 dry_run=0
 age_days=7
@@ -26,13 +27,31 @@ min_age_secs=$(( age_days * 86400 ))
 total_kb=0
 reaped=0
 
-for profile in "$HOME"/.plexi-*/; do
+raw_candidates=()
+shopt -s nullglob
+for profile in "$HOME"/.plexi-*/ "$REPO_ROOT"/.plexi-*/; do
     [[ -d "$profile" ]] || continue
-    channel=$(basename "$profile" | sed 's/^\.plexi-//')
+    raw_candidates+=("$(basename "$profile" | sed 's/^\.plexi-//')")
+done
+for inst in "${XDG_DATA_HOME:-$HOME/.local/share}"/plexi/*/; do
+    [[ -d "$inst" ]] || continue
+    base="$(basename "$inst")"
+    [[ "$base" == "installations" || "$base" == "integration-lock" ]] && continue
+    raw_candidates+=("$base")
+done
+shopt -u nullglob
+
+candidates=""
+if [[ ${#raw_candidates[@]} -gt 0 ]]; then
+    candidates="$(printf '%s\n' "${raw_candidates[@]}" | sort -u)"
+fi
+
+while IFS= read -r channel; do
+    [[ -n "$channel" ]] || continue
 
     # Hard protect list: real channels are never ephemeral, whatever else matches.
     case "$channel" in
-        alpha|beta|main|src|pr-*|rc-*) continue ;;
+        alpha|beta|main|stable|src|pr-*|rc-*) continue ;;
     esac
 
     # Reap only known-ephemeral shapes: 16-hex hashes and ad-hoc test names.
@@ -43,18 +62,27 @@ for profile in "$HOME"/.plexi-*/; do
         esac
     fi
 
-    # Age by the newest mtime in the profile's top two levels, not the dir
+    profile="$HOME/.plexi-$channel"
+    ws_profile="$REPO_ROOT/.plexi-$channel"
+    inst_dir="${XDG_DATA_HOME:-$HOME/.local/share}/plexi/$channel"
+    check_dirs=()
+    [[ -d "$profile" ]] && check_dirs+=("$profile")
+    [[ -d "$ws_profile" ]] && check_dirs+=("$ws_profile")
+    [[ -d "$inst_dir" ]] && check_dirs+=("$inst_dir")
+    [[ ${#check_dirs[@]} -gt 0 ]] || continue
+
+    # Age by the newest mtime in the channel's top two levels, not the dir
     # itself: writing plexi.log does not bump the directory mtime, and an
     # active channel must never look idle.
-    mtime=$(find "$profile" -maxdepth 2 -exec stat -f %m {} + 2>/dev/null | sort -rn | head -1)
-    [[ -n "$mtime" ]] || mtime=$(stat -f %m "$profile")
+    mtime=$(find "${check_dirs[@]}" -maxdepth 2 -exec stat -f %m {} + 2>/dev/null | sort -rn | head -1)
+    [[ -n "$mtime" ]] || mtime=$(stat -f %m "${check_dirs[0]}")
     age_secs=$(( now - mtime ))
     if (( age_secs < min_age_secs )); then
         echo "Skipping $channel (modified $(( age_secs / 86400 ))d ago, threshold ${age_days}d)"
         continue
     fi
 
-    kb=$(du -sk "$profile" | cut -f1)
+    kb=$(du -sk "${check_dirs[@]}" 2>/dev/null | awk '{s+=$1} END {print s+0}')
     total_kb=$(( total_kb + kb ))
     reaped=$(( reaped + 1 ))
     if (( dry_run )); then
@@ -63,7 +91,7 @@ for profile in "$HOME"/.plexi-*/; do
         echo "Reaping $channel ($(( kb / 1024 )) MB, idle $(( age_secs / 86400 ))d)"
         "$SCRIPT_DIR/channel-clean.sh" "$channel"
     fi
-done
+done <<< "$candidates"
 
 if (( reaped == 0 )); then
     echo "Nothing to reap"

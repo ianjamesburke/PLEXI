@@ -161,7 +161,7 @@ Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediate
 
 ## No AI review in this phase
 
-AI diff review happens **once**, pre-push, in `/implement-stint` Phase 4. This skill does not run it again — a second pass over the same diff costs a full Codex run and, in babysitter mode, duplicates what the tester pane is already doing with fresh eyes.
+AI diff review happens **once**, pre-push, in `/implement-stint-v2` Phase 4. This skill does not run it again — a second pass over the same diff costs a full Codex run and, in babysitter mode, duplicates what the tester pane is already doing with fresh eyes.
 
 Carry the implementation phase's verdict into the testing block as `AI_FINDINGS` (the Ship Log's `Codex verdict:` line). If that line is missing, set `AI_FINDINGS="no pre-push review recorded"` and say so plainly rather than running a review here to fill the gap.
 
@@ -337,7 +337,7 @@ Append to Ship Log:
 
 "fail" without a description: ask for it before taking any action.
 
-**Check attempt count** — same marker as Step 0. `### Attempt` counts *implementation* attempts (written by `/implement-issue` and `/implement-stint`), not validation rounds; counting those here made the 3-strikes gate fire off a different number than Step 0 computed:
+**Check attempt count** — same marker as Step 0. `### Attempt` counts *implementation* attempts (written by `/implement-issue` and `/implement-stint-v2`), not validation rounds; counting those here made the 3-strikes gate fire off a different number than Step 0 computed:
 ```bash
 ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
   | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
@@ -458,7 +458,7 @@ Issue re-labeled ready for next attempt
 Surface the diff-review testing block format from Step 3. Key differences from the install path:
 - No attempt count in header (no retry loop for diff-only)
 - No `Pass:` / `Fail:` stop-check criteria — those are only for binary install validation
-- Show AI_FINDINGS verbatim (the pre-push verdict carried from `/implement-stint`); the user is reviewing those findings plus the diff, not exercising a binary
+- Show AI_FINDINGS verbatim (the pre-push verdict carried from `/implement-stint-v2`); the user is reviewing those findings plus the diff, not exercising a binary
 
 Flip pane status the same as the install path before notifying:
 ```bash
@@ -471,7 +471,7 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 ## Rules
 
 - Binary install is the default. Skip only per the Test Evidence conclusion (single source: `/testing` Step 5), with the `apps/`-changed and Done-When overrides.
-- **This skill runs no AI diff review.** Pre-push Codex review is owned by `/implement-stint` Phase 4 — see "Who reviews what" there. Validation owns install and user acceptance, not review.
+- **This skill runs no AI diff review.** Pre-push Codex review is owned by `/implement-stint-v2` Phase 4 — see "Who reviews what" there. Validation owns install and user acceptance, not review.
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
 - Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
