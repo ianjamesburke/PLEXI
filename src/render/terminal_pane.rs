@@ -246,7 +246,7 @@ fn paint_escalation_border(
 /// Recorded geometry from the most recent `render_name_bar_and_tabs` pass for a
 /// terminal pane, used by UI tests to assert that the elided tab/name label and
 /// the outside-workspace badge never intersect.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct TerminalTabBarLayout {
     pub label_rect: Option<egui::Rect>,
@@ -263,6 +263,7 @@ pub(crate) fn last_rendered_tab_bar_layout(
 }
 
 static LOG_OUTSIDE_WORKSPACE_BADGE_RESERVE: Once = Once::new();
+static LOG_WORKING_NO_ESCALATION: Once = Once::new();
 
 // Arg-struct refactor is a design change tracked in stint 0661.
 #[allow(clippy::too_many_arguments)]
@@ -289,13 +290,16 @@ fn render_name_bar_and_tabs(
     let has_escalation = is_error
         || matches!(
             agent_state,
-            Some(
-                AgentState::Working
-                    | AgentState::Blocked
-                    | AgentState::NeedsYou
-                    | AgentState::Interrupted
-            )
+            Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted)
         );
+    if matches!(agent_state, Some(AgentState::Working)) && !is_error {
+        LOG_WORKING_NO_ESCALATION.call_once(|| {
+            log::info!(
+                "terminal_pane: Working state skips escalation chrome (has_name={has_name}, tabbed={})",
+                tab_group.is_some()
+            );
+        });
+    }
 
     if let Some(group) = tab_group {
         let bar_rect = egui::Rect::from_min_size(
@@ -533,6 +537,13 @@ fn render_name_bar_and_tabs(
                     outside_workspace_badge_rect: outside_badge_rect,
                 },
             );
+        });
+    } else {
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<TerminalTabBarLayout>(egui::Id::new((
+                "terminal_tab_bar_layout",
+                *pane_id,
+            )));
         });
     }
 
