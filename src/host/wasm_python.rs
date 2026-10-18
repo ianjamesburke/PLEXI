@@ -1926,6 +1926,7 @@ pub(crate) fn decode_state_file(
 /// caller decides whether to keep previously-known values.
 fn read_python_state_file(
     app_id: &str,
+    scope: crate::host::state_scope::StateScope,
     path: &Path,
     format: crate::host::state_scope::StateFormat,
 ) -> ScopeState {
@@ -1933,11 +1934,23 @@ fn read_python_state_file(
     let digest = read.as_ref().ok().map(|bytes| Sha256::digest(bytes).into());
     match read {
         Ok(bytes) => match decode_state_file(&bytes, format) {
-            Ok(values) => ScopeState {
-                values,
-                digest,
-                error: None,
-            },
+            Ok(values) => {
+                log::info!(
+                    "{}",
+                    format_python_state_load_trace(
+                        app_id,
+                        scope,
+                        format,
+                        path,
+                        Some((bytes.len(), values.len())),
+                    )
+                );
+                ScopeState {
+                    values,
+                    digest,
+                    error: None,
+                }
+            }
             Err(error) => {
                 log::error!(
                     "app::{app_id}: state {} is unreadable ({error}) — state is NOT reset; \
@@ -1951,7 +1964,13 @@ fn read_python_state_file(
                 }
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ScopeState::default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            log::info!(
+                "{}",
+                format_python_state_load_trace(app_id, scope, format, path, None)
+            );
+            ScopeState::default()
+        }
         Err(error) => {
             let message = format!("read state {}: {error}", path.display());
             log::error!("app::{app_id}: {message} — state is NOT reset");
@@ -1962,6 +1981,45 @@ fn read_python_state_file(
             }
         }
     }
+}
+
+fn format_python_state_load_trace(
+    app_id: &str,
+    scope: crate::host::state_scope::StateScope,
+    format: crate::host::state_scope::StateFormat,
+    path: &Path,
+    hit: Option<(usize, usize)>,
+) -> String {
+    match hit {
+        Some((bytes, keys)) => format!(
+            "app::{app_id}: loaded state scope={} format={} bytes={bytes} keys={keys} from {}",
+            scope.as_str(),
+            format.as_str(),
+            path.display()
+        ),
+        None => format!(
+            "app::{app_id}: no state found for scope={} format={} at {} (fallback=none)",
+            scope.as_str(),
+            format.as_str(),
+            path.display()
+        ),
+    }
+}
+
+fn format_python_state_persist_trace(
+    app_id: &str,
+    scope: crate::host::state_scope::StateScope,
+    format: crate::host::state_scope::StateFormat,
+    path: &Path,
+    bytes: usize,
+    replaced: bool,
+) -> String {
+    format!(
+        "app::{app_id}: persisted state scope={} format={} bytes={bytes} replaced={replaced} to {}",
+        scope.as_str(),
+        format.as_str(),
+        path.display()
+    )
 }
 
 /// Content digest of a state file's current bytes. `None` when the file does
@@ -1996,8 +2054,33 @@ fn load_python_state(
     )
     .expect("resolve state path");
     match read_python_state_bytes(&path)? {
-        Some(bytes) => parse_python_state(&path, &bytes),
-        None => Ok(serde_json::Map::new()),
+        Some(bytes) => {
+            let state = parse_python_state(&path, &bytes)?;
+            log::info!(
+                "{}",
+                format_python_state_load_trace(
+                    &config.app_id,
+                    scope,
+                    config.state_format,
+                    &path,
+                    Some((bytes.len(), state.len())),
+                )
+            );
+            Ok(state)
+        }
+        None => {
+            log::info!(
+                "{}",
+                format_python_state_load_trace(
+                    &config.app_id,
+                    scope,
+                    config.state_format,
+                    &path,
+                    None,
+                )
+            );
+            Ok(serde_json::Map::new())
+        }
     }
 }
 
@@ -2063,7 +2146,12 @@ fn load_python_states(
                 config.state_format,
                 &config.context_root,
             ) {
-                Ok(path) => read_python_state_file(&config.app_id, &path, config.state_format),
+                Ok(path) => read_python_state_file(
+                    &config.app_id,
+                    scope,
+                    &path,
+                    config.state_format,
+                ),
                 Err(error) => {
                     log::error!(
                         "app::{}: cannot resolve state path for scope {}: {error}",
@@ -3824,7 +3912,12 @@ impl LivePythonPane {
             );
             return;
         }
-        let fresh = read_python_state_file(&self.app_id, &path, self.config.state_format);
+        let fresh = read_python_state_file(
+            &self.app_id,
+            scope,
+            &path,
+            self.config.state_format,
+        );
         match &fresh.error {
             None => {
                 log::info!(
@@ -3927,13 +4020,19 @@ impl LivePythonPane {
                 scope.as_str(),
                 path.display()
             );
-            let fresh = read_python_state_file(&self.app_id, &path, self.config.state_format);
+            let fresh = read_python_state_file(
+                &self.app_id,
+                scope,
+                &path,
+                self.config.state_format,
+            );
             let error = fresh.error.clone();
             let values = fresh.values.clone();
             self.persisted_states.insert(scope, fresh);
             self.send_state_changed(scope, &values, error.as_deref());
             return;
         }
+        let replaced = disk_digest.is_some();
         let bytes = match encode_state_file(payload, self.config.state_format) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -3982,11 +4081,15 @@ impl LivePythonPane {
                     },
                 );
                 log::info!(
-                    "app::{}: persisted state scope={} format={} to {}",
-                    self.app_id,
-                    scope.as_str(),
-                    self.config.state_format.as_str(),
-                    path.display()
+                    "{}",
+                    format_python_state_persist_trace(
+                        &self.app_id,
+                        scope,
+                        self.config.state_format,
+                        &path,
+                        bytes.len(),
+                        replaced,
+                    )
                 );
             }
             Err(error) => log::error!(
@@ -9302,6 +9405,106 @@ mod tests {
         assert!(
             !file.exists(),
             "a non-string (or missing) document must be a loud error with NO write"
+        );
+    }
+
+    #[test]
+    fn python_state_traces_resolved_path_scope_bytes_and_replacement() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let scope = crate::host::state_scope::StateScope::Context;
+        let format = crate::host::state_scope::StateFormat::Json;
+        let file = context_state_file(root.path(), "test.trace", "json");
+
+        assert_eq!(
+            format_python_state_load_trace("test.trace", scope, format, &file, None),
+            format!(
+                "app::test.trace: no state found for scope=context format=json at {} (fallback=none)",
+                file.display()
+            )
+        );
+        assert!(
+            !format_python_state_load_trace("test.trace", scope, format, &file, None)
+                .contains('\n'),
+            "load miss trace must be one line"
+        );
+
+        let config = file_state_config(app.path(), "test.trace", root.path(), format);
+        let mut pane = LivePythonPane::launch(config.clone()).expect("launch pane");
+        assert!(
+            pane.persisted_states
+                .get(&scope)
+                .is_some_and(|s| s.values.is_empty() && s.digest.is_none()),
+            "miss load starts with empty state and no digest"
+        );
+
+        pane.save_state(Some(&json!("context")), Some(&json!({"items": ["a"]})));
+        let first_bytes = std::fs::read(&file).expect("first persist bytes");
+        assert_eq!(
+            format_python_state_persist_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                first_bytes.len(),
+                false,
+            ),
+            format!(
+                "app::test.trace: persisted state scope=context format=json bytes={} replaced=false to {}",
+                first_bytes.len(),
+                file.display()
+            )
+        );
+
+        pane.save_state(
+            Some(&json!("context")),
+            Some(&json!({"items": ["a", "b"], "count": 2})),
+        );
+        let second_bytes = std::fs::read(&file).expect("second persist bytes");
+        assert_eq!(
+            format_python_state_persist_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                second_bytes.len(),
+                true,
+            ),
+            format!(
+                "app::test.trace: persisted state scope=context format=json bytes={} replaced=true to {}",
+                second_bytes.len(),
+                file.display()
+            )
+        );
+        assert!(
+            !format_python_state_persist_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                second_bytes.len(),
+                true,
+            )
+            .contains('\n'),
+            "persist trace must be one line"
+        );
+
+        let loaded = load_python_states(&config);
+        let loaded_state = loaded.get(&scope).expect("loaded context scope");
+        assert_eq!(loaded_state.values.len(), 2);
+        assert_eq!(
+            format_python_state_load_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                Some((second_bytes.len(), loaded_state.values.len())),
+            ),
+            format!(
+                "app::test.trace: loaded state scope=context format=json bytes={} keys=2 from {}",
+                second_bytes.len(),
+                file.display()
+            )
         );
     }
 
