@@ -40,9 +40,9 @@ pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
 pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
-                                  // `theme::font_medium` for weight contrast.
+// `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
-                                     // user reads first.
+// user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
 pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.
@@ -143,3 +143,112 @@ pub const KEYCHIP_PAD_V: f32 = 3.0; // vertical padding
 pub const KEYCHIP_MIN_W: f32 = 16.0; // floor width; prevents single-char cramping
 pub const KEYCHIP_GAP: f32 = 2.0; // gap between chips in a KeyChipRow
 pub const KEYCHIP_DESC_GAP: f32 = 10.0; // gap between last chip and description
+
+// Pointer micro-motion. Keyboard navigation remains instantaneous.
+pub const DURATION_PRESS_MS: u64 = 140;
+pub const DURATION_MICRO_MS: u64 = 160;
+pub const DURATION_TOAST_MS: u64 = 180;
+pub const PRESS_SCALE: f32 = 0.97;
+const _: () =
+    assert!(DURATION_PRESS_MS <= 300 && DURATION_MICRO_MS <= 300 && DURATION_TOAST_MS <= 300);
+
+/// CSS cubic-bezier(0.23, 1, 0.32, 1), evaluated by inverting its x curve.
+pub fn ease_out_cubic(t: f32) -> f32 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    let (mut lo, mut hi): (f32, f32) = (0.0, 1.0);
+    for _ in 0..20 {
+        let u = (lo + hi) * 0.5;
+        let x = 3.0 * (1.0 - u).powi(2) * u * 0.23 + 3.0 * (1.0 - u) * u * u * 0.32 + u * u * u;
+        if x < t {
+            lo = u;
+        } else {
+            hi = u;
+        }
+    }
+    1.0 - (1.0 - (lo + hi) * 0.5).powi(3)
+}
+
+/// A zero animation_time is the reduced-motion opt-out. Test builds are
+/// deterministic; immediate pointer-down feedback remains enabled in both.
+pub fn micro_motion(ctx: &egui::Context, id: egui::Id, target: bool, duration_ms: u64) -> f32 {
+    let duration = if cfg!(test) || ctx.global_style().animation_time <= 0.0 {
+        0.0
+    } else {
+        duration_ms as f32 / 1000.0
+    };
+    ctx.animate_bool_with_time_and_easing(id, target, duration, ease_out_cubic)
+}
+
+pub fn press_amount(response: &egui::Response) -> f32 {
+    let down = response.enabled() && response.is_pointer_button_down_on();
+    // Snap the animation manager to active on the press frame, then ease out
+    // only on release. The hit rectangle never shrinks.
+    let id = response.id.with("press");
+    let was_down = response.ctx.data_mut(|data| {
+        let old = data.get_temp::<bool>(id.with("held")).unwrap_or(false);
+        data.insert_temp(id.with("held"), down);
+        old
+    });
+    if down && !was_down {
+        log::info!(
+            "ui button active-press id={:?} scale={PRESS_SCALE}",
+            response.id
+        );
+    }
+    if down {
+        response.ctx.animate_bool_with_time(id, true, 0.0)
+    } else {
+        micro_motion(&response.ctx, id, false, DURATION_PRESS_MS)
+    }
+}
+
+pub fn elevation_shadow() -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 12],
+        blur: 32,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(96),
+    }
+}
+
+pub fn hairline_border(color: egui::Color32) -> egui::Stroke {
+    egui::Stroke::new(1.0_f32, color.gamma_multiply(0.65))
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    #[test]
+    fn ui_has_no_accelerating_entrance_easing() {
+        let banned = ["ease", "in"].join("-");
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                assert!(
+                    !std::fs::read_to_string(&path).unwrap().contains(&banned),
+                    "{}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn motion_curve_is_fast_monotonic_and_decelerating() {
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+        assert!(ease_out_cubic(0.25) > 0.5);
+        let mut previous = 0.0;
+        for step in 1..=100 {
+            let value = ease_out_cubic(step as f32 / 100.0);
+            assert!(value >= previous);
+            previous = value;
+        }
+        assert!(ease_out_cubic(0.25) > ease_out_cubic(0.5) - ease_out_cubic(0.25));
+    }
+}

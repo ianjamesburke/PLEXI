@@ -164,14 +164,9 @@ impl<'a> ModalShell<'a> {
                 }
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0_f32, colors.border))
+                    .stroke(style::hairline_border(colors.border))
                     .corner_radius(style::RADIUS_LG)
-                    .shadow(egui::Shadow {
-                        offset: [0, 12],
-                        blur: 32,
-                        spread: 0,
-                        color: Color32::from_black_alpha(96),
-                    })
+                    .shadow(style::elevation_shadow())
                     .inner_margin(egui::Margin::symmetric(
                         style::MODAL_PADDING_H,
                         style::MODAL_PADDING_V,

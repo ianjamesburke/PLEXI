@@ -10,7 +10,7 @@ Host overlays should use these instead of raw egui layout wherever a primitive e
 - `typography` for modal titles, section labels, body text, captions, and muted text.
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.
 - `badge::badge` / `badge::badge_size` / `badge::paint_badge` for every pill badge — the WIT `Badge` node, the sidebar notification count, the terminal outside-workspace tag. Owns padding, radius, label font, and the width floor.
-- `text::elide` / `text::elided_galley` for any label that has to fit a width. Measured against the real font, `Side::Leading` for paths and `Side::Trailing` for titles, always U+2026. Never truncate by character count.
+- `text::elide` / `text::elided_galley` for any label that has to fit a width. Measured against the real font, `Side::Leading` for paths, `Side::Middle` for filenames/UUIDs/identifiers with distinguishing suffixes, and `Side::Trailing` for prose titles/descriptions, always U+2026. Never truncate by character count.
 - `sidebar_row::SidebarRow` for context-list rows. Two tiers, the same convention `ListRow` uses for a secondary line: identity on top (index gutter, name, close action), pane state below (per-window pip capsules, overflow count, notification badge, root path). It resolves every slot rect in one `measure` pass; never hand-place a piece of a sidebar row.
 
 ## Design Tokens (`src/ui/style.rs`)
@@ -50,3 +50,18 @@ Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITL
 ## Style
 
 Document stable contracts, not history. Update in the same change that makes a rule obsolete.
+
+
+## Motion and elevation
+
+| Frequency / action | Motion |
+|---|---|
+| Frequent keyboard actions (100+/day): modal invocation, pane focus, list cursor, scroll-to-row | Instant, zero frames; keep `ModalShell.fade_in(false)` and `.animated(false)` |
+| Pointer button press | Immediate active fill and `scale(0.97)` about the center; retain the hit rectangle |
+| Pointer release | `DURATION_PRESS_MS`, using `ease_out_cubic` |
+| Disclosure and copy feedback | `DURATION_MICRO_MS`, using `ease_out_cubic` |
+| Toast motion, when introduced | `DURATION_TOAST_MS` |
+
+Use `style::ease_out_cubic` (cubic-bezier(0.23, 1, 0.32, 1)) for micro-motion. Never use accelerating entrance easing or durations above 300ms. Never `scale(0)`. A zero egui `animation_time` opts out of interpolation; deterministic test builds also bypass it. Press feedback still appears immediately. Use `hairline_border` and `elevation_shadow` for floating shells.
+
+Text elision preserves grapheme boundaries and collapses line breaks. Use `format_count_plural` for count labels, `compact_count` for bounded badges, and `tabular_count` with a capacity suited to the domain to reserve a monospace counter width.

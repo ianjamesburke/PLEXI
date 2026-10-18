@@ -50,19 +50,21 @@ impl<'a> ListDropdownHeader<'a> {
             colors.text_section
         };
         let r = 4.5;
-        let points = if self.expanded {
-            vec![
-                Pos2::new(center.x - r, center.y - r * 0.45),
-                Pos2::new(center.x + r, center.y - r * 0.45),
-                Pos2::new(center.x, center.y + r * 0.65),
-            ]
-        } else {
-            vec![
-                Pos2::new(center.x - r * 0.45, center.y - r),
-                Pos2::new(center.x - r * 0.45, center.y + r),
-                Pos2::new(center.x + r * 0.65, center.y),
-            ]
-        };
+        let fraction = style::micro_motion(
+            ui.ctx(),
+            id.with("chevron"),
+            self.expanded,
+            style::DURATION_MICRO_MS,
+        );
+        let rotation = egui::emath::Rot2::from_angle(fraction * std::f32::consts::FRAC_PI_2);
+        let points = [
+            egui::vec2(-r * 0.45, -r),
+            egui::vec2(-r * 0.45, r),
+            egui::vec2(r * 0.65, 0.0),
+        ]
+        .into_iter()
+        .map(|point| center + rotation * point)
+        .collect();
         ui.painter().add(egui::Shape::convex_polygon(
             points,
             chevron_color,
@@ -162,15 +164,27 @@ pub(crate) fn paint_table_cell_text(
     font_id: egui::FontId,
     color: Color32,
 ) {
-    let text = text.into();
-    let max_width = (cell.width() - style::SPACE_SM * 2.0).max(0.0);
-    let elided = crate::ui::text::elide(
+    paint_table_cell_text_elided(
         ui,
-        &text,
-        font_id.clone(),
-        max_width,
+        cell,
+        text,
+        font_id,
+        color,
         crate::ui::text::Side::Trailing,
     );
+}
+
+pub(crate) fn paint_table_cell_text_elided(
+    ui: &egui::Ui,
+    cell: egui::Rect,
+    text: impl Into<String>,
+    font_id: egui::FontId,
+    color: Color32,
+    side: crate::ui::text::Side,
+) {
+    let text = text.into();
+    let max_width = (cell.width() - style::SPACE_SM * 2.0).max(0.0);
+    let elided = crate::ui::text::elide(ui, &text, font_id.clone(), max_width, side);
     paint_text_left_center(
         ui,
         elided,

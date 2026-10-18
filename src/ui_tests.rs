@@ -622,6 +622,220 @@ mod tests {
         })
     }
 
+    #[derive(Clone)]
+    struct PressSnapshot {
+        fill: egui::Color32,
+        rect: egui::Rect,
+        clicks: usize,
+    }
+
+    struct PressFixture {
+        kind: u8,
+        snapshot: Arc<std::sync::Mutex<PressSnapshot>>,
+    }
+
+    impl crate::app::app_trait::App for PressFixture {
+        fn type_id(&self) -> &'static str {
+            "press_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Button press feedback".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            let layer = ui.layer_id();
+            let start = ui
+                .ctx()
+                .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
+            let clicked = match self.kind {
+                0 => crate::ui::button::chrome_button(
+                    ui,
+                    "Confirm changes",
+                    crate::ui::button::ButtonKind::Accent,
+                    ctx.colors,
+                    160.0,
+                )
+                .clicked(),
+                1 => {
+                    crate::ui::button::choice_button(ui, "Keep this version", "1", true, ctx.colors)
+                        .clicked()
+                }
+                _ => {
+                    use crate::host::wasm_app::bindings::plexi::platform::types::ButtonNode;
+                    use crate::host::wasm_app::{ButtonStyle, IndexedNode, UiNodeData, UiTree};
+                    let tree = UiTree {
+                        root: 0,
+                        nodes: vec![IndexedNode {
+                            id: 0,
+                            key: "press".into(),
+                            data: UiNodeData::Button(ButtonNode {
+                                label: "Save document".into(),
+                                on_click: "save".into(),
+                                style: ButtonStyle::Primary,
+                                disabled: false,
+                            }),
+                        }],
+                    };
+                    !crate::host::wasm_render::render_ui_tree_with_surface(
+                        ui, &tree, ctx.colors, None, None, 0,
+                    )
+                    .actions
+                    .is_empty()
+                }
+            };
+            let painted = ui.ctx().graphics(|g| {
+                g.get(layer).and_then(|list| {
+                    list.all_entries().skip(start).find_map(|shape| {
+                        if let egui::Shape::Rect(rect) = &shape.shape {
+                            // The app background spans the pane; the button has rounded corners.
+                            if rect.corner_radius != egui::CornerRadius::ZERO
+                                && rect.fill != egui::Color32::TRANSPARENT
+                            {
+                                return Some((rect.rect, rect.fill));
+                            }
+                        }
+                        None
+                    })
+                })
+            });
+            if let Some((rect, fill)) = painted {
+                let mut snapshot = self.snapshot.lock().unwrap();
+                snapshot.rect = rect;
+                snapshot.fill = fill;
+                snapshot.clicks += usize::from(clicked);
+            }
+        }
+    }
+
+    #[test]
+    fn button_pointer_down_paints_active_before_release() {
+        for kind in 0..3 {
+            let mut h = PlexiUiHarness::new_sized(720.0, 420.0);
+            let pane_id = add_focused_pane(&mut h);
+            let snapshot = Arc::new(std::sync::Mutex::new(PressSnapshot {
+                fill: egui::Color32::TRANSPARENT,
+                rect: egui::Rect::NOTHING,
+                clicks: 0,
+            }));
+            h.with_app_mut(|app| {
+                if let Some(Pane::App(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = AppRuntime::Builtin(Box::new(PressFixture {
+                        kind,
+                        snapshot: snapshot.clone(),
+                    }));
+                }
+            });
+            h.run_steps(3);
+            let idle = snapshot.lock().unwrap().clone();
+            assert!(idle.rect.is_positive(), "kind={kind}");
+            let pos = idle.rect.center();
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.run_steps(1);
+            let pressed = snapshot.lock().unwrap().clone();
+            assert_eq!(pressed.clicks, 0, "press must not activate kind={kind}");
+            assert_ne!(pressed.fill, idle.fill, "active fill kind={kind}");
+            assert!(
+                (pressed.rect.width() / idle.rect.width() - 0.97).abs() < 0.001,
+                "kind={kind}: {:?} -> {:?}",
+                idle.rect,
+                pressed.rect
+            );
+            assert!((pressed.rect.height() / idle.rect.height() - 0.97).abs() < 0.001);
+            assert!(pressed.rect.center().distance(idle.rect.center()) < 0.01);
+            h.save_screenshot(&evidence_png!(&format!("_{kind}")))
+                .expect("press screenshot");
+            h.run_steps(2);
+            assert_eq!(snapshot.lock().unwrap().clicks, 0);
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.run_steps(1);
+            let released = snapshot.lock().unwrap().clone();
+            assert_eq!(
+                released.clicks, 1,
+                "release activates exactly once kind={kind}"
+            );
+            assert!((released.rect.width() - idle.rect.width()).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn screenshot_micro_motion_floating_shells() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 900.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.show_ui_gallery = true;
+            app.quit_press_count = 1;
+            app.quit_last_press = None;
+        });
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Host UI Gallery").is_some());
+        assert!(
+            h.harness()
+                .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
+                .is_some()
+        );
+        h.save_screenshot(&evidence_png!())
+            .expect("floating shells screenshot");
+    }
+
+    #[test]
+    fn screenshot_file_browser_middle_elision_distinguishes_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = "Q3 Board Deck — FINAL (revised) v12 [approved by legal]";
+        for suffix in ["-signed.pdf", "-draft.HEIC"] {
+            std::fs::write(dir.path().join(format!("{prefix}{suffix}")), "fixture").unwrap();
+        }
+        let mut h = PlexiUiHarness::new_sized(520.0, 420.0);
+        h.open_file_browser(dir.path().to_path_buf());
+        h.run_steps(3);
+        let mut labels = Vec::new();
+        for shape in &h.harness().output().shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                if text.galley.text().starts_with("Q3") {
+                    labels.push(text.galley.text().to_owned());
+                }
+            }
+        }
+        assert!(
+            labels
+                .iter()
+                .any(|s| s.contains('…') && s.ends_with("-signed.pdf")),
+            "{labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|s| s.contains('…') && s.ends_with("-draft.HEIC")),
+            "{labels:?}"
+        );
+        h.save_screenshot(&evidence_png!())
+            .expect("filename screenshot");
+    }
+
     /// Regression for stint 0351: `AppRequest::KeyPane` (the `plexi pane key`
     /// socket path) must drive a native app pane through its real
     /// `App::handle_key` — not the PGAP event queue, which native apps never

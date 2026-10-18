@@ -39,12 +39,13 @@ pub(crate) fn chrome_button_sized(
         kind,
         colors,
         ChromeButtonState {
-            disabled: false,
+            disabled: !ui.is_enabled(),
             down: false,
         },
     );
 
-    ui.add(
+    tactile_button(
+        ui,
         egui::Button::new(
             RichText::new(label)
                 .size(style::TEXT_CAPTION)
@@ -52,6 +53,15 @@ pub(crate) fn chrome_button_sized(
         )
         .fill(visuals.fill)
         .min_size(egui::vec2(min_width, height)),
+        chrome_button_visuals(
+            kind,
+            colors,
+            ChromeButtonState {
+                disabled: !ui.is_enabled(),
+                down: true,
+            },
+        )
+        .fill,
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -99,11 +109,13 @@ pub(crate) fn toolbar_button(
     label: impl Into<egui::WidgetText>,
     hover_text: &str,
 ) -> egui::Response {
-    ui.add(
+    tactile_button(
+        ui,
         egui::Button::new(label)
             .frame(false)
             .min_size(egui::vec2(style::BUTTON_H_MD - style::SPACE_SM, 0.0))
             .sense(egui::Sense::CLICK),
+        ui.visuals().widgets.active.bg_fill,
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
     .on_hover_text(hover_text)
@@ -155,6 +167,12 @@ pub(crate) fn choice_button(
         bg
     };
 
+    let amount = style::press_amount(&resp);
+    let rect = egui::Rect::from_center_size(
+        rect.center(),
+        rect.size() * (1.0 - (1.0 - style::PRESS_SCALE) * amount),
+    );
+    let actual_bg = actual_bg.lerp_to_gamma(actual_bg.gamma_multiply(0.85), amount);
     let painter = ui.painter();
     painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
     crate::ui::snap::text_snapped(
@@ -185,11 +203,37 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     let now = ui.ctx().input(|i| i.time);
     let copied_at: Option<f64> = ui.ctx().memory(|m| m.data.get_temp(id));
     let just_copied = copied_at.is_some_and(|t| now - t < 2.0);
-    let icon = if just_copied { "✓" } else { "\u{f0c5}" };
+    let feedback = style::micro_motion(
+        ui.ctx(),
+        id.with("copy_feedback"),
+        just_copied,
+        style::DURATION_MICRO_MS,
+    );
     let resp = ui
-        .add(egui::Button::new(RichText::new(icon).size(style::TEXT_CAPTION)).frame(false))
+        .add(egui::Button::new("").frame(false).min_size(egui::vec2(
+            style::BUTTON_H_MD - style::SPACE_SM,
+            style::BUTTON_H_MD - style::SPACE_SM,
+        )))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("Copy `{text}`"));
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Copy")
+    });
+    for (icon, opacity, color) in [
+        ("\u{f0c5}", 1.0 - feedback, ui.visuals().text_color()),
+        ("✓", feedback, ui.visuals().selection.stroke.color),
+    ] {
+        if opacity > 0.0 {
+            crate::ui::snap::text_snapped(
+                ui.painter(),
+                resp.rect.center(),
+                Align2::CENTER_CENTER,
+                icon,
+                egui::FontId::proportional(style::TEXT_CAPTION),
+                color.gamma_multiply(opacity),
+            );
+        }
+    }
     if resp.clicked() && !just_copied {
         ui.ctx().copy_text(text.to_string());
         ui.ctx().memory_mut(|m| m.data.insert_temp(id, now));
@@ -199,4 +243,57 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
             .request_repaint_after(std::time::Duration::from_millis(100));
     }
     resp
+}
+
+/// Keep egui's sizing, accessibility, focus and click semantics, applying the
+/// press transform only to the shapes this button painted, never its hit box.
+pub(crate) fn tactile_button(
+    ui: &mut egui::Ui,
+    button: egui::Button<'_>,
+    active_fill: Color32,
+) -> egui::Response {
+    let layer = ui.layer_id();
+    let start = ui
+        .ctx()
+        .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(button);
+    let amount = style::press_amount(&response);
+    if amount > 0.0 {
+        let scale = 1.0 - (1.0 - style::PRESS_SCALE) * amount;
+        let transform = egui::emath::TSTransform::from_translation(
+            response.rect.center().to_vec2() * (1.0 - scale),
+        ) * egui::emath::TSTransform::from_scaling(scale);
+        ui.ctx().graphics_mut(|g| {
+            if let Some(list) = g.get_mut(layer) {
+                let end = list.all_entries().len();
+                let mut has_fill = false;
+                for index in start..end {
+                    list.mutate_shape(egui::layers::ShapeIdx(index), |clipped| {
+                        if let egui::Shape::Rect(shape) = &mut clipped.shape {
+                            has_fill = true;
+                            shape.fill = shape.fill.lerp_to_gamma(active_fill, amount);
+                        }
+                    });
+                }
+                if !has_fill {
+                    list.set(
+                        backdrop,
+                        ui.clip_rect(),
+                        egui::Shape::rect_filled(
+                            response.rect,
+                            style::RADIUS_SM,
+                            active_fill.gamma_multiply(amount),
+                        ),
+                    );
+                }
+                list.transform_range(
+                    egui::layers::ShapeIdx(start),
+                    egui::layers::ShapeIdx(end),
+                    transform,
+                );
+            }
+        });
+    }
+    response
 }

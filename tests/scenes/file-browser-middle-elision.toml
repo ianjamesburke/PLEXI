@@ -1,0 +1,15 @@
+# Distinguishing filename suffixes must remain visible in a narrow name column.
+# Exact painted-text assertions live in the middle-elision UI harness test.
+sizes = [[520.0, 420.0], [900.0, 600.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "tests/fixtures/middle-elision", as = "files" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+shot = "file-browser-middle-elision.png"

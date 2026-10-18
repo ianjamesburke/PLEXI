@@ -671,7 +671,20 @@ fn render_button_node(
         ));
     }
     let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
-    if ui.add_enabled(!b.disabled, btn).clicked() || synthetic_click {
+    let response = ui
+        .add_enabled_ui(!b.disabled, |ui| {
+            crate::ui::button::tactile_button(
+                ui,
+                btn,
+                if matches!(b.style, ButtonStyle::Ghost) {
+                    colors.bg_active
+                } else {
+                    fill.gamma_multiply(0.85)
+                },
+            )
+        })
+        .inner;
+    if response.clicked() || synthetic_click {
         out.actions.push(b.on_click.clone());
     }
 }

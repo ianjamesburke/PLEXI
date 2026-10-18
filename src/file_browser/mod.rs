@@ -425,6 +425,7 @@ fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
 
 impl FileBrowserApp {
     pub fn new(cwd: PathBuf) -> Self {
+        log::info!("file_browser: opened with middle-elided filenames and tabular counts");
         let mut app = Self {
             cwd,
             entries: Vec::new(),
@@ -1858,7 +1859,7 @@ impl FileBrowserApp {
                 paint_entry_icon(ui.painter(), icon_rect, entry, colors);
                 cell.min.x = (icon_rect.right() + 2.0).min(cell.right());
             }
-            list::paint_table_cell_text(
+            list::paint_table_cell_text_elided(
                 ui,
                 cell,
                 Self::entry_cell_text(entry, column.id),
@@ -1867,6 +1868,11 @@ impl FileBrowserApp {
                     name_color
                 } else {
                     colors.text_dim
+                },
+                if column.id == ColumnId::Name {
+                    crate::ui::text::Side::Middle
+                } else {
+                    crate::ui::text::Side::Trailing
                 },
             );
         }
@@ -3027,16 +3033,40 @@ impl FileBrowserApp {
                 .max_rect(row_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                let selected_label = self.selected_count().to_string();
-                let item_count_resp = ui.label(
-                    egui::RichText::new(format!(
-                        "{} items \u{00b7} selected: {}",
-                        self.visible_entry_count(),
-                        selected_label
-                    ))
-                    .size(style::TEXT_HINT)
-                    .color(colors.text_dim),
+                let selected_label =
+                    crate::ui::text::tabular_count(self.selected_count(), 3, style::TEXT_HINT);
+                let mut count_job = egui::text::LayoutJob::default();
+                count_job.append(
+                    &format!(
+                        "{} · selected: ",
+                        crate::ui::text::format_count_plural(
+                            self.visible_entry_count(),
+                            "item",
+                            "items"
+                        )
+                    ),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::proportional(style::TEXT_HINT),
+                        color: colors.text_dim,
+                        ..Default::default()
+                    },
                 );
+                count_job.append(
+                    selected_label.text(),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::monospace(style::TEXT_HINT),
+                        // Keep the footer's established line box when mixing
+                        // the counter font with proportional labels and hints.
+                        line_height: Some(ui.fonts_mut(|fonts| {
+                            fonts.row_height(&egui::FontId::proportional(style::TEXT_HINT))
+                        })),
+                        color: colors.text_dim,
+                        ..Default::default()
+                    },
+                );
+                let item_count_resp = ui.label(count_job);
                 if show_inspector {
                     ui.label(
                         egui::RichText::new("\u{00b7} inspector visible")

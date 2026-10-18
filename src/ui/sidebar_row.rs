@@ -313,11 +313,7 @@ impl RowGeometry {
         // only elastic element and no two of them can ever collide.
         let lane = (content_right - content_left).max(0.0);
         let badge_galley = (row.badge_count > 0).then(|| {
-            let label = if row.badge_count > 9 {
-                "9+".to_string()
-            } else {
-                row.badge_count.to_string()
-            };
+            let label = crate::ui::text::compact_count(row.badge_count);
             crate::ui::badge::badge_galley(ui, &label, Color32::PLACEHOLDER)
         });
         let badge_size = badge_galley
