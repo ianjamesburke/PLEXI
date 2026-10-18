@@ -52,9 +52,8 @@ pub fn escalation_color(
     match state {
         Some(AgentState::NeedsYou) => Some(needs_you_color(colors)),
         Some(AgentState::Blocked) => Some(blocked_color(colors)),
-        Some(AgentState::Working) => Some(colors.pip_working),
         Some(AgentState::Interrupted) => Some(colors.warning),
-        Some(AgentState::Idle | AgentState::Completed) | None => None,
+        Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
     }
 }
 
@@ -66,9 +65,8 @@ pub fn escalation_label(state: Option<&AgentState>, is_error: bool) -> Option<&'
     match state {
         Some(AgentState::NeedsYou) => Some("NEEDS YOU"),
         Some(AgentState::Blocked) => Some("BLOCKED"),
-        Some(AgentState::Working) => Some("WORKING"),
         Some(AgentState::Interrupted) => Some("INTERRUPTED"),
-        Some(AgentState::Idle | AgentState::Completed) | None => None,
+        Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
     }
 }
 
@@ -161,6 +159,56 @@ mod tests {
         assert_eq!(
             context_status_color(&ContextStatus::Error, &colors),
             Some(colors.danger)
+        );
+    }
+
+    #[test]
+    fn working_does_not_escalate_pane_color_or_label() {
+        let colors = Colors::from_config(&ThemeConfig::default());
+        assert_eq!(
+            escalation_color(Some(&AgentState::Working), false, &colors),
+            None
+        );
+        assert_eq!(escalation_label(Some(&AgentState::Working), false), None);
+
+        // Context-level Working status and activity dot colors remain active.
+        assert_eq!(
+            context_status_color(&ContextStatus::Working, &colors),
+            Some(colors.pip_working)
+        );
+
+        // Actual escalation states continue to return their semantic colors and labels.
+        assert_eq!(
+            escalation_color(Some(&AgentState::Blocked), false, &colors),
+            Some(BLOCKED_COLOR)
+        );
+        assert_eq!(
+            escalation_label(Some(&AgentState::Blocked), false),
+            Some("BLOCKED")
+        );
+        assert_eq!(
+            escalation_color(Some(&AgentState::NeedsYou), false, &colors),
+            Some(NEEDS_YOU_COLOR)
+        );
+        assert_eq!(
+            escalation_label(Some(&AgentState::NeedsYou), false),
+            Some("NEEDS YOU")
+        );
+        assert_eq!(
+            escalation_color(Some(&AgentState::Interrupted), false, &colors),
+            Some(colors.warning)
+        );
+        assert_eq!(
+            escalation_label(Some(&AgentState::Interrupted), false),
+            Some("INTERRUPTED")
+        );
+        assert_eq!(
+            escalation_color(Some(&AgentState::Working), true, &colors),
+            Some(colors.danger)
+        );
+        assert_eq!(
+            escalation_label(Some(&AgentState::Working), true),
+            Some("ERROR")
         );
     }
 }

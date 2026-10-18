@@ -1702,9 +1702,96 @@ mod tests {
                 p_error.status_summary_badge().as_deref(),
                 Some("[1 ERROR]")
             );
+
+            // Named Working pane keeps its normal header bar without an escalation badge.
+            let working_layout =
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_working)
+                    .expect("named Working terminal pane still renders its name header bar");
+            assert_eq!(
+                working_layout.elided_label.as_deref(),
+                Some("lane-working")
+            );
         });
 
         h.save_screenshot(&evidence_png!()).expect("render failed");
+    }
+
+    #[test]
+    fn unnamed_working_terminal_does_not_spawn_escalation_header_bar() {
+        let mut h = PlexiUiHarness::new_sized(600.0, 400.0);
+        h.step();
+        let pane_id = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let mut terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn unnamed terminal pane");
+            terminal.outside_workspace_cached = false;
+            terminal.outside_workspace_checked_at = Some(Instant::now());
+            terminal.outside_workspace_root = Some(workspace_root);
+            terminal.activity = Some(crate::protocol::AgentState::Working);
+
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+            id
+        });
+
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert!(
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
+                    .is_none(),
+                "unnamed single terminal pane in Working state must not render a 20px escalation header bar"
+            );
+        });
+
+        // Escalating to Blocked on the same unnamed terminal pane MUST spawn the header bar with fallback "Terminal" title.
+        h.with_app_mut(|app| {
+            let term = app.windows[app.active_window]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|p| p.as_terminal_mut())
+                .expect("terminal pane");
+            term.activity = Some(crate::protocol::AgentState::Blocked);
+        });
+        h.run_steps(2);
+        h.with_app(|app| {
+            let layout =
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
+                    .expect("Blocked state on unnamed terminal pane must spawn escalation header bar");
+            assert_eq!(layout.elided_label.as_deref(), Some("Terminal"));
+        });
+
+        // Returning to Working removes the escalation header bar again.
+        h.with_app_mut(|app| {
+            let term = app.windows[app.active_window]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|p| p.as_terminal_mut())
+                .expect("terminal pane");
+            term.activity = Some(crate::protocol::AgentState::Working);
+        });
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert!(
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
+                    .is_none(),
+                "returning to Working must clear the temporary escalation header bar"
+            );
+        });
     }
 
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
@@ -2762,6 +2849,12 @@ mod tests {
                         .any(|line| line.contains("RENDER_FIXTURE_READY"))
                 });
                 if ready {
+                    // `capture_lines` reads the live PTY grid directly, which
+                    // can advance between `run_steps(2)` and `capture_lines`.
+                    // Pump a settling pass so `TerminalView::sync()` and egui's
+                    // `FullOutput` incorporate the completed fixture before
+                    // `h.render()` rasterizes the frame (stint 0820).
+                    h.run_steps(2);
                     break;
                 }
                 assert!(
