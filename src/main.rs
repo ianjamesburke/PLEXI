@@ -849,21 +849,14 @@ fn main() -> eframe::Result {
                                 } else if !mcp.is_empty() {
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
-                                    std::process::exit(cli::pane_new_cli(
-                                        None,
-                                        Some(title.as_str()),
-                                        layout.as_deref(),
+                                    std::process::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
+                                        name: Some(title.as_str()),
+                                        layout: layout.as_deref(),
                                         from_pane_id,
-                                        None,
-                                        false,
-                                        false,
-                                        Some("mcp-renderer"),
-                                        &mcp,
-                                        &[],
-                                        None,
-                                        None,
-                                        None,
-                                    ));
+                                        app: Some("mcp-renderer"),
+                                        mcp: &mcp,
+                                        ..Default::default()
+                                    }));
                                 } else {
                                     let binary = cli_flag.unwrap();
                                     log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
@@ -1181,17 +1174,17 @@ fn main() -> eframe::Result {
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()
                         );
-                        std::process::exit(cli::notify_cli(
-                            &title,
-                            &body,
-                            &parsed_choices,
-                            !no_wait,
-                            timeout,
-                            wait_timeout,
-                            parsed_scope,
+                        std::process::exit(cli::notify_cli(cli::NotifyCliArgs {
+                            title: &title,
+                            body: &body,
+                            choices: &parsed_choices,
+                            wait_for_response: !no_wait,
+                            display_timeout_secs: timeout,
+                            wait_timeout_secs: wait_timeout,
+                            scope: parsed_scope,
                             source_context_id,
                             source_pane_id,
-                        ));
+                        }));
                     }
                     Commands::Pane { cmd } => match cmd {
                         PaneCmd::Name { first, second } => {
@@ -1530,22 +1523,19 @@ fn main() -> eframe::Result {
                             } else {
                                 "split_h"
                             };
-                            std::process::exit(cli::pane_new_with_schema_cli(
-                                cmd.as_deref(),
-                                name.as_deref(),
-                                Some(layout),
-                                from,
-                                cwd.as_deref(),
+                            std::process::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
+                                cmd: cmd.as_deref(),
+                                name: name.as_deref(),
+                                layout: Some(layout),
+                                from_pane_id: from,
+                                cwd: cwd.as_deref(),
                                 ephemeral,
                                 no_focus,
-                                None,
-                                &[],
-                                &[],
-                                None,
-                                agent.as_ref(),
-                                worktree.as_deref(),
-                                result_schema.as_deref(),
-                            ));
+                                agent: agent.as_ref(),
+                                worktree: worktree.as_deref(),
+                                result_schema: result_schema.as_deref(),
+                                ..Default::default()
+                            }));
                         }
                     },
                     Commands::Events { cmd } => match cmd {

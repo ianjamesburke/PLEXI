@@ -1423,10 +1423,10 @@ pub use install::{
 pub use ledger::ledger_summary_cli;
 pub use list::{freeze_cli, parse_notify_choice};
 pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
-pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope};
+pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope, NotifyCliArgs};
 pub use open::{
     app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
-    pane_new_with_schema_cli, parse_prefix, AgentBootRequest, OpenPrefix,
+    parse_prefix, AgentBootRequest, OpenPrefix, PaneNewCliArgs,
 };
 pub use permissions::permissions_cli;
 pub use pane::{

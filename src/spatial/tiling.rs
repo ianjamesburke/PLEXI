@@ -60,22 +60,33 @@ mod tests {
     }
 }
 
+pub(crate) struct TabBarPaintParams<'a> {
+    pub bar_rect: egui::Rect,
+    pub group: &'a TabGroupInfo,
+    pub tab_labels: &'a HashMap<PaneId, String>,
+    pub tab_activities: &'a HashMap<PaneId, AgentState>,
+    pub colors: &'a Colors,
+    pub font_size: f32,
+    pub overtake_hint: bool,
+}
+
 /// Render a full-width tab bar and return a switch/reorder action, if any.
 /// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
 /// and advance the cursor past it.
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_tab_bar(
     ctx: &egui::Context,
     painter: &egui::Painter,
-    bar_rect: egui::Rect,
-    group: &TabGroupInfo,
-    tab_labels: &HashMap<PaneId, String>,
-    tab_activities: &HashMap<PaneId, AgentState>,
-    colors: &Colors,
-    font_size: f32,
-    overtake_hint: bool,
+    params: TabBarPaintParams<'_>,
 ) -> Option<TabBarAction> {
+    let TabBarPaintParams {
+        bar_rect,
+        group,
+        tab_labels,
+        tab_activities,
+        colors,
+        font_size,
+        overtake_hint,
+    } = params;
     painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
     let tab_count = group.members.len();
@@ -507,13 +518,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 if let Some(action) = paint_tab_bar(
                     app_ui.ctx(),
                     app_ui.painter(),
-                    bar_rect,
-                    group,
-                    &self.tab_labels,
-                    &tab_activities,
-                    &self.colors,
-                    self.pane_title_font_size,
-                    is_overtaken,
+                    TabBarPaintParams {
+                        bar_rect,
+                        group,
+                        tab_labels: &self.tab_labels,
+                        tab_activities: &tab_activities,
+                        colors: &self.colors,
+                        font_size: self.pane_title_font_size,
+                        overtake_hint: is_overtaken,
+                    },
                 ) {
                     self.tab_action = Some((group.container_tile, action));
                 }

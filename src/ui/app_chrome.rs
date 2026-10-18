@@ -13,6 +13,15 @@ pub(crate) struct AppChrome<'a> {
     colors: &'a Colors,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct TextLabelStyle {
+    pub size: f32,
+    pub color: Color32,
+    pub bold: bool,
+    pub monospace: bool,
+    pub wrap: bool,
+}
+
 impl<'a> AppChrome<'a> {
     pub(crate) fn new(colors: &'a Colors) -> Self {
         Self { colors }
@@ -26,18 +35,19 @@ impl<'a> AppChrome<'a> {
         self.colors.border
     }
 
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn text_label(
         &self,
         ui: &mut Ui,
         text: &str,
-        size: f32,
-        color: Color32,
-        bold: bool,
-        monospace: bool,
-        wrap: bool,
+        style: TextLabelStyle,
     ) -> Response {
+        let TextLabelStyle {
+            size,
+            color,
+            bold,
+            monospace,
+            wrap,
+        } = style;
         let mut rich = RichText::new(text).size(size).color(color);
         if monospace {
             rich = rich.monospace();

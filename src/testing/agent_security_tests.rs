@@ -116,15 +116,18 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
     .unwrap();
 
     let settings = |agent_pane: bool| {
+        let context_env = crate::pane_ops::create::PaneContextEnv {
+            context_id: 1,
+            name: "ctx".to_string(),
+            description: String::new(),
+            root: Some(root.clone()),
+            depth: 0,
+        };
         crate::app::PlexiApp::make_backend_settings(
             7,
             Some(root.clone()),
             &h.app.colors,
-            1,
-            "ctx",
-            "",
-            Some(&root),
-            0,
+            &context_env,
             agent_pane,
         )
         .0

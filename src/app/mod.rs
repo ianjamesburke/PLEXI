@@ -1880,7 +1880,12 @@ impl PlexiApp {
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
         if app
-            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false, false, true)
+            .seed_window_root_pane(
+                0,
+                &seed_context,
+                seed_cwd,
+                crate::pane_ops::create::TerminalSpawnOptions::default(),
+            )
             .is_some()
         {
             log::info!("first boot: seeded base root pane in context 1");
@@ -2803,17 +2808,11 @@ impl PlexiApp {
         user_theme
     }
 
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_backend_settings(
         pane_id: u64,
         working_directory: Option<PathBuf>,
         colors: &Colors,
-        context_id: u64,
-        context_name: &str,
-        context_description: &str,
-        context_root: Option<&PathBuf>,
-        context_depth: u32,
+        context: &crate::pane_ops::create::PaneContextEnv,
         agent_pane: bool,
     ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
         Self::make_backend_settings_in_profile(
@@ -2821,28 +2820,28 @@ impl PlexiApp {
             pane_id,
             working_directory,
             colors,
-            context_id,
-            context_name,
-            context_description,
-            context_root,
-            context_depth,
+            context,
             agent_pane,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_backend_settings_in_profile(
         profile_dir: &std::path::Path,
         pane_id: u64,
         working_directory: Option<PathBuf>,
         colors: &Colors,
-        context_id: u64,
-        context_name: &str,
-        context_description: &str,
-        context_root: Option<&PathBuf>,
-        context_depth: u32,
+        context: &crate::pane_ops::create::PaneContextEnv,
         agent_pane: bool,
     ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
+        let crate::pane_ops::create::PaneContextEnv {
+            context_id,
+            name: context_name,
+            description: context_description,
+            root: context_root,
+            depth: context_depth,
+        } = context;
+        let context_id = *context_id;
+        let context_depth = *context_depth;
         log::info!(
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
@@ -2858,7 +2857,7 @@ impl PlexiApp {
         // Host MCP discovery. The bearer is registered against this trusted
         // pane/context identity; requests cannot supply their own workspace.
         let workspace_root = context_root
-            .cloned()
+            .clone()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
         let call_credential = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
@@ -5205,17 +5204,20 @@ pub(crate) fn restore_workspace(
                         config::AgentRestoreMode::Lazy
                     ) && is_active_top_context);
 
+                    let context_env = crate::pane_ops::create::PaneContextEnv {
+                        context_id: saved_win.context_id,
+                        name: ctx_name,
+                        description: ctx_desc,
+                        root: ctx_root.cloned(),
+                        depth: ctx_depth,
+                    };
                     let (mut settings, pending_credential) =
                         PlexiApp::make_backend_settings_in_profile(
                             collaborators.profile_dir,
                             saved_pane.id,
                             cwd.clone(),
                             collaborators.colors,
-                            saved_win.context_id,
-                            &ctx_name,
-                            &ctx_desc,
-                            ctx_root,
-                            ctx_depth,
+                            &context_env,
                             effective_session.is_some(),
                         );
                     let mut effective_session = effective_session;

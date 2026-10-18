@@ -91,6 +91,14 @@ enum BubbleSide {
 /// Stateless renderer for the Assistant pane.
 pub struct AssistantRenderer;
 
+struct TurnRenderContext<'a> {
+    md_cache: &'a mut egui_commonmark::CommonMarkCache,
+    text_cache: &'a mut MarkdownTextCache,
+    conversation_id: &'a str,
+    colors: &'a Colors,
+    show_thoughts: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct MarkdownTextCache {
     softened_by_turn: HashMap<u64, CachedMarkdownText>,
@@ -326,13 +334,15 @@ impl AssistantRenderer {
                     .min(model.turns.len());
                 let mut review = Self::draw_turn_range(
                     ui,
-                    md_cache,
-                    text_cache,
-                    &model.conversation_id,
+                    &mut TurnRenderContext {
+                        md_cache,
+                        text_cache,
+                        conversation_id: &model.conversation_id,
+                        colors,
+                        show_thoughts: model.show_thoughts,
+                    },
                     0,
-                    colors,
                     &model.turns[..anchor],
-                    model.show_thoughts,
                 );
                 for active in &model.active_tools {
                     Self::draw_active_tool_row(ui, colors, active);
@@ -353,13 +363,15 @@ impl AssistantRenderer {
                 }
                 review = review.or(Self::draw_turn_range(
                     ui,
-                    md_cache,
-                    text_cache,
-                    &model.conversation_id,
+                    &mut TurnRenderContext {
+                        md_cache,
+                        text_cache,
+                        conversation_id: &model.conversation_id,
+                        colors,
+                        show_thoughts: model.show_thoughts,
+                    },
                     anchor,
-                    colors,
                     &model.turns[anchor..],
-                    model.show_thoughts,
                 ));
                 ui.add_space(style::SPACE_SM);
                 review
@@ -385,31 +397,16 @@ impl AssistantRenderer {
     /// turn, in strict chronological order (stint 0455). `index_offset` is
     /// the slice's absolute start index into `model.turns`, so cross-frame
     /// widget/cache keys stay stable.
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     fn draw_turn_range(
         ui: &mut egui::Ui,
-        md_cache: &mut egui_commonmark::CommonMarkCache,
-        text_cache: &mut MarkdownTextCache,
-        conversation_id: &str,
+        ctx: &mut TurnRenderContext<'_>,
         index_offset: usize,
-        colors: &Colors,
         turns: &[super::model::Turn],
-        show_thoughts: bool,
     ) -> Option<ComposerEvent> {
         let mut event = None;
         for (i, turn) in turns.iter().enumerate() {
             ui.push_id(index_offset + i, |ui| {
-                let row = Self::draw_turn_row(
-                    ui,
-                    md_cache,
-                    text_cache,
-                    conversation_id,
-                    index_offset + i,
-                    colors,
-                    turn,
-                    show_thoughts,
-                );
+                let row = Self::draw_turn_row(ui, ctx, index_offset + i, turn);
                 if event.is_none() {
                     event = row;
                 }
@@ -568,18 +565,19 @@ impl AssistantRenderer {
         );
     }
 
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     fn draw_turn_row(
         ui: &mut egui::Ui,
-        md_cache: &mut egui_commonmark::CommonMarkCache,
-        text_cache: &mut MarkdownTextCache,
-        conversation_id: &str,
+        ctx: &mut TurnRenderContext<'_>,
         turn_index: usize,
-        colors: &Colors,
         turn: &super::model::Turn,
-        show_thoughts: bool,
     ) -> Option<ComposerEvent> {
+        let TurnRenderContext {
+            ref mut md_cache,
+            ref mut text_cache,
+            conversation_id,
+            colors,
+            show_thoughts,
+        } = *ctx;
         let text = turn.text.as_str();
         match turn.role {
             // Delivered app events are compact single-line rows.
@@ -1559,13 +1557,15 @@ mod tests {
                 row_rect = ui.available_rect_before_wrap();
                 AssistantRenderer::draw_turn_row(
                     ui,
-                    &mut md_cache,
-                    &mut text_cache,
-                    "test-conversation",
+                    &mut TurnRenderContext {
+                        md_cache: &mut md_cache,
+                        text_cache: &mut text_cache,
+                        conversation_id: "test-conversation",
+                        colors: &colors,
+                        show_thoughts: false,
+                    },
                     0,
-                    &colors,
                     &turn,
-                    false,
                 );
             });
         });

@@ -403,19 +403,12 @@ impl PlexiApp {
             .get(self.active_window)
             .map(|w| w.context_id)
             .unwrap_or(0);
-        let ctx_name = self.context_name_for(ctx_id);
-        let ctx_desc = self.context_description_for(ctx_id);
-        let ctx_root = self.context_root_for(ctx_id);
-        let ctx_depth = self.context_depth_for(ctx_id);
+        let context_env = self.pane_context_env_for_context(ctx_id);
         let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
-            ctx_id,
-            &ctx_name,
-            &ctx_desc,
-            ctx_root.as_ref(),
-            ctx_depth,
+            &context_env,
             false,
         );
         if let Some(cmd) = initial_cmd {
@@ -522,29 +515,23 @@ impl PlexiApp {
                 .get(target_win_idx)
                 .map(|w| w.context_id)
                 .unwrap_or(0);
-            let ctx_name = self.context_name_for(ctx_id);
-            let ctx_desc = self.context_description_for(ctx_id);
-            let ctx_root = self.context_root_for(ctx_id);
-            let ctx_depth = self.context_depth_for(ctx_id);
+            let context_env = self.pane_context_env_for_context(ctx_id);
             // Resolve against the target window's own context, not the ambient
             // active context — target_win_idx may differ from self.active_window.
             let cwd = cwd_override
-                .or_else(|| ctx_root.clone())
+                .or_else(|| context_env.root.clone())
                 .unwrap_or_else(|| {
                     dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
                 });
             log::info!(
-                "new_tab (empty context): target_win_idx={target_win_idx} cwd={cwd:?} context_root={ctx_root:?}"
+                "new_tab (empty context): target_win_idx={target_win_idx} cwd={cwd:?} context_root={:?}",
+                context_env.root
             );
             let (mut settings, pending_credential) = Self::make_backend_settings(
                 new_id,
                 Some(cwd),
                 &self.colors,
-                ctx_id,
-                &ctx_name,
-                &ctx_desc,
-                ctx_root.as_ref(),
-                ctx_depth,
+                &context_env,
                 agent_pane,
             );
             if let Some(cmd) = initial_cmd {
@@ -592,30 +579,24 @@ impl PlexiApp {
             .get(target_win_idx)
             .map(|w| w.context_id)
             .unwrap_or(0);
-        let ctx_name = self.context_name_for(ctx_id);
-        let ctx_desc = self.context_description_for(ctx_id);
-        let ctx_root = self.context_root_for(ctx_id);
-        let ctx_depth = self.context_depth_for(ctx_id);
+        let context_env = self.pane_context_env_for_context(ctx_id);
 
         // Resolve against the target window's own context/pane, not the ambient
         // active window — target_win_idx may differ from self.active_window when
         // anchored to a caller pane in another window.
         let cwd = cwd_override
-            .or_else(|| ctx_root.clone())
+            .or_else(|| context_env.root.clone())
             .or_else(|| self.windows[target_win_idx].get_focused_pane_cwd(focused))
             .or_else(dirs::home_dir);
         log::info!(
-            "new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={ctx_root:?}"
+            "new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={:?}",
+            context_env.root
         );
         let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
-            ctx_id,
-            &ctx_name,
-            &ctx_desc,
-            ctx_root.as_ref(),
-            ctx_depth,
+            &context_env,
             agent_pane,
         );
         if let Some(cmd) = initial_cmd {

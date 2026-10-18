@@ -32,6 +32,54 @@ pub(crate) struct PaneContextEnv {
     pub depth: u32,
 }
 
+/// Shell and environment options for spawning a terminal pane.
+#[derive(Clone, Debug)]
+pub(crate) struct TerminalSpawnOptions<'a> {
+    pub initial_cmd: Option<&'a str>,
+    pub close_on_exit: bool,
+    pub cwd_override: Option<PathBuf>,
+    pub agent_pane: bool,
+    pub inject_folder_secrets: bool,
+}
+
+impl Default for TerminalSpawnOptions<'_> {
+    fn default() -> Self {
+        Self {
+            initial_cmd: None,
+            close_on_exit: false,
+            cwd_override: None,
+            agent_pane: false,
+            inject_folder_secrets: true,
+        }
+    }
+}
+
+/// Parameters for [`PlexiApp::spawn_terminal_pane_at`].
+pub(crate) struct SpawnTerminalAtSpec<'a> {
+    pub win_idx: usize,
+    pub target_tile: egui_tiles::TileId,
+    pub vertical: bool,
+    pub new_pane_first: bool,
+    pub keep_focus: bool,
+    pub options: TerminalSpawnOptions<'a>,
+}
+
+struct WasmAppInstanceSpec<'a> {
+    app_id: &'a str,
+    app: crate::host::wasm_app::WasmApp,
+    snapshot: crate::host::wasm_app::StateSnapshot,
+    workspace_root: PathBuf,
+    permissions: crate::app::permissions::AppPermissions,
+    remembered: Option<(
+        crate::app::permissions::PermissionStore,
+        HashSet<String>,
+        HashSet<String>,
+    )>,
+    layout: Option<&'a str>,
+    launch_args: Vec<String>,
+    wasm_path: PathBuf,
+}
+
 /// Instantiate a builtin `App` by id, checked before the process registry.
 ///
 /// Builtins are compiled-in and never require disk access. Add one line here
@@ -784,17 +832,17 @@ impl PlexiApp {
         }
         let app = WasmApp::load_with_grants(app_id, wasm_path, store, required_grants)
             .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
-        self.open_wasm_app_instance(
+        self.open_wasm_app_instance(WasmAppInstanceSpec {
             app_id,
             app,
             snapshot,
             workspace_root,
-            crate::app::permissions::AppPermissions::default(),
-            Some((permission_store, remembered_grants, remembered_blocks)),
-            None,
+            permissions: crate::app::permissions::AppPermissions::default(),
+            remembered: Some((permission_store, remembered_grants, remembered_blocks)),
+            layout: None,
             launch_args,
-            wasm_path.to_path_buf(),
-        )
+            wasm_path: wasm_path.to_path_buf(),
+        })
     }
 
     fn open_python_wasm_app_pane(
@@ -933,25 +981,22 @@ impl PlexiApp {
         Ok(())
     }
 
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     fn open_wasm_app_instance(
         &mut self,
-        app_id: &str,
-        app: crate::host::wasm_app::WasmApp,
-        snapshot: crate::host::wasm_app::StateSnapshot,
-        workspace_root: PathBuf,
-        permissions: crate::app::permissions::AppPermissions,
-        remembered: Option<(
-            crate::app::permissions::PermissionStore,
-            std::collections::HashSet<String>,
-            std::collections::HashSet<String>,
-        )>,
-        layout: Option<&str>,
-        launch_args: Vec<String>,
-        wasm_path: PathBuf,
+        spec: WasmAppInstanceSpec<'_>,
     ) -> Result<PaneId, String> {
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+        let WasmAppInstanceSpec {
+            app_id,
+            app,
+            snapshot,
+            workspace_root,
+            permissions,
+            remembered,
+            layout,
+            launch_args,
+            wasm_path,
+        } = spec;
 
         let pane = WasmPane::new(app, Box::new(SysinfoStats::new()));
         let pane = if let Some((store, granted, blocked)) = remembered {
@@ -1088,17 +1133,17 @@ impl PlexiApp {
             remembered_grants.len(),
             remembered_blocks.len()
         );
-        self.open_wasm_app_instance(
-            &app_id,
+        self.open_wasm_app_instance(WasmAppInstanceSpec {
+            app_id: &app_id,
             app,
             snapshot,
             workspace_root,
             permissions,
-            Some((permission_store, remembered_grants, remembered_blocks)),
+            remembered: Some((permission_store, remembered_grants, remembered_blocks)),
             layout,
             launch_args,
-            installed.bin_path.clone(),
-        )
+            wasm_path: installed.bin_path.clone(),
+        })
     }
 
     /// Relaunch a CPython-in-WASM pane while preserving its pane envelope.
@@ -1299,11 +1344,7 @@ impl PlexiApp {
                 new_id,
                 Some(cwd.clone()),
                 &self.colors,
-                context.context_id,
-                &context.name,
-                &context.description,
-                context.root.as_ref(),
-                context.depth,
+                context,
                 false,
             );
             if let Some(cmd) = initial_cmd {
@@ -1370,11 +1411,7 @@ impl PlexiApp {
             new_id,
             cwd,
             &self.colors,
-            context.context_id,
-            &context.name,
-            &context.description,
-            context.root.as_ref(),
-            context.depth,
+            context,
             agent_pane,
         );
         if let Some(cmd) = initial_cmd {
@@ -1408,25 +1445,29 @@ impl PlexiApp {
         Some((tree, panes, root_tile))
     }
 
-    /// Spawn a terminal pane adjacent to `target_tile` in `win_idx`.
+    /// Spawn a terminal pane adjacent to `spec.target_tile` in `spec.win_idx`.
     /// Does NOT read or write `active_window` or `focused_pane` — all targeting is explicit.
     /// Returns the newly allocated PaneId.
     /// `keep_focus`: if true, `focused_pane` in the target window is NOT changed.
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_terminal_pane_at(
         &mut self,
-        win_idx: usize,
-        target_tile: egui_tiles::TileId,
-        vertical: bool,
-        new_pane_first: bool,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
-        cwd_override: Option<std::path::PathBuf>,
-        keep_focus: bool,
-        agent_pane: bool,
-        inject_folder_secrets: bool,
+        spec: SpawnTerminalAtSpec<'_>,
     ) -> crate::spatial::tiling::PaneId {
+        let SpawnTerminalAtSpec {
+            win_idx,
+            target_tile,
+            vertical,
+            new_pane_first,
+            keep_focus,
+            options:
+                TerminalSpawnOptions {
+                    initial_cmd,
+                    close_on_exit,
+                    cwd_override,
+                    agent_pane,
+                    inject_folder_secrets,
+                },
+        } = spec;
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(win_idx);
         let cwd = cwd_override.or_else(|| self.windows[win_idx].get_focused_pane_cwd(target_tile));
@@ -1438,11 +1479,7 @@ impl PlexiApp {
             new_id,
             cwd,
             &self.colors,
-            context.context_id,
-            &context.name,
-            &context.description,
-            context.root.as_ref(),
-            context.depth,
+            &context,
             agent_pane,
         );
         if let Some(cmd) = initial_cmd {
@@ -1607,11 +1644,7 @@ impl PlexiApp {
             new_id,
             Some(effective_cwd),
             &self.colors,
-            context.context_id,
-            &context.name,
-            &context.description,
-            context.root.as_ref(),
-            context.depth,
+            &context,
             true,
         );
         if let Some(pid) = parent_pane_id {
@@ -3378,17 +3411,17 @@ mod tests {
         let (app, snapshot) = load_counter();
         let pane_id = h
             .app
-            .open_wasm_app_instance(
-                "counter-pane",
+            .open_wasm_app_instance(super::WasmAppInstanceSpec {
+                app_id: "counter-pane",
                 app,
                 snapshot,
-                std::env::temp_dir(),
-                AppPermissions::default(),
-                None,
-                Some("overlay"),
-                Vec::new(),
-                counter_fixture(),
-            )
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::default(),
+                remembered: None,
+                layout: Some("overlay"),
+                launch_args: Vec::new(),
+                wasm_path: counter_fixture(),
+            })
             .expect("overlay launch returns the reused pane id");
 
         assert_eq!(pane_id, focused, "overlay reuses the focused pane's id");
@@ -3423,17 +3456,17 @@ mod tests {
         let (app, snapshot) = load_counter();
         let pane_id = h
             .app
-            .open_wasm_app_instance(
-                "counter-pane",
+            .open_wasm_app_instance(super::WasmAppInstanceSpec {
+                app_id: "counter-pane",
                 app,
                 snapshot,
-                std::env::temp_dir(),
-                AppPermissions::default(),
-                None,
-                Some("overlay"),
-                Vec::new(),
-                counter_fixture(),
-            )
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::default(),
+                remembered: None,
+                layout: Some("overlay"),
+                launch_args: Vec::new(),
+                wasm_path: counter_fixture(),
+            })
             .expect("overlay with empty context launches as root pane");
 
         let root = h.app.windows[0].tree.root.expect("root tile installed");

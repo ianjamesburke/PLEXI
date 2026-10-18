@@ -978,16 +978,18 @@ impl PlexiApp {
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
                         // keep_focus=true: coordinator app always retains focus after spawning a terminal.
                         let _ = self.spawn_terminal_pane_at(
-                            target_win,
-                            target_tile,
-                            vertical,
-                            new_pane_first,
-                            initial_cmd.as_deref(),
-                            close_on_exit,
-                            None,
-                            true,
-                            false,
-                            true,
+                            crate::pane_ops::create::SpawnTerminalAtSpec {
+                                win_idx: target_win,
+                                target_tile,
+                                vertical,
+                                new_pane_first,
+                                keep_focus: true,
+                                options: crate::pane_ops::create::TerminalSpawnOptions {
+                                    initial_cmd: initial_cmd.as_deref(),
+                                    close_on_exit,
+                                    ..Default::default()
+                                },
+                            },
                         );
                     } else {
                         if let Some(from_id) = from_pane_id {
