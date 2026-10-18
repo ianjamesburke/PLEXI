@@ -26,7 +26,6 @@
 //! - [`store`] — the `NonDestructiveStore` / `SecretStore` trait split and the
 //!   keychain backends.
 //! - [`index`] — the `secrets-index.json` cache (compiled out under test).
-//! - [`migrate`] — the one-shot startup migration of pre-#322 entries.
 //! - [`reconcile`] — index ↔ keychain reconciliation and canonical spellings.
 //! - [`resolver`] — the workspace TOML model and the canonical-name resolver.
 //! - [`file`] — `workspace init` scaffolding and `secrets.toml` upserts.
@@ -38,7 +37,6 @@
 mod file;
 mod folder;
 mod folder_store;
-mod migrate;
 mod pane_read;
 mod reconcile;
 mod resolver;
@@ -47,11 +45,6 @@ mod store;
 #[cfg(all(target_os = "macos", not(test)))]
 mod index;
 
-// Consumed by the macOS startup migration in `main.rs`. No other platform
-// ever had a legacy Keychain to migrate from, and the test stub exists only
-// so that macOS test binaries still link the call in `main`.
-#[cfg(target_os = "macos")]
-pub use migrate::migrate_legacy_global_secrets;
 pub use store::{NonDestructiveStore, SecretStore};
 
 // Only test code outside this module names these. `SecretError` is named from

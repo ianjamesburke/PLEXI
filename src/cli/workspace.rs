@@ -331,33 +331,11 @@ enum SecretListScope {
     UserOnly,
 }
 
-/// Lazy replacement for the old every-invocation startup migration (stint
-/// 0604). A CLI process never migrates at startup (a keychain value read from
-/// a freshly built binary fires a credential dialog), but a user with a
-/// legacy-format index who runs a secret command before ever launching the
-/// host must still see their secrets, so the secret commands migrate on first
-/// access. A no-op once the index is in the flat-string form, and a zero
-/// stub under `cfg(test)`.
-pub(crate) fn migrate_legacy_secrets_on_first_access() {
-    #[cfg(target_os = "macos")]
-    {
-        let migrated = crate::workspace::secrets::migrate_legacy_global_secrets(
-            crate::workspace::secrets::system_store(),
-        );
-        if migrated > 0 {
-            log::info!(
-                "secret:cli: migrated {migrated} legacy global secrets to plexi:user:* namespace on first access"
-            );
-        }
-    }
-}
-
 /// Reconcile the secrets index against a real keychain scan before a CLI
 /// command reads it (`src/workspace/AGENTS.md`: never list secrets from the
 /// index without reconciling first). A failed scan degrades to the index as it
 /// stands, with a warning, rather than failing the command.
 pub(crate) fn reconcile_secrets_before_read(command: &str) {
-    migrate_legacy_secrets_on_first_access();
     match crate::workspace::secrets::reconcile_index_with_keychain() {
         Ok(report) => log::info!(
             "{command}: reconciled secrets index ({} adopted, {} stale, {} renamed)",
@@ -537,7 +515,6 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
         use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, system_store,
         };
-        migrate_legacy_secrets_on_first_access();
         let store = system_store();
 
         if global {

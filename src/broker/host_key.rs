@@ -27,7 +27,7 @@
 //!   designated requirement, attached when the item is created, so a
 //!   same-signer rebuild keeps access when that requirement is stable. An
 //!   ad-hoc signature changes every build, so the next launch rotates again.
-//!   Startup does not call `SecKeychainItemSetAccess`. Every silent keychain
+//!   Startup never edits an existing item's ACL in place. Every silent keychain
 //!   call runs off the UI thread and stops after three seconds. Past that
 //!   deadline the host continues with grants unloaded and one resolvable
 //!   keychain Needs you item. An any-application ACL is never installed. If
@@ -75,6 +75,7 @@ fn join_abandoned_keychain_calls() {
     }
 }
 
+#[cfg(test)]
 use crate::workspace::secrets::system_store;
 
 /// Legacy unscoped item name of the MAC key inside the host store.
@@ -86,6 +87,20 @@ pub(crate) const MAC_ACCOUNT_PREFIX: &str = "plexi:host:permission-mac:";
 
 pub(crate) fn is_mac_account(account: &str) -> bool {
     account == MAC_ITEM || account.starts_with(MAC_ACCOUNT_PREFIX)
+}
+
+/// Human-readable label shown in macOS Keychain Access and SecurityAgent dialogs
+/// so any Keychain entry or prompt explains what the key is and why Plexi uses it.
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) fn keychain_item_label(account: &str) -> String {
+    let channel = crate::config::build_channel().unwrap_or_else(|| "stable".to_string());
+    if is_mac_account(account) {
+        format!(
+            "Plexi ({channel}) — Local Permission & Approval Signing Key (verifies saved tool approvals)"
+        )
+    } else {
+        format!("Plexi ({channel}) — Host Integrity Key ({account})")
+    }
 }
 
 /// Prefix on a host-store read that did not return the secret.
@@ -135,24 +150,6 @@ pub(crate) fn plaintext_seal_refusal(detail: &str) -> String {
          The seal key is stored only in Secret Service (org.freedesktop.secrets). \
          Secret Service is not available: {detail}"
     )
-}
-
-/// Remove `plexi:host:*` from the user secret store so `cat secrets.json` and
-/// `plexi secret get` cannot yield a key an older build wrote there.
-pub(crate) fn scrub_user_secret_host_namespace() {
-    let store = system_store();
-    let accounts = store.list_with_prefix("plexi:host:");
-    if accounts.is_empty() {
-        return;
-    }
-    for account in accounts {
-        match store.delete(&account) {
-            Ok(()) => log::info!("permission_seal: removed {account} from the user secret store"),
-            Err(error) => log::error!(
-                "permission_seal: could not remove {account} from the user secret store: {error}"
-            ),
-        }
-    }
 }
 
 pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
@@ -540,7 +537,7 @@ struct StoredItem {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeychainBlock {
     None,
-    /// `SecKeychainItemSetAccess` and any other ACL edit.
+    /// Simulated in-place ACL edit block.
     SetAccess,
     /// Every keychain call, including an ACL edit.
     AnyCall,
@@ -649,7 +646,7 @@ impl MacFault {
     }
 }
 
-/// Mock keychain that blocks in `SecKeychainItemSetAccess` or in every call.
+/// Mock keychain that blocks in an ACL edit or in every call.
 ///
 /// Drop releases the wait, joins any startup call the deadline abandoned, and
 /// clears the gave-up flag so the next test can read the key. The guard holds
@@ -1644,10 +1641,6 @@ mod mac {
             trusted_list: *const std::ffi::c_void,
             access: *mut SecAccessRef,
         ) -> i32;
-        fn SecKeychainItemSetAccess(
-            item: security_framework_sys::base::SecKeychainItemRef,
-            access: SecAccessRef,
-        ) -> i32;
     }
 
     /// Disable keychain dialogs once and leak the guard.
@@ -1747,12 +1740,23 @@ mod mac {
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
             Ok((password, item)) => {
-                if super::interaction_allowed() {
-                    trust_designated_requirement(account, &item);
-                }
                 let bytes = password.as_ref();
                 let text = String::from_utf8(bytes.to_vec())
                     .map_err(|_| "host seal item is not utf-8".to_string())?;
+                drop(password);
+                drop(item);
+                if super::interaction_allowed() {
+                    // Replace the item via attribute delete + create instead of
+                    // editing the existing item's ACL in place, which would
+                    // force a second SecurityAgent password prompt.
+                    if let Err(error) = delete_without_reading_secret(&chain, account)
+                        .and_then(|()| create_with_access(&chain, account, &text))
+                    {
+                        log::warn!(
+                            "permission_seal: could not refresh keychain ACL for {account} after interactive read: {error}"
+                        );
+                    }
+                }
                 Ok(Some(Zeroizing::new(text)))
             }
             Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
@@ -1881,13 +1885,16 @@ mod mac {
         u32::from_be_bytes(*code)
     }
 
+    /// `kSecLabelItemAttr` (`0x00000007`) sets the human-readable item label in
+    /// Keychain Access and SecurityAgent prompts.
+    const ATTR_LABEL: u32 = 7;
+
     /// Create the item with its ACL already attached. The creating process may
     /// set the initial access without authorization, so no SecurityAgent
-    /// dialog can block `host start`. Editing the ACL afterwards
-    /// (`SecKeychainItemSetAccess`) needs the keychain password and hung
-    /// v0.3.5-alpha.5 on startup.
+    /// dialog can block `host start`.
     fn create_with_access(chain: &SecKeychain, account: &str, value: &str) -> Result<(), String> {
-        let access = unsafe { designated_requirement_access() };
+        let human_label = super::keychain_item_label(account);
+        let access = unsafe { designated_requirement_access(&human_label) };
         let access_ref = match &access {
             Ok(access) => access.as_concrete_TypeRef(),
             Err(status) => {
@@ -1897,9 +1904,15 @@ mod mac {
                 std::ptr::null_mut()
             }
         };
+        let mut label_bytes = human_label.into_bytes();
         let mut service = HOST_SERVICE.as_bytes().to_vec();
         let mut account_bytes = account.as_bytes().to_vec();
         let mut attrs = [
+            KcAttribute {
+                tag: ATTR_LABEL,
+                length: label_bytes.len() as u32,
+                data: label_bytes.as_mut_ptr().cast(),
+            },
             KcAttribute {
                 tag: four_cc(b"svce"),
                 length: service.len() as u32,
@@ -1944,24 +1957,7 @@ mod mac {
         Ok(())
     }
 
-    /// Trust this app's designated requirement. Failure leaves the cdhash ACL
-    /// the keychain already wrote. It does not fail the key write or the read.
-    fn trust_designated_requirement(account: &str, item: &SecKeychainItem) {
-        let status = unsafe { set_designated_requirement_acl(item) };
-        if status == errSecSuccess {
-            if super::is_mac_account(account) {
-                log::info!(
-                    "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
-                );
-            }
-        } else {
-            log::error!(
-                "permission_seal: could not set keychain ACL for {account} to the designated requirement: {status}"
-            );
-        }
-    }
-
-    unsafe fn designated_requirement_access() -> Result<SecAccess, i32> {
+    unsafe fn designated_requirement_access(descriptor: &str) -> Result<SecAccess, i32> {
         let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
         let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
         if status != errSecSuccess || app.is_null() {
@@ -1969,7 +1965,7 @@ mod mac {
         }
         let app = CFType::wrap_under_create_rule(app as CFTypeRef);
         let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
-        let label = CFString::new("Plexi permission seal");
+        let label = CFString::new(descriptor);
         let mut access: SecAccessRef = std::ptr::null_mut();
         let status = SecAccessCreate(
             label.as_concrete_TypeRef().cast(),
@@ -1980,29 +1976,6 @@ mod mac {
             return Err(if status == errSecSuccess { -1 } else { status });
         }
         Ok(SecAccess::wrap_under_create_rule(access))
-    }
-
-    unsafe fn set_designated_requirement_acl(item: &SecKeychainItem) -> i32 {
-        let mut app: *mut std::ffi::c_void = std::ptr::null_mut();
-        let status = SecTrustedApplicationCreateFromPath(std::ptr::null(), &mut app);
-        if status != errSecSuccess || app.is_null() {
-            return if status == errSecSuccess { -1 } else { status };
-        }
-        let app = CFType::wrap_under_create_rule(app as CFTypeRef);
-        // One trusted application. A null list would allow any process.
-        let trusted = CFArray::<CFType>::from_CFTypes(&[app]);
-        let label = CFString::new("Plexi permission seal");
-        let mut access: SecAccessRef = std::ptr::null_mut();
-        let status = SecAccessCreate(
-            label.as_concrete_TypeRef().cast(),
-            trusted.as_concrete_TypeRef().cast(),
-            &mut access,
-        );
-        if status != errSecSuccess || access.is_null() {
-            return if status == errSecSuccess { -1 } else { status };
-        }
-        let access = SecAccess::wrap_under_create_rule(access);
-        SecKeychainItemSetAccess(item.as_concrete_TypeRef(), access.as_concrete_TypeRef())
     }
 }
 
@@ -2169,11 +2142,6 @@ mod tests {
     fn host_key_is_not_written_to_the_user_secret_store() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
-        system_store()
-            .set("plexi:host:permission-mac", "leaked-key")
-            .unwrap();
-        scrub_user_secret_host_namespace();
-        assert!(system_store().get("plexi:host:permission-mac").is_none());
         add_new("probe-item", "host-only-key").unwrap();
         assert_eq!(
             get("probe-item").unwrap().unwrap().as_str(),
@@ -2182,6 +2150,11 @@ mod tests {
         assert!(system_store().get("plexi:host:permission-mac").is_none());
         assert!(system_store().get("permission-mac").is_none());
         assert!(!dir.path().join("secrets.json").exists());
+        let label = keychain_item_label("plexi:host:permission-mac:abcd");
+        assert!(
+            label.contains("Local Permission & Approval Signing Key"),
+            "{label}"
+        );
     }
 
     #[test]

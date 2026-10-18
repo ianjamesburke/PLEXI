@@ -67,7 +67,7 @@ pub enum NeedsYouKind {
 
 /// Shown when saved permissions cannot load because the seal key is unreadable.
 pub(crate) const KEYCHAIN_ACCESS_SUMMARY: &str =
-    "Plexi needs Keychain access to load or replace your saved permission key.";
+    "Plexi needs Keychain access to load or replace your local permission signing key (used to verify saved tool approvals and audit logs). Approve to unlock your saved permissions, or deny to start with a fresh signing key.";
 
 /// A durable grant did not reach disk. Callers show this to the user and the
 /// agent and do not record an allow.

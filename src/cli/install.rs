@@ -292,6 +292,9 @@ pub fn install_workspace_pack_cli() -> i32 {
 pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: bool) -> i32 {
     let result = (|| -> Result<(), String> {
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
+        if receipt.channel.starts_with("pr-") && !keep_data {
+            delete_data = true;
+        }
         if !assume_yes && !keep_data && !delete_data {
             eprint!("Delete this channel's saved data and integrity credentials too? [y/N]: ");
             io::stderr().flush().map_err(|e| format!("write data choice: {e}"))?;

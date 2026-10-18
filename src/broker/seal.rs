@@ -752,35 +752,6 @@ fn write_seal_state(dir: &Path, state: &SealState) -> Result<(), String> {
     write_sealed_with_dir(&path, dir, body.as_bytes())
 }
 
-fn migrate_legacy_seal_state_from_keychain(dir: &Path) -> Result<Option<SealState>, String> {
-    let marker = super::host_key::get(&marker_account(dir))?;
-    let audit_path = dir.join("permission-audit.jsonl");
-    let audit_tip = super::host_key::get(&tip_account(&audit_path))?;
-    let needs_you_tip = super::host_key::get(&super::needs_you_store::tip_account(dir))?;
-    if marker.is_none() && audit_tip.is_none() && needs_you_tip.is_none() {
-        return Ok(None);
-    }
-    let state = SealState {
-        schema: SEAL_STATE_SCHEMA,
-        sealed: marker.is_some() || audit_tip.is_some() || needs_you_tip.is_some(),
-        audit_tip: audit_tip.map(|value| value.trim().to_string()),
-        needs_you_tip: needs_you_tip.map(|value| value.trim().to_string()),
-    };
-    write_seal_state(dir, &state)?;
-    for legacy_account in [
-        marker_account(dir),
-        tip_account(&audit_path),
-        super::needs_you_store::tip_account(dir),
-    ] {
-        let _ = super::host_key::delete(&legacy_account);
-    }
-    log::info!(
-        "permission_seal: migrated legacy keychain seal state to {}",
-        seal_state_path(dir).display()
-    );
-    Ok(Some(state))
-}
-
 fn read_seal_state(dir: &Path) -> SealStateStatus {
     let path = seal_state_path(dir);
     if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
@@ -788,26 +759,13 @@ fn read_seal_state(dir: &Path) -> SealStateStatus {
     }
     match read_sealed_with_dir(&path, dir) {
         SealStatus::Absent => {
-            let has_key = match existing_mac_key(dir) {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
-                Err(error) if super::host_key::is_key_unreadable(&error) => {
+            if let Err(error) = existing_mac_key(dir) {
+                if super::host_key::is_key_unreadable(&error) {
                     return SealStateStatus::KeyUnreadable(error);
                 }
-                Err(error) => return SealStateStatus::Untrusted(error),
-            };
-            let has_sealed_files = has_sealed_files_on_disk(dir);
-            if has_key || has_sealed_files {
-                match migrate_legacy_seal_state_from_keychain(dir) {
-                    Ok(Some(state)) => return SealStateStatus::Trusted(state),
-                    Ok(None) => {}
-                    Err(error) if super::host_key::is_key_unreadable(&error) => {
-                        return SealStateStatus::KeyUnreadable(error);
-                    }
-                    Err(error) => return SealStateStatus::Untrusted(error),
-                }
+                return SealStateStatus::Untrusted(error);
             }
-            if has_sealed_files {
+            if has_sealed_files_on_disk(dir) {
                 SealStateStatus::Untrusted("seal-state.json is missing".to_string())
             } else {
                 SealStateStatus::Absent
@@ -977,26 +935,10 @@ fn backup_corrupt(path: &Path, error: &str) {
 }
 
 /// Permission MAC for `dir` if the host seal store already has one. Does not create a key.
-///
-/// Pre-0825 profiles whose per-profile key does not yet exist fall back once to
-/// the legacy unscoped `permission-mac` item and promote it to `mac_account(dir)`.
 pub(crate) fn existing_mac_key(dir: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-    super::host_key::scrub_user_secret_host_namespace();
     let account = mac_account(dir);
     if let Some(existing) = super::host_key::get(&account)? {
         return Ok(Some(Zeroizing::new(decode_hex(existing.trim())?)));
-    }
-    if !seal_state_path(dir).exists() && has_sealed_files_on_disk(dir) {
-        if let Some(legacy) = super::host_key::get(super::host_key::MAC_ITEM)? {
-            let trimmed = legacy.trim();
-            let bytes = decode_hex(trimmed)?;
-            let _ = super::host_key::add_new(&account, trimmed);
-            log::info!(
-                "permission_seal: promoted legacy shared mac key to per-profile account for {}",
-                dir.display()
-            );
-            return Ok(Some(Zeroizing::new(bytes)));
-        }
     }
     Ok(None)
 }

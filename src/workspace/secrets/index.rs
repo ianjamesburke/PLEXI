@@ -1,13 +1,11 @@
 //! `secrets-index.json`: an accounts-only cache of the keychain.
 //!
 //! Full account strings (`plexi:<scope>:<friendly>`) are the single natural
-//! primary key — the workspace id is embedded in the account name. Replaces
-//! the legacy `SecretEntry`-based index.
+//! primary key — the workspace id is embedded in the account name.
 //!
 //! The whole layer is compiled out under test — `mod index` is gated in
 //! [`super`] — so a test binary has no route to the user's real index file.
 
-use super::keychain_user_name;
 use super::store::SecretError;
 
 pub(super) fn index_path() -> std::path::PathBuf {
@@ -24,31 +22,8 @@ pub(super) fn index_read() -> Vec<String> {
             return Vec::new();
         }
     };
-    // Try the new flat-string schema first.
-    if let Ok(v) = serde_json::from_str::<Vec<String>>(&raw) {
-        return v;
-    }
-    // Migration: old SecretEntry array. Convert legacy entries to
-    // `plexi:user:<key>` (friendly name == canonical name; no workspace scope).
-    // NB: the on-disk friendly name needs to match what `set_user_secret_cli`
-    // writes, which is just the key itself. Keychain entries are migrated
-    // separately by `migrate_legacy_global_secrets`.
-    match serde_json::from_str::<Vec<crate::secrets::SecretEntry>>(&raw) {
-        Ok(legacy) => {
-            let migrated: Vec<String> = legacy
-                .into_iter()
-                .map(|e| keychain_user_name(&e.key))
-                .collect();
-            // Persist the migrated form so we don't re-do this every run.
-            if let Err(e) = index_write(&migrated) {
-                log::error!("workspace_secrets: failed to persist migrated index: {e}");
-            }
-            log::info!(
-                "workspace_secrets: migrated {} legacy index entries to plexi:user:* form",
-                migrated.len()
-            );
-            migrated
-        }
+    match serde_json::from_str::<Vec<String>>(&raw) {
+        Ok(v) => v,
         Err(e) => {
             log::error!("workspace_secrets: failed to parse index {path:?}: {e}");
             Vec::new()

@@ -1165,6 +1165,14 @@ pub fn uninstall(root: &Path) -> Result<()> {
         }),
     }
     remove_if_present(&root.join(RECEIPT))?;
+    for shell in ["zsh", "bash", "fish"] {
+        let _ = fs::remove_dir(root.join("completions").join(shell));
+    }
+    let _ = fs::remove_dir(root.join("completions"));
+    let _ = fs::remove_dir(root.join("generations"));
+    drop(_lock);
+    let _ = fs::remove_file(root.join("install.lock"));
+    let _ = fs::remove_dir(root);
     log::info!(
         "distribution: removed managed channel={} root={}; user data retained",
         receipt.channel,
@@ -1233,6 +1241,9 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
 
 pub fn launch_ready(receipt: &Receipt) -> Result<()> {
     let mut command = Command::new(receipt.active.executable());
+    if let Some(home) = dirs::home_dir() {
+        command.current_dir(home);
+    }
     // `host start` defaults to 15s. A cold Windows install missed that and
     // the package gate reported the host as not ready. The e2e scripts use 90s.
     command.args(["host", "start", "--timeout-secs", "90"]);

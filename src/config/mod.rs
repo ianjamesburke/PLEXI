@@ -1258,10 +1258,20 @@ pub fn config_dir() -> PathBuf {
         if let Some(dir) = test_profile_dir_override() {
             return dir;
         }
+        #[cfg(unix)]
+        let base = PathBuf::from("/tmp");
+        #[cfg(not(unix))]
+        let base = std::env::temp_dir();
+        let fallback = base.join(format!("plexi-t-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&fallback);
+        return fallback;
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(config_dir_name())
+    #[cfg(not(test))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(config_dir_name())
+    }
 }
 
 /// Channel-neutral state directory, always `~/.plexi` regardless of which

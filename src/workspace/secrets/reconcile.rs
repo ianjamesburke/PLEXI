@@ -22,9 +22,7 @@ use super::system_store;
 const FRIENDLY_NAME_ALIASES: &[(&str, &str)] = &[("openrouter-api-key", "OPENROUTER_API_KEY")];
 
 /// Split `plexi:<scope>:<friendly>` into its scope and friendly parts. `None`
-/// for any account that is not in the namespaced form (e.g. the pre-#322
-/// `plexi-run/<dir>/<key>` accounts, which `migrate_legacy_global_secrets`
-/// owns).
+/// for any account that is not in the namespaced form.
 fn split_account(account: &str) -> Option<(&str, &str)> {
     account.strip_prefix("plexi:")?.split_once(':')
 }

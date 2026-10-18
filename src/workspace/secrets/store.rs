@@ -274,6 +274,20 @@ fn read_explicit_password(
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", not(test))))]
+fn human_secret_label(account: &str) -> String {
+    if let Some(rest) = account.strip_prefix("plexi:user:") {
+        format!("Plexi Secret — {rest} (global user scope)")
+    } else if let Some((scope, name)) = account
+        .strip_prefix("plexi:")
+        .and_then(|s| s.split_once(':'))
+    {
+        format!("Plexi Secret — {name} (workspace {scope})")
+    } else {
+        format!("Plexi Secret — {account}")
+    }
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
 fn write_password(
     account: &str,
@@ -285,26 +299,26 @@ fn write_password(
     use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, Location};
 
     let Some(keychain) = keychain else {
-        if create_only {
-            let result = ItemAddOptions::new(ItemAddValue::Data {
-                class: ItemClass::generic_password(),
-                data: CFData::from_buffer(value.as_bytes()),
-            })
-            .set_service(KEYCHAIN_SERVICE)
-            .set_account_name(account)
-            .set_location(Location::DefaultFileKeychain)
-            .add();
-            return match result {
-                Ok(()) => Ok(()),
-                Err(error) if error.code() == -25299 => {
-                    Err(SecretError::AlreadyExists(account.to_string()))
-                }
-                Err(error) => Err(explain_keychain(error)),
-            };
+        if !create_only {
+            let _ = remove_password(account, None);
         }
-        use security_framework::passwords::set_generic_password;
-        return set_generic_password(KEYCHAIN_SERVICE, account, value.as_bytes())
-            .map_err(explain_keychain);
+        let label = human_secret_label(account);
+        let result = ItemAddOptions::new(ItemAddValue::Data {
+            class: ItemClass::generic_password(),
+            data: CFData::from_buffer(value.as_bytes()),
+        })
+        .set_service(KEYCHAIN_SERVICE)
+        .set_account_name(account)
+        .set_label(&label)
+        .set_location(Location::DefaultFileKeychain)
+        .add();
+        return match result {
+            Ok(()) => Ok(()),
+            Err(error) if create_only && error.code() == -25299 => {
+                Err(SecretError::AlreadyExists(account.to_string()))
+            }
+            Err(error) => Err(explain_keychain(error)),
+        };
     };
     write_explicit_password(keychain, account, value, create_only)
 }
@@ -880,6 +894,18 @@ impl SecretStore for InMemoryKeychain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_secret_label_formats_user_and_workspace_scopes() {
+        assert_eq!(
+            human_secret_label("plexi:user:OPENROUTER_API_KEY"),
+            "Plexi Secret — OPENROUTER_API_KEY (global user scope)"
+        );
+        assert_eq!(
+            human_secret_label("plexi:ws-123:API_TOKEN"),
+            "Plexi Secret — API_TOKEN (workspace ws-123)"
+        );
+    }
 
     #[test]
     fn empty_keychain_path_stays_on_the_default_keychain() {
