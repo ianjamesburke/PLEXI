@@ -37,8 +37,9 @@ impl<'a> ToastShell<'a> {
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0_f32, colors.border))
+                    .stroke(style::hairline_border(colors.border))
                     .corner_radius(style::RADIUS_SM)
+                    .shadow(style::elevation_shadow())
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
                         ui.spacing_mut().interact_size.y = TOAST_CONTROL_H;

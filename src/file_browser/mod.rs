@@ -1858,7 +1858,7 @@ impl FileBrowserApp {
                 paint_entry_icon(ui.painter(), icon_rect, entry, colors);
                 cell.min.x = (icon_rect.right() + 2.0).min(cell.right());
             }
-            list::paint_table_cell_text(
+            list::paint_table_cell_text_elided(
                 ui,
                 cell,
                 Self::entry_cell_text(entry, column.id),
@@ -1867,6 +1867,11 @@ impl FileBrowserApp {
                     name_color
                 } else {
                     colors.text_dim
+                },
+                if column.id == ColumnId::Name {
+                    crate::ui::text::Side::Middle
+                } else {
+                    crate::ui::text::Side::Trailing
                 },
             );
         }
@@ -3027,14 +3032,20 @@ impl FileBrowserApp {
                 .max_rect(row_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                let selected_label = self.selected_count().to_string();
+                let selected_label =
+                    crate::ui::text::tabular_count(self.selected_count(), 3, style::TEXT_HINT);
                 let item_count_resp = ui.label(
                     egui::RichText::new(format!(
-                        "{} items \u{00b7} selected: {}",
-                        self.visible_entry_count(),
-                        selected_label
+                        "{} \u{00b7} selected: {}",
+                        crate::ui::text::format_count_plural(
+                            self.visible_entry_count(),
+                            "item",
+                            "items"
+                        ),
+                        selected_label.text()
                     ))
                     .size(style::TEXT_HINT)
+                    .monospace()
                     .color(colors.text_dim),
                 );
                 if show_inspector {

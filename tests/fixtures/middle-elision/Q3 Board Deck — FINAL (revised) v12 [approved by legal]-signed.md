@@ -1,0 +1,1 @@
+Signed board deck fixture.
