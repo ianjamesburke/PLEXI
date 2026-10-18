@@ -3499,6 +3499,53 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
+    struct GalleryRowsFixture {
+        width: f32,
+    }
+
+    impl crate::app::app_trait::App for GalleryRowsFixture {
+        fn type_id(&self) -> &'static str {
+            "gallery_rows_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Gallery rows".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            ui.set_width(self.width);
+            crate::overlays::ui_gallery::gallery_rows(
+                ui,
+                &crate::overlays::ui_gallery::UiGalleryDataMode::WorstCase.fixture(),
+                ctx.colors,
+            );
+        }
+    }
+
+    #[test]
+    fn ui_gallery_worst_case_rows() {
+        for width in [760.0, 320.0] {
+            let mut h = PlexiUiHarness::new_sized(900.0, 1000.0);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                if let Some(Pane::App(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = AppRuntime::Builtin(Box::new(GalleryRowsFixture { width }));
+                }
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(&format!("_{width}")))
+                .expect("all worst-case rows");
+        }
+    }
+
     fn gallery_text_shapes(shape: &egui::Shape, texts: &mut Vec<(egui::Rect, String)>) {
         match shape {
             egui::Shape::Text(text) if !text.galley.text().is_empty() => {
@@ -3741,7 +3788,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
