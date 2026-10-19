@@ -106,6 +106,15 @@ pub struct AgentSubscriptionRequest {
     pub default: Decision,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentHarnessConfig {
+    pub cli: String,
+    pub model: Option<String>,
+    pub fallback: Option<String>,
+    pub ephemeral: bool,
+    pub result_schema: Option<serde_json::Value>,
+}
+
 /// A loaded agent: `AGENT.md` prose + parsed `settings.toml`.
 #[derive(Debug, Clone)]
 pub struct AgentDefinition {
@@ -129,11 +138,17 @@ pub struct AgentDefinition {
     pub client: Option<String>,
     /// Default ledger kind. `None` means the run's own kind, or `output`.
     pub kind: Option<crate::plexi_ai::ledger::RunKind>,
+    /// Optional `[harness]` configuration for CLI worker agents (`plexi agent spawn`).
+    pub harness: Option<AgentHarnessConfig>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct SettingsToml {
     agent: AgentTable,
+    #[serde(default)]
+    harness: Option<HarnessTable>,
+    #[serde(default)]
+    permissions: Option<toml::Value>,
     #[serde(default)]
     subscriptions: Vec<SubscriptionTable>,
     #[serde(default)]
@@ -144,6 +159,20 @@ struct SettingsToml {
     skills: NameList,
     #[serde(default)]
     hooks: NameList,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HarnessTable {
+    cli: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    fallback: Option<String>,
+    #[serde(default)]
+    ephemeral: Option<bool>,
+    #[serde(default)]
+    result_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -162,7 +191,8 @@ struct ModelRouteTable {
 struct AgentTable {
     id: String,
     display_name: String,
-    default_tier: String,
+    #[serde(default)]
+    default_tier: Option<String>,
     #[serde(default)]
     description: String,
     #[serde(default)]
@@ -180,6 +210,17 @@ struct SubscriptionTable {
     payload: String,
     trigger: String,
     default: String,
+}
+
+fn parse_harness_cli_name(field: &str, raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if matches!(trimmed, "pi" | "claude" | "codex" | "agy") {
+        Ok(trimmed.to_string())
+    } else {
+        Err(format!(
+            "settings.toml: [harness] invalid {field} '{raw}' (expected one of: pi, claude, codex, agy)"
+        ))
+    }
 }
 
 impl AgentDefinition {
@@ -208,10 +249,69 @@ impl AgentDefinition {
         if settings.agent.display_name.trim().is_empty() {
             return Err("settings.toml: [agent] display_name must be non-empty".to_string());
         }
-        let default_tier = parse_enum::<ModelTier>("default_tier", &settings.agent.default_tier)
-            .map_err(|e| format!("settings.toml: [agent] {e}"))?;
-        let posture = PermissionPosture::from_toml_str(settings_toml)
-            .map_err(|e| format!("settings.toml: {e}"))?;
+        let has_harness = settings.harness.is_some();
+        let default_tier = match settings.agent.default_tier.as_deref() {
+            Some(raw) => parse_enum::<ModelTier>("default_tier", raw)
+                .map_err(|e| format!("settings.toml: [agent] {e}"))?,
+            None if has_harness => ModelTier::Medium,
+            None => {
+                return Err(
+                    "settings.toml: [agent] missing required field `default_tier`".to_string(),
+                )
+            }
+        };
+        let posture = if settings.permissions.is_some() || !has_harness {
+            PermissionPosture::from_toml_str(settings_toml)
+                .map_err(|e| format!("settings.toml: {e}"))?
+        } else {
+            PermissionPosture {
+                default_posture: Decision::Ask,
+                allow: Vec::new(),
+                ask: Vec::new(),
+                deny: Vec::new(),
+            }
+        };
+        let harness = match settings.harness {
+            None => None,
+            Some(h) => {
+                let cli = parse_harness_cli_name("cli", &h.cli)?;
+                let fallback = h
+                    .fallback
+                    .as_deref()
+                    .map(|fb| parse_harness_cli_name("fallback", fb))
+                    .transpose()?;
+                let model = h
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let result_schema = match &h.result_schema {
+                    None => None,
+                    Some(serde_json::Value::String(spec)) => Some(
+                        crate::host::pane_result::parse_schema_spec(spec, path.as_deref())
+                            .map_err(|e| format!("settings.toml: [harness] result_schema: {e}"))?,
+                    ),
+                    Some(raw @ serde_json::Value::Object(_)) => Some(
+                        crate::host::pane_result::normalize_schema_value(raw, path.as_deref())
+                            .map_err(|e| format!("settings.toml: [harness] result_schema: {e}"))?,
+                    ),
+                    Some(_) => {
+                        return Err(
+                            "settings.toml: [harness] result_schema must be a JSON Schema table/object or a path/JSON string"
+                                .to_string(),
+                        )
+                    }
+                };
+                Some(AgentHarnessConfig {
+                    cli,
+                    model,
+                    fallback,
+                    ephemeral: h.ephemeral.unwrap_or(false),
+                    result_schema,
+                })
+            }
+        };
         let effort = settings
             .agent
             .effort
@@ -288,6 +388,7 @@ impl AgentDefinition {
             hooks: settings.hooks.enabled,
             client,
             kind,
+            harness,
         })
     }
 
@@ -313,6 +414,13 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     pub fn load(profile_dir: &Path, workspace_root: &Path) -> Self {
+        Self::load_with_optional_workspace(profile_dir, Some(workspace_root))
+    }
+
+    pub fn load_with_optional_workspace(
+        profile_dir: &Path,
+        workspace_root: Option<&Path>,
+    ) -> Self {
         let default = AgentDefinition {
             id: "default".to_string(),
             display_name: "Plexi Assistant".to_string(),
@@ -335,10 +443,13 @@ impl AgentRegistry {
             hooks: Vec::new(),
             client: None,
             kind: None,
+            harness: None,
         };
         let user_dir = profile_dir.join("agents");
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
-        let workspace_agents = load_workspace_agent_definitions(workspace_root);
+        let workspace_agents = workspace_root
+            .map(load_workspace_agent_definitions)
+            .unwrap_or_default();
         log::info!(
             "assistant: agent registry sources built-in=1 user={} workspace={}",
             user_agents.len(),
@@ -1730,5 +1841,148 @@ enabled = ["before-turn"]
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn harness_table_parses_and_validates_fields() {
+        let settings = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+description = "Reads the codebase and returns findings"
+
+[harness]
+cli = "pi"
+model = "openrouter/~z-ai/glm-flash-latest"
+fallback = "claude"
+ephemeral = true
+result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+"#;
+        let def = AgentDefinition::parse("You are a researcher.", settings)
+            .expect("valid [harness] settings must parse without default_tier or [permissions]");
+        assert_eq!(def.id, "researcher");
+        assert_eq!(def.default_tier, ModelTier::Medium);
+        let h = def.harness.expect("harness must be present");
+        assert_eq!(h.cli, "pi");
+        assert_eq!(
+            h.model.as_deref(),
+            Some("openrouter/~z-ai/glm-flash-latest")
+        );
+        assert_eq!(h.fallback.as_deref(), Some("claude"));
+        assert!(h.ephemeral);
+        let schema = h.result_schema.expect("result_schema must be present");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], serde_json::json!(["answer"]));
+
+        // Unknown key inside [harness] fails naming the key.
+        let unknown_key = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+bogus_key = "nope"
+"#;
+        let err = AgentDefinition::parse("Persona.", unknown_key).unwrap_err();
+        assert!(
+            err.contains("bogus_key"),
+            "unknown key error must name the key: {err}"
+        );
+
+        // Missing cli inside [harness] fails naming cli.
+        let missing_cli = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+model = "sonnet"
+"#;
+        let err = AgentDefinition::parse("Persona.", missing_cli).unwrap_err();
+        assert!(
+            err.contains("cli"),
+            "missing cli error must name cli: {err}"
+        );
+
+        // Invalid cli inside [harness] fails naming cli.
+        let bad_cli = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "cursor"
+"#;
+        let err = AgentDefinition::parse("Persona.", bad_cli).unwrap_err();
+        assert!(err.contains("cli") && err.contains("cursor"), "{err}");
+
+        // Without [harness], default_tier is still required.
+        let no_harness_no_tier = r#"
+[agent]
+id = "assistant-only"
+display_name = "Assistant Only"
+
+[permissions]
+default_posture = "ask"
+"#;
+        let err = AgentDefinition::parse("Persona.", no_harness_no_tier).unwrap_err();
+        assert!(
+            err.contains("default_tier"),
+            "missing default_tier without [harness] must fail: {err}"
+        );
+    }
+
+    #[test]
+    fn harness_result_schema_supports_inline_table_and_relative_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("auditor");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("AGENT.md"), "Audit carefully.").unwrap();
+        std::fs::write(
+            agent_dir.join("schema.json"),
+            r#"{"type":"object","required":["verdict"],"properties":{"verdict":{"type":"string"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            r#"
+[agent]
+id = "auditor"
+display_name = "Auditor"
+
+[harness]
+cli = "claude"
+result_schema = "schema.json"
+"#,
+        )
+        .unwrap();
+
+        let def = AgentDefinition::load_dir(&agent_dir, AgentSource::Workspace)
+            .expect("relative schema.json in agent dir must load");
+        let schema = def
+            .harness
+            .as_ref()
+            .and_then(|h| h.result_schema.as_ref())
+            .expect("schema resolved");
+        assert_eq!(schema["required"], serde_json::json!(["verdict"]));
+
+        // Inline TOML table for result_schema also parses.
+        let inline_table = r#"
+[agent]
+id = "auditor"
+display_name = "Auditor"
+
+[harness]
+cli = "codex"
+result_schema = { type = "object", required = ["ok"], properties = { ok = { type = "boolean" } } }
+"#;
+        let def2 = AgentDefinition::parse("Audit.", inline_table)
+            .expect("inline TOML result_schema table must parse");
+        let schema2 = def2
+            .harness
+            .and_then(|h| h.result_schema)
+            .expect("schema present");
+        assert_eq!(schema2["required"], serde_json::json!(["ok"]));
     }
 }

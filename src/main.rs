@@ -563,14 +563,41 @@ fn main() -> eframe::Result {
                         }
                     }
                     Commands::Agent { cmd } => match cmd {
-                        AgentCmd::Init { name, from } => {
-                            std::process::exit(cli::agent_init(&name, from))
+                        AgentCmd::Create {
+                            name,
+                            cli: harness_cli,
+                            model,
+                            fallback,
+                            description,
+                            persona,
+                            persona_file,
+                            result_schema,
+                            ephemeral,
+                            display_name,
+                            global,
+                            cwd,
+                        } => std::process::exit(cli::agent_create_cli(
+                            &name,
+                            &harness_cli,
+                            model.as_deref(),
+                            fallback.as_deref(),
+                            description.as_deref(),
+                            persona.as_deref(),
+                            persona_file.as_deref(),
+                            result_schema.as_deref(),
+                            ephemeral,
+                            display_name.as_deref(),
+                            global,
+                            cwd.as_deref(),
+                        )),
+                        AgentCmd::List { cwd, json } => {
+                            std::process::exit(cli::agent_list_cli(cwd.as_deref(), json))
                         }
-                        AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
-                        AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
-                        AgentCmd::List => std::process::exit(cli::agent_list()),
+                        AgentCmd::Show { name, cwd, json } => {
+                            std::process::exit(cli::agent_show_cli(&name, cwd.as_deref(), json))
+                        }
                         AgentCmd::Spawn {
-                            config,
+                            name,
                             task,
                             subcontext,
                             ephemeral,
@@ -578,7 +605,7 @@ fn main() -> eframe::Result {
                             cwd,
                             json,
                         } => std::process::exit(cli::agent_spawn_cli(
-                            &config,
+                            &name,
                             &task,
                             subcontext.as_deref(),
                             ephemeral,

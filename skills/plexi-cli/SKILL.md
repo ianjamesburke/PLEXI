@@ -206,12 +206,13 @@ plexi skill install --agent codex
 <!-- experiment: routines -->
   Scheduled commands: `plexi routine --help`.
 <!-- /experiment -->
-- **Agents** — install workspace definitions, spawn declarative squad workers, inspect closed runs, reopen historical sessions, and report or inspect agent state:
-  `plexi agent --help`. `plexi agent spawn <config> --task "<brief>" [--subcontext <name>] [--ephemeral]`
-  loads `.plexi/agents/<name>.toml` (or `<profile>/agents/<name>.toml`), creates or reuses
-  a sub-context with a parent `PortalPane`, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL=1`,
-  and boots the configured harness (`claude`, `codex`, `pi`, or `agy`). Workers report
-  structured completion via `plexi agent done --result <json> --summary "<text>"` (validates
+- **Agents** — create, list, inspect, and spawn registry-backed agent definitions (`AGENT.md` + `settings.toml` with `[harness]`), inspect closed runs, reopen historical sessions, and report or inspect agent state:
+  `plexi agent --help`. Agents live in two tiers (workspace `.plexi/agents/<slug>/` overrides global `<profile>/agents/<slug>/`, resolved by walking up from cwd stopping at `$HOME`).
+  1. Run `plexi agent list [--json]` first to see whether a matching agent already exists in the workspace or global tier.
+  2. If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] [--fallback <cli>] [--ephemeral] [--result-schema <json-or-path>] --persona "<markdown>"` (or `--persona-file <path>`; defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
+  3. Inspect with `plexi agent show <slug> [--json]` before spawning to see the resolved tier, path, harness settings, `AGENT.md` body, and exact command line `spawn` will run.
+  4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id>`. `spawn` resolves `<slug>` through the two-tier registry, creates or reuses a sub-context with a parent `PortalPane`, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL=1`, injects `AGENT.md` (`--append-system-prompt` for `pi` and `claude`; inlined `# Persona` for `codex` and `agy`) plus the `# Plexi worker contract` and any `result_schema`, and boots the configured harness.
+  Workers report structured completion via `plexi agent done --result <json> --summary "<text>"` (validates
   against `result_schema`, writes `completed` and `summary` slots, and exits `0` so the
   ephemeral pane closes and the sub-context auto-collapses when all workers succeed; non-zero
   crashes keep the pane and sub-context open in `Error` state). Workers escalate to their
@@ -521,6 +522,13 @@ plexi assistant send --text "hello" --client narrative --kind output
 ```
 
 <!-- /experiment -->
+
+### Agents (`plexi agent --help`)
+
+1. Run `plexi agent list` first to see whether a matching agent already exists in the workspace or global tier.
+2. If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
+3. Inspect with `plexi agent show <slug>` before spawning if unsure what CLI or model it uses.
+4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id>`.
 
 <!-- experiment: leads -->
 ### Create an agent head and claim a run

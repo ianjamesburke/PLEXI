@@ -544,17 +544,28 @@ Disable a routine without deleting it (sets `enabled = false`; it never fires un
 
 ## `plexi agent`
 
-Manage workspace agent definitions.
+Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
 
-Install agent definitions from the global registry (`~/.plexi/agents/`) into the current workspace's `.plexi/agents/` directory, each with scoped memory and logs.
+An agent is a directory containing `AGENT.md` (persona / system prompt) and
+`settings.toml` (`[agent]` metadata + `[harness]` CLI worker config).
+
+Two tiers exist, and workspace definitions shadow global ones with the same name:
+- Workspace: `<workspace>/.plexi/agents/<name>/`
+- Global:    `~/.plexi-<channel>/agents/<name>/` (pass `--global` to `create`)
+
+End-to-end worker workflow:
+plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest \
+--persona "You are a researcher." \
+--result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+PANE=$(plexi agent spawn researcher --task "Summarize AgentRegistry")
+plexi pane result wait "$PANE"
 
 | Subcommand | Description |
 |---|---|
-| `init` | Scaffold a new agent app with ai.query capability and a chat UI |
-| `add` | Install an agent definition from the global registry into the current workspace |
-| `update` | Re-install an agent definition from the global registry, preserving memory and logs |
-| `list` | List agents installed in the current workspace |
-| `spawn` | Spawn a worker agent from a `.plexi/agents/<name>.toml` or global role configuration |
+| `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
+| `list` | List active agents from both workspace and global tiers |
+| `show` | Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command |
+| `spawn` | Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
 | `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
 | `report` | Report agent state for this pane to the host |
@@ -569,63 +580,81 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `conversation` | Read one head's conversation |
 | `delegate` | Start a child run whose grants are a subset of the parent run |
 
-### `plexi agent init`
+### `plexi agent create`
 
-Scaffold a new agent app with ai.query capability and a chat UI.
+Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
 
-Creates the app directory, manifest.toml (with ai.query pre-configured), and main.py from the agent template. Equivalent to the former `plexi app init --agent <name>`.
+Writes `<workspace>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)
+and validates the directory through `AgentDefinition::load_dir`. Refuses to overwrite an
+existing agent directory.
 
-Example: plexi agent init my-agent
+Complete `settings.toml` example:
+```toml
+[agent]
+id = "researcher"
+display_name = "Researcher"
+description = "Fast codebase researcher"
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<name>` | string | yes | App name (used as the directory name and app ID) |
-| `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
-
-### `plexi agent add`
-
-Install an agent definition from the global registry into the current workspace.
-
-Copies `~/.plexi/agents/<name>/AGENT.md` into `.plexi/agents/<name>/AGENT.md` and creates `memory/` and `logs/` subdirectories for scoped agent state.
-
-Example: plexi agent add project-manager
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<name>` | string | yes | Agent name (must exist in ~/.plexi/agents/<name>/AGENT.md) |
-
-### `plexi agent update`
-
-Re-install an agent definition from the global registry, preserving memory and logs.
-
-Overwrites `.plexi/agents/<name>/AGENT.md` with the latest version from the global registry while leaving the `memory/` and `logs/` directories untouched.
-
-Example: plexi agent update project-manager
+[harness]
+cli = "pi"
+model = "openrouter/~z-ai/glm-flash-latest"
+fallback = "claude"
+ephemeral = true
+result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+```
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<name>` | string | yes | Agent name to update |
+| `<name>` | string | yes | Agent slug (`a-z`, `0-9`, `-`) |
+| `--cli` | string | yes | CLI harness to launch (`pi`, `claude`, `codex`, or `agy`) |
+| `--model` | string | no | Model identifier passed verbatim via `--model` |
+| `--fallback` | string | no | Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`) |
+| `--description` | string | no | Short human-readable description of the agent's role |
+| `--persona` | string | no | Inline persona text written to `AGENT.md` (mutually exclusive with `--persona-file`) |
+| `--persona-file` | string | no | Path to a markdown file whose contents are written to `AGENT.md` (mutually exclusive with `--persona`) |
+| `--result-schema` | string | no | Optional JSON Schema string or path to a schema file enforced on `plexi agent done` |
+| `--ephemeral` | flag | no | Auto-close the worker pane on clean exit (`0`) |
+| `--display-name` | string | no | Human-facing display name in `[agent]` (defaults to `<name>`) |
+| `--global` | flag | no | Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace |
+| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
 
 ### `plexi agent list`
 
-List agents installed in the current workspace
+List active agents from both workspace and global tiers.
+
+Prints each agent's name, tier (`workspace` or `global`), CLI + model (or `assistant` when no `[harness]` table is present), description, and whether it shadows a global agent.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--json` | flag | no | Output as JSON |
+
+### `plexi agent show`
+
+Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Agent name to inspect |
+| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--json` | flag | no | Output as JSON |
 
 ### `plexi agent spawn`
 
-Spawn a worker agent from a `.plexi/agents/<name>.toml` or global role configuration.
+Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
 
-Creates or reuses an isolated sub-context when `--subcontext` (or the role's `subcontext` key) is set, links a parent `PortalPane` in the caller's context, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL`, and boots the configured CLI harness.
+Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`, and launches the worker pane.
 
 Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<config>` | string | yes | Role config name (in `.plexi/agents/<name>.toml` or `~/.plexi-<channel>/agents/<name>.toml`) or path to a `.toml` file |
+| `<name>` | string | yes | Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/` |
 | `--task` | string | yes | Task brief passed to the spawned agent harness |
-| `--subcontext` | string | no | Sub-context name to spawn into (overrides `subcontext` in the role config) |
+| `--subcontext` | string | no | Sub-context name to spawn into |
 | `--ephemeral` | flag | no | Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish |
 | `--from` | string | no | Parent/caller pane ID (defaults to `$PLEXI_PANE_ID`) |
-| `--cwd` | string | no | Working directory for the spawned worker pane |
+| `--cwd` | string | no | Working directory for workspace lookup and the spawned worker pane |
 | `--json` | flag | no | Print full host JSON response instead of bare pane ID |
 
 ### `plexi agent done`
@@ -1189,7 +1218,7 @@ Use --open to launch it in a split-right pane after scaffolding. See `sdk/python
 | `<name>` | string | no |  |
 | `--adopt` | flag | no | Write or refresh `plexi.scaffold.toml` for an existing app directory without altering source files |
 | `--wasm` | string | no | Create a Rust WASM component app with the Plexi WASM SDK |
-| `--lang` | string | no | App language/template: `python` (declarative UI) or `python_agent` (agent-loop app). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
+| `--lang` | string | no | App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
 | `--open` | flag | no | Open the app in a split-right pane after scaffolding |
 | `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |

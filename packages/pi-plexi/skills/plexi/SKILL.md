@@ -26,3 +26,11 @@ When running inside a Plexi terminal pane (`PLEXI_SOCKET` and `PLEXI_PANE_ID` ar
 4. **Session reattachment & continuation reconciliation**:
    - On startup or after a restart, call `plexi_needs_you_reconcile` (or `/plexi-reconcile`) to inspect open and resolved `Needs you` items and `ContinuationRecord`s for this session/pane.
    - If a continuation is already `completed` with a receipt, do not repeat the mutation.
+
+5. **Agents (`plexi agent --help`)**:
+   - Run `plexi agent list` first to see whether a matching agent already exists in the workspace or global tier.
+   - If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
+   - Inspect with `plexi agent show <slug>` before spawning if unsure what CLI, model, or command it uses.
+   - Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id>`.
+
+

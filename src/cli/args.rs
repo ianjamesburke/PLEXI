@@ -137,10 +137,22 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
-    /// Manage workspace agent definitions.
+    /// Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
     ///
-    /// Install agent definitions from the global registry (`~/.plexi/agents/`) into the
-    /// current workspace's `.plexi/agents/` directory, each with scoped memory and logs.
+    /// An agent is a directory containing `AGENT.md` (persona / system prompt) and
+    /// `settings.toml` (`[agent]` metadata + `[harness]` CLI worker config).
+    ///
+    /// Two tiers exist, and workspace definitions shadow global ones with the same name:
+    ///   - Workspace: `<workspace>/.plexi/agents/<name>/`
+    ///   - Global:    `~/.plexi-<channel>/agents/<name>/` (pass `--global` to `create`)
+    ///
+    /// End-to-end worker workflow:
+    ///   plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest \
+    ///     --persona "You are a researcher." \
+    ///     --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+    ///   PANE=$(plexi agent spawn researcher --task "Summarize AgentRegistry")
+    ///   plexi pane result wait "$PANE"
+    #[command(verbatim_doc_comment)]
     Agent {
         #[command(subcommand)]
         cmd: AgentCmd,
@@ -1317,9 +1329,8 @@ pub enum AppCmd {
         /// Create a Rust WASM component app with the Plexi WASM SDK.
         #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
         wasm: Option<String>,
-        /// App language/template: `python` (declarative UI) or `python_agent`
-        /// (agent-loop app). Use `--wasm <name>` for a Rust WASM component.
-        #[arg(long, default_value = "python", value_parser = ["python", "python_agent"])]
+        /// App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component.
+        #[arg(long, default_value = "python", value_parser = ["python"])]
         lang: String,
         /// Scaffold into the global app registry instead of the workspace
         #[arg(long)]
@@ -1998,7 +2009,12 @@ pub enum PaneCmd {
         timeout: f64,
         /// Shorthand for `plexi pane result write <JSON>`: validate and commit
         /// a structured JSON object once for this pane.
-        #[arg(long, value_name = "JSON", allow_hyphen_values = true, conflicts_with = "schema")]
+        #[arg(
+            long,
+            value_name = "JSON",
+            allow_hyphen_values = true,
+            conflicts_with = "schema"
+        )]
         write: Option<String>,
         /// Shorthand for `plexi pane result schema <JSON_OR_PATH>`: declare or
         /// update the JSON Schema before a result is committed.
@@ -2543,57 +2559,109 @@ pub enum NoteCmd {
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
-    /// Scaffold a new agent app with ai.query capability and a chat UI.
+    /// Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
     ///
-    /// Creates the app directory, manifest.toml (with ai.query pre-configured),
-    /// and main.py from the agent template. Equivalent to the former
-    /// `plexi app init --agent <name>`.
+    /// Writes `<workspace>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)
+    /// and validates the directory through `AgentDefinition::load_dir`. Refuses to overwrite an
+    /// existing agent directory.
     ///
-    /// Example: plexi agent init my-agent
-    Init {
-        /// App name (used as the directory name and app ID)
+    /// Complete `settings.toml` example:
+    /// ```toml
+    /// [agent]
+    /// id = "researcher"
+    /// display_name = "Researcher"
+    /// description = "Fast codebase researcher"
+    ///
+    /// [harness]
+    /// cli = "pi"
+    /// model = "openrouter/~z-ai/glm-flash-latest"
+    /// fallback = "claude"
+    /// ephemeral = true
+    /// result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+    /// ```
+    #[command(verbatim_doc_comment)]
+    Create {
+        /// Agent slug (`a-z`, `0-9`, `-`)
         name: String,
-        /// Open the new pane relative to this pane ID. Defaults to the calling
-        /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
-        #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        /// CLI harness to launch (`pi`, `claude`, `codex`, or `agy`)
+        #[arg(long, value_parser = ["pi", "claude", "codex", "agy"])]
+        cli: String,
+        /// Model identifier passed verbatim via `--model`
+        #[arg(long)]
+        model: Option<String>,
+        /// Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`)
+        #[arg(long, value_parser = ["pi", "claude", "codex", "agy"])]
+        fallback: Option<String>,
+        /// Short human-readable description of the agent's role
+        #[arg(long)]
+        description: Option<String>,
+        /// Inline persona text written to `AGENT.md` (mutually exclusive with `--persona-file`)
+        #[arg(
+            long,
+            required_unless_present = "persona_file",
+            conflicts_with = "persona_file"
+        )]
+        persona: Option<String>,
+        /// Path to a markdown file whose contents are written to `AGENT.md` (mutually exclusive with `--persona`)
+        #[arg(
+            long = "persona-file",
+            required_unless_present = "persona",
+            conflicts_with = "persona"
+        )]
+        persona_file: Option<String>,
+        /// Optional JSON Schema string or path to a schema file enforced on `plexi agent done`
+        #[arg(long = "result-schema")]
+        result_schema: Option<String>,
+        /// Auto-close the worker pane on clean exit (`0`)
+        #[arg(long)]
+        ephemeral: bool,
+        /// Human-facing display name in `[agent]` (defaults to `<name>`)
+        #[arg(long = "display-name")]
+        display_name: Option<String>,
+        /// Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace
+        #[arg(long)]
+        global: bool,
+        /// Directory used to resolve the workspace root (defaults to current working directory)
+        #[arg(long)]
+        cwd: Option<String>,
     },
-    /// Install an agent definition from the global registry into the current workspace.
+    /// List active agents from both workspace and global tiers.
     ///
-    /// Copies `~/.plexi/agents/<name>/AGENT.md` into `.plexi/agents/<name>/AGENT.md`
-    /// and creates `memory/` and `logs/` subdirectories for scoped agent state.
-    ///
-    /// Example: plexi agent add project-manager
-    Add {
-        /// Agent name (must exist in ~/.plexi/agents/<name>/AGENT.md)
+    /// Prints each agent's name, tier (`workspace` or `global`), CLI + model (or `assistant`
+    /// when no `[harness]` table is present), description, and whether it shadows a global agent.
+    List {
+        /// Directory used to resolve the workspace root (defaults to current working directory)
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command.
+    Show {
+        /// Agent name to inspect
         name: String,
+        /// Directory used to resolve the workspace root (defaults to current working directory)
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
-    /// Re-install an agent definition from the global registry, preserving memory and logs.
+    /// Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
     ///
-    /// Overwrites `.plexi/agents/<name>/AGENT.md` with the latest version from the global
-    /// registry while leaving the `memory/` and `logs/` directories untouched.
-    ///
-    /// Example: plexi agent update project-manager
-    Update {
-        /// Agent name to update
-        name: String,
-    },
-    /// List agents installed in the current workspace.
-    List,
-    /// Spawn a worker agent from a `.plexi/agents/<name>.toml` or global role configuration.
-    ///
-    /// Creates or reuses an isolated sub-context when `--subcontext` (or the role's
-    /// `subcontext` key) is set, links a parent `PortalPane` in the caller's context,
-    /// stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL`, and boots the configured CLI harness.
+    /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
+    /// a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`,
+    /// and launches the worker pane.
     ///
     /// Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
     Spawn {
-        /// Role config name (in `.plexi/agents/<name>.toml` or `~/.plexi-<channel>/agents/<name>.toml`) or path to a `.toml` file
-        config: String,
+        /// Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
+        name: String,
         /// Task brief passed to the spawned agent harness
         #[arg(long)]
         task: String,
-        /// Sub-context name to spawn into (overrides `subcontext` in the role config)
+        /// Sub-context name to spawn into
         #[arg(long)]
         subcontext: Option<String>,
         /// Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish
@@ -2602,7 +2670,7 @@ pub enum AgentCmd {
         /// Parent/caller pane ID (defaults to `$PLEXI_PANE_ID`)
         #[arg(long, value_name = "PANE_ID")]
         from: Option<u64>,
-        /// Working directory for the spawned worker pane
+        /// Working directory for workspace lookup and the spawned worker pane
         #[arg(long)]
         cwd: Option<String>,
         /// Print full host JSON response instead of bare pane ID
@@ -3110,7 +3178,8 @@ mod tests {
         }
         assert!(Cli::try_parse_from([
             "plexi", "pane", "send", "42", "hello", "--paste", "--submit",
-        ]).is_err());
+        ])
+        .is_err());
     }
 
     #[test]
@@ -3347,8 +3416,14 @@ mod tests {
     #[test]
     fn app_init_adopt_accepts_dir_in_any_position_or_defaults_to_cwd() {
         for (argv, expected_dir) in [
-            (vec!["plexi", "app", "init", "--adopt", "apps/calc"], Some("apps/calc")),
-            (vec!["plexi", "app", "init", "apps/calc", "--adopt"], Some("apps/calc")),
+            (
+                vec!["plexi", "app", "init", "--adopt", "apps/calc"],
+                Some("apps/calc"),
+            ),
+            (
+                vec!["plexi", "app", "init", "apps/calc", "--adopt"],
+                Some("apps/calc"),
+            ),
             (vec!["plexi", "app", "init", "--adopt"], None),
         ] {
             let cli = Cli::try_parse_from(argv).expect("app init --adopt parses");
