@@ -339,7 +339,8 @@ mod tests {
         assert_eq!(
             agent,
             [
-                "spawn", "done", "ask", "report", "status", "history", "reopen", "hook"
+                "create", "list", "show", "spawn", "done", "ask", "report", "status", "history",
+                "reopen", "hook"
             ],
             "{agent:?}"
         );
@@ -381,12 +382,14 @@ mod tests {
             ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
             (&["plexi", "agent", "run", "list"], ReleaseFeature::Leads),
-            (&["plexi", "agent", "list"], ReleaseFeature::Leads),
             (
                 &["plexi", "command-view", "--json"],
                 ReleaseFeature::CommandView,
             ),
-            (&["plexi", "changes", "refresh", "x"], ReleaseFeature::ChangeSets),
+            (
+                &["plexi", "changes", "refresh", "x"],
+                ReleaseFeature::ChangeSets,
+            ),
             (&["plexi", "ledger"], ReleaseFeature::Ledger),
             (&["plexi", "relay", "status"], ReleaseFeature::Relay),
             (

@@ -1042,6 +1042,63 @@ fn resolve_workspace_root_stopping_at(
     }
 }
 
+/// Walk up from `start` toward the filesystem root looking for the nearest
+/// ancestor that contains `.plexi/agents/` (or a legacy channel `agents/`
+/// directory), stopping at `$HOME` / login home. Used by `plexi agent` lookup
+/// verbs (`list`, `show`, `spawn`).
+pub fn resolve_agent_lookup_workspace_root(start: &Path) -> Option<PathBuf> {
+    resolve_agent_lookup_workspace_root_stopping_at(start, &workspace_walk_stops())
+}
+
+pub(crate) fn resolve_agent_lookup_workspace_root_stopping_at(
+    start: &Path,
+    stops: &[PathBuf],
+) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        if is_walk_stop(&current, stops) {
+            return None;
+        }
+        if crate::agent::workspace_agents_dir(&current).is_dir()
+            || crate::agent::legacy_workspace_agents_dir(&current).is_some_and(|dir| dir.is_dir())
+        {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Walk up from `start` toward the filesystem root looking for the nearest
+/// ancestor that contains `.plexi/` (or channel dir) or `.git`, stopping at
+/// `$HOME` / login home. Used by `plexi agent create` when `--global` is not set.
+pub fn resolve_agent_create_workspace_root(start: &Path) -> Option<PathBuf> {
+    resolve_agent_create_workspace_root_stopping_at(start, &workspace_walk_stops())
+}
+
+pub(crate) fn resolve_agent_create_workspace_root_stopping_at(
+    start: &Path,
+    stops: &[PathBuf],
+) -> Option<PathBuf> {
+    let channel_dir = registry_config_dir();
+    let mut current = start.to_path_buf();
+    loop {
+        if is_walk_stop(&current, stops) {
+            return None;
+        }
+        if current.join(".plexi").is_dir()
+            || current.join(&channel_dir).is_dir()
+            || current.join(".git").exists()
+        {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 /// Resolve the `entry` field from manifest.toml to a path.
 /// Fails fast — no guessing, no fallbacks.
 pub(crate) fn resolve_entry(
@@ -1380,7 +1437,10 @@ mod tests {
         let apps_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps");
         let mut found = Vec::new();
         for entry in fs::read_dir(&apps_dir).expect("apps/ must be readable") {
-            let path = entry.expect("apps/ entry must be readable").path().join("manifest.toml");
+            let path = entry
+                .expect("apps/ entry must be readable")
+                .path()
+                .join("manifest.toml");
             if !path.is_file() {
                 continue;
             }
@@ -1473,7 +1533,8 @@ mod tests {
                 .map(|caps| caps.iter().filter_map(|c| c.as_str()).collect())
                 .unwrap_or_default();
             assert_eq!(
-                published_caps, manifest.app.capabilities.capabilities,
+                published_caps,
+                manifest.app.capabilities.capabilities,
                 "{}",
                 drifted("capabilities")
             );

@@ -142,7 +142,6 @@ pub fn app_init(
     // total so a newly added language can't silently fall back to Python.
     let result = match lang {
         "wasm" => scaffold_wasm_app(&app_dir, name),
-        "python_agent" => scaffold_agent_python_app(&app_dir, name),
         "python" => scaffold_python_app(&app_dir, name),
         other => {
             log::error!("app_init: no scaffold implemented for --lang '{other}'");
@@ -506,7 +505,10 @@ pub fn app_adopt(path: &str) -> i32 {
     let (manifest, _entry_path) = match crate::cli::app_check::load_local_app(raw_path) {
         Ok(loaded) => loaded,
         Err(err) => {
-            log::error!("app_adopt: invalid app directory '{}': {err}", raw_path.display());
+            log::error!(
+                "app_adopt: invalid app directory '{}': {err}",
+                raw_path.display()
+            );
             eprintln!("error: {err}");
             return 1;
         }
@@ -625,31 +627,6 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 
     write_python_scaffold_support_files(app_dir, name)?;
 
-    Ok(())
-}
-
-fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    // manifest.toml — ai.query capability pre-configured.
-    std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"An agent app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"ai.query\"]\n\n[launch]\n{mp}",
-        name = name,
-        display = to_title_case(name),
-        mp = marketplace_placeholder(),
-    ))?;
-
-    let template = include_str!("../../sdk/python/plexi_sdk/templates/agent_init.py");
-    let main_py = template
-        .replace("__CLASS_NAME__", &to_struct_name(name))
-        .replace("__DISPLAY_NAME__", &to_title_case(name));
-    let main_path = app_dir.join("main.py");
-    std::fs::write(&main_path, main_py)?;
-
-    mark_executable(&main_path)?;
-
-    log::info!(
-        "scaffold_agent_python_app: created agent scaffold at {}",
-        app_dir.display()
-    );
     Ok(())
 }
 
@@ -1882,10 +1859,9 @@ pub fn app_render(
         &allowed_hosts,
     );
     let seed_state = if seed_state.is_none() && app_id == "permissions" {
-        let entries = crate::broker::gate::PermissionMonitor::for_profile(
-            &crate::config::config_dir(),
-        )
-        .list_entries();
+        let entries =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .list_entries();
         log::info!(
             "app_render: seeding permissions inventory count={}",
             entries.len()
@@ -2093,7 +2069,8 @@ pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
 /// Host deadline for a CLI tool call. Strictly below the CLI's poll window so
 /// the caller always sees the host's typed timeout, never a client timeout.
 pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-pub(crate) const APP_CALL_APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(crate) const APP_CALL_APPROVAL_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
 
 /// `plexi app call <app_id> <tool> [--input JSON]` — invoke an app tool through
 /// the host's tool dispatcher and print its JSON output on stdout.
@@ -2121,9 +2098,7 @@ pub fn app_call_cli(
     let caller_pane_id = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok());
-    log::info!(
-        "app_call:cli: app={app_id:?} tool={tool:?} caller_pane={caller_pane_id:?}"
-    );
+    log::info!("app_call:cli: app={app_id:?} tool={tool:?} caller_pane={caller_pane_id:?}");
     let mut payload = serde_json::json!({
         "type": "call_app_tool",
         "app_id": app_id,
@@ -2147,8 +2122,13 @@ pub fn app_call_cli(
         payload,
         "app-call-response",
         "app call",
-        APP_CALL_HOST_TIMEOUT + std::time::Duration::from_secs(5)
-            + if wait_approved { APP_CALL_APPROVAL_TIMEOUT } else { std::time::Duration::ZERO },
+        APP_CALL_HOST_TIMEOUT
+            + std::time::Duration::from_secs(5)
+            + if wait_approved {
+                APP_CALL_APPROVAL_TIMEOUT
+            } else {
+                std::time::Duration::ZERO
+            },
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -2162,9 +2142,16 @@ pub fn app_call_cli(
         Ok(reply) => {
             if json {
                 println!("{reply}");
-                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) { 1 } else { 0 };
+                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                    1
+                } else {
+                    0
+                };
             }
-            let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
+            let output = reply
+                .get("output")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             println!("{output}");
             0
         }
@@ -2179,9 +2166,7 @@ pub fn app_call_cli(
 /// snapshot the live tool registry exposed by running app panes in the resolved
 /// context.
 pub fn app_tools_cli(app_id: Option<&str>, context_id: Option<u64>, json: bool) -> i32 {
-    log::info!(
-        "app_tools:cli: app={app_id:?} context={context_id:?} json={json}"
-    );
+    log::info!("app_tools:cli: app={app_id:?} context={context_id:?} json={json}");
     let payload = build_list_app_tools_payload(app_id, context_id);
     let content = match super::request(payload, "app-tools-response", "app tools") {
         Ok(content) => content,
@@ -2217,10 +2202,7 @@ pub fn app_tools_cli(app_id: Option<&str>, context_id: Option<u64>, json: bool) 
         }
         return 0;
     }
-    println!(
-        "context {resolved_ctx} — {} live tool(s):",
-        tools.len()
-    );
+    println!("context {resolved_ctx} — {} live tool(s):", tools.len());
     for entry in &tools {
         let ro = if entry.read_only { " [read_only]" } else { "" };
         println!(
@@ -2298,16 +2280,27 @@ pub fn needs_you_api_cli(op: &str, payload: serde_json::Value) -> i32 {
 pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>) -> i32 {
     let response_file = crate::rpc::response_file("assistant-permission", "json");
     let payload = match op {
-        "list" => serde_json::json!({"type":"list_permission_requests","response_file":response_file}),
-        "show" => serde_json::json!({"type":"show_permission_request","pending_request_id":id.unwrap_or(""),"response_file":response_file}),
-        "resolve" => serde_json::json!({"type":"resolve_permission_request","pending_request_id":id.unwrap_or(""),"choice":choice.unwrap_or(""),"response_file":response_file}),
+        "list" => {
+            serde_json::json!({"type":"list_permission_requests","response_file":response_file})
+        }
+        "show" => {
+            serde_json::json!({"type":"show_permission_request","pending_request_id":id.unwrap_or(""),"response_file":response_file})
+        }
+        "resolve" => {
+            serde_json::json!({"type":"resolve_permission_request","pending_request_id":id.unwrap_or(""),"choice":choice.unwrap_or(""),"response_file":response_file})
+        }
         _ => {
             eprintln!("error: unknown permission operation");
             return 1;
         }
     };
     log::info!("assistant_permission:cli: op={op} id={id:?}");
-    let content = match super::request_with(payload, "assistant-permission", "assistant permission", std::time::Duration::from_secs(15)) {
+    let content = match super::request_with(
+        payload,
+        "assistant-permission",
+        "assistant permission",
+        std::time::Duration::from_secs(15),
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -3430,11 +3423,6 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn stable_agent_scaffold_omits_marketplace_placeholder() {
-        assert_no_placeholder(&manifest_for(scaffold_agent_python_app));
-    }
-
-    #[test]
     fn wasm_scaffold_has_component_workspace_manifest_and_wit_link() {
         let temp = tempfile::tempdir().unwrap();
         let app_dir = temp.path().join("my-counter");
@@ -3468,9 +3456,9 @@ mod scaffold_marketplace_tests {
 
     #[test]
     fn scaffolds_keep_marketplace_placeholder_when_the_experiment_is_on() {
-        let _on = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
+        let _on =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
         assert_placeholder(&manifest_for(scaffold_python_app));
-        assert_placeholder(&manifest_for(scaffold_agent_python_app));
     }
 }
 
@@ -3584,7 +3572,10 @@ mod app_info_honesty_tests {
             out.contains("tools (live registry, context 7):"),
             "expected live registry header: {out}"
         );
-        assert!(out.contains("calc.add  (pane 42)  Add two numbers"), "{out}");
+        assert!(
+            out.contains("calc.add  (pane 42)  Add two numbers"),
+            "{out}"
+        );
         assert!(out.contains("input_schema:"), "{out}");
         assert!(out.contains("output_schema:"), "{out}");
     }
@@ -3628,6 +3619,9 @@ mod app_info_honesty_tests {
             out.contains("static source scan; manifest-only while not running"),
             "must label static scan honestly: {out}"
         );
-        assert!(out.contains("chess.state  Return current board state."), "{out}");
+        assert!(
+            out.contains("chess.state  Return current board state."),
+            "{out}"
+        );
     }
 }

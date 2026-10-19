@@ -24,174 +24,6 @@ const CODEX_HOOK_EVENTS: &[&str] = &[
 const PLEXI_AGENT_STATE_SCRIPT: &str = "claude-code-agent-state.sh";
 const PLEXI_PI_EXTENSION: &str = "plexi-agent-state.ts";
 
-/// `plexi agent init <name>` — scaffold an agent app with ai.query capability.
-pub fn agent_init(name: &str, from_pane_id: Option<u64>) -> i32 {
-    log::info!("agent_init:cli: name={name}");
-    crate::cli::app::app_init(name, "python_agent", false, false, from_pane_id)
-}
-
-/// `plexi agent add <name>` — copy AGENT.md from global registry into workspace.
-pub fn agent_add(name: &str) -> i32 {
-    log::info!("agent_add:cli: name={name}");
-
-    let global_dir = crate::config::config_dir().join("agents").join(name);
-    let global_agent_md = global_dir.join("AGENT.md");
-
-    if !global_agent_md.is_file() {
-        eprintln!(
-            "error: agent '{name}' not found in global registry.\n  \
-             Expected: {}\n  \
-             Create the file and try again.",
-            global_agent_md.display()
-        );
-        return 1;
-    }
-
-    let workspace_root = match resolve_workspace_cwd() {
-        Ok(root) => root,
-        Err(code) => return code,
-    };
-
-    crate::agent::migrate_legacy_workspace_agents(&workspace_root);
-    let ws_agent_dir = crate::agent::workspace_agents_dir(&workspace_root).join(name);
-    let ws_agent_md = ws_agent_dir.join("AGENT.md");
-
-    if ws_agent_md.exists() {
-        eprintln!(
-            "error: agent '{name}' already installed in this workspace.\n  \
-             Use `plexi agent update {name}` to refresh the definition."
-        );
-        return 1;
-    }
-
-    if let Err(e) = install_agent(&global_agent_md, &ws_agent_dir) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-
-    log::info!(
-        "agent_add:cli: installed {name} to {}",
-        ws_agent_dir.display()
-    );
-    println!("Installed agent '{name}' into .plexi/agents/{name}/");
-    println!("  AGENT.md   copied from global registry");
-    println!("  memory/    created (workspace-scoped agent context)");
-    println!("  logs/      created (workspace-scoped agent logs)");
-    super::print_tip("memory/ and logs/ are git-ignored by default. Run `plexi workspace init` if .gitignore is missing agent entries.");
-    0
-}
-
-/// `plexi agent update <name>` — overwrite AGENT.md from global, preserve memory/logs.
-pub fn agent_update(name: &str) -> i32 {
-    log::info!("agent_update:cli: name={name}");
-
-    let global_dir = crate::config::config_dir().join("agents").join(name);
-    let global_agent_md = global_dir.join("AGENT.md");
-
-    if !global_agent_md.is_file() {
-        eprintln!(
-            "error: agent '{name}' not found in global registry.\n  \
-             Expected: {}",
-            global_agent_md.display()
-        );
-        return 1;
-    }
-
-    let workspace_root = match resolve_workspace_cwd() {
-        Ok(root) => root,
-        Err(code) => return code,
-    };
-
-    crate::agent::migrate_legacy_workspace_agents(&workspace_root);
-    let ws_agent_dir = crate::agent::workspace_agents_dir(&workspace_root).join(name);
-    let ws_agent_md = ws_agent_dir.join("AGENT.md");
-
-    if !ws_agent_md.exists() {
-        eprintln!(
-            "error: agent '{name}' is not installed in this workspace.\n  \
-             Use `plexi agent add {name}` first."
-        );
-        return 1;
-    }
-
-    // Read source
-    let content = match std::fs::read_to_string(&global_agent_md) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", global_agent_md.display());
-            return 1;
-        }
-    };
-
-    // Overwrite only AGENT.md, leave memory/ and logs/ untouched
-    if let Err(e) = std::fs::write(&ws_agent_md, &content) {
-        eprintln!("error: could not write {}: {e}", ws_agent_md.display());
-        return 1;
-    }
-
-    // Ensure memory/ and logs/ exist (in case they were deleted)
-    for subdir in &["memory", "logs"] {
-        let path = ws_agent_dir.join(subdir);
-        if let Err(e) = std::fs::create_dir_all(&path) {
-            eprintln!("warning: could not create {}: {e}", path.display());
-        }
-    }
-
-    log::info!(
-        "agent_update:cli: updated {name} at {}",
-        ws_agent_dir.display()
-    );
-    println!("Updated agent '{name}' — AGENT.md refreshed, memory/ and logs/ preserved.");
-    0
-}
-
-/// `plexi agent list` — list agents installed in the current workspace.
-pub fn agent_list() -> i32 {
-    log::info!("agent_list:cli");
-
-    let workspace_root = match resolve_workspace_cwd() {
-        Ok(root) => root,
-        Err(code) => return code,
-    };
-
-    crate::agent::migrate_legacy_workspace_agents(&workspace_root);
-    let agents_dir = crate::agent::workspace_agents_dir(&workspace_root);
-    if !agents_dir.is_dir() {
-        println!("No agents installed in this workspace.");
-        return 0;
-    }
-
-    let mut names: Vec<String> = Vec::new();
-    match std::fs::read_dir(&agents_dir) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() && path.join("AGENT.md").is_file() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        names.push(name.to_string());
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", agents_dir.display());
-            return 1;
-        }
-    }
-
-    names.sort();
-
-    if names.is_empty() {
-        println!("No agents installed in this workspace.");
-    } else {
-        println!("Installed agents:");
-        for name in &names {
-            println!("  {name}");
-        }
-    }
-    0
-}
-
 /// Resolve the workspace root from the current directory.
 pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
     let cwd = match std::env::current_dir() {
@@ -212,25 +44,6 @@ pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
             Err(1)
         }
     }
-}
-
-/// Copy AGENT.md and create memory/ + logs/ subdirectories.
-fn install_agent(global_agent_md: &Path, ws_agent_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(ws_agent_dir)
-        .map_err(|e| format!("create {}: {e}", ws_agent_dir.display()))?;
-
-    let content = std::fs::read_to_string(global_agent_md)
-        .map_err(|e| format!("read {}: {e}", global_agent_md.display()))?;
-
-    let dest = ws_agent_dir.join("AGENT.md");
-    std::fs::write(&dest, &content).map_err(|e| format!("write {}: {e}", dest.display()))?;
-
-    for subdir in &["memory", "logs"] {
-        let path = ws_agent_dir.join(subdir);
-        std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    }
-
-    Ok(())
 }
 
 /// Multi-CLI harness identifiers supported natively by Plexi.
@@ -304,7 +117,8 @@ impl Drop for TestPiSessionsDirGuard {
 
 #[cfg(test)]
 pub fn set_test_pi_sessions_dir(path: PathBuf) -> TestPiSessionsDirGuard {
-    let token = NEXT_TEST_PI_SESSIONS_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let token =
+        NEXT_TEST_PI_SESSIONS_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     TEST_PI_SESSIONS_DIR_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
     TestPiSessionsDirGuard { token }
 }
@@ -453,32 +267,25 @@ impl HarnessAdapter {
     }
 
     /// Build the non-interactive / task-seeded CLI command to spawn a worker for `task`.
+    ///
+    /// `pi` and `claude` receive persona text via `--append-system-prompt`.
+    /// `codex` and `agy` have no system-prompt flag; callers (`build_agent_spawn_command`)
+    /// inline `# Persona` into `task` before calling this method.
     pub fn spawn_command(
         &self,
         task: &str,
         model: Option<&str>,
-        system_prompt_file: Option<&Path>,
+        append_system_prompt: Option<&str>,
     ) -> String {
         let mut parts = vec![self.binary.to_string()];
         if let Some(m) = model.and_then(non_empty_string) {
             parts.push("--model".to_string());
             parts.push(shell_quote_arg(m));
         }
-        if let Some(prompt_path) = system_prompt_file {
-            let quoted_path = shell_quote_arg(&prompt_path.to_string_lossy());
-            match self.harness {
-                AgentHarness::Claude => {
-                    parts.push("--append-system-prompt-file".to_string());
-                    parts.push(quoted_path);
-                }
-                AgentHarness::Pi => {
-                    parts.push("--system-prompt".to_string());
-                    parts.push(quoted_path);
-                }
-                AgentHarness::Codex | AgentHarness::Agy => {
-                    parts.push("--system-prompt-file".to_string());
-                    parts.push(quoted_path);
-                }
+        if let Some(persona) = append_system_prompt.and_then(non_empty_string) {
+            if matches!(self.harness, AgentHarness::Pi | AgentHarness::Claude) {
+                parts.push("--append-system-prompt".to_string());
+                parts.push(shell_quote_arg(persona));
             }
         }
         parts.push(self.task_flag.to_string());
@@ -507,178 +314,662 @@ impl HarnessAdapter {
     }
 }
 
-/// Declarative agent role configuration loaded from `.plexi/agents/<name>.toml`
-/// or `~/.plexi-<channel>/agents/<name>.toml`.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct AgentRoleConfig {
-    /// Logical role name (defaults to the `.toml` file stem when omitted).
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Primary CLI harness (`claude`, `codex`, `pi`, `agy`).
-    #[serde(alias = "default_harness")]
-    pub harness: String,
-    /// Optional fallback CLI harness when the primary binary is unavailable.
-    #[serde(default)]
-    pub fallback_harness: Option<String>,
-    /// Optional model identifier passed to the harness.
-    #[serde(default)]
-    pub model: Option<String>,
-    /// Whether the worker pane should auto-close on clean exit (`0`).
-    #[serde(default)]
-    pub ephemeral: Option<bool>,
-    /// Default target sub-context name for squad execution.
-    #[serde(default)]
-    pub subcontext: Option<String>,
-    /// Optional path to a system prompt markdown file.
-    #[serde(default)]
-    pub system_prompt_file: Option<PathBuf>,
-    /// Optional JSON Schema enforcing structured output on `plexi agent done`.
-    #[serde(default)]
-    pub result_schema: Option<serde_json::Value>,
-    /// Optional explicit shell command template (for custom harnesses or test fixtures).
-    #[serde(default)]
-    pub command: Option<String>,
-}
-
-impl AgentRoleConfig {
-    pub fn parse_toml(content: &str, default_name: Option<&str>) -> Result<Self, String> {
-        let mut cfg: Self =
-            toml::from_str(content).map_err(|e| format!("invalid agent role TOML: {e}"))?;
-        if cfg.name.as_deref().and_then(non_empty_string).is_none() {
-            cfg.name = default_name.map(ToOwned::to_owned);
-        }
-        if harness_adapter(&cfg.harness).is_none() {
-            return Err(format!(
-                "unknown harness '{}' (expected one of: claude, codex, pi, agy)",
-                cfg.harness
-            ));
-        }
-        if let Some(ref fb) = cfg.fallback_harness {
-            if harness_adapter(fb).is_none() {
-                return Err(format!(
-                    "unknown fallback_harness '{}' (expected one of: claude, codex, pi, agy)",
-                    fb
-                ));
-            }
-        }
-        Ok(cfg)
+/// Resolve the active harness adapter for an agent's `[harness]` config, preferring `cli`
+/// when its binary is on `PATH` (or when no `fallback` is set) and falling back to `fallback`
+/// when the primary binary is absent.
+pub fn resolve_harness_adapter(
+    harness_cfg: &crate::agent::AgentHarnessConfig,
+) -> Result<&'static HarnessAdapter, String> {
+    let primary = harness_adapter(&harness_cfg.cli).ok_or_else(|| {
+        format!(
+            "unknown harness cli '{}' (expected pi, claude, codex, or agy)",
+            harness_cfg.cli
+        )
+    })?;
+    if super::binary_in_path(primary.binary) {
+        return Ok(primary);
     }
-
-    /// Resolve the active harness adapter, preferring `harness` when its binary is on `PATH`
-    /// (or when no `fallback_harness` is configured) and falling back to `fallback_harness`
-    /// if the primary binary is absent.
-    pub fn resolve_adapter(&self) -> Result<&'static HarnessAdapter, String> {
-        let primary = harness_adapter(&self.harness).ok_or_else(|| {
+    if let Some(ref fb_name) = harness_cfg.fallback {
+        let fallback = harness_adapter(fb_name).ok_or_else(|| {
             format!(
-                "unknown harness '{}' (expected claude, codex, pi, or agy)",
-                self.harness
+                "unknown fallback '{}' (expected pi, claude, codex, or agy)",
+                fb_name
             )
         })?;
-        if super::binary_in_path(primary.binary) {
-            return Ok(primary);
+        if super::binary_in_path(fallback.binary) {
+            return Ok(fallback);
         }
-        if let Some(ref fb_name) = self.fallback_harness {
-            let fallback = harness_adapter(fb_name).ok_or_else(|| {
-                format!(
-                    "unknown fallback_harness '{}' (expected claude, codex, pi, or agy)",
-                    fb_name
-                )
-            })?;
-            if super::binary_in_path(fallback.binary) {
-                return Ok(fallback);
-            }
-        }
-        Ok(primary)
     }
+    Ok(primary)
+}
 
-    /// Resolve the JSON schema configured on this role, supporting either an inline JSON/TOML
-    /// schema table or a string path/JSON literal.
-    pub fn resolved_result_schema(
-        &self,
-        base_dir: Option<&Path>,
-    ) -> Result<Option<serde_json::Value>, String> {
-        let Some(ref raw) = self.result_schema else {
-            return Ok(None);
-        };
-        match raw {
-            serde_json::Value::String(spec) => {
-                crate::host::pane_result::parse_schema_spec(spec, base_dir).map(Some)
-            }
-            serde_json::Value::Object(_) => {
-                crate::host::pane_result::normalize_schema_value(raw, base_dir).map(Some)
-            }
-            _ => Err("result_schema must be a JSON Schema table/object or a path/JSON string".into()),
+/// Build the `# Plexi worker contract` section appended to every spawned worker's task.
+pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> String {
+    let mut contract = format!(
+        "# Plexi worker contract\n\
+         You are agent `{}` running in a Plexi pane.\n\
+         Finish by running: plexi agent done --summary \"<one line>\" --result '<json>'\n\
+         When blocked, ask the parent agent with: plexi agent ask \"<question>\"",
+        definition.id
+    );
+    if let Some(schema) = definition
+        .harness
+        .as_ref()
+        .and_then(|h| h.result_schema.as_ref())
+    {
+        if let Ok(schema_json) = serde_json::to_string(schema) {
+            contract.push_str(&format!("\nResult schema: {schema_json}"));
         }
+    }
+    contract
+}
+
+/// Pure function building the exact shell command `plexi agent spawn` runs for
+/// `(definition, adapter, task)`.
+///
+/// - Refuses agents without a `[harness]` table.
+/// - `pi` and `claude` pass `--append-system-prompt <AGENT.md text>`.
+/// - `codex` and `agy` have no system-prompt flag, so `# Persona\n<AGENT.md text>\n\n`
+///   is prepended to the task text.
+/// - Always appends `# Plexi worker contract` (including the result schema verbatim when set).
+pub fn build_agent_spawn_command(
+    definition: &crate::agent::AgentDefinition,
+    adapter: &HarnessAdapter,
+    task: &str,
+) -> Result<String, String> {
+    let harness_cfg = definition.harness.as_ref().ok_or_else(|| {
+        format!(
+            "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be spawned as a CLI worker)",
+            definition.id
+        )
+    })?;
+    let persona = definition.prompt.trim();
+    let contract = format_worker_contract(definition);
+    let (append_prompt, full_task) = match adapter.harness {
+        AgentHarness::Pi | AgentHarness::Claude => (Some(persona), format!("{task}\n\n{contract}")),
+        AgentHarness::Codex | AgentHarness::Agy => (
+            None,
+            format!("# Persona\n{persona}\n\n{task}\n\n{contract}"),
+        ),
+    };
+    Ok(adapter.spawn_command(&full_task, harness_cfg.model.as_deref(), append_prompt))
+}
+
+fn tier_display_label(source: crate::agent::AgentSource) -> &'static str {
+    match source {
+        crate::agent::AgentSource::Workspace => "workspace",
+        crate::agent::AgentSource::User => "global",
+        crate::agent::AgentSource::BuiltIn => "built-in",
     }
 }
 
-/// Load an `AgentRoleConfig` by name or path.
-/// Searches:
-/// 1. Direct path if `name_or_path` ends with `.toml` or contains a path separator
-/// 2. `<workspace>/.plexi/agents/<name>.toml` (and channel-scoped workspace dir)
-/// 3. `<profile_dir>/agents/<name>.toml` (`~/.plexi-<channel>/agents/<name>.toml`)
-/// 4. `<shared_dir>/agents/<name>.toml` (`~/.plexi/agents/<name>.toml`)
-pub fn load_agent_role_config(
-    name_or_path: &str,
+/// Validate that `<name>` is a safe lowercase agent slug (`a-z`, `0-9`, `-`, starting with `a-z`).
+pub fn validate_agent_slug(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed != name {
+        return Err(format!(
+            "invalid agent name '{name}': must be a non-empty lowercase slug (a-z, 0-9, '-')"
+        ));
+    }
+    if trimmed == "default" {
+        return Err(
+            "invalid agent name 'default': 'default' is reserved for the built-in assistant"
+                .to_string(),
+        );
+    }
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return Err("agent name cannot be empty".to_string());
+    };
+    if !first.is_ascii_lowercase() {
+        return Err(format!(
+            "invalid agent name '{name}': must start with a lowercase ASCII letter (a-z)"
+        ));
+    }
+    if trimmed.len() > 64
+        || !trimmed
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || trimmed.ends_with('-')
+    {
+        return Err(format!(
+            "invalid agent name '{name}': must contain only lowercase ASCII letters, digits, and hyphens (a-z, 0-9, '-')"
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve an agent by `<name>` through `AgentRegistry` (workspace tier shadowing global tier).
+/// If an agent directory for `<name>` exists on disk with a broken `AGENT.md` or `settings.toml`,
+/// returns that parse error rather than silently ignoring it.
+pub fn resolve_agent_definition_in(
+    name: &str,
+    profile_dir: &Path,
     workspace_root: Option<&Path>,
-) -> Result<(AgentRoleConfig, PathBuf), String> {
-    let trimmed = name_or_path.trim();
+) -> Result<(crate::agent::AgentDefinition, bool), String> {
+    let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err("agent config name cannot be empty".to_string());
+        return Err("agent name cannot be empty".to_string());
     }
-    let direct_path = Path::new(trimmed);
-    if trimmed.ends_with(".toml") || trimmed.contains('/') || trimmed.contains('\\') {
-        if !direct_path.is_file() {
-            return Err(format!(
-                "agent config file not found: {}",
-                direct_path.display()
-            ));
-        }
-        let content = std::fs::read_to_string(direct_path)
-            .map_err(|e| format!("could not read {}: {e}", direct_path.display()))?;
-        let stem = direct_path.file_stem().and_then(|s| s.to_str());
-        let cfg = AgentRoleConfig::parse_toml(&content, stem)?;
-        return Ok((cfg, direct_path.to_path_buf()));
-    }
+    let registry =
+        crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
 
-    let file_name = format!("{trimmed}.toml");
-    let mut candidates = Vec::new();
+    // If a workspace agent directory for `trimmed` exists on disk, ensure any parse error in it
+    // is surfaced rather than silently falling through to a global definition or "not found".
     if let Some(ws) = workspace_root {
-        candidates.push(ws.join(".plexi").join("agents").join(&file_name));
-        let chan_dir = crate::config::workspace_channel_dir();
-        if chan_dir != ".plexi" {
-            candidates.push(ws.join(chan_dir).join("agents").join(&file_name));
-        }
-    }
-    candidates.push(crate::config::config_dir().join("agents").join(&file_name));
-    let shared_agents = crate::config::shared_dir().join("agents").join(&file_name);
-    if !candidates.contains(&shared_agents) {
-        candidates.push(shared_agents);
-    }
-
-    for candidate in &candidates {
-        if candidate.is_file() {
-            let content = std::fs::read_to_string(candidate)
-                .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
-            let cfg = AgentRoleConfig::parse_toml(&content, Some(trimmed))?;
-            return Ok((cfg, candidate.clone()));
+        let ws_dir = crate::agent::workspace_agents_dir(ws).join(trimmed);
+        if ws_dir.is_dir()
+            && !registry
+                .active(trimmed)
+                .is_some_and(|d| d.source == crate::agent::AgentSource::Workspace)
+        {
+            let def = crate::agent::AgentDefinition::load_dir(
+                &ws_dir,
+                crate::agent::AgentSource::Workspace,
+            )?;
+            let shadows_global = registry
+                .active(trimmed)
+                .is_some_and(|d| d.source == crate::agent::AgentSource::User);
+            return Ok((def, shadows_global));
         }
     }
 
-    let searched: Vec<String> = candidates
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
+    let global_dir = profile_dir.join("agents").join(trimmed);
+    if global_dir.is_dir()
+        && !registry
+            .active(trimmed)
+            .is_some_and(|d| d.source != crate::agent::AgentSource::BuiltIn)
+    {
+        let def =
+            crate::agent::AgentDefinition::load_dir(&global_dir, crate::agent::AgentSource::User)?;
+        return Ok((def, false));
+    }
+
+    if let Some(def) = registry
+        .active(trimmed)
+        .filter(|d| d.source != crate::agent::AgentSource::BuiltIn)
+    {
+        let shadows_global = registry
+            .shadowed(trimmed)
+            .iter()
+            .any(|s| s.source == crate::agent::AgentSource::User);
+        return Ok((def.clone(), shadows_global));
+    }
+
+    let mut searched = Vec::new();
+    if let Some(ws) = workspace_root {
+        searched.push(
+            crate::agent::workspace_agents_dir(ws)
+                .join(trimmed)
+                .display()
+                .to_string(),
+        );
+    }
+    searched.push(global_dir.display().to_string());
     Err(format!(
-        "agent role config '{trimmed}' not found (searched: {})",
+        "agent '{trimmed}' not found (searched: {})",
         searched.join(", ")
     ))
 }
 
-/// `plexi agent spawn <config> --task "<brief>" [--subcontext <name>] [--ephemeral]`
+pub struct AgentCreateOptions<'a> {
+    pub name: &'a str,
+    pub cli: &'a str,
+    pub model: Option<&'a str>,
+    pub fallback: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub persona: Option<&'a str>,
+    pub persona_file: Option<&'a str>,
+    pub result_schema: Option<&'a str>,
+    pub ephemeral: bool,
+    pub display_name: Option<&'a str>,
+    pub global: bool,
+    pub cwd: Option<&'a Path>,
+}
+
+pub fn agent_create_in(
+    opts: &AgentCreateOptions<'_>,
+    profile_dir: &Path,
+) -> Result<PathBuf, String> {
+    validate_agent_slug(opts.name)?;
+    let cli_trimmed = opts.cli.trim();
+    if !matches!(cli_trimmed, "pi" | "claude" | "codex" | "agy") {
+        return Err(format!(
+            "invalid --cli '{}': expected one of pi, claude, codex, agy",
+            opts.cli
+        ));
+    }
+    if let Some(fb) = opts.fallback.and_then(non_empty_string) {
+        if !matches!(fb, "pi" | "claude" | "codex" | "agy") {
+            return Err(format!(
+                "invalid --fallback '{fb}': expected one of pi, claude, codex, agy"
+            ));
+        }
+    }
+
+    let effective_cwd = match opts.cwd {
+        Some(d) => d.to_path_buf(),
+        None => std::env::current_dir()
+            .map_err(|e| format!("could not determine current directory: {e}"))?,
+    };
+
+    let persona_text = match (opts.persona, opts.persona_file) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "--persona and --persona-file are mutually exclusive; pass only one".to_string(),
+            )
+        }
+        (None, None) => {
+            return Err("one of --persona <text> or --persona-file <path> is required".to_string())
+        }
+        (Some(inline), None) => {
+            if inline.trim().is_empty() {
+                return Err("--persona must be non-empty".to_string());
+            }
+            inline.to_string()
+        }
+        (None, Some(file_str)) => {
+            let file_path = {
+                let p = Path::new(file_str.trim());
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    effective_cwd.join(p)
+                }
+            };
+            let content = std::fs::read_to_string(&file_path).map_err(|e| {
+                format!("failed to read --persona-file {}: {e}", file_path.display())
+            })?;
+            if content.trim().is_empty() {
+                return Err(format!("--persona-file {} is empty", file_path.display()));
+            }
+            content
+        }
+    };
+
+    let normalized_schema_json = match opts.result_schema.and_then(non_empty_string) {
+        None => None,
+        Some(spec) => {
+            let value = crate::host::pane_result::parse_schema_spec(spec, Some(&effective_cwd))
+                .map_err(|e| format!("invalid --result-schema: {e}"))?;
+            let compact =
+                serde_json::to_string(&value).map_err(|e| format!("serialize schema: {e}"))?;
+            Some(compact)
+        }
+    };
+
+    let (target_dir, source) = if opts.global {
+        (
+            profile_dir.join("agents").join(opts.name),
+            crate::agent::AgentSource::User,
+        )
+    } else {
+        let Some(ws_root) =
+            crate::app::registry::resolve_agent_create_workspace_root(&effective_cwd)
+        else {
+            return Err(format!(
+                "no project workspace (.plexi/ or .git) found at or above {}; run inside a project or pass --global",
+                effective_cwd.display()
+            ));
+        };
+        crate::agent::migrate_legacy_workspace_agents(&ws_root);
+        (
+            crate::agent::workspace_agents_dir(&ws_root).join(opts.name),
+            crate::agent::AgentSource::Workspace,
+        )
+    };
+
+    if target_dir.exists() {
+        return Err(format!(
+            "agent '{}' already exists at {}; edit {}/AGENT.md and {}/settings.toml directly",
+            opts.name,
+            target_dir.display(),
+            target_dir.display(),
+            target_dir.display()
+        ));
+    }
+
+    let display_name = opts
+        .display_name
+        .and_then(non_empty_string)
+        .unwrap_or(opts.name);
+    let description = opts.description.and_then(non_empty_string);
+
+    let mut settings_lines = vec![
+        "[agent]".to_string(),
+        format!("id = {}", toml::Value::String(opts.name.to_string())),
+        format!(
+            "display_name = {}",
+            toml::Value::String(display_name.to_string())
+        ),
+    ];
+    if let Some(desc) = description {
+        settings_lines.push(format!(
+            "description = {}",
+            toml::Value::String(desc.to_string())
+        ));
+    }
+    settings_lines.push(String::new());
+    settings_lines.push("[harness]".to_string());
+    settings_lines.push(format!(
+        "cli = {}",
+        toml::Value::String(cli_trimmed.to_string())
+    ));
+    if let Some(m) = opts.model.and_then(non_empty_string) {
+        settings_lines.push(format!("model = {}", toml::Value::String(m.to_string())));
+    }
+    if let Some(fb) = opts.fallback.and_then(non_empty_string) {
+        settings_lines.push(format!(
+            "fallback = {}",
+            toml::Value::String(fb.to_string())
+        ));
+    }
+    if opts.ephemeral {
+        settings_lines.push("ephemeral = true".to_string());
+    }
+    if let Some(schema_str) = normalized_schema_json {
+        settings_lines.push(format!(
+            "result_schema = {}",
+            toml::Value::String(schema_str)
+        ));
+    }
+    let settings_content = format!("{}\n", settings_lines.join("\n"));
+    let prompt_content = if persona_text.ends_with('\n') {
+        persona_text
+    } else {
+        format!("{persona_text}\n")
+    };
+
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("failed to create {}: {e}", target_dir.display()))?;
+    if let Err(e) = std::fs::write(target_dir.join("AGENT.md"), &prompt_content) {
+        let _ = std::fs::remove_dir(&target_dir);
+        return Err(format!(
+            "failed to write {}: {e}",
+            target_dir.join("AGENT.md").display()
+        ));
+    }
+    if let Err(e) = std::fs::write(target_dir.join("settings.toml"), &settings_content) {
+        let _ = std::fs::remove_file(target_dir.join("AGENT.md"));
+        let _ = std::fs::remove_dir(&target_dir);
+        return Err(format!(
+            "failed to write {}: {e}",
+            target_dir.join("settings.toml").display()
+        ));
+    }
+
+    if let Err(e) = crate::agent::AgentDefinition::load_dir(&target_dir, source) {
+        let _ = std::fs::remove_file(target_dir.join("AGENT.md"));
+        let _ = std::fs::remove_file(target_dir.join("settings.toml"));
+        let _ = std::fs::remove_dir(&target_dir);
+        return Err(e);
+    }
+
+    Ok(target_dir)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn agent_create_cli(
+    name: &str,
+    cli: &str,
+    model: Option<&str>,
+    fallback: Option<&str>,
+    description: Option<&str>,
+    persona: Option<&str>,
+    persona_file: Option<&str>,
+    result_schema: Option<&str>,
+    ephemeral: bool,
+    display_name: Option<&str>,
+    global: bool,
+    cwd: Option<&str>,
+) -> i32 {
+    log::info!("agent_create:cli: name={name} cli={cli} global={global} ephemeral={ephemeral}");
+    let cwd_path = cwd.map(PathBuf::from);
+    let opts = AgentCreateOptions {
+        name,
+        cli,
+        model,
+        fallback,
+        description,
+        persona,
+        persona_file,
+        result_schema,
+        ephemeral,
+        display_name,
+        global,
+        cwd: cwd_path.as_deref(),
+    };
+    match agent_create_in(&opts, &crate::config::config_dir()) {
+        Ok(created_dir) => {
+            log::info!("agent_create:cli: created {}", created_dir.display());
+            println!("{}", created_dir.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+pub fn agent_list_in(
+    profile_dir: &Path,
+    workspace_root: Option<&Path>,
+    json: bool,
+) -> Result<String, String> {
+    let registry =
+        crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
+    let mut rows = Vec::new();
+    for def in registry.agents() {
+        if def.source == crate::agent::AgentSource::BuiltIn {
+            continue;
+        }
+        let tier = tier_display_label(def.source);
+        let shadows_global = registry
+            .shadowed(&def.id)
+            .iter()
+            .any(|s| s.source == crate::agent::AgentSource::User);
+        let (harness_label, cli_val, model_val) = match &def.harness {
+            Some(h) => {
+                let label = match &h.model {
+                    Some(m) => format!("{} ({m})", h.cli),
+                    None => h.cli.clone(),
+                };
+                (
+                    label,
+                    serde_json::Value::String(h.cli.clone()),
+                    h.model
+                        .as_ref()
+                        .map(|m| serde_json::Value::String(m.clone()))
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+            None => (
+                "assistant".to_string(),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ),
+        };
+        rows.push((
+            def,
+            tier,
+            shadows_global,
+            harness_label,
+            serde_json::json!({
+                "name": def.id,
+                "display_name": def.display_name,
+                "tier": tier,
+                "harness": if def.harness.is_some() { cli_val.clone() } else { serde_json::Value::String("assistant".to_string()) },
+                "cli": cli_val,
+                "model": model_val,
+                "description": def.description,
+                "shadows_global": shadows_global,
+                "path": def.path,
+            }),
+        ));
+    }
+
+    if json {
+        let json_rows: Vec<serde_json::Value> = rows.into_iter().map(|(_, _, _, _, j)| j).collect();
+        return serde_json::to_string_pretty(&json_rows).map_err(|e| e.to_string());
+    }
+
+    if rows.is_empty() {
+        return Ok("No agents found in workspace or global registry.".to_string());
+    }
+
+    let mut lines = Vec::with_capacity(rows.len());
+    for (def, tier, shadows_global, harness_label, _) in rows {
+        let mut line = format!("{:<18} {:<10} {:<32}", def.id, tier, harness_label);
+        if !def.description.is_empty() {
+            line.push_str(&format!(" {}", def.description));
+        }
+        if shadows_global {
+            line.push_str(" [shadows global]");
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    Ok(lines.join("\n"))
+}
+
+pub fn agent_list_cli(cwd: Option<&str>, json: bool) -> i32 {
+    log::info!("agent_list:cli: cwd={cwd:?} json={json}");
+    let effective_cwd = cwd
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let workspace_root = effective_cwd
+        .as_deref()
+        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
+    match agent_list_in(
+        &crate::config::config_dir(),
+        workspace_root.as_deref(),
+        json,
+    ) {
+        Ok(out) => {
+            println!("{out}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+pub fn agent_show_in(
+    name: &str,
+    profile_dir: &Path,
+    workspace_root: Option<&Path>,
+    json: bool,
+) -> Result<String, String> {
+    let (def, shadows_global) = resolve_agent_definition_in(name, profile_dir, workspace_root)?;
+    let tier = tier_display_label(def.source);
+    let spawn_command = match &def.harness {
+        Some(h) => {
+            let adapter = resolve_harness_adapter(h)?;
+            Some(build_agent_spawn_command(&def, adapter, "<TASK>")?)
+        }
+        None => None,
+    };
+
+    if json {
+        let harness_json = def.harness.as_ref().map(|h| {
+            serde_json::json!({
+                "cli": h.cli,
+                "model": h.model,
+                "fallback": h.fallback,
+                "ephemeral": h.ephemeral,
+                "result_schema": h.result_schema,
+            })
+        });
+        let value = serde_json::json!({
+            "name": def.id,
+            "display_name": def.display_name,
+            "tier": tier,
+            "shadows_global": shadows_global,
+            "path": def.path,
+            "description": def.description,
+            "persona": def.prompt,
+            "harness": harness_json,
+            "spawn_command": spawn_command,
+        });
+        return serde_json::to_string_pretty(&value).map_err(|e| e.to_string());
+    }
+
+    let path_str = def
+        .path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(built-in)".to_string());
+    let tier_str = if shadows_global {
+        format!("{tier} (shadows global)")
+    } else {
+        tier.to_string()
+    };
+    let mut lines = vec![
+        format!("Name:          {}", def.id),
+        format!("Display name:  {}", def.display_name),
+        format!("Tier:          {tier_str}"),
+        format!("Path:          {path_str}"),
+    ];
+    if !def.description.is_empty() {
+        lines.push(format!("Description:   {}", def.description));
+    }
+    match &def.harness {
+        Some(h) => {
+            lines.push(format!("CLI:           {}", h.cli));
+            if let Some(m) = &h.model {
+                lines.push(format!("Model:         {m}"));
+            }
+            if let Some(fb) = &h.fallback {
+                lines.push(format!("Fallback:      {fb}"));
+            }
+            lines.push(format!("Ephemeral:     {}", h.ephemeral));
+            if let Some(schema) = &h.result_schema {
+                if let Ok(s) = serde_json::to_string(schema) {
+                    lines.push(format!("Result schema: {s}"));
+                }
+            }
+        }
+        None => {
+            lines.push("Harness:       assistant (no [harness] table)".to_string());
+        }
+    }
+    if let Some(cmd) = spawn_command {
+        lines.push(format!("Spawn command: {cmd}"));
+    }
+    Ok(lines.join("\n"))
+}
+
+pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
+    log::info!("agent_show:cli: name={name} cwd={cwd:?} json={json}");
+    let effective_cwd = cwd
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let workspace_root = effective_cwd
+        .as_deref()
+        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
+    match agent_show_in(
+        name,
+        &crate::config::config_dir(),
+        workspace_root.as_deref(),
+        json,
+    ) {
+        Ok(out) => {
+            println!("{out}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi agent spawn <name> --task "<brief>" [--subcontext <name>] [--ephemeral]`
 #[allow(clippy::too_many_arguments)]
 pub fn agent_spawn_cli(
-    config_name: &str,
+    agent_name: &str,
     task: &str,
     subcontext: Option<&str>,
     ephemeral: bool,
@@ -687,71 +978,48 @@ pub fn agent_spawn_cli(
     json: bool,
 ) -> i32 {
     log::info!(
-        "agent_spawn:cli: config={config_name} subcontext={subcontext:?} ephemeral={ephemeral}"
+        "agent_spawn:cli: name={agent_name} subcontext={subcontext:?} ephemeral={ephemeral}"
     );
     let effective_cwd = cwd
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
     let workspace_root = effective_cwd
         .as_deref()
-        .and_then(crate::app::registry::resolve_workspace_root);
+        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
 
-    let (role_cfg, cfg_path) = match load_agent_role_config(config_name, workspace_root.as_deref()) {
+    let (def, _) = match resolve_agent_definition_in(
+        agent_name,
+        &crate::config::config_dir(),
+        workspace_root.as_deref(),
+    ) {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
         }
     };
-    let adapter = match role_cfg.resolve_adapter() {
+    let Some(ref harness_cfg) = def.harness else {
+        eprintln!(
+            "error: agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be spawned as a CLI worker)",
+            def.id
+        );
+        return 1;
+    };
+    let adapter = match resolve_harness_adapter(harness_cfg) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
         }
     };
-    let cfg_dir = cfg_path.parent();
-    let result_schema = match role_cfg.resolved_result_schema(workspace_root.as_deref().or(cfg_dir))
-    {
-        Ok(s) => s,
+    let cmd_string = match build_agent_spawn_command(&def, adapter, task) {
+        Ok(cmd) => cmd,
         Err(e) => {
-            eprintln!("error: invalid_schema: {e}");
+            eprintln!("error: {e}");
             return 1;
         }
     };
-    let resolved_prompt = role_cfg.system_prompt_file.as_ref().map(|p| {
-        if p.is_absolute() {
-            p.clone()
-        } else if let Some(ws) = workspace_root.as_deref() {
-            ws.join(p)
-        } else if let Some(dir) = cfg_dir {
-            dir.join(p)
-        } else {
-            p.clone()
-        }
-    });
-    let cmd_string = match role_cfg.command.as_deref().and_then(non_empty_string) {
-        Some(custom) => {
-            if custom.contains("{task}") {
-                custom.replace("{task}", &shell_quote_arg(task))
-            } else {
-                custom.to_string()
-            }
-        }
-        None => adapter.spawn_command(
-            task,
-            role_cfg.model.as_deref(),
-            resolved_prompt.as_deref(),
-        ),
-    };
-    let role_name = role_cfg
-        .name
-        .clone()
-        .unwrap_or_else(|| config_name.to_string());
-    let effective_ephemeral = ephemeral || role_cfg.ephemeral.unwrap_or(false);
-    let effective_subcontext = subcontext
-        .map(ToOwned::to_owned)
-        .or_else(|| role_cfg.subcontext.clone());
+    let effective_ephemeral = ephemeral || harness_cfg.ephemeral;
     let parent_pane_id = from_pane_id.or_else(|| {
         std::env::var("PLEXI_PANE_ID")
             .ok()
@@ -760,14 +1028,14 @@ pub fn agent_spawn_cli(
 
     let mut payload = serde_json::json!({
         "type": "agent_spawn",
-        "role": role_name,
+        "role": def.id,
         "harness": adapter.harness.as_str(),
         "command": cmd_string,
         "task": task,
         "ephemeral": effective_ephemeral,
     });
-    if let Some(sub) = effective_subcontext {
-        payload["subcontext"] = serde_json::Value::String(sub);
+    if let Some(sub) = subcontext.and_then(non_empty_string) {
+        payload["subcontext"] = serde_json::Value::String(sub.to_string());
     }
     if let Some(pid) = parent_pane_id {
         payload["parent_pane_id"] = serde_json::json!(pid);
@@ -775,8 +1043,8 @@ pub fn agent_spawn_cli(
     if let Some(dir) = effective_cwd.as_ref().and_then(|p| p.to_str()) {
         payload["cwd"] = serde_json::Value::String(dir.to_string());
     }
-    if let Some(schema) = result_schema {
-        payload["result_schema"] = schema;
+    if let Some(ref schema) = harness_cfg.result_schema {
+        payload["result_schema"] = schema.clone();
     }
 
     let content = match super::request(payload, "agent-spawn-response", "agent spawn") {
@@ -801,11 +1069,7 @@ pub fn agent_spawn_cli(
 }
 
 /// `plexi agent done --result <json> [--summary "<text>"] [--pane-id <id>]`
-pub fn agent_done_cli(
-    result: &str,
-    summary: Option<&str>,
-    pane_id_flag: Option<u64>,
-) -> i32 {
+pub fn agent_done_cli(result: &str, summary: Option<&str>, pane_id_flag: Option<u64>) -> i32 {
     let Some(pane_id) = pane_id_flag.or_else(|| {
         std::env::var("PLEXI_PANE_ID")
             .ok()
@@ -832,9 +1096,7 @@ pub fn agent_done_cli(
         Err(code) => return code,
     };
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-        if val.get("ok").and_then(|v| v.as_bool()) == Some(false)
-            || val.get("error").is_some()
-        {
+        if val.get("ok").and_then(|v| v.as_bool()) == Some(false) || val.get("error").is_some() {
             let err_code = val
                 .get("error_code")
                 .and_then(|v| v.as_str())
@@ -1401,7 +1663,11 @@ fn install_json_agent_hooks(
             return 1;
         }
     };
-    if changed { write_json_settings(path, &settings) } else { 0 }
+    if changed {
+        write_json_settings(path, &settings)
+    } else {
+        0
+    }
 }
 
 /// Point every lifecycle event at `command`, dropping any Plexi entry already
@@ -1479,7 +1745,10 @@ pub(crate) fn install_pi_extension_at(extension_path: &Path, script_str: &str) -
             return 0;
         }
         if !is_plexi_pi_extension(&existing) {
-            eprintln!("error: refusing to overwrite unknown Pi extension {}; move it aside first.", extension_path.display());
+            eprintln!(
+                "error: refusing to overwrite unknown Pi extension {}; move it aside first.",
+                extension_path.display()
+            );
             return 1;
         }
     }
@@ -1650,14 +1919,15 @@ fn uninstall_json_hooks(path: &Path, events: &[&str], label: &str) -> i32 {
 
     if let Some(hooks_map) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
         for event in events {
-            let remove_empty_event = if let Some(event_arr) = hooks_map.get_mut(*event).and_then(|v| v.as_array_mut()) {
-                let before = event_arr.len();
-                event_arr.retain(|entry| !contains_plexi_agent_hook(entry));
-                removed += before - event_arr.len();
-                event_arr.is_empty()
-            } else {
-                false
-            };
+            let remove_empty_event =
+                if let Some(event_arr) = hooks_map.get_mut(*event).and_then(|v| v.as_array_mut()) {
+                    let before = event_arr.len();
+                    event_arr.retain(|entry| !contains_plexi_agent_hook(entry));
+                    removed += before - event_arr.len();
+                    event_arr.is_empty()
+                } else {
+                    false
+                };
             if remove_empty_event {
                 hooks_map.remove(*event);
             }
@@ -1756,8 +2026,7 @@ fn read_json_settings(path: &Path) -> Result<serde_json::Value, String> {
     }
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("could not parse {}: {e}", path.display()))
+    serde_json::from_str(&content).map_err(|e| format!("could not parse {}: {e}", path.display()))
 }
 
 fn write_json_settings(path: &Path, settings: &serde_json::Value) -> i32 {
@@ -1800,62 +2069,31 @@ fn backup_existing_file(path: &Path) -> Result<(), String> {
     }
     let backup = path.with_extension(format!(
         "{}.plexi-hook.bak",
-        path.extension().and_then(|extension| extension.to_str()).unwrap_or("bak")
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("bak")
     ));
     if backup.exists() {
         return Ok(());
     }
     std::fs::copy(path, &backup).map_err(|e| {
-        format!("could not back up {} to {}: {e}", path.display(), backup.display())
+        format!(
+            "could not back up {} to {}: {e}",
+            path.display(),
+            backup.display()
+        )
     })?;
-    log::info!("agent_hook: backed up {} to {}", path.display(), backup.display());
+    log::info!(
+        "agent_hook: backed up {} to {}",
+        path.display(),
+        backup.display()
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod agent_tests {
     use std::fs;
-    use tempfile::TempDir;
-
-    /// Set up a fake global config dir with an agent, and a workspace with .plexi/.
-    /// Returns (global_tempdir, workspace_tempdir).
-    fn setup_dirs(agent_name: &str, agent_content: &str) -> (TempDir, TempDir) {
-        let global = tempfile::tempdir().unwrap();
-        let agent_dir = global.path().join("agents").join(agent_name);
-        fs::create_dir_all(&agent_dir).unwrap();
-        fs::write(agent_dir.join("AGENT.md"), agent_content).unwrap();
-
-        let workspace = tempfile::tempdir().unwrap();
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
-
-        (global, workspace)
-    }
-
-    #[test]
-    fn install_agent_creates_all_paths() {
-        let (global, workspace) = setup_dirs("test-agent", "name = \"test-agent\"");
-        let global_md = global.path().join("agents/test-agent/AGENT.md");
-        let ws_dir = workspace.path().join(".plexi/agents/test-agent");
-
-        super::install_agent(&global_md, &ws_dir).unwrap();
-
-        assert!(ws_dir.join("AGENT.md").is_file());
-        assert!(ws_dir.join("memory").is_dir());
-        assert!(ws_dir.join("logs").is_dir());
-
-        let content = fs::read_to_string(ws_dir.join("AGENT.md")).unwrap();
-        assert_eq!(content, "name = \"test-agent\"");
-    }
-
-    #[test]
-    fn install_agent_fails_on_missing_source() {
-        let workspace = tempfile::tempdir().unwrap();
-        let fake_md = workspace.path().join("nonexistent/AGENT.md");
-        let ws_dir = workspace.path().join(".plexi/agents/missing");
-
-        let result = super::install_agent(&fake_md, &ws_dir);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn register_json_hook_is_idempotent_and_agent_specific() {
@@ -1866,19 +2104,22 @@ mod agent_tests {
             "PreToolUse",
             "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh",
             Some("Plexi agent state"),
-        ).unwrap();
+        )
+        .unwrap();
         super::register_json_hook(
             &mut settings,
             "PreToolUse",
             "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh",
             Some("Plexi agent state"),
-        ).unwrap();
+        )
+        .unwrap();
         super::register_json_hook(
             &mut settings,
             "PreToolUse",
             "PLEXI_AGENT_NAME=codex /tmp/current/claude-code-agent-state.sh",
             Some("Plexi agent state"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(hooks.len(), 1);
@@ -1892,38 +2133,75 @@ mod agent_tests {
     #[test]
     fn pane_lifecycle_hook_preserves_stop_failure_and_session_end() {
         use std::io::Write;
-        use std::process::{Command, Stdio};
         use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
         let dir = tempfile::tempdir().unwrap();
         let capture = dir.path().join("capture");
         fs::write(&capture, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'hook_event=%s\\n' \"${PLEXI_AGENT_EVENT:-}\"\n").unwrap();
         fs::set_permissions(&capture, fs::Permissions::from_mode(0o755)).unwrap();
         let script = dir.path().join("hook.sh");
-        fs::write(&script, super::agent_state_script(capture.to_str().unwrap()).replace(
-            ">/dev/null 2>&1 || true", "|| true"
-        )).unwrap();
-        let reports: Vec<_> = ["Stop", "StopFailure", "SessionEnd"].into_iter().map(|event| {
-            let mut child = Command::new("bash").arg(&script)
-                .env("PLEXI_SOCKET", "unused-test-socket")
-                .env("PLEXI_PANE_ID", "7")
-                .env("PLEXI_AGENT_NAME", "claude-code")
-                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-                .spawn().unwrap();
-            write!(child.stdin.take().unwrap(), "{}", serde_json::json!({
-                "hook_event_name": event, "session_id": "test-session"
-            })).unwrap();
-            let output = child.wait_with_output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-            let args = String::from_utf8(output.stdout).unwrap();
-            assert!(args.contains("agent\nreport\n"), "hook did not report: {args}");
-            args
-        }).collect();
-        assert_ne!(reports[0], reports[1], "normal stop and failure lost their distinction at the source");
-        assert_ne!(reports[0], reports[2], "normal stop and session end lost their distinction at the source");
-        assert_ne!(reports[1], reports[2], "failure and session end lost their distinction at the source");
+        fs::write(
+            &script,
+            super::agent_state_script(capture.to_str().unwrap())
+                .replace(">/dev/null 2>&1 || true", "|| true"),
+        )
+        .unwrap();
+        let reports: Vec<_> = ["Stop", "StopFailure", "SessionEnd"]
+            .into_iter()
+            .map(|event| {
+                let mut child = Command::new("bash")
+                    .arg(&script)
+                    .env("PLEXI_SOCKET", "unused-test-socket")
+                    .env("PLEXI_PANE_ID", "7")
+                    .env("PLEXI_AGENT_NAME", "claude-code")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                write!(
+                    child.stdin.take().unwrap(),
+                    "{}",
+                    serde_json::json!({
+                        "hook_event_name": event, "session_id": "test-session"
+                    })
+                )
+                .unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let args = String::from_utf8(output.stdout).unwrap();
+                assert!(
+                    args.contains("agent\nreport\n"),
+                    "hook did not report: {args}"
+                );
+                args
+            })
+            .collect();
+        assert_ne!(
+            reports[0], reports[1],
+            "normal stop and failure lost their distinction at the source"
+        );
+        assert_ne!(
+            reports[0], reports[2],
+            "normal stop and session end lost their distinction at the source"
+        );
+        assert_ne!(
+            reports[1], reports[2],
+            "failure and session end lost their distinction at the source"
+        );
         for (report, event) in reports.iter().zip(["Stop", "StopFailure", "SessionEnd"]) {
-            assert!(report.contains(&format!("hook_event={event}\n")), "raw provenance missing: {report}");
-            assert!(!report.contains("--event\n"), "shared hook must retain old CLI arguments");
+            assert!(
+                report.contains(&format!("hook_event={event}\n")),
+                "raw provenance missing: {report}"
+            );
+            assert!(
+                !report.contains("--event\n"),
+                "shared hook must retain old CLI arguments"
+            );
         }
     }
 
@@ -1993,14 +2271,12 @@ mod agent_tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o755
         );
-        assert!(
-            std::process::Command::new(&path)
-                .env_remove("PLEXI_SOCKET")
-                .env_remove("PLEXI_PANE_ID")
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(std::process::Command::new(&path)
+            .env_remove("PLEXI_SOCKET")
+            .env_remove("PLEXI_PANE_ID")
+            .status()
+            .unwrap()
+            .success());
         std::fs::write(&path, "custom existing hook\n").unwrap();
         super::ensure_agent_state_script().unwrap();
         assert_eq!(
@@ -2027,8 +2303,10 @@ mod agent_tests {
         let neutral = "/home/u/.plexi/hooks/claude-code-agent-state.sh";
 
         let mut settings = serde_json::json!({});
-        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, stale, None).unwrap();
-        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None).unwrap();
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, stale, None)
+            .unwrap();
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None)
+            .unwrap();
 
         for event in super::CLAUDE_CODE_HOOK_EVENTS {
             let entries = settings["hooks"][*event].as_array().unwrap();
@@ -2053,7 +2331,8 @@ mod agent_tests {
         });
         let neutral = "/home/u/.plexi/hooks/claude-code-agent-state.sh";
 
-        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None).unwrap();
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None)
+            .unwrap();
 
         let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
@@ -2078,23 +2357,41 @@ mod agent_tests {
         fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
 
         for _ in 0..2 {
-            assert_eq!(super::install_json_agent_hooks(
-                &path, super::CLAUDE_CODE_HOOK_EVENTS,
-                "/tmp/claude-code-agent-state.sh", None, "Claude Code"), 0);
+            assert_eq!(
+                super::install_json_agent_hooks(
+                    &path,
+                    super::CLAUDE_CODE_HOOK_EVENTS,
+                    "/tmp/claude-code-agent-state.sh",
+                    None,
+                    "Claude Code"
+                ),
+                0
+            );
         }
-        let installed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let installed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(installed["model"], "user-choice");
-        assert_eq!(installed["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            installed["hooks"]["PreToolUse"].as_array().unwrap().len(),
+            2
+        );
         assert_eq!(
             fs::read_to_string(path.with_extension("json.plexi-hook.bak")).unwrap(),
             serde_json::to_string_pretty(&original).unwrap()
         );
 
-        assert_eq!(super::uninstall_json_hooks(&path, super::CLAUDE_CODE_HOOK_EVENTS, "Claude Code"), 0);
-        let removed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            super::uninstall_json_hooks(&path, super::CLAUDE_CODE_HOOK_EVENTS, "Claude Code"),
+            0
+        );
+        let removed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(removed["model"], "user-choice");
         assert_eq!(removed["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        assert_eq!(removed["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "/usr/local/bin/user-hook");
+        assert_eq!(
+            removed["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "/usr/local/bin/user-hook"
+        );
     }
 
     #[test]
@@ -2102,15 +2399,34 @@ mod agent_tests {
         let dir = tempfile::tempdir().unwrap();
         let invalid = dir.path().join("invalid.json");
         fs::write(&invalid, "{ definitely not json").unwrap();
-        assert_eq!(super::install_json_agent_hooks(
-            &invalid, super::CODEX_HOOK_EVENTS, "plexi", None, "Codex"), 1);
-        assert_eq!(fs::read_to_string(&invalid).unwrap(), "{ definitely not json");
+        assert_eq!(
+            super::install_json_agent_hooks(
+                &invalid,
+                super::CODEX_HOOK_EVENTS,
+                "plexi",
+                None,
+                "Codex"
+            ),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(&invalid).unwrap(),
+            "{ definitely not json"
+        );
 
         let unexpected = dir.path().join("unexpected.json");
         let source = r#"{"hooks":{"SessionStart":"do not replace"}}"#;
         fs::write(&unexpected, source).unwrap();
-        assert_eq!(super::install_json_agent_hooks(
-            &unexpected, super::CODEX_HOOK_EVENTS, "plexi", None, "Codex"), 1);
+        assert_eq!(
+            super::install_json_agent_hooks(
+                &unexpected,
+                super::CODEX_HOOK_EVENTS,
+                "plexi",
+                None,
+                "Codex"
+            ),
+            1
+        );
         assert_eq!(fs::read_to_string(&unexpected).unwrap(), source);
     }
 
@@ -2182,7 +2498,10 @@ mod agent_tests {
     #[test]
     fn multi_cli_harness_adapters_build_spawn_resume_and_capture_session_ids() {
         let claude = super::harness_adapter("claude").expect("claude adapter");
-        assert_eq!(claude.resume_command("sess-claude-1"), "claude --resume sess-claude-1");
+        assert_eq!(
+            claude.resume_command("sess-claude-1"),
+            "claude --resume sess-claude-1"
+        );
         assert_eq!(
             claude.spawn_command("fix bug", Some("claude-sonnet-4-5"), None),
             "claude --model claude-sonnet-4-5 -p 'fix bug'"
@@ -2227,49 +2546,338 @@ mod agent_tests {
     }
 
     #[test]
-    fn declarative_agent_role_config_parses_workspace_toml_and_result_schema() {
-        let dir = tempfile::tempdir().unwrap();
-        let agents_dir = dir.path().join(".plexi").join("agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-        let toml_path = agents_dir.join("reviewer.toml");
-        fs::write(
-            &toml_path,
-            r#"
-default_harness = "codex"
-fallback_harness = "claude"
-model = "gpt-5-codex"
-ephemeral = true
-subcontext = "review-squad"
-system_prompt_file = "prompts/reviewer.md"
+    fn build_agent_spawn_command_composes_persona_model_and_worker_contract_for_all_four_clis() {
+        let schema_str =
+            r#"{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}"#;
+        let make_def = |cli: &str, model: Option<&str>| {
+            let model_line = model
+                .map(|m| format!("model = \"{m}\"\n"))
+                .unwrap_or_default();
+            let settings = format!(
+                "[agent]\n\
+                 id = \"researcher\"\n\
+                 display_name = \"Researcher\"\n\
+                 \n\
+                 [harness]\n\
+                 cli = \"{cli}\"\n\
+                 {model_line}\
+                 result_schema = '{schema_str}'\n"
+            );
+            crate::agent::AgentDefinition::parse("You are a fast codebase researcher.", &settings)
+                .expect("valid definition")
+        };
 
-[result_schema]
-type = "object"
-required = ["verdict", "findings"]
+        // 1. pi: uses --append-system-prompt, --model verbatim, and appends worker contract + schema to task.
+        let pi_def = make_def("pi", Some("openrouter/~z-ai/glm-flash-latest"));
+        let pi_adapter = super::harness_adapter("pi").unwrap();
+        let pi_cmd =
+            super::build_agent_spawn_command(&pi_def, pi_adapter, "Find where AgentRegistry loads")
+                .unwrap();
+        assert!(
+            pi_cmd.starts_with(
+                "pi --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.' -p "
+            ),
+            "unexpected pi command: {pi_cmd}"
+        );
+        assert!(pi_cmd.contains("Find where AgentRegistry loads"));
+        assert!(pi_cmd.contains("# Plexi worker contract"));
+        assert!(pi_cmd.contains("agent `researcher`"));
+        assert!(pi_cmd.contains("plexi agent done --summary \"<one line>\" --result "));
+        assert!(pi_cmd.contains("plexi agent ask \"<question>\""));
+        assert!(pi_cmd.contains("\"required\":[\"answer\"]"));
+        assert!(!pi_cmd.contains("# Persona"));
+        let raw_contract = super::format_worker_contract(&pi_def);
+        assert!(
+            raw_contract.contains("plexi agent done --summary \"<one line>\" --result '<json>'")
+        );
 
-[result_schema.properties.verdict]
-type = "string"
+        // 2. claude: uses --append-system-prompt, -p, and appends worker contract.
+        let claude_def = make_def("claude", Some("claude-sonnet-4-5"));
+        let claude_adapter = super::harness_adapter("claude").unwrap();
+        let claude_cmd =
+            super::build_agent_spawn_command(&claude_def, claude_adapter, "Audit module").unwrap();
+        assert!(
+            claude_cmd.starts_with(
+                "claude --model claude-sonnet-4-5 --append-system-prompt 'You are a fast codebase researcher.' -p "
+            ),
+            "unexpected claude command: {claude_cmd}"
+        );
+        assert!(claude_cmd.contains("# Plexi worker contract"));
+        assert!(!claude_cmd.contains("--append-system-prompt-file"));
+        assert!(!claude_cmd.contains("# Persona"));
 
-[result_schema.properties.findings]
-type = "array"
-"#,
+        // 3. codex: no system-prompt flag; prepends `# Persona\n<AGENT.md>\n\n` to task.
+        let codex_def = make_def("codex", Some("gpt-5-codex"));
+        let codex_adapter = super::harness_adapter("codex").unwrap();
+        let codex_cmd =
+            super::build_agent_spawn_command(&codex_def, codex_adapter, "Run suite").unwrap();
+        assert!(
+            codex_cmd.starts_with("codex --model gpt-5-codex exec "),
+            "unexpected codex command: {codex_cmd}"
+        );
+        assert!(!codex_cmd.contains("--append-system-prompt"));
+        assert!(!codex_cmd.contains("--system-prompt"));
+        assert!(
+            codex_cmd.contains(
+                "# Persona\nYou are a fast codebase researcher.\n\nRun suite\n\n# Plexi worker contract"
+            ),
+            "codex command must inline # Persona before task: {codex_cmd}"
+        );
+
+        // 4. agy: no system-prompt flag; prepends `# Persona\n<AGENT.md>\n\n` to task.
+        let agy_def = make_def("agy", Some("gemini-2.5-pro"));
+        let agy_adapter = super::harness_adapter("agy").unwrap();
+        let agy_cmd =
+            super::build_agent_spawn_command(&agy_def, agy_adapter, "Implement feature").unwrap();
+        assert!(
+            agy_cmd.starts_with("agy --model gemini-2.5-pro --prompt "),
+            "unexpected agy command: {agy_cmd}"
+        );
+        assert!(!agy_cmd.contains("--append-system-prompt"));
+        assert!(!agy_cmd.contains("--system-prompt"));
+        assert!(
+            agy_cmd.contains(
+                "# Persona\nYou are a fast codebase researcher.\n\nImplement feature\n\n# Plexi worker contract"
+            ),
+            "agy command must inline # Persona before task: {agy_cmd}"
+        );
+
+        // 5. Refuses Assistant personas without [harness].
+        let assistant_only = crate::agent::AgentDefinition::parse(
+            "You are an assistant.",
+            "[agent]\nid = \"helper\"\ndisplay_name = \"Helper\"\ndefault_tier = \"low\"\n\n[permissions]\ndefault_posture = \"ask\"\n",
+        )
+        .unwrap();
+        let err = super::build_agent_spawn_command(&assistant_only, pi_adapter, "hi").unwrap_err();
+        assert!(err.contains("[harness]"), "{err}");
+    }
+
+    #[test]
+    fn agent_create_writes_files_round_trips_and_validates_errors() {
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        fs::create_dir_all(ws.path().join(".git")).unwrap();
+        let subdir = ws.path().join("crates").join("sub");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let opts = super::AgentCreateOptions {
+            name: "researcher",
+            cli: "pi",
+            model: Some("openrouter/~z-ai/glm-flash-latest"),
+            fallback: Some("claude"),
+            description: Some("Fast codebase researcher"),
+            persona: Some("You are a researcher. Read files and answer concisely."),
+            persona_file: None,
+            result_schema: Some(
+                r#"{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}"#,
+            ),
+            ephemeral: true,
+            display_name: None,
+            global: false,
+            cwd: Some(&subdir),
+        };
+        let created =
+            super::agent_create_in(&opts, profile.path()).expect("create workspace agent");
+        assert_eq!(
+            created,
+            ws.path().join(".plexi").join("agents").join("researcher")
+        );
+        assert!(created.join("AGENT.md").is_file());
+        assert!(created.join("settings.toml").is_file());
+
+        // Round-trips through AgentDefinition::load_dir.
+        let loaded =
+            crate::agent::AgentDefinition::load_dir(&created, crate::agent::AgentSource::Workspace)
+                .expect("round-trip load_dir");
+        assert_eq!(loaded.id, "researcher");
+        assert_eq!(loaded.display_name, "researcher");
+        assert_eq!(loaded.description, "Fast codebase researcher");
+        let h = loaded.harness.expect("harness present");
+        assert_eq!(h.cli, "pi");
+        assert_eq!(
+            h.model.as_deref(),
+            Some("openrouter/~z-ai/glm-flash-latest")
+        );
+        assert_eq!(h.fallback.as_deref(), Some("claude"));
+        assert!(h.ephemeral);
+        assert!(h.result_schema.is_some());
+
+        // Refuses to overwrite existing agent dir and suggests editing files.
+        let overwrite_err = super::agent_create_in(&opts, profile.path()).unwrap_err();
+        assert!(
+            overwrite_err.contains(&created.display().to_string())
+                && overwrite_err.contains("AGENT.md")
+                && overwrite_err.contains("settings.toml"),
+            "overwrite error must name path and suggest editing files: {overwrite_err}"
+        );
+
+        // Refuses invalid slug, invalid CLI, invalid schema, and both/neither persona flags.
+        let bad_slug = super::AgentCreateOptions {
+            name: "Bad_Slug!",
+            ..opts
+        };
+        assert!(super::agent_create_in(&bad_slug, profile.path()).is_err());
+
+        let bad_cli = super::AgentCreateOptions {
+            name: "other",
+            cli: "vim",
+            ..opts
+        };
+        assert!(super::agent_create_in(&bad_cli, profile.path()).is_err());
+
+        let bad_schema = super::AgentCreateOptions {
+            name: "other",
+            result_schema: Some("{not json"),
+            ..opts
+        };
+        assert!(super::agent_create_in(&bad_schema, profile.path()).is_err());
+
+        let both_personas = super::AgentCreateOptions {
+            name: "other",
+            persona: Some("inline"),
+            persona_file: Some("file.md"),
+            ..opts
+        };
+        assert!(super::agent_create_in(&both_personas, profile.path()).is_err());
+
+        // Outside a workspace without --global fails with an error instead of falling back to global.
+        let outside = tempfile::tempdir().unwrap();
+        let no_ws_opts = super::AgentCreateOptions {
+            name: "orphan",
+            cwd: Some(outside.path()),
+            global: false,
+            ..opts
+        };
+        let no_ws_err = super::agent_create_in(&no_ws_opts, profile.path()).unwrap_err();
+        assert!(
+            no_ws_err.contains("--global"),
+            "missing workspace error must mention --global: {no_ws_err}"
+        );
+        assert!(!profile.path().join("agents").join("orphan").exists());
+    }
+
+    #[test]
+    fn agent_list_and_show_report_tiers_shadowing_and_spawn_command() {
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        fs::create_dir_all(ws.path().join(".plexi")).unwrap();
+
+        // Create global researcher + global reviewer.
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "researcher",
+                cli: "claude",
+                model: Some("claude-sonnet-4-5"),
+                fallback: None,
+                description: Some("Global researcher"),
+                persona: Some("Global persona."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: false,
+                display_name: Some("Global Researcher"),
+                global: true,
+                cwd: Some(ws.path()),
+            },
+            profile.path(),
+        )
+        .unwrap();
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "reviewer",
+                cli: "codex",
+                model: None,
+                fallback: None,
+                description: Some("Global reviewer"),
+                persona: Some("Review diffs."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: false,
+                display_name: None,
+                global: true,
+                cwd: Some(ws.path()),
+            },
+            profile.path(),
         )
         .unwrap();
 
-        let (cfg, loaded_path) =
-            super::load_agent_role_config("reviewer", Some(dir.path())).expect("load reviewer.toml");
-        assert_eq!(loaded_path, toml_path);
-        assert_eq!(cfg.name.as_deref(), Some("reviewer"));
-        assert_eq!(cfg.harness, "codex");
-        assert_eq!(cfg.fallback_harness.as_deref(), Some("claude"));
-        assert_eq!(cfg.model.as_deref(), Some("gpt-5-codex"));
-        assert_eq!(cfg.ephemeral, Some(true));
-        assert_eq!(cfg.subcontext.as_deref(), Some("review-squad"));
-        let schema = cfg
-            .resolved_result_schema(Some(dir.path()))
-            .expect("valid result_schema")
-            .expect("result_schema present");
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["required"], serde_json::json!(["verdict", "findings"]));
+        // Create workspace researcher that shadows global researcher.
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "researcher",
+                cli: "pi",
+                model: Some("openrouter/~z-ai/glm-flash-latest"),
+                fallback: None,
+                description: Some("Workspace researcher"),
+                persona: Some("Workspace persona."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: true,
+                display_name: Some("Workspace Researcher"),
+                global: false,
+                cwd: Some(ws.path()),
+            },
+            profile.path(),
+        )
+        .unwrap();
+
+        let list_text = super::agent_list_in(profile.path(), Some(ws.path()), false).unwrap();
+        assert!(list_text.contains("researcher") && list_text.contains("workspace"));
+        assert!(list_text.contains("pi (openrouter/~z-ai/glm-flash-latest)"));
+        assert!(list_text.contains("[shadows global]"));
+        assert!(list_text.contains("reviewer") && list_text.contains("global"));
+
+        let list_json: serde_json::Value = serde_json::from_str(
+            &super::agent_list_in(profile.path(), Some(ws.path()), true).unwrap(),
+        )
+        .unwrap();
+        let arr = list_json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let r = arr.iter().find(|v| v["name"] == "researcher").unwrap();
+        assert_eq!(r["tier"], "workspace");
+        assert_eq!(r["shadows_global"], true);
+        assert_eq!(r["cli"], "pi");
+
+        let show_json: serde_json::Value = serde_json::from_str(
+            &super::agent_show_in("researcher", profile.path(), Some(ws.path()), true).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(show_json["tier"], "workspace");
+        assert_eq!(show_json["shadows_global"], true);
+        let spawn_cmd = show_json["spawn_command"].as_str().unwrap();
+        assert!(spawn_cmd.contains("pi --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona.' -p"));
+        assert!(spawn_cmd.contains("<TASK>"));
+    }
+
+    #[test]
+    fn workspace_walk_stops_never_match_home_for_lookup_or_create() {
+        let fake_home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(fake_home.path().join(".plexi").join("agents")).unwrap();
+        fs::create_dir_all(fake_home.path().join(".git")).unwrap();
+        let child = fake_home.path().join("Downloads");
+        fs::create_dir_all(&child).unwrap();
+        let stops = vec![fake_home.path().to_path_buf()];
+
+        assert_eq!(
+            crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(&child, &stops),
+            None
+        );
+        assert_eq!(
+            crate::app::registry::resolve_agent_create_workspace_root_stopping_at(&child, &stops),
+            None
+        );
+
+        let project = fake_home.path().join("project");
+        let nested = project.join("src");
+        fs::create_dir_all(project.join(".plexi").join("agents")).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(&nested, &stops),
+            Some(project.clone())
+        );
+        assert_eq!(
+            crate::app::registry::resolve_agent_create_workspace_root_stopping_at(&nested, &stops),
+            Some(project)
+        );
     }
 
     #[test]
@@ -2287,15 +2895,17 @@ type = "array"
         assert_eq!(pi.restore_command(None), "pi");
         assert_eq!(pi.restore_command(Some("   ")), "pi");
         assert_eq!(claude.restore_command(None), "claude");
-        assert_eq!(claude.restore_command(Some("sess-claude-1")), "claude --resume sess-claude-1");
+        assert_eq!(
+            claude.restore_command(Some("sess-claude-1")),
+            "claude --resume sess-claude-1"
+        );
 
         // 2. Unpersisted Pi session UUID (no matching file on disk) falls back to bare `pi`.
         assert_eq!(pi.restore_command(Some("019dcdae-unpersisted")), "pi");
 
         // 3. Once `*_019dcdae-persisted.jsonl` exists under `~/.pi/agent/sessions/`,
         //    `restore_command` resumes via `pi --session 019dcdae-persisted`.
-        let persisted_jsonl =
-            proj_dir.join("2026-10-17T05-00-00-000Z_019dcdae-persisted.jsonl");
+        let persisted_jsonl = proj_dir.join("2026-10-17T05-00-00-000Z_019dcdae-persisted.jsonl");
         fs::write(&persisted_jsonl, "{\"role\":\"user\"}\n").unwrap();
         assert_eq!(
             pi.restore_command(Some("019dcdae-persisted")),
@@ -2310,4 +2920,3 @@ type = "array"
         );
     }
 }
-
