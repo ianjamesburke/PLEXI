@@ -403,6 +403,48 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Process-lifetime resource admission. Identity is stamped by the socket listener.",
+          "properties": {
+            "holder_pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "resource_lease",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "holder_pid",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Submit one text turn to the Assistant. With `pane_id` omitted the host\nreuses an Assistant in the context or creates a hidden one, so a\nphone, relay, or CLI caller does not need `app open assistant` first.\nA `pane_id` that does not exist still fails with\n`assistant_pane_not_found`. The pane owns the normal composer path and\nwrites the terminal JSON reply.",
           "properties": {
             "client": {

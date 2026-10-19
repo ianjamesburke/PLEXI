@@ -211,6 +211,7 @@ pub mod subprocess;
 pub mod test_env;
 
 pub mod account;
+pub(crate) mod lease;
 pub mod agent;
 pub mod agents_api;
 pub mod ai;

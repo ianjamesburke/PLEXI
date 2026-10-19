@@ -96,6 +96,16 @@ pub struct PaneAgentState {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AppRequest {
+    /// Process-lifetime resource admission. Identity is stamped by the socket listener.
+    ResourceLease {
+        op: String,
+        name: Option<String>,
+        max: Option<u32>,
+        holder_pid: u32,
+        #[serde(skip)]
+        peer_ancestry: Vec<u32>,
+        response_file: String,
+    },
     /// Submit one text turn to the Assistant. With `pane_id` omitted the host
     /// reuses an Assistant in the context or creates a hidden one, so a
     /// phone, relay, or CLI caller does not need `app open assistant` first.

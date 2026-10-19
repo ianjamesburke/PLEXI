@@ -599,3 +599,38 @@ Updates preserve the installation channel and custom destination. Rollback resto
 the retained previous package; restart the host to use it. Uninstall removes this
 channel's recorded package and launchers and retains user data. It preserves other
 channels and unrelated development binaries.
+
+## Resource leases
+
+Acquire capacity before spawning a lane or starting a build:
+
+```bash
+plexi lease acquire lanes --max 3 --pid $$
+plexi lease acquire cargo-build --max 1 --pid $$
+plexi lease release cargo-build --pid $$
+plexi lease release --pid $$
+```
+
+Replies are JSON. Exit 0 means acquired/released; exit 2 with `status: paused`
+means stop admitting work and retry later, without spawning or queueing panes.
+Exit 1 is an error. Without `--pid`, the calling shell (the CLI's parent) owns
+the lease. An explicit PID must be the CLI or an ancestor authenticated by the
+host's socket. Use a separate child shell for each concurrent lane and omit
+`--pid` inside it. In Bash, `$$` inside a subshell still names the outer shell.
+Acquiring the same name again from the same holder is idempotent, not another slot.
+
+A pool's first holder fixes its maximum until the pool empties. A different
+`--max` fails with `lease_max_mismatch`. `release [name]` releases that holder's
+named lease, or all its leases when the name is omitted. The host reclaims leases
+when a holder exits, including a killed process; PID reuse does not retain them.
+Leases belong to the running host and end when it stops. Use the same host for
+all lanes sharing a cap. The existing machine-wide Cargo file lock remains in
+place across hosts and worktrees.
+
+The host samples machine-wide allocated swap bytes and live `cargo`/`rustc`
+processes off the UI thread. Admission pauses at 256 MiB of swap allocation
+growth within a rolling 60-second window, or at four concurrent build processes.
+It never uses free-memory percentage. Sampling starts on the first lease request;
+initial swap allocation establishes the baseline. Existing work is never killed.
+Sampling failures pause new acquisition; explicit release remains available.
+A paused request is not retained: the caller decides when to retry.

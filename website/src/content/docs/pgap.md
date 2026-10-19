@@ -58,6 +58,18 @@ App-to-host requests — go to `route_command`.
 
 Messages the app sends to request host services.
 
+### `resource_lease`
+
+Process-lifetime resource admission. Identity is stamped by the socket listener.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `holder_pid` | `integer` | yes |
+| `max` | `integer?` | no |
+| `name` | `string?` | no |
+| `op` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `submit_assistant_turn`
 
 Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an Assistant in the context or creates ...
