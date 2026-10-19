@@ -10,6 +10,34 @@ Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, 
 
 Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). A channel-named binary always targets its own profile; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` when run inside a Plexi pane.
 
+## `plexi lease`
+
+Acquire process-lifetime capacity before starting work. Pauses exit with code 2
+
+| Subcommand | Description |
+|---|---|
+| `acquire` | Acquire one slot. The calling shell owns it by default; no work is queued |
+| `release` | Release this holder's leases (or just the named pool) |
+
+### `plexi lease acquire`
+
+Acquire one slot. The calling shell owns it by default; no work is queued
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+| `--max` | string | yes |  |
+| `--pid` | string | no | Holder PID; must be this CLI or one of its ancestors |
+
+### `plexi lease release`
+
+Release this holder's leases (or just the named pool)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | no |  |
+| `--pid` | string | no |  |
+
 ## `plexi assistant`
 
 Submit a text turn to the running host Assistant

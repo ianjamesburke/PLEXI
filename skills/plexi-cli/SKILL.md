@@ -615,8 +615,9 @@ Replies are JSON. Exit 0 means acquired/released; exit 2 with `status: paused`
 means stop admitting work and retry later, without spawning or queueing panes.
 Exit 1 is an error. Without `--pid`, the calling shell (the CLI's parent) owns
 the lease. An explicit PID must be the CLI or an ancestor authenticated by the
-host's socket. Use a dedicated subshell for each concurrent lane; acquiring the
-same name again from the same holder is idempotent, not another slot.
+host's socket. Use a separate child shell for each concurrent lane and omit
+`--pid` inside it. In Bash, `$$` inside a subshell still names the outer shell.
+Acquiring the same name again from the same holder is idempotent, not another slot.
 
 A pool's first holder fixes its maximum until the pool empties. A different
 `--max` fails with `lease_max_mismatch`. `release [name]` releases that holder's
