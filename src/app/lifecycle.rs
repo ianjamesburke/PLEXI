@@ -363,6 +363,27 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, body);
             }
+            crate::protocol::AppRequest::ResourceLease { op, name, max, holder_pid, peer_ancestry, response_file } => {
+                if !peer_ancestry.contains(holder_pid) || *holder_pid <= 1 {
+                    write_json_response(response_file, serde_json::json!({"error": "holder must be a verified caller ancestor", "error_code": "permission_denied"}));
+                } else {
+                    if self.resource_leases.is_none() {
+                        match crate::host::resource_leases::LeaseService::start() {
+                            Ok(service) => self.resource_leases = Some(service),
+                            Err(error) => {
+                                log::error!("lease: service start failed: {error}");
+                                write_json_response(response_file, serde_json::json!({"error": error.to_string(), "error_code": "lease_unavailable"}));
+                            }
+                        }
+                    }
+                    if let Some(service) = &self.resource_leases {
+                        service.submit(crate::host::resource_leases::LeaseRequest {
+                            op: op.clone(), name: name.clone(), max: *max,
+                            holder_pid: *holder_pid, response_file: response_file.clone(),
+                        });
+                    }
+                }
+            }
             crate::protocol::AppRequest::AgentQueue { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agent_queue op={op}");
                 let workspace = payload

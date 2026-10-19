@@ -163,6 +163,7 @@ pub(crate) struct ApprovalButton {
 }
 
 pub struct PlexiApp {
+    resource_leases: Option<crate::host::resource_leases::LeaseService>,
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     pub(crate) last_notify_poll: std::time::Instant,
@@ -693,7 +694,8 @@ pub(crate) fn handle_socket_line(
                 crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::ListAppTools { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::PaneSecretGet { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::NeedsYouApi { peer_ancestry: p, .. } => {
+                | crate::protocol::AppRequest::NeedsYouApi { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::ResourceLease { peer_ancestry: p, .. } => {
                     // Overwrite any client-supplied ancestry. A missing capture
                     // leaves the vector empty so the call cannot pretend to be a pane.
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
@@ -1603,6 +1605,7 @@ impl PlexiApp {
                     shutdown_requested: false,
                     pane_ipc_rx,
                     host_subscriptions,
+                    resource_leases: None,
                     event_subscribe_rx,
                     event_publish_rx,
                     pending_event_consents: std::collections::VecDeque::new(),
@@ -1854,6 +1857,7 @@ impl PlexiApp {
             shutdown_requested: false,
             pane_ipc_rx,
             host_subscriptions,
+            resource_leases: None,
             event_subscribe_rx,
             event_publish_rx,
             pending_event_consents: std::collections::VecDeque::new(),
@@ -2677,6 +2681,7 @@ impl PlexiApp {
                 shutdown_requested: false,
                 pane_ipc_rx,
                 host_subscriptions,
+                resource_leases: None,
                 event_subscribe_rx,
                 event_publish_rx,
                 pending_event_consents: std::collections::VecDeque::new(),

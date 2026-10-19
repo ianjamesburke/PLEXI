@@ -134,3 +134,10 @@ The package and activation contract is `scripts/DISTRIBUTION.md`.
 ## Style
 
 Document stable contracts, not history. Update in the same change that makes a rule obsolete.
+
+## Resource admission
+
+`plexi lease` is host-owned process-lifetime admission. Its caller contract and
+pressure thresholds are documented in `skills/plexi-cli/SKILL.md` under Resource
+leases. Keep OS sampling in the lease worker, never in a paint or dispatch pass.
+Socket ancestry authenticates the holder; wire-supplied ancestry is not authority.

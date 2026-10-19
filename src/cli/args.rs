@@ -40,7 +40,31 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum LeaseCmd {
+    /// Acquire one slot. The calling shell owns it by default; no work is queued.
+    Acquire {
+        name: String,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        max: u32,
+        /// Holder PID; must be this CLI or one of its ancestors.
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// Release this holder's leases (or just the named pool).
+    Release {
+        name: Option<String>,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum Commands {
+    /// Acquire process-lifetime capacity before starting work. Pauses exit with code 2.
+    Lease {
+        #[command(subcommand)]
+        cmd: LeaseCmd,
+    },
     /// Submit a text turn to the running host Assistant.
     Assistant {
         #[command(subcommand)]

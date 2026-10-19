@@ -562,6 +562,7 @@ fn main() -> eframe::Result {
                             }
                         }
                     }
+                    Commands::Lease { cmd } => std::process::exit(cli::lease::dispatch(cmd)),
                     Commands::Agent { cmd } => match cmd {
                         AgentCmd::Create {
                             name,
