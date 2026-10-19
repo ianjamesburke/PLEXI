@@ -558,7 +558,12 @@ plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest
 --persona "You are a researcher." \
 --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
 PANE=$(plexi agent spawn researcher --task "Summarize AgentRegistry")
-plexi pane result wait "$PANE"
+plexi pane result wait "$PANE" --timeout 300
+
+Spawn returns immediately with a pane id, before the worker is done.
+Wait in bounded slices well under your tool harness call limit (e.g. 300s).
+Exit 0 means done; exit 2 means report progress and re-run the same wait;
+exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 
 | Subcommand | Description |
 |---|---|
@@ -1787,14 +1792,14 @@ Pass `--submit` to wake an idle target agent with a short notice to run `plexi p
 
 Drain all queued messages from a pane's mailbox as a JSON array.
 
-Defaults to `PLEXI_PANE_ID`. With `--wait`, blocks host-side with zero polling until at least one message is in the mailbox or `--timeout` expires (exits 0 with the drained JSON array, 2 on timeout, 1 on error).
+Defaults to `PLEXI_PANE_ID`. With `--timeout N` or `--wait`, blocks host-side with zero polling until at least one message is in the mailbox or `--timeout` expires (exits 0 with the drained JSON array, 2 on timeout, 1 on error).
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
 | `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--wait` | flag | no | Block host-side until at least one message arrives or `--timeout` expires |
-| `--timeout` | string | no | Seconds to wait when `--wait` is set before exiting 2 Default: `300`. |
+| `--timeout` | string | no | Block for up to N seconds before exiting 2. --wait alone uses 300 seconds |
 
 ### `plexi pane result`
 
@@ -1829,6 +1834,8 @@ Exits 0 and prints the validated JSON object when committed, exits 2 (`no_result
 Block host-side until a pane commits a valid structured result, then print it.
 
 Equivalent to `plexi pane result <id> --wait`. Exits 0 with the validated JSON object, 2 on timeout, 1 on error.
+
+Agent spawn returns immediately. Wait in bounded slices with `plexi pane result wait <pane_id> --timeout 300`, well under your tool harness call limit. On exit 2, report progress and re-run the same wait until done (exit 0). Inspect errors on exit 1. Never use one long wait or spawn a replacement worker just because a slice expired.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2248,15 +2255,15 @@ Example: plexi skill install --agent claude
 
 | Subcommand | Description |
 |---|---|
-| `install` | Write this binary's skill for one agent CLI, or both |
+| `install` | Write this binary's skill for one agent CLI, or all supported agents |
 
 ### `plexi skill install`
 
-Write this binary's skill for one agent CLI, or both
+Write this binary's skill for one agent CLI, or all supported agents
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--agent` | string | yes | Which agent CLI loads the skill: claude, codex, or all |
+| `--agent` | string | yes | Which agent CLI loads the skill: claude, codex, pi, or all |
 
 ## `plexi completions`
 

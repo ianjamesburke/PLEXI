@@ -1,11 +1,18 @@
 ---
 name: plexi
-description: Operate a live Plexi workspace from Pi: inspect contexts and panes, discover and call app tools with exact resource permissions, subscribe to app event streams, and coordinate creative questions or approvals through Needs you.
+description: "Operate a live Plexi workspace from Pi: inspect contexts and panes, discover and call app tools with exact resource permissions, subscribe to app event streams, and coordinate creative questions or approvals through Needs you."
 ---
 
 # Plexi Workspace Skill for Pi
 
-When running inside a Plexi terminal pane (`PLEXI_SOCKET` and `PLEXI_PANE_ID` are set), use the registered `plexi_*` tools first before falling back to raw shell commands:
+When the target channel is known, use its `plexi-<channel>` shim for every CLI
+command below (for example, `plexi-alpha agent --help`). Bare `plexi` inherits
+the calling pane's routing and can target a different host. `PLEXI_PANE_ID`
+identifies your pane; agent panes may not have `PLEXI_SOCKET`.
+
+When the registered `plexi_*` tools are available, use them for workspace and
+app operations. Print-mode workers may have extensions disabled; use the CLI
+in that case. Start with `plexi agent --help` for the create/spawn flow:
 
 1. **Orient first**:
    - Call `plexi_workspace_overview` to see the active context, sibling panes, running apps, and any pending `Needs you` items or durable continuations.
@@ -31,6 +38,17 @@ When running inside a Plexi terminal pane (`PLEXI_SOCKET` and `PLEXI_PANE_ID` ar
    - Run `plexi agent list` first to see whether a matching agent already exists in the workspace or global tier.
    - If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
    - Inspect with `plexi agent show <slug>` before spawning if unsure what CLI, model, or command it uses.
-   - Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id>`.
+   - Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id> --timeout 300`.
 
+Spawn returns immediately with a pane id; it does not wait for completion.
+Wait in bounded slices well under your tool harness call limit, for example
+`plexi pane result wait <pane_id> --timeout 300`. Exit 0 means done and prints
+the result. Exit 2 means the slice expired: report progress and re-run the same
+wait. Inspect errors on exit 1. Never use one long wait or spawn a replacement
+worker just because a slice expired.
 
+A print-mode worker asks its parent with `plexi agent ask "<question>"`, then
+blocks for the reply with `plexi pane message recv --timeout 300`. Exit 0 prints
+a JSON array of messages; on exit 2, re-run the bounded wait. Exit 1 is an error.
+The parent replies with `plexi pane message send <worker-pane> "<answer>"`.
+Workers finish with `plexi agent done --result '<json>' --summary "<text>"`.

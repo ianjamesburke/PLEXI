@@ -374,3 +374,49 @@ fn skill_version_matches_binary() {
          never hand-edit one without the other",
     );
 }
+
+/// Parse the actual YAML, including multiline and quoted scalars, in every shipped skill.
+#[test]
+fn shipped_skill_frontmatter_is_valid_yaml() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for directory in ["skills", "packages/pi-plexi/skills"] {
+        let mut found = false;
+        for entry in std::fs::read_dir(root.join(directory)).unwrap() {
+            let path = entry.unwrap().path().join("SKILL.md");
+            if !path.is_file() {
+                continue;
+            }
+            found = true;
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut lines = text.lines();
+            assert_eq!(
+                lines.next(),
+                Some("---"),
+                "{}: missing frontmatter",
+                path.display()
+            );
+            let mut yaml = String::new();
+            let mut closed = false;
+            for line in lines {
+                if line == "---" {
+                    closed = true;
+                    break;
+                }
+                yaml.push_str(line);
+                yaml.push('\n');
+            }
+            assert!(closed, "{}: unterminated frontmatter", path.display());
+            let value: serde_yaml::Value = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(value.is_mapping(), "{}: expected mapping", path.display());
+            for field in ["name", "description"] {
+                assert!(
+                    value[field].as_str().is_some_and(|s| !s.is_empty()),
+                    "{}: missing {field}",
+                    path.display()
+                );
+            }
+        }
+        assert!(found, "no skills found in {directory}");
+    }
+}

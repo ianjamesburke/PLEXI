@@ -20,9 +20,10 @@ fn agent_roots(agent: &str) -> Result<Vec<&'static str>, String> {
     match agent {
         "claude" => Ok(vec![".claude"]),
         "codex" => Ok(vec![".codex"]),
-        "all" => Ok(vec![".claude", ".codex"]),
+        "pi" => Ok(vec![".pi/agent"]),
+        "all" => Ok(vec![".claude", ".codex", ".pi/agent"]),
         other => Err(format!(
-            "unknown agent '{other}' — use claude, codex, or all"
+            "unknown agent '{other}' — use claude, codex, pi, or all"
         )),
     }
 }
@@ -113,7 +114,7 @@ fn stamp_channel(skill: &str, channel: Option<&str>) -> String {
         )
 }
 
-/// Write the embedded skill under `home` for `agent` (`claude`, `codex`, or
+/// Write the embedded skill under `home` for `agent` (`claude`, `codex`, `pi`, or
 /// `all`), stripped of every experiment `enabled` reports off. Each channel
 /// installs to its own directory (`plexi-cli` for stable, `plexi-cli-<channel>`
 /// otherwise) and refuses to overwrite a file another channel wrote.
@@ -173,7 +174,7 @@ pub fn install_embedded_skill(
     Ok(written)
 }
 
-/// `plexi skill install --agent claude|codex|all`
+/// `plexi skill install --agent claude|codex|pi|all`
 pub fn skill_install_cli(agent: &str) -> i32 {
     let home = match std::env::var_os("HOME").filter(|value| !value.is_empty()) {
         Some(home) => PathBuf::from(home),
@@ -211,10 +212,26 @@ mod tests {
     }
 
     #[test]
-    fn install_writes_the_default_skill_for_both_agents() {
+    fn pi_install_uses_its_agent_skills_directory_and_valid_yaml() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = install_embedded_skill(home.path(), "pi", Some("alpha"), none).unwrap();
+        assert_eq!(
+            paths,
+            vec![home
+                .path()
+                .join(".pi/agent/skills/plexi-cli-alpha/SKILL.md")]
+        );
+        let text = std::fs::read_to_string(&paths[0]).unwrap();
+        let yaml = text.split("---").nth(1).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(value["name"].as_str(), Some("plexi-cli-alpha"));
+    }
+
+    #[test]
+    fn install_writes_the_default_skill_for_all_agents() {
         let home = tempfile::tempdir().unwrap();
         let paths = install_embedded_skill(home.path(), "all", None, none).unwrap();
-        assert_eq!(paths.len(), 2);
+        assert_eq!(paths.len(), 3);
         let expected = stamp_channel(&render_skill(EMBEDDED_SKILL, none).unwrap(), None);
         for path in &paths {
             let text = std::fs::read_to_string(path).unwrap();
@@ -226,6 +243,7 @@ mod tests {
         }
         assert!(paths[0].ends_with(".claude/skills/plexi-cli/SKILL.md"));
         assert!(paths[1].ends_with(".codex/skills/plexi-cli/SKILL.md"));
+        assert!(paths[2].ends_with(".pi/agent/skills/plexi-cli/SKILL.md"));
     }
 
     #[test]

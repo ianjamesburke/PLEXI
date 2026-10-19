@@ -151,7 +151,12 @@ pub enum Commands {
     ///     --persona "You are a researcher." \
     ///     --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
     ///   PANE=$(plexi agent spawn researcher --task "Summarize AgentRegistry")
-    ///   plexi pane result wait "$PANE"
+    ///   plexi pane result wait "$PANE" --timeout 300
+    ///
+    /// Spawn returns immediately with a pane id, before the worker is done.
+    /// Wait in bounded slices well under your tool harness call limit (e.g. 300s).
+    /// Exit 0 means done; exit 2 means report progress and re-run the same wait;
+    /// exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
     #[command(verbatim_doc_comment)]
     Agent {
         #[command(subcommand)]
@@ -609,10 +614,10 @@ pub enum ExperimentsCmd {
 
 #[derive(Subcommand)]
 pub enum SkillCmd {
-    /// Write this binary's skill for one agent CLI, or both.
+    /// Write this binary's skill for one agent CLI, or all supported agents.
     Install {
-        /// Which agent CLI loads the skill: claude, codex, or all.
-        #[arg(long, value_parser = ["claude", "codex", "all"])]
+        /// Which agent CLI loads the skill: claude, codex, pi, or all.
+        #[arg(long, value_parser = ["claude", "codex", "pi", "all"])]
         agent: String,
     },
 }
@@ -2049,6 +2054,12 @@ pub enum PaneResultCmd {
     ///
     /// Equivalent to `plexi pane result <id> --wait`. Exits 0 with the validated
     /// JSON object, 2 on timeout, 1 on error.
+    ///
+    /// Agent spawn returns immediately. Wait in bounded slices with
+    /// `plexi pane result wait <pane_id> --timeout 300`, well under your tool
+    /// harness call limit. On exit 2, report progress and re-run the same wait
+    /// until done (exit 0). Inspect errors on exit 1. Never use one long wait
+    /// or spawn a replacement worker just because a slice expired.
     Wait {
         /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
@@ -2217,7 +2228,7 @@ pub enum PaneMessageCmd {
     },
     /// Drain all queued messages from a pane's mailbox as a JSON array.
     ///
-    /// Defaults to `PLEXI_PANE_ID`. With `--wait`, blocks host-side with zero
+    /// Defaults to `PLEXI_PANE_ID`. With `--timeout N` or `--wait`, blocks host-side with zero
     /// polling until at least one message is in the mailbox or `--timeout`
     /// expires (exits 0 with the drained JSON array, 2 on timeout, 1 on error).
     Recv {
@@ -2228,11 +2239,14 @@ pub enum PaneMessageCmd {
         #[arg(long = "pane-id", id = "pane_id_flag")]
         pane_id_flag: Option<u64>,
         /// Block host-side until at least one message arrives or `--timeout` expires.
-        #[arg(long)]
+        #[arg(
+            long,
+            default_value_if("timeout", clap::builder::ArgPredicate::IsPresent, "true")
+        )]
         wait: bool,
-        /// Seconds to wait when `--wait` is set before exiting 2.
-        #[arg(long, default_value_t = 300.0)]
-        timeout: f64,
+        /// Block for up to N seconds before exiting 2. --wait alone uses 300 seconds.
+        #[arg(long)]
+        timeout: Option<f64>,
     },
 }
 
@@ -3036,6 +3050,33 @@ mod tests {
         SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn message_recv_timeout_implies_wait() {
+        for (extra, expected_wait, expected_timeout) in [
+            (vec![], false, None),
+            (vec!["--wait"], true, None),
+            (vec!["--timeout", "1"], true, Some(1.0)),
+            (vec!["--timeout", "0"], true, Some(0.0)),
+            (vec!["--wait", "--timeout", "1"], true, Some(1.0)),
+        ] {
+            let mut argv = vec!["plexi", "pane", "message", "recv", "7"];
+            argv.extend(extra);
+            let cli = Cli::try_parse_from(argv).unwrap();
+            match cli.command.unwrap() {
+                super::Commands::Pane {
+                    cmd:
+                        super::PaneCmd::Message {
+                            cmd: super::PaneMessageCmd::Recv { wait, timeout, .. },
+                        },
+                } => {
+                    assert_eq!(wait, expected_wait);
+                    assert_eq!(timeout, expected_timeout);
+                }
+                _ => panic!("expected recv"),
+            }
+        }
+    }
 
     #[test]
     fn note_parses_shorthand_capture_subcommands_and_bare_help() {
