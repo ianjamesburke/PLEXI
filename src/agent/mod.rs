@@ -113,6 +113,7 @@ pub struct AgentHarnessConfig {
     pub fallback: Option<String>,
     pub ephemeral: bool,
     pub result_schema: Option<serde_json::Value>,
+    pub extensions: Vec<String>,
 }
 
 /// A loaded agent: `AGENT.md` prose + parsed `settings.toml`.
@@ -173,6 +174,8 @@ struct HarnessTable {
     ephemeral: Option<bool>,
     #[serde(default)]
     result_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    extensions: Vec<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -303,12 +306,23 @@ impl AgentDefinition {
                         )
                     }
                 };
+                let mut extensions = Vec::with_capacity(h.extensions.len());
+                for (i, ext) in h.extensions.iter().enumerate() {
+                    let trimmed = ext.trim();
+                    if trimmed.is_empty() {
+                        return Err(format!(
+                            "settings.toml: [harness] extensions[{i}] must be non-empty"
+                        ));
+                    }
+                    extensions.push(trimmed.to_string());
+                }
                 Some(AgentHarnessConfig {
                     cli,
                     model,
                     fallback,
                     ephemeral: h.ephemeral.unwrap_or(false),
                     result_schema,
+                    extensions,
                 })
             }
         };
@@ -1873,6 +1887,36 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
         let schema = h.result_schema.expect("result_schema must be present");
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], serde_json::json!(["answer"]));
+        assert!(h.extensions.is_empty());
+
+        // Optional extensions list inside [harness] parses and trims entries.
+        let with_extensions = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+extensions = ["/tmp/ext-a.ts", "builtin:plan-mode"]
+"#;
+        let def_ext = AgentDefinition::parse("Persona.", with_extensions).unwrap();
+        assert_eq!(
+            def_ext.harness.unwrap().extensions,
+            vec!["/tmp/ext-a.ts".to_string(), "builtin:plan-mode".to_string()]
+        );
+
+        // Empty extension path in [harness] extensions is rejected.
+        let empty_ext = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+extensions = ["   "]
+"#;
+        let err = AgentDefinition::parse("Persona.", empty_ext).unwrap_err();
+        assert!(err.contains("extensions[0]"), "{err}");
 
         // Unknown key inside [harness] fails naming the key.
         let unknown_key = r#"

@@ -268,6 +268,8 @@ impl HarnessAdapter {
 
     /// Build the non-interactive / task-seeded CLI command to spawn a worker for `task`.
     ///
+    /// `pi` always passes `--no-extensions --no-mcp` so headless workers never load user
+    /// extensions or MCP servers, plus any explicit `-e <path>` entries.
     /// `pi` and `claude` receive persona text via `--append-system-prompt`.
     /// `codex` and `agy` have no system-prompt flag; callers (`build_agent_spawn_command`)
     /// inline `# Persona` into `task` before calling this method.
@@ -277,7 +279,27 @@ impl HarnessAdapter {
         model: Option<&str>,
         append_system_prompt: Option<&str>,
     ) -> String {
+        self.spawn_command_with_extensions(task, model, append_system_prompt, &[])
+    }
+
+    pub fn spawn_command_with_extensions(
+        &self,
+        task: &str,
+        model: Option<&str>,
+        append_system_prompt: Option<&str>,
+        extensions: &[String],
+    ) -> String {
         let mut parts = vec![self.binary.to_string()];
+        if self.harness == AgentHarness::Pi {
+            parts.push("--no-extensions".to_string());
+            parts.push("--no-mcp".to_string());
+            for ext in extensions {
+                if let Some(e) = non_empty_string(ext) {
+                    parts.push("-e".to_string());
+                    parts.push(shell_quote_arg(e));
+                }
+            }
+        }
         if let Some(m) = model.and_then(non_empty_string) {
             parts.push("--model".to_string());
             parts.push(shell_quote_arg(m));
@@ -291,6 +313,38 @@ impl HarnessAdapter {
         parts.push(self.task_flag.to_string());
         parts.push(shell_quote_arg(task));
         parts.join(" ")
+    }
+
+    /// Summarize the composed CLI flags for logging without including persona or task prose.
+    pub fn spawn_flags_summary(
+        &self,
+        model: Option<&str>,
+        has_append_system_prompt: bool,
+        extensions: &[String],
+    ) -> String {
+        let mut flags = Vec::new();
+        if self.harness == AgentHarness::Pi {
+            flags.push("--no-extensions".to_string());
+            flags.push("--no-mcp".to_string());
+            for ext in extensions {
+                if let Some(e) = non_empty_string(ext) {
+                    flags.push("-e".to_string());
+                    flags.push(shell_quote_arg(e));
+                }
+            }
+        }
+        if let Some(m) = model.and_then(non_empty_string) {
+            flags.push("--model".to_string());
+            flags.push(shell_quote_arg(m));
+        }
+        if has_append_system_prompt
+            && matches!(self.harness, AgentHarness::Pi | AgentHarness::Claude)
+        {
+            flags.push("--append-system-prompt".to_string());
+            flags.push("<AGENT.md>".to_string());
+        }
+        flags.push(self.task_flag.to_string());
+        flags.join(" ")
     }
 
     /// Extract a session ID from a hook JSON payload or structured telemetry value.
@@ -368,6 +422,7 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
 /// `(definition, adapter, task)`.
 ///
 /// - Refuses agents without a `[harness]` table.
+/// - `pi` passes `--no-extensions --no-mcp` (plus any explicit `-e <path>` from `[harness].extensions`).
 /// - `pi` and `claude` pass `--append-system-prompt <AGENT.md text>`.
 /// - `codex` and `agy` have no system-prompt flag, so `# Persona\n<AGENT.md text>\n\n`
 ///   is prepended to the task text.
@@ -392,7 +447,27 @@ pub fn build_agent_spawn_command(
             format!("# Persona\n{persona}\n\n{task}\n\n{contract}"),
         ),
     };
-    Ok(adapter.spawn_command(&full_task, harness_cfg.model.as_deref(), append_prompt))
+    let flags_summary = adapter.spawn_flags_summary(
+        harness_cfg.model.as_deref(),
+        append_prompt.and_then(non_empty_string).is_some(),
+        &harness_cfg.extensions,
+    );
+    log::info!(
+        "agent_spawn: role={} harness={} flags=\"{}\"",
+        definition.id,
+        adapter.harness.as_str(),
+        flags_summary
+    );
+    if harness_cfg.extensions.is_empty() {
+        Ok(adapter.spawn_command(&full_task, harness_cfg.model.as_deref(), append_prompt))
+    } else {
+        Ok(adapter.spawn_command_with_extensions(
+            &full_task,
+            harness_cfg.model.as_deref(),
+            append_prompt,
+            &harness_cfg.extensions,
+        ))
+    }
 }
 
 fn tier_display_label(source: crate::agent::AgentSource) -> &'static str {
@@ -2526,7 +2601,7 @@ mod agent_tests {
         assert_eq!(pi.resume_command("pi-sess-7"), "pi --session pi-sess-7");
         assert_eq!(
             pi.spawn_command("audit module", None, None),
-            "pi -p 'audit module'"
+            "pi --no-extensions --no-mcp -p 'audit module'"
         );
         assert_eq!(
             pi.capture_session_id(&serde_json::json!({"sessionId": "pi-7"})),
@@ -2567,7 +2642,7 @@ mod agent_tests {
                 .expect("valid definition")
         };
 
-        // 1. pi: uses --append-system-prompt, --model verbatim, and appends worker contract + schema to task.
+        // 1. pi: uses --no-extensions --no-mcp, --append-system-prompt, --model verbatim, and appends worker contract + schema to task.
         let pi_def = make_def("pi", Some("openrouter/~z-ai/glm-flash-latest"));
         let pi_adapter = super::harness_adapter("pi").unwrap();
         let pi_cmd =
@@ -2575,10 +2650,12 @@ mod agent_tests {
                 .unwrap();
         assert!(
             pi_cmd.starts_with(
-                "pi --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.' -p "
+                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.' -p "
             ),
             "unexpected pi command: {pi_cmd}"
         );
+        assert!(pi_cmd.contains("--no-extensions"));
+        assert!(pi_cmd.contains("--no-mcp"));
         assert!(pi_cmd.contains("Find where AgentRegistry loads"));
         assert!(pi_cmd.contains("# Plexi worker contract"));
         assert!(pi_cmd.contains("agent `researcher`"));
@@ -2650,6 +2727,48 @@ mod agent_tests {
         .unwrap();
         let err = super::build_agent_spawn_command(&assistant_only, pi_adapter, "hi").unwrap_err();
         assert!(err.contains("[harness]"), "{err}");
+    }
+
+    #[test]
+    fn pi_spawn_command_includes_no_extensions_no_mcp_and_optional_explicit_extensions() {
+        let pi_adapter = super::harness_adapter("pi").unwrap();
+
+        let default_def = crate::agent::AgentDefinition::parse(
+            "Secret persona text that must not appear in flags log.",
+            "[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\n\n[harness]\ncli = \"pi\"\nmodel = \"sonnet\"\n",
+        )
+        .unwrap();
+        let default_cmd =
+            super::build_agent_spawn_command(&default_def, pi_adapter, "do task").unwrap();
+        assert!(
+            default_cmd.starts_with(
+                "pi --no-extensions --no-mcp --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.' -p "
+            ),
+            "unexpected default pi command: {default_cmd}"
+        );
+        let default_flags = pi_adapter.spawn_flags_summary(
+            Some("sonnet"),
+            true,
+            &default_def.harness.as_ref().unwrap().extensions,
+        );
+        assert_eq!(
+            default_flags,
+            "--no-extensions --no-mcp --model sonnet --append-system-prompt <AGENT.md> -p"
+        );
+        assert!(!default_flags.contains("Secret persona text"));
+
+        let ext_def = crate::agent::AgentDefinition::parse(
+            "Secret persona text.",
+            "[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\n\n[harness]\ncli = \"pi\"\nextensions = [\"/tmp/my ext.ts\", \"builtin:plan-mode\"]\n",
+        )
+        .unwrap();
+        let ext_cmd = super::build_agent_spawn_command(&ext_def, pi_adapter, "do task").unwrap();
+        assert!(
+            ext_cmd.starts_with(
+                "pi --no-extensions --no-mcp -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.' -p "
+            ),
+            "unexpected explicit-extension pi command: {ext_cmd}"
+        );
     }
 
     #[test]
@@ -2844,7 +2963,7 @@ mod agent_tests {
         assert_eq!(show_json["tier"], "workspace");
         assert_eq!(show_json["shadows_global"], true);
         let spawn_cmd = show_json["spawn_command"].as_str().unwrap();
-        assert!(spawn_cmd.contains("pi --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona.' -p"));
+        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona.' -p"));
         assert!(spawn_cmd.contains("<TASK>"));
     }
 
