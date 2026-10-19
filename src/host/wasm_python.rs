@@ -1264,6 +1264,9 @@ pub struct LivePythonPane {
     /// One info line the first time this pane serves
     /// `read_permission_decisions`. Later polls stay quiet at info.
     announced_permission_read: bool,
+    /// Per-pane typed-pipe registry (stint 0742) tracking directed JSON pipes
+    /// opened by or targeting this Python runtime.
+    pipes: crate::host::typed_pipes::TypedPipeRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -2527,7 +2530,45 @@ impl LivePythonPane {
             stderr_classifier: GuestStderrClassifier::new(),
             unhandled_warned_at: HashMap::new(),
             announced_permission_read: false,
+            pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
+                crate::config::config_dir().join("pipes"),
+            ),
         })
+    }
+
+    /// Stamp the owning pane's host-established scope onto this instance's
+    /// typed-pipe registry (stint 0742).
+    pub fn set_pipe_owner(&mut self, owner: crate::host::scope::Scope) {
+        self.pipes.set_owner(owner);
+    }
+
+    /// Register a host-directed duplex JSON pipe on this Python instance's
+    /// typed-pipe registry so `has_pipe_reader` reflects the connection.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        match self.pipes.open_json(
+            pipe_id.to_string(),
+            crate::host::typed_pipes::PipeDirection::Duplex,
+        ) {
+            Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {
+                log::info!(
+                    "app::{}: registered directed pipe '{pipe_id}' on Python runtime",
+                    self.app_id
+                );
+                true
+            }
+            Err(error) => {
+                log::warn!(
+                    "app::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
+                    self.app_id
+                );
+                false
+            }
+        }
+    }
+
+    /// True when `pipe_id` is open on this Python instance's typed-pipe registry.
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        self.pipes.has_reader(pipe_id)
     }
 
     /// Refresh the live context root this pane resolves state paths against.
@@ -3132,6 +3173,12 @@ impl LivePythonPane {
                             );
                             return;
                         }
+                    }
+                    if let crate::app::app_trait::AppCommand::OpenDirectedPipe {
+                        ref pipe_id, ..
+                    } = command
+                    {
+                        let _ = self.register_directed_pipe(pipe_id);
                     }
                     self.pending_commands.push(command);
                     }

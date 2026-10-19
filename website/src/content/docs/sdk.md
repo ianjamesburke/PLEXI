@@ -290,6 +290,29 @@ SubscribeEventStreams(request_id: str, app_id: str, event_names: list[str], payl
 UnsubscribeEventStreams(request_id: str, subscription_id: str)
 ```
 
+### `PipeOpenDirected`
+
+```python
+PipeOpenDirected(pipe_id: str, target_pane_id: int)
+```
+
+Open a host-mediated duplex JSON pipe targeting ``target_pane_id``.
+
+Requires the ``pipe.open`` capability. Once subscribed, either endpoint may
+send JSON payloads over ``pipe_id`` via :class:`PipeSend`, delivered to the
+peer as :class:`events.PipeMessage`.
+
+### `PipeSend`
+
+```python
+PipeSend(pipe_id: str, payload: Any = None)
+```
+
+Send a JSON-serializable ``payload`` over an open pipe ``pipe_id``.
+
+Requires the ``pipe.open`` capability. Delivered to the paired endpoint as
+:class:`events.PipeMessage`.
+
 ## Events
 
 ### `Modifiers`
@@ -533,7 +556,7 @@ PipePayload(binary: Optional[bytes] = None, json: Optional[str] = None)
 ### `PipeMessage`
 
 ```python
-PipeMessage(handle: int, payload: PipePayload)
+PipeMessage(handle: int = 0, payload: PipePayload = PipePayload(), pipe_id: str = '', data: Optional[object] = None)
 ```
 
 ### `PipePeerConnected`

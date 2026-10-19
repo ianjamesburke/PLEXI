@@ -116,6 +116,7 @@ class V3AppRuntime:
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._http_tags: dict[str, str] = {}
+        self._pipe_handles: dict[str, int] = {}
         self._running = True
 
     def run(self) -> None:
@@ -285,6 +286,24 @@ class V3AppRuntime:
                 self._set_state(in_view=False)
         elif t == "state_changed":
             self._handle_state_changed(ev)
+        elif t == "pipe_message":
+            self._handle_pipe_message(ev)
+
+    def _handle_pipe_message(self, ev: dict) -> None:
+        pipe_id = str(ev.get("pipe_id", ""))
+        payload = ev.get("payload")
+        handle = self._pipe_handles.setdefault(pipe_id, len(self._pipe_handles) + 1)
+        payload_json = (
+            json.dumps(payload, separators=_JSON_SEPARATORS)
+            if payload is not None
+            else None
+        )
+        self._dispatch(events.PipeMessage(
+            handle=handle,
+            payload=events.PipePayload(json=payload_json),
+            pipe_id=pipe_id,
+            data=payload,
+        ))
 
     def _handle_state_changed(self, ev: dict) -> None:
         """A scope's backing file changed outside our own persist flow.
@@ -837,6 +856,20 @@ class V3AppRuntime:
                     "type": "unsubscribe_event_streams",
                     "request_id": effect.request_id,
                     "subscription_id": effect.subscription_id,
+                })
+            elif isinstance(effect, effects.PipeOpenDirected):
+                pipe_id = str(effect.pipe_id)
+                self._pipe_handles.setdefault(pipe_id, len(self._pipe_handles) + 1)
+                _emit({
+                    "type": "pipe_open_directed",
+                    "pipe_id": pipe_id,
+                    "target_pane_id": int(effect.target_pane_id),
+                })
+            elif isinstance(effect, effects.PipeSend):
+                _emit({
+                    "type": "pipe_send",
+                    "pipe_id": str(effect.pipe_id),
+                    "payload": effect.payload,
                 })
         if state_changed:
             self._set_state(in_view=False)

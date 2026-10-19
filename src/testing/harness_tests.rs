@@ -12081,4 +12081,271 @@ mod agent_state_restoration_tests {
     }
 }
 
+// -- Directed pipe registration across real runtimes (stint 0742) ---------
+
+fn write_directed_pipe_receiver_app(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 1\n\n\
+         [app]\n\
+         id = \"pipe-receiver-probe\"\n\
+         type = \"app\"\n\
+         name = \"Pipe Receiver Probe\"\n\
+         entry = \"main.py\"\n\
+         version = \"0.1.0\"\n\
+         description = \"stint 0742 directed pipe receiver\"\n\n\
+         [app.capabilities]\n\
+         capabilities = [\"pipe.open\"]\n",
+    )
+    .expect("write receiver manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        "from plexi_sdk.effects import PipeSend, SetTitle\n\
+         from plexi_sdk.events import PipeMessage\n\
+         from plexi_sdk.ui import Column\n\n\
+         def init(size, args):\n\
+         \x20   return [SetTitle(\"receiver:ready\")]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeMessage):\n\
+         \x20       msg = event.data.get(\"msg\", \"\") if isinstance(event.data, dict) else \"\"\n\
+         \x20       return [\n\
+         \x20           SetTitle(f\"receiver:rx:{event.pipe_id}:{msg}\"),\n\
+         \x20           PipeSend(event.pipe_id, {\"echo\": msg, \"from\": \"receiver\"}),\n\
+         \x20       ]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write receiver main.py");
+}
+
+fn write_directed_pipe_sender_app(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 1\n\n\
+         [app]\n\
+         id = \"pipe-sender-probe\"\n\
+         type = \"app\"\n\
+         name = \"Pipe Sender Probe\"\n\
+         entry = \"main.py\"\n\
+         version = \"0.1.0\"\n\
+         description = \"stint 0742 directed pipe sender\"\n\n\
+         [app.capabilities]\n\
+         capabilities = [\"pipe.open\"]\n",
+    )
+    .expect("write sender manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        "from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle\n\
+         from plexi_sdk.events import PipeMessage\n\
+         from plexi_sdk.ui import Column\n\n\
+         PIPE_ID = \"stint0742.duplex\"\n\n\
+         def init(size, args):\n\
+         \x20   target_pane_id = int(args[0])\n\
+         \x20   return [\n\
+         \x20       SetTitle(\"sender:opened\"),\n\
+         \x20       PipeOpenDirected(PIPE_ID, target_pane_id),\n\
+         \x20       PipeSend(PIPE_ID, {\"msg\": \"ping\"}),\n\
+         \x20   ]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeMessage):\n\
+         \x20       echo = event.data.get(\"echo\", \"\") if isinstance(event.data, dict) else \"\"\n\
+         \x20       who = event.data.get(\"from\", \"\") if isinstance(event.data, dict) else \"\"\n\
+         \x20       return [SetTitle(f\"sender:ack:{echo}:{who}\")]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write sender main.py");
+}
+
+/// Stint 0742: two real CPython-in-WASM apps (not `PipeTestApp` stubs) open a
+/// directed pipe, register local pipe readers on both runtimes via
+/// `register_directed_pipe_on_target`, and exchange duplex JSON messages
+/// end-to-end.
+#[test]
+fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
+    let receiver_dir = tempfile::tempdir().expect("receiver dir");
+    let sender_dir = tempfile::tempdir().expect("sender dir");
+    write_directed_pipe_receiver_app(receiver_dir.path());
+    write_directed_pipe_sender_app(sender_dir.path());
+
+    let mut h = HostHarness::new();
+    let receiver_pane_id = h
+        .app
+        .launch_app_by_path_with_layout_no_review_modal(
+            &receiver_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch receiver app")
+        .expect("receiver pane id");
+
+    let start = std::time::Instant::now();
+    while python_pane_title(&h, receiver_pane_id).as_deref() != Some("receiver:ready") {
+        h.run_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "receiver app did not reach ready title in time (last title: {:?}, error: {:?})",
+            python_pane_title(&h, receiver_pane_id),
+            python_pane_error(&h, receiver_pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let sender_args = vec![receiver_pane_id.to_string()];
+    let sender_pane_id = h
+        .app
+        .launch_app_by_path_with_layout_no_review_modal(
+            &sender_dir.path().to_string_lossy(),
+            None,
+            None,
+            &sender_args,
+        )
+        .expect("launch sender app")
+        .expect("sender pane id");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        if python_pane_title(&h, sender_pane_id).as_deref() == Some("sender:ack:ping:receiver")
+            && python_pane_title(&h, receiver_pane_id).as_deref()
+                == Some("receiver:rx:stint0742.duplex:ping")
+        {
+            break;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "directed pipe round-trip did not complete in time (sender={:?} err={:?}, receiver={:?} err={:?})",
+            python_pane_title(&h, sender_pane_id),
+            python_pane_error(&h, sender_pane_id),
+            python_pane_title(&h, receiver_pane_id),
+            python_pane_error(&h, receiver_pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let ctx_id = h.app.windows[h.app.active_window].context_id;
+    assert_eq!(
+        h.app
+            .directed_pipes
+            .get(&(ctx_id, "stint0742.duplex".to_string())),
+        Some(&(sender_pane_id, receiver_pane_id)),
+        "directed_pipes must record the subscribed (sender, receiver) pair"
+    );
+
+    let sender_has_reader = h.app.windows[h.app.active_window]
+        .panes
+        .get(&sender_pane_id)
+        .and_then(Pane::as_app)
+        .is_some_and(|pane| pane.runtime.has_pipe_reader("stint0742.duplex"));
+    let receiver_has_reader = h.app.windows[h.app.active_window]
+        .panes
+        .get(&receiver_pane_id)
+        .and_then(Pane::as_app)
+        .is_some_and(|pane| pane.runtime.has_pipe_reader("stint0742.duplex"));
+    assert!(
+        sender_has_reader,
+        "sender Python runtime must have 'stint0742.duplex' registered on its local pipe registry"
+    );
+    assert!(
+        receiver_has_reader,
+        "target Python runtime must have 'stint0742.duplex' registered via register_directed_pipe_on_target"
+    );
+}
+
+/// Stint 0742: `OpenDirectedPipe` targeting a real `AppRuntime::Wasm` pane must
+/// register the pipe on the WASM target's local `TypedPipeRegistry` (so
+/// `has_pipe_reader` is true) and allocate a JSON pipe handle so inbound
+/// `DeliverPipeMessage` frames reach the WASM runtime.
+#[test]
+fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
+    use crate::host::wasm_app::{Grants, StateStore, WasmApp};
+    use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+
+    let mut h = HostHarness::new();
+    let win_idx = h.app.active_window;
+    let (sender_pane_id, _sender_inbox) = add_pipe_test_pane(&mut h, win_idx);
+
+    let wasm_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm");
+    let app = WasmApp::load_with_grants(
+        "sysmon",
+        &wasm_path,
+        StateStore::ephemeral(),
+        Grants {
+            state: true,
+            pipes: true,
+            ..Grants::default()
+        },
+    )
+    .expect("load sysmon wasm fixture");
+    let pane = WasmPane::new(app, Box::new(SysinfoStats::new()));
+    let mut live = LiveWasmPane::new(
+        pane,
+        "sysmon",
+        StateStore::ephemeral().snapshot(),
+        Vec::new(),
+        wasm_path,
+    );
+    let wasm_pane_id = h.app.host.alloc_pane_id();
+    let ctx_id = h.app.windows[win_idx].context_id;
+    live.set_pane_id(wasm_pane_id);
+    live.set_context_id(ctx_id);
+    h.app.windows[win_idx].panes.insert(
+        wasm_pane_id,
+        Pane::App(Box::new(crate::host::pane::AppPane {
+            pip_status: None,
+            id: wasm_pane_id,
+            runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+            workspace_root: std::env::temp_dir(),
+            permissions: crate::app::permissions::AppPermissions::default(),
+            manifest_id: "sysmon".to_string(),
+            name: "sysmon".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        })),
+    );
+    let _ = h.app.windows[win_idx].tree.tiles.insert_pane(wasm_pane_id);
+
+    queue_pipe_command(
+        &mut h,
+        sender_pane_id,
+        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+            sender_pane_id,
+            pipe_id: "wasm.directed".to_string(),
+            target_pane_id: wasm_pane_id,
+        },
+    );
+    queue_pipe_command(
+        &mut h,
+        sender_pane_id,
+        crate::app::app_trait::AppCommand::DeliverPipeMessage {
+            sender_pane_id,
+            pipe_id: "wasm.directed".to_string(),
+            payload: serde_json::json!({"track": 1}),
+        },
+    );
+    h.run_frames(1);
+
+    let wasm_has_reader = h.app.windows[h.app.active_window]
+        .panes
+        .get(&wasm_pane_id)
+        .and_then(Pane::as_app)
+        .is_some_and(|pane| pane.runtime.has_pipe_reader("wasm.directed"));
+    assert!(
+        wasm_has_reader,
+        "WASM target runtime must report has_pipe_reader=true after OpenDirectedPipe"
+    );
+}
+
+
 

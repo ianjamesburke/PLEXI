@@ -37,8 +37,9 @@ use super::wasm_app::bindings::plexi::platform::types::{
     DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
     EventUnsubscriptionResultEvent, FilePickedEvent, FilePickerMode as WitFilePickerMode,
     FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
-    OpenFilePickerEffect, SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect,
-    UiActionEvent, UiValueChangeEvent, UnsubscribeEventStreamsEffect,
+    OpenFilePickerEffect, PipeMessageEvent, PipePayload, SubscribeEventStreamsEffect,
+    ToolCallEvent, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
+    UnsubscribeEventStreamsEffect,
 };
 use super::wasm_app::{
     Effect, InputEvent, KeyEvent, Modifiers, MouseButton, MouseEvent, Point, StateSnapshot,
@@ -588,6 +589,18 @@ impl WasmPane {
             pane_id: self.pane_id,
             context_id,
         });
+    }
+
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        self.app.register_directed_pipe(pipe_id)
+    }
+
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        self.app.has_pipe_reader(pipe_id)
+    }
+
+    pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
+        self.app.json_pipe_handle(pipe_id)
     }
 
     pub fn with_remembered_capabilities(
@@ -2012,6 +2025,14 @@ impl LiveWasmPane {
         self.inner.set_context_id(context_id);
     }
 
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        self.inner.register_directed_pipe(pipe_id)
+    }
+
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        self.inner.has_pipe_reader(pipe_id)
+    }
+
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
         self.inner.take_host_effects()
     }
@@ -2075,6 +2096,21 @@ impl LiveWasmPane {
                     (Some(sequence), None) => Ok(sequence),
                     (_, Some(error)) => Err(error),
                     _ => Err("emit event returned no result".to_string()),
+                })
+            }
+            crate::protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
+                if !self.inner.has_pipe_reader(&pipe_id) {
+                    let _ = self.inner.register_directed_pipe(&pipe_id);
+                }
+                let Some(handle) = self.inner.json_pipe_handle(&pipe_id) else {
+                    log::warn!(
+                        "wasm input: dropping PipeMessage for unregistered pipe '{pipe_id}'"
+                    );
+                    return;
+                };
+                InputEvent::PipeMessage(PipeMessageEvent {
+                    handle,
+                    payload: PipePayload::Json(payload.to_string()),
                 })
             }
             other => {

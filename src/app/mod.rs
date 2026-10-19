@@ -4920,27 +4920,29 @@ fn drive_native_pane_key(
     Ok(disposition)
 }
 
-/// Best-effort: register the directed pipe on the target's OWN local pipe
-/// registry, so a runtime that supports one can report `has_reader`/
-/// `is_connected` true for it (SDK ergonomics on the target's reverse-send
-/// path). Returns `false` unconditionally today — the old `AppRuntime::Process`
-/// arm this backed was removed by the CPython-in-WASM migration (#2386,
-/// 2026-07-12) and neither `AppRuntime::Wasm` nor `AppRuntime::Python` has a
-/// reachable hookup into their pipe registry from outside the runtime yet.
-/// This is a known, pre-existing gap (flagged in stint 0724 Phase D 2/2, not
-/// introduced by it) — restoring it is separate follow-up work.
+/// Register the directed pipe on the target's own local pipe registry so a
+/// runtime that maintains one (`AppRuntime::Wasm` and `AppRuntime::Python`)
+/// reports `has_pipe_reader` true for it on the reverse-send path (stint 0742).
 ///
-/// Its result is deliberately NOT fatal to `OpenDirectedPipe` at the call
-/// site: the actual duplex data plane is host-mediated (the caller inserts
-/// the pair into `directed_pipes` and `DeliverPipeMessage` routes by
-/// consulting that map directly — see `dispatch.rs`), so it never depends on
-/// this registration succeeding. Before this phase, a `false` return here
-/// silently aborted the ENTIRE `OpenDirectedPipe` request (the map insert was
-/// unreachable), so no directed pipe has ever actually routed a message —
-/// this call is now purely advisory.
+/// Builtin apps (`AppRuntime::Builtin`) have no per-pane `TypedPipeRegistry`
+/// and return `false`; `OpenDirectedPipe` still proceeds for them because the
+/// duplex data plane is host-mediated via `directed_pipes` +
+/// `queue_outbound_event`.
 fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
-    let _ = (pane, pipe_id);
-    false
+    let crate::host::pane::Pane::App(app_pane) = pane else {
+        return false;
+    };
+    let runtime_kind = app_pane.runtime.runtime_kind();
+    let registered = app_pane.runtime.register_directed_pipe(pipe_id)
+        && app_pane.runtime.has_pipe_reader(pipe_id);
+    if registered {
+        log::info!(
+            "register_directed_pipe_on_target: registered directed pipe '{pipe_id}' on target pane {} (app_id={}, runtime={runtime_kind})",
+            app_pane.id,
+            app_pane.manifest_id
+        );
+    }
+    registered
 }
 
 /// Explicit collaborators passed to [`restore_workspace`] so workspace

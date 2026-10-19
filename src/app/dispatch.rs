@@ -1321,14 +1321,23 @@ impl PlexiApp {
                         });
                     match target_kind {
                         Some("app") => {
-                            // Register pipe on target's registry so it can
-                            // PipeSend back through the same id. Best-effort
-                            // only: no runtime has a reachable registry hookup
-                            // today (see `register_directed_pipe_on_target`),
-                            // so failure here is informational, never fatal —
-                            // the actual duplex data plane is host-mediated
-                            // via `directed_pipes` + `queue_outbound_event`,
-                            // not this local bookkeeping.
+                            // Register pipe on both sender and target local
+                            // pipe registries so `has_pipe_reader` reflects the
+                            // connection on `Wasm` and `Python` runtimes
+                            // (stint 0742). Builtin apps have no local pipe
+                            // registry and return `false`, which is non-fatal
+                            // because the duplex data plane is host-mediated
+                            // via `directed_pipes` + `queue_outbound_event`.
+                            if let Some((sender_window_index, _)) =
+                                self.find_pane_in_any_window(sender_pane_id)
+                            {
+                                if let Some(sender_pane) = self.windows[sender_window_index]
+                                    .panes
+                                    .get_mut(&sender_pane_id)
+                                {
+                                    let _ = register_directed_pipe_on_target(sender_pane, &pipe_id);
+                                }
+                            }
                             let registered = if let Some(pane) = self.windows[target_window_index]
                                 .panes
                                 .get_mut(&target_pane_id)
@@ -1339,7 +1348,7 @@ impl PlexiApp {
                             };
                             if !registered {
                                 log::info!(
-                                    "OpenDirectedPipe: '{pipe_id}' target {target_pane_id} has no local pipe registry hookup for its runtime yet — host-side routing still proceeds"
+                                    "OpenDirectedPipe: '{pipe_id}' target {target_pane_id} has no local pipe registry hookup for its runtime — host-side routing still proceeds"
                                 );
                             }
                             self.directed_pipes.insert(
