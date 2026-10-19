@@ -163,7 +163,7 @@ pub(crate) struct ApprovalButton {
 }
 
 pub struct PlexiApp {
-    resource_leases: Option<crate::host::resource_leases::LeaseService>,
+    pub(crate) resource_leases: Option<crate::host::resource_leases::LeaseService>,
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     pub(crate) last_notify_poll: std::time::Instant,

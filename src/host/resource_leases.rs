@@ -134,12 +134,18 @@ pub(crate) struct LeaseService {
 
 impl LeaseService {
     pub(crate) fn start() -> std::io::Result<Self> {
+        let mut system = sysinfo::System::new();
+        Self::with_sampler(move || sample_machine(&mut system))
+    }
+
+    fn with_sampler(
+        mut sample: impl FnMut() -> Result<Sample, String> + Send + 'static,
+    ) -> std::io::Result<Self> {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<LeaseRequest>(16);
         std::thread::Builder::new()
             .name("resource-leases".into())
             .spawn(move || {
                 let mut table = LeaseTable::default();
-                let mut system = sysinfo::System::new();
                 let started = std::time::Instant::now();
                 loop {
                     let request = match receiver.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -147,9 +153,23 @@ impl LeaseService {
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    table.observe(sample_machine(&mut system), started.elapsed().as_secs());
+                    let sample_ok = match sample() {
+                        Ok(sample) => {
+                            table.observe(sample, started.elapsed().as_secs());
+                            true
+                        }
+                        Err(error) => {
+                            log::error!(
+                                "lease: machine_pressure admission=paused sample failed: {error}"
+                            );
+                            false
+                        }
+                    };
                     if let Some(request) = request {
                         let result = match request.op.as_str() {
+                            "acquire" if !sample_ok => {
+                                json!({"status": "paused", "error_code": "pressure_unavailable"})
+                            }
                             "acquire" => table.acquire(
                                 request.name.as_deref().unwrap_or(""),
                                 request.max.unwrap_or(0),
@@ -185,17 +205,15 @@ impl LeaseService {
     }
 }
 
-fn sample_machine(system: &mut sysinfo::System) -> Sample {
-    // On macOS total_swap is vm.swapusage.xsu_total: allocated swap-file bytes,
-    // not free RAM (nor a percentage of RAM). Only request swap refresh.
-    system.refresh_memory_specifics(sysinfo::MemoryRefreshKind::new().with_swap());
+fn sample_machine(system: &mut sysinfo::System) -> Result<Sample, String> {
+    let swap_bytes = allocated_swap(system)?;
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
         sysinfo::ProcessRefreshKind::new(),
     );
     let mut sample = Sample {
-        swap_bytes: system.total_swap(),
+        swap_bytes,
         ..Sample::default()
     };
     for (pid, process) in system.processes() {
@@ -206,14 +224,54 @@ fn sample_machine(system: &mut sysinfo::System) -> Sample {
             continue;
         }
         sample.owners.insert(pid.as_u32(), process.start_time());
-        if matches!(
-            process.name().to_str(),
-            Some("cargo" | "rustc" | "cargo.exe" | "rustc.exe")
-        ) {
+        if is_build_process(process.name()) {
             sample.build_processes += 1;
         }
     }
-    sample
+    if !sample.owners.contains_key(&std::process::id()) {
+        return Err("process sample did not include the host".into());
+    }
+    Ok(sample)
+}
+
+fn is_build_process(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("cargo" | "rustc" | "cargo.exe" | "rustc.exe")
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn allocated_swap(_system: &mut sysinfo::System) -> Result<u64, String> {
+    let mut swap = std::mem::MaybeUninit::<libc::xsw_usage>::uninit();
+    let mut size = std::mem::size_of::<libc::xsw_usage>();
+    // SAFETY: sysctl writes at most size bytes into the correctly sized output.
+    // Read it only after success and an exact returned size. No RAM metric is read.
+    let result = unsafe {
+        libc::sysctlbyname(
+            c"vm.swapusage".as_ptr(),
+            swap.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 {
+        return Err(format!("vm.swapusage: {}", std::io::Error::last_os_error()));
+    }
+    if size != std::mem::size_of::<libc::xsw_usage>() {
+        return Err("vm.swapusage returned an unexpected size".into());
+    }
+    Ok(unsafe { swap.assume_init() }.xsu_total)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn allocated_swap(system: &mut sysinfo::System) -> Result<u64, String> {
+    if !sysinfo::IS_SUPPORTED_SYSTEM {
+        return Err("swap sampling is unsupported on this platform".into());
+    }
+    system.refresh_memory_specifics(sysinfo::MemoryRefreshKind::new().with_swap());
+    Ok(system.total_swap())
 }
 
 #[cfg(test)]
@@ -225,6 +283,16 @@ mod tests {
             swap_bytes: swap,
             build_processes: builds,
             owners: owners.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn leases_build_process_names_are_exact() {
+        for name in ["cargo", "rustc", "cargo.exe", "rustc.exe"] {
+            assert!(is_build_process(name.as_ref()));
+        }
+        for name in ["cargo-watch", "rust-analyzer", "my-rustc", "sh"] {
+            assert!(!is_build_process(name.as_ref()));
         }
     }
 
@@ -293,6 +361,96 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    fn host_request(h: &mut crate::testing::HostHarness, op: &str, pid: u32) -> Value {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reply.json");
+        h.inject_ipc(crate::protocol::AppRequest::ResourceLease {
+            op: op.into(),
+            name: Some("lanes".into()),
+            max: Some(1),
+            holder_pid: pid,
+            peer_ancestry: vec![pid],
+            response_file: path.to_string_lossy().into_owned(),
+        });
+        h.hidden_frame();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lease worker did not reply"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn leases_host_round_trip_capacity_release_pressure_and_reclaim() {
+        let mut h = crate::testing::HostHarness::new();
+        let input = std::sync::Arc::new(std::sync::Mutex::new((0_u64, 0_usize, false, false)));
+        let sampler = input.clone();
+        h.app.resource_leases = Some(
+            LeaseService::with_sampler(move || {
+                let (swap, builds, exited, failed) = *sampler.lock().unwrap();
+                if failed {
+                    return Err("injected unavailable sample".into());
+                }
+                Ok(Sample {
+                    swap_bytes: swap,
+                    build_processes: builds,
+                    owners: if exited {
+                        vec![(20, 2)]
+                    } else {
+                        vec![(10, 1), (20, 2)]
+                    }
+                    .into_iter()
+                    .collect(),
+                })
+            })
+            .unwrap(),
+        );
+        assert_eq!(host_request(&mut h, "acquire", 10)["status"], "acquired");
+        assert_eq!(
+            host_request(&mut h, "acquire", 20)["error_code"],
+            "lease_capacity"
+        );
+        assert_eq!(host_request(&mut h, "release", 10)["released"], 1);
+        input.lock().unwrap().0 = SWAP_GROWTH_LIMIT;
+        assert_eq!(
+            host_request(&mut h, "acquire", 20)["error_code"],
+            "machine_pressure"
+        );
+        input.lock().unwrap().0 = 0;
+        input.lock().unwrap().1 = BUILD_PROCESS_LIMIT;
+        assert_eq!(
+            host_request(&mut h, "acquire", 20)["error_code"],
+            "machine_pressure"
+        );
+        input.lock().unwrap().1 = 0;
+        assert_eq!(host_request(&mut h, "acquire", 10)["status"], "acquired");
+        input.lock().unwrap().2 = true;
+        assert_eq!(host_request(&mut h, "acquire", 20)["status"], "acquired");
+        input.lock().unwrap().3 = true;
+        // Explicit release remains possible even if monitoring is unavailable.
+        assert_eq!(host_request(&mut h, "release", 20)["released"], 1);
+        assert_eq!(
+            host_request(&mut h, "acquire", 20)["error_code"],
+            "pressure_unavailable"
+        );
+    }
+
+    #[test]
+    fn leases_wire_cannot_supply_holder_authority() {
+        let request = serde_json::from_value::<crate::protocol::AppRequest>(json!({
+            "type": "resource_lease", "op": "acquire", "name": "lanes", "max": 1,
+            "holder_pid": 10, "peer_ancestry": [10], "response_file": "/tmp/unused"
+        }));
+        assert!(
+            request.is_err(),
+            "wire ancestry must not authorize a holder"
+        );
+    }
 
     #[test]
     fn leases_hidden_host_dispatch_and_owner_identity() {
@@ -338,7 +496,7 @@ mod integration_tests {
             .spawn()
             .unwrap();
         let mut system = sysinfo::System::new();
-        let mut sample = sample_machine(&mut system);
+        let mut sample = sample_machine(&mut system).unwrap();
         assert!(sample.owners.contains_key(&child.id()));
         // Deterministic pressure input; use the real sampled process identities.
         sample.swap_bytes = 0;
@@ -348,7 +506,7 @@ mod integration_tests {
         assert_eq!(table.acquire("lanes", 1, child.id())["status"], "acquired");
         child.kill().unwrap();
         child.wait().unwrap();
-        table.observe(sample_machine(&mut system), 1);
+        table.observe(sample_machine(&mut system).unwrap(), 1);
         assert!(table.pools.is_empty());
     }
 }

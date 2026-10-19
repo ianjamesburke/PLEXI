@@ -631,4 +631,5 @@ processes off the UI thread. Admission pauses at 256 MiB of swap allocation
 growth within a rolling 60-second window, or at four concurrent build processes.
 It never uses free-memory percentage. Sampling starts on the first lease request;
 initial swap allocation establishes the baseline. Existing work is never killed.
+Sampling failures pause new acquisition; explicit release remains available.
 A paused request is not retained: the caller decides when to retry.
