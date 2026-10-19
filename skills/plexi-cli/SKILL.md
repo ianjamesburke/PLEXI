@@ -1,15 +1,18 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.17"
+skill_version: "5.0.18"
 plexi_version: "0.4.0"
-last_verified: "2026-10-16"
+last_verified: "2026-10-19"
 ---
 
 # Plexi CLI
 
 Start with `plexi --help`, then run `plexi <command> --help` before using a
 surface. Help is the reference for arguments and flags in the installed binary.
+When the target channel is known, use its `plexi-<channel>` shim for every
+command below (for example, `plexi-alpha agent --help`). The bare `plexi`
+command inherits the calling pane's routing; it may target a different host.
 
 Run these commands from a Plexi pane when they act on a host. The pane's context
 and connection are supplied automatically. For app state and host state, use the
@@ -17,12 +20,13 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 
 ## Install
 
-This binary carries the skill. One command writes it where Claude Code and
-Codex load a user skill:
+This binary carries the skill. One command writes it where Claude Code,
+Codex, and Pi load a user skill:
 
 ```bash
 plexi skill install --agent claude
 plexi skill install --agent codex
+plexi skill install --agent pi
 ```
 
 ## Feature map
@@ -85,8 +89,8 @@ plexi skill install --agent codex
   FIFO queue without clobbering: `plexi pane message send <id> "<payload>" [--submit]`
   stamps `from_pane_id` host-side from socket peer ancestry, returns `queued` or
   `delivered` ack state, and with `--submit` wakes an idle target agent without
-  interrupting a busy one. `plexi pane message recv [--wait --timeout <secs>]`
-  drains the caller's mailbox as a JSON array and blocks host-side on `--wait`
+  interrupting a busy one. `plexi pane message recv --timeout 300`
+  drains the caller's mailbox as a JSON array and blocks host-side until a message arrives
   with zero polling (exits 0 on messages, 2 on timeout, 1 on error).
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
@@ -211,7 +215,7 @@ plexi skill install --agent codex
   1. Run `plexi agent list [--json]` first to see whether a matching agent already exists in the workspace or global tier.
   2. If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] [--fallback <cli>] [--ephemeral] [--result-schema <json-or-path>] --persona "<markdown>"` (or `--persona-file <path>`; defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
   3. Inspect with `plexi agent show <slug> [--json]` before spawning to see the resolved tier, path, harness settings, `AGENT.md` body, and exact command line `spawn` will run.
-  4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id>`. `spawn` resolves `<slug>` through the two-tier registry, creates or reuses a sub-context with a parent `PortalPane`, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL=1`, injects `AGENT.md` (`--append-system-prompt` for `pi` and `claude`; inlined `# Persona` for `codex` and `agy`) plus the `# Plexi worker contract` and any `result_schema`, and boots the configured harness.
+  4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id> --timeout 300`. `spawn` resolves `<slug>` through the two-tier registry, creates or reuses a sub-context with a parent `PortalPane`, stamps `PLEXI_PARENT_PANE` and `PLEXI_EPHEMERAL=1`, injects `AGENT.md` (`--append-system-prompt` for `pi` and `claude`; inlined `# Persona` for `codex` and `agy`) plus the `# Plexi worker contract` and any `result_schema`, and boots the configured harness.
   Workers report structured completion via `plexi agent done --result <json> --summary "<text>"` (validates
   against `result_schema`, writes `completed` and `summary` slots, and exits `0` so the
   ephemeral pane closes and the sub-context auto-collapses when all workers succeed; non-zero
@@ -300,7 +304,6 @@ plexi skill install --agent codex
   scoped credential (exposes event tools and `<app_id>__<tool>` for live apps in
   the pane's workspace).
 <!-- /experiment -->
-
 
 The release gate verifies these feature-map entry points:
 
@@ -525,10 +528,24 @@ plexi assistant send --text "hello" --client narrative --kind output
 
 ### Agents (`plexi agent --help`)
 
+Read `plexi agent --help` for the create/spawn flow. Spawn returns immediately
+with a pane id; it does not wait for the task to finish. Wait in bounded slices:
+run `plexi pane result wait <pane_id> --timeout 300`, choosing a timeout well
+under your tool harness's call limit. Exit 0 means done and prints the result;
+exit 2 means the slice timed out, so report progress and re-run the wait for the
+same pane. Exit 1 is an error to inspect. Never use one long wait or spawn a
+replacement just because a slice expired.
+
+A print-mode worker that calls `plexi agent ask "<question>"` waits for its
+parent's reply with `plexi pane message recv --timeout 300`. This blocks until
+a message arrives (exit 0 with a JSON array) or the slice expires (exit 2).
+Repeat on exit 2; inspect errors on exit 1. The parent replies with
+`plexi pane message send <worker-pane> "<answer>"`.
+
 1. Run `plexi agent list` first to see whether a matching agent already exists in the workspace or global tier.
 2. If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
 3. Inspect with `plexi agent show <slug>` before spawning if unsure what CLI or model it uses.
-4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id>`.
+4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id> --timeout 300`.
 
 <!-- experiment: leads -->
 ### Create an agent head and claim a run

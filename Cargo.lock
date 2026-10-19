@@ -4218,6 +4218,7 @@ dependencies = [
  "security-framework-sys",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "syntect",
  "sysinfo",

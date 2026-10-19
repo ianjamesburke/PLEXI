@@ -69,7 +69,7 @@ surface that binary does not have or the version stamp is off.
 
 - Written for an outside user: the installed `plexi` binary and nothing else.
   No references to this checkout, `.stint/`, ship-pipeline skills, `just`
-  recipes, channel shims, or worktree paths.
+  recipes or worktree paths. Use the channel-named shim when the target channel is known.
 - Docs links point at `plexiapp.com`, never at repo-relative paths.
 - Frontmatter: `plexi_version` = the tree's `Cargo.toml` version (stamped by
   `just bump`); `skill_version` bumps when content changes; `last_verified` =

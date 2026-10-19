@@ -1438,7 +1438,7 @@ fn main() -> eframe::Result {
                             } => std::process::exit(cli::pane_message_recv_cli(
                                 pane_id.or(pane_id_flag),
                                 wait,
-                                timeout,
+                                timeout.unwrap_or(300.0),
                             )),
                         },
                         PaneCmd::Result {
