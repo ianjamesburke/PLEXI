@@ -212,6 +212,7 @@ impl StateStore {
 struct PipeBinding {
     id: String,
     binary: bool,
+    host_registered: bool,
 }
 
 pub struct HostCtx {
@@ -286,6 +287,49 @@ impl HostCtx {
             .get(&handle)
             .ok_or_else(|| format!("unknown pipe handle {handle}"))
     }
+
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        match self.pipes.open_json(
+            pipe_id.to_string(),
+            crate::host::typed_pipes::PipeDirection::Duplex,
+        ) {
+            Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {}
+            Err(e) => {
+                log::warn!(
+                    "app::{}: failed to register directed pipe '{pipe_id}': {e}",
+                    self.app_id
+                );
+                return false;
+            }
+        }
+        if self.json_pipe_handle(pipe_id).is_none() {
+            let handle = self.next_pipe_handle;
+            self.next_pipe_handle += 1;
+            self.pipe_handles.insert(
+                handle,
+                PipeBinding {
+                    id: pipe_id.to_string(),
+                    binary: false,
+                    host_registered: true,
+                },
+            );
+        }
+        log::info!(
+            "app::{}: registered directed pipe '{pipe_id}' on WASM runtime",
+            self.app_id
+        );
+        true
+    }
+
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        self.pipes.has_reader(pipe_id)
+    }
+
+    pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
+        self.pipe_handles
+            .iter()
+            .find_map(|(&handle, binding)| (!binding.binary && binding.id == pipe_id).then_some(handle))
+    }
 }
 
 impl pipes::Host for HostCtx {
@@ -302,6 +346,20 @@ impl pipes::Host for HostCtx {
             pipes::PipeDirection::Duplex => Dir::Duplex,
         };
         let binary = matches!(kind, pipes::PipeType::Binary);
+        if !binary {
+            if let Some((&handle, binding)) = self
+                .pipe_handles
+                .iter_mut()
+                .find(|(_, b)| !b.binary && b.id == id && b.host_registered)
+            {
+                binding.host_registered = false;
+                log::info!(
+                    "app::{}: claimed host-registered json pipe '{id}' -> handle {handle}",
+                    self.app_id
+                );
+                return Ok(handle);
+            }
+        }
         if binary {
             self.pipes
                 .open_binary(id.clone(), dir)
@@ -318,6 +376,7 @@ impl pipes::Host for HostCtx {
             PipeBinding {
                 id: id.clone(),
                 binary,
+                host_registered: false,
             },
         );
         log::info!(
@@ -767,6 +826,23 @@ impl WasmApp {
         self.store.data().pipes.owner()
     }
 
+    /// Register a host-directed duplex JSON pipe on this WASM instance's
+    /// typed-pipe registry and ensure a handle exists for inbound delivery.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        self.store.data_mut().register_directed_pipe(pipe_id)
+    }
+
+    /// True when `pipe_id` is open on this WASM instance's typed-pipe registry.
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        self.store.data().has_pipe_reader(pipe_id)
+    }
+
+    /// Look up the guest-facing handle for a JSON pipe registered on this WASM
+    /// instance.
+    pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
+        self.store.data().json_pipe_handle(pipe_id)
+    }
+
     /// True when the gpu capability was granted (the app declares a surface).
     pub fn has_gpu(&self) -> bool {
         self.store.data().gpu.is_some()
@@ -1015,6 +1091,26 @@ mod tests {
             "binary on json pipe errors"
         );
         ctx.close(h).expect("close");
+    }
+
+    #[test]
+    fn register_directed_pipe_allows_guest_to_claim_handle() {
+        use pipes::{Host, PipeDirection, PipeType};
+        let mut ctx = host_ctx_with_pipes();
+        assert!(ctx.register_directed_pipe("directed.pipe"));
+        assert!(ctx.has_pipe_reader("directed.pipe"));
+        let host_handle = ctx
+            .json_pipe_handle("directed.pipe")
+            .expect("host registered a JSON handle");
+        let claimed = ctx
+            .open("directed.pipe".to_string(), PipeType::Json, PipeDirection::Duplex)
+            .expect("guest open claims pre-registered directed pipe handle");
+        assert_eq!(claimed, host_handle);
+        assert!(
+            ctx.open("directed.pipe".to_string(), PipeType::Json, PipeDirection::Duplex)
+                .is_err(),
+            "second guest open on an already-claimed pipe must return AlreadyOpen"
+        );
     }
 
     // G12 (host side): a plexi-audio-app component links audio-rt-control and

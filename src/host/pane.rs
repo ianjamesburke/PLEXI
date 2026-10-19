@@ -1338,6 +1338,33 @@ impl AppRuntime {
         }
     }
 
+    /// Register a directed pipe on this runtime's local pipe registry so
+    /// `has_pipe_reader` reflects the connection on the target runtime.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        match self {
+            AppRuntime::Builtin(_) => false,
+            AppRuntime::Python(app) => app.register_directed_pipe(pipe_id),
+            AppRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
+        }
+    }
+
+    /// True when `pipe_id` is open on this runtime's local pipe registry.
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        match self {
+            AppRuntime::Builtin(_) => false,
+            AppRuntime::Python(app) => app.has_pipe_reader(pipe_id),
+            AppRuntime::Wasm(app) => app.has_pipe_reader(pipe_id),
+        }
+    }
+
+    pub fn runtime_kind(&self) -> &'static str {
+        match self {
+            AppRuntime::Builtin(_) => "builtin",
+            AppRuntime::Python(_) => "python",
+            AppRuntime::Wasm(_) => "wasm",
+        }
+    }
+
     /// Deliver the CLI/host semantic action contract to every app runtime.
     pub fn approval_request_id(&self) -> Option<String> {
         match self {
@@ -1587,14 +1614,6 @@ impl AppRuntime {
             AppRuntime::Builtin(_) => None,
             AppRuntime::Python(_) => None,
             AppRuntime::Wasm(_) => None,
-        }
-    }
-
-    pub(crate) fn runtime_kind(&self) -> &'static str {
-        match self {
-            AppRuntime::Builtin(_) => "builtin",
-            AppRuntime::Python(_) => "python-wasm",
-            AppRuntime::Wasm(_) => "wasm",
         }
     }
 }

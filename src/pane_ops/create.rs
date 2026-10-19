@@ -377,7 +377,7 @@ pub(crate) fn restore_app_pane_in_profile(
                 &config.capabilities,
                 config.allowed_hosts.clone(),
             );
-            let (runtime, app_id) = build_python_runtime(
+            let (mut runtime, app_id) = build_python_runtime(
                 config,
                 workspace_root.clone(),
                 context_root.to_path_buf(),
@@ -385,6 +385,10 @@ pub(crate) fn restore_app_pane_in_profile(
                 &permissions,
                 theme,
             )?;
+            runtime.set_pipe_owner(crate::host::scope::Scope::Pane {
+                pane_id,
+                context_id,
+            });
             let state_paths = runtime.state_paths();
             let name = saved_name
                 .map(String::from)
@@ -859,7 +863,7 @@ impl PlexiApp {
         // Seed the pane's live context root from the launching context; the
         // render loop refreshes it every frame thereafter (stint 0652).
         let context_root = self.router.active().root.clone();
-        let (runtime, app_id) = build_python_runtime(
+        let (mut runtime, app_id) = build_python_runtime(
             config,
             workspace_root.clone(),
             context_root,
@@ -872,6 +876,7 @@ impl PlexiApp {
         let state_paths = runtime.state_paths();
         let manifest_id = app_id.clone();
         let name = app_id.clone();
+        let context_id = self.windows[self.active_window].context_id;
         let new_id = self
             .place_app_pane(
                 &app_id,
@@ -879,6 +884,10 @@ impl PlexiApp {
                 layout,
                 None,
                 move |new_id, linked_pane_id, overlay_replaced| {
+                    runtime.set_pipe_owner(crate::host::scope::Scope::Pane {
+                        pane_id: new_id,
+                        context_id,
+                    });
                     Pane::App(Box::new(crate::host::pane::AppPane {
                         pip_status: None,
                         id: new_id,

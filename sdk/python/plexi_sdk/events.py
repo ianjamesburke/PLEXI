@@ -296,8 +296,10 @@ class PipePayload:
 
 @dataclass
 class PipeMessage:
-    handle: int
-    payload: PipePayload
+    handle: int = 0
+    payload: PipePayload = field(default_factory=PipePayload)
+    pipe_id: str = ""
+    data: Optional[object] = None
 
 
 @dataclass

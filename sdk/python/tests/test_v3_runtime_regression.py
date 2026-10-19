@@ -1077,3 +1077,89 @@ def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     assert tree_before != tree_after, (
         f"{relative_path} component tree should change after key '{key}'"
     )
+
+
+def test_pipe_open_directed_and_pipe_send_effects(tmp_path):
+    app = tmp_path / "pipe_sender.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeOpenDirected, PipeSend
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return [
+                PipeOpenDirected("duplex.demo", 7),
+                PipeSend("duplex.demo", {"hello": "world"}),
+            ]
+
+        def update(event):
+            return []
+
+        def view():
+            return Text("sender")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        events = _init_and_render(proc)
+        opens = _find_events(events, "pipe_open_directed")
+        sends = _find_events(events, "pipe_send")
+        assert opens == [{
+            "type": "pipe_open_directed",
+            "pipe_id": "duplex.demo",
+            "target_pane_id": 7,
+        }]
+        assert sends == [{
+            "type": "pipe_send",
+            "pipe_id": "duplex.demo",
+            "payload": {"hello": "world"},
+        }]
+    finally:
+        proc.kill()
+
+
+def test_pipe_message_event_dispatched_and_replies(tmp_path):
+    app = tmp_path / "pipe_receiver.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk import state
+        from plexi_sdk.effects import PipeSend, SetState
+        from plexi_sdk.events import PipeMessage
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return []
+
+        def update(event):
+            if isinstance(event, PipeMessage):
+                return [
+                    SetState({
+                        "pipe_id": event.pipe_id,
+                        "count": event.data["count"],
+                        "handle": event.handle,
+                    }),
+                    PipeSend(event.pipe_id, {"ack": event.data["count"]}),
+                ]
+            return []
+
+        def view():
+            return Text(
+                f"{state.get('pipe_id', '')}:{state.get('count', 0)}:{state.get('handle', 0)}"
+            )
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc, frame_id=1)
+        _send_event(proc, {
+            "type": "pipe_message",
+            "pipe_id": "duplex.demo",
+            "payload": {"count": 3},
+        })
+        events = _render(proc, frame_id=2)
+        sends = _find_events(events, "pipe_send")
+        assert sends == [{
+            "type": "pipe_send",
+            "pipe_id": "duplex.demo",
+            "payload": {"ack": 3},
+        }]
+        assert "duplex.demo:3:1" in json.dumps(events)
+    finally:
+        proc.kill()
+
