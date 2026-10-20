@@ -76,7 +76,7 @@ runs:
       if: inputs.cpython-bundle == 'true'
       uses: actions/cache@v4
       with:
-        path: /Users/runner/.plexi-ci/wasm-bundles
+        path: ${{ env.PLEXI_CPYTHON_BUNDLE_DIR }}
         # Pins the exact verified release. Bump when
         # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
         key: cpython-wasi-3.12.12-wasi_sdk-20
