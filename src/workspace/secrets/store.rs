@@ -538,11 +538,11 @@ impl SecretStore for MacKeychain {
     }
 }
 
-/// Linux file-backed secret store.
+/// Legacy Linux plaintext secret store, retained solely to migrate existing
+/// `secrets.json` values into the protected Linux user-secret backend.
 ///
-/// **This is not an OS keyring.** Linux has no Plexi-blessed Keychain
-/// equivalent in v0 (libsecret/gnome-keyring integration is an explicit
-/// non-goal — see `docs/linux-support-plan.md`), so values live in a
+/// **This is not an OS keyring.** New Linux secrets never use this store;
+/// historical values may live in a
 /// `0600` JSON file inside the channel profile directory. That is strictly
 /// weaker than the macOS Keychain: anything running as the same user can read
 /// it, and it is not encrypted at rest.
@@ -729,6 +729,39 @@ impl SecretStore for FileStore {
         map.remove(account);
         Self::save(&map)
     }
+}
+
+/// Copy a legacy plaintext file into the selected protected backend.  Keep the
+/// source intact if any write fails so a transient Secret Service failure can
+/// never lose a credential.
+#[cfg(all(target_os = "linux", not(test)))]
+pub(super) fn migrate_linux_file_store(destination: &dyn SecretStore) {
+    static MIGRATED: std::sync::Once = std::sync::Once::new();
+    MIGRATED.call_once(|| {
+        let _guard = FileStore::lock();
+        let path = FileStore::path();
+        let entries = match FileStore::load() {
+            Ok(entries) => entries,
+            Err(err) => {
+                log::error!("workspace_secrets: legacy Linux migration failed: {err}");
+                return;
+            }
+        };
+        if entries.is_empty() || !path.exists() {
+            return;
+        }
+        for (account, value) in &entries {
+            if let Err(err) = destination.set(account, value) {
+                log::error!("workspace_secrets: legacy Linux migration failed for account={account}: {err}");
+                return;
+            }
+        }
+        if let Err(err) = std::fs::remove_file(&path) {
+            log::error!("workspace_secrets: migrated legacy Linux secrets but could not remove {}: {err}", path.display());
+            return;
+        }
+        log::info!("workspace_secrets: migrated {} Linux secret(s) from plaintext storage", entries.len());
+    });
 }
 
 /// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for

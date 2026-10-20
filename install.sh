@@ -76,9 +76,9 @@ max_semver() {
 
 # GitHub emits compact JSON with tag_name before draft. Drafts and non-channel tags are dropped.
 extract_tags() {
-  grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"|"draft"[[:space:]]*:[[:space:]]*(true|false)' | awk '
+  grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"|"draft"[[:space:]]*:[[:space:]]*(true|false)|"name"[[:space:]]*:[[:space:]]*"[^"]+"' | awk -v asset="$asset" '
     function flush() {
-      if (have && !draft && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$/) print tag
+      if (have && !draft && has_asset && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$/) print tag
     }
     /"tag_name"/ {
       flush()
@@ -86,10 +86,17 @@ extract_tags() {
       sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", tag)
       sub(/".*/, "", tag)
       draft = 0
+      has_asset = 0
       have = 1
       next
     }
     /"draft"/ { draft = ($0 ~ /true/) }
+    /"name"/ {
+      name = $0
+      sub(/.*"name"[[:space:]]*:[[:space:]]*"/, "", name)
+      sub(/".*/, "", name)
+      if (name == asset) has_asset = 1
+    }
     END { flush() }
   ' || true
 }
@@ -154,19 +161,22 @@ select_channel_tag() {
 
 # Resolve once, then pin both executable and checksum to the same released tag.
 # PLEXI_BOOTSTRAP_TAG overrides channel selection.
+asset="plexi-installer-${os}-${arch}"
 tag="${PLEXI_BOOTSTRAP_TAG:-}"
 if [[ -z "$tag" ]]; then
   case "$channel" in
     alpha|beta) tag="$(select_channel_tag "$channel")" ;;
-    *) tag="$(latest_stable_tag)" ;;
+    *) tag="$(select_channel_tag stable)" ;;
   esac
 fi
-[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$ ]] || { echo 'No valid released installer tag was found.' >&2; exit 1; }
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$ ]] || { echo "No ${channel} release of Plexi is published for ${os}-${arch} yet." >&2; exit 1; }
 echo "Resolved Plexi installer ${tag} (${channel})." >&2
-asset="plexi-installer-${os}-${arch}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-curl -q -fL --retry 3 --connect-timeout 15 "$base/$tag/$asset" -o "$work/$asset"
+if ! curl -q -fL --retry 3 --connect-timeout 15 "$base/$tag/$asset" -o "$work/$asset"; then
+  echo "Installer asset ${asset} is not published for ${tag} (${os}-${arch})." >&2
+  exit 1
+fi
 curl -q -fL --retry 3 --connect-timeout 15 "$base/$tag/$asset.sha256" -o "$work/checksum"
 expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name {print $1}' "$work/checksum")"
 [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Malformed installer checksum.' >&2; exit 1; }

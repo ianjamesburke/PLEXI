@@ -35,9 +35,9 @@ jobs:
     name: ${{ matrix.platform }}
     strategy:
       fail-fast: false
-      # Apple Silicon only (v1 ruling) for alpha tags, PRs and alpha pushes. Other
-      # platforms run only for stable/beta release tags, where `tag` is set and not alpha.
-      matrix: ${{ fromJSON(inputs.tag != '' && !contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":false},{"os":"windows-latest","platform":"windows-x64","optional":false},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}' || '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false}]}') }}
+      # Alpha/PR builds require Apple Silicon and opportunistically package Linux.
+      # Beta/stable retain their complete required platform matrix.
+      matrix: ${{ fromJSON(inputs.tag != '' && !contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":false},{"os":"windows-latest","platform":"windows-x64","optional":false},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}' || '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true}]}') }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
     env:

@@ -9,6 +9,9 @@ alpha_only=false
 if [[ "$tag" == *-alpha.* ]]; then
   alpha_only=true
   platforms=(macos-arm64)
+  # Linux alpha packaging is opportunistic: a failed optional runner must not
+  # block the Mac dogfood release, while a successful leg is published.
+  [[ ! -f "$dist/plexi-linux-x64-alpha.tar.gz" ]] || platforms+=(linux-x64)
 else
   [[ ! -f "$dist/plexi-macos-x64.tar.gz" ]] || platforms+=(macos-x64)
 fi

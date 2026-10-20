@@ -180,13 +180,12 @@ An explicit tag remains exact. Selection paginates releases, orders candidates
 semantically within that policy, excludes drafts, and requires both the correct
 channel/platform archive and checksum. The installation channel stays fixed.
 
-Alpha releases (`vX.Y.Z-alpha.N`) support only macOS Apple Silicon (ARM64).
-They build and validate only that platform's Alpha package and native installer.
-This keeps the daily dogfood release loop focused on the platform in active use,
-without waiting for builds and failures on platforms that are not actively used.
+Alpha releases (`vX.Y.Z-alpha.N`) require macOS Apple Silicon (ARM64) and
+opportunistically publish Linux x64 when its optional package job succeeds.
+Linux failures remain visible without blocking the Mac alpha release.
 
-The same rule applies to pull-request and alpha-push CI: `distribution.yml` runs only the
-Apple Silicon job unless the `tag` input is a stable or beta release tag, and `build-windows.yml`
+The same rule applies to pull-request and alpha-push CI: `distribution.yml` runs the
+Apple Silicon job plus an optional Linux x64 job unless the `tag` input is a stable or beta release tag, and `build-windows.yml`
 runs only on `feature/windows-**` pushes and on demand, not on every PR.
 The package job's host test + clippy step runs only for release tags; on PRs and alpha pushes
 `rust-host.yml` already runs it.
@@ -229,5 +228,6 @@ user PATH registration remain account-scoped despite HOME environment overrides.
 Linux support is x86_64 under X11, with Ubuntu 22.04 as the package build floor.
 The host depends on the system X11, ALSA and graphics libraries installed by
 `.github/actions/plexi-ci-env/action.yml`; GUI validation additionally uses an
-X display. Wayland, Linux hardware video decoding and encrypted Linux secret
-storage are outside this distribution contract.
+X display. Wayland and Linux hardware video decoding are outside this
+distribution contract. Linux secrets use Secret Service or the encrypted-file
+fallback; plaintext profile storage is not supported.

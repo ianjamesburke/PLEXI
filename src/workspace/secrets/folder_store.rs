@@ -500,8 +500,10 @@ fn write_service_index(names: &[String]) -> Result<(), SecretError> {
 /// Run `secret-tool`. Stdout may be a secret; callers must not log it.
 #[cfg(all(target_os = "linux", not(test)))]
 fn secret_tool(args: &[&str], stdin: Option<&[u8]>) -> Result<std::process::Output, SecretError> {
-    let mut cmd = std::process::Command::new("secret-tool");
-    cmd.args(args)
+    // A session bus can hang while activating a locked service. Bound every
+    // call so secrets never hold host startup or a CLI invocation indefinitely.
+    let mut cmd = std::process::Command::new("timeout");
+    cmd.arg("5s").arg("secret-tool").args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
