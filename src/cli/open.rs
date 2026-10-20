@@ -325,8 +325,19 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         queue_payload["result_schema"] = schema;
     }
     log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?} worktree={worktree:?}");
-    match crate::cli::queue_spawn(queue_payload, "pane new", &format!("open {type_id}")) {
-        Ok(()) => 0,
+    match crate::cli::queue_spawn_and_wait(queue_payload, "pane new", &format!("open {type_id}")) {
+        Ok(content) => {
+            match crate::cli::queued_spawn_pane_id(&content) {
+                Ok(pane_id) => {
+                    println!("{pane_id}");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
         Err(code) => code,
     }
 }

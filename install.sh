@@ -101,12 +101,6 @@ extract_tags() {
   ' || true
 }
 
-latest_stable_tag() {
-  local metadata
-  metadata="$(curl -q -fsSL --retry 3 --connect-timeout 15 "$releases_url/latest")"
-  printf '%s' "$metadata" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' | head -1
-}
-
 fetch_tags() {
   local page=1 batch extracted count tags=""
   while (( page <= 1000 )); do
@@ -152,6 +146,10 @@ select_channel_tag() {
     [[ -n "$best" ]] && { printf '%s' "$best"; return; }
     best="$(printf '%s\n' "$tags" | lane_tags beta | max_semver)"
     [[ -n "$best" ]] && { printf '%s' "$best"; return; }
+    printf '%s' "$(printf '%s\n' "$tags" | lane_tags stable | max_semver)"
+    return
+  fi
+  if [[ "$want" == stable ]]; then
     printf '%s' "$(printf '%s\n' "$tags" | lane_tags stable | max_semver)"
     return
   fi

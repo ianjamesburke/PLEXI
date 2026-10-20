@@ -1372,6 +1372,64 @@ pub(super) fn queue_spawn(
     Ok(())
 }
 
+/// Queue a spawn for a running host and wait for the host's launch result.
+///
+/// An outside-Plexi CLI has no command socket in its environment, but it can
+/// still prove a host is servicing this channel and wake it through the notify
+/// socket.  Giving that queued request a response file makes this path observe
+/// the same typed launch error as an in-pane spawn instead of reporting a
+/// misleading successful queue write.
+pub(super) fn queue_spawn_and_wait(
+    mut payload: serde_json::Value,
+    intent: &str,
+    summary: &str,
+) -> Result<String, i32> {
+    let response_file = crate::rpc::response_file("queued-spawn-response", "json");
+    let Some(fields) = payload.as_object_mut() else {
+        log::error!("queue_spawn_and_wait: '{intent}' payload is not a JSON object");
+        eprintln!("error: could not write spawn request: payload is not a JSON object");
+        return Err(1);
+    };
+    fields.insert(
+        "response_file".to_string(),
+        serde_json::Value::String(response_file.clone()),
+    );
+    queue_spawn(payload, intent, summary)?;
+    poll_rpc_with(
+        &response_file,
+        "queued pane",
+        std::time::Duration::from_secs(10),
+    )
+}
+
+/// Decode the definitive reply to an outside-pane queued spawn.
+///
+/// This is deliberately shared with the queue caller instead of treating a
+/// queue-file write as success: the host may reject the app after it drains
+/// the file (for example when the CPython bundle is unavailable).
+pub(super) fn queued_spawn_pane_id(content: &str) -> Result<u64, String> {
+    if let Some(error) = reply_error(content) {
+        return Err(error);
+    }
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|reply| reply.get("pane_id").and_then(serde_json::Value::as_u64))
+        .ok_or_else(|| format!("spawn response carried no pane id: {content}"))
+}
+
+#[cfg(test)]
+mod queued_spawn_tests {
+    use super::queued_spawn_pane_id;
+
+    #[test]
+    fn queued_spawn_surfaces_host_launch_error() {
+        assert_eq!(
+            queued_spawn_pane_id(r#"{"error":"CPython WASM bundle unavailable"}"#),
+            Err("CPython WASM bundle unavailable".to_string())
+        );
+    }
+}
+
 pub(super) fn binary_in_path(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
