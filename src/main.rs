@@ -1905,18 +1905,23 @@ fn main() -> eframe::Result {
          activate_ignoring_other_apps={activate_ignoring_other_apps}"
     );
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1400.0, 900.0])
+        .with_min_inner_size([400.0, 300.0])
+        .with_title(env!("PLEXI_APP_TITLE"))
+        .with_icon(icon)
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false);
+    #[cfg(target_os = "linux")]
+    {
+        viewport = viewport.with_app_id(crate::config::current_exe_basename());
+    }
     let native_options = eframe::NativeOptions {
         // eframe 0.34 split root close into CloseRequested followed by Exit.
         // On macOS its run-on-demand loop can stall between those events after
         // destroying the window, leaving a headless process behind.
         run_and_return: false,
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([400.0, 300.0])
-            .with_title(env!("PLEXI_APP_TITLE"))
-            .with_icon(icon)
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false),
+        viewport,
         ..Default::default()
     };
 
@@ -2086,7 +2091,8 @@ fn top_level_help_flag(args: &[String]) -> bool {
         })
         .map(|s| s.as_str())
         .collect();
-    matches!(filtered.first().copied(), Some("--help") | Some("-h")) && filtered.len() == 1
+    matches!(filtered.first().copied(), Some("--help") | Some("-h") | Some("help"))
+        && filtered.len() == 1
 }
 
 fn parse_profile_flag(args: &[String]) -> Option<String> {
@@ -2151,7 +2157,7 @@ fn render_cli() {
 
 #[cfg(test)]
 mod cli_tests {
-    use super::parse_workspace_path_arg;
+    use super::{parse_workspace_path_arg, top_level_help_flag};
     use std::fs;
 
     fn argv(parts: &[&str]) -> Vec<String> {
@@ -2233,6 +2239,12 @@ mod cli_tests {
     fn plexi_with_no_args_returns_none() {
         let resolved = parse_workspace_path_arg(&argv(&[])).expect("no args should resolve");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn bare_help_is_top_level_help() {
+        assert!(top_level_help_flag(&argv(&["help"])));
+        assert!(top_level_help_flag(&argv(&["--help"])));
     }
 
     #[test]

@@ -142,7 +142,7 @@ pub fn system_store() -> &'static dyn SecretStore {
     }
     #[cfg(all(target_os = "linux", not(test)))]
     {
-        static STORE: store::FileStore = store::FileStore;
+        static STORE: LinuxUserStore = LinuxUserStore;
         &STORE
     }
     #[cfg(all(windows, not(test)))]
@@ -154,6 +154,48 @@ pub fn system_store() -> &'static dyn SecretStore {
     {
         static STORE: std::sync::OnceLock<InMemoryKeychain> = std::sync::OnceLock::new();
         STORE.get_or_init(InMemoryKeychain::new)
+    }
+}
+
+/// Linux user secrets use the same Secret Service/encrypted-file backend as
+/// folder secrets.  The legacy JSON store is read once and removed only after
+/// every value has reached the protected backend.
+#[cfg(all(target_os = "linux", not(test)))]
+struct LinuxUserStore;
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl NonDestructiveStore for LinuxUserStore {
+    fn get(&self, account: &str) -> Option<zeroize::Zeroizing<String>> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().get(account)
+    }
+    fn add_new(&self, account: &str, value: &str) -> Result<(), store::SecretError> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().add_new(account, value)
+    }
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), store::SecretError> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().delete_if_value(account, expected)
+    }
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().list_with_prefix(prefix)
+    }
+    fn scan_accounts(&self) -> Result<Vec<String>, store::SecretError> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().scan_accounts()
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl SecretStore for LinuxUserStore {
+    fn set(&self, account: &str, value: &str) -> Result<(), store::SecretError> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().set(account, value)
+    }
+    fn delete(&self, account: &str) -> Result<(), store::SecretError> {
+        store::migrate_linux_file_store(folder_store::platform_folder_store());
+        folder_store::platform_folder_store().delete(account)
     }
 }
 

@@ -34,8 +34,9 @@ done
 """
 DIGEST = hashlib.sha256(INSTALLER).hexdigest()
 
-def rel(tag, draft=False):
-    return {"tag_name": tag, "draft": draft, "prerelease": "-" in tag.split(".", 3)[-1] or tag.count("-") > 0}
+def rel(tag, draft=False, linux=True):
+    assets = [{"name": "plexi-installer-linux-x64"}] if linux else []
+    return {"tag_name": tag, "draft": draft, "prerelease": "-" in tag.split(".", 3)[-1] or tag.count("-") > 0, "assets": assets}
 
 def stables(n):
     return [rel(f"v0.0.{i}") for i in range(1, n + 1)]
@@ -79,6 +80,10 @@ FIXTURES = {
         "latest": "v0.3.5",
         "releases": [rel("v0.3.5"), rel("v0.3.4")],
     },
+    "stable-asset-fallback": {
+        "latest": "v0.4.0",
+        "releases": [rel("v0.4.0", linux=False), rel("v0.3.9")],
+    },
     "same-series-beta": {
         "latest": "v0.3.5",
         "releases": [
@@ -97,6 +102,18 @@ FIXTURES = {
             rel("v0.3.6-beta.1"),
             rel("v0.3.1-windows.6"),
         ],
+    },
+    "alpha-linux-fallback": {
+        "latest": "v0.4.0",
+        "releases": [
+            rel("v0.4.0-alpha.2", linux=False),
+            rel("v0.3.9-alpha.8"),
+            rel("v0.4.0"),
+        ],
+    },
+    "no-linux-assets": {
+        "latest": "v0.4.0",
+        "releases": [rel("v0.4.0", linux=False), rel("v0.4.0-alpha.2", linux=False)],
     },
 }
 
@@ -187,7 +204,13 @@ run_case() {
 run_case "default uses latest stable" reported v0.3.5 "" ""
 run_case "channel stable uses latest stable" reported v0.3.5 "" "--channel
 stable" --channel stable
+run_case "stable ignores newer beta" ordering v0.9.0 "" "--channel
+stable" --channel stable
+run_case "stable skips newest release without a Linux installer" stable-asset-fallback v0.3.9 "" "--channel
+stable" --channel stable
 run_case "channel main uses latest stable" reported v0.3.5 "" "--channel
+main" --channel main
+run_case "main ignores newer beta" ordering v0.9.0 "" "--channel
 main" --channel main
 run_case "reported alpha bug" reported v0.3.5-alpha.4 "" "--channel
 alpha" --channel alpha
@@ -219,6 +242,20 @@ run_case "beta reads later release pages" paged v0.3.6-beta.1 "" "--channel
 beta" --channel beta
 run_case "pr channel keeps latest installer and forwards the channel" reported v0.3.5 "" "--channel
 pr-12" --channel pr-12
+run_case "pr channel ignores newer beta" ordering v0.9.0 "" "--channel
+pr-12" --channel pr-12
+run_case "alpha skips newest release without a Linux installer" alpha-linux-fallback v0.3.9-alpha.8 "" "--channel
+alpha" --channel alpha
+
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/no-linux-assets" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
+  echo "FAIL no Linux installer release was accepted"
+  fail=1
+elif [[ "$err" != *"No alpha release of Plexi is published for linux-x64 yet."* ]]; then
+  echo "FAIL no Linux installer stderr: $err"
+  fail=1
+else
+  echo "PASS no Linux installer release is clear"
+fi
 
 if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alph 2>&1)"; then
   echo "FAIL unsupported channel was accepted"

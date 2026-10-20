@@ -253,14 +253,10 @@ must say so rather than pretend:
   package repository.
 - **App Nap.** A macOS-only energy concept with no Linux analogue — the Linux
   arm is a documented no-op, not an emulation.
-- **Keyring-backed secrets.** No libsecret / gnome-keyring integration in v0.
-  Linux resolves `system_store()` to a file-backed `SecretStore` (`FileStore`,
-  in the secrets store module) writing a `0600` JSON file in the channel
-  profile dir. That is strictly weaker than the macOS Keychain — same-user
-  readable, not encrypted at rest — and the store says so in the log the first
-  time it is touched. It exists because the alternative is no store at all,
-  which makes `plexi ai onboard`, the OpenRouter key lookup, terminal env
-  injection and the Secrets app dead code on Linux.
+- **Keyring-backed secrets.** Linux user and folder secrets use Secret Service
+  when available. Without it they use the labeled encrypted-file fallback;
+  plaintext values are never written in the channel profile. A legacy
+  `secrets.json` is migrated only after every entry has been copied.
 - **Finder service / macOS menu bar / dock integration.**
 - **Wayland.** X11 only for v0. Wayland may work incidentally; it is not
   verified and not claimed.
@@ -268,7 +264,6 @@ must say so rather than pretend:
   channel (`plexi-alpha`, `plexi-beta`, `plexi-pr-<N>`) with the same suffix
   rules as macOS, but the promotion and release-tagging scripts around it are
   untested off macOS.
-- **CI.** No Linux job added to the pipeline in v0.
 
 ## Definition of done — "alpha runs on this Linux VM"
 
