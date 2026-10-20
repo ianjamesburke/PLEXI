@@ -1905,7 +1905,7 @@ fn main() -> eframe::Result {
          activate_ignoring_other_apps={activate_ignoring_other_apps}"
     );
 
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1400.0, 900.0])
         .with_min_inner_size([400.0, 300.0])
         .with_title(env!("PLEXI_APP_TITLE"))
@@ -1913,9 +1913,7 @@ fn main() -> eframe::Result {
         .with_fullsize_content_view(true)
         .with_titlebar_shown(false);
     #[cfg(target_os = "linux")]
-    {
-        viewport = viewport.with_app_id(crate::config::current_exe_basename());
-    }
+    let viewport = viewport.with_app_id(crate::config::current_exe_basename());
     let native_options = eframe::NativeOptions {
         // eframe 0.34 split root close into CloseRequested followed by Exit.
         // On macOS its run-on-demand loop can stall between those events after
