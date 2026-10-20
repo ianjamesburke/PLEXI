@@ -265,7 +265,17 @@ def main(args):
         helper = f'plexi-installer-{args.platform}' + ('.exe' if os.name == 'nt' else '')
         shutil.copy2(installer, tag_dir / helper)
         (tag_dir / (helper + '.sha256')).write_text(sha(tag_dir / helper) + '  ' + helper + '\n')
-        release = dict(tag_name='v1.1.0', draft=False, prerelease=False, assets=[dict(name=asset), dict(name=asset+'.sha256')])
+        release = dict(
+            tag_name='v1.1.0',
+            draft=False,
+            prerelease=False,
+            assets=[
+                dict(name=asset),
+                dict(name=asset + '.sha256'),
+                dict(name=helper),
+                dict(name=helper + '.sha256'),
+            ],
+        )
         class Handler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *a, **kw): super().__init__(*a, directory=str(server_root), **kw)
             def log_message(self, *a): pass

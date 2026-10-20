@@ -193,6 +193,7 @@ pub(crate) fn with_keychain_interaction<T>(body: impl FnOnce() -> T) -> T {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn interaction_allowed() -> bool {
     KEYCHAIN_INTERACTION.with(|flag| flag.get())
 }
