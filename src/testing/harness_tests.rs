@@ -12527,3 +12527,15 @@ fn working_agent_window_close_and_keyboard_quit_share_confirmation() {
         assert!(!h.app.pending_quit);
     }
 }
+
+#[test]
+fn agent_tool_call_protocol_accepts_blocking_and_async_requests() {
+    for asynchronous in [false, true] {
+        let request = serde_json::json!({
+            "type": "agent_call", "role": "tester", "task": "Verify result",
+            "parent_pane_id": 42, "asynchronous": asynchronous,
+            "response_file": "/tmp/unused-agent-call-reply"
+        });
+        assert!(serde_json::from_value::<crate::protocol::AppRequest>(request).is_ok());
+    }
+}

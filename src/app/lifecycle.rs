@@ -3878,6 +3878,29 @@ impl PlexiApp {
                     response_file,
                 );
             }
+            crate::protocol::AppRequest::AgentCall { role, task, parent_pane_id, call_credential, peer_ancestry, cwd, worktree, asynchronous, handoff, response_file } => {
+                let result = self.start_agent_tool_call(crate::app::agent_tools::AgentCallRequest {
+                    role, task, parent_pane_id: *parent_pane_id,
+                    credential: call_credential.as_deref(), peer_ancestry,
+                    cwd: cwd.as_deref(), worktree: worktree.as_deref(),
+                    asynchronous: *asynchronous, handoff: *handoff, response_file,
+                });
+                if let Err(error) = result {
+                    log::warn!("agent_call: {error}");
+                    write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                }
+            }
+            crate::protocol::AppRequest::AgentMessage { pane_id, text, parent_pane_id, call_credential, peer_ancestry, wait, response_file } => {
+                let result = self.send_agent_tool_message(
+                    *pane_id, text, crate::app::agent_tools::AgentCaller {
+                        pane_id: *parent_pane_id, credential: call_credential.as_deref(), peer_ancestry,
+                    }, *wait, response_file,
+                );
+                if let Err(error) = result {
+                    log::warn!("agent_message: {error}");
+                    write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                }
+            }
             crate::protocol::AppRequest::AgentSpawn {
                 role,
                 harness,
@@ -3907,8 +3930,7 @@ impl PlexiApp {
                     *parent_pane_id,
                     cwd.as_deref().map(std::path::PathBuf::from),
                     result_schema.clone(),
-                    None,
-                );
+                    None, false);
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         if let Some(ref custom_name) = name {
@@ -3986,6 +4008,10 @@ impl PlexiApp {
                 {
                     Ok(committed) => {
                         self.complete_result_waits(*pane_id);
+                        self.finish_agent_tool_waits(*pane_id, serde_json::json!({
+                            "ok": true, "pane_id": pane_id, "status": "completed",
+                            "summary": summary_str, "result": committed,
+                        }));
                         let completed_payload = serde_json::json!({
                             "pane_id": pane_id,
                             "status": "completed",
@@ -4077,6 +4103,10 @@ impl PlexiApp {
                             }),
                         };
                         write_json_response(response_file, payload);
+                        let close = self.agent_tool_children.contains_key(pane_id)
+                            && self.windows.iter().find_map(|w| w.panes.get(pane_id))
+                                .and_then(|p| p.as_terminal()).is_some_and(|t| t.ephemeral);
+                        if close { self.close_pane_by_id(*pane_id); }
                     }
                     Err(err) => {
                         log::warn!(
@@ -4142,6 +4172,9 @@ impl PlexiApp {
                 }
                 if found {
                     self.mark_workspace_dirty();
+                    self.finish_agent_tool_waits(*pane_id, serde_json::json!({
+                        "ok": true, "pane_id": pane_id, "status": "question", "question": question,
+                    }));
                     let question_payload = serde_json::json!({
                         "pane_id": pane_id,
                         "parent_pane_id": parent_pane_id,
@@ -4251,8 +4284,7 @@ impl PlexiApp {
                     record.parent_pane_id,
                     Some(record.cwd.clone()),
                     None,
-                    None,
-                );
+                    None, false);
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         for win in &mut self.windows {

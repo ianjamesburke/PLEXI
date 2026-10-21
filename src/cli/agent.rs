@@ -3078,3 +3078,16 @@ pub fn agent_next_cli(json: bool) -> i32 {
     }
     0
 }
+
+/// Agent tool operations retain the socket until the host answers the lifecycle wait.
+pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
+    payload["parent_pane_id"] = std::env::var("PLEXI_PANE_ID").ok().and_then(|s| s.parse::<u64>().ok()).into();
+    payload["call_credential"] = std::env::var("PLEXI_CALL_CREDENTIAL").ok().into();
+    payload["cwd"] = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()).into();
+    let reply = match super::request_with(payload, "agent-tool", "agent tool", std::time::Duration::from_secs(86405)) {
+        Ok(reply) => reply,
+        Err(code) => return code,
+    };
+    println!("{reply}");
+    if super::reply_error(&reply).is_some() { 1 } else { 0 }
+}

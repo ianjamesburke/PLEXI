@@ -295,8 +295,7 @@ impl PlexiApp {
             caller,
             Some(workspace.clone()),
             None,
-            None,
-        );
+            None, false);
         let (root_pane, context_id) = match spawned {
             Ok(ids) => ids,
             Err(error) => {
@@ -390,8 +389,7 @@ impl PlexiApp {
                 Some(run.root_pane),
                 Some(run.workspace.clone()),
                 Some(run.team.schema()),
-                Some(&field(&child, "run_token")?),
-            )?;
+                Some(&field(&child, "run_token")?), false)?;
             run.members.push((pane, head));
             crate::host::flight_recorder::record(
                 "team_member_spawn",

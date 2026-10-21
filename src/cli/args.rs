@@ -2754,6 +2754,32 @@ pub enum AgentCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Call an agent role and return its validated completion or blocking question as JSON.
+    Call {
+        role: String,
+        #[arg(long)]
+        task: String,
+        /// Create a managed worktree for the child.
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Return the child pane ID immediately.
+        #[arg(long = "async")]
+        asynchronous: bool,
+    },
+    /// Reply through a child agent's structured mailbox.
+    Message {
+        pane_id: u64,
+        text: String,
+        /// Wait for the child's next completion or question.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Transfer the current task to a permitted successor role.
+    Handoff {
+        role: String,
+        #[arg(long)]
+        task: String,
+    },
     /// Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
     ///
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without

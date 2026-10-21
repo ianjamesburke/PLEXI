@@ -1549,6 +1549,7 @@ impl PlexiApp {
         cwd_override: Option<std::path::PathBuf>,
         result_schema: Option<serde_json::Value>,
         run_token: Option<&str>,
+        conjoined: bool,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
         let parent_lookup = from_pane_id.and_then(|pid| {
             self.find_pane_in_any_window(pid)
@@ -1594,6 +1595,10 @@ impl PlexiApp {
                 let win_id = self.next_window_id;
                 self.next_window_id += 1;
 
+                if conjoined {
+                    let parent = parent_pane_id.ok_or("conjoined children require a parent pane")?;
+                    self.conjoined_contexts.insert(ctx_id, parent);
+                } else {
                 // Insert a PortalPane in the parent window adjacent to the caller pane.
                 let portal_pane_id = self.host.alloc_pane_id();
                 let split_target = parent_pane_id
@@ -1620,6 +1625,7 @@ impl PlexiApp {
                     })),
                 );
 
+                }
                 self.router.push(crate::host::context::Context {
                     name: crate::host::context::ContextName::custom(sub_name.to_string()),
                     root: effective_cwd.clone(),

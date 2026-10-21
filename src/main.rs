@@ -598,6 +598,9 @@ fn main() -> eframe::Result {
                         AgentCmd::Show { name, cwd, json } => {
                             std::process::exit(cli::agent_show_cli(&name, cwd.as_deref(), json))
                         }
+                        AgentCmd::Call { role, task, worktree, asynchronous } => std::process::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}))),
+                        AgentCmd::Message { pane_id, text, wait } => std::process::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait}))),
+                        AgentCmd::Handoff { role, task } => std::process::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}))),
                         AgentCmd::Spawn {
                             name,
                             task,
