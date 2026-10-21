@@ -523,6 +523,10 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
     let (payload, json_out, timeout) = match cmd {
         AgentTeamCmd::Show { name, json } => match crate::agent::team::load(&workspace, &name) {
             Ok(team) => {
+                log::info!(
+                    "agent_team: show name={name} workspace={}",
+                    workspace.display()
+                );
                 if json {
                     println!("{}", serde_json::json!({"name":name,"team":team}));
                 } else {

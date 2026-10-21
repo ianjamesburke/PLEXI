@@ -1978,8 +1978,8 @@ impl PlexiApp {
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
-    /// Head bound to this pane, when the pane is an Assistant for that head.
-    /// A terminal pane holds no grants.
+    /// Head bound to an Assistant or an active team worker.
+    /// Other terminal panes hold no head grants.
     pub(crate) fn bound_head_for_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<String> {
         if let Some(head) = self.team_head_for_pane(pane_id) { return Some(head); }
         let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;

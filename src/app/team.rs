@@ -340,8 +340,9 @@ impl PlexiApp {
             run.team.members.len()
         );
         if let Err(error) = self.spawn_team_members(&mut run) {
-            self.finish_team(&run, Err(error.clone()));
-            return Err(error);
+            // finish_team has already replied and retired the partial task.
+            self.finish_team(&run, Err(error));
+            return Ok(());
         }
         self.team_runs.push(run);
         self.ctx.request_repaint();
