@@ -754,8 +754,8 @@ fn main() -> eframe::Result {
                             friendly_name,
                             global,
                         } => std::process::exit(cli::workspace_secret_get(&friendly_name, global)),
-                        SecretCmd::List { global } => {
-                            std::process::exit(cli::workspace_secret_list(global))
+                        SecretCmd::List { global, json } => {
+                            std::process::exit(cli::workspace_secret_list(global, json))
                         }
                         SecretCmd::Delete {
                             friendly_name,

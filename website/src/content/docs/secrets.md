@@ -12,6 +12,34 @@ capability.
 
 ## Set a Secret
 
+Open **Secrets** with Cmd+Shift+S or choose **Open Secrets** in the command
+palette. The app lists global and current-workspace secrets. Folder secrets
+appear when the `folder_secrets` experiment is on.
+
+Use `j`/`k` to select, `Enter` to replace a value, `a` to add, and `d` to
+delete. Deletion asks for confirmation; press `d` or `y` to confirm, or Esc
+to cancel. Values stay masked, and editing starts with an empty replacement
+field.
+
+Each row shows its scope, last audited successful read, and current
+actor-specific grants for that resource. Older reads without timestamps show
+**unknown**. The grant list reports existing decisions; agent and app-tool
+reads retain their existing permission gates.
+
+Usage timestamps cover successful permission-audited reads for that scope.
+Direct clipboard copies of global/workspace secrets and terminal-environment
+injection do not add usage timestamps.
+
+When the list is empty, choose the destination scope and **Import .env…**
+(`i`). Pick a file containing literal `NAME=value` assignments. The importer
+accepts comments, an `export` prefix, and single- or double-quoted values.
+Shell expansion and multiline values are unsupported. Import replaces
+matching names in the selected scope and leaves the source file unchanged.
+The complete file is validated before writing; a storage failure reports
+how many entries were saved.
+
+From a terminal:
+
 ```sh
 plexi secret set MY_API_KEY
 ```
@@ -54,6 +82,11 @@ plexi secret list
 
 Lists all stored secret keys. Values are not shown. Names injected into
 terminals are marked.
+
+`plexi secret list --json` returns the app's names-only inventory, including
+`scope`, `last_used` (Unix seconds or `null` when unknown), and `grant`
+(actor-specific permission descriptions). Add `--global` to restrict it to
+global secrets.
 
 ## Delete a Secret
 

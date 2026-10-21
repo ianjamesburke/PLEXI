@@ -35,6 +35,7 @@
 //! helpers, [`system_store`], and the re-exports every caller reaches through.
 
 mod file;
+pub(crate) mod manager;
 mod folder;
 mod folder_store;
 mod pane_read;
@@ -57,9 +58,6 @@ pub use store::SecretError;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;
-#[cfg(test)]
-pub use reconcile::AccountRename;
-pub use reconcile::ReconcileReport;
 
 pub use folder::{
     canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,

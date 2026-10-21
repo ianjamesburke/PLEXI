@@ -3469,6 +3469,55 @@ impl PermissionMonitor {
             .collect()
     }
 
+    /// Audit a user-initiated vault mutation. This records no permission grant
+    /// and accepts metadata only, so secret values cannot enter the audit.
+    pub(crate) fn note_secret_mutation(
+        &self,
+        call_id: &str,
+        resource: &str,
+        operation: &str,
+        outcome: &str,
+    ) -> Result<(), String> {
+        self.audit(&AuditFact {
+            kind: "secret_mutation".into(),
+            actor: "user:secrets".into(),
+            call_id: call_id.into(),
+            resource_id: resource.into(),
+            operation_id: operation.into(),
+            decision: outcome.into(),
+            grant_id: String::new(),
+            args_fingerprint: String::new(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        })
+    }
+
+    /// Last audited secret-use timestamps. Legacy rows lack a timestamp and
+    /// stay unknown; unverified audit data must never be presented as fact.
+    pub(crate) fn secret_last_uses(&self) -> Result<BTreeMap<String, u64>, String> {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        let mut uses = BTreeMap::new();
+        let Some(path) = &self.audit_path else { return Ok(uses) };
+        if !path.exists() { return Ok(uses); }
+        super::seal::verify_audit(path)?;
+        let text = std::fs::read_to_string(path).map_err(|error| {
+            log::warn!("secrets_manager: audit metadata read failed: {error}");
+            "Could not read secret-use metadata.".to_string()
+        })?;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let envelope: serde_json::Value = serde_json::from_str(line)
+                .map_err(|_| "Invalid secret audit envelope.".to_string())?;
+            let fact: serde_json::Value = serde_json::from_str(envelope["fact"].as_str().unwrap_or(""))
+                .map_err(|_| "Invalid secret audit fact.".to_string())?;
+            if fact["kind"] == "outcome" && fact["decision"] == "ok" && fact["call_id"].as_str().is_some_and(|id| id.starts_with("secret-read-")) {
+                if let (Some(resource), Some(timestamp)) = (fact["resource_id"].as_str(), fact["timestamp"].as_u64()) {
+                    uses.insert(resource.to_string(), timestamp);
+                }
+            }
+        }
+        Ok(uses)
+    }
+
     /// Keep `fact` in the bounded in-memory window, evicting the oldest row.
     fn remember_audit(&self, fact: AuditFact) {
         let mut mem = self.audit_mem.lock().unwrap_or_else(|e| e.into_inner());
@@ -3541,7 +3590,12 @@ impl PermissionMonitor {
         }
         self.remember_audit(fact.clone());
         if let Some(path) = &self.audit_path {
-            match super::seal::append_audit(path, fact) {
+            // Stamp the persisted event once. AuditFact is also serialized by
+            // the live audit API, where serialization time is not event time.
+            let mut persisted_fact = serde_json::to_value(fact)
+                .map_err(|error| format!("audit serialization failed: {error}"))?;
+            persisted_fact["timestamp"] = serde_json::json!(self.now_secs());
+            match super::seal::append_audit(path, &persisted_fact) {
                 Ok(()) => super::integrity::note_saved_file(path),
                 Err(super::seal::SealError::Untrusted(reason)) => {
                     self.raise_integrity(&super::seal::IntegrityFault {

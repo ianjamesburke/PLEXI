@@ -247,6 +247,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "agents fleet team task workers blocked status",
     },
     PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenSecretsManager),
+        name: "Open Secrets",
+        description: "Manage scoped credentials, usage and grants",
+        search_text: "open secrets credentials keys global workspace folder import env",
+    },
+    PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal),
         name: "Review notifications",
         description: "Open the pending notification review queue",
@@ -790,6 +796,7 @@ fn palette_host_binding(
     use crate::host::keys::Action;
     let binding = match command {
         PaletteCommand::Host(Action::OpenAgents) => bindings.open_agents,
+        PaletteCommand::Host(Action::OpenSecretsManager) => bindings.open_secrets_manager,
         PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
         PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
         PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
@@ -1739,6 +1746,7 @@ impl PlexiApp {
                 self.mark_workspace_dirty();
             }
             crate::host::keys::Action::OpenAgents => self.open_agents_pane(),
+            crate::host::keys::Action::OpenSecretsManager => self.open_secrets_manager(),
             crate::host::keys::Action::OpenConfig => {
                 let path = crate::config::ensure_config_file();
                 self.open_config_in_editor(path);
@@ -2304,6 +2312,12 @@ mod tests {
                 crate::host::keys::Action::ToggleNotificationModal
             )]
         );
+    }
+
+    #[test]
+    fn palette_exposes_open_secrets() {
+        assert_eq!(palette_command_matches("open secrets"), vec![PaletteCommand::Host(crate::host::keys::Action::OpenSecretsManager)]);
+        assert_eq!(palette_host_binding(&crate::host::keys::KeyBindings::default(), &PaletteCommand::Host(crate::host::keys::Action::OpenSecretsManager)), Some(crate::host::keys::KeyBindings::default().open_secrets_manager));
     }
 
     #[test]
