@@ -965,6 +965,8 @@ pub fn agent_show_in(
             "path": def.path,
             "description": def.description,
             "persona": def.prompt,
+            "can_call": def.can_call,
+            "can_handoff": def.can_handoff,
             "harness": harness_json,
             "spawn_command": spawn_command,
         });

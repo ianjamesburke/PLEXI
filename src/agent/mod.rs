@@ -143,10 +143,16 @@ pub struct AgentDefinition {
     pub kind: Option<crate::plexi_ai::ledger::RunKind>,
     /// Optional `[harness]` configuration for CLI worker agents (`plexi agent spawn`).
     pub harness: Option<AgentHarnessConfig>,
+    pub can_call: Vec<String>,
+    pub can_handoff: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct SettingsToml {
+    #[serde(default)]
+    can_call: Vec<String>,
+    #[serde(default)]
+    can_handoff: Vec<String>,
     agent: AgentTable,
     #[serde(default)]
     harness: Option<HarnessTable>,
@@ -167,6 +173,10 @@ struct SettingsToml {
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HarnessTable {
+    #[serde(default)]
+    can_call: Option<Vec<String>>,
+    #[serde(default)]
+    can_handoff: Option<Vec<String>>,
     cli: String,
     #[serde(default)]
     model: Option<String>,
@@ -276,6 +286,16 @@ impl AgentDefinition {
                 deny: Vec::new(),
             }
         };
+        let can_call = settings.harness.as_ref().and_then(|h| h.can_call.clone())
+            .unwrap_or(settings.can_call);
+        let can_handoff = settings.harness.as_ref().and_then(|h| h.can_handoff.clone())
+            .unwrap_or(settings.can_handoff);
+        for (field, roles) in [("can_call", &can_call), ("can_handoff", &can_handoff)] {
+            for role in roles {
+                crate::cli::agent::validate_agent_slug(role)
+                    .map_err(|error| format!("settings.toml: {field}: {error}"))?;
+            }
+        }
         let harness = match settings.harness {
             None => None,
             Some(h) => {
@@ -405,6 +425,8 @@ impl AgentDefinition {
             client,
             kind,
             harness,
+            can_call,
+            can_handoff,
         })
     }
 
@@ -460,6 +482,8 @@ impl AgentRegistry {
             client: None,
             kind: None,
             harness: None,
+            can_call: Vec::new(),
+            can_handoff: Vec::new(),
         };
         let user_dir = profile_dir.join("agents");
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
@@ -1348,6 +1372,18 @@ payload = "full"
 trigger = "conversation"
 default = "ask"
 "#;
+
+    #[test]
+    fn agent_tool_permissions_accept_harness_and_top_level() {
+        for settings in [
+            "can_call = ['tester']\ncan_handoff = ['writer']\n[agent]\nid='lead'\ndisplay_name='Lead'\n[harness]\ncli='pi'",
+            "[agent]\nid='lead'\ndisplay_name='Lead'\n[harness]\ncli='pi'\ncan_call=['tester']\ncan_handoff=['writer']",
+        ] {
+            let def = AgentDefinition::parse("Lead.", settings).unwrap();
+            assert_eq!(def.can_call, vec!["tester"]);
+            assert_eq!(def.can_handoff, vec!["writer"]);
+        }
+    }
 
     #[test]
     fn spec_settings_example_parses() {
