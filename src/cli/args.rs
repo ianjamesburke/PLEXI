@@ -1761,6 +1761,9 @@ pub enum PaneCmd {
         /// With a numeric argument, returns panes in that specific context.
         #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
         context: Option<String>,
+        /// Output as a JSON array (accepted for compatibility; JSON is the default format).
+        #[arg(long)]
+        json: bool,
     },
     /// Move the visible focus to a specific pane.
     ///
@@ -3546,6 +3549,19 @@ mod tests {
         };
         assert!(!open);
         assert!(!no_open);
+    }
+
+    #[test]
+    fn pane_list_accepts_json_flag() {
+        let cli = Cli::try_parse_from(["plexi", "pane", "list", "--json"]).unwrap();
+        let Some(Commands::Pane {
+            cmd: super::PaneCmd::List { context, json },
+        }) = cli.command
+        else {
+            panic!("expected pane list command");
+        };
+        assert_eq!(context, None);
+        assert!(json);
     }
 
     #[test]

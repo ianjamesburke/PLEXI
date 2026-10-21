@@ -209,8 +209,8 @@ plexi skill install --agent pi
   `plexi run --json` returns `[{name, scope, description, run, steps, on_load, secrets}]` (secret
   names only, never values), and `plexi run <name> [args...]` executes the named
   command with scoped secrets injected. `[commands.<name>]` in `commands.toml`
-  supports chained `steps = [...]` (Plexi CLI subcommands like `"pane new --right -- <cmd>"`
-  or `"app open strudel --split down"`, or shell snippets, with `$1`/`$@` substitution
+  supports chained `steps = [...]` (Plexi CLI subcommands like `"pane new --right -- mixer"`
+  or `"pane new --down -- nooise --mute"`, or shell snippets, with `$1`/`$@` substitution
   and `step <i>/<n> failed: <cmd> (exit <code>)` error reporting), optional `on_load`
   steps (`plexi pane new --on-load <step>`), and `[keys]` bindings (`"<chord>" = "run:<name>"`)
   in `config.toml` checked against reserved shortcuts by `plexi config check`. `secret list` first reconciles its index with the

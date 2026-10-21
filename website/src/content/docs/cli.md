@@ -1630,6 +1630,7 @@ Filter by context: `--context` (no value) returns panes in the caller's context 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--context` | string | no | Filter by context. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With a numeric argument, returns panes in that specific context |
+| `--json` | flag | no | Output as a JSON array (accepted for compatibility; JSON is the default format) |
 
 ### `plexi pane focus`
 

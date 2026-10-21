@@ -1238,7 +1238,7 @@ fn main() -> eframe::Result {
                             };
                             std::process::exit(cli::pane_set_title_cli(pane_id, &name))
                         }
-                        PaneCmd::List { context } => {
+                        PaneCmd::List { context, json: _ } => {
                             let (context_id, current) = match context.as_deref() {
                                 None => (None, false),
                                 Some("current") => (None, true),

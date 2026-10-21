@@ -444,7 +444,7 @@ pub fn dispatch_cli_step(
                     ..Default::default()
                 })
             }
-            PaneCmd::List { context } => {
+            PaneCmd::List { context, json: _ } => {
                 let (context_id, current) = match context.as_deref() {
                     None => (None, false),
                     Some("current") => (None, true),
@@ -1217,10 +1217,10 @@ global_only = { run = "echo global-only", secrets = ["GLOBAL_SECRET"] }
     fn parse_commands_toml_accepts_steps_and_rejects_run_plus_steps_or_empty_steps() {
         let valid = r#"
 [commands.play]
-description = "Open mixing terminal + Strudel"
+description = "Start mixer + muted nooise"
 steps = [
-  "pane new --right -- echo mix",
-  "app open strudel --split down",
+  "pane new --right -- mixer",
+  "pane new --down -- nooise --mute",
 ]
 on_load = "pane name mixer"
 "#;
@@ -1229,12 +1229,12 @@ on_load = "pane name mixer"
         assert_eq!(
             play.steps(),
             &[
-                "pane new --right -- echo mix".to_string(),
-                "app open strudel --split down".to_string(),
+                "pane new --right -- mixer".to_string(),
+                "pane new --down -- nooise --mute".to_string(),
             ]
         );
         assert_eq!(play.on_load(), &["pane name mixer".to_string()]);
-        assert_eq!(play.description(), Some("Open mixing terminal + Strudel"));
+        assert_eq!(play.description(), Some("Start mixer + muted nooise"));
 
         let both = r#"
 [commands.bad]
