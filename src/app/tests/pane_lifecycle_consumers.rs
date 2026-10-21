@@ -22,8 +22,9 @@ impl Connection {
         h.app.event_publish_rx = rx;
         let ipc = h.ipc_tx.clone();
         let (mut socket, server) = UnixStream::pair().unwrap();
+        let trace_profile = crate::config::config_dir();
         let thread = std::thread::spawn(move || {
-            crate::app::handle_socket_connection(server, ipc, subscribe, publish, None);
+            crate::app::handle_socket_connection(&trace_profile, server, ipc, subscribe, publish, None);
         });
         writeln!(socket, "{request}").unwrap();
         let input = socket.try_clone().unwrap();

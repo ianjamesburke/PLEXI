@@ -266,7 +266,8 @@ fn run_socket_connection(
     client
         .shutdown(std::net::Shutdown::Write)
         .expect("close write half");
-    handle_socket_connection(server, mailbox, subscribe_mailbox, publish_mailbox, None);
+    let profile = tempfile::tempdir().unwrap();
+    handle_socket_connection(profile.path(), server, mailbox, subscribe_mailbox, publish_mailbox, None);
     rx
 }
 

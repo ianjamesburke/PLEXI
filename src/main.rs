@@ -54,11 +54,11 @@ fn main() -> eframe::Result {
             if flag == "--distribution-check" {
                 if let Err(error) = distribution::check_runtime() {
                     eprintln!("package runtime check: {error}");
-                    std::process::exit(1);
+                    cli::trace::exit(1);
                 }
             }
             println!("{}", distribution::build_info());
-            std::process::exit(0);
+            cli::trace::exit(0);
         }
     }
     let boot_state = crate::workspace::consume_host_boot_state();
@@ -69,13 +69,13 @@ fn main() -> eframe::Result {
                 "error: {}",
                 crate::release::feature_unavailable_message(feature)
             );
-            std::process::exit(1);
+            cli::trace::exit(1);
         }
     }
 
     if std::env::args().nth(1).as_deref() == Some("--render") {
         render_cli();
-        std::process::exit(0);
+        cli::trace::exit(0);
     }
     // Parse --profile <name> early so config_dir() resolves correctly for
     // both logging and all downstream I/O.
@@ -94,23 +94,23 @@ fn main() -> eframe::Result {
     // is handled by clap below.
     if top_level_help_flag(&raw_args) {
         cli::help::print_grouped_help();
-        std::process::exit(0);
+        cli::trace::exit(0);
     }
     if let Some(help) = cli::help::unknown_command_help(&raw_args, &cli::help::gated_command()) {
         eprint!("{help}");
-        std::process::exit(2);
+        cli::trace::exit(2);
     }
     // A bad [experiments] table fails every command except the ones needed to
     // fix it, so the user is never locked out of repairing the config.
     if let Some(error) = crate::release::experiments_error() {
         if !experiments_repair_command(&raw_args) {
             eprintln!("error: {error}");
-            std::process::exit(1);
+            cli::trace::exit(1);
         }
     }
     let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
         eprintln!("profile initialization: {error}");
-        std::process::exit(1);
+        cli::trace::exit(1);
     });
     let is_first_launch = crate::config::ensure_profile_initialized();
 
@@ -174,7 +174,7 @@ fn main() -> eframe::Result {
     }
     if let Err(error) = crate::distribution::seed_profile() {
         eprintln!("package profile initialization: {error}");
-        std::process::exit(1);
+        cli::trace::exit(1);
     }
     drop(profile_init_lock);
 
@@ -187,7 +187,7 @@ fn main() -> eframe::Result {
         Ok(root) => root,
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            cli::trace::exit(1);
         }
     };
     crate::config::set_adopted_workspace_root(adopted_root.clone());
@@ -307,10 +307,13 @@ fn main() -> eframe::Result {
                 cli::set_command_socket_override(socket);
             }
             if let Some(cmd) = cli.command {
+                if !matches!(&cmd, Commands::Debug { .. } | Commands::Skill { .. }) {
+                    cli::trace::begin(&raw_args);
+                }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
                         AssistantCmd::Send { text, head, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(
+                            cli::trace::exit(cli::assistant_send_cli(
                                 text.as_deref(),
                                 request_id.as_deref(),
                                 pane_id,
@@ -326,20 +329,20 @@ fn main() -> eframe::Result {
                             ))
                         }
                         AssistantCmd::Open { head } => {
-                            std::process::exit(cli::assistant_open_head_cli(&head))
+                            cli::trace::exit(cli::assistant_open_head_cli(&head))
                         }
                         AssistantCmd::Tool { name, input } => {
-                            std::process::exit(cli::assistant_tool_cli(&name, &input))
+                            cli::trace::exit(cli::assistant_tool_cli(&name, &input))
                         }
                         AssistantCmd::Permission { cmd } => match cmd {
                             AssistantPermissionCmd::List => {
-                                std::process::exit(cli::assistant_permission_cli("list", None, None))
+                                cli::trace::exit(cli::assistant_permission_cli("list", None, None))
                             }
                             AssistantPermissionCmd::Show { id } => {
-                                std::process::exit(cli::assistant_permission_cli("show", Some(&id), None))
+                                cli::trace::exit(cli::assistant_permission_cli("show", Some(&id), None))
                             }
                             AssistantPermissionCmd::Resolve { id, choice } => {
-                                std::process::exit(cli::assistant_permission_cli(
+                                cli::trace::exit(cli::assistant_permission_cli(
                                     "resolve",
                                     Some(&id),
                                     Some(&choice),
@@ -349,9 +352,9 @@ fn main() -> eframe::Result {
                     },
                     Commands::NeedsYou { cmd } => match cmd {
                         NeedsYouCmd::List { json: _ } => {
-                            std::process::exit(cli::needs_you_cli("list", None, None))
+                            cli::trace::exit(cli::needs_you_cli("list", None, None))
                         }
-                        NeedsYouCmd::Show { id } => std::process::exit(cli::needs_you_api_cli(
+                        NeedsYouCmd::Show { id } => cli::trace::exit(cli::needs_you_api_cli(
                             "show",
                             serde_json::json!({ "id": id }),
                         )),
@@ -378,7 +381,7 @@ fn main() -> eframe::Result {
                                     .ok()
                                     .and_then(|v| v.parse::<u64>().ok())
                             });
-                            std::process::exit(cli::needs_you_api_cli(
+                            cli::trace::exit(cli::needs_you_api_cli(
                                 "ask",
                                 serde_json::json!({
                                     "summary": summary,
@@ -399,7 +402,7 @@ fn main() -> eframe::Result {
                             id,
                             answer,
                             ui_token,
-                        } => std::process::exit(cli::needs_you_api_cli(
+                        } => cli::trace::exit(cli::needs_you_api_cli(
                             "answer",
                             serde_json::json!({
                                 "id": id,
@@ -413,7 +416,7 @@ fn main() -> eframe::Result {
                             pane_id,
                             context_id,
                             id,
-                        } => std::process::exit(cli::needs_you_api_cli(
+                        } => cli::trace::exit(cli::needs_you_api_cli(
                             "reconcile",
                             serde_json::json!({
                                 "session_id": session_id,
@@ -423,7 +426,7 @@ fn main() -> eframe::Result {
                             }),
                         )),
                         NeedsYouCmd::Complete { id, state, receipt } => {
-                            std::process::exit(cli::needs_you_api_cli(
+                            cli::trace::exit(cli::needs_you_api_cli(
                                 "complete",
                                 serde_json::json!({
                                     "id": id,
@@ -442,7 +445,7 @@ fn main() -> eframe::Result {
                             // still settles. Questions and blocked runs settle
                             // from here and do not mint a grant. The phone flag
                             // does not change that.
-                            std::process::exit(cli::needs_you_cli(
+                            cli::trace::exit(cli::needs_you_cli(
                                 "resolve",
                                 Some(&id),
                                 Some(approve && !deny),
@@ -451,76 +454,79 @@ fn main() -> eframe::Result {
                     },
                     Commands::Experiments { cmd } => match cmd {
                         cli::args::ExperimentsCmd::List { json } => {
-                            std::process::exit(cli::experiments::experiments_list(json))
+                            cli::trace::exit(cli::experiments::experiments_list(json))
                         }
                         cli::args::ExperimentsCmd::Enable { name } => {
-                            std::process::exit(cli::experiments::experiments_set(&name, true))
+                            cli::trace::exit(cli::experiments::experiments_set(&name, true))
                         }
                         cli::args::ExperimentsCmd::Disable { name } => {
-                            std::process::exit(cli::experiments::experiments_set(&name, false))
+                            cli::trace::exit(cli::experiments::experiments_set(&name, false))
                         }
                     },
                     Commands::Skill { cmd } => match cmd {
+                        SkillCmd::Draft { from_session, pane, format, out } => {
+                            cli::trace::exit(cli::skill_draft::skill_draft_cli(&from_session, pane, &format, out.as_deref()))
+                        }
                         SkillCmd::Install { agent } => {
-                            std::process::exit(cli::skill_install::skill_install_cli(&agent))
+                            cli::trace::exit(cli::skill_install::skill_install_cli(&agent))
                         }
                     },
                     Commands::Permissions { cmd } => match cmd {
                         PermissionsCmd::List { json } => {
-                            std::process::exit(cli::permissions_cli("list", None, json))
+                            cli::trace::exit(cli::permissions_cli("list", None, json))
                         }
                         PermissionsCmd::Reset { id } => {
-                            std::process::exit(cli::permissions_cli("reset", Some(&id), true))
+                            cli::trace::exit(cli::permissions_cli("reset", Some(&id), true))
                         }
                         PermissionsCmd::Revoke { id } => {
-                            std::process::exit(cli::permissions_cli("revoke", Some(&id), true))
+                            cli::trace::exit(cli::permissions_cli("revoke", Some(&id), true))
                         }
                         PermissionsCmd::Allow { id } => {
-                            std::process::exit(cli::permissions_cli("allow", Some(&id), true))
+                            cli::trace::exit(cli::permissions_cli("allow", Some(&id), true))
                         }
                     },
                     Commands::Relay { cmd } => match cmd {
                         RelayCmd::Connect { url } => {
-                            std::process::exit(cli::relay::relay_connect_cli(url))
+                            cli::trace::exit(cli::relay::relay_connect_cli(url))
                         }
                         RelayCmd::Confirm { pairing_id } => {
-                            std::process::exit(cli::relay::relay_confirm_cli(pairing_id))
+                            cli::trace::exit(cli::relay::relay_confirm_cli(pairing_id))
                         }
                         RelayCmd::Revoke { device_id } => {
-                            std::process::exit(cli::relay::relay_revoke_cli(&device_id))
+                            cli::trace::exit(cli::relay::relay_revoke_cli(&device_id))
                         }
-                        RelayCmd::Pair => std::process::exit(cli::relay::relay_pair_cli()),
+                        RelayCmd::Pair => cli::trace::exit(cli::relay::relay_pair_cli()),
                         RelayCmd::Enable { url } => {
-                            std::process::exit(cli::relay::relay_enable_cli(url))
+                            cli::trace::exit(cli::relay::relay_enable_cli(url))
                         }
-                        RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
-                        RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
+                        RelayCmd::Disable => cli::trace::exit(cli::relay::relay_disable_cli()),
+                        RelayCmd::Status => cli::trace::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::CommandView { cmd, json, follow } => {
                         if follow && cmd.is_some() {
                             eprintln!("error: --follow prints the live projection and takes no subcommand");
-                            std::process::exit(2);
+                            cli::trace::exit(2);
                         }
                         if follow {
-                            std::process::exit(cli::command_view_follow_cli());
+                            cli::trace::exit(cli::command_view_follow_cli());
                         }
                         match cmd {
                             Some(CommandViewCmd::Open) => {
-                                std::process::exit(cli::command_view_cli("open", json))
+                                cli::trace::exit(cli::command_view_cli("open", json))
                             }
                             Some(CommandViewCmd::Send { lead, text }) => {
-                                std::process::exit(cli::command_view_send_cli(&lead, &text))
+                                cli::trace::exit(cli::command_view_send_cli(&lead, &text))
                             }
                             Some(CommandViewCmd::Cancel { run }) => {
-                                std::process::exit(cli::command_view_cancel_cli(&run))
+                                cli::trace::exit(cli::command_view_cancel_cli(&run))
                             }
                             Some(CommandViewCmd::Resolve { id: _ }) => {
-                                std::process::exit(cli::command_view_refused("resolve"))
+                                cli::trace::exit(cli::command_view_refused("resolve"))
                             }
                             Some(CommandViewCmd::Allow { tool: _ }) => {
-                                std::process::exit(cli::command_view_refused("allow"))
+                                cli::trace::exit(cli::command_view_refused("allow"))
                             }
-                            None => std::process::exit(cli::command_view_cli("list", json)),
+                            None => cli::trace::exit(cli::command_view_cli("list", json)),
                         }
                     }
                     Commands::Run {
@@ -528,20 +534,20 @@ fn main() -> eframe::Result {
                         json,
                         extra_args,
                     } => match command {
-                        Some(cmd) => std::process::exit(cli::run_command(&cmd, &extra_args)),
-                        None => std::process::exit(cli::run_list_commands(json)),
+                        Some(cmd) => cli::trace::exit(cli::run_command(&cmd, &extra_args)),
+                        None => cli::trace::exit(cli::run_list_commands(json)),
                     },
                     Commands::Workspace { cmd } => match cmd {
-                        WorkspaceCmd::Init => std::process::exit(cli::workspace_init()),
+                        WorkspaceCmd::Init => cli::trace::exit(cli::workspace_init()),
                         WorkspaceCmd::Clean { dry_run } => {
-                            std::process::exit(cli::workspace_clean_cli(dry_run))
+                            cli::trace::exit(cli::workspace_clean_cli(dry_run))
                         }
                     },
                     Commands::Routine { cmd } => {
                         match cmd {
-                            RoutineCmd::List => std::process::exit(cli::routine_list()),
+                            RoutineCmd::List => cli::trace::exit(cli::routine_list()),
                             RoutineCmd::Run { name, force } => {
-                                std::process::exit(cli::routine_run(&name, force))
+                                cli::trace::exit(cli::routine_run(&name, force))
                             }
                             RoutineCmd::Add {
                                 name,
@@ -549,7 +555,7 @@ fn main() -> eframe::Result {
                                 schedule,
                                 context,
                                 ephemeral,
-                            } => std::process::exit(cli::routine_add(
+                            } => cli::trace::exit(cli::routine_add(
                                 &name,
                                 &command,
                                 &schedule,
@@ -557,17 +563,17 @@ fn main() -> eframe::Result {
                                 ephemeral,
                             )),
                             RoutineCmd::Remove { name } => {
-                                std::process::exit(cli::routine_remove(&name))
+                                cli::trace::exit(cli::routine_remove(&name))
                             }
                             RoutineCmd::Enable { name } => {
-                                std::process::exit(cli::routine_set_enabled(&name, true))
+                                cli::trace::exit(cli::routine_set_enabled(&name, true))
                             }
                             RoutineCmd::Disable { name } => {
-                                std::process::exit(cli::routine_set_enabled(&name, false))
+                                cli::trace::exit(cli::routine_set_enabled(&name, false))
                             }
                         }
                     }
-                    Commands::Lease { cmd } => std::process::exit(cli::lease::dispatch(cmd)),
+                    Commands::Lease { cmd } => cli::trace::exit(cli::lease::dispatch(cmd)),
                     Commands::Agent { cmd } => match cmd {
                         AgentCmd::Create {
                             name,
@@ -582,7 +588,7 @@ fn main() -> eframe::Result {
                             display_name,
                             global,
                             cwd,
-                        } => std::process::exit(cli::agent_create_cli(
+                        } => cli::trace::exit(cli::agent_create_cli(
                             &name,
                             &harness_cli,
                             model.as_deref(),
@@ -597,14 +603,14 @@ fn main() -> eframe::Result {
                             cwd.as_deref(),
                         )),
                         AgentCmd::List { cwd, json } => {
-                            std::process::exit(cli::agent_list_cli(cwd.as_deref(), json))
+                            cli::trace::exit(cli::agent_list_cli(cwd.as_deref(), json))
                         }
                         AgentCmd::Show { name, cwd, json } => {
-                            std::process::exit(cli::agent_show_cli(&name, cwd.as_deref(), json))
+                            cli::trace::exit(cli::agent_show_cli(&name, cwd.as_deref(), json))
                         }
-                        AgentCmd::Call { role, task, worktree, asynchronous } => std::process::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}))),
-                        AgentCmd::Message { pane_id, text, wait } => std::process::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait}))),
-                        AgentCmd::Handoff { role, task } => std::process::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}))),
+                        AgentCmd::Call { role, task, worktree, asynchronous } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}))),
+                        AgentCmd::Message { pane_id, text, wait } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait}))),
+                        AgentCmd::Handoff { role, task } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}))),
                         AgentCmd::Spawn {
                             name,
                             task,
@@ -613,7 +619,7 @@ fn main() -> eframe::Result {
                             from,
                             cwd,
                             json,
-                        } => std::process::exit(cli::agent_spawn_cli(
+                        } => cli::trace::exit(cli::agent_spawn_cli(
                             &name,
                             &task,
                             subcontext.as_deref(),
@@ -626,13 +632,13 @@ fn main() -> eframe::Result {
                             result,
                             summary,
                             pane_id,
-                        } => std::process::exit(cli::agent_done_cli(
+                        } => cli::trace::exit(cli::agent_done_cli(
                             &result,
                             summary.as_deref(),
                             pane_id,
                         )),
                         AgentCmd::Ask { question, pane_id } => {
-                            std::process::exit(cli::agent_ask_cli(&question, pane_id))
+                            cli::trace::exit(cli::agent_ask_cli(&question, pane_id))
                         }
                         AgentCmd::Report {
                             state,
@@ -641,7 +647,7 @@ fn main() -> eframe::Result {
                             session_id,
                             event,
                             blocked_reason,
-                        } => std::process::exit(cli::agent_report_cli(
+                        } => cli::trace::exit(cli::agent_report_cli(
                             state.as_str(),
                             agent.as_str(),
                             detail.as_deref(),
@@ -653,44 +659,44 @@ fn main() -> eframe::Result {
                             blocked,
                             working,
                             idle,
-                        } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
-                        AgentCmd::Next { json } => { std::process::exit(cli::agent_next_cli(json)); }
+                        } => cli::trace::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Next { json } => { cli::trace::exit(cli::agent_next_cli(json)); }
                         AgentCmd::Fleet { json, filter } => {
-                            std::process::exit(cli::agent_fleet_cli(json, filter));
+                            cli::trace::exit(cli::agent_fleet_cli(json, filter));
                         }
                         AgentCmd::History { limit, json } => {
-                            std::process::exit(cli::agent_history_cli(limit, json))
+                            cli::trace::exit(cli::agent_history_cli(limit, json))
                         }
                         AgentCmd::Reopen {
                             target,
                             subcontext,
                             json,
-                        } => std::process::exit(cli::agent_reopen_cli(
+                        } => cli::trace::exit(cli::agent_reopen_cli(
                             &target,
                             subcontext.as_deref(),
                             json,
                         )),
-                        AgentCmd::Team { cmd } => std::process::exit(cli::agent_team_dispatch(cmd)),
-                        AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
+                        AgentCmd::Team { cmd } => cli::trace::exit(cli::agent_team_dispatch(cmd)),
+                        AgentCmd::Head { cmd } => cli::trace::exit(cli::agent_head_dispatch(cmd)),
                         AgentCmd::Grants { cmd } => {
-                            std::process::exit(cli::agent_grants_dispatch(cmd))
+                            cli::trace::exit(cli::agent_grants_dispatch(cmd))
                         }
-                        AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
+                        AgentCmd::Run { cmd } => cli::trace::exit(cli::agent_run_dispatch(cmd)),
                         AgentCmd::Assign { head, input, json } => {
-                            std::process::exit(cli::agent_assign_cli(&head, &input, json))
+                            cli::trace::exit(cli::agent_assign_cli(&head, &input, json))
                         }
                         AgentCmd::Cancel { id, json } => {
-                            std::process::exit(cli::agent_cancel_cli(&id, json))
+                            cli::trace::exit(cli::agent_cancel_cli(&id, json))
                         }
                         AgentCmd::Conversation { head, as_head, json } => {
-                            std::process::exit(cli::agent_conversation_cli(&head, as_head.as_deref(), json))
+                            cli::trace::exit(cli::agent_conversation_cli(&head, as_head.as_deref(), json))
                         }
                         AgentCmd::Delegate {
                             parent_run,
                             name,
                             grant,
                             json,
-                        } => std::process::exit(cli::agent_delegate_cli(
+                        } => cli::trace::exit(cli::agent_delegate_cli(
                             &parent_run,
                             &name,
                             &grant,
@@ -701,7 +707,7 @@ fn main() -> eframe::Result {
                                 claude_code,
                                 codex,
                                 pi,
-                            } => std::process::exit(cli::agent_hook_install_cli(
+                            } => cli::trace::exit(cli::agent_hook_install_cli(
                                 claude_code,
                                 codex,
                                 pi,
@@ -710,14 +716,14 @@ fn main() -> eframe::Result {
                                 claude_code,
                                 codex,
                                 pi,
-                            } => std::process::exit(cli::agent_hook_uninstall_cli(
+                            } => cli::trace::exit(cli::agent_hook_uninstall_cli(
                                 claude_code,
                                 codex,
                                 pi,
                             )),
                         },
                     },
-                    Commands::Changes { cmd } => std::process::exit(match cmd {
+                    Commands::Changes { cmd } => cli::trace::exit(match cmd {
                         ChangesCmd::Allow {
                             agent,
                             file,
@@ -745,7 +751,7 @@ fn main() -> eframe::Result {
                             folder,
                         } => {
                             if let Some(folder) = folder.as_deref() {
-                                std::process::exit(cli::folder_secret_set(
+                                cli::trace::exit(cli::folder_secret_set(
                                     &friendly_name,
                                     from_env,
                                     global,
@@ -753,7 +759,7 @@ fn main() -> eframe::Result {
                                     folder,
                                 ))
                             }
-                            std::process::exit(cli::workspace_secret_set(
+                            cli::trace::exit(cli::workspace_secret_set(
                                 &friendly_name,
                                 from_env,
                                 global,
@@ -763,25 +769,25 @@ fn main() -> eframe::Result {
                         SecretCmd::Get {
                             friendly_name,
                             global,
-                        } => std::process::exit(cli::workspace_secret_get(&friendly_name, global)),
+                        } => cli::trace::exit(cli::workspace_secret_get(&friendly_name, global)),
                         SecretCmd::List { global, json } => {
-                            std::process::exit(cli::workspace_secret_list(global, json))
+                            cli::trace::exit(cli::workspace_secret_list(global, json))
                         }
                         SecretCmd::Delete {
                             friendly_name,
                             global,
                         } => {
-                            std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
+                            cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global))
                         }
                         SecretCmd::Rm { name, folder } => {
-                            std::process::exit(cli::folder_secret_rm(&name, &folder))
+                            cli::trace::exit(cli::folder_secret_rm(&name, &folder))
                         }
                         SecretCmd::Grant {
                             name,
                             agent,
                             app,
                             folder,
-                        } => std::process::exit(cli::folder_secret_grant(
+                        } => cli::trace::exit(cli::folder_secret_grant(
                             &name,
                             agent.as_deref(),
                             app.as_deref(),
@@ -792,14 +798,14 @@ fn main() -> eframe::Result {
                             agent,
                             app,
                             folder,
-                        } => std::process::exit(cli::folder_secret_read(
+                        } => cli::trace::exit(cli::folder_secret_read(
                             &name,
                             agent.as_deref(),
                             app.as_deref(),
                             folder.as_deref(),
                         )),
                         SecretCmd::Exec { cwd, command } => {
-                            std::process::exit(cli::folder_secret_exec(&cwd, &command))
+                            cli::trace::exit(cli::folder_secret_exec(&cwd, &command))
                         }
                     },
                     Commands::App { cmd } => {
@@ -838,20 +844,20 @@ fn main() -> eframe::Result {
                                     + cli_flag.is_some() as u8;
                                 if mode_count == 0 {
                                     eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
-                                    std::process::exit(2);
+                                    cli::trace::exit(2);
                                 }
                                 if mode_count > 1 {
                                     eprintln!(
                                         "error: TYPE_ID, --mcp, and --cli are mutually exclusive"
                                     );
-                                    std::process::exit(2);
+                                    cli::trace::exit(2);
                                 }
                                 if let Some(tid) = type_id {
                                     // Prefix routing: cli:, mcp:, app:, or bare name
                                     match cli::parse_prefix(&tid) {
                                         cli::OpenPrefix::Cli(name) => {
                                             log::info!("app_open:cli: prefix-routed cli:{name}");
-                                            std::process::exit(cli::open_cli_by_name(
+                                            cli::trace::exit(cli::open_cli_by_name(
                                                 &name,
                                                 layout.as_deref(),
                                                 from_pane_id,
@@ -863,7 +869,7 @@ fn main() -> eframe::Result {
                                                 crate::release::ReleaseFeature::McpClient,
                                             );
                                             log::info!("app_open:cli: prefix-routed mcp:{name}");
-                                            std::process::exit(cli::open_mcp_by_name(
+                                            cli::trace::exit(cli::open_mcp_by_name(
                                                 &name,
                                                 layout.as_deref(),
                                                 from_pane_id,
@@ -872,7 +878,7 @@ fn main() -> eframe::Result {
                                         }
                                         cli::OpenPrefix::App(name) => {
                                             log::info!("app_open:cli: prefix-routed app:{name}");
-                                            std::process::exit(cli::open_cli(
+                                            cli::trace::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
                                                 layout.as_deref(),
@@ -882,7 +888,7 @@ fn main() -> eframe::Result {
                                         }
                                         cli::OpenPrefix::Bare(name) => {
                                             log::info!("app_open:cli: opening app type_id={name}");
-                                            std::process::exit(cli::open_cli(
+                                            cli::trace::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
                                                 layout.as_deref(),
@@ -894,7 +900,7 @@ fn main() -> eframe::Result {
                                 } else if !mcp.is_empty() {
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
-                                    std::process::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
+                                    cli::trace::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
                                         name: Some(title.as_str()),
                                         layout: layout.as_deref(),
                                         from_pane_id,
@@ -905,7 +911,7 @@ fn main() -> eframe::Result {
                                 } else {
                                     let binary = cli_flag.unwrap();
                                     log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
-                                    std::process::exit(cli::open_cli_by_name(
+                                    cli::trace::exit(cli::open_cli_by_name(
                                         &binary,
                                         layout.as_deref(),
                                         from_pane_id,
@@ -922,19 +928,19 @@ fn main() -> eframe::Result {
                             } => {
                                 if let Some(p) = pack {
                                     log::info!("app_install:cli: pack={p} refresh={refresh}");
-                                    std::process::exit(cli::install_pack_cli(&p, refresh));
+                                    cli::trace::exit(cli::install_pack_cli(&p, refresh));
                                 }
                                 match spec_or_path {
                                     None => {
                                         log::info!("app_install:cli: workspace pack (no args)");
-                                        std::process::exit(cli::install_workspace_pack_cli());
+                                        cli::trace::exit(cli::install_workspace_pack_cli());
                                     }
                                     Some(s) => match cli::app::classify_app_install_spec(&s) {
                                         cli::app::AppInstallSpecKind::Package => {
                                             log::info!(
                                                 "app_install:cli: package={s} version={version:?}"
                                             );
-                                            std::process::exit(cli::app_install_package(
+                                            cli::trace::exit(cli::app_install_package(
                                                 &s,
                                                 version.as_deref(),
                                                 cli::InstallConfirm::Interactive,
@@ -945,11 +951,11 @@ fn main() -> eframe::Result {
                                             log::info!(
                                                     "app_install:cli: source spec={s} version={version:?}"
                                                 );
-                                            std::process::exit(cli::install_cli(&s, yes));
+                                            cli::trace::exit(cli::install_cli(&s, yes));
                                         }
                                         cli::app::AppInstallSpecKind::LocalPath => {
                                             log::info!("app_install:cli: local path={s} version={version:?}");
-                                            std::process::exit(cli::app_install_with_pin(
+                                            cli::trace::exit(cli::app_install_with_pin(
                                                 &s,
                                                 version.as_deref(),
                                                 cli::InstallConfirm::Interactive,
@@ -961,7 +967,7 @@ fn main() -> eframe::Result {
                                                 crate::release::ReleaseFeature::Marketplace,
                                             );
                                             log::info!("app_install:cli: marketplace id={s} version={version:?}");
-                                            std::process::exit(cli::install_cli(&s, yes));
+                                            cli::trace::exit(cli::install_cli(&s, yes));
                                         }
                                     },
                                 }
@@ -977,11 +983,11 @@ fn main() -> eframe::Result {
                                 from: from_pane_id,
                             } => {
                                 if adopt {
-                                    std::process::exit(cli::app_adopt(
+                                    cli::trace::exit(cli::app_adopt(
                                         name.as_deref().unwrap_or("."),
                                     ));
                                 }
-                                std::process::exit(cli::app_init(
+                                cli::trace::exit(cli::app_init(
                                     wasm.as_deref().or(name.as_deref()).unwrap_or_default(),
                                     if wasm.is_some() { "wasm" } else { &lang },
                                     global,
@@ -990,15 +996,15 @@ fn main() -> eframe::Result {
                                 ));
                             }
                             AppCmd::Uninstall { id, yes } => {
-                                std::process::exit(cli::app_uninstall(&id, yes))
+                                cli::trace::exit(cli::app_uninstall(&id, yes))
                             }
-                            AppCmd::List => std::process::exit(cli::app_list()),
+                            AppCmd::List => cli::trace::exit(cli::app_list()),
                             AppCmd::Prune { dry_run } => {
-                                std::process::exit(cli::app_prune_cli(dry_run))
+                                cli::trace::exit(cli::app_prune_cli(dry_run))
                             }
                             AppCmd::Trust { path } => {
                                 log::info!("app_trust:cli: path={path}");
-                                std::process::exit(cli::app_trust_cli(&path));
+                                cli::trace::exit(cli::app_trust_cli(&path));
                             }
                             AppCmd::Render {
                                 app,
@@ -1006,7 +1012,7 @@ fn main() -> eframe::Result {
                                 state,
                                 output,
                                 png,
-                            } => std::process::exit(cli::app_render(
+                            } => cli::trace::exit(cli::app_render(
                                 &app,
                                 &size,
                                 state.as_deref(),
@@ -1019,7 +1025,7 @@ fn main() -> eframe::Result {
                                 png_dir,
                             } => {
                                 log::info!("app_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}");
-                                std::process::exit(cli::app_check_cli(
+                                cli::trace::exit(cli::app_check_cli(
                                     &path,
                                     &sizes,
                                     png_dir.as_deref(),
@@ -1027,45 +1033,45 @@ fn main() -> eframe::Result {
                             }
                             AppCmd::Test { path, snapshot } => {
                                 log::info!("app_test:cli: path={path} snapshot={snapshot}");
-                                std::process::exit(cli::app_test_cli(&path, snapshot));
+                                cli::trace::exit(cli::app_test_cli(&path, snapshot));
                             }
-                            AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
+                            AppCmd::Info { id } => cli::trace::exit(cli::app_info(&id)),
                             AppCmd::State { cmd } => match cmd {
-                                AppStateCmd::Get { app, scope } => std::process::exit(
+                                AppStateCmd::Get { app, scope } => cli::trace::exit(
                                     cli::app_state::get(&app, scope.as_deref()),
                                 ),
-                                AppStateCmd::Set { app, file, scope } => std::process::exit(
+                                AppStateCmd::Set { app, file, scope } => cli::trace::exit(
                                     cli::app_state::set(&app, file.as_deref(), scope.as_deref()),
                                 ),
                             },
                             AppCmd::Validate { path } => {
                                 log::info!("app_validate:cli: path={path}");
-                                std::process::exit(cli::validate_cli(&path));
+                                cli::trace::exit(cli::validate_cli(&path));
                             }
                             AppCmd::Inspect { path } => {
                                 log::info!("app_inspect:cli: path={path}");
-                                std::process::exit(cli::app_inspect_cli(&path));
+                                cli::trace::exit(cli::app_inspect_cli(&path));
                             }
                             AppCmd::Package { path, out } => {
                                 log::info!("app_package:cli: path={path} out={out:?}");
-                                std::process::exit(cli::app_package_cli(&path, out.as_deref()));
+                                cli::trace::exit(cli::app_package_cli(&path, out.as_deref()));
                             }
                             AppCmd::Freeze { path } => {
                                 log::info!("app_freeze:cli: path={path}");
-                                std::process::exit(cli::freeze_cli(&path));
+                                cli::trace::exit(cli::freeze_cli(&path));
                             }
                             AppCmd::Publish { path } => {
-                                std::process::exit(cli::app_publish_cli(&path));
+                                cli::trace::exit(cli::app_publish_cli(&path));
                             }
                             AppCmd::Browse => {
-                                std::process::exit(cli::app_browse_cli());
+                                cli::trace::exit(cli::app_browse_cli());
                             }
                             AppCmd::Search { query } => {
-                                std::process::exit(cli::app_search_cli(&query));
+                                cli::trace::exit(cli::app_search_cli(&query));
                             }
                             AppCmd::Update { id } => {
                                 log::info!("app_update:cli: id={id:?}");
-                                std::process::exit(cli::app_update_cli(id.as_deref()));
+                                cli::trace::exit(cli::app_update_cli(id.as_deref()));
                             }
                             AppCmd::Action {
                                 pane_id,
@@ -1073,7 +1079,7 @@ fn main() -> eframe::Result {
                                 args,
                             } => {
                                 log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
-                                std::process::exit(cli::app_action_cli(pane_id, &action, &args));
+                                cli::trace::exit(cli::app_action_cli(pane_id, &action, &args));
                             }
                             AppCmd::Call {
                                 app_id,
@@ -1082,11 +1088,11 @@ fn main() -> eframe::Result {
                                 json,
                                 pane,
                                 wait_approved,
-                            } => std::process::exit(cli::app_call_cli(
+                            } => cli::trace::exit(cli::app_call_cli(
                                 &app_id, &tool, &input, json, pane, wait_approved,
                             )),
                             AppCmd::Tools { app, context, json } => {
-                                std::process::exit(cli::app_tools_cli(
+                                cli::trace::exit(cli::app_tools_cli(
                                     app.as_deref(),
                                     context,
                                     json,
@@ -1095,9 +1101,9 @@ fn main() -> eframe::Result {
                         }
                     }
                     Commands::Uninstall { keep_data, delete_data, yes } => {
-                        std::process::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes))
+                        cli::trace::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes))
                     }
-                    Commands::Update { rollback } => std::process::exit(cli::self_update_cli(rollback)),
+                    Commands::Update { rollback } => cli::trace::exit(cli::self_update_cli(rollback)),
                     Commands::Host { cmd } => match cmd {
                         HostCmd::Start {
                             layout,
@@ -1105,20 +1111,20 @@ fn main() -> eframe::Result {
                             timeout_secs,
                             ephemeral,
                             background,
-                        } => std::process::exit(cli::host_start_cli(
+                        } => cli::trace::exit(cli::host_start_cli(
                             layout.as_deref(),
                             &panes,
                             timeout_secs,
                             ephemeral,
                             background,
                         )),
-                        HostCmd::Stop => std::process::exit(cli::host_stop_cli()),
+                        HostCmd::Stop => cli::trace::exit(cli::host_stop_cli()),
                         HostCmd::Log { message, source } => {
-                            std::process::exit(cli::host_log_cli(&source, &message))
+                            cli::trace::exit(cli::host_log_cli(&source, &message))
                         }
-                        HostCmd::Status { json } => std::process::exit(cli::host_status_cli(json)),
+                        HostCmd::Status { json } => cli::trace::exit(cli::host_status_cli(json)),
                         HostCmd::Screenshot { pane, output } => {
-                            std::process::exit(cli::host_screenshot_cli(pane, output.as_deref()))
+                            cli::trace::exit(cli::host_screenshot_cli(pane, output.as_deref()))
                         }
                     },
                     Commands::Notify { cmd, post } => {
@@ -1130,7 +1136,7 @@ fn main() -> eframe::Result {
                                 Ok(id) => Some(id),
                                 Err(_) => {
                                     eprintln!("error: {key} is not a valid number: {s}");
-                                    std::process::exit(1);
+                                    cli::trace::exit(1);
                                 }
                             },
                             Err(_) => None,
@@ -1138,7 +1144,7 @@ fn main() -> eframe::Result {
                         let source_context_id = caller_env_id("PLEXI_CONTEXT_ID");
                         let source_pane_id = caller_env_id("PLEXI_PANE_ID");
                         if let Some(NotifyCmd::Dismiss { notify_id }) = cmd {
-                            std::process::exit(cli::dismiss_notify_cli(
+                            cli::trace::exit(cli::dismiss_notify_cli(
                                 &notify_id,
                                 source_context_id,
                                 source_pane_id,
@@ -1146,7 +1152,7 @@ fn main() -> eframe::Result {
                         }
                         let Some(title) = post.title else {
                             eprintln!("error: --title is required when posting a notification");
-                            std::process::exit(1);
+                            cli::trace::exit(1);
                         };
                         let body = post.body;
                         let choices = post.choices;
@@ -1175,7 +1181,7 @@ fn main() -> eframe::Result {
                                     );
                                     log::warn!("notify:cli: {msg}");
                                     eprintln!("{msg}");
-                                    std::process::exit(1);
+                                    cli::trace::exit(1);
                                 }
                             }
                         }
@@ -1193,7 +1199,7 @@ fn main() -> eframe::Result {
                                 Err(msg) => {
                                     log::warn!("notify:cli: {msg}");
                                     eprintln!("{msg}");
-                                    std::process::exit(1);
+                                    cli::trace::exit(1);
                                 }
                             }
                         }
@@ -1205,21 +1211,21 @@ fn main() -> eframe::Result {
                             );
                             log::warn!("notify:cli: {msg}");
                             eprintln!("{msg}");
-                            std::process::exit(1);
+                            cli::trace::exit(1);
                         }
                         let parsed_scope = match cli::parse_notify_scope(scope.as_deref()) {
                             Ok(parsed) => parsed,
                             Err(msg) => {
                                 log::warn!("notify:cli: {msg}");
                                 eprintln!("{msg}");
-                                std::process::exit(1);
+                                cli::trace::exit(1);
                             }
                         };
                         log::info!(
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()
                         );
-                        std::process::exit(cli::notify_cli(cli::NotifyCliArgs {
+                        cli::trace::exit(cli::notify_cli(cli::NotifyCliArgs {
                             title: &title,
                             body: &body,
                             choices: &parsed_choices,
@@ -1238,12 +1244,12 @@ fn main() -> eframe::Result {
                                     Ok(id) => (Some(id), title),
                                     Err(_) => {
                                         eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
-                                        std::process::exit(1);
+                                        cli::trace::exit(1);
                                     }
                                 },
                                 None => (None, first),
                             };
-                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                            cli::trace::exit(cli::pane_set_title_cli(pane_id, &name))
                         }
                         PaneCmd::List { context, json: _ } => {
                             let (context_id, current) = match context.as_deref() {
@@ -1253,27 +1259,27 @@ fn main() -> eframe::Result {
                                     Ok(id) => (Some(id), false),
                                     Err(_) => {
                                         eprintln!("error: --context value must be a numeric context ID or omitted for current context");
-                                        std::process::exit(1);
+                                        cli::trace::exit(1);
                                     }
                                 },
                             };
-                            std::process::exit(cli::pane_list_cli(context_id, current))
+                            cli::trace::exit(cli::pane_list_cli(context_id, current))
                         }
                         PaneCmd::Focus { pane_id, back: _, forward } => {
-                            std::process::exit(match pane_id {
+                            cli::trace::exit(match pane_id {
                                 Some(id) => cli::pane_focus_cli(id),
                                 None => cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
                             })
                         }
                         PaneCmd::Hide { pane_id } | PaneCmd::Reveal { pane_id } => {
                             let hidden = matches!(cmd, PaneCmd::Hide { .. });
-                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
                         }
                         PaneCmd::Zoom { pane_id } => {
-                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom"}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom"}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
                         }
                         PaneCmd::Swap { pane_id, direction } => {
-                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
                         }
                         PaneCmd::Close { pane_id } => {
                             let id = match pane_id {
@@ -1283,7 +1289,7 @@ fn main() -> eframe::Result {
                                         Ok(s) => s,
                                         Err(_) => {
                                             eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
-                                            std::process::exit(1);
+                                            cli::trace::exit(1);
                                         }
                                     };
                                     match s.parse::<u64>() {
@@ -1292,20 +1298,20 @@ fn main() -> eframe::Result {
                                             eprintln!(
                                                 "error: PLEXI_PANE_ID is not a valid number: {s}"
                                             );
-                                            std::process::exit(1);
+                                            cli::trace::exit(1);
                                         }
                                     }
                                 }
                             };
                             log::info!("pane_close:cli: pane_id={id}");
-                            std::process::exit(cli::pane_close_cli(id));
+                            cli::trace::exit(cli::pane_close_cli(id));
                         }
                         PaneCmd::Send {
                             pane_id,
                             text,
                             submit,
                             paste,
-                        } => std::process::exit(cli::pane_send_cli(pane_id, &text, submit, paste)),
+                        } => cli::trace::exit(cli::pane_send_cli(pane_id, &text, submit, paste)),
                         PaneCmd::Command {
                             pane_id,
                             text,
@@ -1320,22 +1326,22 @@ fn main() -> eframe::Result {
                             // confirm) instead of racing a raw newline against
                             // the shell's line editor. Without `--enter` this
                             // stays the type-only verb, same as `pane send`.
-                            std::process::exit(cli::pane_send_cli(pane_id, &text, enter, false));
+                            cli::trace::exit(cli::pane_send_cli(pane_id, &text, enter, false));
                         }
                         PaneCmd::Key { pane_id, key } => {
-                            std::process::exit(cli::pane_key_cli(pane_id, &key))
+                            cli::trace::exit(cli::pane_key_cli(pane_id, &key))
                         }
                         PaneCmd::Drop {
                             pane_id,
                             path_or_url,
-                        } => std::process::exit(cli::pane_drop_cli(pane_id, &path_or_url)),
+                        } => cli::trace::exit(cli::pane_drop_cli(pane_id, &path_or_url)),
                         PaneCmd::Click {
                             pane_id,
                             x,
                             y,
                             node,
                             button,
-                        } => std::process::exit(match node {
+                        } => cli::trace::exit(match node {
                             Some(node_id) => cli::pane_click_node_cli(pane_id, &node_id, &button),
                             None => match (x, y) {
                                 (Some(x), Some(y)) => cli::pane_click_cli(pane_id, x, y, &button),
@@ -1355,7 +1361,7 @@ fn main() -> eframe::Result {
                             to_node,
                             steps,
                             button,
-                        } => std::process::exit(cli::pane_drag_cli(
+                        } => cli::trace::exit(cli::pane_drag_cli(
                             pane_id,
                             from.as_deref(),
                             from_node.as_deref(),
@@ -1364,9 +1370,9 @@ fn main() -> eframe::Result {
                             steps,
                             &button,
                         )),
-                        PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
+                        PaneCmd::Self_ => cli::trace::exit(cli::pane_self_cli()),
                         PaneCmd::Info { previous } => {
-                            std::process::exit(cli::pane_info_cli(previous))
+                            cli::trace::exit(cli::pane_info_cli(previous))
                         }
                         PaneCmd::Capture {
                             pane_id,
@@ -1374,7 +1380,7 @@ fn main() -> eframe::Result {
                             full_output,
                             from_cursor,
                             plain,
-                        } => std::process::exit(cli::pane_capture_cli(
+                        } => cli::trace::exit(cli::pane_capture_cli(
                             pane_id,
                             lines,
                             full_output,
@@ -1382,19 +1388,19 @@ fn main() -> eframe::Result {
                             plain,
                         )),
                         PaneCmd::Wait { pane_id, until, timeout } => {
-                            std::process::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
+                            cli::trace::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
                         }
                         PaneCmd::Events { follow: _, pane } => {
-                            std::process::exit(cli::pane_lifecycle_follow_cli(pane))
+                            cli::trace::exit(cli::pane_lifecycle_follow_cli(pane))
                         }
                         PaneCmd::Status { pane_id } => {
-                            std::process::exit(cli::pane_status_cli(pane_id))
+                            cli::trace::exit(cli::pane_status_cli(pane_id))
                         }
                         PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
-                            std::process::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
+                            cli::trace::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
                         }
                         PaneCmd::State { pane_id, stale_after } => {
-                            std::process::exit(cli::pane_state_cli(pane_id, stale_after))
+                            cli::trace::exit(cli::pane_state_cli(pane_id, stale_after))
                         }
                         PaneCmd::Slot { cmd } => match cmd {
                             PaneSlotCmd::Write {
@@ -1404,7 +1410,7 @@ fn main() -> eframe::Result {
                                 append,
                                 replace,
                             } => {
-                                std::process::exit(cli::pane_slot_write_cli(
+                                cli::trace::exit(cli::pane_slot_write_cli(
                                     &name,
                                     content.as_deref(),
                                     append,
@@ -1417,7 +1423,7 @@ fn main() -> eframe::Result {
                                 pane_id,
                                 pane_id_flag,
                             } => {
-                                std::process::exit(cli::pane_slot_read_cli(
+                                cli::trace::exit(cli::pane_slot_read_cli(
                                     &name,
                                     pane_id.or(pane_id_flag),
                                 ))
@@ -1428,7 +1434,7 @@ fn main() -> eframe::Result {
                                 pane_id_flag,
                                 until,
                                 timeout,
-                            } => std::process::exit(cli::pane_slot_wait_cli(
+                            } => cli::trace::exit(cli::pane_slot_wait_cli(
                                 &name,
                                 pane_id.or(pane_id_flag),
                                 &until,
@@ -1437,7 +1443,7 @@ fn main() -> eframe::Result {
                             PaneSlotCmd::List {
                                 pane_id,
                                 pane_id_flag,
-                            } => std::process::exit(cli::pane_slot_list_cli(
+                            } => cli::trace::exit(cli::pane_slot_list_cli(
                                 pane_id.or(pane_id_flag),
                             )),
                             PaneSlotCmd::Delete {
@@ -1445,7 +1451,7 @@ fn main() -> eframe::Result {
                                 pane_id,
                                 pane_id_flag,
                             } => {
-                                std::process::exit(cli::pane_slot_delete_cli(
+                                cli::trace::exit(cli::pane_slot_delete_cli(
                                     &name,
                                     pane_id.or(pane_id_flag),
                                 ))
@@ -1456,7 +1462,7 @@ fn main() -> eframe::Result {
                                 pane_id,
                                 payload,
                                 submit,
-                            } => std::process::exit(cli::pane_message_send_cli(
+                            } => cli::trace::exit(cli::pane_message_send_cli(
                                 pane_id,
                                 &payload,
                                 submit,
@@ -1466,7 +1472,7 @@ fn main() -> eframe::Result {
                                 pane_id_flag,
                                 wait,
                                 timeout,
-                            } => std::process::exit(cli::pane_message_recv_cli(
+                            } => cli::trace::exit(cli::pane_message_recv_cli(
                                 pane_id.or(pane_id_flag),
                                 wait,
                                 timeout.unwrap_or(300.0),
@@ -1486,7 +1492,7 @@ fn main() -> eframe::Result {
                                 pane_id_flag,
                                 wait,
                                 timeout,
-                            }) => std::process::exit(cli::pane_result_read_cli(
+                            }) => cli::trace::exit(cli::pane_result_read_cli(
                                 pane_id.or(pane_id_flag),
                                 wait,
                                 timeout,
@@ -1495,7 +1501,7 @@ fn main() -> eframe::Result {
                                 pane_id,
                                 pane_id_flag,
                                 timeout,
-                            }) => std::process::exit(cli::pane_result_read_cli(
+                            }) => cli::trace::exit(cli::pane_result_read_cli(
                                 pane_id.or(pane_id_flag),
                                 true,
                                 timeout,
@@ -1504,7 +1510,7 @@ fn main() -> eframe::Result {
                                 first,
                                 second,
                                 pane_id_flag,
-                            }) => std::process::exit(cli::pane_result_write_cli(
+                            }) => cli::trace::exit(cli::pane_result_write_cli(
                                 first.as_deref(),
                                 second.as_deref(),
                                 pane_id_flag,
@@ -1513,7 +1519,7 @@ fn main() -> eframe::Result {
                                 first,
                                 second,
                                 pane_id_flag,
-                            }) => std::process::exit(cli::pane_result_schema_cli(
+                            }) => cli::trace::exit(cli::pane_result_schema_cli(
                                 &first,
                                 second.as_deref(),
                                 pane_id_flag,
@@ -1521,19 +1527,19 @@ fn main() -> eframe::Result {
                             None => {
                                 let resolved = pane_id.or(pane_id_flag);
                                 if let Some(json_str) = write {
-                                    std::process::exit(cli::pane_result_write_cli(
+                                    cli::trace::exit(cli::pane_result_write_cli(
                                         Some(&json_str),
                                         None,
                                         resolved,
                                     ));
                                 } else if let Some(schema_spec) = schema {
-                                    std::process::exit(cli::pane_result_schema_cli(
+                                    cli::trace::exit(cli::pane_result_schema_cli(
                                         &schema_spec,
                                         None,
                                         resolved,
                                     ));
                                 } else {
-                                    std::process::exit(cli::pane_result_read_cli(
+                                    cli::trace::exit(cli::pane_result_read_cli(
                                         resolved,
                                         wait,
                                         timeout,
@@ -1583,7 +1589,7 @@ fn main() -> eframe::Result {
                             } else {
                                 "split_h"
                             };
-                            std::process::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
+                            cli::trace::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
                                 cmd: cmd.as_deref(),
                                 name: name.as_deref(),
                                 layout: Some(layout),
@@ -1608,7 +1614,7 @@ fn main() -> eframe::Result {
                             payload,
                             trigger,
                             resource,
-                        } => std::process::exit(cli::events_subscribe_cli(
+                        } => cli::trace::exit(cli::events_subscribe_cli(
                             &app_id,
                             stream.as_deref(),
                             all,
@@ -1621,7 +1627,7 @@ fn main() -> eframe::Result {
                             stream,
                             schema,
                             description,
-                        } => std::process::exit(cli::events_declare_cli(
+                        } => cli::trace::exit(cli::events_declare_cli(
                             &app_id,
                             &stream,
                             &schema,
@@ -1640,7 +1646,7 @@ fn main() -> eframe::Result {
                             revision_before,
                             rollback_token,
                             changed_resources,
-                        } => std::process::exit(cli::events_emit_cli(cli::EmitArgs {
+                        } => cli::trace::exit(cli::events_emit_cli(cli::EmitArgs {
                             app_id: &app_id,
                             event: &event,
                             summary: &summary,
@@ -1654,14 +1660,14 @@ fn main() -> eframe::Result {
                             rollback_token: rollback_token.as_deref(),
                             changed_resources: &changed_resources,
                         })),
-                        EventsCmd::List { json } => std::process::exit(cli::events_list_cli(json)),
-                        EventsCmd::McpConfig => std::process::exit(cli::events_mcp_config_cli()),
+                        EventsCmd::List { json } => cli::trace::exit(cli::events_list_cli(json)),
+                        EventsCmd::McpConfig => cli::trace::exit(cli::events_mcp_config_cli()),
                     },
                     Commands::CompleteOpen { prefix } => {
-                        std::process::exit(cli::complete_open_cli(&prefix));
+                        cli::trace::exit(cli::complete_open_cli(&prefix));
                     }
                     Commands::CompleteRun => {
-                        std::process::exit(cli::complete_run_cli());
+                        cli::trace::exit(cli::complete_run_cli());
                     }
                     Commands::Descriptor { cmd } => match cmd {
                         DescriptorCmd::Probe {
@@ -1683,19 +1689,19 @@ fn main() -> eframe::Result {
                                         match serde_json::to_string_pretty(&resolved.descriptor) {
                                             Ok(j) => {
                                                 println!("{j}");
-                                                std::process::exit(0);
+                                                cli::trace::exit(0);
                                             }
                                             Err(e) => {
                                                 eprintln!(
                                                     "error: could not serialize descriptor: {e}"
                                                 );
-                                                std::process::exit(1);
+                                                cli::trace::exit(1);
                                             }
                                         }
                                     }
                                     Err(e) => {
                                         eprintln!("error: {e}");
-                                        std::process::exit(1);
+                                        cli::trace::exit(1);
                                     }
                                 }
                             }
@@ -1705,23 +1711,23 @@ fn main() -> eframe::Result {
                                 use_crawl: !no_crawl,
                             };
                             let extra: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-                            std::process::exit(cli::descriptor::probe_with_options(
+                            cli::trace::exit(cli::descriptor::probe_with_options(
                                 &runner, &command, &extra, &opts,
                             ));
                         }
                     },
                     Commands::Account { cmd } => {
                         match cmd {
-                            AccountCmd::Status => std::process::exit(cli::account_status_cli()),
+                            AccountCmd::Status => cli::trace::exit(cli::account_status_cli()),
                             AccountCmd::Login { email } => {
-                                std::process::exit(cli::account_login_cli(email.as_deref()))
+                                cli::trace::exit(cli::account_login_cli(email.as_deref()))
                             }
-                            AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
+                            AccountCmd::Logout => cli::trace::exit(cli::account_logout_cli()),
                         }
                     }
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {
-                            std::process::exit(cli::registry::watch_cli(only.as_deref()));
+                            cli::trace::exit(cli::registry::watch_cli(only.as_deref()));
                         }
                     },
                     Commands::Context { cmd } => match cmd {
@@ -1746,7 +1752,7 @@ fn main() -> eframe::Result {
                             } else {
                                 "right"
                             };
-                            std::process::exit(cli::context_new_cli(
+                            cli::trace::exit(cli::context_new_cli(
                                 name.as_deref(),
                                 path.as_deref(),
                                 parent.as_deref(),
@@ -1764,7 +1770,7 @@ fn main() -> eframe::Result {
                             layout,
                             focus,
                             from,
-                        } => std::process::exit(cli::context_sub_cli(
+                        } => cli::trace::exit(cli::context_sub_cli(
                             &name,
                             path.as_deref(),
                             agents,
@@ -1774,33 +1780,33 @@ fn main() -> eframe::Result {
                             from,
                         )),
                         ContextCmd::Open { path } => {
-                            std::process::exit(cli::context_open_cli(path.as_deref()))
+                            cli::trace::exit(cli::context_open_cli(path.as_deref()))
                         }
                         ContextCmd::SetRoot { path } => {
-                            std::process::exit(cli::context_set_root_cli(path.as_deref()))
+                            cli::trace::exit(cli::context_set_root_cli(path.as_deref()))
                         }
-                        ContextCmd::Current => std::process::exit(cli::context_current_cli()),
+                        ContextCmd::Current => cli::trace::exit(cli::context_current_cli()),
                         ContextCmd::Describe { text } => {
-                            std::process::exit(cli::context_describe_cli(&text))
+                            cli::trace::exit(cli::context_describe_cli(&text))
                         }
                         ContextCmd::Zoom { context_id } => {
-                            std::process::exit(cli::context_zoom_cli(context_id))
+                            cli::trace::exit(cli::context_zoom_cli(context_id))
                         }
-                        ContextCmd::ZoomOut => std::process::exit(cli::context_zoom_out_cli()),
+                        ContextCmd::ZoomOut => cli::trace::exit(cli::context_zoom_out_cli()),
                         ContextCmd::Push { name, pane_id } => {
-                            std::process::exit(cli::context_push_cli(name.as_deref(), pane_id))
+                            cli::trace::exit(cli::context_push_cli(name.as_deref(), pane_id))
                         }
                         ContextCmd::Rename { name, context_id } => {
-                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"context_rename", "name":name}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_rename", "name":name}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
                         }
                         ContextCmd::Close { context_id } => {
-                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"context_close"}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_close"}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
                         }
                         ContextCmd::Park { context_id } | ContextCmd::Unpark { context_id } => {
                             let parked = matches!(cmd, ContextCmd::Park { .. });
-                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"context_park", "parked":parked}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_park", "parked":parked}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
                         }
-                        ContextCmd::List => std::process::exit(cli::context_list_cli()),
+                        ContextCmd::List => cli::trace::exit(cli::context_list_cli()),
                     },
                     Commands::Completions { shell } => {
                         let s = shell.as_deref().unwrap_or("zsh");
@@ -1811,49 +1817,51 @@ fn main() -> eframe::Result {
                             .and_then(|n| n.to_str())
                             .unwrap_or("plexi")
                             .to_string();
-                        std::process::exit(cli::completions_cli(s, &binary_name));
+                        cli::trace::exit(cli::completions_cli(s, &binary_name));
                     }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
-                        ConfigCmd::Reload => std::process::exit(cli::host_action_cli(serde_json::json!({"type":"reload_config"}), None)),
+                        ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"reload_config"}), None)),
                         ConfigCmd::Check { scope } => {
-                            std::process::exit(cli::config_check(scope.scope()));
+                            cli::trace::exit(cli::config_check(scope.scope()));
                         }
                         ConfigCmd::Edit { scope } => {
-                            std::process::exit(cli::config_edit(scope.scope()));
+                            cli::trace::exit(cli::config_edit(scope.scope()));
                         }
                         ConfigCmd::Get { scope, key } => {
-                            std::process::exit(cli::config_get(&key, scope.scope()));
+                            cli::trace::exit(cli::config_get(&key, scope.scope()));
                         }
                         ConfigCmd::Reset { scope } => {
-                            std::process::exit(cli::config_reset(scope.scope()));
+                            cli::trace::exit(cli::config_reset(scope.scope()));
                         }
                         ConfigCmd::List { scope, json } => {
-                            std::process::exit(cli::config_list(scope.scope(), json));
+                            cli::trace::exit(cli::config_list(scope.scope(), json));
                         }
                         ConfigCmd::Set { scope, pairs } => {
-                            std::process::exit(cli::config_set(&pairs, scope.scope()));
+                            cli::trace::exit(cli::config_set(&pairs, scope.scope()));
                         }
                     },
                     Commands::Note { cmd, text } => {
-                        std::process::exit(cli::notes::note_cli(cmd, text))
+                        cli::trace::exit(cli::notes::note_cli(cmd, text))
                     }
                     Commands::Notes { cmd } => {
-                        std::process::exit(cli::notes::notes_compat_cli(cmd))
+                        cli::trace::exit(cli::notes::notes_compat_cli(cmd))
                     }
                     Commands::Debug { cmd } => match cmd {
                         DebugCmd::Session { cmd } => match cmd {
                             DebugSessionCmd::List { json } => {
-                                std::process::exit(cli::debug::debug_session_list_cli(json))
+                                cli::trace::exit(cli::debug::debug_session_list_cli(json))
                             }
                             DebugSessionCmd::Show {
                                 session,
                                 pane,
                                 join_agents,
+                                cli,
                                 json,
-                            } => std::process::exit(cli::debug::debug_session_show_cli(
+                            } => cli::trace::exit(cli::debug::debug_session_show_cli(
                                 session.as_deref(),
                                 pane,
                                 join_agents,
+                                cli,
                                 json,
                             )),
                         },
@@ -1863,26 +1871,34 @@ fn main() -> eframe::Result {
                             Some(LedgerCmd::Summary { by, since, json }) => (by, since, json),
                             None => (None, None, false),
                         };
-                        std::process::exit(cli::ledger_summary_cli(
+                        cli::trace::exit(cli::ledger_summary_cli(
                             by.as_deref(),
                             since.as_deref(),
                             json,
                         ));
                     }
                     Commands::Ai { cmd } => match cmd {
-                        AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
-                        AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
-                        AiCmd::Setup => std::process::exit(cli::ai_setup_cli()),
+                        AiCmd::Onboard => cli::trace::exit(cli::ai_onboard_cli()),
+                        AiCmd::Doctor { json } => cli::trace::exit(cli::ai_doctor_cli(json)),
+                        AiCmd::Setup => cli::trace::exit(cli::ai_setup_cli()),
                     },
-                    Commands::Doctor { json } => std::process::exit(cli::doctor_cli(json)),
-                    Commands::Demo => std::process::exit(cli::demo_cli()),
+                    Commands::Doctor { json } => cli::trace::exit(cli::doctor_cli(json)),
+                    Commands::Demo => cli::trace::exit(cli::demo_cli()),
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
         }
         Err(e) => {
             // --help and --version print and exit 0/2 through this path
-            e.exit();
+            if raw_args.windows(2).any(|args| args == ["secret", "set"]) {
+                if let Some(socket) = raw_args.windows(2).find(|args| args[0] == "--socket") {
+                    cli::set_command_socket_override(socket[1].clone().into());
+                }
+                cli::trace::begin(&raw_args);
+            }
+            let code = e.exit_code();
+            if let Err(error) = e.print() { log::warn!("cli: help output failed: {error}"); }
+            cli::trace::exit(code);
         }
     }
 
@@ -1891,7 +1907,7 @@ fn main() -> eframe::Result {
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
         let _ = cli::help::gated_command().print_help();
         println!();
-        std::process::exit(0);
+        cli::trace::exit(0);
     }
 
     // When invoked with no arguments outside Plexi, print a brief launch
@@ -2159,13 +2175,13 @@ fn render_cli() {
     let mut input = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("plexi --render: failed to read stdin: {e}");
-        std::process::exit(1);
+        cli::trace::exit(1);
     }
     let req: serde_json::Value = match serde_json::from_str(&input) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("plexi --render: invalid JSON: {e}");
-            std::process::exit(1);
+            cli::trace::exit(1);
         }
     };
     let viewport = &req["viewport"];
@@ -2176,7 +2192,7 @@ fn render_cli() {
         Some(arr) => arr.clone(),
         None => {
             eprintln!("plexi --render: 'draw_commands' must be a JSON array");
-            std::process::exit(1);
+            cli::trace::exit(1);
         }
     };
     let mut all_commands = Vec::with_capacity(commands.len() + 1);
@@ -2194,7 +2210,7 @@ fn render_cli() {
     let png_bytes = renderer.render_pgap_frame(&all_commands, width, height);
     if let Err(e) = std::io::stdout().write_all(&png_bytes) {
         eprintln!("plexi --render: failed to write PNG to stdout: {e}");
-        std::process::exit(1);
+        cli::trace::exit(1);
     }
 }
 

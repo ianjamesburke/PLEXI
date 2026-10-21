@@ -78,6 +78,7 @@ pub fn debug_session_show_cli(
     session: Option<&str>,
     pane: Option<u64>,
     join_agents: bool,
+    cli: bool,
     json: bool,
 ) -> i32 {
     let profile = crate::config::config_dir();
@@ -90,6 +91,7 @@ pub fn debug_session_show_cli(
                 return 1;
             }
         };
+    let timeline = if cli { recorder::cli_calls(timeline, pane) } else { timeline };
     if skipped > 0 {
         eprintln!("warning: skipped {skipped} unparseable line(s) in {session_id}");
     }
@@ -287,6 +289,11 @@ fn clip(text: &str) -> String {
 fn summary_of(row: &Value) -> String {
     let d = &row["data"];
     match row["kind"].as_str().unwrap_or("?") {
+        "cli_call" => format!(
+            "exit={} argv={}",
+            d["exit_code"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
+            d["argv"]
+        ),
         "timeline_event" => format!(
             "{}/{} {}",
             d["app_id"].as_str().unwrap_or("?"),
@@ -347,7 +354,7 @@ pub(crate) fn render_line(entry: &Value) -> String {
         "{time} {:>5}  {}  {}{}",
         entry["seq"].as_u64().unwrap_or(0),
         entry["kind"].as_str().unwrap_or("?"),
-        clip(&summary_of(entry)),
+        if entry["kind"] == "cli_call" { summary_of(entry) } else { clip(&summary_of(entry)) },
         if ids.is_empty() { String::new() } else { format!("  ({ids})") }
     )
 }

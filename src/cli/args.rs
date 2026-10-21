@@ -607,6 +607,10 @@ pub enum DebugSessionCmd {
         /// Only records for this pane (and the calls it made).
         #[arg(long)]
         pane: Option<u64>,
+        /// Show only CLI argv calls and their exit codes. Secret values, known
+        /// secret options, and KEY=value assignments are redacted at capture.
+        #[arg(long, conflicts_with = "join_agents")]
+        cli: bool,
         /// Interleave external agent transcripts.
         #[arg(long)]
         join_agents: bool,
@@ -654,6 +658,25 @@ pub enum ExperimentsCmd {
 
 #[derive(Subcommand)]
 pub enum SkillCmd {
+    /// Draft a reusable skill or commands.toml snippet from captured CLI calls.
+    ///
+    /// Prints for review; installs nothing. Without --out, writes no draft files.
+    /// Captured secret values and KEY=value assignments stay redacted. Review
+    /// failed calls and suggested --subcontext forms before accepting the draft.
+    Draft {
+        /// Recorded host session id, or latest.
+        #[arg(long)]
+        from_session: String,
+        /// Include only this caller pane's calls.
+        #[arg(long)]
+        pane: Option<u64>,
+        /// Output format: SKILL.md or commands.toml snippet.
+        #[arg(long = "as", default_value = "skill", value_parser = ["skill", "command"])]
+        format: String,
+        /// Write the draft to a new file instead of stdout; never installs it.
+        #[arg(long, value_hint = ValueHint::FilePath)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Write this binary's skill for one agent CLI, or all supported agents.
     Install {
         /// Which agent CLI loads the skill: claude, codex, pi, or all.

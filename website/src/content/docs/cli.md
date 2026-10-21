@@ -2435,6 +2435,7 @@ With `--join-agents`, recorded agent session ids are resolved to their transcrip
 |---|---|---|---|
 | `<session>` | string | no | Session id (`sess-…`) or `latest`. Omitted means `latest` |
 | `--pane` | string | no | Only records for this pane (and the calls it made) |
+| `--cli` | flag | no | Show only CLI argv calls and their exit codes. Secret values, known secret options, and KEY=value assignments are redacted at capture |
 | `--join-agents` | flag | no | Interleave external agent transcripts |
 | `--json` | flag | no | Print one JSON object on stdout |
 
@@ -2486,7 +2487,21 @@ Example: plexi skill install --agent claude
 
 | Subcommand | Description |
 |---|---|
+| `draft` | Draft a reusable skill or commands.toml snippet from captured CLI calls |
 | `install` | Write this binary's skill for one agent CLI, or all supported agents |
+
+### `plexi skill draft`
+
+Draft a reusable skill or commands.toml snippet from captured CLI calls.
+
+Prints for review; installs nothing. Without --out, writes no draft files. Captured secret values and KEY=value assignments stay redacted. Review failed calls and suggested --subcontext forms before accepting the draft.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--from-session` | string | yes | Recorded host session id, or latest |
+| `--pane` | string | no | Include only this caller pane's calls |
+| `--as` | string | no | Output format: SKILL.md or commands.toml snippet Default: `skill`. |
+| `--out` | string | no | Write the draft to a new file instead of stdout; never installs it |
 
 ### `plexi skill install`
 

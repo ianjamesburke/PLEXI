@@ -101,6 +101,25 @@ not spawn work until it succeeds. Exit 1 is an error. Leases belong to the
 holder process and are reclaimed when it exits. Use one host for all lanes
 sharing a capacity limit.
 
+## Draft a workflow from a session
+
+The host captures CLI argv with caller pane, agent session, timestamps and the
+CLI exit code. Secret-setting values, secret options and `KEY=value` assignments
+are redacted before recording. Interrupted calls, including a host shutdown,
+retain an unknown exit status. This diagnostic trace is not an authorization log.
+
+```bash
+plexi debug session show --cli --pane <id> --json
+plexi skill draft --from-session latest --pane <id>
+plexi skill draft --from-session latest --as command --out <path>
+```
+
+Drafts print to stdout unless `--out` names a new file. They never install a skill
+or edit commands. Review pane ids and paths, replace redacted values through the
+secret workflow, and choose a task-specific name for suggested `--subcontext`
+arguments. Failed, incomplete and redacted calls remain review comments. Session
+inspection and drafting do not add calls to the trace they are reading.
+
 The command map below comes from this binary's CLI and experiment ownership.
 Use each command's `--help` for its full argument contract. Installed skills
 omit entries for experiments that are off.
