@@ -3168,6 +3168,7 @@ impl PlexiApp {
                 let mut found = false;
                 let mut dirty = false;
                 let mut has_parent_pane = false;
+                let mut effective_session_id = session_id.clone();
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
@@ -3177,6 +3178,9 @@ impl PlexiApp {
                                     t.agent_session_id = Some(sid.clone());
                                     dirty = true;
                                 }
+                            }
+                            if effective_session_id.is_none() {
+                                effective_session_id = t.agent_session_id.clone();
                             }
                             if t.agent_harness.is_none() {
                                 if let Some(h) = crate::cli::AgentHarness::parse(agent) {
@@ -3285,6 +3289,15 @@ impl PlexiApp {
                         if let Err(error) = filed {
                             log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
                         }
+                    } else if !matches!(
+                        state,
+                        crate::protocol::AgentState::NeedsYou
+                            | crate::protocol::AgentState::Blocked
+                    ) {
+                        self.withdraw_agent_attention_items(
+                            *pane_id,
+                            effective_session_id.as_deref(),
+                        );
                     }
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
@@ -4130,6 +4143,7 @@ impl PlexiApp {
                                 break;
                             }
                         }
+                        self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
                         self.report_agent_attention(*pane_id, &crate::protocol::AgentState::Completed, None);
                         if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
                         self.mark_workspace_dirty();

@@ -1487,6 +1487,67 @@ impl PermissionMonitor {
         })
     }
 
+    /// Withdraw open agent-filed `Question` and `BlockedRun` attention items
+    /// for `pane_id` (or `session_id`) when the agent transitions to a
+    /// non-attention state (`idle`, `working`, `completed`, `interrupted`).
+    ///
+    /// Never records an approval or mints a grant, and never touches
+    /// broker-filed items (`ApprovalClick`, `PermissionChange`,
+    /// `PermissionRequest`, `Integrity`, `Keychain`).
+    pub fn withdraw_agent_needs_you(
+        &self,
+        pane_id: u64,
+        session_id: Option<&str>,
+    ) -> Vec<String> {
+        let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        let pane_tag = format!("pane:{pane_id}");
+        let session_tag = session_id.map(str::trim).filter(|s| !s.is_empty());
+        let matching_ids: Vec<String> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| {
+                row.resolution.is_none()
+                    && matches!(row.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+                    && (row.resource == pane_tag
+                        || row.actor == pane_tag
+                        || row.run_tag.as_deref() == Some(pane_tag.as_str())
+                        || row.details.as_ref().and_then(|d| d.pane_id) == Some(pane_id)
+                        || session_tag.is_some_and(|sid| {
+                            row.run_tag.as_deref() == Some(sid)
+                                || row
+                                    .details
+                                    .as_ref()
+                                    .and_then(|d| d.session_id.as_deref())
+                                    == Some(sid)
+                        }))
+            })
+            .map(|row| row.id.clone())
+            .collect();
+        let mut withdrawn = Vec::new();
+        for id in matching_ids {
+            let outcome = self.run_outcome_for(&id);
+            if !self.close_needs_you(&id, NeedsYouResolution::Denied, "withdrawn", "") {
+                continue;
+            }
+            self.question_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            self.run_outcomes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.clone(), outcome);
+            log::info!(
+                "needs_you: withdrew {id} pane_id={pane_id} run_outcome={}",
+                outcome.as_str()
+            );
+            withdrawn.push(id);
+        }
+        withdrawn
+    }
+
     /// Return one `NeedsYouRecord` (open or resolved) by id.
     pub fn get_needs_you(&self, id: &str) -> Option<NeedsYouRecord> {
         self.expire_needs_you();
