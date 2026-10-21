@@ -546,6 +546,72 @@ export function buildPlexiTools(deps: PlexiToolDeps) {
     },
   };
 
+  const runTool = {
+    name: "plexi_run",
+    label: "Plexi Run",
+    description:
+      "List or run named workspace and global commands (`plexi run --json` / `plexi run <name> [-- <args>...]`). Omit `command` to list merged workspace + global commands (`[{name, scope, description, run, secrets}]`).",
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description:
+            "Optional command name to run (`plexi run <command>`). Omit to list available workspace and global commands via `plexi run --json`.",
+        },
+        args: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional positional arguments forwarded after `--` (`$1`, `$2`, ...).",
+        },
+        timeout_ms: {
+          type: "number",
+          description: "Optional timeout in milliseconds when running a command (default 30000).",
+        },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: Record<string, any>, _signal: AbortSignal | undefined, _onUpdate: any, _ctx: any): Promise<ToolResponse> {
+      const command =
+        typeof params?.command === "string" && params.command.trim()
+          ? params.command.trim()
+          : undefined;
+      if (!command) {
+        const res = await client.listCommands();
+        return textResult(
+          {
+            ok: res.ok,
+            commands: res.data ?? [],
+            error: res.error,
+          },
+          !res.ok,
+        );
+      }
+      const extraArgs = Array.isArray(params?.args)
+        ? params.args.map(String)
+        : undefined;
+      const timeoutMs =
+        typeof params?.timeout_ms === "number" ? params.timeout_ms : undefined;
+      const res = await client.runCommand({
+        command,
+        args: extraArgs,
+        timeoutMs,
+      });
+      return textResult(
+        {
+          ok: res.ok,
+          command,
+          exit_code: res.exitCode,
+          stdout: res.stdout,
+          stderr: res.stderr,
+          error: res.error,
+        },
+        !res.ok,
+      );
+    },
+  };
+
   return [
     workspaceOverviewTool,
     paneInspectTool,
@@ -555,5 +621,6 @@ export function buildPlexiTools(deps: PlexiToolDeps) {
     needsYouAskTool,
     needsYouReconcileTool,
     hostScreenshotTool,
+    runTool,
   ];
 }

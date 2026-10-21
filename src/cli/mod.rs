@@ -94,105 +94,231 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
     }
 }
 
-/// Scope of a user-authored command surfaced in the command palette.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Default starter template written when `Edit commands` creates a missing
+/// workspace or global `commands.toml`.
+pub const COMMANDS_TEMPLATE: &str = "\
+# Plexi Commands
+#
+# Define named shell commands for this scope. Run them from the command
+# palette (Cmd+P) or the terminal (`plexi run <name>`, `plexi run --json`).
+# Workspace commands override global commands of the same name.
+#
+# [commands]
+# hello = \"echo hi\"
+# dev = { run = \"npm run dev\", description = \"Start the dev server\" }
+# deploy = { run = \"./deploy.sh\", description = \"Deploy\", secrets = [\"API_KEY\"] }
+
+[commands]
+";
+
+/// Path to the channel-global `commands.toml` (`~/.plexi[-<channel>]/commands.toml`).
+pub fn global_commands_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("commands.toml")
+}
+
+/// Ensure the effective `commands.toml` exists on disk, creating it from
+/// [`COMMANDS_TEMPLATE`] when missing, and return its path.
+///
+/// When `workspace_root` is `Some(root)`, targets `<root>/<workspace_channel_dir()>/commands.toml`.
+/// When `None`, targets `<config_dir()>/commands.toml`.
+pub fn ensure_commands_file(workspace_root: Option<&std::path::Path>) -> std::path::PathBuf {
+    let path = match workspace_root {
+        Some(root) => root.join(commands_file()),
+        None => global_commands_path(),
+    };
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!(
+                    "commands: failed to create directory {}: {e}",
+                    parent.display()
+                );
+                return path;
+            }
+        }
+        match std::fs::write(&path, COMMANDS_TEMPLATE) {
+            Ok(()) => log::info!("commands: created template at {}", path.display()),
+            Err(e) => log::warn!("commands: failed to write {}: {e}", path.display()),
+        }
+    }
+    path
+}
+
+/// Resolve the workspace root for `commands.toml` lookup from `cwd`.
+///
+/// Walks up via [`crate::app::registry::resolve_workspace_root`]; if that
+/// returns `None` (for example in a scratch directory under `$HOME`), falls
+/// back to `cwd` itself when `cwd/<workspace_channel_dir()>/commands.toml`
+/// exists and is distinct from [`global_commands_path`].
+pub fn resolve_commands_workspace_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    if let Some(root) = crate::app::registry::resolve_workspace_root(cwd) {
+        return Some(root);
+    }
+    let candidate = cwd.join(commands_file());
+    if candidate.is_file() && candidate != global_commands_path() {
+        return Some(cwd.to_path_buf());
+    }
+    None
+}
+
+pub(super) fn merged_secret_names(config: &PlexiCommands, entry: &CommandEntry) -> Vec<String> {
+    let mut keys: Vec<String> = config.secrets.required.clone();
+    for k in entry.secrets() {
+        if !keys.contains(k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// Scope of a user-authored command surfaced in the command palette and `plexi run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum UserCommandScope {
     /// Defined in the focused workspace's channel-scoped `commands.toml`.
     Workspace,
-    /// A global profile script under `config_dir()/scripts/`.
+    /// Defined in the global profile (`config_dir()/commands.toml` or `config_dir()/scripts/`).
     Global,
 }
 
-/// A user-authored command resolved for the command palette.
+impl UserCommandScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UserCommandScope::Workspace => "workspace",
+            UserCommandScope::Global => "global",
+        }
+    }
+}
+
+/// A user-authored command resolved for the command palette and `plexi run`.
 ///
-/// Mirrors exactly what `plexi run <name>` would resolve from the given
-/// workspace cwd, so the palette never lists a command `plexi run` cannot
-/// execute.
-#[derive(Debug, Clone)]
+/// Mirrors what `plexi run <name>` resolves from the given workspace cwd:
+/// global commands (`config_dir()/commands.toml` and executable scripts in
+/// `config_dir()/scripts/`) merge with workspace commands
+/// (`<workspace>/.plexi[-channel]/commands.toml`), with workspace winning on
+/// name collisions. `secrets` lists required secret names only — never values.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ResolvedUserCommand {
     pub name: String,
+    pub scope: UserCommandScope,
+    pub description: Option<String>,
     /// Shell snippet for `commands.toml` entries (shown as preview text).
     /// `None` for global scripts — the run target is the script file itself.
     pub run: Option<String>,
-    pub description: Option<String>,
-    pub scope: UserCommandScope,
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
-/// Resolve user commands for the command palette, mirroring `plexi run`
-/// precedence: a workspace `commands.toml` shadows global scripts entirely
-/// (same fallback chain as [`run::run_command`]). A present-but-unparseable
-/// `commands.toml` yields no commands rather than silently falling back to
-/// global scripts, because `plexi run` would error in that state.
+/// Resolve merged global + workspace user commands, returning an error string if
+/// a present `commands.toml` cannot be read or parsed.
 ///
-/// Reads the file fresh on every call, so the palette hot-reloads on the next
-/// open with no mtime bookkeeping — same pattern as palette note loading.
-pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<ResolvedUserCommand> {
+/// Precedence (highest wins per command `name`):
+/// 1. Workspace `<workspace_root>/<workspace_channel_dir()>/commands.toml` (`scope = workspace`)
+/// 2. Global `<config_dir()>/commands.toml` (`scope = global`)
+/// 3. Executable scripts in `<config_dir()>/scripts/` (`scope = global`)
+pub fn resolve_user_commands_checked(
+    workspace_root: Option<&std::path::Path>,
+) -> Result<Vec<ResolvedUserCommand>, String> {
+    let mut merged: std::collections::BTreeMap<String, ResolvedUserCommand> =
+        std::collections::BTreeMap::new();
+
+    // 1. Global scripts (`config_dir()/scripts/`).
+    let scripts_dir = crate::config::config_dir().join("scripts");
+    for name in list_global_scripts(&scripts_dir) {
+        merged.insert(
+            name.clone(),
+            ResolvedUserCommand {
+                name,
+                scope: UserCommandScope::Global,
+                description: None,
+                run: None,
+                secrets: Vec::new(),
+            },
+        );
+    }
+
+    // 2. Global `config_dir()/commands.toml` (overrides same-named global scripts).
+    let global_path = global_commands_path();
+    match std::fs::read_to_string(&global_path) {
+        Ok(contents) => {
+            let config: PlexiCommands = toml::from_str(&contents)
+                .map_err(|e| format!("failed to parse {}: {e}", global_path.display()))?;
+            for (name, entry) in &config.commands {
+                merged.insert(
+                    name.clone(),
+                    ResolvedUserCommand {
+                        name: name.clone(),
+                        scope: UserCommandScope::Global,
+                        description: entry.description().map(|s| s.to_string()),
+                        run: Some(entry.run().to_string()),
+                        secrets: merged_secret_names(&config, entry),
+                    },
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!("could not read {}: {e}", global_path.display()));
+        }
+    }
+
+    // 3. Workspace `<workspace_root>/.plexi[-channel]/commands.toml` (overrides global per name).
     if let Some(root) = workspace_root {
-        let config_path = root.join(commands_file());
-        match std::fs::read_to_string(&config_path) {
-            Ok(contents) => {
-                // commands.toml present — its commands are the entire set; global
-                // scripts are NOT consulted (mirrors run_command's fallback chain).
-                match toml::from_str::<PlexiCommands>(&contents) {
-                    Ok(config) => {
-                        let mut cmds: Vec<ResolvedUserCommand> = config
-                            .commands
-                            .iter()
-                            .map(|(name, entry)| ResolvedUserCommand {
+        let rel_file = commands_file();
+        let config_path = root.join(&rel_file);
+        if config_path != global_path {
+            match std::fs::read_to_string(&config_path) {
+                Ok(contents) => {
+                    let config: PlexiCommands = toml::from_str(&contents)
+                        .map_err(|e| format!("failed to parse {rel_file}: {e}"))?;
+                    for (name, entry) in &config.commands {
+                        merged.insert(
+                            name.clone(),
+                            ResolvedUserCommand {
                                 name: name.clone(),
-                                run: Some(entry.run().to_string()),
-                                description: entry.description().map(|s| s.to_string()),
                                 scope: UserCommandScope::Workspace,
-                            })
-                            .collect();
-                        cmds.sort_by(|a, b| a.name.cmp(&b.name));
-                        log::info!(
-                            "palette: resolved {} workspace command(s) from {}",
-                            cmds.len(),
-                            config_path.display()
+                                description: entry.description().map(|s| s.to_string()),
+                                run: Some(entry.run().to_string()),
+                                secrets: merged_secret_names(&config, entry),
+                            },
                         );
-                        return cmds;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "palette: failed to parse {}: {e}; no workspace commands surfaced",
-                            config_path.display()
-                        );
-                        return Vec::new();
                     }
                 }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // No workspace commands.toml — fall through to global scripts.
-            }
-            Err(e) => {
-                log::warn!(
-                    "palette: could not read {}: {e}; no workspace commands surfaced",
-                    config_path.display()
-                );
-                return Vec::new();
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!("could not read {}: {e}", config_path.display()));
+                }
             }
         }
     }
 
-    // Global fallback: scripts dir, same as `plexi run` with no commands.toml.
-    let scripts_dir = crate::config::config_dir().join("scripts");
-    let mut cmds: Vec<ResolvedUserCommand> = list_global_scripts(&scripts_dir)
-        .into_iter()
-        .map(|name| ResolvedUserCommand {
-            name,
-            run: None,
-            description: None,
-            scope: UserCommandScope::Global,
-        })
-        .collect();
-    cmds.sort_by(|a, b| a.name.cmp(&b.name));
+    let cmds: Vec<ResolvedUserCommand> = merged.into_values().collect();
     log::info!(
-        "palette: resolved {} global script(s) from {}",
+        "commands: resolved {} merged command(s) (workspace_root={:?})",
         cmds.len(),
-        scripts_dir.display()
+        workspace_root
     );
-    cmds
+    Ok(cmds)
+}
+
+/// Resolve user commands for the command palette, mirroring `plexi run`
+/// per-name layering: global commands (`config_dir()/commands.toml` and
+/// `config_dir()/scripts/`) merge with workspace commands
+/// (`<workspace>/.plexi[-channel]/commands.toml`), and workspace entries win on
+/// name collisions. A present-but-unparseable `commands.toml` yields no
+/// commands rather than silently masking the parse error, because `plexi run`
+/// errors in that state.
+///
+/// Reads the files fresh on every call, so the palette hot-reloads on the next
+/// open with no mtime bookkeeping — same pattern as palette note loading.
+pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<ResolvedUserCommand> {
+    match resolve_user_commands_checked(workspace_root) {
+        Ok(cmds) => cmds,
+        Err(err) => {
+            log::warn!("palette: {err}; no commands surfaced");
+            Vec::new()
+        }
+    }
 }
 
 pub mod args;
@@ -1500,6 +1626,8 @@ pub use pane::{
 };
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};
+#[cfg(test)]
+pub(crate) use run::format_list_commands_for_root;
 pub use validate::validate_cli;
 pub use workspace::{
     folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,
@@ -1509,7 +1637,9 @@ pub use workspace::{
 
 #[cfg(test)]
 mod resolve_user_commands_tests {
-    use super::{resolve_user_commands, UserCommandScope};
+    use super::{
+        ensure_commands_file, resolve_user_commands, UserCommandScope, COMMANDS_TEMPLATE,
+    };
 
     /// Build a workspace tempdir whose channel-scoped commands.toml holds `body`.
     fn workspace_with_commands(body: &str) -> (tempfile::TempDir, crate::config::TestChannelGuard) {
@@ -1525,39 +1655,100 @@ mod resolve_user_commands_tests {
     fn workspace_commands_resolve_sorted_with_scope() {
         let (tmp, _g) = workspace_with_commands(
             r#"
+[secrets]
+required = ["GLOBAL_SECRET"]
+
 [commands]
 zeta = "echo z"
-build = { run = "cargo build", description = "Build it" }
+build = { run = "cargo build", description = "Build it", secrets = ["API_KEY"] }
 "#,
         );
+        let profile = tempfile::tempdir().unwrap();
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let cmds = resolve_user_commands(Some(tmp.path()));
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].name, "build");
         assert_eq!(cmds[0].description.as_deref(), Some("Build it"));
         assert_eq!(cmds[0].run.as_deref(), Some("cargo build"));
         assert_eq!(cmds[0].scope, UserCommandScope::Workspace);
+        assert_eq!(cmds[0].secrets, vec!["GLOBAL_SECRET", "API_KEY"]);
         assert_eq!(cmds[1].name, "zeta");
+        assert_eq!(cmds[1].secrets, vec!["GLOBAL_SECRET"]);
     }
 
     #[test]
-    fn workspace_commands_shadow_global_scripts() {
-        // commands.toml present → global scripts must NOT appear (mirrors `plexi run`).
-        let (tmp, _g) = workspace_with_commands("[commands]\nonly = \"echo hi\"\n");
+    fn workspace_and_global_commands_merge_with_workspace_override() {
+        // Done-When: global `foo` and workspace `bar` are both listed;
+        // workspace `foo` overrides global `foo`.
+        let (tmp, _g) = workspace_with_commands(
+            r#"
+[commands]
+bar = { run = "echo ws-bar", description = "Workspace bar" }
+foo = { run = "echo ws-foo", description = "Workspace foo override" }
+"#,
+        );
         let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            profile.path().join("commands.toml"),
+            r#"
+[commands]
+foo = { run = "echo global-foo", description = "Global foo" }
+global_cmd = "echo global-toml"
+"#,
+        )
+        .unwrap();
         let scripts = profile.path().join("scripts");
         std::fs::create_dir_all(&scripts).unwrap();
-        write_executable(&scripts.join("global-only"));
+        write_executable(&scripts.join("global-script"));
         let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
 
         let cmds = resolve_user_commands(Some(tmp.path()));
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].name, "only");
-        assert_eq!(cmds[0].scope, UserCommandScope::Workspace);
+        let names: Vec<(&str, UserCommandScope, Option<&str>)> = cmds
+            .iter()
+            .map(|c| (c.name.as_str(), c.scope, c.run.as_deref()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("bar", UserCommandScope::Workspace, Some("echo ws-bar")),
+                ("foo", UserCommandScope::Workspace, Some("echo ws-foo")),
+                ("global-script", UserCommandScope::Global, None),
+                (
+                    "global_cmd",
+                    UserCommandScope::Global,
+                    Some("echo global-toml")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_commands_file_creates_template_when_missing() {
+        let _g = crate::config::set_test_channel("test");
+        let ws = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+
+        let ws_path = ensure_commands_file(Some(ws.path()));
+        assert_eq!(ws_path, ws.path().join(".plexi-test").join("commands.toml"));
+        assert!(ws_path.is_file());
+        assert_eq!(std::fs::read_to_string(&ws_path).unwrap(), COMMANDS_TEMPLATE);
+        assert!(resolve_user_commands(Some(ws.path())).is_empty());
+
+        let global_path = ensure_commands_file(None);
+        assert_eq!(global_path, profile.path().join("commands.toml"));
+        assert!(global_path.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&global_path).unwrap(),
+            COMMANDS_TEMPLATE
+        );
     }
 
     #[test]
     fn hot_reload_rereads_file_each_call() {
         let (tmp, _g) = workspace_with_commands("[commands]\nfirst = \"echo 1\"\n");
+        let profile = tempfile::tempdir().unwrap();
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let first = resolve_user_commands(Some(tmp.path()));
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].name, "first");

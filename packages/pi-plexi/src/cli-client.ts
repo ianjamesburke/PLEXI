@@ -328,6 +328,32 @@ export class PlexiCliClient {
     return this.runRaw(args, 20_000);
   }
 
+  async listCommands(): Promise<
+    CliResult<
+      Array<{
+        name: string;
+        scope: "workspace" | "global";
+        description: string | null;
+        run: string | null;
+        secrets: string[];
+      }>
+    >
+  > {
+    return this.runJson(["run", "--json"]);
+  }
+
+  async runCommand(options: {
+    command: string;
+    args?: string[];
+    timeoutMs?: number;
+  }): Promise<CliResult<string>> {
+    const cliArgs = ["run", options.command];
+    if (options.args && options.args.length > 0) {
+      cliArgs.push("--", ...options.args);
+    }
+    return this.runRaw(cliArgs, options.timeoutMs ?? 30_000);
+  }
+
   async fetchWorkspaceOverview(sessionId?: string): Promise<WorkspaceOverviewSnapshot> {
     if (!this.config.attached) {
       return {

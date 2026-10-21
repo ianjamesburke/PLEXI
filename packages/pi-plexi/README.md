@@ -15,6 +15,7 @@ First-party [Pi coding agent](https://github.com/earendil-works/pi) package for 
   - `plexi_needs_you_ask` — file a structured creative or blocking question (`choices`, `allow_free_text`, `preview_refs`, `correlation_id`, `expected_revision`) in both Pi's UI and the Plexi host's `Needs you` surface, and wait for or reconcile the human's answer without minting a permission grant.
   - `plexi_needs_you_reconcile` — reconcile open/resolved `Needs you` items and durable continuation records across Pi or host restarts, preventing duplicate mutations.
   - `plexi_host_screenshot` — capture a PNG screenshot of the Plexi host window or a specific pane (`plexi host screenshot`).
+  - `plexi_run` — list merged workspace and global commands (`plexi run --json`) or execute a named command (`plexi run <name> [-- <args>...]`).
 - **Lifecycle bridge & legacy hook migration** (`src/lifecycle.ts`): reports `working`, `blocked`, and `idle` states to the host and automatically migrates legacy `~/.pi/agent/extensions/plexi-agent-state.ts` hooks to `.plexi-hook.bak` so lifecycle events are never reported twice.
 
 ## Loading from a checkout

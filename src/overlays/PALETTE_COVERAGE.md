@@ -52,7 +52,7 @@ duplicate an editor or picker merely to claim coverage.
 | Review issues needing attention | `Review issues needing attention` opens the Needs attention review (routing rule: `src/overlays/attention.rs`). Resolution stays in the existing guarded handlers. | `PaletteCommand::OpenAttention`; `AttentionState::open`. | PAL-04. |
 | Find an agent and focus its pane | Search agent name, title, state, and active tool; select its stable pane target. | Palette `Agent` result and `jump_to_context`; CLI `AgentCmd::Status`. | Present navigation; PAL-05 owns richer matching. |
 | Launch an installed app | Search registry apps and select an app result. Arguments and unusual placement are not part of this row. | Palette `App`/`Builtin` results and `launch_palette_app`; CLI `AppCmd::Open`. | Present. |
-| Run a named workspace/global command | Search the named command and run it through the existing user-command path. Arguments are a stretch flow. | Palette `UserCommand` result and `run_palette_user_command`; CLI `Commands::Run`. | Present without arguments. |
+| Run or edit a named workspace/global command | Search the named command and run it through the existing user-command path; `Edit commands` opens the effective workspace or global `commands.toml` in a `text-editor` split (creating it from a commented template if absent). Arguments are a stretch flow. | Palette `UserCommand` result and `run_user_command`; `PaletteCommand::EditCommands` and `ensure_commands_file`; CLI `Commands::Run`. | Present without arguments. |
 
 `ToggleSidebar`, `ToggleShortcuts`, `ToggleMinimap`, pane font changes, directional
 navigation, pane swapping/sending, `NewPageRight`, `OpenFileBrowser`, and

@@ -1963,6 +1963,14 @@ impl PlexiApp {
     /// open config is focused rather than duplicated. File buffers save only
     /// on Cmd+S, so opening a real config here cannot silently mutate it.
     pub(crate) fn open_config_in_editor(&mut self, path: PathBuf) {
+        self.open_config_in_editor_with_cwd(path, None);
+    }
+
+    pub(crate) fn open_config_in_editor_with_cwd(
+        &mut self,
+        path: PathBuf,
+        cwd_override: Option<PathBuf>,
+    ) {
         if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
             log::info!(
                 "open_config: {} already open in pane {pane_id}, focusing",
@@ -1977,7 +1985,7 @@ impl PlexiApp {
             "text-editor",
             Some("split_h".to_string()),
             &args,
-            None,
+            cwd_override,
         ) {
             Ok(existing) => log::info!(
                 "open_config: {} opened in text-editor pane {}",

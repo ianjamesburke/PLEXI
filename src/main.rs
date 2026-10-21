@@ -521,10 +521,11 @@ fn main() -> eframe::Result {
                     }
                     Commands::Run {
                         command,
+                        json,
                         extra_args,
                     } => match command {
                         Some(cmd) => std::process::exit(cli::run_command(&cmd, &extra_args)),
-                        None => std::process::exit(cli::run_list_commands()),
+                        None => std::process::exit(cli::run_list_commands(json)),
                     },
                     Commands::Workspace { cmd } => match cmd {
                         WorkspaceCmd::Init => std::process::exit(cli::workspace_init()),

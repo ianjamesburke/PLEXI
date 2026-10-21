@@ -84,6 +84,7 @@ test("Acceptance 1 & 9: package loads cleanly, registers tools/commands, and mig
     "plexi_needs_you_ask",
     "plexi_needs_you_reconcile",
     "plexi_host_screenshot",
+    "plexi_run",
   ];
   for (const name of expectedTools) {
     assert.equal(tools.has(name), true, `missing tool ${name}`);
@@ -266,6 +267,35 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
         stderr: "",
       };
     }
+    if (cmd === "run --json") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([
+          {
+            name: "hello",
+            scope: "workspace",
+            description: "Say hello",
+            run: "echo hi",
+            secrets: ["API_KEY"],
+          },
+          {
+            name: "deploy-global",
+            scope: "global",
+            description: null,
+            run: null,
+            secrets: [],
+          },
+        ]),
+        stderr: "",
+      };
+    }
+    if (args[0] === "run" && args[1] === "hello") {
+      return {
+        exitCode: 0,
+        stdout: "hi\n",
+        stderr: "",
+      };
+    }
     return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
   };
 
@@ -360,6 +390,28 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
   assert.ok(
     calls.some((c) => c[0] === "needs-you" && c[1] === "complete" && c[2] === "op-crop-1"),
     "completing app tool call with operation_id should mark continuation completed",
+  );
+
+  // List and run commands via plexi_run (shells to `plexi run --json` and `plexi run <name>`)
+  const listRunRes = await tools
+    .get("plexi_run")
+    .execute("call-4", {}, undefined, undefined, fakeCtx);
+  assert.equal(listRunRes.isError, false);
+  assert.equal(listRunRes.details.commands.length, 2);
+  assert.equal(listRunRes.details.commands[0].name, "hello");
+  assert.equal(listRunRes.details.commands[0].scope, "workspace");
+  assert.deepEqual(listRunRes.details.commands[0].secrets, ["API_KEY"]);
+
+  const execRunRes = await tools
+    .get("plexi_run")
+    .execute("call-5", { command: "hello", args: ["world"] }, undefined, undefined, fakeCtx);
+  assert.equal(execRunRes.isError, false);
+  assert.equal(execRunRes.details.stdout, "hi\n");
+  assert.ok(
+    calls.some(
+      (c) => c[0] === "run" && c[1] === "hello" && c[2] === "--" && c[3] === "world",
+    ),
+    "plexi_run with command and args should shell to `plexi run <name> -- <args>`",
   );
 });
 
