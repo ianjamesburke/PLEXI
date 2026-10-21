@@ -600,7 +600,8 @@ transition. A worker receives the reply through `pane message recv`.
 The host authenticates the calling pane and checks its configured role; an
 agent cannot select a different caller role to widen its allowlist. `handoff`
 checks `can_handoff`, carries the prior session state and successor brief in a
-restore packet, and completes the caller after the successor launches. Its
+restore packet, and completes and closes the caller after the successor launches,
+including callers created by `agent spawn` or configured with `ephemeral = false`. Its
 completion record must satisfy the caller's result schema; a mismatch fails
 before launch.
 

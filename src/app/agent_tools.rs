@@ -224,6 +224,13 @@ impl PlexiApp {
                     summary: Some(format!("Handed off to {}", def.id)),
                     response_file: request.response_file.to_string(),
                 });
+                // Handoff transfers ownership, independently of ordinary done's
+                // optional ephemeral cleanup. The successor exists and the
+                // prevalidated completion has been published before closing.
+                if self.find_pane_in_any_window(old).is_some() {
+                    self.close_pane_by_id(old);
+                }
+                log::info!("agent_handoff: closed caller={old} successor={pane_id}");
             }
         } else if request.asynchronous {
             crate::rpc::write_json_response(
@@ -386,6 +393,238 @@ mod tests {
 
     fn read(path: &std::path::Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_tool_message_cli_process() {
+        let Ok(args) = std::env::var("PLEXI_TEST_AGENT_MESSAGE_ARGS") else {
+            return;
+        };
+        use clap::Parser;
+        let args: Vec<String> = serde_json::from_str(&args).unwrap();
+        let cli = crate::cli::args::Cli::parse_from(args);
+        let Some(crate::cli::args::Commands::Agent {
+            cmd:
+                crate::cli::args::AgentCmd::Message {
+                    pane_id,
+                    text,
+                    wait,
+                },
+        }) = cli.command
+        else {
+            panic!("expected agent message");
+        };
+        std::process::exit(crate::cli::agent::agent_tool_cli(json!({
+            "type":"agent_message", "pane_id":pane_id, "text":text, "wait":wait,
+        })));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_tool_message_cli_socket_round_trip_and_wait() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+        use std::process::{Command, Stdio};
+        let mut h = HostHarness::new();
+        let parent = h.add_test_pane();
+        let (child, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "tester",
+                "pi",
+                "sleep 30",
+                "Verify",
+                None,
+                false,
+                Some(parent),
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let root = h.workspace_root();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir());
+        let token = monitor.issue_credential(
+            Some(parent),
+            h.app.windows[0].context_id,
+            &root,
+            "agent:lead",
+        );
+        let socket_dir = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = socket_dir.path().join("message.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        for wait in [false, true] {
+            let mut args = vec![
+                "plexi".to_owned(),
+                "agent".into(),
+                "message".into(),
+                child.to_string(),
+                "reply with spaces".into(),
+            ];
+            if wait {
+                args.push("--wait".into());
+            }
+            let mut process = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::agent_tools::tests::agent_tool_message_cli_process",
+                    "--nocapture",
+                ])
+                .env(
+                    "PLEXI_TEST_AGENT_MESSAGE_ARGS",
+                    serde_json::to_string(&args).unwrap(),
+                )
+                .env("PLEXI_SOCKET", &socket)
+                .env("PLEXI_PANE_ID", parent.to_string())
+                .env("PLEXI_CALL_CREDENTIAL", &token)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline =
+                Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+            let stream = loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    break stream;
+                }
+                if Instant::now() > deadline {
+                    process.kill().unwrap();
+                    process.wait().unwrap();
+                    panic!("CLI did not connect");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut wire = String::new();
+            reader.read_line(&mut wire).unwrap();
+            // This is the production socket decoder, not direct typed IPC injection.
+            crate::app::handle_socket_line(&wire, &h.ipc_tx, Some(&[]), reader.get_mut());
+            h.hidden_frame();
+            let delivered = h
+                .app
+                .pane_mailboxes
+                .get(&child)
+                .and_then(|q| q.back())
+                .map(|m| m.payload.as_str())
+                == Some("reply with spaces");
+            if !delivered {
+                process.kill().unwrap();
+                process.wait().unwrap();
+                panic!("CLI wire request was not delivered: {wire}");
+            }
+            if wait {
+                assert!(
+                    process.try_wait().unwrap().is_none(),
+                    "--wait returned before child outcome"
+                );
+                h.inject_ipc(crate::protocol::AppRequest::AgentAsk {
+                    pane_id: child,
+                    question: "Need anything else?".into(),
+                    response_file: root.join("ask.json").to_string_lossy().into_owned(),
+                });
+                h.hidden_frame();
+            }
+            loop {
+                if process.try_wait().unwrap().is_some() {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    process.kill().unwrap();
+                    process.wait().unwrap();
+                    panic!("CLI did not receive its response");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = process.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let response: Value =
+                serde_json::from_str(stdout.lines().find(|l| l.starts_with('{')).unwrap()).unwrap();
+            assert_eq!(response["ok"], true);
+            if wait {
+                assert_eq!(response["status"], "question");
+                assert_eq!(response["question"], "Need anything else?");
+            }
+            h.app.pane_mailboxes.get_mut(&child).unwrap().clear();
+        }
+    }
+
+    #[test]
+    fn agent_tool_handoff_closes_non_ephemeral_spawned_caller() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        for role in ["lead", "writer"] {
+            let dir = crate::agent::workspace_agents_dir(&root).join(role);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), "Work carefully").unwrap();
+            std::fs::write(dir.join("settings.toml"), format!("[agent]\nid='{role}'\ndisplay_name='{role}'\n[harness]\ncli='pi'\nephemeral=false\ncan_handoff=['writer']")).unwrap();
+        }
+        let (caller, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "lead",
+                "pi",
+                "sleep 30",
+                "Start",
+                None,
+                false,
+                None,
+                Some(root.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(!h.app.agent_tool_children.contains_key(&caller));
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir());
+        let token = monitor.issue_credential(
+            Some(caller),
+            h.app.windows[0].context_id,
+            &root,
+            "agent:lead",
+        );
+        let response = root.join("handoff.json");
+        h.app
+            .start_agent_tool_call(AgentCallRequest {
+                role: "writer",
+                task: "Continue",
+                parent_pane_id: Some(caller),
+                credential: Some(&token),
+                peer_ancestry: &[],
+                cwd: None,
+                worktree: None,
+                asynchronous: false,
+                handoff: true,
+                response_file: response.to_str().unwrap(),
+            })
+            .unwrap();
+        assert_eq!(read(&response)["ok"], true);
+        assert!(h
+            .app
+            .windows
+            .iter()
+            .flat_map(|w| w.panes.values())
+            .any(|p| p
+                .as_terminal()
+                .is_some_and(|t| t.agent_role.as_deref() == Some("writer"))));
+        assert!(
+            h.app.find_pane_in_any_window(caller).is_none(),
+            "handoff retained its non-ephemeral caller"
+        );
     }
 
     #[test]

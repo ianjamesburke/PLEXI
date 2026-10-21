@@ -121,6 +121,8 @@ The package and activation contract is `scripts/DISTRIBUTION.md`.
 
 ## Traps
 
+- **Agent tool requests must be stamped as protocol variants.** `agent_tool_cli` validates and serializes `AppRequest` before transport. Do not inject shared JSON fields across command variants: `AgentCall` owns `cwd`, while `AgentMessage` does not. Socket regression coverage lives in `agent_tool_message_cli_socket_round_trip_and_wait`.
+
 - **Windows detached launch must disable handle inheritance.** NUL stdio alone leaves inherited capture-pipe writers in a child, so the caller can wait for EOF after the CLI has exited. `host::windows_launch` owns the no-inheritance process boundary. Host readiness is a deadline-bounded application round trip; an open pipe alone is not readiness.
 
 - **Path-based app commands must not resolve a workspace.** `app validate <path>`, `app install <path>`, `app run <path>`, and `app init --adopt <dir>` operate on an explicit filesystem path. Never call `resolve_workspace_root` for that argument. Use `std::fs::canonicalize` directly (`app_adopt` validates the directory via `load_local_app` and writes only `plexi.scaffold.toml` without touching existing source files). `resolve_workspace_root` is only legitimate in `AppRegistry::load` and new-app `app init <name>`.
