@@ -1666,37 +1666,11 @@ impl PlexiApp {
     /// click), the context is restored and focused.
     pub(crate) fn toggle_park_active_context(&mut self) {
         let idx = self.router.active_idx();
-        let is_parked = self.router.get(idx).parked;
-
-        if is_parked {
-            // Unpark
-            self.router.get_mut(idx).parked = false;
-            log::info!(
-                "context: unparked '{}' (idx={idx})",
-                self.router.get(idx).name
-            );
-            self.mark_workspace_dirty();
-            return;
+        if self.router.get(idx).parked {
+            self.unpark_context(idx);
+        } else {
+            self.park_context(idx);
         }
-
-        // Park the active context
-        let name = self.router.get(idx).name.clone();
-        self.router.get_mut(idx).parked = true;
-        log::info!("context: parked '{name}' (idx={idx})");
-
-        // Find the nearest unparked context to switch focus to.
-        // Search forward first, then backward.
-        let len = self.router.len();
-        let next_unparked = (1..len)
-            .map(|offset| (idx + offset) % len)
-            .find(|&i| !self.router.get(i).parked);
-
-        if let Some(new_idx) = next_unparked {
-            self.switch_workspace(new_idx);
-        }
-        // If all contexts are parked, stay on the current one (degenerate case).
-
-        self.mark_workspace_dirty();
     }
 
     /// Park a specific context by index, moving focus to the nearest unparked neighbor.

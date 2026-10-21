@@ -6,3 +6,5 @@ mod notification_tests;
 mod pane_invariant_tests;
 mod pane_lifecycle_consumers;
 mod shortcut_tests;
+
+mod cli_parity_tests;

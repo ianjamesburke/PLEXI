@@ -1553,6 +1553,72 @@ impl PlexiApp {
                     }),
                 );
             }
+            crate::protocol::AppRequest::ContextRename { context_id, name, response_file } => {
+                let reply = match self.router.position(|c| c.context_id == *context_id) {
+                    Some(idx) => serde_json::json!({"ok":true, "name":self.rename_context(idx, name)}),
+                    None => serde_json::json!({"error":format!("context {context_id} not found")}),
+                };
+                write_json_response(response_file, reply);
+            }
+            crate::protocol::AppRequest::ContextClose { context_id, response_file } => {
+                let reply = match self.close_context_action(*context_id) {
+                    Ok(pending) => serde_json::json!({"ok":true, "pending_confirmation":pending}),
+                    Err(error) => serde_json::json!({"error":error}),
+                };
+                write_json_response(response_file, reply);
+            }
+            crate::protocol::AppRequest::ContextPark { context_id, parked, response_file } => {
+                let reply = match self.router.position(|c| c.context_id == *context_id) {
+                    Some(idx) => {
+                        if *parked { self.park_context(idx); } else { self.unpark_context(idx); }
+                        serde_json::json!({"ok":true})
+                    }
+                    None => serde_json::json!({"error":format!("context {context_id} not found")}),
+                };
+                write_json_response(response_file, reply);
+            }
+            crate::protocol::AppRequest::PaneVisibility { pane_id, hidden, response_file } => {
+                let reply = match self.set_pane_hidden(*pane_id, *hidden) {
+                    Ok(()) => serde_json::json!({"ok":true}),
+                    Err(error) => serde_json::json!({"error":error}),
+                };
+                write_json_response(response_file, reply);
+            }
+            crate::protocol::AppRequest::PaneZoom { pane_id, response_file } => {
+                if self.fleet_focused_pane() == Some(*pane_id) || self.pane_navigate(*pane_id) {
+                    self.toggle_pane_zoom();
+                    write_json_response(response_file, serde_json::json!({"ok":true}));
+                } else {
+                    write_json_response(response_file, serde_json::json!({"error":format!("pane {pane_id} not found")}));
+                }
+            }
+            crate::protocol::AppRequest::PaneSwap { pane_id, direction, response_file } => {
+                use crate::host::keys::Direction;
+                let dir = match direction.as_str() {
+                    "left" => Some(Direction::Left), "right" => Some(Direction::Right),
+                    "up" => Some(Direction::Up), "down" => Some(Direction::Down), _ => None,
+                };
+                if let Some(dir) = dir {
+                    if self.pane_navigate(*pane_id) {
+                        self.swap_pane_action(dir);
+                        write_json_response(response_file, serde_json::json!({"ok":true}));
+                    } else {
+                        write_json_response(response_file, serde_json::json!({"error":format!("pane {pane_id} not found")}));
+                    }
+                } else {
+                    write_json_response(response_file, serde_json::json!({"error":"direction must be left, right, up, or down"}));
+                }
+            }
+            crate::protocol::AppRequest::ReloadConfig { response_file } => {
+                log::info!("config_reload: CLI requested reload");
+                self.reload_config();
+                write_json_response(response_file, serde_json::json!({"ok":true}));
+            }
+            crate::protocol::AppRequest::FocusHistory { forward, response_file } => {
+                log::info!("focus_history: forward={forward}");
+                if *forward { self.step_focus_history_forward(); } else { self.step_focus_history_back(); }
+                write_json_response(response_file, serde_json::json!({"ok":true}));
+            }
             crate::protocol::AppRequest::FocusPane { pane_id } => {
                 log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
                 if !self.pane_navigate(*pane_id) {

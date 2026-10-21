@@ -1631,6 +1631,18 @@ pub enum AccountCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
+    /// Hide a pane (defaults to the calling pane).
+    Hide { pane_id: Option<u64> },
+    /// Reveal a hidden pane (defaults to the calling pane).
+    Reveal { pane_id: Option<u64> },
+    /// Focus a pane and toggle fullscreen zoom, or enter its sub-context.
+    Zoom { pane_id: Option<u64> },
+    /// Focus a pane and swap it with a directional neighbor.
+    Swap {
+        #[arg(value_parser = ["left", "right", "up", "down"])]
+        direction: String,
+        #[arg(long)] pane_id: Option<u64>,
+    },
     /// Wait for current idle, blocked, or exited state; print its lifecycle record.
     /// Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure.
     Wait {
@@ -1770,8 +1782,15 @@ pub enum PaneCmd {
     /// This moves what the user sees on screen — it does not change which pane an agent is running in.
     /// An agent calling this from pane A remains in pane A; the user just sees pane B highlighted.
     Focus {
-        /// Pane id to focus (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id to focus (from `plexi pane list`).
+        #[arg(required_unless_present_any = ["back", "forward"], conflicts_with_all = ["back", "forward"])]
+        pane_id: Option<u64>,
+        /// Step back through pane focus history.
+        #[arg(long, conflicts_with = "forward")]
+        back: bool,
+        /// Step forward through pane focus history.
+        #[arg(long)]
+        forward: bool,
     },
     /// Configure a host-owned recurring prompt for a terminal pane.
     ///
@@ -2336,6 +2355,14 @@ pub enum RegistryCmd {
 
 #[derive(Subcommand)]
 pub enum ContextCmd {
+    /// Rename a context (defaults to the calling pane's context).
+    Rename { name: String, #[arg(long)] context_id: Option<u64> },
+    /// Close a context, requesting desktop confirmation when configured.
+    Close { context_id: Option<u64> },
+    /// Park a context and move focus to an unparked neighbor.
+    Park { context_id: Option<u64> },
+    /// Unpark a context and focus it.
+    Unpark { context_id: Option<u64> },
     /// Open a new context with an optional name.
     ///
     /// Examples:
@@ -2448,6 +2475,8 @@ pub enum ContextCmd {
 
 #[derive(Subcommand)]
 pub enum ConfigCmd {
+    /// Reload configuration in the running host.
+    Reload,
     /// Validate the selected config.toml and report any errors.
     ///
     /// Reads the workspace config inside a workspace, otherwise the global config.

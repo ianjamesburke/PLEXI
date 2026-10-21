@@ -2263,7 +2263,11 @@ impl PlexiApp {
                     });
                     0
                 }
-                PaneCmd::Focus { pane_id } => {
+                PaneCmd::Focus { pane_id, forward, .. } => {
+                    let Some(pane_id) = pane_id else {
+                        if forward { self.step_focus_history_forward(); } else { self.step_focus_history_back(); }
+                        return 0;
+                    };
                     let exists = self
                         .windows
                         .iter()

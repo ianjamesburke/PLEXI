@@ -1081,6 +1081,10 @@ Manage the active context (the folder and project scope tied to the current pane
 
 | Subcommand | Description |
 |---|---|
+| `rename` | Rename a context (defaults to the calling pane's context) |
+| `close` | Close a context, requesting desktop confirmation when configured |
+| `park` | Park a context and move focus to an unparked neighbor |
+| `unpark` | Unpark a context and focus it |
 | `new` | Open a new context with an optional name |
 | `sub` | Create a sub-context under the current one, pre-populated with panes |
 | `open` | Switch the current pane to a context at the given path |
@@ -1091,6 +1095,39 @@ Manage the active context (the folder and project scope tied to the current pane
 | `zoom-out` | Zoom out of the current sub-context to the parent |
 | `push` | Push a pane into a new sub-context |
 | `list` | List all open contexts as a JSON array |
+
+### `plexi context rename`
+
+Rename a context (defaults to the calling pane's context)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+| `--context-id` | string | no |  |
+
+### `plexi context close`
+
+Close a context, requesting desktop confirmation when configured
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<context_id>` | string | no |  |
+
+### `plexi context park`
+
+Park a context and move focus to an unparked neighbor
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<context_id>` | string | no |  |
+
+### `plexi context unpark`
+
+Unpark a context and focus it
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<context_id>` | string | no |  |
 
 ### `plexi context new`
 
@@ -1569,6 +1606,10 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 
 | Subcommand | Description |
 |---|---|
+| `hide` | Hide a pane (defaults to the calling pane) |
+| `reveal` | Reveal a hidden pane (defaults to the calling pane) |
+| `zoom` | Focus a pane and toggle fullscreen zoom, or enter its sub-context |
+| `swap` | Focus a pane and swap it with a directional neighbor |
 | `wait` | Wait for current idle, blocked, or exited state; print its lifecycle record. Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure |
 | `events` | Follow brokered pane lifecycle records as NDJSON until interrupted |
 | `new` | Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent` |
@@ -1591,6 +1632,39 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `slot` | Manage host-managed named file slots for a pane |
 | `message` | Send and receive structured messages via a host-managed per-pane FIFO mailbox |
 | `result` | Declare a result schema, write a schema-validated structured result once, or read a pane's validated result |
+
+### `plexi pane hide`
+
+Hide a pane (defaults to the calling pane)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | no |  |
+
+### `plexi pane reveal`
+
+Reveal a hidden pane (defaults to the calling pane)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | no |  |
+
+### `plexi pane zoom`
+
+Focus a pane and toggle fullscreen zoom, or enter its sub-context
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | no |  |
+
+### `plexi pane swap`
+
+Focus a pane and swap it with a directional neighbor
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<direction>` | string | yes |  |
+| `--pane-id` | string | no |  |
 
 ### `plexi pane wait`
 
@@ -1673,7 +1747,9 @@ This moves what the user sees on screen — it does not change which pane an age
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to focus (from `plexi pane list`) |
+| `<pane_id>` | string | no | Pane id to focus (from `plexi pane list`) |
+| `--back` | flag | no | Step back through pane focus history |
+| `--forward` | flag | no | Step forward through pane focus history |
 
 ### `plexi pane heartbeat`
 
@@ -2436,12 +2512,17 @@ Check your Plexi config file for errors
 
 | Subcommand | Description |
 |---|---|
+| `reload` | Reload configuration in the running host |
 | `check` | Validate the selected config.toml and report any errors |
 | `edit` | Open the selected config.toml in your $EDITOR |
 | `get` | Print a config key from the selected config.toml to stdout |
 | `reset` | Overwrite the selected config.toml with the built-in default template |
 | `list` | Print all known config keys with type, current value, and description |
 | `set` | Set one or more keys in the selected config.toml |
+
+### `plexi config reload`
+
+Reload configuration in the running host
 
 ### `plexi config check`
 

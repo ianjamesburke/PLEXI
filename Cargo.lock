@@ -2238,7 +2238,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "plexi",
+ "serde_json",
  "serde_yaml",
+ "syn 2.0.119",
  "toml 0.8.23",
 ]
 
@@ -4247,6 +4249,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "syn 2.0.119",
  "syntect",
  "sysinfo",
  "taffy",

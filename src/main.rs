@@ -96,6 +96,10 @@ fn main() -> eframe::Result {
         cli::help::print_grouped_help();
         std::process::exit(0);
     }
+    if let Some(help) = cli::help::unknown_command_help(&raw_args, &cli::help::gated_command()) {
+        eprint!("{help}");
+        std::process::exit(2);
+    }
     // A bad [experiments] table fails every command except the ones needed to
     // fix it, so the user is never locked out of repairing the config.
     if let Some(error) = crate::release::experiments_error() {
@@ -1255,8 +1259,21 @@ fn main() -> eframe::Result {
                             };
                             std::process::exit(cli::pane_list_cli(context_id, current))
                         }
-                        PaneCmd::Focus { pane_id } => {
-                            std::process::exit(cli::pane_focus_cli(pane_id))
+                        PaneCmd::Focus { pane_id, back: _, forward } => {
+                            std::process::exit(match pane_id {
+                                Some(id) => cli::pane_focus_cli(id),
+                                None => cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
+                            })
+                        }
+                        PaneCmd::Hide { pane_id } | PaneCmd::Reveal { pane_id } => {
+                            let hidden = matches!(cmd, PaneCmd::Hide { .. });
+                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                        }
+                        PaneCmd::Zoom { pane_id } => {
+                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom"}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                        }
+                        PaneCmd::Swap { pane_id, direction } => {
+                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
                         }
                         PaneCmd::Close { pane_id } => {
                             let id = match pane_id {
@@ -1773,6 +1790,16 @@ fn main() -> eframe::Result {
                         ContextCmd::Push { name, pane_id } => {
                             std::process::exit(cli::context_push_cli(name.as_deref(), pane_id))
                         }
+                        ContextCmd::Rename { name, context_id } => {
+                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"context_rename", "name":name}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                        }
+                        ContextCmd::Close { context_id } => {
+                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"context_close"}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                        }
+                        ContextCmd::Park { context_id } | ContextCmd::Unpark { context_id } => {
+                            let parked = matches!(cmd, ContextCmd::Park { .. });
+                            std::process::exit(cli::host_action_cli(serde_json::json!({"type":"context_park", "parked":parked}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                        }
                         ContextCmd::List => std::process::exit(cli::context_list_cli()),
                     },
                     Commands::Completions { shell } => {
@@ -1787,6 +1814,7 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::completions_cli(s, &binary_name));
                     }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
+                        ConfigCmd::Reload => std::process::exit(cli::host_action_cli(serde_json::json!({"type":"reload_config"}), None)),
                         ConfigCmd::Check { scope } => {
                             std::process::exit(cli::config_check(scope.scope()));
                         }

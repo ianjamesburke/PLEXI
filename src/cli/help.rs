@@ -137,8 +137,53 @@ pub fn blocked_feature(
 }
 
 pub fn print_grouped_help() {
-    let cmd = gated_command();
-    let no_color = std::env::var_os("NO_COLOR").is_some();
+    print!(
+        "{}",
+        grouped_help(&gated_command(), std::env::var_os("NO_COLOR").is_some())
+    );
+}
+
+/// Diagnose command-shaped words before the workspace-path fallback consumes them.
+/// Existing directories and explicitly spelled paths retain workspace semantics.
+pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    let word = loop {
+        let arg = iter.next()?;
+        if matches!(arg.as_str(), "--profile" | "--socket") {
+            iter.next();
+        } else if !arg.starts_with('-') {
+            break arg;
+        }
+    };
+    if cmd
+        .get_subcommands()
+        .any(|sub| sub.get_name() == word || sub.get_all_aliases().any(|alias| alias == word))
+        || word.contains('/')
+        || word.contains('\\')
+        || word.starts_with('.')
+        || std::path::Path::new(word).exists()
+    {
+        return None;
+    }
+    let parser = clap::Command::new("plexi")
+        .color(clap::ColorChoice::Never)
+        .subcommands(cmd.get_subcommands().cloned());
+    let error = parser
+        .try_get_matches_from(["plexi", word.as_str()])
+        .unwrap_err();
+    let suggestion = match error.get(clap::error::ContextKind::SuggestedSubcommand) {
+        Some(clap::error::ContextValue::Strings(names)) => {
+            format!("Did you mean {}?\n\n", names.join(" or "))
+        }
+        Some(clap::error::ContextValue::String(name)) => format!("Did you mean {name}?\n\n"),
+        _ => String::new(),
+    };
+    Some(format!("{error}\n{suggestion}{}", grouped_help(cmd, true)))
+}
+
+pub fn grouped_help(cmd: &clap::Command, no_color: bool) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
 
     // Apply ANSI to already-padded text so width counting is based on visible chars.
     let header = |s: &str| -> String {
@@ -165,14 +210,14 @@ pub fn print_grouped_help() {
 
     // About
     if let Some(about) = cmd.get_about() {
-        println!("{about}");
-        println!();
+        writeln!(output, "{about}").unwrap();
+        writeln!(output).unwrap();
     }
 
     // Usage
     let bin = cmd.get_name();
-    println!("{} {bin} [OPTIONS] [COMMAND]", header("Usage"));
-    println!();
+    writeln!(output, "{} {bin} [OPTIONS] [COMMAND]", header("Usage")).unwrap();
+    writeln!(output).unwrap();
 
     // Visible positional arguments (workspace_path)
     let visible_positional: Vec<_> = cmd
@@ -182,26 +227,33 @@ pub fn print_grouped_help() {
         .collect();
 
     if !visible_positional.is_empty() {
-        println!("{}", header("Arguments"));
+        writeln!(output, "{}", header("Arguments")).unwrap();
         for arg in &visible_positional {
             let name = format!("[{}]", arg.get_id().as_str().to_uppercase());
             let padded = format!("{name:<22}");
             let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
-            println!("  {} {help}", lit(padded));
+            writeln!(output, "  {} {help}", lit(padded)).unwrap();
         }
-        println!();
+        writeln!(output).unwrap();
     }
 
     // Options: -h and -V only (--profile is hidden)
-    println!("{}", header("Options"));
-    println!("  {} Print help", lit(format!("{:<22}", "-h, --help")));
+    writeln!(output, "{}", header("Options")).unwrap();
+    writeln!(
+        output,
+        "  {} Print help",
+        lit(format!("{:<22}", "-h, --help"))
+    )
+    .unwrap();
     if cmd.get_version().is_some() {
-        println!(
+        writeln!(
+            output,
             "  {} Print version",
             lit(format!("{:<22}", "-V, --version"))
-        );
+        )
+        .unwrap();
     }
-    println!();
+    writeln!(output).unwrap();
 
     // Grouped subcommands
     let col_width = HELP_GROUPS
@@ -214,25 +266,56 @@ pub fn print_grouped_help() {
         + 2;
 
     for (heading, names) in HELP_GROUPS {
-        println!("{}", header(heading));
+        writeln!(output, "{}", header(heading)).unwrap();
         for &name in *names {
             if let Some(sub) = cmd.find_subcommand(name).filter(|s| !s.is_hide_set()) {
                 let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
-                println!("  {} {about}", lit(format!("{name:<col_width$}")));
+                writeln!(output, "  {} {about}", lit(format!("{name:<col_width$}"))).unwrap();
             }
         }
-        println!();
+        writeln!(output).unwrap();
     }
 
     // After-help footer
     if let Some(after) = cmd.get_after_help() {
-        println!("{}", dim(&after.to_string()));
+        writeln!(output, "{}", dim(&after.to_string())).unwrap();
     }
+    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_help_snapshots() {
+        let cmd = all_off();
+        for (name, argv) in [
+            ("short", vec!["plexi", "-h"]),
+            ("long", vec!["plexi", "--help"]),
+            ("typo", vec!["plexi", "pnae"]),
+            ("typo-help", vec!["plexi", "pnae", "-h"]),
+        ] {
+            let args: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+            let error = unknown_command_help(&args, &cmd);
+            let output = error.clone().unwrap_or_else(|| grouped_help(&cmd, true));
+            if name.starts_with("typo") {
+                assert!(error.is_some());
+                assert!(
+                    output.contains("Did you mean") && output.contains("pane"),
+                    "{output}"
+                );
+                assert!(output.ends_with(&grouped_help(&cmd, true)));
+            }
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("src/cli/snapshots/help-{name}.txt"));
+            if std::env::var_os("UPDATE_HELP_SNAPSHOTS").is_some() {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, &output).unwrap();
+            }
+            assert_eq!(std::fs::read_to_string(path).unwrap(), output);
+        }
+    }
 
     fn all_off() -> clap::Command {
         gate_command(Cli::command(), |_| false)
@@ -340,8 +423,8 @@ mod tests {
         assert_eq!(
             agent,
             [
-                "team", "next", "fleet", "create", "list", "show", "call", "message", "handoff", "spawn", "done", "ask", "report", "status", "history",
-                "reopen", "hook"
+                "team", "next", "fleet", "create", "list", "show", "call", "message", "handoff",
+                "spawn", "done", "ask", "report", "status", "history", "reopen", "hook"
             ],
             "{agent:?}"
         );
