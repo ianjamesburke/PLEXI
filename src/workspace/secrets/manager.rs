@@ -144,7 +144,17 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
             add(meta.name, SecretTarget::Folder(meta.folder));
         }
     }
-    entries.sort_by(|a, b| a.scope.cmp(&b.scope).then(a.name.cmp(&b.name)));
+    entries.sort_by(|a, b| {
+        let rank = |target: &SecretTarget| match target {
+            SecretTarget::Global => 0,
+            SecretTarget::Workspace { .. } => 1,
+            SecretTarget::Folder(_) => 2,
+        };
+        rank(&a.target)
+            .cmp(&rank(&b.target))
+            .then(a.scope.cmp(&b.scope))
+            .then(a.name.cmp(&b.name))
+    });
     Ok(entries)
 }
 

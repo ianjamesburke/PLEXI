@@ -18,6 +18,7 @@ struct PendingImport {
 pub struct SecretsApp {
     entries: Vec<SecretEntry>,
     selected: usize,
+    scroll_to_selected: bool,
     cwd: PathBuf,
     target: SecretTarget,
     editing: bool,
@@ -27,6 +28,7 @@ pub struct SecretsApp {
     focus_value: bool,
     pending_delete: bool,
     pick_requested: bool,
+    copy_pending: bool,
     pending_import: Option<PendingImport>,
     picker: Arc<dyn crate::host::services::PickerService>,
     terminal_inject: Vec<String>,
@@ -38,6 +40,7 @@ impl SecretsApp {
         let mut app = Self {
             entries: Vec::new(),
             selected: 0,
+            scroll_to_selected: false,
             target: SecretTarget::Global,
             cwd,
             editing: false,
@@ -47,6 +50,7 @@ impl SecretsApp {
             focus_value: false,
             pending_delete: false,
             pick_requested: false,
+            copy_pending: false,
             pending_import: None,
             picker: crate::host::services::default_picker_service(),
             terminal_inject: Vec::new(),
@@ -174,6 +178,56 @@ impl SecretsApp {
         }
     }
 
+    fn copy_selected(&mut self, context: &egui::Context) {
+        self.copy_pending = false;
+        let Some(entry) = self.entries.get(self.selected).cloned() else {
+            return;
+        };
+        use crate::workspace::secrets::{self, ReadResult};
+        // Preserve the existing explicit clipboard action for user/workspace
+        // secrets. Folder reads retain their existing actor/click admission.
+        let result = match &entry.target {
+            SecretTarget::Global => Ok(secrets::system_store()
+                .get(&secrets::keychain_user_name(&entry.name))
+                .map_or(ReadResult::NotFound, ReadResult::Value)),
+            SecretTarget::Workspace { id, .. } => Ok(secrets::system_store()
+                .get(&secrets::keychain_workspace_name(id, &entry.name))
+                .map_or(ReadResult::NotFound, ReadResult::Value)),
+            SecretTarget::Folder(folder) => {
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                );
+                secrets::read_folder_secret(
+                    &monitor,
+                    secrets::folder_store(),
+                    &secrets::SecretActor::app("secrets_manager"),
+                    &entry.name,
+                    folder,
+                )
+            }
+        };
+        match result {
+            Ok(ReadResult::Value(value)) => {
+                context.copy_text((*value).clone());
+                self.status_msg = format!("Copied {} to clipboard.", entry.name);
+                log::info!(
+                    "secrets_manager: copied name={} scope={}",
+                    entry.name,
+                    entry.scope
+                );
+            }
+            Ok(ReadResult::PermissionRequired { .. }) => {
+                self.status_msg =
+                    "Approve this read in the Plexi window, then press c again.".into()
+            }
+            Ok(ReadResult::Denied) => self.status_msg = "Read denied.".into(),
+            Ok(ReadResult::NotFound) => {
+                self.status_msg = "Secret could not be read. Refresh and try again.".into()
+            }
+            Err(error) => self.report_error(error),
+        }
+    }
+
     fn import_selected(&mut self, target: &SecretTarget, path: &Path) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
@@ -228,7 +282,11 @@ impl SecretsApp {
         labels::description_label(ui, "Scope", colors);
         ui.add_enabled_ui(!self.editing && self.pending_import.is_none(), |ui| {
             egui::ComboBox::from_id_salt("secret_scope")
-                .selected_text(self.target.label())
+                .selected_text(match self.target {
+                    SecretTarget::Global => "Global",
+                    SecretTarget::Workspace { .. } => "Workspace",
+                    SecretTarget::Folder(_) => "Folder",
+                })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.target, SecretTarget::Global, "Global");
                     if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
@@ -247,6 +305,7 @@ impl SecretsApp {
                     }
                 });
         });
+        labels::description_label(ui, &self.target.label(), colors);
     }
 
     fn form(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
@@ -413,6 +472,13 @@ impl App for SecretsApp {
                     .iter()
                     .any(|event| matches!(event, egui::Event::Text(text) if text == character))
         };
+        if pressed(egui::Key::J, "j")
+            || pressed(egui::Key::K, "k")
+            || input.key_pressed(egui::Key::ArrowDown)
+            || input.key_pressed(egui::Key::ArrowUp)
+        {
+            self.scroll_to_selected = true;
+        }
         if input.key_pressed(egui::Key::Escape) && self.pending_delete {
             self.pending_delete = false;
             return KeyDisposition::Consumed;
@@ -437,6 +503,8 @@ impl App for SecretsApp {
             self.delete_selected();
         } else if pressed(egui::Key::I, "i") && self.entries.is_empty() {
             self.pick_requested = true;
+        } else if pressed(egui::Key::C, "c") {
+            self.copy_pending = true;
         } else if pressed(egui::Key::R, "r") {
             self.refresh();
             self.pending_delete = false;
@@ -457,6 +525,9 @@ impl App for SecretsApp {
         if self.pick_requested {
             self.start_picker(ui.ctx());
         }
+        if self.copy_pending {
+            self.copy_selected(ui.ctx());
+        }
         egui::Frame::NONE.inner_margin(egui::Margin::same(style::SPACE_MD as i8)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Secrets");
@@ -464,7 +535,7 @@ impl App for SecretsApp {
                 if button::chrome_button(ui, "Refresh", ButtonKind::Secondary, colors, 80.0).clicked() { self.refresh(); }
             });
             if !self.form_open {
-                HintBar::new(&[HintGroup::new(&["j", "k"], "select"), HintGroup::new(&["Enter"], "edit"), HintGroup::new(&["a"], "add"), HintGroup::new(&["d"], "delete")]).show(ui, colors);
+                HintBar::new(&[HintGroup::new(&["j", "k"], "select"), HintGroup::new(&["Enter"], "edit"), HintGroup::new(&["a"], "add"), HintGroup::new(&["d"], "delete"), HintGroup::new(&["c"], "copy")]).show(ui, colors);
             }
             // Fixed status space keeps async import completion from moving rows.
             labels::description_label(ui, if self.status_msg.is_empty() { "Values stay hidden. Permissions apply per caller." } else { &self.status_msg }, colors);
@@ -499,16 +570,18 @@ impl App for SecretsApp {
                         labels::description_label(ui, &entry.scope, colors);
                         let last = entry.last_used.and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0)).map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "unknown".into());
                         labels::description_label(ui, &format!("Last used: {last}"), colors);
-                        let grant = if entry.grant.is_empty() { "Ask on agent/app read".into() } else { entry.grant.join("; ") };
+                        let grant = if entry.grant.is_empty() { "No resource-specific grants".into() } else { entry.grant.join("; ") };
                         labels::description_label(ui, &format!("Grants: {grant}"), colors);
                         if let SecretTarget::Workspace { root, .. } = &entry.target {
                             let enabled = self.terminal_inject.contains(&entry.name);
                             if button::chrome_button(ui, if enabled { "Human terminal env: on" } else { "Human terminal env: off" }, ButtonKind::Secondary, colors, 180.0).clicked() { toggle = Some((entry.name.clone(), root.clone())); }
                         }
                     });
+                    if index == self.selected && self.scroll_to_selected { response.scroll_to_me(Some(egui::Align::Center)); }
                     if response.clicked() { select = Some(index); }
                     if response.double_clicked() { select = Some(index); edit = true; }
                 }
+                self.scroll_to_selected = false;
                 if let Some(index) = select { self.selected = index; self.pending_delete = false; }
                 if edit { self.begin_edit(); }
                 if let Some((name, root)) = toggle { self.toggle_terminal_env(&name, &root); }
@@ -661,6 +734,29 @@ mod tests {
             )
             .unwrap();
         }
+        let actor = crate::workspace::secrets::SecretActor::app("assistant");
+        let read = || {
+            crate::workspace::secrets::read_pane_secret(
+                &monitor,
+                SecretsApp::store_for(&global),
+                &actor,
+                "OPENAI_0858_SHOT_KEY",
+                &crate::workspace::secrets::SecretScope::Global,
+                root.path(),
+            )
+            .unwrap()
+        };
+        let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id } = read()
+        else {
+            panic!("fixture read must ask")
+        };
+        monitor
+            .approve_pending(&pending_id, crate::broker::gate::ApprovalChoice::Session)
+            .unwrap();
+        assert!(matches!(
+            read(),
+            crate::workspace::secrets::ReadResult::Value(_)
+        ));
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
@@ -708,7 +804,14 @@ mod tests {
                 .entries
                 .iter()
                 .any(|entry| entry.name == "DEPLOY_TOKEN" && entry.target == folder));
+            secrets.entries.retain(|entry| {
+                (entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global)
+                    || (entry.name == "GITHUB_TOKEN" && entry.target == workspace)
+                    || (entry.name == "DEPLOY_TOKEN" && entry.target == folder)
+            });
+            secrets.selected = 0;
         });
+        h.run_steps(2);
         h.save_screenshot(&crate::ui_tests::evidence_png!())
             .unwrap();
         h.harness().set_size(egui::vec2(520.0, 650.0));

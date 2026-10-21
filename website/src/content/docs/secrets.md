@@ -22,8 +22,9 @@ to cancel. Values stay masked, and editing starts with an empty replacement
 field.
 
 Each row shows its scope, last audited successful read, and current
-actor-specific grants. Older reads without timestamps show **unknown**.
-An empty grant list means the next agent or app read must ask for approval.
+actor-specific grants for that resource. Older reads without timestamps show
+**unknown**. The grant list reports existing decisions; each read still goes
+through the permission monitor.
 
 When the list is empty, choose the destination scope and **Import .env…**
 (`i`). Pick a file containing literal `NAME=value` assignments. The importer

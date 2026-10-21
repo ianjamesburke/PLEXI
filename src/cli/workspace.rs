@@ -364,6 +364,7 @@ fn secret_list_scope(global: bool) -> SecretListScope {
 /// workspace namespace plus user-scope. Outside a workspace, gracefully falls
 /// back to user-scope. Names only, never values.
 pub fn workspace_secret_list(global: bool, json: bool) -> i32 {
+    log::info!("secret_list:cli: global={global} json={json}");
     if json {
         let cwd = match std::env::current_dir() {
             Ok(cwd) => cwd,
@@ -380,7 +381,6 @@ pub fn workspace_secret_list(global: bool, json: bool) -> i32 {
         };
     }
     let scope = secret_list_scope(global);
-    log::info!("secret_list:cli: global={global}");
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         reconcile_secrets_before_read("secret_list:cli");
