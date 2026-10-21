@@ -191,6 +191,8 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         None => None,
     };
 
+    // `agents` is the built-in fleet surface, also available via app open.
+    let app = app.or_else(|| (cmd == Some("agents") && agent.is_none()).then_some("agents"));
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
     let type_id = if let Some(a) = app {

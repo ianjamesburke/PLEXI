@@ -76,26 +76,7 @@ impl DisplayState {
         }
     }
 }
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    clap::ValueEnum,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum FleetFilter {
-    #[default]
-    All,
-    NeedsAttention,
-    Working,
-    Done,
-}
+pub use crate::protocol::FleetFilter;
 impl FleetFilter {
     pub fn label(self) -> &'static str {
         match self {
@@ -113,7 +94,7 @@ impl FleetFilter {
             Self::Done => Self::All,
         }
     }
-    fn matches(self, row: &AgentRow) -> bool {
+    pub(crate) fn matches(self, row: &AgentRow) -> bool {
         match self {
             Self::All => true,
             Self::NeedsAttention => row.display_state.rank(row.needs_you) <= 3,
@@ -124,6 +105,7 @@ impl FleetFilter {
 }
 #[derive(Clone, Debug)]
 pub struct AgentInput {
+    pub live: bool,
     pub pane_id: u64,
     pub parent_pane_id: Option<u64>,
     pub role: String,
@@ -141,6 +123,7 @@ pub struct AgentInput {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRow {
+    pub live: bool,
     pub pane_id: u64,
     pub parent_pane_id: Option<u64>,
     pub role: String,
@@ -247,6 +230,7 @@ impl AgentsView {
                 r.blocked_on
             };
             let row = AgentRow {
+                live: r.live,
                 pane_id: r.pane_id,
                 parent_pane_id: r.parent_pane_id,
                 role: r.role,
@@ -311,6 +295,7 @@ mod tests {
 
     fn row(id: u64, state: AgentState) -> AgentInput {
         AgentInput {
+            live: true,
             pane_id: id,
             parent_pane_id: None,
             role: format!("worker-{id}"),

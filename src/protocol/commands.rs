@@ -39,6 +39,27 @@ pub enum AgentBlockedReason {
     Unknown,
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum FleetFilter {
+    #[default]
+    All,
+    NeedsAttention,
+    Working,
+    Done,
+}
+
 /// App-reported "pip" status — a traffic-light health indicator an app sets for
 /// itself via the SDK (`App.set_pip_status`). Optional: when unset the host
 /// falls back to derived activity. Distinct from `AgentState` (the hook-script
@@ -749,6 +770,13 @@ pub enum AppRequest {
     /// Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question
     /// and transition the worker pane to `AgentState::Blocked` without interrupting
     /// the human (`plexi agent ask`, stint 0802).
+    /// Read the shared task and worker roster.
+    AgentFleet {
+        #[serde(default)]
+        filter: FleetFilter,
+        response_file: String,
+    },
+
     AgentAsk {
         pane_id: u64,
         question: String,

@@ -646,6 +646,9 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Fleet { json, filter } => {
+                            std::process::exit(cli::agent_fleet_cli(json, filter));
+                        }
                         AgentCmd::History { limit, json } => {
                             std::process::exit(cli::agent_history_cli(limit, json))
                         }

@@ -610,19 +610,7 @@ impl Pane {
                     .clone()
                     .or_else(|| agent.as_ref().and_then(|a| a.session_id.clone()));
                 let changed = prev_state != new_state || prev_session != new_session;
-                if prev_state != new_state {
-                    t.fleet_since = crate::platform::clock::now_secs();
-                    if new_state == Some(crate::protocol::AgentState::Completed)
-                        || (prev_state == Some(crate::protocol::AgentState::Working)
-                            && new_state == Some(crate::protocol::AgentState::Idle)) {
-                        t.fleet_done_unseen = true;
-                        t.fleet_seen = false;
-                    } else if new_state == Some(crate::protocol::AgentState::Working) {
-                        t.fleet_done_unseen = false;
-                        t.fleet_seen = false;
-                        t.agent_completed = false;
-                    }
-                }
+                t.update_fleet_transition(prev_state.as_ref(), new_state.as_ref());
                 t.agent_reported_at = agent.as_ref().map(|_| std::time::Instant::now());
                 t.agent = agent;
                 (true, changed)
@@ -929,6 +917,28 @@ impl TerminalPane {
         }
     }
 
+    fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
+        use crate::protocol::AgentState;
+        if previous == next { return; }
+        self.fleet_since = crate::platform::clock::now_secs();
+        if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
+            self.fleet_done_unseen = true;
+            self.fleet_seen = false;
+        } else if next == Some(&AgentState::Working) {
+            self.fleet_done_unseen = false;
+            self.fleet_seen = false;
+            self.agent_completed = false;
+        }
+    }
+
+    pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
+        let now = std::time::Instant::now();
+        let before = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        self.observed_agent = observed;
+        let after = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        self.update_fleet_transition(before.as_ref(), after.as_ref());
+    }
+
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
     /// if it is an agent pane.
     pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
@@ -1044,6 +1054,7 @@ impl TerminalPane {
         let closed_at = crate::platform::clock::now_secs();
         let run_id = format!("run-{}-{closed_at}", self.id);
         Some(crate::workspace::AgentHistoryRecord {
+            fleet_seen: self.fleet_seen,
             run_id,
             pane_id: self.id,
             context_id,

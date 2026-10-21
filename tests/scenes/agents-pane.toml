@@ -1,0 +1,19 @@
+size = [1100.0, 760.0]
+
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+
+[[steps]]
+assert_label = { target = "agents", label = "Agents" }
+
+[[steps]]
+assert_label = { target = "agents", label = "No matching agents" }
+
+[[steps]]
+key = { target = "agents", value = "f" }
+
+[[steps]]
+assert_label = { target = "agents", label = "Needs attention  [f]" }
+
+[[steps]]
+shot = "agents-pane.png"

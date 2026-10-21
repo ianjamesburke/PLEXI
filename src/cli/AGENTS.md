@@ -141,3 +141,7 @@ Document stable contracts, not history. Update in the same change that makes a r
 pressure thresholds are documented in `skills/plexi-cli/SKILL.md` under Resource
 leases. Keep OS sampling in the lease worker, never in a paint or dispatch pass.
 Socket ancestry authenticates the holder; wire-supplied ancestry is not authority.
+
+## Fleet inspection
+
+The Agents pane and `agent fleet` share the projection in `src/agent/fleet.rs`. The user workflow and configuration are documented in `skills/plexi-cli/SKILL.md` under Agents.

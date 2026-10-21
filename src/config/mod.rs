@@ -195,6 +195,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "scroll_down",
     "increase_font_size",
     "decrease_font_size",
+    "open_agents",
     "open_file_browser",
     "open_quick_note",
     "open_config",
@@ -391,6 +392,8 @@ pub struct KeybindingsConfig {
     pub scroll_down: Option<String>,
     pub increase_font_size: Option<String>,
     pub decrease_font_size: Option<String>,
+    /// Open the Agents pane (default Cmd+Alt+A).
+    pub open_agents: Option<String>,
     pub open_file_browser: Option<String>,
     pub open_quick_note: Option<String>,
     pub open_config: Option<String>,
@@ -458,6 +461,7 @@ impl KeybindingsConfig {
         overlay_field!(scroll_down);
         overlay_field!(increase_font_size);
         overlay_field!(decrease_font_size);
+        overlay_field!(open_agents);
         overlay_field!(open_file_browser);
         overlay_field!(open_quick_note);
         overlay_field!(open_config);

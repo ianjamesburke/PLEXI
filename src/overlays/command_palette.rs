@@ -241,6 +241,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "browse notes note picker open find global context",
     },
     PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenAgents),
+        name: "Open Agents pane",
+        description: "Review tasks, workers and blocking reasons",
+        search_text: "agents fleet team task workers blocked status",
+    },
+    PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal),
         name: "Review notifications",
         description: "Open the pending notification review queue",
@@ -783,6 +789,7 @@ fn palette_host_binding(
 ) -> Option<(egui::Modifiers, egui::Key)> {
     use crate::host::keys::Action;
     let binding = match command {
+        PaletteCommand::Host(Action::OpenAgents) => bindings.open_agents,
         PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
         PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
         PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
@@ -878,7 +885,9 @@ impl PlexiApp {
         // Collected fresh each frame, never snapshotted at open time: agent
         // state arrives over pane IPC (`set_agent_state`) while the palette is
         // up, and the rows must show it live.
-        let agent_rows = palette_agent_rows(&self.windows, &context_names);
+        let all_agent_rows = palette_agent_rows(&self.windows, &context_names);
+        let agent_pane_ids: std::collections::HashSet<u64> = all_agent_rows.iter().map(|r| r.pane_id).collect();
+        let agent_rows = if self.config.agents.as_ref().and_then(|a| a.palette_agent_results).unwrap_or(false) { all_agent_rows } else { vec![] };
         if self.palette_agent_count_logged != Some(agent_rows.len()) {
             self.palette_agent_count_logged = Some(agent_rows.len());
             log::info!("palette: collected {} agent panes", agent_rows.len());
@@ -886,8 +895,7 @@ impl PlexiApp {
         // An agent pane is represented once — by its agent row, which carries
         // strictly more (agent name, live state, active tool) than the plain
         // pane row would.
-        let agent_pane_ids: std::collections::HashSet<u64> =
-            agent_rows.iter().map(|row| row.pane_id).collect();
+
 
         let ctx_entries: Vec<PaletteEntry> = {
             // Context-scoped unpacking: the ACTIVE context expands to one row
@@ -1730,6 +1738,7 @@ impl PlexiApp {
                 self.split_focused(true, None, false, false, None);
                 self.mark_workspace_dirty();
             }
+            crate::host::keys::Action::OpenAgents => self.open_agents_pane(),
             crate::host::keys::Action::OpenConfig => {
                 let path = crate::config::ensure_config_file();
                 self.open_config_in_editor(path);

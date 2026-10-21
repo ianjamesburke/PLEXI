@@ -39,6 +39,8 @@ mod secret_get;
 mod sync;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
+mod fleet;
+pub(crate) mod agents_app;
 pub mod video_player_app;
 
 #[cfg(test)]
@@ -228,6 +230,7 @@ pub struct PlexiApp {
     /// Per-pane schema-validated structured results (`plexi pane result`, stint 0666).
     /// Retained across pane close so spawners can read results after an ephemeral worker exits.
     pub(crate) closed_pane_slots: HashMap<PaneId, HashMap<String, std::path::PathBuf>>,
+    pub(crate) fleet_history: std::cell::RefCell<Vec<crate::workspace::AgentHistoryRecord>>,
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
@@ -1504,7 +1507,8 @@ impl PlexiApp {
                     pending_message_recvs: Vec::new(),
                     next_pane_message_id: 1,
                     closed_pane_slots: HashMap::new(),
-                    pane_results: HashMap::new(),
+                    fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
+            pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1758,6 +1762,7 @@ impl PlexiApp {
             pending_message_recvs: Vec::new(),
             next_pane_message_id: 1,
             closed_pane_slots: HashMap::new(),
+            fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
             pending_result_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
@@ -1907,6 +1912,7 @@ impl PlexiApp {
     /// counters, then applying context transition effects.
     #[cfg(test)]
     pub(crate) fn install_restored_workspace(&mut self, restored: RestoredWorkspace) {
+        self.fleet_history = std::cell::RefCell::new(crate::workspace::load_agent_history());
         self.router = restored.router;
         self.windows = restored.windows;
         self.active_window = restored.active_window;
@@ -2583,6 +2589,7 @@ impl PlexiApp {
                 pending_message_recvs: Vec::new(),
                 next_pane_message_id: 1,
                 closed_pane_slots: HashMap::new(),
+                fleet_history: std::cell::RefCell::new(Vec::new()),
                 pane_results: HashMap::new(),
                 pending_result_waits: Vec::new(),
                 last_sent_window_title: None,
@@ -4113,6 +4120,7 @@ impl eframe::App for PlexiApp {
                 Action::CloseApp => {
                     self.close_focused_app();
                 }
+                Action::OpenAgents => self.open_agents_pane(),
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
                 }
@@ -5022,6 +5030,8 @@ pub(crate) fn restore_workspace(
                         || saved_pane.slots.contains_key("completed"))
             });
             if is_completed_ephemeral {
+                crate::workspace::archive_saved_completion(collaborators.profile_dir, saved_pane,
+                    saved_win.context_id, ctx_name_map.get(&saved_win.context_id).map(String::as_str).unwrap_or("unknown"));
                 log::info!(
                     "workspace_restore: skipping completed ephemeral agent pane {}",
                     saved_pane.id

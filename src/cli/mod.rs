@@ -1441,7 +1441,7 @@ pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
     agent_ask_cli, agent_create_cli, agent_done_cli, agent_history_cli, agent_hook_install_cli,
     agent_hook_uninstall_cli, agent_list_cli, agent_reopen_cli, agent_report_cli, agent_show_cli,
-    agent_spawn_cli, agent_status_cli, AgentHarness,
+    agent_spawn_cli, agent_status_cli, agent_fleet_cli, AgentHarness,
 };
 pub use agents_api::{
     agent_assign_cli, agent_cancel_cli, agent_conversation_cli, agent_delegate_cli, agent_head_dispatch, agent_run_dispatch,

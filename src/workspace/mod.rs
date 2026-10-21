@@ -111,6 +111,8 @@ pub struct SavedAgentSession {
 /// whenever an agent pane or ephemeral squad worker closes.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct AgentHistoryRecord {
+    #[serde(default)]
+    pub fleet_seen: bool,
     pub run_id: String,
     pub pane_id: u64,
     pub context_id: u64,
@@ -237,7 +239,7 @@ pub fn load_agent_history_from(profile_dir: &Path) -> Vec<AgentHistoryRecord> {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
-    data.lines()
+    let records = data.lines()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| match serde_json::from_str::<AgentHistoryRecord>(line) {
             Ok(rec) => Some(rec),
@@ -246,7 +248,11 @@ pub fn load_agent_history_from(profile_dir: &Path) -> Vec<AgentHistoryRecord> {
                 None
             }
         })
-        .collect()
+        .map(|r| (r.run_id.clone(), r))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut records: Vec<_> = records.into_values().collect();
+    records.sort_by_key(|r| r.closed_at);
+    records
 }
 
 /// Env switch for a hermetic host session, set by `plexi host start
@@ -850,6 +856,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let rec = AgentHistoryRecord {
+            fleet_seen: false,
             run_id: "run-42-100".to_string(),
             pane_id: 42,
             pane_name: Some("worker-1".to_string()),
@@ -873,5 +880,30 @@ mod tests {
         append_agent_history_to(dir.path(), &rec).expect("append history");
         let loaded = load_agent_history_from(dir.path());
         assert_eq!(loaded, vec![rec]);
+    }
+}
+
+/// Preserve an unseen completion before restore discards its finished ephemeral PTY.
+pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context_id: u64, context_name: &str) {
+    let Some(session) = &pane.agent_session else { return };
+    if load_agent_history_from(profile).iter().any(|r| r.pane_id == pane.id && r.session_id == session.session_id) { return; }
+    let result = pane.slots.get("result").and_then(|path| {
+        match std::fs::read_to_string(path).and_then(|data| serde_json::from_str(&data).map_err(io::Error::other)) {
+            Ok(value) => Some(value),
+            Err(error) => { log::warn!("agents: restore completion result {}: {error}", path.display()); None }
+        }
+    });
+    let record = AgentHistoryRecord {
+        fleet_seen: session.fleet_seen,
+        run_id: format!("run-{}-{}", pane.id, session.fleet_since),
+        pane_id: pane.id, context_id, context_name: context_name.into(), parent_pane_id: session.parent_pane_id,
+        pane_name: pane.name.clone(), harness: session.harness.clone(), config_name: session.config_name.clone(),
+        session_id: session.session_id.clone(), cwd: pane.cwd.clone(), ephemeral: session.ephemeral,
+        last_state: crate::protocol::AgentState::Completed, last_blocked_reason: None,
+        last_detail: session.last_detail.clone(), summary: session.last_detail.clone(), result,
+        tail_preview: session.tail_preview.clone(), slots: pane.slots.clone(), closed_at: session.fleet_since,
+    };
+    if let Err(error) = append_agent_history_to(profile, &record) {
+        log::error!("agents: archive restored completion pane={}: {error}", pane.id);
     }
 }

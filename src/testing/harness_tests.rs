@@ -10182,6 +10182,20 @@ mod pane_lifecycle_events {
             crate::host::context_state::ContextStatus::Blocked
         );
 
+        let fleet_reply = temp_response(dir.path(), "fleet");
+        h.inject_ipc(crate::protocol::AppRequest::AgentFleet {
+            filter: crate::agent::fleet::FleetFilter::All,
+            response_file: fleet_reply.clone(),
+        });
+        h.hidden_frame();
+        let fleet = read_json_response(&fleet_reply);
+        let worker = fleet["tasks"].as_array().unwrap().iter()
+            .flat_map(|t| t["rows"].as_array().unwrap())
+            .find(|r| r["pane_id"] == worker_id).unwrap();
+        assert_eq!(worker["blocked_on"]["kind"], "agent");
+        assert_eq!(worker["blocked_on"]["pane_id"], master_pane);
+        assert_eq!(worker["blocked_on"]["question"], "Should we use BTreeMap or HashMap?");
+
         // Tier 2 (`NeedsYou`): escalates to the human and rolls up `ContextStatus::NeedsYou`.
         h.inject_ipc(
             serde_json::from_value(serde_json::json!({
@@ -11756,6 +11770,13 @@ mod agent_state_restoration_tests {
         assert_eq!(rec.parent_pane_id, Some(master_pane));
         assert_eq!(rec.summary.as_deref(), Some("Auth audit passed"));
         assert!(rec.slots.contains_key("summary"));
+
+        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(fleet.tasks.iter().flat_map(|t| &t.rows).find(|r| r.pane_id == worker_id).unwrap().display_state, crate::agent::fleet::DisplayState::DoneUnseen);
+        h.app.mark_agent_seen(worker_id);
+        let restored_history = crate::workspace::load_agent_history();
+        assert_eq!(restored_history.len(), 1, "seen updates replace the same run in the ledger projection");
+        assert!(restored_history[0].fleet_seen);
 
         // Reopen by session_id (`pi-sess-900`) via `AppRequest::AgentReopen`.
         let reopen_reply = temp_response(tmp.path(), "reopen-worker");

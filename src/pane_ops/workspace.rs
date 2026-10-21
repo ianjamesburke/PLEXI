@@ -2166,6 +2166,7 @@ impl PlexiApp {
             .or_else(|| shell::get_pid_cwd(t.backend.child_pid()))
             .unwrap_or_else(|| win_path.to_path_buf());
         if let Some(record) = t.build_history_record(context_id, &context_name, cwd) {
+            self.fleet_history.borrow_mut().push(record.clone());
             if let Err(e) = crate::workspace::append_agent_history(&record) {
                 log::warn!(
                     "agent_history: failed to append closed run for pane {}: {e}",

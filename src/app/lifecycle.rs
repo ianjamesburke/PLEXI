@@ -1017,27 +1017,7 @@ impl PlexiApp {
                     );
                     return;
                 };
-                let message_id = self.next_pane_message_id;
-                self.next_pane_message_id = self.next_pane_message_id.saturating_add(1);
-                let timestamp_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                let msg = crate::app::pane_wait::PaneMessage {
-                    id: message_id,
-                    pane_id: *pane_id,
-                    to_pane_id: *pane_id,
-                    from_pane_id,
-                    sender_pane_id: from_pane_id,
-                    payload: payload.clone(),
-                    timestamp_ms,
-                };
-                self.pane_mailboxes
-                    .entry(*pane_id)
-                    .or_default()
-                    .push_back(msg);
-
-                let delivered_to_waiter = self.complete_message_recvs(*pane_id);
+                let (message_id, delivered_to_waiter) = self.enqueue_pane_message(*pane_id, from_pane_id, payload.clone());
                 let mut woke = false;
                 if *submit && !delivered_to_waiter {
                     let can_wake =
@@ -3163,6 +3143,7 @@ impl PlexiApp {
                         break;
                     }
                 }
+                if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
                 if dirty {
                     self.mark_workspace_dirty();
                 }
@@ -4026,6 +4007,9 @@ impl PlexiApp {
                             if let Some(pane) = win.panes.get_mut(pane_id) {
                                 if let Some(t) = pane.as_terminal_mut() {
                                     t.agent_completed = true;
+                                    t.fleet_done_unseen = true;
+                                    t.fleet_seen = false;
+                                    t.fleet_since = crate::platform::clock::now_secs();
                                     t.last_blocked_reason = None;
                                     if let Some(ref h) = t.agent_harness {
                                         agent_label = h.clone();
@@ -4045,6 +4029,7 @@ impl PlexiApp {
                                 break;
                             }
                         }
+                        if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
                         self.mark_workspace_dirty();
                         let provenance = Provenance {
                             source: Source::LegacyReport,
@@ -4100,6 +4085,10 @@ impl PlexiApp {
                         );
                     }
                 }
+            }
+            crate::protocol::AppRequest::AgentFleet { filter, response_file } => {
+                log::info!("agents: fleet query filter={filter:?}");
+                write_json_response(response_file, serde_json::json!(self.agents_view(*filter)));
             }
             crate::protocol::AppRequest::AgentAsk {
                 pane_id,
@@ -4722,7 +4711,7 @@ impl PlexiApp {
                     if let Some(agent) = &observed {
                         transitions.push((*pane_id, agent.clone()));
                     }
-                    t.observed_agent = observed;
+                    t.set_observed_agent(observed);
                     observed_dirty = true;
                 }
             }
