@@ -1,0 +1,199 @@
+{
+  "SplitHorizontal": {
+    "cli": "pane new --right",
+    "note": ""
+  },
+  "SplitVertical": {
+    "cli": "pane new --down",
+    "note": ""
+  },
+  "SplitRight": {
+    "cli": "pane new --right",
+    "note": "CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type."
+  },
+  "SplitDown": {
+    "cli": "pane new --down",
+    "note": "CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type."
+  },
+  "Navigate": {
+    "cli": "pane focus 42",
+    "note": "Select the destination by pane id rather than relative direction."
+  },
+  "ClosePane": {
+    "cli": "pane close 42",
+    "note": ""
+  },
+  "NewTab": {
+    "cli": "pane new --tab",
+    "note": ""
+  },
+  "SwitchContext": {
+    "cli": "context zoom 42",
+    "note": "CLI uses a stable context id rather than the sidebar index."
+  },
+  "NextTab": {
+    "cli": "pane focus 42",
+    "note": "Select the destination by pane id rather than tab order."
+  },
+  "PrevTab": {
+    "cli": "pane focus 42",
+    "note": "Select the destination by pane id rather than tab order."
+  },
+  "NextContext": {
+    "cli": "context zoom 42",
+    "note": "Select the destination by context id rather than sidebar order."
+  },
+  "PrevContext": {
+    "cli": "context zoom 42",
+    "note": "Select the destination by context id rather than sidebar order."
+  },
+  "Quit": {
+    "cli": "host stop",
+    "note": ""
+  },
+  "ToggleZoom": {
+    "cli": "pane zoom 42",
+    "note": ""
+  },
+  "RenamePane": {
+    "cli": "pane name 42 name",
+    "note": ""
+  },
+  "CloseApp": {
+    "cli": "pane close 42",
+    "note": ""
+  },
+  "OpenFileBrowser": {
+    "cli": "app open file_browser",
+    "note": ""
+  },
+  "OpenAgents": {
+    "cli": "pane new agents",
+    "note": ""
+  },
+  "NextBlockedAgent": {
+    "cli": "agent next",
+    "note": ""
+  },
+  "OpenQuickNote": {
+    "cli": "note add text",
+    "note": "CLI supplies text directly instead of opening the entry overlay."
+  },
+  "OpenConfig": {
+    "cli": "config edit",
+    "note": ""
+  },
+  "OpenSecretsManager": {
+    "cli": "app open secrets_manager"
+  },
+  "OpenAssistant": {
+    "cli": "assistant open --head example",
+    "note": ""
+  },
+  "RenameContext": {
+    "cli": "context rename name --context-id 42",
+    "note": ""
+  },
+  "ForceReloadApp": {
+    "ui-only": "Developer recovery gesture for a focused app; normal source edits reload through the file watcher."
+  },
+  "NewPageRight": {
+    "cli": "pane new --window",
+    "note": ""
+  },
+  "NewContext": {
+    "cli": "context new name",
+    "note": ""
+  },
+  "ReloadConfig": {
+    "cli": "config reload",
+    "note": ""
+  },
+  "NavBackApp": {
+    "cli": "pane focus --back",
+    "note": "CLI traverses host focus history; app-local navigation remains owned by each app."
+  },
+  "FocusHistoryForward": {
+    "cli": "pane focus --forward",
+    "note": ""
+  },
+  "SwapPane": {
+    "cli": "pane swap left --pane-id 42",
+    "note": ""
+  },
+  "OpenScratchpad": {
+    "cli": "app open text-editor"
+  },
+  "PushPaneToSubcontext": {
+    "cli": "context push name --pane-id 42",
+    "note": ""
+  },
+  "NewChildContext": {
+    "cli": "context new name --parent --focus",
+    "note": ""
+  },
+  "ContextZoomOut": {
+    "cli": "context zoom-out",
+    "note": ""
+  },
+  "SetContextRootFromCwd": {
+    "cli": "context set-root .",
+    "note": ""
+  },
+  "HidePane": {
+    "cli": "pane hide 42",
+    "note": "Use pane reveal to restore visibility; the shortcut toggles."
+  },
+  "ParkContext": {
+    "cli": "context park 42",
+    "note": "Use context unpark to restore and focus; the shortcut toggles."
+  },
+  "OpenNotesPicker": {
+    "cli": "note open",
+    "note": "CLI opens its terminal picker instead of the desktop overlay."
+  },
+  "CloseContext": {
+    "cli": "context close 42",
+    "note": "Honors desktop confirmation; response reports pending_confirmation."
+  },
+  "RunUserCommand": {
+    "cli": "run name",
+    "note": ""
+  },
+  "MoveContextUp": {
+    "ui-only": "Sidebar ordering is a visual preference; contexts remain addressable by stable id."
+  },
+  "MoveContextDown": {
+    "ui-only": "Sidebar ordering is a visual preference; contexts remain addressable by stable id."
+  },
+  "ToggleSidebar": {
+    "ui-only": "Toggles host chrome only."
+  },
+  "ToggleShortcuts": {
+    "ui-only": "Displays the keyboard reference overlay; agents use CLI help."
+  },
+  "ToggleCommandPalette": {
+    "ui-only": "Displays a human command chooser; agents invoke the selected command directly."
+  },
+  "IncreasePaneFontSize": {
+    "ui-only": "Per-pane visual text size preference."
+  },
+  "DecreasePaneFontSize": {
+    "ui-only": "Per-pane visual text size preference."
+  },
+  "ScrollUp": {
+    "ui-only": "Moves the visible viewport; agents read pane capture output."
+  },
+  "ScrollDown": {
+    "ui-only": "Moves the visible viewport; agents read pane capture output."
+  },
+  "ToggleNotificationModal": {
+    "ui-only": "Opens the desktop notification viewer; agents inspect needs-you and notification records."
+  },
+  "ToggleMinimap": {
+    "ui-only": "Toggles a visual navigation overlay."
+  },
+  "SendPane": {
+    "ui-only": "Focus-preserving spatial layout gesture; pane swap exposes the corresponding layout move with focus following."
+  }
+}

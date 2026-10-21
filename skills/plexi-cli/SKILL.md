@@ -320,6 +320,10 @@ omit entries for experiments that are off.
 - `plexi agent delegate`: Start a child run whose grants are a subset of the parent run
 <!-- /experiment -->
 - `plexi context`: Manage the active context (the folder and project scope tied to the current pane)
+- `plexi context rename`: Rename a context (defaults to the calling pane's context)
+- `plexi context close`: Close a context, requesting desktop confirmation when configured
+- `plexi context park`: Park a context and move focus to an unparked neighbor
+- `plexi context unpark`: Unpark a context and focus it
 - `plexi context new`: Open a new context with an optional name
 - `plexi context sub`: Create a sub-context under the current one, pre-populated with panes
 - `plexi context open`: Switch the current pane to a context at the given path
@@ -380,6 +384,10 @@ omit entries for experiments that are off.
 - `plexi registry`: Watch installed CLI tools for changes to their available commands and options
 - `plexi registry watch`: Check installed CLI tools for changes to their help output and update Plexi's knowledge of them
 - `plexi pane`: Control panes — list, focus, send input, capture output, and more
+- `plexi pane hide`: Hide a pane (defaults to the calling pane)
+- `plexi pane reveal`: Reveal a hidden pane (defaults to the calling pane)
+- `plexi pane zoom`: Focus a pane and toggle fullscreen zoom, or enter its sub-context
+- `plexi pane swap`: Focus a pane and swap it with a directional neighbor
 - `plexi pane wait`: Wait for current idle, blocked, or exited state; print its lifecycle record
 - `plexi pane events`: Follow brokered pane lifecycle records as NDJSON until interrupted
 - `plexi pane new`: Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent`
@@ -462,6 +470,7 @@ omit entries for experiments that are off.
 - `plexi skill install`: Write this binary's skill for one agent CLI, or all supported agents
 - `plexi completions`: Print a shell completion script to stdout
 - `plexi config`: Check your Plexi config file for errors
+- `plexi config reload`: Reload configuration in the running host
 - `plexi config check`: Validate the selected config.toml and report any errors
 - `plexi config edit`: Open the selected config.toml in your $EDITOR
 - `plexi config get`: Print a config key from the selected config.toml to stdout

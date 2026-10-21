@@ -1962,3 +1962,29 @@ mod spawn_gate_tests {
         assert_eq!(channel_label_from(""), "default");
     }
 }
+
+/// Run a host action and return its acknowledged result, including host errors.
+pub fn host_action_cli(mut payload: serde_json::Value, identity: Option<(&str, Option<u64>, &str)>) -> i32 {
+    if let Some((field, explicit, env)) = identity {
+        let id = explicit.or_else(|| std::env::var(env).ok()?.parse().ok());
+        let Some(id) = id else {
+            eprintln!("error: supply {field} explicitly outside a Plexi pane");
+            return 1;
+        };
+        payload[field] = id.into();
+    }
+    match request(payload, "host-action", "host action") {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(reply) if reply.get("error").is_some() => {
+                eprintln!("error: {}", reply["error"].as_str().unwrap_or(&content));
+                1
+            }
+            Ok(_) => { println!("{content}"); 0 }
+            Err(error) => { eprintln!("error: invalid host response: {error}"); 1 }
+        },
+        Err(code) => code,
+    }
+}
+
+#[cfg(test)]
+mod parity_tests;

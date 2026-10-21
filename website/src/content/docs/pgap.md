@@ -58,6 +58,81 @@ App-to-host requests — go to `route_command`.
 
 Messages the app sends to request host services.
 
+### `context_rename`
+
+Rename a context through the same commit handler as the desktop editor.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `context_close`
+
+Close a context, honoring the desktop confirmation policy.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+
+### `context_park`
+
+Set a context's parked state.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer` | yes |
+| `parked` | `boolean` | yes |
+| `response_file` | `string` | yes |
+
+### `pane_visibility`
+
+Set pane visibility without changing its identity or focus.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `hidden` | `boolean` | yes |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+
+### `pane_zoom`
+
+Focus a pane and toggle its zoom, including portal navigation.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+
+### `pane_swap`
+
+Focus a pane and swap it with its directional neighbor.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `direction` | `string` | yes |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+
+### `reload_config`
+
+Reload the running host configuration from disk.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `focus_history`
+
+Step through the host's pane focus history.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `forward` | `boolean` | yes |
+| `response_file` | `string` | yes |
+
 ### `resource_lease`
 
 Process-lifetime resource admission. Identity is stamped by the socket listener.

@@ -228,7 +228,7 @@ check-sdk-lock:
     fi
     echo "SDK lock is up to date."
 
-check-docs: check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
+check-docs: check-parity check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
 
 run:
     bash scripts/cargo-with-lease.sh cargo build --release
@@ -640,3 +640,10 @@ e2e-baseline channel="e2e" *flags="":
 # Runner unit tests (command construction + dry-run plumbing, fully host-free).
 e2e-test:
     uv run --python 3.12 --project tools/e2e_authoring --extra dev python -m pytest tools/e2e_authoring
+
+# Verify every host Action has a CLI mapping or explicit UI-only waiver.
+check-parity: (check-generated "docs/cli/PARITY.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity" "gen-parity" "UI-to-CLI parity is up to date.")
+
+# Regenerate the UI-to-CLI parity table.
+gen-parity:
+    bash scripts/gen-doc-safe.sh docs/cli/PARITY.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity

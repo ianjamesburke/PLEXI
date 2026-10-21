@@ -1,3 +1,4 @@
+mod cli_actions;
 pub mod account;
 pub mod command_view_app;
 mod app_call;
@@ -3859,47 +3860,7 @@ impl eframe::App for PlexiApp {
                         self.push_focus_history(old_window_id, old_focus);
                     }
                 }
-                Action::SwapPane(dir) => match self.swap_pane(dir) {
-                    crate::pane_ops::SwapResult::Swapped { rect_a, rect_b, .. } => {
-                        let now = std::time::Instant::now();
-                        self.pane_anims = vec![
-                            PaneSwapAnim {
-                                from: rect_a,
-                                to: rect_b,
-                                started_at: now,
-                            },
-                            PaneSwapAnim {
-                                from: rect_b,
-                                to: rect_a,
-                                started_at: now,
-                            },
-                        ];
-                        self.ctx.request_repaint();
-                    }
-                    crate::pane_ops::SwapResult::AtBoundary => {
-                        let moved = match dir {
-                            crate::host::keys::Direction::Down => {
-                                self.move_focused_pane_to_row_boundary(true)
-                            }
-                            crate::host::keys::Direction::Up => {
-                                self.move_focused_pane_to_row_boundary(false)
-                            }
-                            _ => self.move_focused_pane_to_adjacent_window(dir),
-                        };
-                        if moved {
-                            self.ctx.request_repaint();
-                        } else if let Some(focused) = self.windows[self.active_window].focused_pane
-                        {
-                            self.edge_pulse = Some(EdgePulse {
-                                tile: focused,
-                                dir,
-                                started_at: std::time::Instant::now(),
-                            });
-                            self.ctx.request_repaint();
-                        }
-                    }
-                    crate::pane_ops::SwapResult::NoFocus => {}
-                },
+                Action::SwapPane(dir) => self.swap_pane_action(dir),
                 Action::SendPane(dir) => {
                     match self.send_pane(dir) {
                         crate::pane_ops::SwapResult::Swapped { rect_a, rect_b, .. } => {
@@ -3997,63 +3958,7 @@ impl eframe::App for PlexiApp {
                     self.new_tab(self.active_window, None, false, None, false, true);
                     self.mark_workspace_dirty();
                 }
-                Action::ToggleZoom => {
-                    if let Some(parent) = self.fleet_focused_pane() {
-                        if self.dive_into_agent_children(parent) { continue; }
-                    }
-                    let (focused_tile, portal_target) = {
-                        let win = &self.windows[self.active_window];
-                        let tile = win.focused_pane;
-                        let target = tile
-                            .and_then(|tile_id| win.tree.tiles.get(tile_id))
-                            .and_then(|t| {
-                                if let egui_tiles::Tile::Pane(p) = t {
-                                    Some(*p)
-                                } else {
-                                    None
-                                }
-                            })
-                            .and_then(|pane_id| win.panes.get(&pane_id))
-                            .and_then(|p| p.portal_target());
-                        (tile, target)
-                    };
-                    if let Some(child_ctx_id) = portal_target {
-                        // Focused pane is a Portal tile → zoom into its sub-context.
-                        // Verify target context exists BEFORE pushing depth state;
-                        // push_depth must not fire if there is nothing to switch to.
-                        if let Some(ctx_idx) =
-                            self.router.position(|c| c.context_id == child_ctx_id)
-                        {
-                            log::info!(
-                                "ToggleZoom on Portal: zooming into context_id={child_ctx_id}"
-                            );
-                            let current_ctx_id = self.router.active().context_id;
-                            let current_win_id = self.windows[self.active_window].window_id;
-                            self.router
-                                .push_depth(current_ctx_id, current_win_id, focused_tile);
-                            self.switch_workspace(ctx_idx);
-                        } else {
-                            log::warn!("ToggleZoom on Portal: target context_id={child_ctx_id} not found in router");
-                        }
-                    } else {
-                        // Non-Portal pane → toggle fullscreen zoom.
-                        let ctx = &mut self.windows[self.active_window];
-                        if let Some(focused) = ctx.focused_pane {
-                            if ctx.zoomed_pane == Some(focused) {
-                                ctx.clear_zoom();
-                                log::info!("zoom: toggle off — pane={focused:?}");
-                            } else if ctx.panes.len() <= 1 {
-                                log::info!(
-                                    "zoom: toggle ignored — pane={focused:?} is the only pane in window={}",
-                                    ctx.window_id,
-                                );
-                            } else {
-                                ctx.zoom_to(focused);
-                                log::info!("zoom: toggle on — pane={focused:?}");
-                            }
-                        }
-                    }
-                }
+                Action::ToggleZoom => self.toggle_pane_zoom(),
                 Action::Quit => {
                     if !self.prepare_user_quit() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -4137,23 +4042,13 @@ impl eframe::App for PlexiApp {
                     self.open_rename_for_focused();
                 }
                 Action::HidePane => {
-                    let win = &mut self.windows[self.active_window];
-                    if let Some(focused_tile) = win.focused_pane {
-                        if let Some(Tile::Pane(pane_id)) = win.tree.tiles.get(focused_tile) {
-                            let pane_id = *pane_id;
-                            if let Some(pane) = win.panes.get_mut(&pane_id) {
-                                let new_val = !pane.is_hidden();
-                                pane.set_hidden(new_val);
-                                let name = match pane {
-                                    Pane::Terminal(t) => t.name.clone().unwrap_or_default(),
-                                    Pane::App(a) => a.name.clone(),
-                                    Pane::Portal(_) => String::new(),
-                                };
-                                log::info!(
-                                    "pane_hide: pane={pane_id} name={name:?} hidden={new_val}"
-                                );
-                                self.mark_workspace_dirty();
-                            }
+                    let win = &self.windows[self.active_window];
+                    let target = win.focused_pane
+                        .and_then(|tile| Self::find_pane_in_tile(&win.tree, tile))
+                        .and_then(|id| win.panes.get(&id).map(|pane| (id, !pane.is_hidden())));
+                    if let Some((pane_id, hidden)) = target {
+                        if let Err(error) = self.set_pane_hidden(pane_id, hidden) {
+                            log::warn!("pane_hide: {error}");
                         }
                     }
                 }
@@ -4327,25 +4222,7 @@ impl eframe::App for PlexiApp {
                     self.open_notes_picker();
                 }
                 Action::CloseContext => {
-                    let ctx_id = self.router.active().context_id;
-                    if self.router.len() <= 1 {
-                        log::info!("close_context: only one context remains, ignoring");
-                    } else {
-                        let state = self.build_context_close_state(ctx_id);
-                        let confirm = self.config.confirm_context_close.unwrap_or(true);
-                        if state.items.is_empty() || !confirm {
-                            let idx = self.router.active_idx();
-                            log::info!("close_context: closing ctx={ctx_id} idx={idx} (empty={}, confirm={confirm})", state.items.is_empty());
-                            self.delete_context(idx);
-                            self.mark_workspace_dirty();
-                        } else {
-                            log::info!(
-                                "close_context: ctx={ctx_id} has {} panes, showing confirm dialog",
-                                state.items.len()
-                            );
-                            self.pending_context_close = Some(state);
-                        }
-                    }
+                    let _ = self.close_context_action(self.router.active().context_id);
                 }
                 Action::ContextZoomOut => {
                     log::info!(

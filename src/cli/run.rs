@@ -476,7 +476,10 @@ pub fn dispatch_cli_step(
                 };
                 crate::cli::pane_set_title_cli(pane_id, &name)
             }
-            PaneCmd::Focus { pane_id } => crate::cli::pane_focus_cli(pane_id),
+            PaneCmd::Focus { pane_id, forward, .. } => match pane_id {
+                Some(id) => crate::cli::pane_focus_cli(id),
+                None => crate::cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
+            },
             PaneCmd::Close { pane_id } => {
                 let id = match pane_id {
                     Some(id) => id,
