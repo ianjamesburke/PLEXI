@@ -450,6 +450,8 @@ mod pane_caller;
 mod skill_surface;
 pub mod experiments;
 pub mod skill_install;
+pub mod trace;
+pub mod skill_draft;
 pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;

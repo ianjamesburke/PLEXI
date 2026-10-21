@@ -694,6 +694,19 @@ pub(crate) fn handle_socket_line(
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl std::io::Write,
 ) {
+    if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line) {
+        if frame["type"] == "cli_trace" {
+            match crate::host::flight_recorder::handle_cli_trace(&crate::config::config_dir(), &frame) {
+                Ok(()) => {
+                    if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
+                        log::warn!("cli_trace: acknowledgement failed: {error}");
+                    }
+                }
+                Err(error) => log::warn!("{error}"),
+            }
+            return;
+        }
+    }
     match serde_json::from_str::<crate::protocol::AppRequest>(line) {
         Ok(mut cmd) => {
             let needs_identity_ack = matches!(

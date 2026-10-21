@@ -53,6 +53,7 @@ struct Active {
 struct Slot {
     active: Option<Active>,
     backlog: Vec<Pending>,
+    agent_sessions: HashMap<u64, String>,
 }
 
 fn slots() -> &'static Mutex<HashMap<PathBuf, Slot>> {
@@ -96,6 +97,9 @@ pub fn record_in(
     };
     let mut map = slots().lock().unwrap_or_else(|e| e.into_inner());
     let slot = map.entry(key.clone()).or_default();
+    if let (Some(pane), Some(session)) = (pane_id, pending.data["payload"]["provenance"]["session_id"].as_str()) {
+        slot.agent_sessions.insert(pane, session.to_string());
+    }
     match slot.active.as_mut() {
         Some(active) => write_row(&key, active, pending),
         None => {
@@ -350,6 +354,7 @@ pub fn summarize(session_id: &str, rows: &[Value]) -> Value {
 pub fn agent_session_of(row: &Value) -> Option<String> {
     row["data"]["payload"]["provenance"]["session_id"]
         .as_str()
+        .or_else(|| row["data"]["agent_session_id"].as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
 }
@@ -413,5 +418,89 @@ mod tests {
         assert_eq!(rows[1]["call_id"], "call-1");
         assert_eq!(rows[0]["host_session_id"], "sess-test");
         assert_eq!(resolve_session(dir.path(), "latest").unwrap(), "sess-test");
+    }
+}
+
+/// Transport-only trace frames never dispatch a host action or confer identity.
+/// The caller pane is diagnostic provenance, not an authorization credential.
+pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), String> {
+    let id = frame["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .ok_or("cli_trace: missing/invalid invocation id")?;
+    let kind = match frame["phase"].as_str() {
+        Some("start") => "cli_call_started",
+        Some("exit") if frame["exit_code"].as_i64().is_some() => "cli_call",
+        _ => return Err("cli_trace: invalid phase or exit code".into()),
+    };
+    let argv: Vec<String> = serde_json::from_value(frame["argv"].clone())
+        .map_err(|error| format!("cli_trace: invalid argv: {error}"))?;
+    let argv = crate::cli::trace::redact_argv(&argv, &crate::cli::trace::known_secret_names(profile));
+    let pane = frame["pane_id"].as_u64();
+    let agent_session = frame["agent_session_id"].as_str().map(str::to_string)
+        .or_else(|| pane.and_then(|pane| {
+            let key = crate::platform::path::canonical_or_self(profile);
+            slots().lock().unwrap_or_else(|e| e.into_inner()).get(&key)
+                .and_then(|slot| slot.agent_sessions.get(&pane)).cloned()
+        }));
+    record_in(profile, kind, None, pane, Some(id), json!({
+        "argv": argv, "agent_session_id": agent_session,
+        "exit_code": if kind == "cli_call" { frame["exit_code"].clone() } else { Value::Null },
+        "started_at": frame["ts"],
+    }));
+    log::info!("cli_trace: captured {kind} call={id} pane={pane:?}");
+    Ok(())
+}
+
+/// Present one row per invocation, preserving start order and final CLI status.
+/// Missing completion (killed CLI or stopped host) remains null, never success.
+pub(crate) fn cli_calls(rows: Vec<Value>, pane: Option<u64>) -> Vec<Value> {
+    let mut positions = HashMap::new();
+    let mut calls: Vec<Value> = Vec::new();
+    for mut row in rows {
+        if !matches!(row["kind"].as_str(), Some("cli_call" | "cli_call_started"))
+            || pane.is_some_and(|pane| row["pane_id"].as_u64() != Some(pane)) {
+            continue;
+        }
+        let Some(id) = row["call_id"].as_str().map(str::to_string) else { continue };
+        if let Some(index) = positions.get(&id).copied() {
+            let previous: &mut Value = &mut calls[index];
+            row["seq"] = previous["seq"].clone();
+            row["ts"] = previous["ts"].clone();
+            *previous = row;
+        } else {
+            positions.insert(id, calls.len());
+            row["kind"] = json!("cli_call");
+            calls.push(row);
+        }
+    }
+    calls
+}
+
+#[cfg(test)]
+mod cli_trace_tests {
+    use super::*;
+
+    #[test]
+    fn cli_trace_records_redacted_calls_and_actual_exit_status() {
+        let dir = tempfile::tempdir().unwrap();
+        adopt_session(dir.path(), "sess-test-cli");
+        record_in(dir.path(), "timeline_event", None, Some(19), None,
+            json!({"payload":{"provenance":{"session_id":"agent-19"}}}));
+        let id = uuid::Uuid::new_v4().to_string();
+        handle_cli_trace(dir.path(), &json!({"id":id,"phase":"start","pane_id":19,
+            "argv":["plexi-alpha","pane","new","--right"],"ts":"2026-10-21T00:00:00Z"})).unwrap();
+        handle_cli_trace(dir.path(), &json!({"id":id,"phase":"exit","exit_code":2,"pane_id":19,"argv":["plexi-alpha","pane","new","--right"]})).unwrap();
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        handle_cli_trace(dir.path(), &json!({"id":secret_id,"phase":"start","pane_id":20,
+            "argv":["plexi","secret","set","FOO","bar"]})).unwrap();
+        let (rows, _) = read_session(dir.path(), "sess-test-cli").unwrap();
+        let calls = cli_calls(rows.clone(), Some(19));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["data"]["argv"], json!(["plexi-alpha","pane","new","--right"]));
+        assert_eq!(calls[0]["data"]["exit_code"], 2);
+        assert_eq!(calls[0]["data"]["agent_session_id"], "agent-19");
+        let calls = cli_calls(rows, Some(20));
+        assert_eq!(calls[0]["data"]["argv"][4], "<redacted>");
+        assert!(calls[0]["data"]["exit_code"].is_null());
+        assert!(!std::fs::read_to_string(dir.path().join("sessions/sess-test-cli.jsonl")).unwrap().contains("bar"));
     }
 }
