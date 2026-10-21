@@ -595,6 +595,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 
 | Subcommand | Description |
 |---|---|
+| `fleet` | Show tasks and their workers, ordered by attention, with blocking reasons |
 | `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
 | `list` | List active agents from both workspace and global tiers |
 | `show` | Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command |
@@ -612,6 +613,15 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `cancel` | Stop a queued or running headless task before the next tool call |
 | `conversation` | Read one head's conversation |
 | `delegate` | Start a child run whose grants are a subset of the parent run |
+
+### `plexi agent fleet`
+
+Show tasks and their workers, ordered by attention, with blocking reasons
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print the shared Agents pane view as JSON |
+| `--filter` | string | no | Select all, needs-attention, working, or done workers Default: `all`. |
 
 ### `plexi agent create`
 
@@ -1447,7 +1457,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 |---|---|
 | `wait` | Wait for current idle, blocked, or exited state; print its lifecycle record. Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure |
 | `events` | Follow brokered pane lifecycle records as NDJSON until interrupted |
-| `new` | Open a new terminal pane, or launch an agent with `--agent` and wait until ready |
+| `new` | Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent` |
 | `name` | Rename a pane |
 | `list` | List all open panes as a JSON array |
 | `focus` | Move the visible focus to a specific pane |
@@ -1489,7 +1499,7 @@ Follow brokered pane lifecycle records as NDJSON until interrupted
 
 ### `plexi pane new`
 
-Open a new terminal pane, or launch an agent with `--agent` and wait until ready.
+Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent`.
 
 `--agent <tier-alias>` is the supported way to launch an agent into a fresh pane: the host runs the command in the new pane and prints the pane id only once the agent reports idle, so a printed id on stdout means ready-to-brief with `plexi pane send <id> "<brief>" --submit` (two commands, no sleeps, no capture polling).
 
@@ -1499,7 +1509,7 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<cmd>` | string | no | Shell command to run in the new terminal |
+| `<cmd>` | string | no | Shell command to run, or `agents` to open the built-in Agents pane |
 | `--agent` | string | no | Launch an agent in the new pane and block until it reports ready-to-brief.  The value is a shell command — normally a size-tier alias such as `c-large` or `codex-small` — run in the new pane verbatim. The pane id is printed only once the agent has booted, so a successful id on stdout means the pane is ready to receive a brief via `plexi pane send <id> "<brief>" --submit`. On boot timeout the reason and the created pane id go to stderr, stdout stays empty, and the exit code is 2 so the caller can close the pane.  Requires a running Plexi host (PLEXI_SOCKET). |
 | `--boot-timeout` | string | no | How long to wait for the agent to report ready, in seconds. Defaults to 60 when omitted (the host owns the default) |
 | `--name` / `-n` | string | no | Name the pane |

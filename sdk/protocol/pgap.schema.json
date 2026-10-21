@@ -137,6 +137,15 @@
           ],
           "type": "string"
         },
+        "FleetFilter": {
+          "enum": [
+            "all",
+            "needs-attention",
+            "working",
+            "done"
+          ],
+          "type": "string"
+        },
         "ModelTier": {
           "description": "Coarse model tier requested by the app. The host maps each tier to a\nconcrete model identifier per backend (spec §ai.query):\n  - `Low`    → Haiku\n  - `Medium` → Sonnet\n  - `High`   → Opus",
           "enum": [
@@ -2014,7 +2023,28 @@
         },
         {
           "additionalProperties": false,
-          "description": "Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question\nand transition the worker pane to `AgentState::Blocked` without interrupting\nthe human (`plexi agent ask`, stint 0802).",
+          "description": "Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question\nand transition the worker pane to `AgentState::Blocked` without interrupting\nthe human (`plexi agent ask`, stint 0802).\nRead the shared task and worker roster.",
+          "properties": {
+            "filter": {
+              "$ref": "#/$defs/FleetFilter",
+              "default": "all"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_fleet",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "pane_id": {
               "format": "uint64",

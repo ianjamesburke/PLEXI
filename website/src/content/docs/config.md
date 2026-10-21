@@ -165,6 +165,8 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `stalled_after_secs` | integer | — | Idle ephemeral worker stall threshold in seconds (default 120). |
+| `palette_agent_results` | bool | — | Show agent jump rows in the command palette (default false). |
 | `low` | string | claude haiku with --dangerously-skip-permissions | Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions. |
 | `medium` | string | claude sonnet with --dangerously-skip-permissions | Standard work. Default: claude sonnet with --dangerously-skip-permissions. |
 | `high` | string | claude with --dangerously-skip-permissions | Complex/autonomous tasks. Default: claude with --dangerously-skip-permissions. |
@@ -222,6 +224,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `scroll_down` | scroll down |
 | `increase_font_size` | increase font size |
 | `decrease_font_size` | decrease font size |
+| `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
 | `open_file_browser` | open file browser |
 | `open_quick_note` | open quick note |
 | `open_config` | open config |
@@ -349,11 +352,14 @@ model_high   = "anthropic/claude-fable-5"
 # assistant = true
 
 # [keybindings]
+# open_agents = "cmd+alt+a"
 # toggle_command_palette = "cmd+p"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"
 
 [agents]
+stalled_after_secs = 120
+palette_agent_results = false
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
