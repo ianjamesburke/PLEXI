@@ -662,6 +662,9 @@ fn main() -> eframe::Result {
                             json,
                         )),
                         AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
+                        AgentCmd::Grants { cmd } => {
+                            std::process::exit(cli::agent_grants_dispatch(cmd))
+                        }
                         AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
                         AgentCmd::Assign { head, input, json } => {
                             std::process::exit(cli::agent_assign_cli(&head, &input, json))

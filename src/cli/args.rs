@@ -2849,12 +2849,19 @@ pub enum AgentCmd {
     /// Create or list an agent head stored under `.plexi/agents`.
     ///
     /// A head is a named definition. `AGENT.md` is guidance and grants nothing.
-    /// `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+    /// `--grant tool=allow[:hard|:soft]|ask|deny` is the authority the permission gate enforces.
     ///
     /// Example: plexi agent head create lead --grant agents.ping=allow --json
     Head {
         #[command(subcommand)]
         cmd: AgentHeadCmd,
+    },
+    /// Inspect hard and soft tool grants recorded for agent heads in the current workspace.
+    ///
+    /// Example: plexi agent grants list --json
+    Grants {
+        #[command(subcommand)]
+        cmd: AgentGrantsCmd,
     },
     /// Spawn, list, or finish a run of an agent head.
     ///
@@ -2913,8 +2920,8 @@ pub enum AgentCmd {
     },
     /// Start a child run whose grants are a subset of the parent run.
     ///
-    /// A grant the parent does not hold is refused and audited. The child is
-    /// temporary and does not appear in `agent head list` unless `--all`.
+    /// A grant the parent does not hold is refused, audited, and filed in Needs-you.
+    /// The child is temporary and does not appear in `agent head list` unless `--all`.
     ///
     /// Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
     Delegate {
@@ -2924,9 +2931,19 @@ pub enum AgentCmd {
         /// Child head name
         #[arg(long)]
         name: String,
-        /// Grant to copy, as `tool=allow|ask|deny`. Repeatable.
+        /// Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
         #[arg(long = "grant")]
         grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentGrantsCmd {
+    /// List tool grants recorded for agent heads in the current workspace.
+    List {
         /// Print the host JSON reply
         #[arg(long)]
         json: bool,
@@ -2945,7 +2962,7 @@ pub enum AgentHeadCmd {
         /// Short description stored on the head card
         #[arg(long)]
         description: Option<String>,
-        /// Grant, as `tool=allow|ask|deny`. Repeatable.
+        /// Grant, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
         #[arg(long = "grant")]
         grant: Vec<String>,
         /// Print the host JSON reply

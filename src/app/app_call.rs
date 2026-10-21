@@ -366,6 +366,7 @@ impl PlexiApp {
                     context_id: Some(resolved_context),
                     pane_id: resolved_pane,
                     expected_revision,
+                    ..Default::default()
                 };
                 match monitor.file_needs_you_with_details(
                     crate::broker::gate::NeedsYouFile {

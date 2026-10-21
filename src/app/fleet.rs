@@ -91,6 +91,7 @@ impl PlexiApp {
                         n.kind,
                         crate::broker::gate::NeedsYouKind::ApprovalClick
                             | crate::broker::gate::NeedsYouKind::PermissionChange
+                            | crate::broker::gate::NeedsYouKind::PermissionRequest
                     ) {
                         Some(BlockedOn::Permission {
                             summary: n.summary.clone(),

@@ -1306,6 +1306,7 @@ mod tests {
             context_id: Some(1),
             pane_id: Some(1),
             expected_revision: Some("rev-1".to_string()),
+            ..Default::default()
         };
         let (qid, _token) = monitor
             .file_needs_you_with_details(

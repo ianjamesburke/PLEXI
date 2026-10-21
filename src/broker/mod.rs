@@ -95,6 +95,27 @@ pub enum GrantDuration {
     Always,
 }
 
+/// Whether a grant is permanent (`hard`) or time-limited (`soft`).
+///
+/// Old `grants.toml` entries without a `kind` field deserialize as `Hard` via
+/// `#[serde(default)]`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantKind {
+    #[default]
+    Hard,
+    Soft,
+}
+
+impl GrantKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hard => "hard",
+            Self::Soft => "soft",
+        }
+    }
+}
+
 /// Where a grant came from. Managed grants cannot be overridden by any other
 /// source — they are evaluated first at each decision tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -151,6 +172,9 @@ pub struct GrantRecord {
     pub decision: Decision,
     pub duration: GrantDuration,
     pub source: GrantSource,
+    /// Hard (permanent until revoked) vs soft (expires into `ask`).
+    #[serde(default)]
+    pub kind: GrantKind,
     /// Unix seconds.
     pub created_at: i64,
     /// Unix seconds; `None` = no expiry.
@@ -274,6 +298,7 @@ impl GrantRecord {
             decision: Decision::Deny,
             duration: GrantDuration::Once,
             source: GrantSource::Session,
+            kind: GrantKind::Hard,
             created_at: 0,
             expires_at: None,
             binding_schema: 0,
@@ -314,6 +339,7 @@ impl GrantRecord {
             decision,
             duration,
             source,
+            kind: GrantKind::Hard,
             created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
             binding_schema: 1,
@@ -634,10 +660,13 @@ impl PermissionPosture {
     pub fn load_from_config(config_dir: &Path) -> Option<Self> {
         let path = config_dir.join("config.toml");
         let raw = std::fs::read_to_string(&path).ok()?;
-        let has_table = toml::from_str::<toml::Value>(&raw)
-            .ok()
-            .is_some_and(|v| v.get("permissions").is_some());
-        if !has_table {
+        let value = toml::from_str::<toml::Value>(&raw).ok()?;
+        let perm_table = value.get("permissions").and_then(toml::Value::as_table)?;
+        let has_posture_keys = perm_table.contains_key("default_posture")
+            || perm_table.contains_key("allow")
+            || perm_table.contains_key("ask")
+            || perm_table.contains_key("deny");
+        if !has_posture_keys {
             return None;
         }
         match Self::from_toml_str(&raw) {
@@ -1040,6 +1069,15 @@ impl GrantStore {
         posture: Option<&PermissionPosture>,
     ) -> Decision {
         let now = crate::platform::clock::now_secs() as i64;
+        self.evaluate_at(req, posture, now)
+    }
+
+    pub fn evaluate_at(
+        &self,
+        req: &PermissionRequest,
+        posture: Option<&PermissionPosture>,
+        now: i64,
+    ) -> Decision {
         let matching: Vec<&GrantRecord> = self
             .file
             .data
@@ -1706,5 +1744,31 @@ deny = ["host.secrets.read"]
             PermissionPosture::from_toml_str("[other]\nx = 1\n").is_err(),
             "missing [permissions] table must fail, not silently default"
         );
+    }
+
+    #[test]
+    fn grants_toml_without_kind_loads_as_hard() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_toml = r#"[[records]]
+actor_type = "agent"
+actor_id = "agent:lead"
+actor_scope = "workspace"
+workspace_root = "/tmp/ws"
+target_type = "host_tool"
+target_id = "agents.ping"
+resource_scope = "workspace"
+decision = "allow"
+duration = "always"
+source = "user"
+created_at = 1700000000
+grant_id = "grant_legacy_1"
+args_unbound = true
+"#;
+        std::fs::write(dir.path().join("grants.toml"), legacy_toml).unwrap();
+        let store = GrantStore::load_or_default(dir.path());
+        assert_eq!(store.records().len(), 1);
+        assert_eq!(store.records()[0].grant_id, "grant_legacy_1");
+        assert_eq!(store.records()[0].kind, GrantKind::Hard);
+        assert_eq!(store.records()[0].expires_at, None);
     }
 }

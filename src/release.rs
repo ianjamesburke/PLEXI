@@ -144,6 +144,7 @@ impl ReleaseFeature {
             Self::AiSetup => &[Sub(&["ai", "setup"]), Sub(&["ai", "onboard"])],
             Self::Leads => &[
                 Sub(&["agent", "head"]),
+                Sub(&["agent", "grants"]),
                 Sub(&["agent", "run"]),
                 Sub(&["agent", "assign"]),
                 Sub(&["agent", "cancel"]),

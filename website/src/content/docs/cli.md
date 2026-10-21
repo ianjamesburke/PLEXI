@@ -608,6 +608,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `reopen` | Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory |
 | `hook` | Install or uninstall agent hook integrations |
 | `head` | Create or list an agent head stored under `.plexi/agents` |
+| `grants` | Inspect hard and soft tool grants recorded for agent heads in the current workspace |
 | `run` | Spawn, list, or finish a run of an agent head |
 | `assign` | Assign work to a head. The task is stored even when no pane is open |
 | `cancel` | Stop a queued or running headless task before the next tool call |
@@ -822,7 +823,7 @@ Remove PLEXI agent-state hook integrations
 
 Create or list an agent head stored under `.plexi/agents`.
 
-A head is a named definition. `AGENT.md` is guidance and grants nothing. `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+A head is a named definition. `AGENT.md` is guidance and grants nothing. `--grant tool=allow[:hard|:soft]|ask|deny` is the authority the permission gate enforces.
 
 Example: plexi agent head create lead --grant agents.ping=allow --json
 
@@ -840,7 +841,7 @@ Create a head in the current workspace
 | `<name>` | string | yes | Head id (lowercase slug) |
 | `--display-name` | string | no | Display name. Defaults to the head id on the host when omitted |
 | `--description` | string | no | Short description stored on the head card |
-| `--grant` | string (repeatable) | no | Grant, as `tool=allow|ask|deny`. Repeatable |
+| `--grant` | string (repeatable) | no | Grant, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable |
 | `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent head list`
@@ -850,6 +851,24 @@ List heads in the current workspace
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--all` | flag | no | Include temporary delegated children |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent grants`
+
+Inspect hard and soft tool grants recorded for agent heads in the current workspace.
+
+Example: plexi agent grants list --json
+
+| Subcommand | Description |
+|---|---|
+| `list` | List tool grants recorded for agent heads in the current workspace |
+
+#### `plexi agent grants list`
+
+List tool grants recorded for agent heads in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
 | `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent run`
@@ -951,7 +970,7 @@ Example: plexi agent conversation --head lead-b --json
 
 Start a child run whose grants are a subset of the parent run.
 
-A grant the parent does not hold is refused and audited. The child is temporary and does not appear in `agent head list` unless `--all`.
+A grant the parent does not hold is refused, audited, and filed in Needs-you. The child is temporary and does not appear in `agent head list` unless `--all`.
 
 Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
 
@@ -959,7 +978,7 @@ Example: plexi agent delegate --parent-run run_example --name scout --grant agen
 |---|---|---|---|
 | `--parent-run` | string | yes | Active parent run id |
 | `--name` | string | yes | Child head name |
-| `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow|ask|deny`. Repeatable |
+| `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable |
 | `--json` | flag | no | Print the host JSON reply |
 
 ## `plexi context`
