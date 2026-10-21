@@ -247,16 +247,22 @@ impl PlexiApp {
             Some(from_pane_id),
             serde_json::json!({"answer":text}).to_string(),
         );
+        let mut session_id = None;
         if let Some(pane) = self.windows[index].panes.get_mut(&pane_id) {
             if let Some(mut state) = pane.agent().cloned() {
+                session_id = state.session_id.clone();
                 state.state = AgentState::Working;
                 state.detail = None;
                 pane.set_agent(Some(state));
             }
             if let Some(t) = pane.as_terminal_mut() {
+                if session_id.is_none() {
+                    session_id = t.agent_session_id.clone();
+                }
                 t.last_blocked_reason = None;
             }
         }
+        self.withdraw_agent_attention_items(pane_id, session_id.as_deref());
         self.mark_workspace_dirty();
         log::info!("agents: reply delivered pane_id={pane_id} from_pane_id={from_pane_id}");
     }
@@ -442,6 +448,172 @@ mod attention_tests {
         assert_eq!(row.events[0], notifications[0].agent_event());
         assert!(row.events[0].body.contains("Which branch?"));
     }
+
+    #[test]
+    fn non_attention_state_report_withdraws_agent_attention_and_preserves_broker_permission_request() {
+        let mut h = HostHarness::new();
+        h.app.notifications_enabled = true;
+        let agent = h.add_focused_terminal();
+        let other = h.add_test_pane();
+        h.focus_pane(other);
+
+        // 1. Agent reports needs_you -> files NeedsYouKind::Question, appears in open_items and agent next.
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: agent,
+            state: AgentState::NeedsYou,
+            agent: "test".into(),
+            detail: Some("Which branch?".into()),
+            session_id: None,
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let items = crate::overlays::attention::open_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, crate::broker::gate::NeedsYouKind::Question);
+        let question_id = items[0].id.clone();
+
+        // 2. Agent reports idle -> withdraws its attention item without recording an approval,
+        // clears the attention notification, and removes the agent from `agent next`.
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: agent,
+            state: AgentState::Idle,
+            agent: "test".into(),
+            detail: None,
+            session_id: None,
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        assert!(
+            crate::overlays::attention::open_items().is_empty(),
+            "attention card must be cleared when agent transitions to idle"
+        );
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let settled = monitor.get_needs_you(&question_id).expect("settled item");
+        assert_eq!(
+            settled.resolution,
+            Some(crate::broker::gate::NeedsYouResolution::Denied),
+            "withdrawn item must not be recorded as an approval"
+        );
+        assert!(
+            h.app
+                .pending_notifications
+                .iter()
+                .all(|n| n.agent_source_pane() != agent),
+            "agent-attention notification must be removed"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let response = dir.path().join("next.json");
+        h.app.handle_pane_ipc_request(AppRequest::AgentNext {
+            response_file: response.to_string_lossy().into_owned(),
+        });
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+        assert!(
+            value["pane_id"].is_null(),
+            "plexi agent next --json must return null after agent returns to idle"
+        );
+        assert_eq!(
+            h.app.fleet_focused_pane(),
+            Some(other),
+            "focus must not move when no agents need attention"
+        );
+
+        // 3. Also verify working and completed withdraw blocked/needs_you items,
+        // while a broker-filed PermissionRequest is NOT withdrawn by an agent state report.
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: agent,
+            state: AgentState::Blocked,
+            agent: "test".into(),
+            detail: Some("Waiting on input".into()),
+            session_id: Some("sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        let perm_req_id = monitor
+            .file_needs_you_with_details(
+                crate::broker::gate::NeedsYouFile {
+                    kind: crate::broker::gate::NeedsYouKind::PermissionRequest,
+                    actor: format!("pane:{agent}"),
+                    resource: "git.push".into(),
+                    summary: "tool 'git.push' was denied".into(),
+                    expires_at: None,
+                    run_tag: Some("sess-1".into()),
+                },
+                Some(crate::broker::gate::NeedsYouDetails {
+                    pane_id: Some(agent),
+                    tool: Some("git.push".into()),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .0;
+        h.hidden_frame();
+        assert_eq!(crate::overlays::attention::open_items().len(), 2);
+
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: agent,
+            state: AgentState::Working,
+            agent: "test".into(),
+            detail: None,
+            session_id: Some("sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let remaining = crate::overlays::attention::open_items();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "broker PermissionRequest must survive agent state report"
+        );
+        assert_eq!(remaining[0].id, perm_req_id);
+        assert_eq!(
+            remaining[0].kind,
+            crate::broker::gate::NeedsYouKind::PermissionRequest
+        );
+
+        // 4. Verify completed also withdraws an open agent needs_you item.
+        monitor
+            .resolve_needs_you_from(
+                &perm_req_id,
+                false,
+                crate::broker::gate::ResolveSurface::Desktop,
+            )
+            .unwrap();
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: agent,
+            state: AgentState::NeedsYou,
+            agent: "test".into(),
+            detail: Some("Final check?".into()),
+            session_id: Some("sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        assert_eq!(crate::overlays::attention::open_items().len(), 1);
+
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id: agent,
+            state: AgentState::Completed,
+            agent: "test".into(),
+            detail: None,
+            session_id: Some("sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        assert!(
+            crate::overlays::attention::open_items().is_empty(),
+            "completed state report must withdraw the agent's open needs-you item"
+        );
+    }
 }
 
 #[derive(Default)]
@@ -474,6 +646,7 @@ impl PlexiApp {
             state,
             AgentState::NeedsYou | AgentState::Blocked | AgentState::Completed
         ) {
+            self.clear_agent_attention_notification(pane_id);
             return;
         }
         let role = self
@@ -511,6 +684,41 @@ impl PlexiApp {
                 .pending_os
                 .push((pane_id, state.clone(), event));
         }
+    }
+
+    pub(crate) fn clear_agent_attention_notification(&mut self, pane_id: u64) {
+        let notify_id = format!("agent-attention-{pane_id}");
+        let before = self.pending_notifications.len();
+        self.pending_notifications
+            .retain(|n| n.notify_id != notify_id);
+        if self.pending_notifications.len() != before {
+            if self.current_notify_id.as_deref() == Some(notify_id.as_str()) {
+                self.current_notify_id = None;
+            }
+            if self.pending_notifications.is_empty() {
+                self.show_notification_modal = false;
+            }
+            self.save_notifications();
+        }
+    }
+
+    pub(crate) fn withdraw_agent_attention_items(
+        &mut self,
+        pane_id: u64,
+        session_id: Option<&str>,
+    ) {
+        let withdrawn = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        )
+        .withdraw_agent_needs_you(pane_id, session_id);
+        if !withdrawn.is_empty() {
+            log::info!(
+                "attention: withdrew {} agent needs-you item(s) for pane_id={pane_id}: {:?}",
+                withdrawn.len(),
+                withdrawn
+            );
+        }
+        self.clear_agent_attention_notification(pane_id);
     }
 
     pub(crate) fn service_agent_attention(&mut self, ctx: &egui::Context) {
