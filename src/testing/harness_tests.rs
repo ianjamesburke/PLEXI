@@ -12437,7 +12437,10 @@ fn pane_close_keys_keep_host_and_restore_zoom() {
 #[test]
 fn working_agent_quit_requires_confirmation_and_cancel_preserves_panes() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
+    let pane_count = h.pane_count();
+    #[cfg(unix)]
+    let child_pid = h.terminal_backend(pane).child_pid();
     h.app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
         agent: "test-agent".into(),
         state: crate::protocol::AgentState::Working,
@@ -12449,6 +12452,9 @@ fn working_agent_quit_requires_confirmation_and_cancel_preserves_panes() {
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!h.app.pending_close);
     assert!(!h.app.quitting);
+    assert_eq!(h.pane_count(), pane_count);
+    #[cfg(unix)]
+    assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0, "Cancel keeps the agent process running");
     assert!(h.app.windows[0].panes.contains_key(&pane));
 }
 

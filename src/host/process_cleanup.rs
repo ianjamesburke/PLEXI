@@ -1,21 +1,25 @@
 //! Pane-owned process teardown. PTY launch uses setsid (alacritty), so the
 //! recorded root pid is also its process-group id. The host marker follows
 //! children across nohup, setsid and reparenting; it is never inherited by a
-//! separately launched Plexi host.
-use std::collections::BTreeMap;
+//! host launched through `plexi host start`.
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 #[cfg(unix)]
-use std::collections::BTreeSet;
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
 
 pub(crate) const SESSION_ENV: &str = "PLEXI_HOST_SESSION";
 static SESSION: OnceLock<String> = OnceLock::new();
+#[cfg(unix)]
 #[derive(Clone)]
 struct RootProcess {
     pgid: i32,
     started: u64,
     marker: String,
 }
+#[cfg(unix)]
 static ROOTS: Mutex<BTreeMap<u32, RootProcess>> = Mutex::new(BTreeMap::new());
 
 pub(crate) fn session_marker() -> &'static str {
@@ -23,7 +27,10 @@ pub(crate) fn session_marker() -> &'static str {
 }
 
 #[derive(Debug)]
-pub(crate) struct PaneProcessGroup(u32);
+pub(crate) struct PaneProcessGroup {
+    #[cfg(unix)]
+    pid: u32,
+}
 impl PaneProcessGroup {
     pub(crate) fn record(pid: u32) -> Self {
         Self::record_for(pid, session_marker())
@@ -58,16 +65,20 @@ impl PaneProcessGroup {
             }
         }
         #[cfg(not(unix))]
-        let _ = marker;
-        Self(pid)
+        let _ = (pid, marker);
+        Self {
+            #[cfg(unix)]
+            pid,
+        }
     }
 }
+#[cfg(unix)]
 impl Drop for PaneProcessGroup {
     fn drop(&mut self) {
         ROOTS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
+            .remove(&self.pid);
     }
 }
 
@@ -92,14 +103,42 @@ pub(crate) fn stop_pane_processes() -> KillReport {
     stop_marked_processes(session_marker(), grace)
 }
 
+// Shutdown helpers must not let an unresponsive tmux server stall host exit.
+fn quit_helper(args: &[&str], deadline: Instant) -> std::io::Result<std::process::Output> {
+    if Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "quit helper deadline elapsed",
+        ));
+    }
+    let mut child = std::process::Command::new(args[0])
+        .args(&args[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "quit helper timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// An existing tmux server does not necessarily propagate a client's env to
 /// sessions. Only an explicit matching session environment proves ownership;
 /// never kill an unmarked shared server or a user-selected custom socket.
 fn stop_marked_tmux_sessions(marker: &str) {
-    let sessions = match std::process::Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_id}"])
-        .output()
-    {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let sessions = match quit_helper(&["tmux", "list-sessions", "-F", "#{session_id}"], deadline) {
         Ok(output) if output.status.success() => output,
         Ok(_) => return, // No default server is a normal state.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
@@ -110,10 +149,14 @@ fn stop_marked_tmux_sessions(marker: &str) {
     };
     let expected = format!("{SESSION_ENV}={marker}");
     for session in String::from_utf8_lossy(&sessions.stdout).lines() {
-        let env = match std::process::Command::new("tmux")
-            .args(["show-environment", "-t", session, SESSION_ENV])
-            .output()
-        {
+        if Instant::now() >= deadline {
+            log::warn!("quit: tmux session cleanup deadline elapsed");
+            break;
+        }
+        let env = match quit_helper(
+            &["tmux", "show-environment", "-t", session, SESSION_ENV],
+            deadline,
+        ) {
             Ok(output) => output,
             Err(e) => {
                 log::warn!("quit: tmux environment query failed session={session}: {e}");
@@ -121,10 +164,7 @@ fn stop_marked_tmux_sessions(marker: &str) {
             }
         };
         if env.status.success() && String::from_utf8_lossy(&env.stdout).trim() == expected {
-            match std::process::Command::new("tmux")
-                .args(["kill-session", "-t", session])
-                .output()
-            {
+            match quit_helper(&["tmux", "kill-session", "-t", session], deadline) {
                 Ok(output) if output.status.success() => {
                     log::info!("quit: stopped marked tmux session={session}")
                 }
@@ -228,7 +268,12 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
         signal(-*group, libc::SIGTERM);
     }
     for pid in &owned {
-        signal(*pid as i32, libc::SIGTERM);
+        if !process_groups
+            .get(pid)
+            .is_some_and(|group| groups.contains(group))
+        {
+            signal(*pid as i32, libc::SIGTERM);
+        }
     }
     let deadline = std::time::Instant::now() + grace;
     let tracked: Vec<_> = identities
@@ -285,6 +330,15 @@ fn stop_marked_processes(_marker: &str, _grace: Duration) -> KillReport {
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+
+    #[test]
+    fn unresponsive_quit_helper_is_killed_at_deadline() {
+        let start = Instant::now();
+        let error =
+            quit_helper(&["/bin/sleep", "600"], start + Duration::from_millis(30)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
 
     struct FixtureChild(std::process::Child);
     impl Drop for FixtureChild {

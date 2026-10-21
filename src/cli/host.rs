@@ -1322,6 +1322,7 @@ mod tests {
         let parent = vec![
             ("PLEXI_SOCKET".to_string(), "/tmp/x.sock".to_string()),
             ("PLEXI_PANE_ID".to_string(), "7".to_string()),
+            (crate::host::process_cleanup::SESSION_ENV.to_string(), "parent-host".to_string()),
             ("PLEXI_CONTEXT_ID".to_string(), "3".to_string()),
             ("PLEXI_CONTEXT_ROOT".to_string(), "/tmp".to_string()),
             ("PLEXI_RUNNING".to_string(), "1".to_string()),
@@ -1342,6 +1343,7 @@ mod tests {
         assert_eq!(map.get(crate::workspace::BACKGROUND_SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_SOCKET"), None);
         assert_eq!(map.get("PLEXI_PANE_ID"), None);
+        assert_eq!(map.get(crate::host::process_cleanup::SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ID"), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ROOT"), None);
         assert_eq!(map.get("PLEXI_RUNNING"), None);

@@ -2480,7 +2480,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | Subcommand | Description |
 |---|---|
 | `start` | Launch this channel's app bundle detached and wait for readiness |
-| `stop` | Stop the running host for this channel |
+| `stop` | Stop the running host and every pane agent for this channel |
 | `log` | Write one info-level marker line into the running host's channel log |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
@@ -2503,9 +2503,9 @@ Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
 
 ### `plexi host stop`
 
-Stop the running host for this channel.
+Stop the running host and every pane agent for this channel.
 
-Sends a clean shutdown request first, falling back to SIGTERM if the host doesn't confirm exit in time.
+Non-interactive: terminates pane process groups with SIGTERM, then SIGKILL after a grace period (PLEXI_QUIT_GRACE_MS, default 2000 ms). Sends a clean shutdown request first, falling back to SIGTERM if the host doesn't confirm exit in time.
 
 ### `plexi host log`
 
