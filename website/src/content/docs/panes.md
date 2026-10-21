@@ -11,7 +11,7 @@ Plexi's UI is built from **panes** arranged in a tiling grid.
 A pane is a single rectangular region. There are two kinds:
 
 - **Terminal** — a full PTY session. Inherits your shell, dotfiles, and CWD.
-- **App** — runs a Plexi app process via PGAP. Python apps are native subprocesses with capability-gated host APIs, not a process sandbox.
+- **App** — renders a Plexi app through PGAP. See [App execution and permissions](/docs/apps#execution-and-permissions) for the Python/WASM runtime and capability boundaries.
 
 ## Splitting
 

@@ -6,7 +6,28 @@ order: 5
 
 Plexi apps render into panes through PGAP. The Python SDK is the default authoring path.
 
-Python apps are sandboxed, not native subprocesses: they run through the CPython-in-WASM adapter inside their own `wasmtime::Store`, the same component boundary a Rust WASM app gets. Capabilities gate host APIs such as `net.http`, `secrets.get`, and `ai.query` on top of that sandbox.
+## Execution and permissions
+
+Python apps opened in panes run in CPython-in-WASM, inside a Wasmtime store.
+The host routes `.py` and `.pyc` entries to this adapter and does not fall back
+to a native subprocess when the WASM bundle is missing. Rust WASM components
+use the component runtime; both paths gate host APIs through capabilities.
+
+The Python guest receives read-only mounts for its app directory, the SDK,
+and the Python standard library. Host filesystem access, network requests,
+and secrets go through the host APIs and their grants. Declaring a capability
+in the manifest requests access; it does not grant access by itself.
+
+Native Python still runs during development tooling, such as type checks and
+SDK tests executed with a local interpreter. Those processes have the permissions
+of the user who starts them; the pane sandbox does not cover them. A terminal
+pane running `python3` is also an ordinary native process.
+
+The routing and sandbox setup are defined by
+[`open_python_wasm_app_pane` and `build_python_runtime`](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/pane_ops/create.rs)
+and [`WasmPythonRuntime::launch`](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/host/wasm_python.rs).
+The [app checker](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/cli/app_check.rs)
+uses WASM for render checks and native tooling for static analysis.
 
 ## Create an App
 
@@ -25,7 +46,7 @@ my-app/
   manifest.toml    ← capabilities, entry point, metadata
   main.py          ← your app code
   tests/test_app.py ← AppHarness smoke tests
-  .venv/           ← isolated Python runtime
+  .venv/           ← local development environment
 ```
 
 Validate the app and write screenshots:

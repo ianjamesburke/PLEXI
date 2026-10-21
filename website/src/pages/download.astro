@@ -3,8 +3,9 @@ import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
 const UNIX_INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | bash';
+const WINDOWS_INSTALL_CMD = 'irm https://plexiapp.com/install.ps1 | iex';
 ---
-<Layout title="Download Plexi" description="Install the Plexi tiling terminal host and CLI on macOS. Linux and Windows are coming soon.">
+<Layout title="Download Plexi" description="Install the Plexi tiling terminal host and CLI on macOS, Linux, and Windows.">
   <header class="dl-hero">
     <div class="wrap">
       <h1>Install Plexi</h1>
@@ -24,7 +25,7 @@ const UNIX_INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | bash';
       <div class="install-block">
         <div class="install-heading">
           <span class="platform-mark">01</span>
-          <div class="install-label">macOS <span>(Apple Silicon; Intel when published)</span></div>
+          <div class="install-label">macOS <span>(Apple Silicon and Intel)</span></div>
         </div>
         <div class="install-cmd-row">
           <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
@@ -36,27 +37,48 @@ const UNIX_INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | bash';
         <p class="install-note">
           Downloads the matching current macOS stable release. Requires <code>bash</code>,
           <code>curl</code>, <code>tar</code>, and <code>shasum</code>; it does not need Rust,
-          Git, or administrator access. The installer selects your architecture; Intel works when
-          that release publishes its x64 archive and otherwise reports the missing asset clearly.
+          Git, or administrator access. The installer selects the archive for your architecture.
         </p>
       </div>
 
-      <div class="install-block disabled" aria-disabled="true">
+      <div class="install-block">
         <div class="install-heading">
           <span class="platform-mark">02</span>
-          <div class="install-label">Linux</div>
-          <span class="soon-badge">Coming soon</span>
+          <div class="install-label">Linux <span>(x86_64, X11)</span></div>
         </div>
+        <div class="install-cmd-row">
+          <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
+          <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy Linux install command"><span class="copy-label">Copy</span></button>
+        </div>
+        <p class="install-note">Downloads the Linux x64 stable archive into user-owned directories.
+          Requires bash, curl, tar, and sha256sum or shasum. Wayland is not supported.
+          See <a href="/docs/getting-started#linux-limitations">Linux limitations</a>.</p>
       </div>
 
-      <div class="install-block disabled" aria-disabled="true">
+      <div class="install-block">
         <div class="install-heading">
           <span class="platform-mark">03</span>
-          <div class="install-label">Windows</div>
-          <span class="soon-badge">Coming soon</span>
+          <div class="install-label">Windows <span>(x64)</span></div>
         </div>
+        <div class="install-cmd-row">
+          <code class="install-cmd">{WINDOWS_INSTALL_CMD}</code>
+          <button class="copy-btn" data-cmd={WINDOWS_INSTALL_CMD} aria-label="Copy Windows install command"><span class="copy-label">Copy</span></button>
+        </div>
+        <p class="install-note">Run in Windows PowerShell 5.1 or later. Downloads the Windows x64
+          stable archive, verifies its SHA-256 checksum, and adds the command directory to your user PATH.
+          Rust and Visual Studio are not required.</p>
       </div>
       </div>
+
+      <p class="install-note">
+        Release assets verified on 2026-10-21:
+        <a href="https://github.com/ianjamesburke/PLEXI/releases/tag/v0.3.5">stable v0.3.5</a>
+        publishes all platforms listed above.
+        <a href="https://github.com/ianjamesburke/PLEXI/releases/tag/v0.4.0-alpha.6">Alpha v0.4.0-alpha.6</a>
+        publishes macOS Apple Silicon only. The commands above select stable, not alpha.
+        Check <a href="https://github.com/ianjamesburke/PLEXI/releases">release assets</a>
+        before selecting another channel; an available installer does not imply an archive exists for every channel.
+      </p>
 
       <p class="install-note trust-note">
         Stable, alpha and beta builds are unsigned and not notarized. Before bypassing an operating-system warning,
