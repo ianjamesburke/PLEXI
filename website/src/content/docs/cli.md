@@ -596,6 +596,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 
 | Subcommand | Description |
 |---|---|
+| `team` | Inspect or run a stored team of independent ranking agents. |
 | `fleet` | Show tasks and their workers, ordered by attention, with blocking reasons |
 | `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
 | `list` | List active agents from both workspace and global tiers |
@@ -615,6 +616,51 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `cancel` | Stop a queued or running headless task before the next tool call |
 | `conversation` | Read one head's conversation |
 | `delegate` | Start a child run whose grants are a subset of the parent run |
+
+### `plexi agent team`
+
+Inspect or run a stored team of independent ranking agents.
+
+Team v0 TOML is resolved from workspace channel teams/<name>.toml,
+then profile teams/<name>.toml, then built-in consult-experts.
+Fields: version = 0; options = ["Proceed", "Experiment", "Defer"].
+Each [[members]] has role, harness (pi/claude/codex/agy/script),
+grants = ["agents.ping=allow", "agents.review=deny"], optional model.
+Script members require command: a shell command whose stdout is exactly
+{"ranking":["Proceed","Experiment","Defer"],"rationale":"why"}.
+Scripts receive PLEXI_AGENT_TASK, PLEXI_TEAM_OPTIONS and PLEXI_TEAM_RUN_ID.
+Real harnesses report the same JSON through agent done.
+At least three members independently rank every option once. Borda awards
+N-1 down to 0 points; ties follow options order. The host writes RESULT.md.
+Grants use existing head/delegation admission; a team is not authority.
+Format v0 may change. consult-experts uses pi, claude and codex by default.
+
+| Subcommand | Description |
+|---|---|
+| `show` | Show the resolved v0 team, including roles, harnesses, options and grants |
+| `run` | Run independent team members in one task and wait for RESULT.md |
+
+#### `plexi agent team show`
+
+Show the resolved v0 team, including roles, harnesses, options and grants
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+| `--json` | flag | no |  |
+
+#### `plexi agent team run`
+
+Run independent team members in one task and wait for RESULT.md
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+| `--question` | string | yes |  |
+| `--out` | string | no | Output directory (default: a new team-results/<run-id> in the workspace) |
+| `--option` | string (repeatable) | no | Replace the stored options; repeat for each option (at least two) |
+| `--timeout` | string | no | Host-side deadline in seconds; a timed-out run fails and stops its members Default: `600`. |
+| `--json` | flag | no |  |
 
 ### `plexi agent fleet`
 
