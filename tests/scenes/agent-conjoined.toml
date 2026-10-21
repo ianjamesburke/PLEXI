@@ -1,0 +1,22 @@
+size = [1280.0, 800.0]
+
+[[steps]]
+agent_children = "seed"
+
+[[steps]]
+assert_label = { target = "host", label = "implementer · working" }
+
+[[steps]]
+key = { target = "host", value = "cmd+down" }
+
+[[steps]]
+shot = "agent-conjoined.png"
+
+[[steps]]
+assert = { pane_count = 2, context_count = 2, portal_count = 0 }
+
+[[steps]]
+agent_children = "complete"
+
+[[steps]]
+assert = { pane_count = 1, context_count = 1 }

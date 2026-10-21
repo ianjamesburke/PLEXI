@@ -580,6 +580,35 @@ mod tests {
     use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
     use egui_kittest::kittest::Queryable;
 
+    #[test]
+    fn screenshot_agent_conjoined_strip_and_parent_pin() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let parent = h.with_app_mut(|app| {
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false).unwrap();
+            let (_, tile) = app.find_pane_in_any_window(parent).unwrap();
+            app.windows[app.active_window].focused_pane = Some(tile);
+            for role in ["implementer", "tester"] {
+                let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true).unwrap();
+                app.agent_tool_children.insert(child, Some(parent));
+            }
+            parent
+        });
+        h.run_steps(4);
+        h.save_screenshot(&evidence_png!("_strip")).unwrap();
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert_eq!(app.conjoined_parent(), Some(parent));
+            assert_eq!(app.visual_owner_pane(), Some(parent));
+            assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
+        });
+        h.save_screenshot(&evidence_png!("_view")).unwrap();
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
+    }
+
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         let active_window = h.with_app(|app| app.active_window);
         add_focused_pane_to_window(h, active_window)

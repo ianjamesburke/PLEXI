@@ -1309,6 +1309,10 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenNotesPicker,
         },
+        BindingEntry {
+            modifiers: cmd(), key: egui::Key::ArrowDown, exact: true,
+            no_repeat: true, context: BindingContext::Normal, action: Action::ToggleZoom,
+        },
         // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
         // so there is no subset conflict on this key.
         BindingEntry {

@@ -344,6 +344,8 @@ pub enum Step {
     /// Chess approval through the production assistant turn, plus a human
     /// move through `KeyPane` when `phase` is `human`.
     ChessApproval { chess_approval: ChessApprovalSpec },
+    /// Seed or complete a deterministic conjoined agent family.
+    AgentChildren { agent_children: String },
 }
 
 /// One phase of the chess approval scene. `pending` queues a scripted
@@ -1764,6 +1766,7 @@ impl LiveBackend {
             Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
             Step::Expect { expect } => self.expect(expect),
             Step::Shot { shot } => self.capture_shot(shot, shots),
+            Step::AgentChildren { .. } => Err(SceneError::new("unsupported_live_verb", "agent_children is a headless fixture")),
             Step::ChessApproval { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
                 "chess_approval is a headless scene verb",
@@ -2354,6 +2357,7 @@ fn step_label(step: &Step) -> String {
             )
         }
         Step::Shot { shot } => format!("shot {shot}"),
+        Step::AgentChildren { agent_children } => format!("agent_children {agent_children}"),
         Step::ChessApproval { chess_approval } => {
             format!("chess_approval {}", chess_approval.phase)
         }
@@ -2799,8 +2803,41 @@ impl HeadlessBackend {
                     message: path.display().to_string(),
                 }))
             }
+            Step::AgentChildren { agent_children } => self.agent_children(agent_children),
             Step::ChessApproval { chess_approval } => self.chess_approval(chess_approval),
         }
+    }
+
+    fn agent_children(&mut self, phase: &str) -> Result<Option<StepDetail>, SceneError> {
+        match phase {
+            "seed" => {
+                let result = self.h.with_app_mut(|app| -> Result<Vec<(&str, u64)>, String> {
+                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "sleep 120", "Coordinate", None, false, None, None, None, None, false)?;
+                    let (_, tile) = app.find_pane_in_any_window(parent).ok_or("missing parent")?;
+                    app.windows[app.active_window].focused_pane = Some(tile);
+                    let mut members = vec![("lead", parent)];
+                    for role in ["implementer", "tester"] {
+                        let (child, _) = app.spawn_agent_worker_pane(role, "pi", "sleep 120", "Verify", Some("agent-tools-scene"), true, Some(parent), None, None, None, true)?;
+                        app.agent_tool_children.insert(child, Some(parent));
+                        members.push((role, child));
+                    }
+                    Ok(members)
+                }).map_err(|e| SceneError::new("agent_fixture", e))?;
+                for (name, id) in result { self.handles.bind(name, id)?; }
+            }
+            "complete" => {
+                for role in ["implementer", "tester"] {
+                    let id = self.handles.resolve(role)?;
+                    let response_file = self.h.workspace_root().join(format!("{role}-done.json")).to_string_lossy().into_owned();
+                    self.h.with_app_mut(|app| app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone {
+                        pane_id: id, result: Some("{}".into()), summary: Some("Verified".into()), response_file,
+                    }));
+                }
+            }
+            _ => return Err(SceneError::new("agent_fixture", "expected seed or complete")),
+        }
+        self.h.run_steps(2);
+        Ok(None)
     }
 
     fn chess_approval(

@@ -1397,6 +1397,7 @@ impl PlexiApp {
     /// Shared body of Cmd+Escape (`Action::ContextZoomOut`) and the
     /// `ZoomOutOfContext` IPC request. Returns true when a switch happened.
     pub(crate) fn zoom_out_of_context(&mut self) -> bool {
+        self.conjoined_parent_focus = None;
         if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
             if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
                 self.switch_workspace(ctx_idx);

@@ -240,10 +240,7 @@ impl PlexiApp {
         // The owner pane must be a terminal (including an exited one — its
         // "[process exited]" view auto-closes on the next keypress, which it now
         // reads from this buffer).
-        self.windows[self.active_window]
-            .panes
-            .get(&pane_id)?
-            .as_terminal()?;
+        self.windows.iter().find_map(|w| w.panes.get(&pane_id))?.as_terminal()?;
 
         let router = crate::app::input_router::PlexiInput::take_from(ctx);
         let (keyboard_events, modifiers) = router.into_events_and_modifiers();

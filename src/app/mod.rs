@@ -41,6 +41,7 @@ pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
 mod fleet;
 mod agent_tools;
+mod conjoined;
 mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
@@ -238,6 +239,7 @@ pub struct PlexiApp {
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
+    pub(crate) conjoined_parent_focus: Option<u64>,
     pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
     pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
@@ -1528,6 +1530,7 @@ impl PlexiApp {
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_parent_focus: None,
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1789,6 +1792,7 @@ impl PlexiApp {
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_parent_focus: None,
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2626,6 +2630,7 @@ impl PlexiApp {
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_parent_focus: None,
                     team_runs: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,
@@ -3962,6 +3967,9 @@ impl eframe::App for PlexiApp {
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {
+                    if let Some(parent) = self.fleet_focused_pane() {
+                        if self.dive_into_agent_children(parent) { continue; }
+                    }
                     let (focused_tile, portal_target) = {
                         let win = &self.windows[self.active_window];
                         let tile = win.focused_pane;
