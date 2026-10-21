@@ -89,6 +89,25 @@ mod tests {
     }
 
     #[test]
+    fn cli_trace_redacts_secrets_inside_shell_arguments() {
+        let argv = [
+            "plexi",
+            "pane",
+            "send",
+            "19",
+            "plexi secret set FOO 'hidden value'; echo --secret=other",
+            "run --custom-name 'private value'",
+        ]
+        .map(str::to_string);
+        let safe = redact_argv(&argv, &["CUSTOM_NAME".into()]);
+        let text = safe.join(" ");
+        assert!(!text.contains("hidden value"), "{text}");
+        assert!(!text.contains("other"), "{text}");
+        assert!(!text.contains("private value"), "{text}");
+        assert_eq!(redact_argv(&safe, &["CUSTOM_NAME".into()]), safe);
+    }
+
+    #[test]
     fn cli_trace_preserves_useful_argv() {
         let argv = ["plexi-alpha", "pane", "new", "--right"].map(str::to_string);
         assert_eq!(redact_argv(&argv, &[]), argv);
@@ -251,7 +270,7 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
                     && key.chars().enumerate().all(|(i, c)| {
                         c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
                     }))
-                    || secret_name(key, known)
+                    || (!key.contains(char::is_whitespace) && secret_name(key, known))
                 {
                     return format!("{key}=<redacted>");
                 }
@@ -263,6 +282,24 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
             }
             if arg.starts_with("--") && !arg.contains(char::is_whitespace) {
                 return arg.clone();
+            }
+            // A shell fragment is one argv value. If it embeds a secret-setting
+            // command or secret option, redact the whole fragment rather than
+            // trying to parse shell quoting and risk retaining part of a value.
+            let words: Vec<&str> = arg.split_whitespace().collect();
+            if words.len() > 1
+                && (words.windows(2).any(|pair| pair == ["secret", "set"])
+                    || words.iter().any(|word| {
+                        let name = word
+                            .split('=')
+                            .next()
+                            .unwrap_or(word)
+                            .trim_matches(['\'', '"']);
+                        (name.starts_with('-') && secret_name(name, known))
+                            || known.iter().any(|known| known.eq_ignore_ascii_case(name))
+                    }))
+            {
+                return "<redacted>".to_string();
             }
             // Also sanitize assignment strings embedded in a shell command or prompt.
             static ASSIGNMENT: OnceLock<regex::Regex> = OnceLock::new();
