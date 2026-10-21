@@ -1160,9 +1160,12 @@ pub fn uninstall(root: &Path) -> Result<()> {
     match fs::remove_dir_all(root.join("transaction")) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(source) => return Err(Error::Io {
-            action: "remove installer transaction scratch".into(), source,
-        }),
+        Err(source) => {
+            return Err(Error::Io {
+                action: "remove installer transaction scratch".into(),
+                source,
+            });
+        }
     }
     remove_if_present(&root.join(RECEIPT))?;
     for shell in ["zsh", "bash", "fish"] {
@@ -1509,7 +1512,10 @@ mod tests {
             "build-no-tag"
         );
         assert_eq!(installed_tag_text("", "build-9"), "build-9");
-        assert_eq!(installed_tag_text("v0.1.0-alpha.2", "build-9"), "v0.1.0-alpha.2");
+        assert_eq!(
+            installed_tag_text("v0.1.0-alpha.2", "build-9"),
+            "v0.1.0-alpha.2"
+        );
         assert_eq!(channel_profile_dir_name("beta"), ".plexi-beta");
         assert_eq!(channel_profile_dir_name("main"), ".plexi");
         assert_eq!(channel_profile_dir_name("pr-12"), ".plexi-pr-12");

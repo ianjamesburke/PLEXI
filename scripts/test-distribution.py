@@ -262,6 +262,16 @@ def main(args):
                 for path in new.iterdir(): tar.add(path, path.name)
         sidecar = tag_dir / (asset + '.sha256')
         sidecar.write_text(sha(archive) + '  ' + asset + '\n')
+        alpha_asset = f'plexi-{args.platform}-alpha.' + ('zip' if os.name == 'nt' else 'tar.gz')
+        alpha_archive = tag_dir / alpha_asset
+        if os.name == 'nt':
+            with zipfile.ZipFile(alpha_archive, 'w') as z:
+                for path in alpha.rglob('*'):
+                    if path.is_file(): z.write(path, path.relative_to(alpha))
+        else:
+            with tarfile.open(alpha_archive, 'w:gz') as tar:
+                for path in alpha.iterdir(): tar.add(path, path.name)
+        (tag_dir / (alpha_asset + '.sha256')).write_text(sha(alpha_archive) + '  ' + alpha_asset + '\n')
         helper = f'plexi-installer-{args.platform}' + ('.exe' if os.name == 'nt' else '')
         shutil.copy2(installer, tag_dir / helper)
         (tag_dir / (helper + '.sha256')).write_text(sha(tag_dir / helper) + '  ' + helper + '\n')
@@ -280,6 +290,13 @@ def main(args):
             def __init__(self, *a, **kw): super().__init__(*a, directory=str(server_root), **kw)
             def log_message(self, *a): pass
             def do_GET(self):
+                if self.path.startswith('/rate-limited-releases'):
+                    self.send_response(403)
+                    self.send_header('x-ratelimit-remaining', '0')
+                    self.send_header('x-ratelimit-reset', '1700000060')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
                 if self.path.startswith('/releases'):
                     body = json.dumps(release if self.path.startswith('/releases/latest') else [release]).encode()
                     self.send_response(200); self.end_headers(); self.wfile.write(body)
@@ -292,6 +309,13 @@ def main(args):
             bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-InstallOnly'] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--install-only']
             run(bootstrap, http_env)
             assert active() == 'new'
+            rate_limited_env = http_env | {'PLEXI_RELEASES_URL': base + '/rate-limited-releases'}
+            run([installer, '--channel', 'stable', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
+            run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
+            limited = run([installer, '--channel', 'stable', '--install-only'], rate_limited_env, False)
+            assert 'GitHub API rate limit reached' in limited.stderr, limited.stderr
+            print('PASS: explicit stable and alpha tags download directly when release API is rate-limited')
+            print(limited.stderr.strip())
             sidecar.write_text('0'*64 + '  ' + asset + '\n')
             run([installer, '--install-only'], http_env, False)
             sidecar.unlink()

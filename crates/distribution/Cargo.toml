@@ -12,6 +12,7 @@ semver = "1"
 tempfile = "3"
 dirs = "6"
 log = "0.4"
+chrono = "0.4"
 thiserror = "2"
 ureq = { version = "2", features = ["json"] }
 flate2 = "1"

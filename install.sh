@@ -13,6 +13,7 @@ case "$(uname -m)" in
 esac
 base="${PLEXI_RELEASE_BASE_URL:-https://github.com/ianjamesburke/PLEXI/releases/download}"
 releases_url="${PLEXI_RELEASES_URL:-https://api.github.com/repos/ianjamesburke/PLEXI/releases}"
+github_token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
 # Last --channel wins. The original argv is forwarded unchanged.
 channel=stable
@@ -102,9 +103,38 @@ extract_tags() {
 }
 
 fetch_tags() {
-  local page=1 batch extracted count tags=""
+  local page=1 batch extracted count tags="" headers body status reset retry_after remaining
   while (( page <= 1000 )); do
-    batch="$(curl -q -fsSL --retry 3 --connect-timeout 15 "${releases_url}?per_page=100&page=${page}")"
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    local curl_args=(-q -sS -L --retry 3 --connect-timeout 15 -D "$headers" -o "$body" -w '%{http_code}')
+    [[ -n "$github_token" ]] && curl_args+=(-H "Authorization: Bearer $github_token")
+    status="$(curl "${curl_args[@]}" "${releases_url}?per_page=100&page=${page}")" || {
+      rm -f "$headers" "$body"
+      echo "Unable to fetch Plexi releases page ${page}." >&2
+      exit 1
+    }
+    batch="$(cat "$body")"
+    remaining="$(awk 'tolower($1) == "x-ratelimit-remaining:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
+    reset="$(awk 'tolower($1) == "x-ratelimit-reset:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
+    retry_after="$(awk 'tolower($1) == "retry-after:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
+    rm -f "$headers" "$body"
+    if [[ "$status" == 429 || ( "$status" == 403 && ( "$remaining" == 0 || -n "$retry_after" ) ) ]]; then
+      local reset_at=""
+      if [[ "$reset" =~ ^[0-9]+$ ]]; then
+        reset_at="$(date -d "@$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
+      elif [[ "$retry_after" =~ ^[0-9]+$ ]]; then
+        local until=$(( $(date +%s) + retry_after ))
+        reset_at="$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
+      fi
+      [[ -n "$reset_at" ]] || reset_at="the time shown by GitHub"
+      echo "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at ${reset_at}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset." >&2
+      exit 1
+    fi
+    if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+      echo "Unable to fetch Plexi releases page ${page}: HTTP ${status}." >&2
+      exit 1
+    fi
     extracted="$(printf '%s' "$batch" | extract_tags)"
     if [[ -n "$extracted" ]]; then
       tags="${tags}${extracted}"$'\n'
@@ -140,7 +170,7 @@ lane_tags() {
 # across beta and stable. See crates/distribution/src/release.rs.
 select_channel_tag() {
   local want="$1" tags best
-  tags="$(fetch_tags)"
+  tags="$(fetch_tags)" || exit 1
   if [[ "$want" == alpha ]]; then
     best="$(printf '%s\n' "$tags" | lane_tags alpha | max_semver)"
     [[ -n "$best" ]] && { printf '%s' "$best"; return; }
@@ -163,8 +193,8 @@ asset="plexi-installer-${os}-${arch}"
 tag="${PLEXI_BOOTSTRAP_TAG:-}"
 if [[ -z "$tag" ]]; then
   case "$channel" in
-    alpha|beta) tag="$(select_channel_tag "$channel")" ;;
-    *) tag="$(select_channel_tag stable)" ;;
+    alpha|beta) tag="$(select_channel_tag "$channel")" || exit 1 ;;
+    *) tag="$(select_channel_tag stable)" || exit 1 ;;
   esac
 fi
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$ ]] || { echo "No ${channel} release of Plexi is published for ${os}-${arch} yet." >&2; exit 1; }
@@ -182,4 +212,18 @@ if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$work/$asset"
 else actual="$(shasum -a 256 "$work/$asset" | awk '{print $1}')"; fi
 [[ "$actual" == "$expected" ]] || { echo 'Installer checksum mismatch.' >&2; exit 1; }
 chmod 755 "$work/$asset"
-"$work/$asset" "$@"
+has_tag=0
+previous=""
+for arg in "$@"; do
+  [[ "$previous" == "--tag" || "$arg" == --tag=* ]] && has_tag=1
+  previous="$arg"
+done
+case "$channel" in
+  stable|main|alpha|beta) forward_resolved_tag=1 ;;
+  pr-*) forward_resolved_tag=0 ;;
+esac
+if (( has_tag || !forward_resolved_tag )); then
+  "$work/$asset" "$@"
+else
+  "$work/$asset" "$@" --tag "$tag"
+fi
