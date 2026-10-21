@@ -2622,6 +2622,12 @@ pub enum AgentCmd {
         #[command(subcommand)]
         cmd: AgentTeamCmd,
     },
+    /// Focus the next live agent needing attention (needs-you, blocked, done-unseen).
+    Next {
+        /// Print the focused pane id, or null when none needs attention, as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show tasks and their workers, ordered by attention, with blocking reasons.
     Fleet {
         /// Print the shared Agents pane view as JSON.

@@ -87,6 +87,7 @@ pub enum Action {
     /// Open the file browser app in the focused terminal.
     OpenFileBrowser,
     OpenAgents,
+    NextBlockedAgent,
     /// Open the quick note app (full pane, no terminal split).
     OpenQuickNote,
     /// Open config file in the text editor.
@@ -194,6 +195,7 @@ pub struct KeyBindings {
     pub scroll_down: (egui::Modifiers, egui::Key),
     pub increase_font_size: (egui::Modifiers, egui::Key),
     pub decrease_font_size: (egui::Modifiers, egui::Key),
+    pub next_blocked_agent: (egui::Modifiers, egui::Key),
     pub open_agents: (egui::Modifiers, egui::Key),
     pub open_file_browser: (egui::Modifiers, egui::Key),
     pub open_quick_note: (egui::Modifiers, egui::Key),
@@ -299,6 +301,7 @@ impl Default for KeyBindings {
             scroll_down: (cmd_shift(), egui::Key::ArrowDown),
             increase_font_size: (cmd(), egui::Key::Equals),
             decrease_font_size: (cmd(), egui::Key::Minus),
+            next_blocked_agent: (cmd_alt(), egui::Key::B),
             open_agents: (cmd_alt(), egui::Key::A),
             open_file_browser: (cmd(), egui::Key::E),
             open_quick_note: (cmd(), egui::Key::Num0),
@@ -484,6 +487,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(scroll_down, "scroll_down");
     apply_override!(increase_font_size, "increase_font_size");
     apply_override!(decrease_font_size, "decrease_font_size");
+    apply_override!(next_blocked_agent, "next_blocked_agent");
     apply_override!(open_agents, "open_agents");
     apply_override!(open_file_browser, "open_file_browser");
     apply_override!(open_quick_note, "open_quick_note");
@@ -544,6 +548,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("scroll_down", bindings.scroll_down),
         ("increase_font_size", bindings.increase_font_size),
         ("decrease_font_size", bindings.decrease_font_size),
+        ("next_blocked_agent", bindings.next_blocked_agent),
         ("open_agents", bindings.open_agents),
         ("open_file_browser", bindings.open_file_browser),
         ("open_quick_note", bindings.open_quick_note),
@@ -678,6 +683,14 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             no_repeat: true,
             context: BindingContext::Global,
             action: Action::OpenAgents,
+        },
+        BindingEntry {
+            modifiers: b.next_blocked_agent.0,
+            key: b.next_blocked_agent.1,
+            exact: true,
+            no_repeat: true,
+            context: BindingContext::Global,
+            action: Action::NextBlockedAgent,
         },
         // toggle_notification_modal is Cmd+Shift+A; exact=true so plain Cmd+A (select-all)
         // is not consumed by the subset match.
@@ -1242,6 +1255,21 @@ pub fn poll_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn attention_keys_preserve_notifications_and_use_free_binding() {
+        let b = KeyBindings::default();
+        let table = build_binding_table(&b);
+        assert_eq!(b.toggle_notification_modal, (cmd_shift(), egui::Key::A));
+        assert!(table.iter().any(|e| (e.modifiers, e.key) == b.toggle_notification_modal && e.action == Action::ToggleNotificationModal));
+        assert_eq!(b.next_blocked_agent, (cmd_alt(), egui::Key::B));
+        let overrides: crate::config::KeybindingsConfig = toml::from_str(
+            "next_blocked_agent = \"cmd+alt+g\"").unwrap();
+        assert_eq!(build_key_bindings(Some(&overrides)).next_blocked_agent, (cmd_alt(), egui::Key::G));
+        assert_eq!(table.iter().filter(|e| (e.modifiers, e.key) == b.next_blocked_agent).count(), 1);
+        assert!(table.iter().any(|e| e.action == Action::NextBlockedAgent));
+    }
 
     /// Run `poll_actions` for a single Tab keypress with an active app surface.
     fn poll_tab() -> Vec<Action> {

@@ -77,6 +77,16 @@ pub(crate) struct PendingNotification {
 }
 
 impl PendingNotification {
+    pub(crate) fn from_agent_event(pane_id: u64, event: &crate::agent::fleet::AgentEvent) -> Self {
+        Self {
+            notify_id: format!("agent-attention-{pane_id}"),
+            sender_pane_id: pane_id,
+            title: event.title.clone(),
+            body: event.body.clone(),
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn agent_source_pane(&self) -> u64 {
         if self.sender_pane_id != 0 { self.sender_pane_id } else { self.dismiss_owner_pane_id }
     }
@@ -558,7 +568,7 @@ impl PlexiApp {
 
         let is_visible = self.notification_is_visible(&notification);
         let may_interrupt = self.notification_may_interrupt(&notification);
-        let cue_played = self.play_notification_cue(&notification);
+        let cue_played = !notification.notify_id.starts_with("agent-attention-") && self.play_notification_cue(&notification);
         self.pending_notifications.push(notification);
         self.save_notifications();
 

@@ -4038,6 +4038,7 @@ impl PlexiApp {
                                 break;
                             }
                         }
+                        self.report_agent_attention(*pane_id, &crate::protocol::AgentState::Completed, None);
                         if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
                         self.mark_workspace_dirty();
                         let provenance = Provenance {
@@ -4094,6 +4095,10 @@ impl PlexiApp {
                         );
                     }
                 }
+            }
+            crate::protocol::AppRequest::AgentNext { response_file } => {
+                let pane_id = self.next_blocked_agent();
+                write_json_response(response_file, serde_json::json!({"pane_id": pane_id}));
             }
             crate::protocol::AppRequest::AgentFleet { filter, response_file } => {
                 log::info!("agents: fleet query filter={filter:?}");

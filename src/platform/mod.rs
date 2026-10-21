@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 pub mod app_nap;
+pub mod attention;
 pub mod clock;
 #[cfg(target_os = "macos")]
 pub mod finder_service;
