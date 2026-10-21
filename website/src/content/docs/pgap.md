@@ -568,9 +568,16 @@ Complete a worker agent's task, validating `--result` against `result_schema` (s
 | `result` | `string?` | no |
 | `summary` | `string?` | no |
 
-### `agent_ask`
+### `agent_fleet`
 
 Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question and transition the worker pane to `Age...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `filter` | `FleetFilter` | no |
+| `response_file` | `string` | yes |
+
+### `agent_ask`
 
 | Field | Type | Required |
 |-------|------|----------|

@@ -1626,7 +1626,7 @@ pub enum PaneCmd {
         #[arg(long)]
         pane: Option<u64>,
     },
-    /// Open a new terminal pane, or launch an agent with `--agent` and wait until ready.
+    /// Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent`.
     ///
     /// `--agent <tier-alias>` is the supported way to launch an agent into a fresh
     /// pane: the host runs the command in the new pane and prints the pane id only
@@ -1643,7 +1643,7 @@ pub enum PaneCmd {
     ///
     /// For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
     New {
-        /// Shell command to run in the new terminal
+        /// Shell command to run, or `agents` to open the built-in Agents pane
         #[arg(conflicts_with = "agent")]
         cmd: Option<String>,
         /// Launch an agent in the new pane and block until it reports ready-to-brief.
@@ -2597,6 +2597,15 @@ pub enum NoteCmd {
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
+    /// Show tasks and their workers, ordered by attention, with blocking reasons.
+    Fleet {
+        /// Print the shared Agents pane view as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Select all, needs-attention, working, or done workers.
+        #[arg(long, value_enum, default_value = "all")]
+        filter: crate::protocol::FleetFilter,
+    },
     /// Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
     ///
     /// Writes `<workspace>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)

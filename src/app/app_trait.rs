@@ -20,6 +20,7 @@ pub struct AppRenderContext<'a> {
 
 /// Commands an app can issue back to the system.
 pub enum AppCommand {
+    Fleet(crate::app::agents_app::FleetAction),
     /// A capability-gated effect returned by a WASM component. The app model
     /// executes it through the same host services that native apps use.
     WasmHostEffect {
@@ -408,6 +409,9 @@ pub trait App: Send {
     fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         None
     }
+
+    /// Receive the host-owned fleet projection without disk or socket reads.
+    fn sync_agents_view(&mut self, _view: &crate::agent::fleet::AgentsView) {}
 
     /// Concrete-type access for host tests that assert on app-internal state
     /// through `AppRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer

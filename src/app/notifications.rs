@@ -76,6 +76,15 @@ pub(crate) struct PendingNotification {
     pub origin_in_view: bool,
 }
 
+impl PendingNotification {
+    pub(crate) fn agent_source_pane(&self) -> u64 {
+        if self.sender_pane_id != 0 { self.sender_pane_id } else { self.dismiss_owner_pane_id }
+    }
+    pub(crate) fn agent_event(&self) -> crate::agent::fleet::AgentEvent {
+        crate::agent::fleet::AgentEvent { title: self.title.clone(), body: self.body.clone() }
+    }
+}
+
 impl Default for PendingNotification {
     /// Every field that is the same constant at essentially every construction
     /// site. `enqueued_at` is stamped at construction time, so a value built
@@ -481,6 +490,15 @@ impl PlexiApp {
         source: NotifySource,
         mut notification: PendingNotification,
     ) -> bool {
+        let source_pane = notification.agent_source_pane();
+        let source_is_agent = self.windows.iter().find_map(|w| w.panes.get(&source_pane))
+            .is_some_and(|p| p.as_terminal().is_some_and(|t| t.is_agent_pane()));
+        if source_is_agent && self.fleet_focused_pane() == Some(source_pane) {
+            log::info!("agents: suppress focused notification pane_id={source_pane}");
+            self.deliver_notify_action(notification.sender_pane_id, notification.notify_id,
+                "cancelled".into(), Some(NOTIFY_OUTCOME_CANCELLED.into()), notification.response_file, None);
+            return false;
+        }
         if !self.notifications_enabled {
             log::info!(
                 "notify: dropped source={} title={:?} — notifications disabled",

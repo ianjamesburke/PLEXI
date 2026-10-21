@@ -89,6 +89,7 @@ struct WasmAppInstanceSpec<'a> {
 /// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
 pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
     match id {
+        "agents" => Some(Box::new(crate::app::agents_app::AgentsApp::default())),
         "image-viewer" => {
             let path = args.first().map(PathBuf::from)?;
             Some(Box::new(crate::app::image_viewer_app::ImageViewerApp::new(
@@ -176,7 +177,7 @@ fn builtin_restore_args(
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
-        "file_browser" | "secrets_manager" | "command" | "command-view" => Some(vec![]),
+        "agents" | "file_browser" | "secrets_manager" | "command" | "command-view" => Some(vec![]),
         _ => None,
     }
 }

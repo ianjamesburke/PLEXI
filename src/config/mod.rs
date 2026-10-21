@@ -89,7 +89,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode"];
+const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
     "preset",
@@ -195,6 +195,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "scroll_down",
     "increase_font_size",
     "decrease_font_size",
+    "open_agents",
     "open_file_browser",
     "open_quick_note",
     "open_config",
@@ -391,6 +392,8 @@ pub struct KeybindingsConfig {
     pub scroll_down: Option<String>,
     pub increase_font_size: Option<String>,
     pub decrease_font_size: Option<String>,
+    /// Open the Agents pane (default Cmd+Alt+A).
+    pub open_agents: Option<String>,
     pub open_file_browser: Option<String>,
     pub open_quick_note: Option<String>,
     pub open_config: Option<String>,
@@ -458,6 +461,7 @@ impl KeybindingsConfig {
         overlay_field!(scroll_down);
         overlay_field!(increase_font_size);
         overlay_field!(decrease_font_size);
+        overlay_field!(open_agents);
         overlay_field!(open_file_browser);
         overlay_field!(open_quick_note);
         overlay_field!(open_config);
@@ -752,6 +756,10 @@ pub enum AgentRestoreMode {
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
 #[derive(Deserialize, Default, Clone)]
 pub struct AgentsConfig {
+    /// Idle ephemeral worker stall threshold in seconds (default 120).
+    pub stalled_after_secs: Option<u64>,
+    /// Show agent jump rows in the command palette (default false).
+    pub palette_agent_results: Option<bool>,
     /// Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions.
     pub low: Option<String>,
     /// Standard work. Default: claude sonnet with --dangerously-skip-permissions.
@@ -764,6 +772,8 @@ pub struct AgentsConfig {
 
 impl AgentsConfig {
     fn overlay(&mut self, other: Self) {
+        if other.stalled_after_secs.is_some() { self.stalled_after_secs = other.stalled_after_secs; }
+        if other.palette_agent_results.is_some() { self.palette_agent_results = other.palette_agent_results; }
         if other.low.is_some() {
             self.low = other.low;
         }

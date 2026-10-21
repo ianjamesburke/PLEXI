@@ -1189,6 +1189,7 @@ impl PlexiApp {
             log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
             return false;
         };
+        self.mark_agent_seen(pane_id);
         let old_focus = self.windows[self.active_window].focused_pane;
         let old_window_id = self.windows[self.active_window].window_id;
         // Clear any stale zoom on the destination window — a programmatic focus

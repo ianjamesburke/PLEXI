@@ -3039,3 +3039,22 @@ mod agent_tests {
         );
     }
 }
+
+/// Read the same host projection painted by the Agents pane.
+pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 {
+    let content = match super::request(serde_json::json!({"type":"agent_fleet", "filter":filter}), "plexi-agent-fleet", "agent fleet") {
+        Ok(content) => content, Err(code) => return code,
+    };
+    let view: crate::agent::fleet::AgentsView = match serde_json::from_str(&content) {
+        Ok(view) => view, Err(e) => { eprintln!("error: could not read agent fleet: {e}"); return 1; }
+    };
+    if json { println!("{content}"); return 0; }
+    if view.tasks.is_empty() { println!("No matching agents."); }
+    for task in view.tasks {
+        println!("{} — {}", task.title, task.counts());
+        for row in task.rows {
+            println!("  #{} {} ({})  {}{}", row.pane_id, row.role, row.harness, row.display_state.label(), row.blocked_on.map(|b| format!(" — {}", b.label())).unwrap_or_default());
+        }
+    }
+    0
+}

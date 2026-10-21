@@ -610,6 +610,7 @@ impl Pane {
                     .clone()
                     .or_else(|| agent.as_ref().and_then(|a| a.session_id.clone()));
                 let changed = prev_state != new_state || prev_session != new_session;
+                t.update_fleet_transition(prev_state.as_ref(), new_state.as_ref());
                 t.agent_reported_at = agent.as_ref().map(|_| std::time::Instant::now());
                 t.agent = agent;
                 (true, changed)
@@ -689,6 +690,10 @@ impl Pane {
 // ---------------------------------------------------------------------------
 
 pub struct TerminalPane {
+    pub fleet_result: Option<serde_json::Value>,
+    pub fleet_seen: bool,
+    pub fleet_done_unseen: bool,
+    pub fleet_since: u64,
     /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
     pub id: PaneId,
     pub backend: TerminalBackend,
@@ -814,6 +819,10 @@ impl TerminalPane {
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
             hidden: false,
+            fleet_result: None,
+            fleet_seen: false,
+            fleet_done_unseen: false,
+            fleet_since: crate::platform::clock::now_secs(),
             agent: None,
             agent_reported_at: None,
             observed_agent: None,
@@ -910,6 +919,28 @@ impl TerminalPane {
         }
     }
 
+    fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
+        use crate::protocol::AgentState;
+        if previous == next { return; }
+        self.fleet_since = crate::platform::clock::now_secs();
+        if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
+            self.fleet_done_unseen = true;
+            self.fleet_seen = false;
+        } else if next == Some(&AgentState::Working) {
+            self.fleet_done_unseen = false;
+            self.fleet_seen = false;
+            self.agent_completed = false;
+        }
+    }
+
+    pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
+        let now = std::time::Instant::now();
+        let before = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        self.observed_agent = observed;
+        let after = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        self.update_fleet_transition(before.as_ref(), after.as_ref());
+    }
+
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
     /// if it is an agent pane.
     pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
@@ -939,6 +970,10 @@ impl TerminalPane {
             if self.parent_pane_id.is_some() {
                 s.parent_pane_id = self.parent_pane_id;
             }
+            s.fleet_result = self.fleet_result.clone();
+            s.fleet_seen = self.fleet_seen;
+            s.fleet_done_unseen = self.fleet_done_unseen;
+            s.fleet_since = self.fleet_since;
             s.ephemeral = self.ephemeral;
             if s.tail_preview.is_none() {
                 s.tail_preview = self.tail_preview.clone();
@@ -976,6 +1011,10 @@ impl TerminalPane {
             .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
 
         Some(crate::workspace::SavedAgentSession {
+            fleet_result: self.fleet_result.clone(),
+            fleet_seen: self.fleet_seen,
+            fleet_done_unseen: self.fleet_done_unseen,
+            fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
             session_id,
@@ -1015,10 +1054,12 @@ impl TerminalPane {
             .slots
             .get("result")
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .or_else(|| self.fleet_result.clone());
         let closed_at = crate::platform::clock::now_secs();
         let run_id = format!("run-{}-{closed_at}", self.id);
         Some(crate::workspace::AgentHistoryRecord {
+            fleet_seen: self.fleet_seen,
             run_id,
             pane_id: self.id,
             context_id,

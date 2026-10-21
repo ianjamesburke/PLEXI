@@ -303,6 +303,7 @@ impl PlexiApp {
     /// rendered here: unsafe commands are held while a modal owns input and
     /// released on the next modal-free pass, exactly as before.
     pub(super) fn service_app_commands(&mut self, ctx: &egui::Context) {
+        self.sync_agents_panes(ctx);
         // eframe skips `App::ui` entirely while the window is hidden
         // (minimized or fully occluded) — the active context's own panes
         // then get no `ui()` pass either, so they need the same headless
@@ -744,6 +745,20 @@ impl PlexiApp {
                 // (stint 0013/0014). routing.rs already checked panes.read /
                 // panes.control; execute it through the same handler CLI
                 // requests take over PLEXI_SOCKET.
+                AppCommand::Fleet(action) => {
+                    match action {
+                        crate::app::agents_app::FleetAction::Seen(id) => self.mark_agent_seen(id),
+                        crate::app::agents_app::FleetAction::ReviewAttention { pane_id } => {
+                            self.open_attention_overlay("agents");
+                            if let Some(index) = crate::overlays::attention::open_items().iter().position(|r| r.resource == format!("pane:{pane_id}") || r.actor == format!("pane:{pane_id}")) {
+                                self.attention.selected = index;
+                            }
+                        },
+                        crate::app::agents_app::FleetAction::Reply { pane_id, from_pane_id, text } => {
+                            self.reply_to_fleet_agent(pane_id, from_pane_id, text);
+                        }
+                    }
+                }
                 AppCommand::ForwardPaneRequest { request } => {
                     self.handle_pane_ipc_request(request);
                 }
@@ -1655,7 +1670,7 @@ impl PlexiApp {
                             pane_id: Some(pane_id),
                         });
                     }
-                    AppCommand::ToolResult { .. } => deferred.push(cmd),
+                    AppCommand::Fleet(_) | AppCommand::ToolResult { .. } => deferred.push(cmd),
                     AppCommand::AppEventRequest { request, .. } => {
                         deferred.push(AppCommand::AppEventRequest {
                             request,

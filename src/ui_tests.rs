@@ -4583,6 +4583,85 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+    #[test]
+    fn screenshot_agents_pane_states_and_keys() {
+        use crate::protocol::AgentState;
+        let mut h = PlexiUiHarness::new_sized(1200.0, 850.0);
+        let root = h.workspace_root().to_path_buf();
+        let mut ids = Vec::new();
+        for (role, state, detail) in [
+            ("Planner", AgentState::Working, None),
+            ("Implementer", AgentState::Blocked, Some("Which branch should receive the fix?")),
+            ("Reviewer", AgentState::NeedsYou, Some("Approve the deployment plan")),
+            ("Tester", AgentState::Completed, None),
+            ("Researcher", AgentState::Interrupted, None),
+            ("Writer", AgentState::Idle, None),
+            ("Runner", AgentState::Working, None),
+        ] {
+            let id = add_focused_pane(&mut h);
+            ids.push(id);
+            h.with_app_mut(|app| {
+                let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                term.agent_role = Some(role.into());
+                term.agent_harness = Some("pi".into());
+                term.agent_completed = state == AgentState::Completed;
+                term.tail_preview = Some("Inspected the affected files. Ready for the next step.".into());
+                term.parent_pane_id = (role == "Implementer").then_some(ids[0]);
+                term.agent = Some(crate::protocol::PaneAgentState { pane_id:id, state, agent:"pi".into(), detail:detail.map(str::to_string), session_id:None });
+                app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                app.sidebar_visible = false;
+            });
+        }
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
+        });
+        h.with_app_mut(|app| {
+            app.show_command_palette = true;
+            app.palette_query = "agents".into();
+        });
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.palette_agent_count_logged, Some(0)));
+        h.save_screenshot(&evidence_png!("_before")).unwrap();
+        h.with_app_mut(|app| app.show_command_palette = false);
+        h.step();
+        let agents_id = h.open_builtin_by_id("agents", &root, &[]).unwrap();
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            win.zoomed_pane = win.tree.tiles.find_pane(&agents_id);
+        });
+        h.run_steps(3);
+        h.harness().get_by_label("Agents");
+        h.save_screenshot(&evidence_png!("_after")).unwrap();
+        h.harness().set_size(egui::vec2(520.0, 760.0));
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_narrow")).unwrap();
+        h.harness().set_size(egui::vec2(1200.0, 850.0));
+        h.run_steps(2);
+        // The selection starts at human attention, then the parent-routed question.
+        h.harness().key_press(egui::Key::J);
+        h.step();
+        h.harness().key_press(egui::Key::A);
+        h.run_steps(2);
+        h.harness().get_by_label("Reply to worker");
+        h.harness().input_mut().events.push(egui::Event::Text("Use feature/0846".into()));
+        h.step();
+        h.harness().get_by_label("Send reply").click();
+        h.run_steps(2);
+        h.with_app(|app| {
+            let view = app.agents_view(crate::agent::fleet::FleetFilter::All);
+            let row = view.tasks.iter().flat_map(|t| &t.rows).find(|r| r.pane_id == ids[1]).unwrap();
+            assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Working);
+            assert!(app.pane_mailboxes[&ids[1]].front().unwrap().payload.contains("feature/0846"));
+        });
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.fleet_focused_pane(), Some(ids[1])));
+    }
+
     /// Visual review surface for stint 0565: the palette rendering an agent
     /// fleet spread across two contexts, including a stint-0568-style squad
     /// whose three panes share one title. Empty query shows the whole fleet;
@@ -4590,6 +4669,7 @@ mod tests {
     #[test]
     fn screenshot_command_palette_agent_fleet() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        h.with_app_mut(|app| app.config.agents.get_or_insert_with(Default::default).palette_agent_results = Some(true));
         add_focused_pane(&mut h);
         let browser_root = h.workspace.path().to_path_buf();
 

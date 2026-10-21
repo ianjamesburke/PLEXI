@@ -1142,3 +1142,17 @@ fn unconfirmed_reply(pane_id: u64, tail: &[String], retried: bool) -> Value {
         "retried": retried,
     })
 }
+
+impl PlexiApp {
+    /// Common mailbox delivery for CLI send and the Agents pane reply composer.
+    pub(crate) fn enqueue_pane_message(&mut self, pane_id: u64, from_pane_id: Option<u64>, payload: String) -> (u64, bool) {
+        let id = self.next_pane_message_id;
+        self.next_pane_message_id = id.saturating_add(1);
+        let timestamp_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        self.pane_mailboxes.entry(pane_id).or_default().push_back(PaneMessage {
+            id, pane_id, to_pane_id: pane_id, from_pane_id, sender_pane_id: from_pane_id, payload, timestamp_ms,
+        });
+        let delivered = self.complete_message_recvs(pane_id);
+        (id, delivered)
+    }
+}

@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.18"
+skill_version: "5.0.19"
 plexi_version: "0.4.0"
-last_verified: "2026-10-19"
+last_verified: "2026-10-21"
 ---
 
 # Plexi CLI
@@ -527,6 +527,18 @@ plexi assistant send --text "hello" --client narrative --kind output
 <!-- /experiment -->
 
 ### Agents (`plexi agent --help`)
+
+`plexi agent fleet --json` reads the same task → worker tree as the Agents pane,
+including blocking reasons, attention order, completion results and notifications.
+Use `--filter needs-attention`, `--filter working`, or `--filter done` to narrow it.
+Open the pane with `plexi pane new agents`, `plexi app open agents`, or
+Cmd+Option+A (`open_agents` in the rebindable key configuration). In the pane,
+j/k selects, Enter focuses the worker and marks its completion seen, a opens a
+reply or Needs attention, x dismisses an unseen completion, and f cycles filters.
+Agent notifications remain in the existing notification panel too; notifications
+from the focused agent are suppressed. Cmd+Shift+A still opens notifications.
+`[agents] stalled_after_secs` defaults to 120; `palette_agent_results` defaults
+to false. Completion seen state is retained across restarts.
 
 Read `plexi agent --help` for the create/spawn flow. Spawn returns immediately
 with a pane id; it does not wait for the task to finish. Wait in bounded slices:
