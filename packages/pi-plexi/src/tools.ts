@@ -624,3 +624,51 @@ export function buildPlexiTools(deps: PlexiToolDeps) {
     runTool,
   ];
 }
+
+/** Role names come from the resolved agent definition; the host rechecks authority. */
+export function buildAgentTools(client: PlexiCliClient, canCall: string[], canHandoff: string[]) {
+  const run = async (args: string[]): Promise<ToolResponse> => {
+    const res = await client.runJson(args, 86_405_000);
+    return textResult(res.data ?? { ok: false, error: res.error }, !res.ok);
+  };
+  const calls = [...new Set(canCall)].filter(role => /^[a-z][a-z0-9-]*$/.test(role)).map(role => ({
+    name: `agent_call_${role}`,
+    label: `Call ${role}`,
+    description: `Delegate a task to ${role}. Waits for a validated completion or a blocking question; reply with agent_message.`,
+    parameters: {
+      type: "object", properties: {
+        task: { type: "string" }, worktree: { type: "string" }, async: { type: "boolean" },
+      }, required: ["task"], additionalProperties: false,
+    },
+    async execute(_id: string, params: Record<string, any>): Promise<ToolResponse> {
+      const args = ["agent", "call", role, "--task", String(params.task)];
+      if (params.worktree) args.push("--worktree", String(params.worktree));
+      if (params.async) args.push("--async");
+      return run(args);
+    },
+  }));
+  return [...calls, {
+    name: "agent_message", label: "Reply to Child Agent",
+    description: "Send a structured mailbox reply to a child agent. With wait, return its next completion or question.",
+    parameters: {
+      type: "object", properties: { pane_id: { type: "integer" }, text: { type: "string" }, wait: { type: "boolean" } },
+      required: ["pane_id", "text"], additionalProperties: false,
+    },
+    async execute(_id: string, params: Record<string, any>): Promise<ToolResponse> {
+      const args = ["agent", "message", String(params.pane_id), String(params.text)];
+      if (params.wait) args.push("--wait");
+      return run(args);
+    },
+  }, {
+    name: "agent_handoff", label: "Hand Off Task",
+    description: `Transfer this task to a permitted successor (${canHandoff.join(", ") || "none configured"}).`,
+    parameters: {
+      type: "object", properties: { role: { type: "string" }, task: { type: "string" } },
+      required: ["role", "task"], additionalProperties: false,
+    },
+    async execute(_id: string, params: Record<string, any>): Promise<ToolResponse> {
+      if (!canHandoff.includes(params.role)) return textResult({ ok: false, error: "Role is not in can_handoff" }, true);
+      return run(["agent", "handoff", String(params.role), "--task", String(params.task)]);
+    },
+  }];
+}

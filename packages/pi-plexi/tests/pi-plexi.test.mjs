@@ -579,3 +579,24 @@ test("Stint 0815: session_start and session_shutdown omit sessionId until sessio
   ]);
 });
 
+
+test("agent tool synthesis binds allowed roles and preserves structured question replies", async () => {
+  const { buildAgentTools } = await import("../src/tools.ts");
+  const calls = [];
+  const client = { async runJson(args, timeout) {
+    calls.push({ args, timeout });
+    return { ok: true, data: { status: "question", pane_id: 81, question: "Which branch?" } };
+  } };
+  const tools = buildAgentTools(client, ["tester", "code-review"], ["writer"]);
+  assert.deepEqual(tools.map(t => t.name), ["agent_call_tester", "agent_call_code-review", "agent_message", "agent_handoff"]);
+  const result = await tools[0].execute("call", { task: "Verify", worktree: "feature/check" });
+  assert.equal(result.details.status, "question");
+  assert.deepEqual(calls[0].args, ["agent", "call", "tester", "--task", "Verify", "--worktree", "feature/check"]);
+  await tools[2].execute("reply", { pane_id: 81, text: "alpha", wait: true });
+  assert.deepEqual(calls[1].args, ["agent", "message", "81", "alpha", "--wait"]);
+  const refused = await tools[3].execute("handoff", { role: "tester", task: "Continue" });
+  assert.equal(refused.isError, true);
+  assert.equal(calls.length, 2);
+  await tools[3].execute("handoff", { role: "writer", task: "Continue" });
+  assert.deepEqual(calls[2].args, ["agent", "handoff", "writer", "--task", "Continue"]);
+});
