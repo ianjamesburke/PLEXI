@@ -10,44 +10,22 @@ Quick Note, and the local app runtime.
 
 ## Install
 
-### macOS (Apple Silicon)
+Use the [Download page](/download) for the supported platform and channel combinations,
+install commands, prerequisites, and links to the published release assets. That page
+owns current download availability; source-build support does not imply a published archive.
 
-```sh
-curl -fsSL https://plexiapp.com/install | bash
-```
+### Linux limitations
 
-This downloads the current Apple Silicon alpha release. It requires `bash`,
-`curl`, `tar`, and `shasum`, but not Git, Rust, a package manager, or
-administrator access. macOS Intel has no current download path; build from a
-checkout instead.
-
-### Linux (x86_64, X11)
-
-```sh
-curl -fsSL https://plexiapp.com/install | bash
-```
-
-This downloads the current Linux x64 stable release. It requires `bash`, `curl`,
-`tar`, and `sha256sum` (or `shasum`), and installs into user-owned directories.
-Plexi supports X11 sessions; Wayland is not supported. This is not an apt, yay,
-AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
-
+Plexi supports X11 sessions. Wayland is not supported. The download is a tar archive,
+not an apt, AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
 On Linux, secrets are kept in a mode-`0600` file rather than an encrypted OS
 keyring. Hardware video decoding is not implemented on Linux.
 
-### Windows (x64)
+### Windows setup
 
-Run this in Windows PowerShell 5.1 or later:
-
-```powershell
-irm https://plexiapp.com/install.ps1 | iex
-```
-
-This downloads the current Windows x64 stable release, verifies its SHA-256
-checksum, and does not require Rust or Visual Studio. It does not build from
-source. The installer adds its user-owned command directory to the user `PATH`
-and records the installed tag; Windows shell completions are TBD. The Unix
-`curl | bash` command is not a Windows installer.
+The Windows installer adds its user-owned command directory to the user `PATH`
+and records the installed tag; Windows shell completions are TBD. Use the PowerShell
+command on the Download page; the Unix `curl | bash` command is not a Windows installer.
 
 ### Source builds and unsigned releases
 
