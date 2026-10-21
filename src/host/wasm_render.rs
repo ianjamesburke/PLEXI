@@ -378,6 +378,11 @@ const TEXT_INPUT_PENDING_LIMIT: usize = 32;
 struct TextInputEditState {
     /// The draft the user is editing. Painted, not `ti.value`.
     buf: String,
+    /// The last `ti.value` adopted from or echoed by the guest. Used to tell a
+    /// pre-echo guest frame (carrying the same pre-edit value the widget had
+    /// before an in-flight `on_change` took effect) apart from an external
+    /// app-side `SetState` reset.
+    last_app_value: String,
     /// Generation of the committed guest tree this state last reconciled
     /// against. Equal generations mean the same tree is being repainted.
     seen_seq: u64,
@@ -409,7 +414,7 @@ enum TextInputReconcile {
 /// frame, so the same stale `value` is presented over and over. Comparing
 /// values alone cannot separate that stale repaint from a genuine app-side
 /// reset, which is why typing faster than the guest's round trip used to drop
-/// characters. Two signals fix it:
+/// characters. Three signals fix it:
 ///
 /// - `seq` — the committed tree's generation. Unchanged generation means we are
 ///   looking at a tree we already reconciled; it can never carry news, so the
@@ -417,6 +422,10 @@ enum TextInputReconcile {
 /// - `pending` — the values we sent out and are still waiting to see echoed. A
 ///   new tree whose value is one of them is our own echo (possibly several
 ///   keystrokes behind), so the draft is kept and the queue drained past it.
+/// - `last_app_value` — the baseline guest value before our un-echoed edits. A
+///   new tree that arrives while `pending` is non-empty and still carries that
+///   unchanged baseline was rendered before our `on_change` took effect (e.g. a
+///   startup resize or timer frame in flight), so the draft is kept.
 ///
 /// Anything else on a new tree is genuine app news (`SetState`, a post-submit
 /// reset) and is adopted.
@@ -433,6 +442,7 @@ fn reconcile_text_input_buffer(
 ) -> (TextInputEditState, TextInputReconcile) {
     let adopt = |mut state: TextInputEditState| {
         state.buf = app_value.to_string();
+        state.last_app_value = app_value.to_string();
         state.seen_seq = seq;
         state.pending.clear();
         state.awaiting_submit = false;
@@ -456,12 +466,25 @@ fn reconcile_text_input_buffer(
         if state.buf.is_empty() {
             return adopt(state);
         }
+        if let Some(index) = state.pending.iter().position(|value| value == app_value) {
+            state.pending.drain(..=index);
+            state.last_app_value = app_value.to_string();
+        }
         return (state, TextInputReconcile::KeptDraft);
     }
 
     // Our own echo, possibly lagging several keystrokes behind.
     if let Some(index) = state.pending.iter().position(|value| value == app_value) {
         state.pending.drain(..=index);
+        state.last_app_value = app_value.to_string();
+        return (state, TextInputReconcile::KeptDraft);
+    }
+
+    // A newly committed guest tree that still carries the exact baseline value
+    // from before our un-echoed edits is a pre-echo frame (e.g. a resize or
+    // timer render that was already in flight when the user typed), not an
+    // app-pushed reset.
+    if !state.pending.is_empty() && app_value == state.last_app_value {
         return (state, TextInputReconcile::KeptDraft);
     }
 
@@ -876,6 +899,7 @@ fn render_node(
                 // keeps its value instead of clearing it (a search field), the
                 // next committed tree is adopted and restores it.
                 buf.clear();
+                state.last_app_value.clear();
                 state.pending.clear();
                 state.awaiting_submit = true;
                 // Keep focus for consecutive entries — Enter submits, it
@@ -1719,51 +1743,72 @@ mod tests {
     }
 
     /// Build an edit state as the render arm would leave it.
-    fn edit_state(buf: &str, seen_seq: u64, pending: &[&str]) -> TextInputEditState {
+    fn edit_state(
+        buf: &str,
+        last_app_value: &str,
+        seen_seq: u64,
+        pending: &[&str],
+    ) -> TextInputEditState {
         TextInputEditState {
             buf: buf.to_string(),
+            last_app_value: last_app_value.to_string(),
             seen_seq,
             pending: pending.iter().map(|v| v.to_string()).collect(),
             awaiting_submit: false,
         }
     }
 
-    /// Stints 0456/0720: the TextInput edit buffer only resets when the app
-    /// pushes news — a repaint of the same committed tree and the echo of our
-    /// own `on_change` never clobber a local draft mid-round-trip.
+    /// Stints 0456/0720/0864: the TextInput edit buffer only resets when the app
+    /// pushes news — a repaint of the same committed tree, a pre-echo guest
+    /// frame carrying the unchanged baseline value, and the echo of our own
+    /// `on_change` never clobber a local draft mid-round-trip.
     #[test]
     fn text_input_buffer_reconciliation() {
         // Fresh widget: adopt the app's value.
         let (state, outcome) = reconcile_text_input_buffer(None, "seed", 7);
         assert_eq!(outcome, TextInputReconcile::Adopted);
-        assert_eq!(state, edit_state("seed", 7, &[]));
+        assert_eq!(state, edit_state("seed", "seed", 7, &[]));
 
         // Stint 0720 regression: the SAME committed tree repainted, carrying a
         // value that differs from the draft because the guest has not echoed
         // yet. Value comparison alone called this an app reset and dropped the
         // keystroke; the generation says there is no news.
         let (state, outcome) =
-            reconcile_text_input_buffer(Some(edit_state("hi", 3, &["h", "hi"])), "", 3);
+            reconcile_text_input_buffer(Some(edit_state("hi", "", 3, &["h", "hi"])), "", 3);
         assert_eq!(
             outcome,
             TextInputReconcile::KeptDraft,
             "a repaint of an already-reconciled tree must never clobber the draft"
         );
-        assert_eq!(state, edit_state("hi", 3, &["h", "hi"]));
+        assert_eq!(state, edit_state("hi", "", 3, &["h", "hi"]));
+
+        // Stint 0864 regression: a NEW guest tree (e.g. from a startup resize
+        // render that was already in flight before `on_change("h")` reached the
+        // guest) commits with the same baseline value (`""`) the widget had
+        // before the pending edits started. That is a pre-echo frame, not an
+        // app-pushed reset.
+        let (state, outcome) =
+            reconcile_text_input_buffer(Some(edit_state("hi", "", 3, &["h", "hi"])), "", 4);
+        assert_eq!(
+            outcome,
+            TextInputReconcile::KeptDraft,
+            "a pre-echo guest frame carrying the unchanged baseline value must never clobber the draft"
+        );
+        assert_eq!(state, edit_state("hi", "", 4, &["h", "hi"]));
 
         // A new tree carrying an echo we are still waiting on: keep the draft
         // and drain the queue through that entry.
-        let (state, outcome) =
-            reconcile_text_input_buffer(Some(edit_state("hi", 3, &["h", "hi"])), "h", 4);
+        let (state, outcome) = reconcile_text_input_buffer(Some(state), "h", 5);
         assert_eq!(outcome, TextInputReconcile::KeptDraft);
-        assert_eq!(state, edit_state("hi", 4, &["hi"]));
+        assert_eq!(state, edit_state("hi", "h", 5, &["hi"]));
 
-        // A new tree with a value we never sent is genuine app news (external
-        // SetState, post-submit reset) and wins over the draft.
+        // A new tree with a value we never sent and that differs from the
+        // baseline is genuine app news (external SetState, post-submit reset)
+        // and wins over the draft.
         let (state, outcome) =
-            reconcile_text_input_buffer(Some(edit_state("typed", 3, &["typed"])), "", 4);
+            reconcile_text_input_buffer(Some(edit_state("typed", "seed", 3, &["typed"])), "", 4);
         assert_eq!(outcome, TextInputReconcile::Adopted);
-        assert_eq!(state, edit_state("", 4, &[]));
+        assert_eq!(state, edit_state("", "", 4, &[]));
     }
 
     /// Stint 0720: after `on_submit` the app redefines the value, but a
@@ -1773,6 +1818,7 @@ mod tests {
     fn text_input_submit_hands_the_value_back_unless_the_user_typed_first() {
         let submitted = TextInputEditState {
             buf: String::new(),
+            last_app_value: String::new(),
             seen_seq: 3,
             pending: VecDeque::new(),
             awaiting_submit: true,
@@ -1783,7 +1829,7 @@ mod tests {
         // same way.
         let (state, outcome) = reconcile_text_input_buffer(Some(submitted.clone()), "query", 4);
         assert_eq!(outcome, TextInputReconcile::Adopted);
-        assert_eq!(state, edit_state("query", 4, &[]));
+        assert_eq!(state, edit_state("query", "query", 4, &[]));
 
         // Typed in the gap: the fresh draft outranks the app's answer.
         let mut typed_after = submitted;
@@ -1791,7 +1837,7 @@ mod tests {
         typed_after.pending.push_back("z".to_string());
         let (state, outcome) = reconcile_text_input_buffer(Some(typed_after), "hi", 4);
         assert_eq!(outcome, TextInputReconcile::KeptDraft);
-        assert_eq!(state, edit_state("z", 4, &["z"]));
+        assert_eq!(state, edit_state("z", "", 4, &["z"]));
     }
     use std::path::PathBuf;
 

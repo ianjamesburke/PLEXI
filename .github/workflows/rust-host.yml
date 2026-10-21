@@ -69,13 +69,19 @@ jobs:
       PLEXI_CPYTHON_BUNDLE_DIR: /home/runner/.plexi-ci/wasm-bundles
     steps:
       - uses: actions/checkout@v6
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Set up Plexi CI environment
         uses: ./.github/actions/plexi-ci-env
         with:
           cache-key: linux-host
           cpython-bundle: 'true'
       - name: Build and test host
+        # Phone seal tests shell out to phone_crypto.py, which imports cryptography.
         run: |
+          python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
           cargo build --release --bin plexi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \

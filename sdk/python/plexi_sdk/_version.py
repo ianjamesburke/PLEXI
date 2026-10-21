@@ -15,11 +15,37 @@ would make the SDK claim a version that was never declared.
 
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    tomllib = None  # type: ignore[assignment]
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
 from pathlib import Path
+import re
 
 _DISTRIBUTION_NAME = "plexi-sdk"
+_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
+_VERSION_RE = re.compile(r'^\s*version\s*=\s*(?:"([^"]*)"|\'([^\']*)\')\s*(?:#.*)?$')
+
+
+def _parse_project_version_fallback(text: str) -> dict[str, dict[str, str]]:
+    """Minimal ``[project].version`` reader used when stdlib ``tomllib`` is absent."""
+    in_project = False
+    project: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        section_match = _SECTION_RE.match(raw_line)
+        if section_match is not None:
+            in_project = section_match.group(1).strip() == "project"
+            continue
+        if in_project:
+            version_match = _VERSION_RE.match(raw_line)
+            if version_match is not None:
+                value = version_match.group(1)
+                if value is None:
+                    value = version_match.group(2) or ""
+                project["version"] = value
+                break
+    return {"project": project} if project else {}
 
 
 def _from_pyproject() -> str | None:
@@ -27,8 +53,11 @@ def _from_pyproject() -> str | None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     if not pyproject.is_file():
         return None
-    with pyproject.open("rb") as f:
-        data = tomllib.load(f)
+    if tomllib is not None:
+        with pyproject.open("rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = _parse_project_version_fallback(pyproject.read_text(encoding="utf-8"))
     try:
         declared = data["project"]["version"]
     except KeyError as e:
