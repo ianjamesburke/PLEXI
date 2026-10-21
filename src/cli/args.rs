@@ -2602,6 +2602,26 @@ pub enum NoteCmd {
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
+    /// Inspect or run a stored team of independent ranking agents.
+    ///
+    /// Team v0 TOML is resolved from workspace channel teams/<name>.toml,
+    /// then profile teams/<name>.toml, then built-in consult-experts.
+    /// Fields: version = 0; options = ["Proceed", "Experiment", "Defer"].
+    /// Each [[members]] has role, harness (pi/claude/codex/agy/script),
+    /// grants = ["agents.ping=allow", "agents.review=deny"], optional model.
+    /// Script members require command: a shell command whose stdout is exactly
+    /// {"ranking":["Proceed","Experiment","Defer"],"rationale":"why"}.
+    /// Scripts receive PLEXI_AGENT_TASK, PLEXI_TEAM_OPTIONS and PLEXI_TEAM_RUN_ID.
+    /// Real harnesses report the same JSON through agent done.
+    /// At least three members independently rank every option once. Borda awards
+    /// N-1 down to 0 points; ties follow options order. The host writes RESULT.md.
+    /// Grants use existing head/delegation admission; a team is not authority.
+    /// Format v0 may change. consult-experts uses pi, claude and codex by default.
+    #[command(verbatim_doc_comment)]
+    Team {
+        #[command(subcommand)]
+        cmd: AgentTeamCmd,
+    },
     /// Show tasks and their workers, ordered by attention, with blocking reasons.
     Fleet {
         /// Print the shared Agents pane view as JSON.
@@ -3061,6 +3081,33 @@ pub enum HookAction {
         /// Remove Pi extension hooks
         #[arg(long)]
         pi: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentTeamCmd {
+    /// Show the resolved v0 team, including roles, harnesses, options and grants.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run independent team members in one task and wait for RESULT.md.
+    Run {
+        name: String,
+        #[arg(long)]
+        question: String,
+        /// Output directory (default: a new team-results/<run-id> in the workspace).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Replace the stored options; repeat for each option (at least two).
+        #[arg(long = "option")]
+        options: Vec<String>,
+        /// Host-side deadline in seconds; a timed-out run fails and stops its members.
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        timeout: u64,
+        #[arg(long)]
+        json: bool,
     },
 }
 

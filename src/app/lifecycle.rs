@@ -450,6 +450,13 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
+                if op == "team_run" {
+                    if let Err(error) = self.start_team(payload, response_file) {
+                        log::error!("agent_team: start failed: {error}");
+                        crate::rpc::write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                    }
+                    return;
+                }
                 let mut payload = payload.clone();
                 if op == "create_head" {
                     if let Some(pane_id) = payload.get("caller_pane").and_then(|value| value.as_u64()) {
@@ -3900,6 +3907,7 @@ impl PlexiApp {
                     *parent_pane_id,
                     cwd.as_deref().map(std::path::PathBuf::from),
                     result_schema.clone(),
+                    None,
                 );
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
@@ -4237,6 +4245,7 @@ impl PlexiApp {
                     false,
                     record.parent_pane_id,
                     Some(record.cwd.clone()),
+                    None,
                     None,
                 );
                 let payload = match result {

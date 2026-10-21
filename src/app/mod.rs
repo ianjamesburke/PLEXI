@@ -40,6 +40,7 @@ mod sync;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
 mod fleet;
+mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
 
@@ -236,6 +237,7 @@ pub struct PlexiApp {
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
+    pub(crate) team_runs: Vec<team::TeamRun>,
     /// `plexi pane new --agent` spawns whose response is withheld until the
     /// agent in the new pane self-reports idle (stint 0584).
     pub(crate) pending_agent_boots: Vec<crate::app::pane_wait::PendingAgentBoot>,
@@ -1512,6 +1514,7 @@ impl PlexiApp {
                     fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
+                    team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
                     pane_heartbeats: restored.pane_heartbeats,
@@ -1768,6 +1771,7 @@ impl PlexiApp {
             fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
             pending_result_waits: Vec::new(),
+                    team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
             pane_heartbeats: HashMap::new(),
@@ -1974,9 +1978,10 @@ impl PlexiApp {
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
-    /// Head bound to this pane, when the pane is an Assistant for that head.
-    /// A terminal pane holds no grants.
+    /// Head bound to an Assistant or an active team worker.
+    /// Other terminal panes hold no head grants.
     pub(crate) fn bound_head_for_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<String> {
+        if let Some(head) = self.team_head_for_pane(pane_id) { return Some(head); }
         let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
         let pane = self.windows.get(win_idx)?.panes.get(&pane_id)?;
         pane.as_app()
@@ -2596,6 +2601,7 @@ impl PlexiApp {
                 fleet_history: std::cell::RefCell::new(Vec::new()),
                 pane_results: HashMap::new(),
                 pending_result_waits: Vec::new(),
+                    team_runs: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,
                 _test_scratch: Some(scratch),
@@ -3347,6 +3353,7 @@ impl eframe::App for PlexiApp {
             self.service_pending_slot_waits(ctx);
             self.service_pending_message_recvs(ctx);
             self.service_pending_result_waits(ctx);
+            self.service_team_runs(ctx);
         });
 
         // And for `pane new --agent`, whose reply is owed either an idle

@@ -34,6 +34,7 @@
 
 pub mod fleet;
 pub mod heads;
+pub(crate) mod team;
 pub mod leads;
 pub mod queue;
 

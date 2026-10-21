@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.20"
+skill_version: "5.0.21"
 plexi_version: "0.4.0"
 last_verified: "2026-10-21"
 ---
@@ -564,6 +564,32 @@ Repeat on exit 2; inspect errors on exit 1. The parent replies with
 2. If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
 3. Inspect with `plexi agent show <slug>` before spawning if unsure what CLI or model it uses.
 4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id> --timeout 300`.
+
+### Run a stored ranking team
+
+```bash
+plexi agent team show consult-experts --json
+plexi agent team run consult-experts --question "Should we ship this proposal?" --out ./expert-result --json
+plexi agent team run consult-experts --question "Which implementation?" --option "A" --option "B" --option "C" --json
+```
+
+`agent team --help` documents the v0 TOML format and lookup order. The built-in
+team uses pi, Claude and Codex with no tool grants and ranks Proceed, Experiment,
+and Defer; override options for a specific decision. Each member works
+independently under one task in Agents / `agent fleet --json`. The command waits
+for every validated `agent done` result, then writes `RESULT.md` with Borda scores
+and each rationale. Existing output files are never overwritten. `--timeout`
+bounds the host-side wait; timeout or a closed worker fails the run and closes
+its panes. Successful worker panes remain available for inspection.
+
+For deterministic runs, store a team with `harness = "script"` and a `command`
+that prints a single ranking JSON object to stdout. The runner submits that
+output through `agent done`; log diagnostics to stderr. Scripts receive
+`PLEXI_AGENT_TASK`, `PLEXI_TEAM_OPTIONS` and `PLEXI_TEAM_RUN_ID`. Harnesses receive
+the run-scoped host MCP credential through the normal `PLEXI_HOST_MCP_TOKEN`
+environment variable. Stored grants use existing head/delegation admission and
+never widen the caller's grants. They govern Plexi broker calls, not OS shell
+access. Team start, member spawns and completion appear in `debug session show`.
 
 <!-- experiment: leads -->
 ### Create an agent head and claim a run
