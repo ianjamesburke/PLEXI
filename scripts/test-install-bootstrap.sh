@@ -122,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         with open(hit_log, "a", encoding="utf-8") as fh:
-            fh.write(self.path + "\n")
+            fh.write(self.path + " " + self.headers.get("Authorization", "") + "\n")
 
     def _send(self, body, content_type="application/json"):
         data = body if isinstance(body, bytes) else body.encode()
@@ -135,6 +135,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        with open(hit_log, "a", encoding="utf-8") as fh:
+            fh.write("AUTH " + self.headers.get("Authorization", "") + "\n")
+        if parts[:2] == ["fixtures", "rate-limit"]:
+            self.send_response(403)
+            self.send_header("x-ratelimit-remaining", "0")
+            self.send_header("x-ratelimit-reset", "1700000060")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if parts[:1] == ["download"] and len(parts) == 3:
             name = parts[2]
             if name.endswith(".sha256"):
@@ -187,9 +196,24 @@ run_case() {
   else
     err="$(env -u PLEXI_CHANNEL -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/$fixture" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" "$@" 2>&1)" || status=$?
   fi
-  local got="" argv_got=""
+  local got="" argv_got="" expected_channel=stable previous_arg="" forward_resolved_tag=1
+  for arg in "$@"; do
+    if [[ "$previous_arg" == "--channel" ]]; then
+      expected_channel="$arg"
+    elif [[ "$arg" == --channel=* ]]; then
+      expected_channel="${arg#--channel=}"
+    fi
+    previous_arg="$arg"
+  done
+  [[ "$expected_channel" == pr-* ]] && forward_resolved_tag=0
   got="$(sed -nE 's#.*/download/([^/]+)/.*#\1#p' "$hits" | sort -u | paste -sd, -)"
   argv_got="$(cat "$argv")"
+  if (( forward_resolved_tag )) && [[ "$expected_argv" != *$'--tag\n'* && "$expected_argv" != *'--tag='* ]]; then
+    if [[ -n "$expected_argv" ]]; then
+      expected_argv+=$'\n'
+    fi
+    expected_argv+="--tag"$'\n'"$expected_tag"
+  fi
   if [[ "$status" -ne 0 || "$got" != "$expected_tag" || "$argv_got" != "$expected_argv" ]]; then
     echo "FAIL $name"
     echo "  exit=$status tag='$got' expected='$expected_tag'"
@@ -218,6 +242,8 @@ run_case "alpha equals form" reported v0.3.5-alpha.4 "" "--channel=alpha" --chan
 run_case "alpha forwards remaining installer args" reported v0.3.5-alpha.4 "" "--install-only
 --channel
 alpha" --install-only --channel alpha
+run_case "user tag is not duplicated" reported v0.3.5 "" "--tag
+v0.3.5-alpha.4" --tag v0.3.5-alpha.4
 run_case "beta falls back to newer stable" reported v0.3.5 "" "--channel
 beta" --channel beta
 run_case "bootstrap tag overrides channel" reported v0.3.5-alpha.1 v0.3.5-alpha.1 "--channel
@@ -240,7 +266,7 @@ run_case "alpha reads later release pages" paged v0.3.5-alpha.10 "" "--channel
 alpha" --channel alpha
 run_case "beta reads later release pages" paged v0.3.6-beta.1 "" "--channel
 beta" --channel beta
-run_case "pr channel keeps latest installer and forwards the channel" reported v0.3.5 "" "--channel
+run_case "pr channel keeps stable installer tag out of package argv" reported v0.3.5 "" "--channel
 pr-12" --channel pr-12
 run_case "pr channel ignores newer beta" ordering v0.9.0 "" "--channel
 pr-12" --channel pr-12
@@ -265,6 +291,27 @@ elif [[ "$err" != *"Unsupported install channel: alph"* ]]; then
   fail=1
 else
   echo "PASS unsupported channel is rejected"
+fi
+
+: >"$hits"
+if ! env -u PLEXI_BOOTSTRAP_TAG GITHUB_TOKEN=bootstrap-test-token PLEXI_RELEASES_URL="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1; then
+  echo "FAIL bootstrap token fixture"
+  fail=1
+elif ! grep -Fq 'AUTH Bearer bootstrap-test-token' "$hits"; then
+  echo "FAIL bootstrap did not send GITHUB_TOKEN"
+  fail=1
+else
+  echo "PASS bootstrap sends GITHUB_TOKEN"
+fi
+
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/rate-limit" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
+  echo "FAIL rate-limited bootstrap succeeded"
+  fail=1
+elif [[ "$err" != *"GitHub API rate limit reached"* || "$err" != *"GITHUB_TOKEN"* || "$err" == *"No alpha release of Plexi is published for linux-x64 yet."* ]]; then
+  echo "FAIL rate-limit bootstrap stderr: $err"
+  fail=1
+else
+  echo "PASS rate-limit bootstrap is clear"
 fi
 
 if [[ "$fail" -ne 0 ]]; then

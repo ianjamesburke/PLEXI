@@ -143,34 +143,25 @@ fn run(args: Args) -> Result<i32> {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(15))
             .build();
-        let endpoint =
-            std::env::var("PLEXI_RELEASES_URL").unwrap_or_else(|_| release::RELEASES_URL.into());
-        let releases = release::fetch(&agent, &endpoint)?;
         let platform = release::platform()?;
-        let selected = if let Some(tag) = &args.tag {
-            releases.iter().find(|r| {
-                &r.tag_name == tag
-                    && !r.draft
-                    && release::accepts(channel, &r.tag_name, r.prerelease)
-            })
+        let tag = if let Some(tag) = &args.tag {
+            release::validate_tag(channel, tag)?;
+            tag.clone()
         } else {
+            let endpoint = std::env::var("PLEXI_RELEASES_URL")
+                .unwrap_or_else(|_| release::RELEASES_URL.into());
+            let releases = release::fetch(&agent, &endpoint)?;
             release::select(&releases, channel, &platform, None)
-        }
-        .ok_or_else(|| {
-            Error::Invalid(format!(
-                "no complete published release for {channel} on {platform}"
-            ))
-        })?;
+                .ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "no complete published release for {channel} on {platform}"
+                    ))
+                })?
+                .tag_name
+                .clone()
+        };
         let asset = release::archive_name(&platform, channel);
-        for name in [&asset, &format!("{asset}.sha256")] {
-            if !selected.assets.iter().any(|a| &a.name == name) {
-                return Err(Error::Invalid(format!(
-                    "{} is missing {name}",
-                    selected.tag_name
-                )));
-            }
-        }
-        println!("Plexi {} ({channel}, {platform})", selected.tag_name);
+        println!("Plexi {tag} ({channel}, {platform})");
         println!("Installation: {}", options.root.display());
         if args.dry_run {
             return Ok(0);
@@ -179,13 +170,14 @@ fn run(args: Args) -> Result<i32> {
             .map_err(|e| Error::Invalid(format!("create download directory: {e}")))?;
         let base = std::env::var("PLEXI_RELEASE_BASE_URL")
             .unwrap_or_else(|_| release::DOWNLOAD_URL.into());
-        release::download_package(
-            &agent,
-            &base,
-            &selected.tag_name,
-            &platform,
-            channel,
-            temp.path(),
+        release::download_package(&agent, &base, &tag, &platform, channel, temp.path()).map_err(
+            |error| {
+                if args.tag.is_some() && error.to_string().contains("status code 404") {
+                    Error::Invalid(format!("{asset} is not published for {tag}"))
+                } else {
+                    error
+                }
+            },
         )?;
         temp.path().join("package")
     };

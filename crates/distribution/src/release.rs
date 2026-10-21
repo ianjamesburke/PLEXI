@@ -1,6 +1,11 @@
 use crate::{Error, IoContext, Result};
+use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, SystemTime},
+};
 
 pub const RELEASES_URL: &str = "https://api.github.com/repos/ianjamesburke/PLEXI/releases";
 pub const DOWNLOAD_URL: &str = "https://github.com/ianjamesburke/PLEXI/releases/download";
@@ -36,11 +41,7 @@ pub fn validate_channel(channel: &str) -> Result<()> {
 }
 
 pub fn normalized_channel(channel: &str) -> &str {
-    if channel == "main" {
-        "stable"
-    } else {
-        channel
-    }
+    if channel == "main" { "stable" } else { channel }
 }
 pub fn command_name(channel: &str) -> String {
     let channel = normalized_channel(channel);
@@ -97,6 +98,52 @@ pub fn accepts(channel: &str, tag: &str, prerelease: bool) -> bool {
         (c, Some(("alpha" | "beta", true))) if c.starts_with("pr-") => true,
         _ => false,
     }
+}
+
+pub fn validate_tag(channel: &str, tag: &str) -> Result<()> {
+    if version(tag).is_none() || !accepts(channel, tag, tag.contains('-')) {
+        return Err(Error::Invalid(format!(
+            "release tag {tag:?} is not valid for channel {channel}"
+        )));
+    }
+    Ok(())
+}
+
+/// Returns a human-oriented GitHub API rate-limit diagnostic when the response
+/// headers identify the failure as rate limiting.
+pub fn rate_limit_message(
+    status: u16,
+    remaining: Option<&str>,
+    reset: Option<&str>,
+    retry_after: Option<&str>,
+    now: SystemTime,
+) -> Option<String> {
+    let limited = status == 429
+        || ((status == 403)
+            && (remaining.is_some_and(|value| value.trim() == "0") || retry_after.is_some()));
+    if !limited {
+        return None;
+    }
+    let reset_at = reset
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .and_then(|seconds| Local.timestamp_opt(seconds, 0).single())
+        .or_else(|| {
+            retry_after
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .and_then(|seconds| now.checked_add(Duration::from_secs(seconds)))
+                .map(chrono::DateTime::<Local>::from)
+        })
+        .map(|time| time.format("%Y-%m-%d %H:%M %Z").to_string())
+        .unwrap_or_else(|| "the time shown by GitHub".into());
+    Some(format!(
+        "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at {reset_at}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset."
+    ))
+}
+
+fn github_token() -> Option<String> {
+    ["GITHUB_TOKEN", "GH_TOKEN"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|token| !token.is_empty()))
 }
 
 /// The alpha installer consumes alpha builds first. A stable package can be
@@ -165,13 +212,38 @@ pub fn fetch(agent: &ureq::Agent, endpoint: &str) -> Result<Vec<Release>> {
     let mut releases = Vec::new();
     for page in 1..=1000 {
         let url = format!("{endpoint}?per_page=100&page={page}");
-        let response = agent
+        let request = agent
             .get(&url)
             .set("User-Agent", "plexi-installer")
             .set("Accept", "application/vnd.github+json")
-            .timeout(Duration::from_secs(30))
-            .call()
-            .map_err(|e| Error::Invalid(format!("fetch releases page {page}: {e}")))?;
+            .timeout(Duration::from_secs(30));
+        let request = if let Some(token) = github_token() {
+            request.set("Authorization", &format!("Bearer {token}"))
+        } else {
+            request
+        };
+        let response = match request.call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(status, response)) => {
+                if let Some(message) = rate_limit_message(
+                    status,
+                    response.header("x-ratelimit-remaining"),
+                    response.header("x-ratelimit-reset"),
+                    response.header("retry-after"),
+                    SystemTime::now(),
+                ) {
+                    return Err(Error::Invalid(message));
+                }
+                return Err(Error::Invalid(format!(
+                    "fetch releases page {page}: status code {status}"
+                )));
+            }
+            Err(error) => {
+                return Err(Error::Invalid(format!(
+                    "fetch releases page {page}: {error}"
+                )));
+            }
+        };
         let batch: Vec<Release> = response.into_json().context("decode releases page")?;
         let done = batch.len() < 100;
         releases.extend(batch);
@@ -197,6 +269,13 @@ pub fn download(agent: &ureq::Agent, url: &str, destination: &Path) -> Result<()
     file.sync_all().context("sync download")
 }
 
+fn package_urls(base: &str, tag: &str, name: &str) -> (String, String) {
+    (
+        format!("{base}/{tag}/{name}.sha256"),
+        format!("{base}/{tag}/{name}"),
+    )
+}
+
 pub fn download_package(
     agent: &ureq::Agent,
     base: &str,
@@ -206,14 +285,13 @@ pub fn download_package(
     destination: &Path,
 ) -> Result<()> {
     validate_channel(channel)?;
-    if version(tag).is_none() {
-        return Err(Error::Invalid("invalid release tag".into()));
-    }
+    validate_tag(channel, tag)?;
     let name = archive_name(platform, channel);
     let archive = destination.join(&name);
     let sidecar = destination.join(format!("{name}.sha256"));
-    download(agent, &format!("{base}/{tag}/{name}.sha256"), &sidecar)?;
-    download(agent, &format!("{base}/{tag}/{name}"), &archive)?;
+    let (checksum_url, archive_url) = package_urls(base, tag, &name);
+    download(agent, &checksum_url, &sidecar)?;
+    download(agent, &archive_url, &archive)?;
     verify_checksum(&archive, &sidecar, &name)?;
     let root = destination.join("package");
     fs::create_dir(&root).context("create unpack directory")?;
@@ -389,6 +467,69 @@ mod tests {
                 .unwrap()
                 .tag_name,
             "v0.3.4"
+        );
+    }
+
+    #[test]
+    fn explicit_tag_uses_direct_package_urls_without_a_release_lookup() {
+        let name = archive_name("linux-x64", "alpha");
+        assert_eq!(
+            package_urls("http://example.test/download", "v1.2.3-alpha.4", &name),
+            (
+                "http://example.test/download/v1.2.3-alpha.4/plexi-linux-x64-alpha.tar.gz.sha256"
+                    .into(),
+                "http://example.test/download/v1.2.3-alpha.4/plexi-linux-x64-alpha.tar.gz".into(),
+            )
+        );
+        assert!(validate_tag("alpha", "v1.2.3-alpha.4").is_ok());
+        assert!(validate_tag("stable", "v1.2.3-alpha.4").is_err());
+    }
+
+    #[test]
+    fn rate_limit_message_identifies_only_rate_limited_responses() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let reset = rate_limit_message(403, Some("0"), Some("1700000060"), None, now).unwrap();
+        assert!(reset.contains("GitHub API rate limit reached"));
+        assert!(reset.contains("GITHUB_TOKEN"));
+        let retry = rate_limit_message(429, None, None, Some("60"), now).unwrap();
+        assert!(retry.contains("Resets at "));
+        assert!(rate_limit_message(403, None, None, None, now).is_none());
+    }
+
+    #[test]
+    fn fetch_sends_github_token_when_available() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            thread,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4096];
+            let count = stream.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..count]).into_owned();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+                .unwrap();
+            request
+        });
+        let previous = std::env::var_os("GITHUB_TOKEN");
+        unsafe { std::env::set_var("GITHUB_TOKEN", "distribution-test-token") };
+        let result = fetch(&ureq::Agent::new(), &endpoint);
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("GITHUB_TOKEN", value) };
+        } else {
+            unsafe { std::env::remove_var("GITHUB_TOKEN") };
+        }
+        assert!(result.unwrap().is_empty());
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .contains("Authorization: Bearer distribution-test-token")
         );
     }
 }
