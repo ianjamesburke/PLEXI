@@ -326,11 +326,6 @@ pub(crate) fn store_workspace_secret(
     Ok(injected)
 }
 
-enum SecretListScope {
-    WorkspaceAndUser(String),
-    UserOnly,
-}
-
 /// Reconcile the secrets index against a real keychain scan before a CLI
 /// command reads it (`src/workspace/AGENTS.md`: never list secrets from the
 /// index without reconciling first). A failed scan degrades to the index as it
@@ -347,103 +342,88 @@ pub(crate) fn reconcile_secrets_before_read(command: &str) {
     }
 }
 
-fn secret_list_scope(global: bool) -> SecretListScope {
-    if global {
-        return SecretListScope::UserOnly;
-    }
-    match require_workspace() {
-        Ok((_root, cfg)) => SecretListScope::WorkspaceAndUser(cfg.id),
-        Err(e) => {
-            log::info!("secret_list:cli: no workspace found, falling back to user scope: {e}");
-            SecretListScope::UserOnly
-        }
-    }
-}
-
 /// `plexi secret list` — list friendly names. Inside a workspace, includes
 /// workspace namespace plus user-scope. Outside a workspace, gracefully falls
 /// back to user-scope. Names only, never values.
 pub fn workspace_secret_list(global: bool, json: bool) -> i32 {
     log::info!("secret_list:cli: global={global} json={json}");
+    let result = std::env::current_dir()
+        .map_err(|error| format!("current directory: {error}"))
+        .and_then(|cwd| write_secret_list(&cwd, global, json, &mut std::io::stdout().lock()));
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            log::warn!("secret_list: failed: {error}");
+            eprintln!("error: {error}");
+            1
+        }
+    }
+}
+
+fn write_secret_list(
+    cwd: &std::path::Path,
+    global: bool,
+    json: bool,
+    output: &mut impl std::io::Write,
+) -> Result<(), String> {
+    use crate::workspace::secrets::manager::{secret_inventory, SecretTarget};
+
+    // The inventory owns reconciliation and scope/experiment filtering for both formats.
+    let entries = secret_inventory(cwd, global)?;
     if json {
-        let cwd = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(error) => { eprintln!("error: current directory: {error}"); return 1; }
-        };
-        return match crate::workspace::secrets::manager::secret_inventory(&cwd, global) {
-            Ok(entries) => {
-                match serde_json::to_string_pretty(&entries) {
-                    Ok(output) => { println!("{output}"); 0 }
-                    Err(error) => { eprintln!("error: secret list JSON: {error}"); 1 }
-                }
-            }
-            Err(error) => { log::warn!("secret_list: metadata failed: {error}"); eprintln!("error: {error}"); 1 }
-        };
+        let rendered = serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?;
+        return writeln!(output, "{rendered}").map_err(|e| e.to_string());
     }
-    let scope = secret_list_scope(global);
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    if entries.is_empty() {
+        return writeln!(output, "No secrets stored.").map_err(|e| e.to_string());
+    }
+    if let Some(SecretTarget::Workspace { id, root }) = entries.iter().find_map(|entry| {
+        matches!(entry.target, SecretTarget::Workspace { .. }).then_some(&entry.target)
+    }) {
+        let injected = crate::workspace::secrets::WorkspaceSecrets::load(root)?
+            .map(|router| router.terminal.env.inject)
+            .unwrap_or_default();
+        writeln!(output, "Workspace ({id}):").map_err(|e| e.to_string())?;
+        for entry in &entries {
+            if matches!(entry.target, SecretTarget::Workspace { .. }) {
+                let annotation = if injected.contains(&entry.name) {
+                    "  (injected into human terminal panes)"
+                } else {
+                    ""
+                };
+                writeln!(output, "  {}{annotation}", entry.name).map_err(|e| e.to_string())?;
+            }
+        }
+        writeln!(output).map_err(|e| e.to_string())?;
+    }
+    if entries
+        .iter()
+        .any(|entry| entry.target == SecretTarget::Global)
     {
-        reconcile_secrets_before_read("secret_list:cli");
-        use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, system_store,
-        };
-        let store = system_store();
-        let user_prefix = keychain_user_name("");
-        let (workspace_id, workspace_entries) = match &scope {
-            SecretListScope::WorkspaceAndUser(workspace_id) => {
-                let workspace_prefix = keychain_workspace_name(workspace_id, "");
-                (
-                    Some((workspace_id.as_str(), workspace_prefix.clone())),
-                    store.list_with_prefix(&workspace_prefix),
-                )
-            }
-            SecretListScope::UserOnly => (None, Vec::new()),
-        };
-        let user_entries = store.list_with_prefix(&user_prefix);
-        let folders = crate::workspace::secrets::list_folder_secrets(
-            crate::workspace::secrets::folder_store(),
-        );
-        if workspace_entries.is_empty() && user_entries.is_empty() && folders.is_empty() {
-            println!("No secrets stored.");
-            return 0;
-        }
-        if let Some((workspace_id, workspace_prefix)) = workspace_id {
-            let injected = require_workspace()
-                .ok()
-                .and_then(|(root, _)| crate::workspace::secrets::WorkspaceSecrets::load(&root).ok().flatten())
-                .map(|router| router.terminal.env.inject)
-                .unwrap_or_default();
-            println!("Workspace ({workspace_id}):");
-            for a in &workspace_entries {
-                if let Some(name) = a.strip_prefix(&workspace_prefix) {
-                    if injected.iter().any(|injected| injected == name) {
-                        println!("  {name}  (injected into human terminal panes)");
-                    } else {
-                        println!("  {name}");
-                    }
-                }
+        writeln!(output, "User scope:").map_err(|e| e.to_string())?;
+        for entry in &entries {
+            if entry.target == SecretTarget::Global {
+                writeln!(output, "  {}", entry.name).map_err(|e| e.to_string())?;
             }
         }
-        if !user_entries.is_empty() {
-            if !workspace_entries.is_empty() {
-                println!();
-            }
-            println!("User scope:");
-            for a in &user_entries {
-                if let Some(name) = a.strip_prefix(&user_prefix) {
-                    println!("  {name}");
-                }
-            }
-        }
-        print_folder_secrets(&folders);
-        0
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = scope;
-        eprintln!("error: keychain not available on this platform");
-        1
+    let mut folders = entries
+        .iter()
+        .filter_map(|entry| match &entry.target {
+            SecretTarget::Folder(folder) => Some((&entry.name, folder)),
+            _ => None,
+        })
+        .peekable();
+    if folders.peek().is_some() {
+        let backend = crate::workspace::secrets::backend_label();
+        eprintln!("folder secrets backend: {backend}");
+        writeln!(output, "Folder scope:").map_err(|e| e.to_string())?;
+        for (name, folder) in folders {
+            writeln!(output, "  {name}  {}", folder.display()).map_err(|e| e.to_string())?;
+        }
+        log::info!("folder_secrets: listed inventory backend={backend}");
     }
+    Ok(())
 }
 
 /// `plexi secret get` from a terminal pane. The host admits the read for the
@@ -676,25 +656,6 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
         eprintln!("error: keychain not available on this platform");
         1
     }
-}
-
-fn print_folder_secrets(folders: &[crate::workspace::secrets::FolderSecretMeta]) {
-    if folders.is_empty() {
-        return;
-    }
-    eprintln!(
-        "folder secrets backend: {}",
-        crate::workspace::secrets::backend_label()
-    );
-    println!("Folder scope:");
-    for meta in folders {
-        println!("  {}  {}", meta.name, meta.folder.display());
-    }
-    log::info!(
-        "folder_secrets: list count={} backend={}",
-        folders.len(),
-        crate::workspace::secrets::backend_label()
-    );
 }
 
 fn read_secret_value(name: &str, from_env: bool) -> Result<zeroize::Zeroizing<String>, i32> {
@@ -1041,17 +1002,10 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
 
 #[cfg(test)]
 mod secret_set_tests {
-    use super::{
-        delete_existing_secret, folder_secret_grant, secret_list_scope, SecretListScope,
-    };
+    use super::{delete_existing_secret, folder_secret_grant};
     use crate::workspace::secrets::InMemoryKeychain;
     use std::fs;
     use tempfile::TempDir;
-
-    #[test]
-    fn secret_list_global_uses_user_scope_without_workspace_lookup() {
-        assert!(matches!(secret_list_scope(true), SecretListScope::UserOnly));
-    }
 
     #[test]
     fn secret_delete_missing_key_returns_not_found_error() {
@@ -1219,5 +1173,132 @@ mod workspace_init_tests {
             cwd.join(&channel_dir).is_dir(),
             "channel directory should exist after init"
         );
+    }
+}
+
+#[cfg(test)]
+mod secret_list_tests {
+    use super::write_secret_list;
+    use crate::workspace::secrets::{
+        self,
+        manager::{mutate_secret, Mutation, SecretTarget},
+    };
+
+    fn check_listing(global: bool, folders_enabled: bool, json: bool) {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let root = tempfile::tempdir().unwrap();
+        let cfg =
+            secrets::init_workspace(root.path(), &crate::config::workspace_channel_dir()).unwrap();
+        let root_path = crate::platform::path::canonical_or_self(root.path());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path());
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let names = [
+            format!("GLOBAL_{suffix}"),
+            format!("WORKSPACE_{suffix}"),
+            format!("FOLDER_{suffix}"),
+        ];
+        let targets = [
+            SecretTarget::Global,
+            SecretTarget::Workspace {
+                id: cfg.id,
+                root: root_path.clone(),
+            },
+            SecretTarget::Folder(root_path),
+        ];
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        for (name, target) in names.iter().zip(&targets) {
+            let store = if matches!(target, SecretTarget::Folder(_)) {
+                secrets::folder_store()
+            } else {
+                secrets::system_store()
+            };
+            mutate_secret(
+                store,
+                &monitor,
+                target,
+                name,
+                Mutation::Set("never-print-this-secret-canary"),
+            )
+            .unwrap();
+        }
+        secrets::write_terminal_env_inject(root.path(), &names[1], true).unwrap();
+        let enabled = if folders_enabled {
+            vec![crate::release::ReleaseFeature::FolderSecrets]
+        } else {
+            vec![]
+        };
+        let _experiment = crate::release::set_test_experiments(&enabled);
+        let child = root.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let mut output = Vec::new();
+        write_secret_list(&child, global, json, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(&names[0]), "global entry missing: {output}");
+        assert_eq!(
+            output.contains(&names[1]),
+            !global,
+            "workspace visibility: {output}"
+        );
+        assert_eq!(
+            output.contains(&names[2]),
+            !global && folders_enabled,
+            "folder visibility: {output}"
+        );
+        assert!(!output.contains("never-print-this-secret-canary"));
+        if json {
+            let rows: serde_json::Value = serde_json::from_str(&output).unwrap();
+            if global {
+                assert!(rows
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["scope"] == "global"));
+            }
+        } else if !global {
+            assert!(
+                output.contains(&format!(
+                    "{}  (injected into human terminal panes)",
+                    names[1]
+                )),
+                "injection annotation: {output}"
+            );
+        }
+        let _cleanup =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        for (name, target) in names.iter().zip(&targets) {
+            let store = if matches!(target, SecretTarget::Folder(_)) {
+                secrets::folder_store()
+            } else {
+                secrets::system_store()
+            };
+            mutate_secret(store, &monitor, target, name, Mutation::Delete).unwrap();
+        }
+    }
+
+    #[test]
+    fn text_global_omits_workspace_and_folders() {
+        check_listing(true, true, false);
+    }
+    #[test]
+    fn json_global_omits_workspace_and_folders() {
+        check_listing(true, true, true);
+    }
+    #[test]
+    fn text_folder_experiment_off_omits_folders() {
+        check_listing(false, false, false);
+    }
+    #[test]
+    fn json_folder_experiment_off_omits_folders() {
+        check_listing(false, false, true);
+    }
+    #[test]
+    fn text_folder_experiment_on_includes_folders_and_injection() {
+        check_listing(false, true, false);
+    }
+    #[test]
+    fn json_folder_experiment_on_includes_folders() {
+        check_listing(false, true, true);
     }
 }

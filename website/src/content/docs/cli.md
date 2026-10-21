@@ -361,7 +361,7 @@ Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`). Scripts sho
 
 Store and retrieve secrets (API keys, passwords, tokens).
 
-Workspace secrets (`secret set` without `--folder`) are saved to the system keychain on macOS. On Linux those workspace entries are a mode-`0600` profile file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`) are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file fallback. Their values are never written in plaintext under `.plexi`. A new terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
+Secrets use macOS Keychain or, on Linux, Secret Service with a labeled encrypted-file fallback. Global, workspace, and folder scopes share that Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for backend selection and legacy plaintext migration. With folder secrets enabled, `secret set NAME --folder` binds a value to a directory. A new human terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
 
 Same-user native processes are not isolated from each other. A process running as this user can still read a value that a pane already holds. Folder secrets stop accidental injection into the wrong directory.
 
@@ -380,7 +380,7 @@ Same-user native processes are not isolated from each other. A process running a
 
 Save a secret to the platform secret store.
 
-Plexi will prompt you to type the value (hidden). On macOS the secret is stored in the system keychain; on Linux it is stored in a mode-`0600`, unencrypted profile file. It can be injected into commands automatically.
+Plexi will prompt you to type the value (hidden). On macOS the secret is stored in the system keychain; on Linux it uses Secret Service or a labeled encrypted-file fallback. See https://plexiapp.com/docs/secrets/#linux-storage for storage and migration details. Terminal injection is opt-in in Secrets.
 
 Use --from-env to read the value from an existing environment variable instead of typing it. Use --global to make the secret available across all projects, not just the current one.
 

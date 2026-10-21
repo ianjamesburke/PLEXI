@@ -150,7 +150,7 @@ The Agents pane and `agent fleet` share the projection in `src/agent/fleet.rs`. 
 
 ## Secret inventory
 
-`secret list --json` and the Secrets app share `manager::secret_inventory` in
+`secret list` (text and JSON) and the Secrets app share `manager::secret_inventory` in
 `src/workspace/secrets/manager.rs`. The output fields and user workflow are
 documented in `website/src/content/docs/secrets.md`. Keep permission decisions
 in the existing monitor; the inventory only observes them.
