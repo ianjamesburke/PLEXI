@@ -135,18 +135,8 @@ fn descend<'a>(
 /// the natural relabel target for the reference blocks.
 const INERT_FENCE_LANGS: &[&str] = &["json", "toml", "rust"];
 
-/// Coverage floors: canaries against silent extraction collapse. The public
-/// skill is a feature map with worked examples, not a complete CLI reference:
-/// the checked map resolves 18 paths and its executable examples resolve 19,
-/// for 37 total. A floor of 30 means dropping either checked section (at most
-/// 19 paths remain) always fails, while allowing deliberate small edits to a
-/// map or example without an unrelated test edit.
-///
-/// All 13 long flags live in the executable examples. Allow one flag to change
-/// with a legitimate recipe edit, but fail if two disappear: that catches a
-/// skipped multi-flag command line or a skipped example block. This is a
-/// canary for extraction coverage, not proof that the examples execute; live
-/// host verification of every published recipe is the separate guarantee.
+/// Coverage floors catch extraction collapse in the generated map and workflows.
+/// Exact command coverage is asserted separately against the gated clap tree.
 const MIN_COMMANDS_RESOLVED: usize = 30;
 const MIN_FLAGS_CHECKED: usize = 12;
 /// Floor for the default (all experiments off) skill: well under the full
@@ -279,6 +269,17 @@ fn check_bash_block(root: &clap::Command, block: &Block, report: &mut Report) {
 /// Check `text` against `root`, returning the report.
 fn surface_report(text: &str, root: &clap::Command) -> Report {
     let mut report = Report::default();
+    // Generated map entries are inline code, separate from workflow fences.
+    // Feed them through the strict reference parser so every path token is checked.
+    let map = map_entries(text);
+    check_reference_block(
+        root,
+        &Block {
+            lang: String::new(),
+            lines: map,
+        },
+        &mut report,
+    );
     for block in fenced_blocks(text) {
         match block.lang.as_str() {
             "" => check_reference_block(root, &block, &mut report),
@@ -370,7 +371,7 @@ fn skill_version_matches_binary() {
     assert_eq!(
         declared,
         env!("CARGO_PKG_VERSION"),
-        "SKILL.md plexi_version must match Cargo.toml — `just bump` stamps both; \
+        "SKILL.md plexi_version must match Cargo.toml — the generator and `just bump` stamp both; \
          never hand-edit one without the other",
     );
 }
@@ -419,4 +420,65 @@ fn shipped_skill_frontmatter_is_valid_yaml() {
         }
         assert!(found, "no skills found in {directory}");
     }
+}
+
+/// Only the generated feature map uses this line format.
+fn map_entries(text: &str) -> Vec<String> {
+    text.split_once("## Feature map\n")
+        .map(|(_, map)| {
+            map.lines()
+                .filter_map(|line| {
+                    line.trim_start()
+                        .strip_prefix("- `plexi ")
+                        .and_then(|entry| entry.split_once('`').map(|(path, _)| path.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn public_paths(
+    command: &clap::Command,
+    parent: &str,
+    paths: &mut std::collections::BTreeSet<String>,
+) {
+    for sub in command
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+    {
+        let path = format!("{parent} {}", sub.get_name()).trim().to_string();
+        paths.insert(path.clone());
+        public_paths(sub, &path, paths);
+    }
+}
+
+#[test]
+fn generated_feature_map_covers_every_visible_command() {
+    // Default, all-on and each experiment alone must match help in both directions.
+    let sets: Vec<Vec<ReleaseFeature>> = std::iter::once(vec![])
+        .chain(std::iter::once(ReleaseFeature::ALL.to_vec()))
+        .chain(ReleaseFeature::ALL.iter().map(|feature| vec![*feature]))
+        .collect();
+    for enabled in sets {
+        let on = |feature| enabled.contains(&feature);
+        let mut expected = std::collections::BTreeSet::new();
+        public_paths(&built_cli(on), "", &mut expected);
+        let actual: std::collections::BTreeSet<_> = map_entries(&rendered_skill(on))
+            .into_iter()
+            .filter(|entry| {
+                !entry.contains(" --") && !entry.contains(" -") && !entry.contains(" <")
+            })
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "generated map differs from help for {enabled:?}"
+        );
+    }
+}
+
+#[test]
+fn generated_map_extractor_rejects_unknown_commands_and_flags() {
+    let root = built_cli(|_| true);
+    let report = surface_report("## Feature map\n- `plexi invented-command`: bad\n- `plexi pane list --invented-flag`: bad\n", &root);
+    assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
 }

@@ -7,3 +7,5 @@ publish = false
 [dependencies]
 plexi = { path = "../.." }
 clap = { version = "4", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.8"
