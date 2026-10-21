@@ -1105,11 +1105,21 @@ impl PlexiApp {
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         match monitor.resolve_needs_you_from(id, approve, crate::broker::gate::ResolveSurface::Desktop) {
             Ok(receipt) => {
-                log::info!(
-                    "permission_seal: desktop {label} resolved id={} resolution={}",
-                    receipt.id,
-                    receipt.resolution.as_str()
-                );
+                if approve && receipt.run_outcome == crate::broker::gate::RunOutcome::OutcomeUnknown {
+                    log::warn!(
+                        "permission_seal: desktop {label} resolved id={} resolution={} run_outcome={} (request could not be applied)",
+                        receipt.id,
+                        receipt.resolution.as_str(),
+                        receipt.run_outcome.as_str()
+                    );
+                } else {
+                    log::info!(
+                        "permission_seal: desktop {label} resolved id={} resolution={} run_outcome={}",
+                        receipt.id,
+                        receipt.resolution.as_str(),
+                        receipt.run_outcome.as_str()
+                    );
+                }
                 Ok(())
             }
             Err(crate::broker::gate::NeedsYouResolveError::Refused) => {

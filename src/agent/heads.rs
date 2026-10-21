@@ -835,6 +835,48 @@ fn grants_from_value(value: &Value) -> Result<Vec<ToolGrant>, String> {
     specs.iter().map(|spec| parse_grant_spec(spec)).collect()
 }
 
+fn pane_session_grants(workspace: &Path, pane_id: u64) -> Vec<ToolGrant> {
+    let gate = monitor();
+    let session_id = gate.session_id().to_string();
+    let now = gate.now_secs();
+    let pane_actor = format!("pane:{pane_id}");
+    let store = gate.store();
+    store
+        .records()
+        .iter()
+        .filter(|rec| {
+            if rec.consumed {
+                return false;
+            }
+            if rec.expires_at.is_some_and(|exp| now >= exp) {
+                return false;
+            }
+            if rec.workspace_root.as_deref() != Some(workspace) {
+                return false;
+            }
+            if rec.duration == GrantDuration::Session
+                && rec.session_id.as_deref() != Some(session_id.as_str())
+            {
+                return false;
+            }
+            let matches_pane = rec.actor_id == pane_actor
+                || rec.bound_operation_id.as_deref() == Some(pane_actor.as_str())
+                || (rec.resource_scope == crate::broker::ResourceScope::Pane
+                    && rec.resource_id.as_deref() == Some(pane_actor.as_str()))
+                || (pane_id != 0
+                    && rec.instance_id == Some(pane_id)
+                    && !rec.actor_id.starts_with("agent:"));
+            matches_pane && !rec.target_id.is_empty()
+        })
+        .map(|rec| ToolGrant {
+            tool: rec.target_id.clone(),
+            decision: rec.decision.as_str().to_string(),
+            kind: rec.kind,
+            expires_at: rec.expires_at,
+        })
+        .collect()
+}
+
 pub fn handle_request(op: &str, payload: &Value) -> Value {
     let Some(workspace_raw) = payload.get("workspace").and_then(|v| v.as_str()) else {
         return json!({"ok": false, "error_code": "invalid_argument", "error": "workspace is required"});
@@ -860,10 +902,18 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .get("caller_head")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let (parent_owned, denial_owned) = if caller_pane.is_some() {
+            let (parent_owned, denial_owned) = if let Some(pane_id) = caller_pane {
                 if caller_head.is_empty() {
-                    log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
-                    (Some(Vec::new()), "pane".to_string())
+                    let pane_grants = pane_session_grants(&workspace, pane_id);
+                    if pane_grants.is_empty() {
+                        log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
+                    } else {
+                        log::info!(
+                            "agents_api: create_head pane={caller_pane:?} session_grants={}",
+                            pane_grants.len()
+                        );
+                    }
+                    (Some(pane_grants), "pane".to_string())
                 } else {
                     match find_head(&workspace, caller_head) {
                         Ok(card) => {
@@ -1038,6 +1088,8 @@ fn list_grants(workspace: &Path) -> Value {
         .filter(|rec| {
             rec.actor_type == ActorType::Agent
                 && !rec.consumed
+                && (rec.duration != GrantDuration::Session
+                    || rec.session_id.as_deref() == Some(gate.session_id()))
                 && (rec.workspace_root.as_deref() == Some(workspace)
                     || rec.workspace_root.is_none())
         })
@@ -1833,6 +1885,21 @@ mod tests {
             }),
         );
         assert_eq!(empty["error_code"], "permission_denied", "{empty}");
+        let ny_id = empty["needs_you_id"].as_str().expect("needs_you_id");
+        monitor()
+            .resolve_needs_you_from(ny_id, true, crate::broker::gate::ResolveSurface::Desktop)
+            .expect("desktop approve mints pane grant");
+        let retried = handle_request(
+            "create_head",
+            &json!({
+                "workspace": fix.ws(),
+                "name": "bare",
+                "grants": ["assistant.turn=allow"],
+                "caller_pane": 9,
+                "caller_head": "",
+            }),
+        );
+        assert_eq!(retried["ok"], true, "{retried}");
     }
 
     #[test]
