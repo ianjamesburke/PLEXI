@@ -12402,3 +12402,128 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
 
 
 
+
+#[test]
+fn pane_close_keys_keep_host_and_restore_zoom() {
+    let mut h = HostHarness::new();
+    h.app.config.confirm_close = Some(false);
+    let first = h.add_test_pane();
+    let second = h.add_test_pane();
+    let win = &mut h.app.windows[0];
+    let tiles = win.tree.tiles.iter().filter_map(|(id, tile)| matches!(tile, egui_tiles::Tile::Pane(_)).then_some(*id)).collect();
+    win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(tiles));
+    h.focus_pane(second).run_frames(2);
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    assert!(h.app.windows[0].zoomed_pane.is_some());
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(h.app.windows[0].zoomed_pane.is_none());
+    assert!(h.app.windows[0].panes.contains_key(&second), "Escape unzooms without closing");
+    h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
+    assert!(!h.app.windows[0].panes.contains_key(&second));
+    assert!(h.app.windows[0].panes.contains_key(&first));
+    h.focus_pane(first);
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key { key: egui::Key::W, physical_key: None,
+            pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND }],
+        ..Default::default()
+    });
+    h.app.config.confirm_close = Some(false);
+    h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.windows.len(), 1);
+    assert!(h.app.windows[0].panes.is_empty());
+    assert!(!h.app.quitting);
+}
+
+#[test]
+fn working_agent_quit_requires_confirmation_and_cancel_preserves_panes() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let pane_count = h.pane_count();
+    #[cfg(unix)]
+    let child_pid = h.terminal_backend(pane).child_pid();
+    h.app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+        agent: "test-agent".into(),
+        state: crate::protocol::AgentState::Working,
+        pane_id: pane, detail: None, session_id: None
+    }));
+    assert!(!h.app.prepare_user_quit());
+    assert!(h.app.pending_close);
+    h.run_frames(2);
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!h.app.pending_close);
+    assert!(!h.app.quitting);
+    assert_eq!(h.pane_count(), pane_count);
+    #[cfg(unix)]
+    assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0, "Cancel keeps the agent process running");
+    assert!(h.app.windows[0].panes.contains_key(&pane));
+}
+
+#[test]
+fn pane_close_chord_dismisses_modal_without_closing_pane() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane).run_frames(2);
+    h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+    assert!(h.app.show_command_palette);
+    h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
+    assert!(!h.app.show_command_palette);
+    assert!(h.app.windows[0].panes.contains_key(&pane));
+    assert!(!h.app.pending_close);
+}
+
+#[test]
+fn pane_zoom_escape_still_reaches_terminal_pty() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let evidence = tempfile::tempdir().unwrap();
+    // A real raw-mode alternate-screen program, not just a synthetic key tap.
+    let script = r#"stty -echo -icanon min 1 time 0; printf '\033[?1049h'; touch "$1/ready"; dd bs=1 count=1 2>/dev/null | od -An -tx1 > "$1/key"; printf '\033[?1049l'; stty sane"#;
+    let command = crate::host::shell::shell_join(&[
+        "/bin/sh".into(), "-c".into(), script.into(), "plexi-escape-test".into(), evidence.path().display().to_string(),
+    ]);
+    h.terminal_backend(pane).process_command(egui_term::BackendCommand::Write(format!("{command}\n").into_bytes()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !evidence.path().join("ready").exists() {
+        assert!(std::time::Instant::now() < deadline, "raw-mode fixture did not start");
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    assert!(h.app.windows[0].zoomed_pane.is_some());
+    h.terminal_backend(pane).enable_input_tap();
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(h.app.windows[0].zoomed_pane.is_none());
+    assert_eq!(h.terminal_backend(pane).take_input_tap(), b"\x1b");
+    loop {
+        if std::fs::read_to_string(evidence.path().join("key")).is_ok_and(|key| key.trim() == "1b") { break; }
+        assert!(std::time::Instant::now() < deadline, "TUI did not receive Escape");
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn working_agent_window_close_and_keyboard_quit_share_confirmation() {
+    for window_close in [true, false] {
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        h.app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id: pane, agent: "codex".into(), state: crate::protocol::AgentState::Working,
+            detail: Some("Running tests".into()), session_id: None,
+        }));
+        h.app.config.confirm_quit = Some(false); // Working protection is unconditional.
+        if window_close {
+            let mut input = egui::RawInput::default();
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+            h.frame(input);
+        } else {
+            h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+        }
+        assert!(h.app.pending_quit);
+        assert!(!h.app.quitting);
+        h.run_frames(2);
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        assert!(h.app.quitting);
+        assert!(!h.app.pending_quit);
+    }
+}

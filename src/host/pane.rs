@@ -690,6 +690,7 @@ impl Pane {
 // ---------------------------------------------------------------------------
 
 pub struct TerminalPane {
+    _process_group: super::process_cleanup::PaneProcessGroup,
     pub fleet_result: Option<serde_json::Value>,
     pub fleet_seen: bool,
     pub fleet_done_unseen: bool,
@@ -772,9 +773,10 @@ impl TerminalPane {
         id: u64,
         ctx: egui::Context,
         tx: Sender<(u64, PtyEvent)>,
-        settings: BackendSettings,
+        mut settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
+        settings.env.insert(super::process_cleanup::SESSION_ENV.into(), super::process_cleanup::session_marker().into());
         let ephemeral = settings
             .env
             .get("PLEXI_EPHEMERAL")
@@ -795,7 +797,9 @@ impl TerminalPane {
                 return None;
             }
         };
+        let process_group = super::process_cleanup::PaneProcessGroup::record(backend.child_pid());
         Some(Self {
+            _process_group: process_group,
             id,
             backend,
             exited: false,

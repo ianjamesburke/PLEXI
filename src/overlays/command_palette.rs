@@ -1854,7 +1854,8 @@ impl PlexiApp {
     fn close_palette_focused_pane(&mut self) {
         if self.confirm_close() {
             self.pending_close = true;
-        } else if !self.execute_close_pane() {
+        } else {
+            self.execute_close_pane();
             self.mark_workspace_dirty();
         }
     }

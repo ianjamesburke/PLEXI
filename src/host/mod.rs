@@ -45,3 +45,5 @@ pub mod wasm_pane;
 pub mod wasm_python;
 pub mod wasm_render;
 pub mod worktree;
+
+pub(crate) mod process_cleanup;

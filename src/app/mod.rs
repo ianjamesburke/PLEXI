@@ -193,6 +193,7 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
+    pub(crate) pending_quit: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
@@ -1493,6 +1494,7 @@ impl PlexiApp {
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     claimed_host_key_releases: HashSet::new(),
                     pending_close: false,
+                    pending_quit: false,
                     pending_context_close: None,
                     frame_tick,
                     ui_phase: ui_phase.clone(),
@@ -1748,6 +1750,7 @@ impl PlexiApp {
             claimed_host_key_releases: HashSet::new(),
             key_bindings,
             pending_close: false,
+            pending_quit: false,
             pending_context_close: None,
             frame_tick,
             ui_phase,
@@ -2570,6 +2573,7 @@ impl PlexiApp {
                 claimed_host_key_releases: HashSet::new(),
                 key_bindings,
                 pending_close: false,
+                pending_quit: false,
                 pending_context_close: None,
                 frame_tick,
                 ui_phase: crate::platform::logging::new_ui_phase_tracker(),
@@ -3513,6 +3517,27 @@ impl eframe::App for PlexiApp {
         // `dispatch_app_key_events` and `poll_actions` from seeing those events.
         // Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) remain active via `poll_actions`
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
+        // A close chord belongs to the top modal, never the pane beneath it.
+        // Reuse that modal's Escape/cancel contract, including unsaved-work vetoes.
+        if self.input_captured_by_overlay() {
+            let binding = self.key_bindings.close_pane;
+            let mut claimed = false;
+            ctx.input_mut(|input| {
+                for event in &mut input.events {
+                    if let egui::Event::Key { key, modifiers, physical_key, .. } = event {
+                        if *key == binding.1 && modifiers.matches_logically(binding.0) {
+                            claimed = true;
+                            *key = egui::Key::Escape;
+                            *physical_key = None;
+                            *modifiers = egui::Modifiers::NONE;
+                        }
+                    }
+                }
+            });
+            if claimed {
+                self.claimed_host_key_releases.insert(binding.1);
+            }
+        }
         let mut early_modal_cmds: Vec<crate::app::app_trait::AppCommand> = Vec::new();
         let overlay_key_disposition = if self.input_captured_by_overlay() {
             // Ownership-transfer (stint 0240): take this frame's input-intent
@@ -3849,6 +3874,18 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
+                    if self.show_ui_gallery {
+                        self.show_ui_gallery = false;
+                        continue;
+                    }
+                    if self.show_changelog {
+                        self.show_changelog = false;
+                        continue;
+                    }
+                    if self.show_shortcuts {
+                        self.show_shortcuts = false;
+                        continue;
+                    }
                     // If the focused app pane has a non-empty nav stack
                     // (via PushNav), Escape routes NavBack to the app
                     // instead of closing the pane.
@@ -3872,9 +3909,8 @@ impl eframe::App for PlexiApp {
                             }
                         } else if self.confirm_close() {
                             self.pending_close = true;
-                        } else if self.execute_close_pane() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         } else {
+                            self.execute_close_pane();
                             self.mark_workspace_dirty();
                         }
                     }
@@ -4118,7 +4154,12 @@ impl eframe::App for PlexiApp {
                     self.scroll_focused_pane(-3);
                 }
                 Action::CloseApp => {
-                    self.close_focused_app();
+                    if self.windows[self.active_window].zoomed_pane.is_some() {
+                        self.windows[self.active_window].clear_zoom();
+                        log::info!("zoom: Escape restored pane layout");
+                    } else {
+                        self.close_focused_app();
+                    }
                 }
                 Action::OpenAgents => self.open_agents_pane(),
                 Action::OpenFileBrowser => {
@@ -4293,6 +4334,21 @@ impl eframe::App for PlexiApp {
         // swallowing a key before the terminal processes it. `poll_actions`
         // above already claimed global hotkeys from the same buffer, so the
         // terminal only ever sees what the global allowlist left behind.
+        // Terminal Escape remains terminal-owned, even when it also restores
+        // the host layout. Do not consume it: TUIs must receive the same byte.
+        if !self.input_captured_by_overlay()
+            && self.windows[self.active_window].zoomed_pane.is_some()
+            && self.windows[self.active_window].focused_pane
+                .and_then(|tile| Self::find_pane_in_tile(&self.windows[self.active_window].tree, tile))
+                .and_then(|id| self.windows[self.active_window].panes.get(&id))
+                .is_some_and(|pane| pane.as_terminal().is_some())
+            && ctx.input(|input| input.events.iter().any(|event| matches!(event,
+                egui::Event::Key { key: egui::Key::Escape, modifiers, pressed: true, .. }
+                    if *modifiers == egui::Modifiers::NONE)))
+        {
+            self.windows[self.active_window].clear_zoom();
+            log::info!("zoom: Escape restored terminal layout; key forwarded to PTY");
+        }
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
         // Host focus (keyboard nav, a click handled before this pass) is
         // already current. egui focus still belongs to last frame until

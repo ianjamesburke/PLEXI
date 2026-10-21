@@ -41,6 +41,7 @@ impl PlexiApp {
             return;
         };
         let pane_id = *pane_id;
+        let zoomed = self.windows[active].zoomed_pane.is_some();
         let Some(pane) = self.windows[active].panes.get_mut(&pane_id) else {
             return;
         };
@@ -188,6 +189,13 @@ impl PlexiApp {
             log::info!(
                 "app_keys: pane {pane_id} Escape left focused TextInput — dedicated delivery disposition={disposition:?}, CloseApp suppressed"
             );
+            return;
+        }
+        // TextInput Escape has already had first refusal. At the pane level,
+        // Escape restores zoom before an app can interpret it as pane close.
+        if zoomed && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            self.windows[active].clear_zoom();
+            log::info!("zoom: Escape restored app layout pane={pane_id}");
             return;
         }
         // The app classifies keys from the frame's ownership-transfer buffer

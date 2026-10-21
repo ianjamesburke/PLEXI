@@ -1711,7 +1711,7 @@ impl PlexiApp {
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
-    pub(crate) fn execute_close_pane(&mut self) -> bool {
+    pub(crate) fn execute_close_pane(&mut self) {
         let ctx_id = self.windows[self.active_window].context_id;
         self.windows[self.active_window].clear_zoom();
         if !self.windows[self.active_window].panes.is_empty() {
@@ -1733,7 +1733,7 @@ impl PlexiApp {
         // An emptied subcontext collapses entirely — delete it and zoom back
         // out to the parent, as if Cmd+Escape had been pressed.
         self.collapse_subcontext_if_empty(ctx_id);
-        false
+        log::info!("pane close: host remains running window={}", self.windows[self.active_window].window_id);
     }
 }
 

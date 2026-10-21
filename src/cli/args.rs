@@ -1546,8 +1546,10 @@ pub enum HostCmd {
         #[arg(long)]
         background: bool,
     },
-    /// Stop the running host for this channel.
+    /// Stop the running host and every pane agent for this channel.
     ///
+    /// Non-interactive: terminates pane process groups with SIGTERM, then
+    /// SIGKILL after a grace period (PLEXI_QUIT_GRACE_MS, default 2000 ms).
     /// Sends a clean shutdown request first, falling back to SIGTERM if the
     /// host doesn't confirm exit in time.
     Stop,

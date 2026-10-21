@@ -77,6 +77,8 @@ An experiment owns its storage in its own versioned location and never writes co
 
 ## Traps
 
+- **macOS can hide a system binary's process environment.** `sysinfo::Process::environ` and `ps eww` can both return no environment for pane shells and `sleep`, even when the host supplied a marker. Shutdown must retain root PID/start-time identity and walk descendants as well as matching `PLEXI_HOST_SESSION`. A fully reparented process with an unreadable or scrubbed marker cannot be safely attributed to the host.
+
 - **The host's launch env leaks into every pane.** Anything not overridden in
   `build_env` is inherited by PTY children from whatever launched the host. A
   sandbox/agent session exporting `NO_COLOR=1 FORCE_COLOR=0` turned every Linux

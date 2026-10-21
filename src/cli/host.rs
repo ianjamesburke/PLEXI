@@ -136,6 +136,7 @@ fn placement_to_layout(spec: &PaneSpec) -> Result<&'static str, String> {
 const STRIP_VARS: &[&str] = &[
     "PLEXI_SOCKET",
     "PLEXI_PANE_ID",
+    crate::host::process_cleanup::SESSION_ENV,
     "PLEXI_CONTEXT_ID",
     "PLEXI_CONTEXT_ROOT",
     "PLEXI_RUNNING",
@@ -708,7 +709,7 @@ pub(crate) fn stop_for_uninstall() -> Result<(), String> {
     if host_stop_cli() != 0 {
         return Err("could not stop the channel host before uninstall".into());
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(35);
     while !shutdown_complete(pid, &socket) {
         if Instant::now() >= deadline {
             return Err("channel host has not exited; no uninstall data was removed".into());
@@ -1321,6 +1322,7 @@ mod tests {
         let parent = vec![
             ("PLEXI_SOCKET".to_string(), "/tmp/x.sock".to_string()),
             ("PLEXI_PANE_ID".to_string(), "7".to_string()),
+            (crate::host::process_cleanup::SESSION_ENV.to_string(), "parent-host".to_string()),
             ("PLEXI_CONTEXT_ID".to_string(), "3".to_string()),
             ("PLEXI_CONTEXT_ROOT".to_string(), "/tmp".to_string()),
             ("PLEXI_RUNNING".to_string(), "1".to_string()),
@@ -1341,6 +1343,7 @@ mod tests {
         assert_eq!(map.get(crate::workspace::BACKGROUND_SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_SOCKET"), None);
         assert_eq!(map.get("PLEXI_PANE_ID"), None);
+        assert_eq!(map.get(crate::host::process_cleanup::SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ID"), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ROOT"), None);
         assert_eq!(map.get("PLEXI_RUNNING"), None);
