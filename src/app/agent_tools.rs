@@ -154,7 +154,7 @@ impl PlexiApp {
                 .find_map(|w| w.panes.get(&old))
                 .and_then(|p| p.as_terminal());
             let packet = json!({"from_pane_id":old,"from_role":terminal.and_then(|t| t.agent_role.as_deref()),
-                "previous_task":terminal.and_then(|t| t.spawn_env.get("PLEXI_AGENT_TASK")),"task":request.task});
+                "session":terminal.and_then(|t| t.build_saved_agent_session()),"task":request.task});
             format!(
                 "# Restore packet\n{packet}\n\n# Successor task\n{}",
                 request.task
