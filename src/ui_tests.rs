@@ -601,6 +601,11 @@ mod tests {
         h.with_app(|app| {
             assert_eq!(app.conjoined_parent(), Some(parent));
             assert_eq!(app.visual_owner_pane(), Some(parent));
+            assert_eq!(app.fleet_focused_pane(), Some(parent));
+            let parent_rect = app.visible_pane_rect(parent).unwrap();
+            let child_rect = app.windows[app.active_window].tree.root.and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile)).unwrap();
+            let share = parent_rect.width() / (parent_rect.width() + child_rect.width());
+            assert!((share - 0.35).abs() < 0.01, "parent share: {share}");
             assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
         });
         h.save_screenshot(&evidence_png!("_view")).unwrap();

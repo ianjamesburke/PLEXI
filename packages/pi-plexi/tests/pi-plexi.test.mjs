@@ -600,3 +600,26 @@ test("agent tool synthesis binds allowed roles and preserves structured question
   await tools[3].execute("handoff", { role: "writer", task: "Continue" });
   assert.deepEqual(calls[2].args, ["agent", "handoff", "writer", "--task", "Continue"]);
 });
+
+test("session start synthesizes agent tools from the live pane role", async () => {
+  const { pi, tools } = makeFakePiHarness();
+  const calls = [];
+  const runner = async (_bin, args) => {
+    calls.push(args);
+    let data = [];
+    if (args[0] === "pane" && args[1] === "list") data = [{ id: 1, type: "terminal", context_id: 10, agent_role: "lead" }];
+    if (args[0] === "agent" && args[1] === "show") data = { can_call: ["tester"], can_handoff: ["writer"] };
+    return { exitCode: 0, stdout: JSON.stringify(data), stderr: "" };
+  };
+  createPiPlexiExtension({
+    env: { PLEXI_RUNNING: "1", PLEXI_PANE_ID: "1", PLEXI_CONTEXT_ID: "10", PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock", PLEXI_CHANNEL: "alpha" },
+    runner, checkSocketExists: () => true,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-agent-tools-")),
+  })(pi);
+  await pi.emit("session_start", {}, {});
+  assert.equal(tools.has("agent_call_tester"), true);
+  assert.equal(tools.has("agent_call_writer"), false);
+  assert.equal(tools.has("agent_message"), true);
+  assert.ok(calls.some(args => args.join(" ") === "agent show lead --json"));
+  await pi.emit("session_shutdown", {}, {});
+});

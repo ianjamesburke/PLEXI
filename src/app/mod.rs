@@ -239,6 +239,7 @@ pub struct PlexiApp {
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
+    pub(crate) conjoined_parent_rect: Option<(u64, egui::Rect)>,
     pub(crate) conjoined_parent_focus: Option<u64>,
     pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
@@ -1531,6 +1532,7 @@ impl PlexiApp {
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
                     conjoined_parent_focus: None,
+                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1793,6 +1795,7 @@ impl PlexiApp {
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
                     conjoined_parent_focus: None,
+                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2631,6 +2634,7 @@ impl PlexiApp {
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
                     conjoined_parent_focus: None,
+                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,

@@ -207,10 +207,10 @@ impl PlexiApp {
         let region = match request.pane_id {
             None => None,
             Some(pane_id) => {
-                let Some((win_idx, tile_id)) = self.find_pane_in_any_window(pane_id) else {
+                if self.find_pane_in_any_window(pane_id).is_none() {
                     return Err(format!("pane {pane_id} not found"));
                 };
-                let Some(rect) = self.windows[win_idx].tree.tiles.rect(tile_id) else {
+                let Some(rect) = self.visible_pane_rect(pane_id) else {
                     return Err(format!(
                         "pane {pane_id}: no known screen rect (pane has not rendered yet)"
                     ));

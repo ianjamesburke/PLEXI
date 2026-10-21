@@ -11,6 +11,18 @@ impl PlexiApp {
             .filter(|id| self.find_pane_in_any_window(*id).is_some())
     }
 
+    pub(crate) fn visible_pane_rect(&self, pane_id: u64) -> Option<egui::Rect> {
+        if self.conjoined_parent() == Some(pane_id) {
+            if let Some((id, rect)) = self.conjoined_parent_rect {
+                if id == pane_id {
+                    return Some(rect);
+                }
+            }
+        }
+        let (win, tile) = self.find_pane_in_any_window(pane_id)?;
+        self.windows[win].tree.tiles.rect(tile)
+    }
+
     pub(crate) fn child_agent_strips(&self) -> HashMap<u64, Vec<AgentRow>> {
         let mut strips: HashMap<u64, Vec<AgentRow>> = HashMap::new();
         for row in self
@@ -65,6 +77,7 @@ impl PlexiApp {
         let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
         let split = rect.left() + rect.width() * 0.35;
         let left = egui::Rect::from_min_max(rect.min, egui::pos2(split - gap / 2.0, rect.bottom()));
+        self.conjoined_parent_rect = Some((parent, left));
         let right = egui::Rect::from_min_max(egui::pos2(split + gap / 2.0, rect.top()), rect.max);
         if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(left) {
             self.conjoined_parent_focus = Some(parent);

@@ -536,6 +536,37 @@ Read a pane's validated structured result (`plexi pane result <id>`, stint 0666)
 | `timeout_secs` | `number` | no |
 | `wait` | `boolean` | no |
 
+### `agent_call`
+
+Invoke an agent role as a tool, waiting for its completion or question.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `asynchronous` | `boolean` | no |
+| `call_credential` | `string?` | no |
+| `cwd` | `string?` | no |
+| `handoff` | `boolean` | no |
+| `parent_pane_id` | `integer?` | no |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string` | yes |
+| `role` | `string` | yes |
+| `task` | `string` | yes |
+| `worktree` | `string?` | no |
+
+### `agent_message`
+
+Deliver a structured reply to a child agent, optionally waiting for its next outcome.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `call_credential` | `string?` | no |
+| `pane_id` | `integer` | yes |
+| `parent_pane_id` | `integer?` | no |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string` | yes |
+| `text` | `string` | yes |
+| `wait` | `boolean` | no |
+
 ### `agent_spawn`
 
 Spawn a configured agent worker pane, optionally into a created or reused child sub-context with a parent `PortalPane...
