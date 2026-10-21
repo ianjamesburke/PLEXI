@@ -314,8 +314,10 @@ impl App for AgentsApp {
                                                 egui::TextEdit::multiline(&mut self.reply)
                                                     .hint_text("Your answer"),
                                             );
+                                            let surface = crate::ui::focus::SurfaceKey::Pane(ctx.pane_id);
+                                            crate::ui::focus::register_text_surface(ui.ctx(), surface, response.id);
                                             if self.focus_reply {
-                                                response.request_focus();
+                                                crate::ui::focus::claim_text_surface(ui.ctx(), surface, response.id);
                                                 self.focus_reply = false;
                                             }
                                             if ui
