@@ -299,6 +299,7 @@ plexi config reset
         "keybindings",
         "agents",
         "cli",
+        "permissions",
         "marketplace",
         "file_handlers",
     ];
@@ -436,6 +437,12 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
     // ── CLI ──────────────────────────────────────────────────────────────────
     println!("### CLI (`[cli]`)\n");
     if let Some(s) = structs.get("CliConfig") {
+        emit_table(&s.fields);
+    }
+
+    // ── Permissions ──────────────────────────────────────────────────────────
+    println!("### Permissions (`[permissions]`)\n");
+    if let Some(s) = structs.get("PermissionsConfig") {
         emit_table(&s.fields);
     }
 

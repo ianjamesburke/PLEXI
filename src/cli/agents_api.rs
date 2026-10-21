@@ -1,7 +1,13 @@
 //! CLI front end for the Agents API. The host owns heads, runs, and the gate.
 
-use crate::cli::args::{AgentHeadCmd, AgentRunCmd};
+use crate::cli::args::{AgentGrantsCmd, AgentHeadCmd, AgentRunCmd};
 use serde_json::{json, Value};
+
+pub fn agent_grants_dispatch(cmd: AgentGrantsCmd) -> i32 {
+    match cmd {
+        AgentGrantsCmd::List { json } => call("list_grants", json!({}), json),
+    }
+}
 
 pub fn agent_head_dispatch(cmd: AgentHeadCmd) -> i32 {
     match cmd {
@@ -230,11 +236,13 @@ pub fn assistant_open_head_cli(head: &str) -> i32 {
 }
 
 pub fn agent_delegate_cli(parent_run: &str, name: &str, grant: &[String], json: bool) -> i32 {
-    call(
-        "delegate",
-        json!({"parent_run": parent_run, "name": name, "grants": grant}),
-        json,
-    )
+    let mut payload = json!({"parent_run": parent_run, "name": name, "grants": grant});
+    if let Ok(pane) = std::env::var("PLEXI_PANE_ID") {
+        if let Ok(pane_id) = pane.parse::<u64>() {
+            payload["caller_pane"] = json!(pane_id);
+        }
+    }
+    call("delegate", payload, json)
 }
 
 fn call(op: &str, payload: Value, json_out: bool) -> i32 {
@@ -297,6 +305,24 @@ fn print_human(value: &Value) {
         eprintln!("error: {code}: {error}");
         return;
     }
+    if let Some(grants) = value.get("grants").and_then(|v| v.as_array()) {
+        if grants.is_empty() {
+            println!("No agent grants.");
+            return;
+        }
+        for grant in grants {
+            let head = grant.get("head").and_then(|v| v.as_str()).unwrap_or("?");
+            let tool = grant.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+            let decision = grant.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = grant.get("kind").and_then(|v| v.as_str()).unwrap_or("hard");
+            let expires_at = grant.get("expires_at").and_then(|v| v.as_i64());
+            match expires_at {
+                Some(exp) => println!("{head}  {tool}={decision}:{kind}  expires_at={exp}"),
+                None => println!("{head}  {tool}={decision}:{kind}"),
+            }
+        }
+        return;
+    }
     if let Some(heads) = value.get("heads").and_then(|v| v.as_array()) {
         if heads.is_empty() {
             println!("No agent heads.");
@@ -354,7 +380,12 @@ fn grant_list(grants: Option<&Value>) -> String {
                 .filter_map(|grant| {
                     let tool = grant.get("tool")?.as_str()?;
                     let decision = grant.get("decision")?.as_str()?;
-                    Some(format!("{tool}={decision}"))
+                    let kind = grant.get("kind").and_then(|v| v.as_str()).unwrap_or("hard");
+                    if decision == "allow" && kind == "soft" {
+                        Some(format!("{tool}={decision}:soft"))
+                    } else {
+                        Some(format!("{tool}={decision}"))
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(",")

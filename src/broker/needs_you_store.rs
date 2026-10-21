@@ -339,6 +339,7 @@ fn validate(items: &[DiskItem]) -> Result<Vec<RestoredItem>, String> {
             NeedsYouKind::Question
             | NeedsYouKind::BlockedRun
             | NeedsYouKind::PermissionChange
+            | NeedsYouKind::PermissionRequest
             | NeedsYouKind::Integrity
             | NeedsYouKind::Keychain => {
                 if item.pending.is_some() {

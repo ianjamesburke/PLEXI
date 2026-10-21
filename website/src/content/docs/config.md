@@ -248,6 +248,12 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 |---|---|---|---|
 | `tips` | bool | `true` | Print contextual tips after CLI commands. Default: `true`. Set to `false` to suppress. |
 
+### Permissions (`[permissions]`)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `soft_grant_days` | integer | 30 | Expiry window in days for soft grants (`--grant tool=allow:soft`). After this window, a soft grant reverts to `ask`. Default: 30. |
+
 ### File handlers (`[file_handlers]`)
 
 Choose which app opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
@@ -367,6 +373,9 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 
 [cli]
 tips = true
+
+# [permissions]
+# soft_grant_days = 30         # expiry window in days for `--grant tool=allow:soft` grants; after expiry they revert to `ask`
 
 # [file_handlers]
 # Choose which app opens each file type from the File Explorer (Enter / double-

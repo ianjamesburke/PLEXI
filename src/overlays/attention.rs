@@ -144,6 +144,14 @@ pub(crate) fn attention_view(record: &NeedsYouRecord) -> AttentionView {
             "The permission stays as it is until you decide.".to_string(),
             "Decide in the approval prompt. Closing this review does not decide anything.".to_string(),
         ),
+        NeedsYouKind::PermissionRequest => (
+            "Permission request",
+            Severity::Warning,
+            format!("{} requested tool permission", record.actor),
+            record.summary.clone(),
+            "The refused tool stays blocked for this run until you decide.".to_string(),
+            "Allow to grant this tool for this run only, or Dismiss to keep it refused.".to_string(),
+        ),
         NeedsYouKind::Question => (
             "Question",
             Severity::Info,

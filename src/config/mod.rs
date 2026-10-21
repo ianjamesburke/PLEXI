@@ -84,6 +84,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "cli",
     "marketplace",
     "cloud",
+    "permissions",
     "experiments",
     "pane_gap",
     "pane_title_font_size",
@@ -91,6 +92,13 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results"];
 const KNOWN_CLI: &[&str] = &["tips"];
+const KNOWN_PERMISSIONS: &[&str] = &[
+    "soft_grant_days",
+    "default_posture",
+    "allow",
+    "ask",
+    "deny",
+];
 const KNOWN_THEME: &[&str] = &[
     "preset",
     "bg_darkest",
@@ -302,6 +310,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             if let Some(toml::Value::Table(t)) = table.get("cloud") {
                 check_unknown_keys(t, "cloud", KNOWN_CLOUD, &path_str, &mut diags);
             }
+            if let Some(toml::Value::Table(t)) = table.get("permissions") {
+                check_unknown_keys(t, "permissions", KNOWN_PERMISSIONS, &path_str, &mut diags);
+            }
             if table.contains_key("quick_note") {
                 diags.push(ConfigDiagnostic::DeprecatedSection {
                     path: path_str.clone(),
@@ -512,6 +523,8 @@ pub struct PlexiConfig {
     /// Optional cloud link (`[cloud]`). Local use never reads this. See
     /// [`CloudConfig`].
     pub cloud: Option<CloudConfig>,
+    /// Permissions broker settings (`[permissions]`).
+    pub permissions: Option<PermissionsConfig>,
     /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
     /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
     /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
@@ -570,6 +583,28 @@ pub struct CloudConfig {
     /// Relay registry rows, queued-envelope metadata, and logs Plexi controls
     /// are pruned either way.
     pub retain_local_history: Option<bool>,
+}
+
+/// Default expiry window in days for soft permission grants (`--grant tool=allow:soft`).
+pub const DEFAULT_SOFT_GRANT_DAYS: u32 = 30;
+
+/// Permissions broker configuration (`[permissions]`).
+#[derive(Deserialize, Default, Clone)]
+pub struct PermissionsConfig {
+    /// Expiry window in days for soft grants (`--grant tool=allow:soft`). After this window, a soft grant reverts to `ask`. Default: 30.
+    pub soft_grant_days: Option<u32>,
+}
+
+impl PermissionsConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.soft_grant_days.is_some() {
+            self.soft_grant_days = other.soft_grant_days;
+        }
+    }
+
+    pub fn effective_soft_grant_days(&self) -> u32 {
+        self.soft_grant_days.unwrap_or(DEFAULT_SOFT_GRANT_DAYS)
+    }
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -1587,6 +1622,13 @@ impl PlexiConfig {
         self.osc_pane_title.unwrap_or(true)
     }
 
+    pub fn soft_grant_days(&self) -> u32 {
+        self.permissions
+            .as_ref()
+            .map(PermissionsConfig::effective_soft_grant_days)
+            .unwrap_or(DEFAULT_SOFT_GRANT_DAYS)
+    }
+
     pub fn agent_restore_mode(&self) -> AgentRestoreMode {
         self.agents
             .as_ref()
@@ -1719,6 +1761,11 @@ impl PlexiConfig {
         match (self.cloud.as_mut(), other.cloud) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.cloud = Some(incoming),
+            _ => {}
+        }
+        match (self.permissions.as_mut(), other.permissions) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.permissions = Some(incoming),
             _ => {}
         }
     }

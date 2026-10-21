@@ -238,11 +238,14 @@ plexi skill install --agent pi
   fields.
 <!-- experiment: leads -->
   Agent heads and runs: `agent head create` stores a
-  named head under `.plexi/agents` with `--grant tool=allow|ask|deny`. `AGENT.md`
+  named head under `.plexi/agents` with `--grant tool=allow[:hard|:soft]|ask|deny` (`allow:soft`
+  expires after `[permissions] soft_grant_days` in `config.toml`, default 30, reverting to `ask`).
+  `agent grants list [--json]` lists recorded hard and soft grants in the workspace. `AGENT.md`
   is guidance and grants nothing. `agent run spawn` starts a run; repeat the
   same `--admission` to get that run back, and a second admission while it is
   active returns `assignment_conflict`. `agent run finish` stops it. `agent delegate`
-  starts a temporary child with a subset of the parent run's grants.
+  starts a temporary child with a subset of the parent run's grants; any ungranted
+  tool refusal is audited and filed in `plexi needs-you list`.
   `agent conversation --head <id> --as <other>` is refused when the ids differ.
   `agent assign --head <id> --input task.json` queues work with no pane open.
   `agent cancel --id <task>` stops it before the next tool. A lead cannot read,
@@ -566,8 +569,9 @@ Heads live in the workspace `.plexi/agents` directory. Grants are the permission
 gate's authority. The same admission id returns the original run.
 
 ```bash
-plexi agent head create lead --display-name Lead --description 'Lead agent' --grant agents.ping=allow --grant agents.review=ask --json
+plexi agent head create lead --display-name Lead --description 'Lead agent' --grant agents.ping=allow --grant agents.review=allow:soft --json
 plexi agent head list --all --json
+plexi agent grants list --json
 plexi agent run spawn --head lead --admission adm-1 --client-ref acme --kind output --input-tokens 11 --output-tokens 4 --json
 plexi agent run list --json
 plexi agent run show run_example --json

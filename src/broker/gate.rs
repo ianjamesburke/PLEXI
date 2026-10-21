@@ -55,6 +55,10 @@ pub enum NeedsYouKind {
     BlockedRun,
     /// An agent asked to widen a permission. Approval applies the change.
     PermissionChange,
+    /// A broker refusal (e.g. ungranted tool on `agent delegate` or a member
+    /// calling a denied/ungranted tool). Resolving with Allow from the
+    /// desktop grants that tool for that run only.
+    PermissionRequest,
     /// A grant, deny, or audit file failed its integrity check.
     /// Resolving it does not mint a grant.
     Integrity,
@@ -82,6 +86,7 @@ impl NeedsYouKind {
             Self::Question => "question",
             Self::BlockedRun => "blocked_run",
             Self::PermissionChange => "permission_change",
+            Self::PermissionRequest => "permission_request",
             Self::Integrity => "integrity",
             Self::Keychain => "keychain",
         }
@@ -175,6 +180,14 @@ pub struct NeedsYouDetails {
     pub pane_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -934,7 +947,9 @@ impl PermissionMonitor {
             operation_id: operation_id_of(req.input_json),
         };
         let request = PermissionRequest::exact(&binding);
-        let decision = self.store().evaluate(&request, None);
+        self.expire_soft_grants();
+        let now = self.now_secs();
+        let decision = self.store().evaluate_at(&request, None, now);
         log::info!(
             "permission_monitor: admit actor={} tool={} resource={:?} call_id={} -> {}",
             binding.actor_id,
@@ -961,7 +976,7 @@ impl PermissionMonitor {
                     .store()
                     .records()
                     .iter()
-                    .find(|record| record.matches(&request, crate::platform::clock::now_secs() as i64))
+                    .find(|record| record.matches(&request, now))
                     .map(|record| record.grant_id.clone())
                     .unwrap_or_default();
                 Admission::Proceed {
@@ -1147,7 +1162,7 @@ impl PermissionMonitor {
             ApprovalChoice::Always => (
                 GrantDuration::Always,
                 None,
-                Some(crate::platform::clock::now_secs() as i64 + ALWAYS_TTL_SECS),
+                Some(self.now_secs() + ALWAYS_TTL_SECS),
             ),
             ApprovalChoice::Deny | ApprovalChoice::DenyAlways => {
                 unreachable!("deny returned above")
@@ -1258,6 +1273,8 @@ impl PermissionMonitor {
                     row.resolution.is_none()
                         && row.kind == filed.kind
                         && row.run_tag.as_deref() == Some(tag)
+                        && (filed.kind != NeedsYouKind::PermissionRequest
+                            || row.resource == filed.resource)
                 }) {
                     log::info!(
                         "needs_you: reuse {} kind={}",
@@ -1492,6 +1509,7 @@ impl PermissionMonitor {
 
     /// Drop expired open items, denying each one once.
     pub fn expire_needs_you(&self) {
+        self.expire_soft_grants();
         let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_needs_you_locked();
     }
@@ -1653,6 +1671,62 @@ impl PermissionMonitor {
                     return Err(format!("needs-you item {id} could not be audited"));
                 }
             }
+            NeedsYouKind::PermissionRequest => {
+                let resolution = final_resolution;
+                let decision = if approve { "approved" } else { "denied" };
+                let mut minted_grant_id = String::new();
+                if approve {
+                    let det = row.details.clone().unwrap_or_default();
+                    let tool = det
+                        .tool
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(row.resource.as_str())
+                        .to_string();
+                    let target_run = det
+                        .run_id
+                        .clone()
+                        .or_else(|| det.parent_run.clone())
+                        .or_else(|| row.run_tag.clone())
+                        .unwrap_or_default();
+                    let ws_path = det
+                        .workspace
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(PathBuf::from);
+                    if let Some(ws) = ws_path.as_deref() {
+                        if !target_run.is_empty() {
+                            match crate::agent::heads::grant_tool_for_run(ws, &target_run, &tool) {
+                                Ok(actor_id) => {
+                                    minted_grant_id = self.record_run_only_grant(
+                                        ws,
+                                        &actor_id,
+                                        &target_run,
+                                        &tool,
+                                    )?;
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "needs_you: permission_request {id} run grant update failed for run={target_run}: {error}"
+                                    );
+                                    minted_grant_id = self.record_run_only_grant(
+                                        ws,
+                                        &row.actor,
+                                        &target_run,
+                                        &tool,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !self.close_needs_you(id, resolution, decision, &minted_grant_id) {
+                    if let Some(existing) = self.resolved_receipt(id, true) {
+                        return Ok(existing);
+                    }
+                    return Err(format!("needs-you item {id} could not be audited"));
+                }
+            }
             NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
                 let resolution = final_resolution;
                 let decision = if approve { "approved" } else { "denied" };
@@ -1788,6 +1862,7 @@ impl PermissionMonitor {
                 .strip_prefix("pane:")
                 .and_then(|s| s.parse::<u64>().ok()),
             expected_revision: None,
+            ..Default::default()
         };
         let record = NeedsYouRecord {
             id: pending.id.clone(),
@@ -2339,7 +2414,7 @@ impl PermissionMonitor {
         }
     }
 
-    fn now_secs(&self) -> i64 {
+    pub fn now_secs(&self) -> i64 {
         #[cfg(test)]
         {
             let over = self.now_override.load(Ordering::SeqCst);
@@ -2353,6 +2428,139 @@ impl PermissionMonitor {
     #[cfg(test)]
     pub fn set_now_for_test(&self, unix_secs: i64) {
         self.now_override.store(unix_secs, Ordering::SeqCst);
+    }
+
+    /// Transition any expired soft grants (`GrantKind::Soft` + `Decision::Allow`
+    /// with `expires_at <= now`) back to `Decision::Ask`, clear `expires_at`,
+    /// persist `grants.toml`, sync the workspace agent files if present, and
+    /// append one `permission-audit.jsonl` row per expired grant.
+    pub fn expire_soft_grants(&self) -> usize {
+        let now = self.now_secs();
+        let expired: Vec<(String, String, String, Option<PathBuf>)> = {
+            let mut store = self.store();
+            let mut found = Vec::new();
+            for record in store.records_mut().iter_mut() {
+                if record.kind == super::GrantKind::Soft
+                    && record.decision == Decision::Allow
+                    && record.expires_at.is_some_and(|exp| now >= exp)
+                {
+                    record.decision = Decision::Ask;
+                    record.expires_at = None;
+                    let resource = record
+                        .resource_id
+                        .clone()
+                        .unwrap_or_else(|| record.target_id.clone());
+                    found.push((
+                        record.actor_id.clone(),
+                        record.grant_id.clone(),
+                        resource,
+                        record.workspace_root.clone(),
+                    ));
+                }
+            }
+            found
+        };
+        if expired.is_empty() {
+            return 0;
+        }
+        if let Err(error) = self.save_durable() {
+            log::error!("permission_monitor: failed to save expired soft grants: {error}");
+        }
+        for (actor, grant_id, resource_id, workspace_root) in &expired {
+            if let Some(ws) = workspace_root {
+                crate::agent::heads::expire_soft_grant_in_workspace(ws, actor, resource_id);
+            }
+            let _ = self.audit(&AuditFact {
+                kind: "expire".to_string(),
+                actor: actor.clone(),
+                call_id: String::new(),
+                grant_id: grant_id.clone(),
+                resource_id: resource_id.clone(),
+                args_fingerprint: String::new(),
+                operation_id: String::new(),
+                decision: "ask".to_string(),
+                revision_before: "allow".to_string(),
+                revision_after: "ask".to_string(),
+            });
+            log::info!(
+                "permission_monitor: expired soft grant {grant_id} actor={actor} tool={resource_id} -> ask"
+            );
+        }
+        expired.len()
+    }
+
+    /// Record a run-only tool grant in memory and audit it. Revoked when the run finishes.
+    pub fn record_run_only_grant(
+        &self,
+        workspace: &Path,
+        actor_id: &str,
+        run_id: &str,
+        tool: &str,
+    ) -> Result<String, String> {
+        let binding = ExactBinding {
+            actor_type: ActorType::Agent,
+            actor_id: actor_id.to_string(),
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host".to_string(),
+            workspace_root: crate::platform::path::canonical_or_self(workspace),
+            target_type: TargetType::HostTool,
+            target_id: tool.to_string(),
+            resource_scope: ResourceScope::Workspace,
+            resource_id: None,
+            args_fingerprint: "scope".to_string(),
+            session_id: Some(self.session_id.clone()),
+            package_id: "agents".to_string(),
+            instance_id: Some(0),
+            context_id: Some(0),
+            call_id: String::new(),
+            operation_id: run_id.to_string(),
+        };
+        let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+        let mut record = GrantRecord::from_binding(
+            &binding,
+            Decision::Allow,
+            GrantDuration::Session,
+            GrantSource::Session,
+            &grant_id,
+        );
+        record.created_at = self.now_secs();
+        record.session_id = Some(self.session_id.clone());
+        record.args_unbound = true;
+        record.bound_operation_id = Some(run_id.to_string());
+        self.store().record(record);
+        self.audit(&AuditFact {
+            kind: "grant".to_string(),
+            actor: actor_id.to_string(),
+            call_id: run_id.to_string(),
+            grant_id: grant_id.clone(),
+            resource_id: tool.to_string(),
+            args_fingerprint: "scope".to_string(),
+            operation_id: run_id.to_string(),
+            decision: "allow_run".to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        })?;
+        log::info!(
+            "permission_monitor: granted {grant_id} actor={actor_id} tool={tool} for run={run_id} only"
+        );
+        Ok(grant_id)
+    }
+
+    /// Revoke any in-memory grants bound to `run_id` when that run finishes.
+    pub fn revoke_run_grants(&self, run_id: &str) -> usize {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.store();
+        let before = store.records().len();
+        store
+            .records_mut()
+            .retain(|r| r.bound_operation_id.as_deref() != Some(run_id));
+        let removed = before - store.records().len();
+        if removed > 0 {
+            log::info!(
+                "permission_monitor: revoked {removed} run-scoped grant(s) for finished run {run_id}"
+            );
+        }
+        removed
     }
 
     /// Record use before execution. Failure denies the call. Revoke that wins
@@ -2491,6 +2699,7 @@ impl PermissionMonitor {
     /// Live inventory: durable grants and denies, session and one-shot grants
     /// still in memory, and asks waiting on a person. One list, no second store.
     pub fn list_entries(&self) -> Vec<PermissionEntry> {
+        self.expire_soft_grants();
         let now = self.now_secs();
         let mut entries = Vec::new();
         for record in self.store().records() {
@@ -5873,6 +6082,7 @@ mod tests {
             context_id: Some(1),
             pane_id: Some(7),
             expected_revision: Some("rev-1".to_string()),
+            ..Default::default()
         };
         let (qid, ui_token) = monitor
             .file_needs_you_with_details(
