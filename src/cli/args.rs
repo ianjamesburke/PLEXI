@@ -1062,6 +1062,9 @@ pub enum SecretCmd {
         /// Show only globally-stored user-scope secrets
         #[arg(long)]
         global: bool,
+        /// Print names, scopes, last-used timestamps and actor grants as JSON (never values)
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a stored secret.
     ///
@@ -3345,10 +3348,17 @@ mod tests {
         let Some(Commands::Secret { cmd }) = cli.command else {
             panic!("expected secret command");
         };
-        let SecretCmd::List { global } = cmd else {
+        let SecretCmd::List { global, json } = cmd else {
             panic!("expected secret list command");
         };
         assert!(global);
+        assert!(!json);
+    }
+
+    #[test]
+    fn secret_list_accepts_json_flag() {
+        let cli = Cli::try_parse_from(["plexi", "secret", "list", "--json"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Secret { cmd: SecretCmd::List { global: false, json: true } })));
     }
 
     #[test]
@@ -3358,7 +3368,7 @@ mod tests {
         let Some(Commands::Secret { cmd }) = cli.command else {
             panic!("expected secret command");
         };
-        assert!(matches!(cmd, SecretCmd::List { global: false }));
+        assert!(matches!(cmd, SecretCmd::List { global: false, json: false }));
     }
 
     #[test]

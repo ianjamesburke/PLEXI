@@ -123,14 +123,6 @@ impl<'a> HintBar<'a> {
         self
     }
 
-    /// Extra vertical space needed beyond the first row at `available_width`.
-    /// Fixed-height callers can reserve this without duplicating the packing
-    /// policy that `show` uses.
-    pub(crate) fn additional_height(&self, ui: &egui::Ui, available_width: f32) -> f32 {
-        self.rows(ui, available_width).len().saturating_sub(1) as f32
-            * (hint_row_height(ui) + ui.spacing().item_spacing.y)
-    }
-
     /// Total height of a `PaneFooterBand` at the current `ui.available_width()`,
     /// accounting for wrapped rows and the optional 1px top divider.
     pub(crate) fn band_height(&self, ui: &egui::Ui, divider: bool) -> f32 {

@@ -363,7 +363,22 @@ fn secret_list_scope(global: bool) -> SecretListScope {
 /// `plexi secret list` — list friendly names. Inside a workspace, includes
 /// workspace namespace plus user-scope. Outside a workspace, gracefully falls
 /// back to user-scope. Names only, never values.
-pub fn workspace_secret_list(global: bool) -> i32 {
+pub fn workspace_secret_list(global: bool, json: bool) -> i32 {
+    if json {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(error) => { eprintln!("error: current directory: {error}"); return 1; }
+        };
+        return match crate::workspace::secrets::manager::secret_inventory(&cwd, global) {
+            Ok(entries) => {
+                match serde_json::to_string_pretty(&entries) {
+                    Ok(output) => { println!("{output}"); 0 }
+                    Err(error) => { eprintln!("error: secret list JSON: {error}"); 1 }
+                }
+            }
+            Err(error) => { log::warn!("secret_list: metadata failed: {error}"); eprintln!("error: {error}"); 1 }
+        };
+    }
     let scope = secret_list_scope(global);
     log::info!("secret_list:cli: global={global}");
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]

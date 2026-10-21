@@ -540,6 +540,7 @@ macro_rules! evidence_png {
         $crate::ui_tests::evidence_png_path($crate::ui_tests::enclosing_fn_name!(), &$suffix)
     };
 }
+pub(crate) use evidence_png;
 
 /// The unqualified name of the function this expands inside.
 #[cfg(test)]

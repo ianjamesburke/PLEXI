@@ -873,7 +873,7 @@ fn read_input_json(name: &str, folder: &str) -> String {
     .to_string()
 }
 
-fn account_name(folder: &Path, name: &str) -> String {
+pub(super) fn account_name(folder: &Path, name: &str) -> String {
     format!("{ACCOUNT_PREFIX}{}:{name}", hex_encode(&path_bytes(folder)))
 }
 

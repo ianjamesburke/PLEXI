@@ -1,318 +1,333 @@
-use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
 use crate::ui::button::{self, ButtonKind};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::{labels, row, style};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use crate::workspace::secrets::manager::{self, Mutation, SecretEntry, SecretTarget};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
 
-#[derive(Clone)]
-struct ManagedSecret {
-    /// Full Keychain account string: `plexi:user:<name>` or `plexi:<ws-id>:<name>`.
-    account: String,
-    /// Friendly display name (everything after the second `:`).
-    name: String,
-    /// `"global"` for user-scoped, or the workspace ID for workspace-scoped.
-    scope: String,
-}
-
-impl ManagedSecret {
-    fn from_account(account: String) -> Option<Self> {
-        let (scope_part, name) = account.strip_prefix("plexi:")?.split_once(':')?;
-        let scope = if scope_part == "user" {
-            "global".to_string()
-        } else {
-            scope_part.to_string()
-        };
-        let name = name.to_string();
-        Some(Self {
-            account,
-            name,
-            scope,
-        })
-    }
-}
-
-/// One-line summary of what a reconcile pass changed, or `None` when the index
-/// already matched the keychain.
-fn reconcile_status_line(report: &crate::workspace::secrets::ReconcileReport) -> Option<String> {
-    if report.is_noop() {
-        return None;
-    }
-    let mut parts = Vec::new();
-    if !report.adopted.is_empty() {
-        parts.push(format!("{} found in keychain", report.adopted.len()));
-    }
-    if !report.renamed.is_empty() {
-        parts.push(format!("{} renamed", report.renamed.len()));
-    }
-    if !report.stale.is_empty() {
-        parts.push(format!("{} stale removed", report.stale.len()));
-    }
-    if !report.conflicts.is_empty() {
-        parts.push(format!(
-            "{} duplicate name(s) need manual cleanup — check logs",
-            report.conflicts.len()
-        ));
-    }
-    Some(format!("Reconciled with keychain: {}.", parts.join(", ")))
-}
-
-/// List every managed secret, first reconciling the index against a real
-/// keychain scan so keys written out-of-band are visible. Returns the entries
-/// plus a status line describing any reconciliation the user should know about.
-fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        use crate::workspace::secrets::{
-            reconcile_index_with_keychain, system_store,
-        };
-        let (accounts, status) = match reconcile_index_with_keychain() {
-            Ok(report) => {
-                let status = reconcile_status_line(&report);
-                (report.index, status)
-            }
-            Err(e) => {
-                log::warn!(
-                    "secrets_manager: keychain reconcile failed: {e}; listing from the index only"
-                );
-                (
-                    system_store().list_with_prefix("plexi:"),
-                    Some("Could not scan keychain — showing indexed secrets only.".to_string()),
-                )
-            }
-        };
-        let entries = accounts
-            .into_iter()
-            .filter_map(ManagedSecret::from_account)
-            .collect();
-        (entries, status)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        (Vec::new(), None)
-    }
-}
-
-fn load_workspace_policy(
-    cwd: &std::path::Path,
-) -> (Option<PathBuf>, Option<String>, HashSet<String>) {
-    let Some(root) = crate::app::registry::resolve_workspace_root(cwd) else {
-        return (None, None, HashSet::new());
-    };
-    let workspace_id = crate::workspace::secrets::WorkspaceConfig::load(&root)
-        .ok()
-        .flatten()
-        .map(|cfg| cfg.id);
-    let inject = crate::workspace::secrets::WorkspaceSecrets::load(&root)
-        .ok()
-        .flatten()
-        .map(|router| router.terminal.env.inject.into_iter().collect())
-        .unwrap_or_default();
-    (Some(root), workspace_id, inject)
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    List,
-    Adding,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum FormField {
-    Key,
-    Value,
+struct PendingImport {
+    target: SecretTarget,
+    receiver: mpsc::Receiver<crate::host::services::FilePickOutcome>,
+    ready: Arc<AtomicBool>,
 }
 
 pub struct SecretsApp {
-    entries: Vec<ManagedSecret>,
+    entries: Vec<SecretEntry>,
     selected: usize,
     cwd: PathBuf,
-    workspace_root: Option<PathBuf>,
-    workspace_id: Option<String>,
-    terminal_inject: HashSet<String>,
-
-    mode: Mode,
+    target: SecretTarget,
+    editing: bool,
+    form_open: bool,
     new_key: String,
-    new_value: String,
-    form_focus: FormField,
-
-    /// First `d` sets this; second `d` or `y` confirms the delete.
+    new_value: zeroize::Zeroizing<String>,
+    focus_value: bool,
     pending_delete: bool,
-    /// Set in handle_key; processed in ui() where ui.ctx() is available.
-    copy_pending: bool,
-
-    pending_cmds: Vec<AppCommand>,
-    status_msg: Option<String>,
+    pick_requested: bool,
+    pending_import: Option<PendingImport>,
+    terminal_inject: Vec<String>,
+    status_msg: String,
 }
 
 impl SecretsApp {
     pub fn new(cwd: PathBuf) -> Self {
-        let (entries, status_msg) = load_entries();
-        let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&cwd);
-        Self {
-            entries,
+        let mut app = Self {
+            entries: Vec::new(),
             selected: 0,
+            target: SecretTarget::Global,
             cwd,
-            workspace_root,
-            workspace_id,
-            terminal_inject,
-            mode: Mode::List,
+            editing: false,
+            form_open: false,
             new_key: String::new(),
-            new_value: String::new(),
-            form_focus: FormField::Key,
+            new_value: zeroize::Zeroizing::new(String::new()),
+            focus_value: false,
             pending_delete: false,
-            copy_pending: false,
-            pending_cmds: Vec::new(),
-            status_msg,
+            pick_requested: false,
+            pending_import: None,
+            terminal_inject: Vec::new(),
+            status_msg: String::new(),
+        };
+        match manager::workspace_target(&app.cwd) {
+            Ok(Some(target)) => app.target = target,
+            Ok(None) => {}
+            Err(error) => app.report_error(error),
         }
+        app.refresh();
+        log::info!(
+            "secrets_manager: opened cwd={} count={}",
+            app.cwd.display(),
+            app.entries.len()
+        );
+        app
+    }
+
+    fn report_error(&mut self, error: String) {
+        log::warn!("secrets_manager: {error}");
+        self.status_msg = error;
     }
 
     fn refresh(&mut self) {
-        let (entries, status_msg) = load_entries();
-        self.entries = entries;
-        self.status_msg = status_msg;
-        let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&self.cwd);
-        self.workspace_root = workspace_root;
-        self.workspace_id = workspace_id;
-        self.terminal_inject = terminal_inject;
+        match manager::secret_inventory(&self.cwd, false) {
+            Ok(entries) => self.entries = entries,
+            Err(error) => self.report_error(error),
+        }
+        self.terminal_inject.clear();
+        match manager::workspace_target(&self.cwd) {
+            Ok(Some(SecretTarget::Workspace { root, .. })) => {
+                match crate::workspace::secrets::WorkspaceSecrets::load(&root) {
+                    Ok(Some(router)) => self.terminal_inject = router.terminal.env.inject,
+                    Ok(None) => {}
+                    Err(error) => self.report_error(error),
+                }
+            }
+            Ok(_) => {}
+            Err(error) => self.report_error(error),
+        }
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
-        log::info!(
-            "secrets_manager: refreshed — {} entries",
-            self.entries.len()
-        );
     }
 
     fn begin_add(&mut self) {
         self.new_key.clear();
         self.new_value.clear();
-        self.form_focus = FormField::Key;
-        self.mode = Mode::Adding;
+        self.editing = false;
+        self.form_open = true;
+        self.focus_value = false;
+        self.pending_delete = false;
+        self.status_msg.clear();
     }
 
-    fn cancel_add(&mut self) {
-        self.mode = Mode::List;
+    fn begin_edit(&mut self) {
+        if let Some(entry) = self.entries.get(self.selected) {
+            self.target = entry.target.clone();
+            self.new_key = entry.name.clone();
+            self.new_value.clear();
+            self.editing = true;
+            self.form_open = true;
+            self.focus_value = true;
+            self.pending_delete = false;
+            self.status_msg = "Enter a replacement value. The stored value stays hidden.".into();
+        }
+    }
+
+    fn close_form(&mut self) {
+        self.form_open = false;
+        self.new_value.clear();
+    }
+
+    fn store_for(target: &SecretTarget) -> &'static dyn crate::workspace::secrets::SecretStore {
+        match target {
+            SecretTarget::Folder(_) => crate::workspace::secrets::folder_store(),
+            _ => crate::workspace::secrets::system_store(),
+        }
     }
 
     fn commit_add(&mut self) {
         let name = self.new_key.trim().to_string();
-        let value = self.new_value.trim().to_string();
-
-        if name.is_empty() || value.is_empty() {
-            self.status_msg = Some("Name and value cannot be empty.".to_string());
-            return;
-        }
-
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        {
-            use crate::workspace::secrets::{
-                keychain_user_name, keychain_workspace_name, system_store,
-                WorkspaceConfig,
-            };
-
-            // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.
-            let workspace =
-                crate::app::registry::resolve_workspace_root(&self.cwd).and_then(|root| {
-                    WorkspaceConfig::load(&root)
-                        .ok()
-                        .flatten()
-                        .map(|cfg| (root, cfg))
-                });
-
-            let (account, scope) = match &workspace {
-                Some((_, cfg)) => (keychain_workspace_name(&cfg.id, &name), cfg.id.clone()),
-                None => (keychain_user_name(&name), "global".to_string()),
-            };
-
-            let store = system_store();
-            match store.set(&account, &value) {
-                Ok(()) => {
-                    self.entries.retain(|e| e.account != account);
-                    self.entries.push(ManagedSecret {
-                        account,
-                        name: name.clone(),
-                        scope: scope.clone(),
-                    });
-                    if let Some((root, _)) = workspace.as_ref() {
-                        match crate::workspace::secrets::write_default_route(root, &name, &name) {
-                            Ok(()) => log::info!(
-                                "secrets_manager: wrote default route for '{name}' scope={scope}"
-                            ),
-                            Err(e) => {
-                                log::warn!("secrets_manager: failed to write default route: {e}")
-                            }
-                        }
-                    }
-                    self.selected = self.entries.len().saturating_sub(1);
-                    self.mode = Mode::List;
-                    self.status_msg = Some(format!("Stored '{name}'."));
-                    log::info!("secrets_manager: stored secret '{name}' scope={scope}");
-                }
-                Err(e) => {
-                    self.status_msg = Some("Failed to store secret — check logs.".to_string());
-                    log::error!("secrets_manager: store failed for '{name}': {e}");
-                }
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let result = manager::mutate_secret(
+            Self::store_for(&self.target),
+            &monitor,
+            &self.target,
+            &name,
+            Mutation::Set(&self.new_value),
+        );
+        match result {
+            Ok(()) => {
+                self.close_form();
+                self.refresh();
+                self.selected = self
+                    .entries
+                    .iter()
+                    .position(|entry| entry.name == name && entry.target == self.target)
+                    .unwrap_or(0);
+                self.status_msg = format!("Saved {name}.");
             }
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-        {
-            log::warn!("secrets_manager: commit_add: Keychain not available on this platform");
+            Err(error) => self.report_error(error),
         }
     }
 
     fn delete_selected(&mut self) {
-        if let Some(entry) = self.entries.get(self.selected).cloned() {
-            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-            {
-                use crate::workspace::secrets::system_store;
-                let store = system_store();
-                match store.delete(&entry.account) {
-                    Ok(()) => {
-                        let name = entry.name.clone();
-                        self.entries.remove(self.selected);
-                        if self.selected > 0 && self.selected >= self.entries.len() {
-                            self.selected = self.entries.len().saturating_sub(1);
-                        }
-                        self.status_msg = Some(format!("Deleted '{name}'."));
-                        log::info!("secrets_manager: deleted '{name}'");
-                    }
-                    Err(e) => {
-                        self.status_msg = Some("Failed to delete — check logs.".to_string());
-                        log::error!("secrets_manager: delete failed for '{}': {e}", entry.name);
-                    }
-                }
+        self.pending_delete = false;
+        let Some(entry) = self.entries.get(self.selected).cloned() else {
+            return;
+        };
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        match manager::mutate_secret(
+            Self::store_for(&entry.target),
+            &monitor,
+            &entry.target,
+            &entry.name,
+            Mutation::Delete,
+        ) {
+            Ok(()) => {
+                self.refresh();
+                self.status_msg = format!("Deleted {}.", entry.name);
             }
-            #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-            {
-                log::warn!("secrets_manager: delete_selected: Keychain not available");
-            }
+            Err(error) => self.report_error(error),
         }
     }
 
-    fn toggle_terminal_env(&mut self, name: String) {
-        let Some(root) = self.workspace_root.clone() else {
-            return;
-        };
-        let enabled = !self.terminal_inject.contains(&name);
-        match crate::workspace::secrets::write_terminal_env_inject(&root, &name, enabled) {
-            Ok(()) => {
-                if enabled {
-                    self.terminal_inject.insert(name.clone());
-                    self.status_msg =
-                        Some(format!("'{name}' will be injected into new terminals."));
-                } else {
-                    self.terminal_inject.remove(&name);
-                    self.status_msg =
-                        Some(format!("'{name}' will not be injected into new terminals."));
-                }
-                log::info!("secrets_manager: terminal env injection {enabled} for '{name}'");
-            }
-            Err(e) => {
+    fn import_selected(&mut self, target: &SecretTarget, path: &Path) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let result = manager::import_env(Self::store_for(target), &monitor, target, path);
+        self.refresh();
+        match result {
+            Ok(count) => {
                 self.status_msg =
-                    Some("Failed to update terminal env policy — check logs.".to_string());
-                log::warn!(
-                    "secrets_manager: failed to update terminal env policy for '{name}': {e}"
+                    format!("Imported {count} secrets. The .env file was not changed.")
+            }
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    fn start_picker(&mut self, context: &egui::Context) {
+        self.pick_requested = false;
+        if self.pending_import.is_some() {
+            return;
+        }
+        let service = crate::host::services::default_picker_service();
+        let (sender, receiver) = mpsc::channel();
+        let ready = Arc::new(AtomicBool::new(false));
+        let completed = ready.clone();
+        let wake = context.clone();
+        let result = std::thread::Builder::new()
+            .name("secrets-import-picker".into())
+            .spawn(move || {
+                let result = service.pick(&crate::host::services::FilePickRequest {
+                    filter: Vec::new(),
+                    multiple: false,
+                    mode: crate::protocol::FilePickerMode::Open,
+                });
+                if sender.send(result).is_ok() {
+                    completed.store(true, Ordering::Release);
+                    wake.request_repaint();
+                }
+            });
+        match result {
+            Ok(_) => {
+                self.pending_import = Some(PendingImport {
+                    target: self.target.clone(),
+                    receiver,
+                    ready,
+                });
+                self.status_msg = "Choose a .env file to import into the selected scope.".into();
+            }
+            Err(error) => self.report_error(format!("Could not start file picker: {error}")),
+        }
+    }
+
+    fn scope_picker(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+        labels::description_label(ui, "Scope", colors);
+        ui.add_enabled_ui(!self.editing && self.pending_import.is_none(), |ui| {
+            egui::ComboBox::from_id_salt("secret_scope")
+                .selected_text(self.target.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.target, SecretTarget::Global, "Global");
+                    if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
+                        ui.selectable_value(&mut self.target, target, "Workspace");
+                    }
+                    if crate::release::feature_enabled(
+                        crate::release::ReleaseFeature::FolderSecrets,
+                    ) {
+                        ui.selectable_value(
+                            &mut self.target,
+                            SecretTarget::Folder(crate::platform::path::canonical_or_self(
+                                &self.cwd,
+                            )),
+                            "Folder (current directory)",
+                        );
+                    }
+                });
+        });
+    }
+
+    fn form(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+        let colors = ctx.colors;
+        labels::section_header(
+            ui,
+            if self.editing {
+                "Edit Secret"
+            } else {
+                "New Secret"
+            },
+            colors,
+        );
+        self.scope_picker(ui, colors);
+        let key_id = ui.make_persistent_id("secrets_new_key");
+        let value_id = ui.make_persistent_id("secrets_new_value");
+        labels::description_label(ui, "Name", colors);
+        ui.add_enabled_ui(!self.editing, |ui| {
+            let response = crate::ui::text_field::TextField::singleline(
+                key_id,
+                "e.g. OPENAI_API_KEY",
+            )
+            .show(ui, &mut self.new_key, colors);
+            crate::ui::focus::register_text_surface(
+                ui.ctx(),
+                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                key_id,
+            );
+            if response.has_focus() {
+                self.focus_value = false;
+            }
+            if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
+                self.focus_value = true;
+            }
+        });
+        labels::description_label(ui, "Value (hidden)", colors);
+        let response = crate::ui::text_field::TextField::singleline(value_id, "secret value")
+            .password(true)
+            .show(ui, &mut self.new_value, colors);
+        crate::ui::focus::register_text_surface(
+            ui.ctx(),
+            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+            value_id,
+        );
+        if response.has_focus() {
+            self.focus_value = true;
+        }
+        let save = response.has_focus()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        crate::ui::focus::claim_text_surface(
+            ui.ctx(),
+            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+            if self.focus_value { value_id } else { key_id },
+        );
+        ui.add_space(style::SPACE_SM);
+        ui.horizontal(|ui| {
+            if button::chrome_button(ui, "Save", ButtonKind::Accent, colors, 64.0).clicked() || save
+            {
+                self.commit_add();
+            }
+            if button::chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 64.0).clicked() {
+                self.close_form();
+            }
+        });
+        HintBar::new(&[
+            HintGroup::new(&["Tab"], "next field"),
+            HintGroup::new(&["Enter"], "save"),
+            HintGroup::new(&["Esc"], "cancel"),
+        ])
+        .show(ui, colors);
+    }
+
+    fn toggle_terminal_env(&mut self, name: &str, root: &Path) {
+        let enabled = !self.terminal_inject.iter().any(|key| key == name);
+        match crate::workspace::secrets::write_terminal_env_inject(root, name, enabled) {
+            Ok(()) => {
+                self.refresh();
+                self.status_msg = format!(
+                    "{name}: human terminal environment {}. Agent panes remain excluded.",
+                    if enabled { "on" } else { "off" }
                 );
             }
+            Err(error) => self.report_error(error),
         }
     }
 }
@@ -322,103 +337,92 @@ impl App for SecretsApp {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
-
     fn type_id(&self) -> &'static str {
         "secrets_manager"
     }
-
     fn display_name(&self) -> String {
-        "Secrets".to_string()
+        "Secrets".into()
     }
-
-    fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
-        self.cwd = new_cwd.to_path_buf();
-        let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&self.cwd);
-        self.workspace_root = workspace_root;
-        self.workspace_id = workspace_id;
-        self.terminal_inject = terminal_inject;
+    fn sync_cwd(&mut self, cwd: &Path) {
+        if self.cwd != cwd {
+            self.cwd = cwd.into();
+            self.refresh();
+        }
     }
-
-    fn handle_key(
-        &mut self,
-        input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        use crate::app::app_trait::KeyDisposition;
-        if self.mode == Mode::Adding {
+    fn background_tick(&mut self) {
+        let Some(pending) = self.pending_import.as_ref() else {
+            return;
+        };
+        match pending.receiver.try_recv() {
+            Ok(outcome) => {
+                let target = pending.target.clone();
+                self.pending_import = None;
+                match outcome {
+                    crate::host::services::FilePickOutcome::Picked(paths) => {
+                        if let Some(path) = paths.first() {
+                            self.import_selected(&target, path);
+                        }
+                    }
+                    crate::host::services::FilePickOutcome::Cancelled => {
+                        self.status_msg = "Import cancelled.".into()
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending_import = None;
+                self.report_error("File picker stopped before returning a file.".into());
+            }
+        }
+    }
+    fn needs_background_tick(&self) -> bool {
+        self.pending_import
+            .as_ref()
+            .is_some_and(|pending| pending.ready.load(Ordering::Acquire))
+    }
+    fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
+        if self.form_open {
             if input.key_pressed(egui::Key::Escape) {
-                self.cancel_add();
+                self.close_form();
                 return KeyDisposition::Consumed;
             }
             return KeyDisposition::Passthrough;
         }
-
-        if self.pending_delete && input.key_pressed(egui::Key::Escape) {
-            self.pending_delete = false;
-            self.status_msg = None;
-            return KeyDisposition::Consumed;
-        }
-
         if input.modifiers().command || input.modifiers().alt {
             return KeyDisposition::Passthrough;
         }
-
-        let mut consumed = false;
-
+        if input.key_pressed(egui::Key::Escape) && self.pending_delete {
+            self.pending_delete = false;
+            return KeyDisposition::Consumed;
+        }
         if input.key_pressed(egui::Key::J) || input.key_pressed(egui::Key::ArrowDown) {
-            if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
-                self.selected += 1;
-                self.pending_delete = false;
-            }
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::K) || input.key_pressed(egui::Key::ArrowUp) {
-            if self.selected > 0 {
-                self.selected -= 1;
-                self.pending_delete = false;
-            }
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::R) {
-            self.refresh();
+            self.selected = (self.selected + 1).min(self.entries.len().saturating_sub(1));
             self.pending_delete = false;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::N) {
+        } else if input.key_pressed(egui::Key::K) || input.key_pressed(egui::Key::ArrowUp) {
+            self.selected = self.selected.saturating_sub(1);
             self.pending_delete = false;
+        } else if input.key_pressed(egui::Key::A) || input.key_pressed(egui::Key::N) {
             self.begin_add();
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::D) && !self.entries.is_empty() {
+        } else if input.key_pressed(egui::Key::Enter) {
+            self.begin_edit();
+        } else if input.key_pressed(egui::Key::D) && !self.entries.is_empty() {
             if self.pending_delete {
                 self.delete_selected();
-                self.pending_delete = false;
-            } else if let Some(entry) = self.entries.get(self.selected) {
+            } else {
                 self.pending_delete = true;
-                let name = entry.name.clone();
-                self.status_msg = Some(format!(
-                    "Delete '{name}'? Press d/y to confirm, Esc to cancel."
-                ));
             }
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::Y) && self.pending_delete && !self.entries.is_empty() {
+        } else if input.key_pressed(egui::Key::Y) && self.pending_delete {
             self.delete_selected();
+        } else if input.key_pressed(egui::Key::I) && self.entries.is_empty() {
+            self.pick_requested = true;
+        } else if input.key_pressed(egui::Key::R) {
+            self.refresh();
             self.pending_delete = false;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::C) && !self.entries.is_empty() {
-            self.pending_delete = false;
-            self.copy_pending = true;
-            consumed = true;
-        }
-
-        if consumed {
-            KeyDisposition::Consumed
         } else {
-            KeyDisposition::Passthrough
+            return KeyDisposition::Passthrough;
         }
+        KeyDisposition::Consumed
     }
-
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -426,418 +430,189 @@ impl App for SecretsApp {
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
-        let pane_key = ctx.pane_id;
-        let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
-
-        const HEADER_H: f32 = 44.0;
-        const FORM_H: f32 = 212.0;
-        const FORM_PAD_H: f32 = 20.0;
-
-        // Process clipboard copy request (needs ui.ctx() — not available in handle_key).
-        if self.copy_pending {
-            self.copy_pending = false;
-            if let Some(entry) = self.entries.get(self.selected) {
-                let account = entry.account.clone();
-                let name = entry.name.clone();
-                #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-                {
-                    use crate::workspace::secrets::system_store;
-                    match system_store().get(&account) {
-                        Some(value) => {
-                            ui.ctx().copy_text((*value).clone());
-                            self.status_msg = Some(format!("'{name}' copied to clipboard."));
-                            log::info!("secrets_manager: copied value for '{name}'");
-                        }
-                        None => {
-                            self.status_msg =
-                                Some(format!("Could not retrieve '{name}' — check logs."));
-                            log::warn!(
-                                "secrets_manager: secret store get returned None for account='{account}'"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Header ──────────────────────────────────────────────────────────
-        let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER_H));
         ui.painter()
-            .rect_filled(header_rect, 0.0, colors.bg_toolbar);
-        ui.painter().line_segment(
-            [
-                egui::pos2(header_rect.left(), header_rect.bottom()),
-                egui::pos2(header_rect.right(), header_rect.bottom()),
-            ],
-            egui::Stroke::new(1.0_f32, colors.border),
-        );
-
-        let header_inner = header_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0));
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(header_inner)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("Secrets")
-                        .color(colors.text_primary)
-                        .font(crate::ui::theme::font_medium(style::TEXT_TITLE)),
-                );
-                let header_hints: &[HintGroup<'_>] = if self.mode == Mode::Adding {
-                    &[HintGroup::new(&["Esc"], "cancel")]
-                } else {
-                    &[
-                        HintGroup::new(&["n"], "new"),
-                        HintGroup::new(&["d"], "del"),
-                        HintGroup::new(&["c"], "copy"),
-                        HintGroup::new(&["r"], "refresh"),
-                    ]
-                };
-                HintBar::new(header_hints)
-                    .inline_status_bar()
-                    .show(ui, colors);
-            },
-        );
-
-        // ── Status message ───────────────────────────────────────────────────
-        let status_h = if let Some(msg) = &self.status_msg {
-            let status_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.left(), rect.top() + HEADER_H),
-                egui::vec2(rect.width(), 28.0),
-            );
-            ui.painter().rect_filled(status_rect, 0.0, colors.bg_active);
-            let mut status_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(status_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0))),
-            );
-            status_ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new(msg.as_str())
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim)
-                        .family(egui::FontFamily::Monospace),
-                );
+            .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
+        if self.pick_requested {
+            self.start_picker(ui.ctx());
+        }
+        ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.heading("Secrets");
+                if button::chrome_button(ui, "Add", ButtonKind::Accent, colors, 64.0).clicked() { self.begin_add(); }
+                if button::chrome_button(ui, "Refresh", ButtonKind::Secondary, colors, 80.0).clicked() { self.refresh(); }
             });
-            28.0_f32
-        } else {
-            0.0_f32
-        };
-
-        let list_top = rect.top() + HEADER_H + status_h + 1.0;
-
-        // ── Add form (when active) ───────────────────────────────────────────
-        if self.mode == Mode::Adding {
-            let hints = [
-                HintGroup::new(&["Tab"], "advance"),
-                HintGroup::new(&["Enter"], "save"),
-                HintGroup::new(&["Esc"], "cancel"),
-            ];
-            let form_content_width = (rect.width() - FORM_PAD_H * 2.0).max(0.0);
-            let available_form_h = (rect.bottom() - list_top).max(0.0);
-            let desired_form_h =
-                FORM_H + HintBar::new(&hints).additional_height(ui, form_content_width);
-            let form_h = desired_form_h.min(available_form_h);
-            let form_rect =
-                egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - form_h), rect.max);
-            ui.painter().rect_filled(form_rect, 0.0, colors.bg_sidebar);
-            ui.painter().line_segment(
-                [
-                    egui::pos2(form_rect.left(), form_rect.top()),
-                    egui::pos2(form_rect.right(), form_rect.top()),
-                ],
-                egui::Stroke::new(1.0_f32, colors.border),
-            );
-
-            let vertical_padding = if form_h < desired_form_h {
-                0.0
-            } else {
-                style::SPACE_SM * 2.0
-            };
-            let mut form_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(form_rect.shrink2(egui::vec2(FORM_PAD_H, vertical_padding))),
-            );
-
-            form_ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("New Secret")
-                        .color(colors.accent)
-                        .size(style::TEXT_CAPTION)
-                        .strong(),
-                );
-                ui.add_space(style::SPACE_SM);
-
-                // Name field
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Name  ")
-                            .color(colors.text_dim)
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    let key_resp = crate::ui::text_field::TextField::singleline(
-                        egui::Id::new("secrets_new_key"),
-                        "e.g. OPENAI_API_KEY",
-                    )
-                    .show(ui, &mut self.new_key, colors);
-                    crate::ui::focus::register_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(pane_key),
-                        egui::Id::new("secrets_new_key"),
-                    );
-                    if key_resp.has_focus() {
-                        self.form_focus = FormField::Key;
-                    }
-                    if key_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
-                        self.form_focus = FormField::Value;
-                    }
-                });
-
-                ui.add_space(style::SPACE_XS);
-
-                // Value field (masked)
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Value ")
-                            .color(colors.text_dim)
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    let val_resp = crate::ui::text_field::TextField::singleline(
-                        egui::Id::new("secrets_new_value"),
-                        "secret value",
-                    )
-                    .password(true)
-                    .show(ui, &mut self.new_value, colors);
-                    crate::ui::focus::register_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(pane_key),
-                        egui::Id::new("secrets_new_value"),
-                    );
-                    if val_resp.has_focus() {
-                        self.form_focus = FormField::Value;
-                    }
-                    if val_resp.has_focus()
-                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                    {
-                        self.commit_add();
-                    }
-                });
-
-                // Focus is a projection of `form_focus` (stint 0429): claim
-                // the active field; the reconciler grants it while this pane
-                // owns input. Clicks re-sync `form_focus` above, so pointer
-                // and Tab navigation both flow through the same claim.
-                if self.mode == Mode::Adding {
-                    let claim_id = match self.form_focus {
-                        FormField::Key => egui::Id::new("secrets_new_key"),
-                        FormField::Value => egui::Id::new("secrets_new_value"),
-                    };
-                    crate::ui::focus::claim_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(pane_key),
-                        claim_id,
-                    );
-                }
-
-                ui.add_space(style::SPACE_SM);
-
-                ui.horizontal(|ui| {
-                    if button::chrome_button(ui, "Save", ButtonKind::Accent, colors, 64.0).clicked()
-                    {
-                        self.commit_add();
-                    }
-                    ui.add_space(style::SPACE_SM);
-                    if button::chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 64.0)
-                        .clicked()
-                    {
-                        self.cancel_add();
-                    }
-                });
-
-                HintBar::new(&hints).show(ui, colors);
-            });
-
-            if form_rect.top() > list_top + 1.0 {
-                let list_rect = egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), list_top),
-                    egui::pos2(rect.right(), form_rect.top() - 1.0),
-                );
-                self.draw_list(ui, colors, list_rect);
+            if !self.form_open {
+                HintBar::new(&[HintGroup::new(&["j", "k"], "select"), HintGroup::new(&["Enter"], "edit"), HintGroup::new(&["a"], "add"), HintGroup::new(&["d"], "delete")]).show(ui, colors);
             }
-        } else {
-            let list_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), list_top), rect.max);
-            self.draw_list(ui, colors, list_rect);
-        }
-    }
-
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
-        std::mem::take(&mut self.pending_cmds)
-    }
-
-    fn serialize_state(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ "selected": self.selected }))
-    }
-
-    fn restore_state(&mut self, state: &serde_json::Value) {
-        if let Some(s) = state.get("selected").and_then(|v| v.as_u64()) {
-            self.selected = s as usize;
-        }
-    }
-}
-
-impl SecretsApp {
-    fn draw_list(
-        &mut self,
-        ui: &mut egui::Ui,
-        colors: &crate::ui::theme::Colors,
-        rect: egui::Rect,
-    ) {
-        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-        egui::ScrollArea::vertical()
-            .id_salt("secrets_list")
-            .show(&mut list_ui, |ui| {
+            // Fixed status space keeps async import completion from moving rows.
+            labels::description_label(ui, if self.status_msg.is_empty() { "Values stay hidden. Permissions apply per caller." } else { &self.status_msg }, colors);
+            ui.separator();
+            egui::ScrollArea::vertical().id_salt("secrets_body").show(ui, |ui| {
+                if self.form_open { self.form(ui, ctx); return; }
                 if self.entries.is_empty() {
-                    ui.add_space(40.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("No secrets stored")
-                                .color(colors.text_dim)
-                                .size(style::TEXT_BODY),
-                        );
-                        ui.add_space(style::SPACE_SM);
-                        ui.label(
-                            egui::RichText::new(
-                                "Use `plexi secret set` or press n to add the first one",
-                            )
-                            .color(colors.text_dim.linear_multiply(0.6))
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
-                        );
+                    labels::section_header(ui, "No secrets stored", colors);
+                    labels::description_label(ui, "Add a secret, or import literal NAME=value entries from a .env file.", colors);
+                    self.scope_picker(ui, colors);
+                    labels::description_label(ui, "The source file is never changed. Import replaces matching names in this scope.", colors);
+                    ui.add_enabled_ui(self.pending_import.is_none(), |ui| {
+                        if button::chrome_button(ui, "Import .env…", ButtonKind::Secondary, colors, 128.0).clicked() { self.pick_requested = true; }
                     });
+                    HintBar::new(&[HintGroup::new(&["i"], "import .env")]).show(ui, colors);
                     return;
                 }
-
-                let mut clicked_idx: Option<usize> = None;
-                let mut toggle_terminal_env: Option<String> = None;
-
-                for (idx, entry) in self.entries.iter().enumerate() {
-                    let is_selected = idx == self.selected;
-                    let is_current_workspace_secret =
-                        self.workspace_id.as_deref() == Some(entry.scope.as_str());
-                    let env_enabled = self.terminal_inject.contains(&entry.name);
-                    let (resp, _) = row::selectable_row(ui, is_selected, colors, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&entry.name)
-                                        .size(style::TEXT_BODY)
-                                        .color(colors.text_primary),
-                                );
-                                ui.scope(|ui| {
-                                    ui.set_max_width(300.0);
-                                    labels::description_label(ui, &entry.scope, colors);
-                                });
-                            });
-                            if is_current_workspace_secret {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let label = if env_enabled { "env on" } else { "env off" };
-                                        let kind = if env_enabled {
-                                            ButtonKind::Accent
-                                        } else {
-                                            ButtonKind::Secondary
-                                        };
-                                        if button::chrome_button_sized(
-                                            ui,
-                                            label,
-                                            kind,
-                                            colors,
-                                            56.0,
-                                            24.0,
-                                        )
-                                        .clicked()
-                                        {
-                                            toggle_terminal_env = Some(entry.name.clone());
-                                        }
-                                    },
-                                );
-                            }
-                        });
+                if self.pending_delete {
+                    if let Some(entry) = self.entries.get(self.selected) { ui.label(format!("Delete {} from {}?", entry.name, entry.scope)); }
+                    ui.horizontal(|ui| {
+                        if button::chrome_button(ui, "Delete", ButtonKind::Accent, colors, 80.0).clicked() { self.delete_selected(); }
+                        if button::chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 80.0).clicked() { self.pending_delete = false; }
                     });
-
-                    if is_selected {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                resp.rect.min,
-                                egui::vec2(3.0, resp.rect.height()),
-                            ),
-                            0.0,
-                            colors.accent,
-                        );
-                    }
-
-                    if resp.clicked() {
-                        clicked_idx = Some(idx);
-                    }
+                    HintBar::new(&[HintGroup::new(&["d", "y"], "confirm"), HintGroup::new(&["Esc"], "cancel")]).show(ui, colors);
                 }
-
-                if let Some(idx) = clicked_idx {
-                    self.selected = idx;
-                    self.pending_delete = false;
+                let mut select = None;
+                let mut edit = false;
+                let mut toggle = None;
+                for (index, entry) in self.entries.iter().enumerate() {
+                    let (response, ()) = row::selectable_row(ui, index == self.selected, colors, |ui| {
+                        ui.label(&entry.name);
+                        labels::description_label(ui, &entry.scope, colors);
+                        let last = entry.last_used.and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0)).map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "unknown".into());
+                        labels::description_label(ui, &format!("Last used: {last}"), colors);
+                        let grant = if entry.grant.is_empty() { "Ask on agent/app read".into() } else { entry.grant.join("; ") };
+                        labels::description_label(ui, &format!("Grants: {grant}"), colors);
+                        if let SecretTarget::Workspace { root, .. } = &entry.target {
+                            let enabled = self.terminal_inject.contains(&entry.name);
+                            if button::chrome_button(ui, if enabled { "Human terminal env: on" } else { "Human terminal env: off" }, ButtonKind::Secondary, colors, 180.0).clicked() { toggle = Some((entry.name.clone(), root.clone())); }
+                        }
+                    });
+                    if response.clicked() { select = Some(index); }
+                    if response.double_clicked() { select = Some(index); edit = true; }
                 }
-                if let Some(name) = toggle_terminal_env {
-                    self.toggle_terminal_env(name);
-                }
+                if let Some(index) = select { self.selected = index; self.pending_delete = false; }
+                if edit { self.begin_edit(); }
+                if let Some((name, root)) = toggle { self.toggle_terminal_env(&name, &root); }
             });
+        });
+    }
+    fn serialize_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"selected": self.selected}))
+    }
+    fn restore_state(&mut self, state: &serde_json::Value) {
+        if let Some(selected) = state.get("selected").and_then(|v| v.as_u64()) {
+            self.selected = (selected as usize).min(self.entries.len().saturating_sub(1));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::secrets::{AccountRename, ReconcileReport};
 
     #[test]
-    fn reconcile_status_line_is_silent_when_nothing_changed() {
-        assert_eq!(reconcile_status_line(&ReconcileReport::default()), None);
+    fn secrets_app_mutations_use_shared_audited_handlers() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let cwd = tempfile::tempdir().unwrap();
+        let cfg = crate::workspace::secrets::init_workspace(
+            cwd.path(),
+            &crate::config::workspace_channel_dir(),
+        )
+        .unwrap();
+        let mut app = SecretsApp::new(cwd.path().into());
+        app.begin_add();
+        app.new_key = "APP_TEST_TOKEN".into();
+        *app.new_value = "canary-app-first".into();
+        app.commit_add();
+        assert!(!app.form_open, "{}", app.status_msg);
+        app.begin_edit();
+        assert!(
+            app.new_value.is_empty(),
+            "edit must not fetch the stored value"
+        );
+        *app.new_value = "canary-app-second".into();
+        app.commit_add();
+        let account = crate::workspace::secrets::keychain_workspace_name(&cfg.id, "APP_TEST_TOKEN");
+        assert_eq!(
+            crate::workspace::secrets::system_store()
+                .get(&account)
+                .unwrap()
+                .as_str(),
+            "canary-app-second"
+        );
+        app.delete_selected();
+        assert!(crate::workspace::secrets::system_store()
+            .get(&account)
+            .is_none());
+        let fixture = cwd.path().join("fixture.env");
+        let bytes = b"IMPORTED_APP_TOKEN=canary-app-import\n";
+        std::fs::write(&fixture, bytes).unwrap();
+        app.import_selected(&app.target.clone(), &fixture);
+        assert_eq!(std::fs::read(&fixture).unwrap(), bytes);
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path());
+        let rows = monitor.audit_records();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.kind == "secret_mutation" && r.decision == "ok")
+                .count(),
+            4
+        );
+        let audit = std::fs::read_to_string(profile.path().join("permission-audit.jsonl")).unwrap();
+        assert!(audit.contains("APP_TEST_TOKEN"));
+        assert!(!audit.contains("canary-app-"));
     }
 
     #[test]
-    fn reconcile_status_line_names_every_kind_of_change() {
-        let report = ReconcileReport {
-            adopted: vec!["plexi:user:AGE".to_string()],
-            stale: vec!["plexi:user:GONE".to_string()],
-            renamed: vec![AccountRename {
-                from: "plexi:user:openrouter-api-key".to_string(),
-                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
-            }],
-            conflicts: Vec::new(),
-            ignored: Vec::new(),
-            index: vec!["plexi:user:AGE".to_string()],
-        };
-
-        let line = reconcile_status_line(&report).expect("changes must be surfaced");
-
-        assert!(line.contains("1 found in keychain"), "{line}");
-        assert!(line.contains("1 renamed"), "{line}");
-        assert!(line.contains("1 stale removed"), "{line}");
-    }
-
-    #[test]
-    fn managed_secret_parses_scope_and_name() {
-        let user = ManagedSecret::from_account("plexi:user:OPENAI_API_KEY".to_string())
-            .expect("user account parses");
-        assert_eq!(user.scope, "global");
-        assert_eq!(user.name, "OPENAI_API_KEY");
-
-        let workspace = ManagedSecret::from_account("plexi:ws-1:GITHUB_TOKEN".to_string())
-            .expect("workspace account parses");
-        assert_eq!(workspace.scope, "ws-1");
-        assert_eq!(workspace.name, "GITHUB_TOKEN");
-
-        assert!(ManagedSecret::from_account("plexi-run//Users/me/KEY".to_string()).is_none());
+    fn screenshot_secrets_scoped_inventory() {
+        use crate::app::permissions::AppPermissions;
+        let mut h = crate::ui_tests::PlexiUiHarness::new_sized_ppp(1000.0, 700.0, 1.0);
+        let root = tempfile::tempdir().unwrap();
+        let mut secrets = SecretsApp::new(root.path().into());
+        secrets.entries = vec![
+            SecretEntry {
+                name: "OPENAI_API_KEY".into(),
+                scope: "global".into(),
+                last_used: Some(1792526400),
+                grant: vec!["app:assistant: allow (session)".into()],
+                target: SecretTarget::Global,
+            },
+            SecretEntry {
+                name: "GITHUB_TOKEN".into(),
+                scope: "workspace: /projects/example-project".into(),
+                last_used: None,
+                grant: Vec::new(),
+                target: SecretTarget::Workspace {
+                    id: "example-project".into(),
+                    root: root.path().into(),
+                },
+            },
+            SecretEntry {
+                name: "DEPLOY_TOKEN".into(),
+                scope: "folder: /projects/example-project/deploy".into(),
+                last_used: None,
+                grant: Vec::new(),
+                target: SecretTarget::Folder(root.path().join("deploy")),
+            },
+        ];
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(secrets),
+                AppPermissions::builtin(),
+                root.path().into(),
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(3);
+        h.save_screenshot(&crate::ui_tests::evidence_png!())
+            .unwrap();
+        h.harness().set_size(egui::vec2(520.0, 650.0));
+        h.run_steps(3);
+        h.save_screenshot(&crate::ui_tests::evidence_png!("_narrow"))
+            .unwrap();
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        h.save_screenshot(&crate::ui_tests::evidence_png!("_edit"))
+            .unwrap();
     }
 }
