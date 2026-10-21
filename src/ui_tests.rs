@@ -4389,6 +4389,26 @@ mod tests {
         h.run_steps(2);
     }
 
+    #[test]
+    fn screenshot_working_agent_quit_confirmation() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+        for name in ["release-checks.md", "implementation-plan.md", "test-results.json"] {
+            std::fs::write(h.workspace.path().join(name), "Working agent release validation").unwrap();
+        }
+        let pane = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: pane, agent: "codex".into(), state: crate::protocol::AgentState::Working,
+                detail: Some("Validating the release build".into()), session_id: None,
+            }));
+            assert!(!app.prepare_user_quit());
+        });
+        h.step();
+        h.save_screenshot(&evidence_png!()).expect("render quit confirmation");
+        assert!(h.with_app(|app| app.pending_quit && !app.quitting));
+        println!("Screenshot saved to {}", evidence_png!());
+    }
+
     /// ActionModal defaults: shortcut chips lead every action row, all rows
     /// share the modal's left edge, and the destructive action is distinct
     /// without a filled button (stint 0542).

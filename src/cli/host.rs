@@ -136,6 +136,7 @@ fn placement_to_layout(spec: &PaneSpec) -> Result<&'static str, String> {
 const STRIP_VARS: &[&str] = &[
     "PLEXI_SOCKET",
     "PLEXI_PANE_ID",
+    crate::host::process_cleanup::SESSION_ENV,
     "PLEXI_CONTEXT_ID",
     "PLEXI_CONTEXT_ROOT",
     "PLEXI_RUNNING",
@@ -708,7 +709,7 @@ pub(crate) fn stop_for_uninstall() -> Result<(), String> {
     if host_stop_cli() != 0 {
         return Err("could not stop the channel host before uninstall".into());
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(35);
     while !shutdown_complete(pid, &socket) {
         if Instant::now() >= deadline {
             return Err("channel host has not exited; no uninstall data was removed".into());

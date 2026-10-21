@@ -32,7 +32,7 @@ impl PlexiApp {
         let actions = [
             crate::ui::dialog::DialogAction::new(
                 "close",
-                "Close",
+                if self.pending_quit { "Quit Plexi and stop them" } else { "Close" },
                 crate::ui::button::ButtonKind::Danger,
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
@@ -51,13 +51,18 @@ impl PlexiApp {
                 egui::Key::Escape,
             )),
         ];
+        let title = if self.pending_quit {
+            let count = self.working_agent_count();
+            if count == 1 { "1 agent is working. Quit Plexi and stop them?".to_string() }
+            else { format!("{count} agents are working. Quit Plexi and stop them?") }
+        } else { "Close pane?".to_string() };
         let response =
-            crate::ui::dialog::ActionModal::new("confirm_close_overlay", "Close pane?", &actions)
+            crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
                         ui,
-                        "The running process will be terminated.",
+                        if self.pending_quit { "Every pane process in this Plexi instance will be stopped." } else { "The running process will be terminated." },
                         &self.colors,
                     );
                 });
@@ -65,13 +70,12 @@ impl PlexiApp {
         let confirmed = response.selected == Some("close");
         let cancelled = response.dismissed || response.selected == Some("cancel");
 
-        if confirmed {
+        if self.pending_quit && (confirmed || cancelled) {
+            self.resolve_quit_confirmation(confirmed);
+        } else if confirmed {
             self.pending_close = false;
-            if self.execute_close_pane() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                self.mark_workspace_dirty();
-            }
+            self.execute_close_pane();
+            self.mark_workspace_dirty();
         } else if cancelled {
             self.pending_close = false;
         }

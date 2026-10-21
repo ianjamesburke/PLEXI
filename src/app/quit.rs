@@ -19,6 +19,30 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 impl super::PlexiApp {
+    pub(crate) fn working_agent_count(&self) -> usize {
+        self.windows.iter().flat_map(|window| window.panes.values())
+            .filter(|pane| pane.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working))
+            .count()
+    }
+
+    pub(crate) fn resolve_quit_confirmation(&mut self, confirmed: bool) {
+        self.pending_close = false;
+        self.pending_quit = false;
+        self.quit_press_count = 0;
+        self.quit_last_press = None;
+        self.quitting = confirmed;
+        if confirmed && self.prepare_user_quit() {
+            self.save_workspace_now();
+            self.workspace_dirty = false;
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            log::info!("quit: working-agent confirmation accepted");
+        } else {
+            self.quitting = false;
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            log::info!("quit: working-agent confirmation cancelled or vetoed");
+        }
+    }
+
     /// Normal desktop quit shares pane-close protection. Forced IPC stop and
     /// process termination cannot present an interactive unsaved-work prompt.
     pub(crate) fn prepare_user_quit(&mut self) -> bool {
@@ -33,6 +57,15 @@ impl super::PlexiApp {
             self.quit_last_press = None;
             self.pane_navigate(pane);
             log::info!("quit: unsaved work vetoed desktop quit pane={pane}");
+            return false;
+        }
+        let working = self.working_agent_count();
+        if !self.quitting && working > 0 {
+            self.pending_quit = true;
+            self.pending_close = true;
+            self.quit_press_count = 0;
+            self.quit_last_press = None;
+            log::info!("quit: confirmation required working_agents={working}");
             return false;
         }
         true
@@ -118,6 +151,8 @@ pub(crate) fn release_notify_socket() -> SocketRelease {
 
 /// Tear the host down and end the process. Never returns.
 pub(crate) fn exit_host(reason: &str) -> ! {
+    let killed = crate::host::process_cleanup::stop_pane_processes();
+    log::info!("quit: killed {} pane process groups ({} SIGKILL) reason={reason}", killed.groups, killed.escalated);
     // A kill skips this, so the next start can tell a clean quit from a death.
     crate::broker::integrity::mark_clean_shutdown(&crate::config::config_dir());
     let socket = release_notify_socket();
