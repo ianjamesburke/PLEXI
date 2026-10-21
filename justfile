@@ -646,4 +646,4 @@ check-parity: (check-generated "docs/cli/PARITY.md" "bash scripts/cargo-with-lea
 
 # Regenerate the UI-to-CLI parity table.
 gen-parity:
-    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity > docs/cli/PARITY.md
+    bash scripts/gen-doc-safe.sh docs/cli/PARITY.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity
