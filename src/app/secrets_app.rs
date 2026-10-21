@@ -28,6 +28,7 @@ pub struct SecretsApp {
     pending_delete: bool,
     pick_requested: bool,
     pending_import: Option<PendingImport>,
+    picker: Arc<dyn crate::host::services::PickerService>,
     terminal_inject: Vec<String>,
     status_msg: String,
 }
@@ -47,6 +48,7 @@ impl SecretsApp {
             pending_delete: false,
             pick_requested: false,
             pending_import: None,
+            picker: crate::host::services::default_picker_service(),
             terminal_inject: Vec::new(),
             status_msg: String::new(),
         };
@@ -191,7 +193,7 @@ impl SecretsApp {
         if self.pending_import.is_some() {
             return;
         }
-        let service = crate::host::services::default_picker_service();
+        let service = self.picker.clone();
         let (sender, receiver) = mpsc::channel();
         let ready = Arc::new(AtomicBool::new(false));
         let completed = ready.clone();
@@ -346,6 +348,12 @@ impl App for SecretsApp {
     fn sync_cwd(&mut self, cwd: &Path) {
         if self.cwd != cwd {
             self.cwd = cwd.into();
+            if !self.form_open && self.pending_import.is_none() {
+                match manager::workspace_target(cwd) {
+                    Ok(target) => self.target = target.unwrap_or(SecretTarget::Global),
+                    Err(error) => self.report_error(error),
+                }
+            }
             self.refresh();
         }
     }
@@ -380,8 +388,15 @@ impl App for SecretsApp {
             .as_ref()
             .is_some_and(|pending| pending.ready.load(Ordering::Acquire))
     }
+    fn submit_on_focused_text_input_enter(&self) -> bool {
+        self.form_open
+    }
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         if self.form_open {
+            if input.modifiers().is_none() && input.key_pressed(egui::Key::Enter) {
+                self.commit_add();
+                return KeyDisposition::Consumed;
+            }
             if input.key_pressed(egui::Key::Escape) {
                 self.close_form();
                 return KeyDisposition::Consumed;
@@ -391,31 +406,38 @@ impl App for SecretsApp {
         if input.modifiers().command || input.modifiers().alt {
             return KeyDisposition::Passthrough;
         }
+        let pressed = |key, character: &str| {
+            input.key_pressed(key)
+                || input
+                    .events()
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Text(text) if text == character))
+        };
         if input.key_pressed(egui::Key::Escape) && self.pending_delete {
             self.pending_delete = false;
             return KeyDisposition::Consumed;
         }
-        if input.key_pressed(egui::Key::J) || input.key_pressed(egui::Key::ArrowDown) {
+        if pressed(egui::Key::J, "j") || input.key_pressed(egui::Key::ArrowDown) {
             self.selected = (self.selected + 1).min(self.entries.len().saturating_sub(1));
             self.pending_delete = false;
-        } else if input.key_pressed(egui::Key::K) || input.key_pressed(egui::Key::ArrowUp) {
+        } else if pressed(egui::Key::K, "k") || input.key_pressed(egui::Key::ArrowUp) {
             self.selected = self.selected.saturating_sub(1);
             self.pending_delete = false;
-        } else if input.key_pressed(egui::Key::A) || input.key_pressed(egui::Key::N) {
+        } else if pressed(egui::Key::A, "a") || pressed(egui::Key::N, "n") {
             self.begin_add();
         } else if input.key_pressed(egui::Key::Enter) {
             self.begin_edit();
-        } else if input.key_pressed(egui::Key::D) && !self.entries.is_empty() {
+        } else if pressed(egui::Key::D, "d") && !self.entries.is_empty() {
             if self.pending_delete {
                 self.delete_selected();
             } else {
                 self.pending_delete = true;
             }
-        } else if input.key_pressed(egui::Key::Y) && self.pending_delete {
+        } else if pressed(egui::Key::Y, "y") && self.pending_delete {
             self.delete_selected();
-        } else if input.key_pressed(egui::Key::I) && self.entries.is_empty() {
+        } else if pressed(egui::Key::I, "i") && self.entries.is_empty() {
             self.pick_requested = true;
-        } else if input.key_pressed(egui::Key::R) {
+        } else if pressed(egui::Key::R, "r") {
             self.refresh();
             self.pending_delete = false;
         } else {
@@ -435,7 +457,7 @@ impl App for SecretsApp {
         if self.pick_requested {
             self.start_picker(ui.ctx());
         }
-        ui.vertical(|ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin::same(style::SPACE_MD as i8)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Secrets");
                 if button::chrome_button(ui, "Add", ButtonKind::Accent, colors, 64.0).clicked() { self.begin_add(); }
@@ -561,41 +583,88 @@ mod tests {
     }
 
     #[test]
+    fn picker_import_keeps_chosen_scope_and_does_not_change_source() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let root = tempfile::tempdir().unwrap();
+        let cfg = crate::workspace::secrets::init_workspace(
+            root.path(),
+            &crate::config::workspace_channel_dir(),
+        )
+        .unwrap();
+        let fixture = root.path().join("fixture.env");
+        let bytes = b"PICKER_0858_TOKEN=picker-secret-canary\n";
+        std::fs::write(&fixture, bytes).unwrap();
+        let mut app = SecretsApp::new(root.path().into());
+        app.picker = Arc::new(crate::host::services::ScriptedPickerService::from_outcomes(
+            vec![crate::host::services::FilePickOutcome::Picked(vec![
+                fixture.clone(),
+            ])],
+        ));
+        app.start_picker(&egui::Context::default());
+        app.target = SecretTarget::Global;
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while app.pending_import.is_some() && std::time::Instant::now() < deadline {
+            app.background_tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.pending_import.is_none());
+        assert!(
+            app.status_msg.starts_with("Imported 1"),
+            "{}",
+            app.status_msg
+        );
+        assert_eq!(std::fs::read(&fixture).unwrap(), bytes);
+        let account =
+            crate::workspace::secrets::keychain_workspace_name(&cfg.id, "PICKER_0858_TOKEN");
+        assert_eq!(
+            crate::workspace::secrets::system_store()
+                .get(&account)
+                .unwrap()
+                .as_str(),
+            "picker-secret-canary"
+        );
+    }
+
+    #[test]
     fn screenshot_secrets_scoped_inventory() {
         use crate::app::permissions::AppPermissions;
         let mut h = crate::ui_tests::PlexiUiHarness::new_sized_ppp(1000.0, 700.0, 1.0);
+        let _experiment =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let root = tempfile::tempdir().unwrap();
-        let mut secrets = SecretsApp::new(root.path().into());
-        secrets.entries = vec![
-            SecretEntry {
-                name: "OPENAI_API_KEY".into(),
-                scope: "global".into(),
-                last_used: Some(1792526400),
-                grant: vec!["app:assistant: allow (session)".into()],
-                target: SecretTarget::Global,
-            },
-            SecretEntry {
-                name: "GITHUB_TOKEN".into(),
-                scope: "workspace: /projects/example-project".into(),
-                last_used: None,
-                grant: Vec::new(),
-                target: SecretTarget::Workspace {
-                    id: "example-project".into(),
-                    root: root.path().into(),
-                },
-            },
-            SecretEntry {
-                name: "DEPLOY_TOKEN".into(),
-                scope: "folder: /projects/example-project/deploy".into(),
-                last_used: None,
-                grant: Vec::new(),
-                target: SecretTarget::Folder(root.path().join("deploy")),
-            },
-        ];
+        let cfg = crate::workspace::secrets::init_workspace(
+            root.path(),
+            &crate::config::workspace_channel_dir(),
+        )
+        .unwrap();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let global = SecretTarget::Global;
+        let workspace = SecretTarget::Workspace {
+            id: cfg.id,
+            root: root.path().into(),
+        };
+        let folder = SecretTarget::Folder(crate::platform::path::canonical_or_self(root.path()));
+        for (name, target) in [
+            ("OPENAI_0858_SHOT_KEY", &global),
+            ("GITHUB_TOKEN", &workspace),
+            ("DEPLOY_TOKEN", &folder),
+        ] {
+            manager::mutate_secret(
+                SecretsApp::store_for(target),
+                &monitor,
+                target,
+                name,
+                Mutation::Set("screenshot-canary-value"),
+            )
+            .unwrap();
+        }
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(secrets),
+                Box::new(crate::file_browser::FileBrowserApp::new(root.path().into())),
                 AppPermissions::builtin(),
                 root.path().into(),
                 None,
@@ -604,6 +673,42 @@ mod tests {
             );
         });
         h.run_steps(3);
+        h.harness().key_press_modifiers(
+            egui::Modifiers {
+                command: true,
+                mac_cmd: true,
+                shift: true,
+                ..Default::default()
+            },
+            egui::Key::S,
+        );
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let secrets = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|pane| {
+                    let crate::host::pane::AppRuntime::Builtin(builtin) =
+                        &mut pane.as_app_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    builtin.as_any_mut().downcast_mut::<SecretsApp>()
+                })
+                .expect("hotkey opens Secrets");
+            assert!(secrets
+                .entries
+                .iter()
+                .any(|entry| entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global));
+            assert!(secrets
+                .entries
+                .iter()
+                .any(|entry| entry.name == "GITHUB_TOKEN" && entry.target == workspace));
+            assert!(secrets
+                .entries
+                .iter()
+                .any(|entry| entry.name == "DEPLOY_TOKEN" && entry.target == folder));
+        });
         h.save_screenshot(&crate::ui_tests::evidence_png!())
             .unwrap();
         h.harness().set_size(egui::vec2(520.0, 650.0));
@@ -614,5 +719,19 @@ mod tests {
         h.run_steps(3);
         h.save_screenshot(&crate::ui_tests::evidence_png!("_edit"))
             .unwrap();
+        for (name, target) in [
+            ("OPENAI_0858_SHOT_KEY", &global),
+            ("GITHUB_TOKEN", &workspace),
+            ("DEPLOY_TOKEN", &folder),
+        ] {
+            manager::mutate_secret(
+                SecretsApp::store_for(target),
+                &monitor,
+                target,
+                name,
+                Mutation::Delete,
+            )
+            .unwrap();
+        }
     }
 }
