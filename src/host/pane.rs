@@ -690,6 +690,7 @@ impl Pane {
 // ---------------------------------------------------------------------------
 
 pub struct TerminalPane {
+    pub fleet_result: Option<serde_json::Value>,
     pub fleet_seen: bool,
     pub fleet_done_unseen: bool,
     pub fleet_since: u64,
@@ -818,6 +819,7 @@ impl TerminalPane {
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
             hidden: false,
+            fleet_result: None,
             fleet_seen: false,
             fleet_done_unseen: false,
             fleet_since: crate::platform::clock::now_secs(),
@@ -968,6 +970,7 @@ impl TerminalPane {
             if self.parent_pane_id.is_some() {
                 s.parent_pane_id = self.parent_pane_id;
             }
+            s.fleet_result = self.fleet_result.clone();
             s.fleet_seen = self.fleet_seen;
             s.fleet_done_unseen = self.fleet_done_unseen;
             s.fleet_since = self.fleet_since;
@@ -1008,6 +1011,7 @@ impl TerminalPane {
             .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
 
         Some(crate::workspace::SavedAgentSession {
+            fleet_result: self.fleet_result.clone(),
             fleet_seen: self.fleet_seen,
             fleet_done_unseen: self.fleet_done_unseen,
             fleet_since: self.fleet_since,
@@ -1050,7 +1054,8 @@ impl TerminalPane {
             .slots
             .get("result")
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .or_else(|| self.fleet_result.clone());
         let closed_at = crate::platform::clock::now_secs();
         let run_id = format!("run-{}-{closed_at}", self.id);
         Some(crate::workspace::AgentHistoryRecord {

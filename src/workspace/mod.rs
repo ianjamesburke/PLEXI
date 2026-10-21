@@ -83,6 +83,8 @@ pub struct SavedPane {
 /// Persisted agent session state for an agent terminal pane.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct SavedAgentSession {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_result: Option<serde_json::Value>,
     #[serde(default)]
     pub fleet_seen: bool,
     #[serde(default)]
@@ -821,6 +823,7 @@ mod tests {
             launch: None,
             slots: slots.clone(),
             agent_session: Some(SavedAgentSession {
+                fleet_result: None,
                 fleet_seen: false,
                 fleet_done_unseen: false,
                 fleet_since: 0,
@@ -887,12 +890,12 @@ mod tests {
 pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context_id: u64, context_name: &str) {
     let Some(session) = &pane.agent_session else { return };
     if load_agent_history_from(profile).iter().any(|r| r.pane_id == pane.id && r.session_id == session.session_id) { return; }
-    let result = pane.slots.get("result").and_then(|path| {
+    let result = session.fleet_result.clone().or_else(|| pane.slots.get("result").and_then(|path| {
         match std::fs::read_to_string(path).and_then(|data| serde_json::from_str(&data).map_err(io::Error::other)) {
             Ok(value) => Some(value),
             Err(error) => { log::warn!("agents: restore completion result {}: {error}", path.display()); None }
         }
-    });
+    }));
     let record = AgentHistoryRecord {
         fleet_seen: session.fleet_seen,
         run_id: format!("run-{}-{}", pane.id, session.fleet_since),

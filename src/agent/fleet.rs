@@ -439,13 +439,14 @@ mod tests {
     }
     #[test]
     fn e7_seen_round_trip_in_saved_session() {
-        let raw = serde_json::json!({"harness":"pi", "last_state":"completed", "fleet_seen":false, "fleet_done_unseen":true, "fleet_since":100});
+        let raw = serde_json::json!({"harness":"pi", "last_state":"completed", "fleet_seen":false, "fleet_done_unseen":true, "fleet_since":100, "fleet_result":{"ok":true}});
         let session: crate::workspace::SavedAgentSession = serde_json::from_value(raw).unwrap();
         let restored: crate::workspace::SavedAgentSession =
             serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
         assert!(!restored.fleet_seen);
         assert!(restored.fleet_done_unseen);
         assert_eq!(restored.fleet_since, 100);
+        assert_eq!(restored.fleet_result, Some(serde_json::json!({"ok":true})));
     }
     #[test]
     fn e8_focused_agent_event_suppressed() {

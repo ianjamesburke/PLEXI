@@ -4618,16 +4618,29 @@ mod tests {
             let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
             win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
         });
-        h.step();
+        h.with_app_mut(|app| {
+            app.show_command_palette = true;
+            app.palette_query = "agents".into();
+        });
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.palette_agent_count_logged, Some(0)));
         h.save_screenshot(&evidence_png!("_before")).unwrap();
-        h.open_builtin_by_id("agents", &root, &[]).unwrap();
+        h.with_app_mut(|app| app.show_command_palette = false);
+        h.step();
+        let agents_id = h.open_builtin_by_id("agents", &root, &[]).unwrap();
+        h.run_steps(3);
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
-            win.zoomed_pane = win.focused_pane;
+            win.zoomed_pane = win.tree.tiles.find_pane(&agents_id);
         });
         h.run_steps(3);
         h.harness().get_by_label("Agents");
         h.save_screenshot(&evidence_png!("_after")).unwrap();
+        h.harness().set_size(egui::vec2(520.0, 760.0));
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_narrow")).unwrap();
+        h.harness().set_size(egui::vec2(1200.0, 850.0));
+        h.run_steps(2);
         // The selection starts at human attention, then the parent-routed question.
         h.harness().key_press(egui::Key::J);
         h.step();

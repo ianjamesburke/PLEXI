@@ -4007,6 +4007,7 @@ impl PlexiApp {
                             if let Some(pane) = win.panes.get_mut(pane_id) {
                                 if let Some(t) = pane.as_terminal_mut() {
                                     t.agent_completed = true;
+                                    t.fleet_result = Some(committed.clone());
                                     t.fleet_done_unseen = true;
                                     t.fleet_seen = false;
                                     t.fleet_since = crate::platform::clock::now_secs();

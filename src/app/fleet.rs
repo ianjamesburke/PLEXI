@@ -151,7 +151,7 @@ impl PlexiApp {
                     context_name: context_name.clone(),
                     state,
                     since: t.fleet_since,
-                    ephemeral: t.ephemeral && !t.slots.contains_key("question"),
+                    ephemeral: t.ephemeral,
                     seen: t.fleet_seen,
                     done_unseen: t.fleet_done_unseen,
                     blocked_on,
@@ -159,7 +159,8 @@ impl PlexiApp {
                     result: self
                         .pane_results
                         .get(&pane_id)
-                        .and_then(|r| r.committed.clone()),
+                        .and_then(|r| r.committed.clone())
+                        .or_else(|| t.fleet_result.clone()),
                     events,
                 });
             }
