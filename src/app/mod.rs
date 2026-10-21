@@ -232,6 +232,7 @@ pub struct PlexiApp {
     /// Per-pane schema-validated structured results (`plexi pane result`, stint 0666).
     /// Retained across pane close so spawners can read results after an ephemeral worker exits.
     pub(crate) closed_pane_slots: HashMap<PaneId, HashMap<String, std::path::PathBuf>>,
+    pub(crate) agent_attention: crate::app::fleet::AttentionState,
     pub(crate) fleet_history: std::cell::RefCell<Vec<crate::workspace::AgentHistoryRecord>>,
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
@@ -1511,6 +1512,7 @@ impl PlexiApp {
                     pending_message_recvs: Vec::new(),
                     next_pane_message_id: 1,
                     closed_pane_slots: HashMap::new(),
+                    agent_attention: Default::default(),
                     fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
@@ -1768,6 +1770,7 @@ impl PlexiApp {
             pending_message_recvs: Vec::new(),
             next_pane_message_id: 1,
             closed_pane_slots: HashMap::new(),
+            agent_attention: Default::default(),
             fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
             pending_result_waits: Vec::new(),
@@ -2598,6 +2601,7 @@ impl PlexiApp {
                 pending_message_recvs: Vec::new(),
                 next_pane_message_id: 1,
                 closed_pane_slots: HashMap::new(),
+                agent_attention: Default::default(),
                 fleet_history: std::cell::RefCell::new(Vec::new()),
                 pane_results: HashMap::new(),
                 pending_result_waits: Vec::new(),
@@ -4168,6 +4172,7 @@ impl eframe::App for PlexiApp {
                         self.close_focused_app();
                     }
                 }
+                Action::NextBlockedAgent => { self.next_blocked_agent(); },
                 Action::OpenAgents => self.open_agents_pane(),
                 Action::OpenFileBrowser => {
                     self.open_file_browser();

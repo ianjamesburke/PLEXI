@@ -4605,6 +4605,44 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+
+    #[test]
+    fn screenshot_agent_attention_toast_over_working_fleet() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        let root = h.workspace_root().to_path_buf();
+        let id = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let mut term = crate::host::pane::TerminalPane::new(
+                id, app.ctx.clone(), app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()],
+                    working_directory: Some(root.clone()), ..Default::default()
+                }, 14.0).unwrap();
+            term.agent_role = Some("Implementer".into());
+            term.agent_harness = Some("pi".into());
+            term.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: id, state: crate::protocol::AgentState::Working, agent: "pi".into(),
+                detail: Some("Validating notification delivery".into()), session_id: None,
+            });
+            term.tail_preview = Some("Running focused tests for attention navigation.".into());
+            app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+            app.sidebar_visible = false;
+        });
+        let agents = h.open_builtin_by_id("agents", &root, &[]).unwrap();
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            win.zoomed_pane = win.tree.tiles.find_pane(&agents);
+        });
+        h.run_steps(3);
+        h.harness().key_press_modifiers(
+            egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() },
+            egui::Key::B,
+        );
+        h.run_steps(2);
+        h.harness().get_by_label("No agents need attention.");
+        h.save_screenshot(&evidence_png!()).unwrap();
+    }
+
     #[test]
     fn screenshot_agents_pane_states_and_keys() {
         use crate::protocol::AgentState;

@@ -90,7 +90,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results"];
+const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results", "os_notifications"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_PERMISSIONS: &[&str] = &[
     "soft_grant_days",
@@ -204,6 +204,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "increase_font_size",
     "decrease_font_size",
     "open_agents",
+    "next_blocked_agent",
     "open_file_browser",
     "open_quick_note",
     "open_config",
@@ -405,6 +406,8 @@ pub struct KeybindingsConfig {
     pub decrease_font_size: Option<String>,
     /// Open the Agents pane (default Cmd+Alt+A).
     pub open_agents: Option<String>,
+    /// Next agent needing attention (default cmd+alt+b).
+    pub next_blocked_agent: Option<String>,
     pub open_file_browser: Option<String>,
     pub open_quick_note: Option<String>,
     pub open_config: Option<String>,
@@ -473,6 +476,7 @@ impl KeybindingsConfig {
         overlay_field!(increase_font_size);
         overlay_field!(decrease_font_size);
         overlay_field!(open_agents);
+        overlay_field!(next_blocked_agent);
         overlay_field!(open_file_browser);
         overlay_field!(open_quick_note);
         overlay_field!(open_config);
@@ -791,6 +795,10 @@ pub enum AgentRestoreMode {
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
 #[derive(Deserialize, Default, Clone)]
 pub struct AgentsConfig {
+    /// Raise silent macOS attention notifications while Plexi is unfocused (default true).
+    /// Uses provisional authorization without a permission dialog; enable banners in macOS
+    /// notification settings if desired. Disabled in tests; other platforms log only.
+    pub os_notifications: Option<bool>,
     /// Idle ephemeral worker stall threshold in seconds (default 120).
     pub stalled_after_secs: Option<u64>,
     /// Show agent jump rows in the command palette (default false).
@@ -807,6 +815,7 @@ pub struct AgentsConfig {
 
 impl AgentsConfig {
     fn overlay(&mut self, other: Self) {
+        if other.os_notifications.is_some() { self.os_notifications = other.os_notifications; }
         if other.stalled_after_secs.is_some() { self.stalled_after_secs = other.stalled_after_secs; }
         if other.palette_agent_results.is_some() { self.palette_agent_results = other.palette_agent_results; }
         if other.low.is_some() {

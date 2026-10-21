@@ -155,6 +155,8 @@ security-framework-sys = "2.17"
 # security-framework itself uses, or the CF types will not unify.
 core-foundation = "0.10"
 objc2 = "0.6"
+block2 = "0.6"
+objc2-user-notifications = "0.3"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo"] }
 # AVFoundation video decoder (#346).

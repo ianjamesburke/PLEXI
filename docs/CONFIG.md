@@ -164,6 +164,7 @@ Host-raised config errors are the one deliberate exception: they are workspace-w
 
 ```toml
 [agents]
+os_notifications = true
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
@@ -301,6 +302,7 @@ model_high   = "anthropic/claude-fable-5"
 # close_context          = "cmd+shift+w"
 
 [agents]
+os_notifications = true
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"

@@ -771,6 +771,7 @@ pub enum AppRequest {
     /// and transition the worker pane to `AgentState::Blocked` without interrupting
     /// the human (`plexi agent ask`, stint 0802).
     /// Read the shared task and worker roster.
+    AgentNext { response_file: String },
     AgentFleet {
         #[serde(default)]
         filter: FleetFilter,

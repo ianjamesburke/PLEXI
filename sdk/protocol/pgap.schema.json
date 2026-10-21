@@ -2025,6 +2025,23 @@
           "additionalProperties": false,
           "description": "Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question\nand transition the worker pane to `AgentState::Blocked` without interrupting\nthe human (`plexi agent ask`, stint 0802).\nRead the shared task and worker roster.",
           "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_next",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "filter": {
               "$ref": "#/$defs/FleetFilter",
               "default": "all"

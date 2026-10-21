@@ -165,6 +165,7 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `os_notifications` | bool | — | Raise silent macOS attention notifications while Plexi is unfocused (default true). Uses provisional authorization without a permission dialog; enable banners in macOS notification settings if desired. Disabled in tests; other platforms log only. |
 | `stalled_after_secs` | integer | — | Idle ephemeral worker stall threshold in seconds (default 120). |
 | `palette_agent_results` | bool | — | Show agent jump rows in the command palette (default false). |
 | `low` | string | claude haiku with --dangerously-skip-permissions | Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions. |
@@ -225,6 +226,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `increase_font_size` | increase font size |
 | `decrease_font_size` | decrease font size |
 | `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
+| `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
 | `open_file_browser` | open file browser |
 | `open_quick_note` | open quick note |
 | `open_config` | open config |
@@ -359,11 +361,14 @@ model_high   = "anthropic/claude-fable-5"
 
 # [keybindings]
 # open_agents = "cmd+alt+a"
+# next_blocked_agent = "cmd+alt+b"
 # toggle_command_palette = "cmd+p"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"
 
 [agents]
+# Silent desktop attention alerts while Plexi is not focused.
+os_notifications = true
 stalled_after_secs = 120
 palette_agent_results = false
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"

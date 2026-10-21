@@ -1,0 +1,16 @@
+size = [1100.0, 760.0]
+
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+
+[[steps]]
+key = { target = "host", value = "cmd+alt+b" }
+
+[[steps]]
+assert_label = { target = "host", label = "No agents need attention." }
+
+[[steps]]
+assert = { target = "agents", focused = true }
+
+[[steps]]
+shot = "agent-attention-empty.png"

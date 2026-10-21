@@ -795,6 +795,7 @@ fn palette_host_binding(
 ) -> Option<(egui::Modifiers, egui::Key)> {
     use crate::host::keys::Action;
     let binding = match command {
+        PaletteCommand::Host(Action::NextBlockedAgent) => bindings.next_blocked_agent,
         PaletteCommand::Host(Action::OpenAgents) => bindings.open_agents,
         PaletteCommand::Host(Action::OpenSecretsManager) => bindings.open_secrets_manager,
         PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
@@ -1745,6 +1746,7 @@ impl PlexiApp {
                 self.split_focused(true, None, false, false, None);
                 self.mark_workspace_dirty();
             }
+            crate::host::keys::Action::NextBlockedAgent => { self.next_blocked_agent(); },
             crate::host::keys::Action::OpenAgents => self.open_agents_pane(),
             crate::host::keys::Action::OpenSecretsManager => self.open_secrets_manager(),
             crate::host::keys::Action::OpenConfig => {

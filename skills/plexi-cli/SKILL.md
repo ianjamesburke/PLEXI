@@ -534,6 +534,8 @@ plexi assistant send --text "hello" --client narrative --kind output
 
 ### Agents (`plexi agent --help`)
 
+`plexi agent next --json` focuses the next live agent in NeedsYou, Blocked, then done-unseen order and returns `{"pane_id": N}` (null when none need attention). The default host shortcut is Cmd+Alt+B, rebindable as `next_blocked_agent` in `[keybindings]`.
+
 `plexi agent fleet --json` reads the same task → worker tree as the Agents pane,
 including blocking reasons, attention order, completion results and notifications.
 Use `--filter needs-attention`, `--filter working`, or `--filter done` to narrow it.

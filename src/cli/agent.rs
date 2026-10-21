@@ -3058,3 +3058,21 @@ pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 
     }
     0
 }
+
+pub fn agent_next_cli(json: bool) -> i32 {
+    let content = match super::request(serde_json::json!({"type":"agent_next"}), "plexi-agent-next", "agent next") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if json { println!("{content}"); }
+    else {
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(value) => match value["pane_id"].as_u64() {
+                Some(id) => println!("{id}"),
+                None => println!("No agents need attention."),
+            },
+            Err(error) => { eprintln!("error: invalid agent next response: {error}"); return 1; }
+        }
+    }
+    0
+}
