@@ -818,6 +818,10 @@ mod tests {
         h.run_steps(3);
         h.save_screenshot(&crate::ui_tests::evidence_png!("_narrow"))
             .unwrap();
+        for _ in 0..2 {
+            h.harness().input_mut().events.push(egui::Event::Text("j".into()));
+            h.run_steps(2);
+        }
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(3);
         h.save_screenshot(&crate::ui_tests::evidence_png!("_edit"))

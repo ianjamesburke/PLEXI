@@ -456,6 +456,7 @@ mod inventory_tests {
             .filter(|e| e.name == name)
             .all(|e| e.last_used.is_none() && e.grant.is_empty()));
         let actor = SecretActor::agent("inventory-reader");
+        monitor.set_now_for_test(1_800_000_000);
         let scope = SecretScope::Global;
         let read =
             read_pane_secret(&monitor, store, &actor, &name, &scope, profile.path()).unwrap();
@@ -472,7 +473,17 @@ mod inventory_tests {
         let entries = secret_inventory(root.path(), true).unwrap();
         assert!(entries.iter().all(|e| e.target == SecretTarget::Global));
         let entry = entries.iter().find(|e| e.name == name).unwrap();
-        assert!(entry.last_used.is_some());
+        assert_eq!(entry.last_used, Some(1_800_000_000));
+        monitor.set_now_for_test(1_800_000_001);
+        assert_eq!(
+            secret_inventory(root.path(), true)
+                .unwrap()
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap()
+                .last_used,
+            Some(1_800_000_000)
+        );
         assert!(entry
             .grant
             .iter()

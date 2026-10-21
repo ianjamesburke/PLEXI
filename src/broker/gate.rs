@@ -3590,7 +3590,12 @@ impl PermissionMonitor {
         }
         self.remember_audit(fact.clone());
         if let Some(path) = &self.audit_path {
-            match super::seal::append_audit(path, fact) {
+            // Stamp the persisted event once. AuditFact is also serialized by
+            // the live audit API, where serialization time is not event time.
+            let mut persisted_fact = serde_json::to_value(fact)
+                .map_err(|error| format!("audit serialization failed: {error}"))?;
+            persisted_fact["timestamp"] = serde_json::json!(self.now_secs());
+            match super::seal::append_audit(path, &persisted_fact) {
                 Ok(()) => super::integrity::note_saved_file(path),
                 Err(super::seal::SealError::Untrusted(reason)) => {
                     self.raise_integrity(&super::seal::IntegrityFault {
@@ -3838,8 +3843,7 @@ pub fn gate_log_contains(fragment: &str) -> bool {
 impl serde::Serialize for AuditFact {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut row = serializer.serialize_struct("AuditFact", 11)?;
-        row.serialize_field("timestamp", &crate::platform::clock::now_secs())?;
+        let mut row = serializer.serialize_struct("AuditFact", 10)?;
         row.serialize_field("kind", &self.kind)?;
         row.serialize_field("actor", &self.actor)?;
         row.serialize_field("call_id", &self.call_id)?;

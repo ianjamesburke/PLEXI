@@ -145,3 +145,10 @@ Socket ancestry authenticates the holder; wire-supplied ancestry is not authorit
 ## Fleet inspection
 
 The Agents pane and `agent fleet` share the projection in `src/agent/fleet.rs`. The user workflow and configuration are documented in `skills/plexi-cli/SKILL.md` under Agents.
+
+## Secret inventory
+
+`secret list --json` and the Secrets app share `manager::secret_inventory` in
+`src/workspace/secrets/manager.rs`. The output fields and user workflow are
+documented in `website/src/content/docs/secrets.md`. Keep permission decisions
+in the existing monitor; the inventory only observes them.

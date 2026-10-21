@@ -407,6 +407,7 @@ Inside a workspace, shows project secrets plus user-scope secrets. Outside a wor
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` | flag | no | Show only globally-stored user-scope secrets |
+| `--json` | flag | no | Print names, scopes, last-used timestamps and actor grants as JSON (never values) |
 
 ### `plexi secret delete`
 

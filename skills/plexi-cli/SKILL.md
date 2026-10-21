@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.19"
+skill_version: "5.0.20"
 plexi_version: "0.4.0"
 last_verified: "2026-10-21"
 ---
@@ -207,6 +207,9 @@ plexi skill install --agent pi
   keychain, so it also shows keys added outside Plexi. A legacy-format secrets
   index is migrated the first time `secret get` or `secret list` runs, not at
   CLI startup.
+  Use `plexi secret list --json` for names-only automation. The
+  [Secrets guide](https://plexiapp.com/docs/secrets) describes the metadata
+  fields and the keyboard workflow in the Secrets app.
 <!-- experiment: routines -->
   Scheduled commands: `plexi routine --help`.
 <!-- /experiment -->
