@@ -406,6 +406,7 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
          When blocked, ask the parent agent with: plexi agent ask \"<question>\"",
         definition.id
     );
+    contract.push_str("\nAfter asking, wait for the parent's reply with: plexi pane message recv --timeout 300. Retry on timeout; continue the task after reading the reply.");
     if let Some(schema) = definition
         .harness
         .as_ref()
@@ -965,6 +966,8 @@ pub fn agent_show_in(
             "path": def.path,
             "description": def.description,
             "persona": def.prompt,
+            "can_call": def.can_call,
+            "can_handoff": def.can_handoff,
             "harness": harness_json,
             "spawn_command": spawn_command,
         });
@@ -3075,4 +3078,53 @@ pub fn agent_next_cli(json: bool) -> i32 {
         }
     }
     0
+}
+
+/// Agent tool operations retain the socket until the host answers the lifecycle wait.
+pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
+    // Build and stamp the protocol type before sending. Command-specific fields
+    // must not leak into other deny_unknown_fields request variants.
+    payload["response_file"] = "".into();
+    let mut request: crate::protocol::AppRequest = match serde_json::from_value(payload) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("error: invalid agent tool request: {error}");
+            return 1;
+        }
+    };
+    match &mut request {
+        crate::protocol::AppRequest::AgentCall { parent_pane_id, call_credential, .. }
+        | crate::protocol::AppRequest::AgentMessage { parent_pane_id, call_credential, .. } => {
+            *parent_pane_id = std::env::var("PLEXI_PANE_ID").ok().and_then(|s| s.parse().ok());
+            *call_credential = std::env::var("PLEXI_CALL_CREDENTIAL").ok();
+        }
+        _ => {
+            eprintln!("error: expected an agent call or message request");
+            return 1;
+        }
+    }
+    if let crate::protocol::AppRequest::AgentCall { cwd, .. } = &mut request {
+        *cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    }
+    let timeout = if matches!(request,
+        crate::protocol::AppRequest::AgentCall { asynchronous: false, handoff: false, .. }
+        | crate::protocol::AppRequest::AgentMessage { wait: true, .. }
+    ) {
+        std::time::Duration::from_secs(86405)
+    } else {
+        crate::rpc::DEFAULT_TIMEOUT
+    };
+    let payload = match serde_json::to_value(request) {
+        Ok(payload) => payload,
+        Err(error) => {
+            eprintln!("error: serializing agent tool request: {error}");
+            return 1;
+        }
+    };
+    let reply = match super::request_with(payload, "agent-tool", "agent tool", timeout) {
+        Ok(reply) => reply,
+        Err(code) => return code,
+    };
+    println!("{reply}");
+    if super::reply_error(&reply).is_some() { 1 } else { 0 }
 }

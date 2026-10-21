@@ -710,6 +710,41 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// Invoke an agent role as a tool, waiting for its completion or question.
+    AgentCall {
+        role: String,
+        task: String,
+        #[serde(default)]
+        parent_pane_id: Option<u64>,
+        #[serde(default)]
+        call_credential: Option<String>,
+        #[serde(default)]
+        peer_ancestry: Vec<u32>,
+        #[serde(default)]
+        cwd: Option<String>,
+        #[serde(default)]
+        worktree: Option<String>,
+        #[serde(default)]
+        asynchronous: bool,
+        #[serde(default)]
+        handoff: bool,
+        response_file: String,
+    },
+    /// Deliver a structured reply to a child agent, optionally waiting for its next outcome.
+    AgentMessage {
+        pane_id: u64,
+        text: String,
+        #[serde(default)]
+        parent_pane_id: Option<u64>,
+        #[serde(default)]
+        call_credential: Option<String>,
+        #[serde(default)]
+        peer_ancestry: Vec<u32>,
+        #[serde(default)]
+        wait: bool,
+        response_file: String,
+    },
+
     /// Spawn a configured agent worker pane, optionally into a created or reused
     /// child sub-context with a parent `PortalPane` (`plexi agent spawn`, stint 0802).
     AgentSpawn {

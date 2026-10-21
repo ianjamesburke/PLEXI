@@ -1549,7 +1549,13 @@ impl PlexiApp {
         cwd_override: Option<std::path::PathBuf>,
         result_schema: Option<serde_json::Value>,
         run_token: Option<&str>,
+        conjoined: bool,
+        origin_context_id: Option<u64>,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        let origin_win = match origin_context_id {
+            Some(id) => self.windows.iter().position(|w| w.context_id == id).ok_or_else(|| format!("origin context {id} not found"))?,
+            None => self.active_window,
+        };
         let parent_lookup = from_pane_id.and_then(|pid| {
             self.find_pane_in_any_window(pid)
                 .map(|(w_idx, _)| (pid, w_idx, self.windows[w_idx].context_id))
@@ -1558,8 +1564,8 @@ impl PlexiApp {
             Some((pid, w_idx, c_id)) => (Some(pid), w_idx, c_id),
             None => (
                 from_pane_id,
-                self.active_window,
-                self.windows[self.active_window].context_id,
+                origin_win,
+                self.windows[origin_win].context_id,
             ),
         };
         let parent_root = self
@@ -1594,6 +1600,10 @@ impl PlexiApp {
                 let win_id = self.next_window_id;
                 self.next_window_id += 1;
 
+                if conjoined {
+                    let parent = parent_pane_id.ok_or("conjoined children require a parent pane")?;
+                    self.conjoined_contexts.insert(ctx_id, parent);
+                } else {
                 // Insert a PortalPane in the parent window adjacent to the caller pane.
                 let portal_pane_id = self.host.alloc_pane_id();
                 let split_target = parent_pane_id
@@ -1620,6 +1630,7 @@ impl PlexiApp {
                     })),
                 );
 
+                }
                 self.router.push(crate::host::context::Context {
                     name: crate::host::context::ContextName::custom(sub_name.to_string()),
                     root: effective_cwd.clone(),

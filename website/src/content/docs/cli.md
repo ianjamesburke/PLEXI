@@ -607,6 +607,9 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
 | `list` | List active agents from both workspace and global tiers |
 | `show` | Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command |
+| `call` | Call an agent role and return its validated completion or blocking question as JSON |
+| `message` | Reply through a child agent's structured mailbox |
+| `handoff` | Transfer the current task to a permitted successor role |
 | `spawn` | Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
 | `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
@@ -743,6 +746,36 @@ Show the resolved definition for `<name>`, its directory path, and its exact `sp
 | `<name>` | string | yes | Agent name to inspect |
 | `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
 | `--json` | flag | no | Output as JSON |
+
+### `plexi agent call`
+
+Call an agent role and return its validated completion or blocking question as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<role>` | string | yes |  |
+| `--task` | string | yes |  |
+| `--worktree` | string | no | Create a managed worktree for the child |
+| `--async` | flag | no | Return the child pane ID immediately |
+
+### `plexi agent message`
+
+Reply through a child agent's structured mailbox
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes |  |
+| `<text>` | string | yes |  |
+| `--wait` | flag | no | Wait for the child's next completion or question |
+
+### `plexi agent handoff`
+
+Transfer the current task to a permitted successor role
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<role>` | string | yes |  |
+| `--task` | string | yes |  |
 
 ### `plexi agent spawn`
 

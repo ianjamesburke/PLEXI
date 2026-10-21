@@ -84,6 +84,9 @@ impl PlexiApp {
         if let Some(surface) = self.overlay_surface() {
             return InputOwner::Overlay(surface);
         }
+        if let Some(parent) = self.conjoined_parent() {
+            if self.conjoined_parent_focus == Some(parent) { return InputOwner::Pane(parent); }
+        }
         let win = &self.windows[self.active_window];
         if let Some(focused_tile) = win.focused_pane {
             // `focused_pane` can transiently point at a container after
@@ -188,9 +191,7 @@ impl PlexiApp {
         // every unfocused terminal.
         let mut locked_terminal = None;
         if let InputOwner::Pane(pane_id) = owner {
-            if self.windows[self.active_window]
-                .panes
-                .get(&pane_id)
+            if self.windows.iter().find_map(|w| w.panes.get(&pane_id))
                 .is_some_and(|pane| pane.as_terminal().is_some())
             {
                 let terminal_id = egui_term::terminal_widget_id(pane_id);

@@ -374,6 +374,8 @@ impl Default for PortalPreview {
 
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
+    pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
+    pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
@@ -478,6 +480,27 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
         }
 
+        if let Some(children) = self.child_agent_strips.get(pane_id) {
+            ui.horizontal(|ui| {
+                ui.set_clip_rect(ui.max_rect());
+                for child in children {
+                    let text = format!("{} · {}", child.role, child.display_state.label());
+                    let color = match child.display_state {
+                        crate::agent::fleet::DisplayState::Blocked | crate::agent::fleet::DisplayState::Stalled => self.colors.danger,
+                        crate::agent::fleet::DisplayState::DoneUnseen => self.colors.accent,
+                        _ => self.colors.pane_header_bg(),
+                    };
+                    let label = crate::ui::text::elide(ui, &text, crate::ui::badge::badge_font(), (ui.available_width() - style::SPACE_SM).max(0.0), crate::ui::text::Side::Trailing);
+                    if label.is_empty() { break; }
+                    let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
+                    let button = ui.interact(response.rect, ui.id().with(("child-agent", child.pane_id)), egui::Sense::click());
+                    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text));
+                    if button.on_hover_text("Open child agents (Cmd+Down)").clicked() {
+                        self.child_agent_dive = Some(*pane_id);
+                    }
+                }
+            });
+        }
         let pane_rect = ui.available_rect_before_wrap();
 
         let tab_activities: HashMap<PaneId, AgentState> = self

@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.21"
+skill_version: "5.0.22"
 plexi_version: "0.4.0"
 last_verified: "2026-10-21"
 ---
@@ -576,6 +576,42 @@ Repeat on exit 2; inspect errors on exit 1. The parent replies with
 2. If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
 3. Inspect with `plexi agent show <slug>` before spawning if unsure what CLI or model it uses.
 4. Spawn with `plexi agent spawn <slug> --task "<brief>" [--subcontext <name>] [--ephemeral]` and collect the structured return with `plexi pane result wait <pane_id> --timeout 300`.
+
+### Call agents as tools
+
+Set `can_call = ["tester"]` and `can_handoff = ["writer"]` in the caller's
+`settings.toml`, either at the top level or under `[harness]`. The harness
+entry wins when both are present. Omitted lists grant no roles. Inspect the
+resolved lists with `plexi agent show <slug> --json`.
+
+```bash
+plexi agent call tester --task "Verify the change"
+plexi agent call tester --task "Verify in isolation" --worktree feature/verify --async
+plexi agent message 42 "Use alpha" --wait
+plexi agent handoff writer --task "Continue with this summary and remaining work"
+```
+
+`call` waits for `{status:"completed", summary, result}` after schema-validated
+`agent done`, or `{status:"question", pane_id, question}` after `agent ask`.
+`--async` returns the child pane ID immediately. `message` delivers through
+the structured mailbox; `--wait` returns the next completion, question, or idle
+transition. A worker receives the reply through `pane message recv`.
+
+The host authenticates the calling pane and checks its configured role; an
+agent cannot select a different caller role to widen its allowlist. `handoff`
+checks `can_handoff`, carries the prior session state and successor brief in a
+restore packet, and completes and closes the caller after the successor launches,
+including callers created by `agent spawn` or configured with `ephemeral = false`. Its
+completion record must satisfy the caller's result schema; a mismatch fails
+before launch.
+
+Tool children attach to a child strip on their parent without a Portal tile.
+Click a child pill or press Cmd+Down on the parent to open the parent-left,
+workers-right view; Cmd+Escape returns. Ephemeral children close on successful
+`agent done`; the empty child context collapses automatically. The Pi Plexi
+extension synthesizes `agent_call_<role>`, `agent_message`, and `agent_handoff`
+from the resolved role when it loads in a pane. Isolated Pi workers must
+explicitly include that extension in their harness `extensions` list.
 
 ### Run a stored ranking team
 

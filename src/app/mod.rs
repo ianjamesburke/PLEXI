@@ -40,6 +40,8 @@ mod sync;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
 mod fleet;
+mod agent_tools;
+mod conjoined;
 mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
@@ -237,6 +239,11 @@ pub struct PlexiApp {
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
+    pub(crate) conjoined_parent_rect: Option<(u64, egui::Rect)>,
+    pub(crate) conjoined_parent_focus: Option<u64>,
+    pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
+    pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
+    pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
     pub(crate) team_runs: Vec<team::TeamRun>,
     /// `plexi pane new --agent` spawns whose response is withheld until the
@@ -698,7 +705,9 @@ pub(crate) fn handle_socket_line(
                 | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                 }
-                crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
+                crate::protocol::AppRequest::AgentCall { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::AgentMessage { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::ListAppTools { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::PaneSecretGet { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::NeedsYouApi { peer_ancestry: p, .. }
@@ -1519,6 +1528,11 @@ impl PlexiApp {
                     fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
+                    agent_tool_waits: Vec::new(),
+                    agent_tool_children: std::collections::HashMap::new(),
+                    conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_parent_focus: None,
+                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1777,6 +1791,11 @@ impl PlexiApp {
             fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
             pending_result_waits: Vec::new(),
+                    agent_tool_waits: Vec::new(),
+                    agent_tool_children: std::collections::HashMap::new(),
+                    conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_parent_focus: None,
+                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2611,6 +2630,11 @@ impl PlexiApp {
                 fleet_history: std::cell::RefCell::new(Vec::new()),
                 pane_results: HashMap::new(),
                 pending_result_waits: Vec::new(),
+                    agent_tool_waits: Vec::new(),
+                    agent_tool_children: std::collections::HashMap::new(),
+                    conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_parent_focus: None,
+                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,
@@ -3363,6 +3387,7 @@ impl eframe::App for PlexiApp {
             self.service_pending_slot_waits(ctx);
             self.service_pending_message_recvs(ctx);
             self.service_pending_result_waits(ctx);
+            self.service_agent_tool_waits(ctx);
             self.service_team_runs(ctx);
         });
 
@@ -3639,6 +3664,33 @@ impl eframe::App for PlexiApp {
             overlay_open,
             self.show_shortcuts,
         );
+        // Cmd+Down belongs to editors unless the focused pane has tool children.
+        // Use the normal binding poller so both edges and overlay capture retain
+        // the same ownership rules as other host chords.
+        if self.visual_owner_pane().is_some_and(|parent| {
+            self.conjoined_contexts.iter().any(|(context, id)| {
+                *id == parent && self.windows.iter().any(|window| {
+                    window.context_id == *context && !window.panes.is_empty()
+                })
+            })
+        }) {
+            poll_actions_result.extend(keys::poll_actions(
+                &mut router_input,
+                &[keys::BindingEntry {
+                    modifiers: egui::Modifiers::COMMAND,
+                    key: egui::Key::ArrowDown,
+                    exact: true,
+                    no_repeat: true,
+                    context: keys::BindingContext::Normal,
+                    action: Action::ToggleZoom,
+                }],
+                &mut self.claimed_host_key_releases,
+                false,
+                keyboard_capture_active,
+                overlay_open,
+                self.show_shortcuts,
+            ));
+        }
         router_input.give_back(ctx);
 
         // Apps only receive key input when no overlay holds focus. Double-check
@@ -3946,6 +3998,9 @@ impl eframe::App for PlexiApp {
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {
+                    if let Some(parent) = self.fleet_focused_pane() {
+                        if self.dive_into_agent_children(parent) { continue; }
+                    }
                     let (focused_tile, portal_target) = {
                         let win = &self.windows[self.active_window];
                         let tile = win.focused_pane;

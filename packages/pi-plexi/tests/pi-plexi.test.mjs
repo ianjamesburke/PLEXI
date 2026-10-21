@@ -579,3 +579,47 @@ test("Stint 0815: session_start and session_shutdown omit sessionId until sessio
   ]);
 });
 
+
+test("agent tool synthesis binds allowed roles and preserves structured question replies", async () => {
+  const { buildAgentTools } = await import("../src/tools.ts");
+  const calls = [];
+  const client = { async runJson(args, timeout) {
+    calls.push({ args, timeout });
+    return { ok: true, data: { status: "question", pane_id: 81, question: "Which branch?" } };
+  } };
+  const tools = buildAgentTools(client, ["tester", "code-review"], ["writer"]);
+  assert.deepEqual(tools.map(t => t.name), ["agent_call_tester", "agent_call_code-review", "agent_message", "agent_handoff"]);
+  const result = await tools[0].execute("call", { task: "Verify", worktree: "feature/check" });
+  assert.equal(result.details.status, "question");
+  assert.deepEqual(calls[0].args, ["agent", "call", "tester", "--task", "Verify", "--worktree", "feature/check"]);
+  await tools[2].execute("reply", { pane_id: 81, text: "alpha", wait: true });
+  assert.deepEqual(calls[1].args, ["agent", "message", "81", "alpha", "--wait"]);
+  const refused = await tools[3].execute("handoff", { role: "tester", task: "Continue" });
+  assert.equal(refused.isError, true);
+  assert.equal(calls.length, 2);
+  await tools[3].execute("handoff", { role: "writer", task: "Continue" });
+  assert.deepEqual(calls[2].args, ["agent", "handoff", "writer", "--task", "Continue"]);
+});
+
+test("session start synthesizes agent tools from the live pane role", async () => {
+  const { pi, tools } = makeFakePiHarness();
+  const calls = [];
+  const runner = async (_bin, args) => {
+    calls.push(args);
+    let data = [];
+    if (args[0] === "pane" && args[1] === "list") data = [{ id: 1, type: "terminal", context_id: 10, agent_role: "lead" }];
+    if (args[0] === "agent" && args[1] === "show") data = { can_call: ["tester"], can_handoff: ["writer"] };
+    return { exitCode: 0, stdout: JSON.stringify(data), stderr: "" };
+  };
+  createPiPlexiExtension({
+    env: { PLEXI_RUNNING: "1", PLEXI_PANE_ID: "1", PLEXI_CONTEXT_ID: "10", PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock", PLEXI_CHANNEL: "alpha" },
+    runner, checkSocketExists: () => true,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-agent-tools-")),
+  })(pi);
+  await pi.emit("session_start", {}, {});
+  assert.equal(tools.has("agent_call_tester"), true);
+  assert.equal(tools.has("agent_call_writer"), false);
+  assert.equal(tools.has("agent_message"), true);
+  assert.ok(calls.some(args => args.join(" ") === "agent show lead --json"));
+  await pi.emit("session_shutdown", {}, {});
+});

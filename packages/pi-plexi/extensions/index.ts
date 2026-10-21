@@ -11,7 +11,7 @@ import {
   PlexiLifecycleReporter,
   resolveSessionIdFromContext,
 } from "../src/lifecycle.ts";
-import { buildPlexiTools } from "../src/tools.ts";
+import { buildAgentTools, buildPlexiTools } from "../src/tools.ts";
 import { applyWorkspaceUi } from "../src/ui.ts";
 
 export interface PiPlexiExtensionOptions {
@@ -131,6 +131,22 @@ export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
         events.setAttachConfig(attachConfig);
       }
 
+      if (attachConfig.attached && attachConfig.paneId !== undefined) {
+        const panes = await client.listPanes();
+        const pane = Array.isArray(panes.data) ? panes.data.find((p: any) => Number(p.id ?? p.pane_id) === attachConfig.paneId) : undefined;
+        const role = pane?.agent_role;
+        if (typeof role === "string" && role) {
+          const definition = await client.runJson(["agent", "show", role, "--json"]);
+          if (definition.ok) {
+            const names = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+            for (const tool of buildAgentTools(client, names(definition.data?.can_call), names(definition.data?.can_handoff))) {
+              pi.registerTool(tool);
+            }
+          } else {
+            ctx?.ui?.notify?.(`Agent tools unavailable: ${definition.error}`, "warning");
+          }
+        }
+      }
       lifecycle.resetSession();
       const sid = resolveSessionIdFromContext(ctx, {
         requirePersisted: true,

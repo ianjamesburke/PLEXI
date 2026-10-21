@@ -1880,6 +1880,136 @@
         },
         {
           "additionalProperties": false,
+          "description": "Invoke an agent role as a tool, waiting for its completion or question.",
+          "properties": {
+            "asynchronous": {
+              "default": false,
+              "type": "boolean"
+            },
+            "call_credential": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "handoff": {
+              "default": false,
+              "type": "boolean"
+            },
+            "parent_pane_id": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "peer_ancestry": {
+              "default": [],
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            },
+            "task": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_call",
+              "type": "string"
+            },
+            "worktree": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "role",
+            "task",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Deliver a structured reply to a child agent, optionally waiting for its next outcome.",
+          "properties": {
+            "call_credential": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "parent_pane_id": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "peer_ancestry": {
+              "default": [],
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_message",
+              "type": "string"
+            },
+            "wait": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "text",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Spawn a configured agent worker pane, optionally into a created or reused\nchild sub-context with a parent `PortalPane` (`plexi agent spawn`, stint 0802).",
           "properties": {
             "command": {

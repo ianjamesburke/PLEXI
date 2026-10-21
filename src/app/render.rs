@@ -634,6 +634,14 @@ impl PlexiApp {
                 // this frame's pending click for whichever pane they render.
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
+                let child_agent_strips = self.child_agent_strips();
+                let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
+                let mut child_ui;
+                let ui = if let Some(rect) = right {
+                    child_ui = ui.new_child(egui::UiBuilder::new().id_salt("conjoined-children").max_rect(rect));
+                    child_ui.set_clip_rect(rect);
+                    &mut child_ui
+                } else { ui };
                 let ctx = &mut self.windows[self.active_window];
 
                 ctx.reconcile_stale_tiles();
@@ -781,6 +789,8 @@ impl PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
+                    child_agent_strips,
+                    child_agent_dive: None,
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
@@ -823,7 +833,7 @@ impl PlexiApp {
                 // Paint the active pane focus outline using the parent painter which
                 // has the full window clip rect. paint_on_top_of_tile cannot do this —
                 // its painter is clipped to the tile rect, making Outside strokes invisible.
-                if zoomed_pane.is_none() && owner_pane.is_some() {
+                if zoomed_pane.is_none() && owner_pane.is_some_and(|id| behavior.panes.contains_key(&id)) {
                     if let Some(tile_id) = ctx.focused_pane {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
                             let gap = behavior.pane_gap;
@@ -865,9 +875,11 @@ impl PlexiApp {
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let new_focused = behavior.new_focused;
+                if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
                 let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
+                let child_agent_dive = behavior.child_agent_dive.take();
 
                 // Draw zoom overlay if a pane is zoomed
                 let mut zoomed_tab_action: Option<(
@@ -1207,6 +1219,8 @@ impl PlexiApp {
                     // zoom back out to the parent, like Cmd+Escape.
                     self.collapse_subcontext_if_empty(ctx_id);
                 }
+
+                if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
 
                 // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
                 if let Some(child_ctx_id) = portal_zoom {
