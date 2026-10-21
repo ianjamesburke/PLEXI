@@ -4,6 +4,81 @@ mod tests {
     use crate::testing::HostHarness;
     use serde_json::{json, Value};
 
+    fn scripted_fixture() -> (HostHarness, std::path::PathBuf) {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let workspace = h.workspace_root();
+        let dir = workspace
+            .join(crate::config::workspace_channel_dir())
+            .join("teams");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut team = crate::agent::team::builtin();
+        for member in &mut team.members {
+            member.harness = "script".into();
+            member.command = Some("true".into());
+        }
+        std::fs::write(dir.join("test-team.toml"), toml::to_string(&team).unwrap()).unwrap();
+        (h, workspace)
+    }
+    #[test]
+    fn team_timeout_closes_members_and_revokes_runs_without_publishing_result() {
+        let (mut h, workspace) = scripted_fixture();
+        let reply = workspace.join("timeout.json");
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        let run_ids = h.app.team_runs[0].run_ids.clone();
+        let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
+        // Exercise the same broker entry point used by a run-scoped MCP bearer.
+        let denied = crate::agent::heads::handle_request(
+            "call",
+            &json!({"workspace":workspace,"run_id":run_ids[1],"tool":"agents.review","input_json":"{}"}),
+        );
+        assert_eq!(denied["error_code"], "permission_denied", "{denied}");
+        h.app.team_runs[0].deadline = std::time::Instant::now();
+        h.hidden_frame();
+        let response: Value =
+            serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
+        assert_eq!(response["ok"], false);
+        assert!(!workspace.join("out/RESULT.md").exists());
+        assert!(h.app.team_runs.is_empty());
+        for pane in panes {
+            assert!(h.app.find_pane_in_any_window(pane).is_none());
+        }
+        for id in run_ids {
+            let run = crate::agent::heads::handle_request(
+                "show_run",
+                &json!({"workspace":workspace,"id":id}),
+            );
+            assert_eq!(run["run"]["active"], false);
+        }
+    }
+    #[test]
+    fn team_preserves_existing_result_and_refuses_caller_grant_widening() {
+        let (mut h, workspace) = scripted_fixture();
+        std::fs::write(workspace.join("RESULT.md"), "keep me").unwrap();
+        let reply = workspace.join("reply.json");
+        let request =
+            json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace});
+        assert!(h
+            .app
+            .start_team(&request, reply.to_str().unwrap())
+            .unwrap_err()
+            .contains("already exists"));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("RESULT.md")).unwrap(),
+            "keep me"
+        );
+        let mut team = crate::agent::team::builtin();
+        team.members[0].grants = vec!["agents.review=allow".into()];
+        let path = workspace
+            .join(crate::config::workspace_channel_dir())
+            .join("teams/test-team.toml");
+        std::fs::write(path, toml::to_string(&team).unwrap()).unwrap();
+        let caller = h.add_test_pane();
+        let request = json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("other"),"caller_pane":caller});
+        assert!(h.app.start_team(&request, reply.to_str().unwrap()).is_err());
+        assert!(h.app.team_runs.is_empty());
+    }
+
     #[test]
     fn team_run_collects_three_agent_done_results_while_hidden_and_records_trace() {
         let mut h = HostHarness::new();
@@ -42,6 +117,15 @@ mod tests {
             .find(|t| t.rows.len() == 3)
             .expect("three members under one task");
         let members: Vec<_> = task.rows.iter().map(|r| r.pane_id).collect();
+        let invalid_reply = workspace.join("invalid.json");
+        h.inject_ipc(serde_json::from_value(json!({"type":"agent_done","pane_id":members[0],
+            "result":json!({"ranking":["Proceed","Proceed","Defer"],"rationale":"duplicate"}).to_string(),
+            "response_file":invalid_reply})).unwrap());
+        h.hidden_frame();
+        let invalid: Value =
+            serde_json::from_str(&std::fs::read_to_string(invalid_reply).unwrap()).unwrap();
+        assert_eq!(invalid["ok"], false);
+        assert!(!reply.exists());
         for (i, pane) in members.iter().enumerate() {
             let mut ranking = team.options.clone();
             ranking.rotate_left(i);
@@ -266,6 +350,11 @@ impl PlexiApp {
     fn spawn_team_members(&mut self, run: &mut TeamRun) -> Result<(), String> {
         let cli = std::env::current_exe().map_err(|e| format!("team executable: {e}"))?;
         let quote = crate::host::shell::shell_quote;
+        let completion = format!(
+            "{} --socket {} agent done",
+            quote(&cli.to_string_lossy()),
+            quote(&crate::platform::ipc::endpoint())
+        );
         for (i, member) in run.team.members.iter().enumerate() {
             let head = format!("{}-{i}", run.run_ids[0].replace('_', "-"));
             let child = api(
@@ -275,9 +364,9 @@ impl PlexiApp {
             )?;
             let child_run = field(&child["run"], "id")?;
             run.run_ids.push(child_run.clone());
-            let task = format!("Role: {}. Independently answer this question: {}\nRank these options, best first, exactly once each: {}\nReturn JSON {{\"ranking\":[...],\"rationale\":\"your reasoning\"}} using `plexi agent done --result '<JSON>'`. Do not consult other members. Your Plexi broker run id is {}. Stored grants: {}. Use the host MCP endpoint with PLEXI_HOST_MCP_PORT and PLEXI_HOST_MCP_TOKEN for brokered tools. The stored policy grants no OS sandbox privileges.", member.role, run.question, serde_json::to_string(&run.team.options).map_err(|e| e.to_string())?, child_run, member.grants.join(", "));
+            let task = format!("Role: {}. Independently answer this question: {}\nRank these options, best first, exactly once each: {}\nReturn JSON {{\"ranking\":[...],\"rationale\":\"your reasoning\"}} using `{completion} --result '<JSON>'`. Do not consult other members. Your Plexi broker run id is {}. Stored grants: {}. Use the host MCP endpoint with PLEXI_HOST_MCP_PORT and PLEXI_HOST_MCP_TOKEN for brokered tools. The stored policy grants no OS sandbox privileges.", member.role, run.question, serde_json::to_string(&run.team.options).map_err(|e| e.to_string())?, child_run, member.grants.join(", "));
             let body = if let Some(script) = &member.command {
-                format!("plexi_team_result=$(/bin/sh -c {}) && {} agent done --result \"$plexi_team_result\" --summary {}", quote(script), quote(&cli.to_string_lossy()), quote(&member.role))
+                format!("plexi_team_result=$(/bin/sh -c {}) && {} --result \"$plexi_team_result\" --summary {}", quote(script), completion, quote(&member.role))
             } else {
                 let harness = crate::cli::AgentHarness::parse(&member.harness)
                     .ok_or_else(|| "invalid member harness".to_string())?;

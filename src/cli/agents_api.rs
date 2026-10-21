@@ -505,9 +505,20 @@ pub fn agent_cancel_cli(id: &str, json_out: bool) -> i32 {
 
 pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
     use crate::cli::args::AgentTeamCmd;
-    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
-        Ok(root) => root,
-        Err(code) => return code,
+    let cwd = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("error: current directory: {error}");
+            return 1;
+        }
+    };
+    let workspace = if matches!(&cmd, AgentTeamCmd::Show { .. }) {
+        crate::app::registry::resolve_workspace_root(&cwd).unwrap_or_else(|| cwd.clone())
+    } else {
+        match crate::cli::agent::resolve_workspace_cwd() {
+            Ok(root) => root,
+            Err(code) => return code,
+        }
     };
     let (payload, json_out, timeout) = match cmd {
         AgentTeamCmd::Show { name, json } => match crate::agent::team::load(&workspace, &name) {
@@ -515,7 +526,13 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
                 if json {
                     println!("{}", serde_json::json!({"name":name,"team":team}));
                 } else {
-                    println!("{}", toml::to_string_pretty(&team).unwrap_or_default());
+                    match toml::to_string_pretty(&team) {
+                        Ok(text) => println!("{text}"),
+                        Err(error) => {
+                            eprintln!("error: serialize team: {error}");
+                            return 1;
+                        }
+                    }
                 }
                 return 0;
             }
@@ -532,13 +549,7 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
             timeout,
             json,
         } => {
-            let out = out.map(|p| {
-                if p.is_absolute() {
-                    p
-                } else {
-                    workspace.join(p)
-                }
-            });
+            let out = out.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
             (
                 json!({"type":"agents_api", "op":"team_run", "payload": {
                     "workspace": workspace, "name":name, "question":question,
