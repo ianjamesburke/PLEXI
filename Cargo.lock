@@ -2238,6 +2238,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "plexi",
+ "serde_yaml",
+ "toml 0.8.23",
 ]
 
 [[package]]

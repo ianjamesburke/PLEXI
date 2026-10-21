@@ -4,7 +4,13 @@
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use plexi::cli_args::Cli;
 
+mod skill;
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--skill") {
+        print!("{}", skill::generate());
+        return;
+    }
     let cmd = Cli::command();
 
     print!(

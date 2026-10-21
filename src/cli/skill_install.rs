@@ -293,7 +293,14 @@ mod tests {
     #[test]
     fn default_render_has_no_experiment_section() {
         let text = render_skill(EMBEDDED_SKILL, none).unwrap();
-        assert!(!text.contains("<!--"), "markers must not survive");
+        assert!(
+            !text.contains(EXPERIMENT_OPEN),
+            "open markers must not survive"
+        );
+        assert!(
+            !text.contains(EXPERIMENT_CLOSE),
+            "close markers must not survive"
+        );
         for needle in [
             "assistant send",
             "plexi relay",
@@ -320,7 +327,6 @@ mod tests {
         let on = render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Ledger).unwrap();
         assert!(on.contains("plexi ledger"));
         assert!(!on.contains("plexi relay"));
-        // A section needing two experiments needs both.
         let leads_only = render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Leads).unwrap();
         assert!(leads_only.contains("agent head create"));
         assert!(!leads_only.contains("assistant open --head"));
@@ -328,7 +334,23 @@ mod tests {
             matches!(f, ReleaseFeature::Leads | ReleaseFeature::Assistant)
         })
         .unwrap();
-        assert!(both.contains("assistant open --head"));
+        assert!(both.contains("plexi assistant open"));
+        assert!(both.contains("agent head create"));
+
+        // Combined markers remain supported even when the current catalog has
+        // no overlapping command owners.
+        let fixture = "<!-- experiment: leads, assistant -->\ncombined\n<!-- /experiment -->\n";
+        assert!(render_skill(fixture, |f| f == ReleaseFeature::Leads)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            render_skill(fixture, |f| matches!(
+                f,
+                ReleaseFeature::Leads | ReleaseFeature::Assistant
+            ))
+            .unwrap(),
+            "combined\n"
+        );
     }
 
     #[test]

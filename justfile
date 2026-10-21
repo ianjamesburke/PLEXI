@@ -147,6 +147,12 @@ check-generated artifact generator regen ok:
 # Fails if website/src/content/docs/cli.md is stale.
 check-cli-docs: (check-generated "website/src/content/docs/cli.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs" "gen-cli-docs" "CLI docs are up to date.")
 
+# Generate the installed agent skill without committing or pushing.
+gen-skill-docs:
+    bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill
+
+check-skill-docs: (check-generated "skills/plexi-cli/SKILL.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill" "gen-skill-docs" "CLI skill is up to date.")
+
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
 gen-config-docs:
@@ -222,7 +228,7 @@ check-sdk-lock:
     fi
     echo "SDK lock is up to date."
 
-check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
+check-docs: check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
 
 run:
     bash scripts/cargo-with-lease.sh cargo build --release
@@ -246,6 +252,13 @@ regen-if-stale:
         echo "CLI docs source changed — regenerating CLI docs..."
         bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
     fi
+    for source in Cargo.toml src/cli/args.rs src/release/catalog.rs skills/plexi-cli/intro.md tools/gen_cli_docs/Cargo.toml tools/gen_cli_docs/src/main.rs tools/gen_cli_docs/src/skill.rs; do
+        if [[ "$source" -nt skills/plexi-cli/SKILL.md ]]; then
+            echo "CLI skill source changed — regenerating skill..."
+            bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill
+            break
+        fi
+    done
     if [[ src/config/mod.rs -nt website/src/content/docs/config.md || scripts/default-config.toml -nt website/src/content/docs/config.md ]]; then
         echo "Config source changed — regenerating config docs..."
         bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
