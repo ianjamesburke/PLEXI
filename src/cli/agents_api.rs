@@ -313,7 +313,10 @@ fn print_human(value: &Value) {
         for grant in grants {
             let head = grant.get("head").and_then(|v| v.as_str()).unwrap_or("?");
             let tool = grant.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
-            let decision = grant.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
+            let decision = grant
+                .get("decision")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let kind = grant.get("kind").and_then(|v| v.as_str()).unwrap_or("hard");
             let expires_at = grant.get("expires_at").and_then(|v| v.as_i64());
             match expires_at {
@@ -498,4 +501,77 @@ pub fn agent_cancel_cli(id: &str, json_out: bool) -> i32 {
     let body = crate::agent::queue::request_cancel(&workspace, id);
     notify_host_pump(&workspace);
     print_queue(&body, json_out)
+}
+
+pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
+    use crate::cli::args::AgentTeamCmd;
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let (payload, json_out, timeout) = match cmd {
+        AgentTeamCmd::Show { name, json } => match crate::agent::team::load(&workspace, &name) {
+            Ok(team) => {
+                if json {
+                    println!("{}", serde_json::json!({"name":name,"team":team}));
+                } else {
+                    println!("{}", toml::to_string_pretty(&team).unwrap_or_default());
+                }
+                return 0;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return 1;
+            }
+        },
+        AgentTeamCmd::Run {
+            name,
+            question,
+            out,
+            options,
+            timeout,
+            json,
+        } => {
+            let out = out.map(|p| {
+                if p.is_absolute() {
+                    p
+                } else {
+                    workspace.join(p)
+                }
+            });
+            (
+                json!({"type":"agents_api", "op":"team_run", "payload": {
+                    "workspace": workspace, "name":name, "question":question,
+                    "out":out, "options":options, "timeout":timeout,
+                    "caller_pane":std::env::var("PLEXI_PANE_ID").ok().and_then(|p| p.parse::<u64>().ok())
+                }}),
+                json,
+                timeout,
+            )
+        }
+    };
+    let body = match super::request_with(
+        payload,
+        "agent-team",
+        "agent team run",
+        std::time::Duration::from_secs(timeout + 20),
+    ) {
+        Ok(body) => body,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&body) {
+        return code;
+    }
+    if json_out {
+        println!("{body}");
+    } else {
+        match serde_json::from_str::<Value>(&body) {
+            Ok(value) => println!("{}", value["result_path"].as_str().unwrap_or(&body)),
+            Err(error) => {
+                eprintln!("error: invalid team reply: {error}");
+                return 1;
+            }
+        }
+    }
+    0
 }

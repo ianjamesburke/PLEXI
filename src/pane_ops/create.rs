@@ -1548,6 +1548,7 @@ impl PlexiApp {
         from_pane_id: Option<u64>,
         cwd_override: Option<std::path::PathBuf>,
         result_schema: Option<serde_json::Value>,
+        run_token: Option<&str>,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
         let parent_lookup = from_pane_id.and_then(|pid| {
             self.find_pane_in_any_window(pid)
@@ -1657,6 +1658,9 @@ impl PlexiApp {
             &context,
             true,
         );
+        if let Some(token) = run_token {
+            settings.env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
+        }
         if let Some(pid) = parent_pane_id {
             settings
                 .env

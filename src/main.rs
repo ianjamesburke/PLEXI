@@ -661,6 +661,7 @@ fn main() -> eframe::Result {
                             subcontext.as_deref(),
                             json,
                         )),
+                        AgentCmd::Team { cmd } => std::process::exit(cli::agent_team_dispatch(cmd)),
                         AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
                         AgentCmd::Grants { cmd } => {
                             std::process::exit(cli::agent_grants_dispatch(cmd))

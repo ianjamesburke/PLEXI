@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(
             agent,
             [
-                "fleet", "create", "list", "show", "spawn", "done", "ask", "report", "status", "history",
+                "team", "fleet", "create", "list", "show", "spawn", "done", "ask", "report", "status", "history",
                 "reopen", "hook"
             ],
             "{agent:?}"
