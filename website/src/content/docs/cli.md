@@ -8,7 +8,7 @@ The `plexi` CLI is the primary way to interact with a running Plexi instance fro
 
 Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, local app runtime, and CLI/MCP app wrappers. Assistant, marketplace, MCP client, and routine surfaces are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
 
-Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). A channel-named binary always targets its own profile; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` when run inside a Plexi pane.
+Each channel has its own binary, profile (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-beta`), and workspace directory (`<repo>/.plexi`, `<repo>/.plexi-alpha`, `<repo>/.plexi-beta`). A channel-named binary always targets its own profile and workspace directory; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` / `PLEXI_CHANNEL` when run inside a Plexi pane.
 
 ## `plexi lease`
 
@@ -240,13 +240,21 @@ Example: plexi command-view allow --tool assistant.turn
 
 ## `plexi run`
 
-Run a named command from workspace or global commands.toml (or global scripts).
+Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts).
 
-Global commands (`~/.plexi/commands.toml` and executable files in `~/.plexi/scripts/`) and workspace commands (`.plexi/commands.toml`) merge by name, with workspace entries overriding global entries of the same name. `plexi run` with no arguments lists both scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret names only, never values). Any secrets listed in a command definition are injected as environment variables automatically when the command runs.
+Resolution and precedence rules:
+
+(1) Global tier: `config_dir()/commands.toml` (`~/.plexi-alpha/commands.toml` on alpha, `~/.plexi-beta/commands.toml` on beta, `~/.plexi/commands.toml` on stable) plus executable files in `config_dir()/scripts/` (`~/.plexi-<channel>/scripts/`, or `~/.plexi/scripts/` on stable).
+
+(2) Workspace tier: `<workspace>/.plexi-<channel>/commands.toml` (`<workspace>/.plexi/commands.toml` on stable), where `<workspace>` is the nearest ancestor of the starting `cwd` containing a `.plexi-<channel>/` directory (`.plexi/` on stable) via `resolve_workspace_root_stopping_at`. The upward walk stops at `$HOME` and the passwd login home directory so `~` is never treated as a workspace. Fallback (`resolve_commands_workspace_root`): `cwd` itself when `cwd/.plexi-<channel>/commands.toml` (or `cwd/.plexi/commands.toml` on stable) exists and is distinct from the global `commands.toml`.
+
+(3) Starting directory by surface: `plexi run` in a terminal uses the shell's `cwd`. The command palette (`Cmd+P`) uses the focused pane's `cwd`, then falls back to the active context root (`effective_commands_workspace_root`); `Edit commands` opens that workspace's `commands.toml` (creating it from template if absent), or the global `commands.toml` when outside a workspace. `[keys]` `"<chord>" = "run:<name>"` bindings in `~/.plexi-<channel>/config.toml` (or `<repo>/.plexi-<channel>/config.toml`; `~/.plexi/config.toml` on stable) use the adopted/host workspace root, falling back to the active context root (`run_user_command_by_name`, validated by `plexi config check` against reserved shortcuts).
+
+(4) Precedence: workspace `commands.toml` > global `commands.toml` > global `scripts/`, merged by command name. `plexi run` with no arguments lists both scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret names only, never values). Any secrets listed in a command definition are injected as environment variables automatically when the command runs.
+
+(5) Live reload: `commands.toml` and `scripts/` are re-read from disk on every command palette open and every `plexi run` or keybinding invocation — no host restart is needed.
 
 Multi-step commands (`steps = [...]`) execute each Plexi CLI invocation or shell snippet sequentially, substituting `$1`, `$2`, … and `$@` from extra arguments, and stop at the first failing step with `step <i>/<n> failed: <cmd> (exit <code>)`.
-
-Key binding: bind any user command to a shortcut in `config.toml` under `[keys]`, e.g. `[keys]` `"cmd+shift+p" = "run:play"` (validated by `plexi config check` against reserved shortcuts).
 
 Example: plexi run dev Example: plexi run play Example: plexi run --json
 
@@ -271,7 +279,7 @@ Run this once inside your project directory to enable workspace-scoped secrets a
 
 Set up a .plexi/ workspace in the current directory.
 
-Run this once inside your project folder. It creates a .plexi/workspace.toml so that secrets and commands are scoped to this project.
+Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`, and `commands.toml` so that secrets, apps, and commands are scoped to this project.
 
 ### `plexi workspace clean`
 
@@ -1288,11 +1296,11 @@ The non-interactive form of the review `plexi app open <file.wasm>` runs at a TT
 
 Install an app from a local path, a remote source, or a pack file.
 
-Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store. Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi app install` (no args) — installs from .plexi/apps.toml.
+Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store. Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (.plexi/apps.toml) |
+| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable) |
 | `--pack` | string | no | Install from a pack file or 'core' |
 | `--refresh` | flag | no | With --pack: re-extract already-installed `local:` apps from this binary's embedded tree, replacing the installed copy. The update path for bundled core apps on stable channels |
 | `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently |
@@ -2494,7 +2502,7 @@ Example: plexi skill install --agent claude
 
 Draft a reusable skill or commands.toml snippet from captured CLI calls.
 
-Prints for review; installs nothing. Without --out, writes no draft files. Captured secret values and KEY=value assignments stay redacted. Review failed calls and suggested --subcontext forms before accepting the draft.
+Prints for review; installs nothing (never edits `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` / `~/.plexi/commands.toml` on stable). Without --out, writes no draft files. Captured secret values and KEY=value assignments stay redacted. Review failed calls and suggested --subcontext forms before accepting the draft.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2547,8 +2555,8 @@ Reads the workspace config inside a workspace, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--global` / `-g` | flag | no | Use the global channel config.toml only |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config edit`
 
@@ -2558,8 +2566,8 @@ Opens the workspace config inside a workspace, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--global` / `-g` | flag | no | Use the global channel config.toml only |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config get`
 
@@ -2569,8 +2577,8 @@ Supports dotted keys: agents.low, agents.medium, agents.high. Reads the workspac
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--global` / `-g` | flag | no | Use the global channel config.toml only |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 | `<key>` | string | yes | Dotted key to retrieve (e.g. agents.medium) |
 
 ### `plexi config reset`
@@ -2581,8 +2589,8 @@ Writes the workspace config inside a workspace, otherwise the global config. Cre
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--global` / `-g` | flag | no | Use the global channel config.toml only |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config list`
 
@@ -2592,8 +2600,8 @@ Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output. 
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--global` / `-g` | flag | no | Use the global channel config.toml only |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 | `--json` | flag | no | Output as a JSON array instead of tab-separated lines |
 
 ### `plexi config set`
@@ -2604,8 +2612,8 @@ Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--global` / `-g` | flag | no | Use the global channel config.toml only |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 | `<pairs>` | string (repeatable) | yes | One or more KEY=VALUE pairs to write |
 
 ## `plexi note`

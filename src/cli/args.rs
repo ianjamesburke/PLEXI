@@ -99,21 +99,43 @@ pub enum Commands {
         follow: bool,
     },
     // ── Workspace ─────────────────────────────────────────────────────────────
-    /// Run a named command from workspace or global commands.toml (or global scripts).
+    /// Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts).
     ///
-    /// Global commands (`~/.plexi/commands.toml` and executable files in `~/.plexi/scripts/`)
-    /// and workspace commands (`.plexi/commands.toml`) merge by name, with workspace entries
-    /// overriding global entries of the same name. `plexi run` with no arguments lists both
-    /// scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]`
-    /// (secret names only, never values). Any secrets listed in a command definition are injected
-    /// as environment variables automatically when the command runs.
+    /// Resolution and precedence rules:
+    ///
+    /// (1) Global tier: `config_dir()/commands.toml` (`~/.plexi-alpha/commands.toml` on alpha,
+    /// `~/.plexi-beta/commands.toml` on beta, `~/.plexi/commands.toml` on stable) plus executable
+    /// files in `config_dir()/scripts/` (`~/.plexi-<channel>/scripts/`, or `~/.plexi/scripts/` on stable).
+    ///
+    /// (2) Workspace tier: `<workspace>/.plexi-<channel>/commands.toml` (`<workspace>/.plexi/commands.toml`
+    /// on stable), where `<workspace>` is the nearest ancestor of the starting `cwd` containing a
+    /// `.plexi-<channel>/` directory (`.plexi/` on stable) via `resolve_workspace_root_stopping_at`.
+    /// The upward walk stops at `$HOME` and the passwd login home directory so `~` is never treated
+    /// as a workspace. Fallback (`resolve_commands_workspace_root`): `cwd` itself when
+    /// `cwd/.plexi-<channel>/commands.toml` (or `cwd/.plexi/commands.toml` on stable) exists and is
+    /// distinct from the global `commands.toml`.
+    ///
+    /// (3) Starting directory by surface: `plexi run` in a terminal uses the shell's `cwd`.
+    /// The command palette (`Cmd+P`) uses the focused pane's `cwd`, then falls back to the active
+    /// context root (`effective_commands_workspace_root`); `Edit commands` opens that workspace's
+    /// `commands.toml` (creating it from template if absent), or the global `commands.toml` when
+    /// outside a workspace. `[keys]` `"<chord>" = "run:<name>"` bindings in
+    /// `~/.plexi-<channel>/config.toml` (or `<repo>/.plexi-<channel>/config.toml`; `~/.plexi/config.toml`
+    /// on stable) use the adopted/host workspace root, falling back to the active context root
+    /// (`run_user_command_by_name`, validated by `plexi config check` against reserved shortcuts).
+    ///
+    /// (4) Precedence: workspace `commands.toml` > global `commands.toml` > global `scripts/`,
+    /// merged by command name. `plexi run` with no arguments lists both scopes (`[workspace]` and
+    /// `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret
+    /// names only, never values). Any secrets listed in a command definition are injected as
+    /// environment variables automatically when the command runs.
+    ///
+    /// (5) Live reload: `commands.toml` and `scripts/` are re-read from disk on every command
+    /// palette open and every `plexi run` or keybinding invocation — no host restart is needed.
     ///
     /// Multi-step commands (`steps = [...]`) execute each Plexi CLI invocation or shell snippet
     /// sequentially, substituting `$1`, `$2`, … and `$@` from extra arguments, and stop at the
     /// first failing step with `step <i>/<n> failed: <cmd> (exit <code>)`.
-    ///
-    /// Key binding: bind any user command to a shortcut in `config.toml` under `[keys]`, e.g.
-    /// `[keys]` `"cmd+shift+p" = "run:play"` (validated by `plexi config check` against reserved shortcuts).
     ///
     /// Example: plexi run dev
     /// Example: plexi run play
@@ -660,9 +682,10 @@ pub enum ExperimentsCmd {
 pub enum SkillCmd {
     /// Draft a reusable skill or commands.toml snippet from captured CLI calls.
     ///
-    /// Prints for review; installs nothing. Without --out, writes no draft files.
-    /// Captured secret values and KEY=value assignments stay redacted. Review
-    /// failed calls and suggested --subcontext forms before accepting the draft.
+    /// Prints for review; installs nothing (never edits `<repo>/.plexi-<channel>/commands.toml`
+    /// or `~/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` / `~/.plexi/commands.toml` on stable).
+    /// Without --out, writes no draft files. Captured secret values and KEY=value assignments
+    /// stay redacted. Review failed calls and suggested --subcontext forms before accepting the draft.
     Draft {
         /// Recorded host session id, or latest.
         #[arg(long)]
@@ -1041,8 +1064,9 @@ pub enum EventsCmd {
 pub enum WorkspaceCmd {
     /// Set up a .plexi/ workspace in the current directory.
     ///
-    /// Run this once inside your project folder. It creates a .plexi/workspace.toml
-    /// so that secrets and commands are scoped to this project.
+    /// Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/`
+    /// (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`,
+    /// and `commands.toml` so that secrets, apps, and commands are scoped to this project.
     Init,
     /// Remove pane slot files for panes that are no longer open.
     Clean {
@@ -1251,10 +1275,10 @@ pub enum AppCmd {
     /// Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store.
     /// Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub.
     /// Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack.
-    /// Workspace pack: `plexi app install` (no args) — installs from .plexi/apps.toml.
+    /// Workspace pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
     Install {
         /// Source to install: a local path, GitHub spec (github:owner/repo), or bare app id.
-        /// Omit to install from the workspace pack (.plexi/apps.toml).
+        /// Omit to install from the workspace pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable).
         spec_or_path: Option<String>,
         /// Install from a pack file or 'core'
         #[arg(long)]
@@ -2560,10 +2584,10 @@ pub enum ConfigCmd {
 
 #[derive(Args, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConfigScopeArgs {
-    /// Use the global channel config.toml only.
+    /// Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable).
     #[arg(short = 'g', long = "global", conflicts_with = "workspace")]
     pub global: bool,
-    /// Use the active workspace's channel-scoped config.toml only.
+    /// Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable).
     #[arg(short = 'w', long = "workspace", visible_alias = "ws")]
     pub workspace: bool,
 }

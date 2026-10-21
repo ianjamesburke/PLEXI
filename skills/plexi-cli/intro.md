@@ -2,9 +2,12 @@
 
 Start with `plexi --help`, then `plexi <command> --help` for arguments and
 flags. When the target channel is known, use its `plexi-<channel>` shim for
-every command. Bare `plexi` inherits the calling pane's routing and may target
-a different host. Run host commands from a Plexi pane so the host supplies
-its context and connection. Use the CLI or app SDK for state.
+every command (`plexi-alpha` reads `~/.plexi-alpha/` and `<repo>/.plexi-alpha/`;
+`plexi-beta` reads `~/.plexi-beta/` and `<repo>/.plexi-beta/`; stable `plexi`
+reads `~/.plexi/` and `<repo>/.plexi/`). Bare `plexi` inherits the calling
+pane's routing and may target a different host. Run host commands from a Plexi
+pane so the host supplies its context and connection. Use the CLI or app SDK
+for state.
 
 This binary carries the skill. Install it for your agent:
 
@@ -115,10 +118,12 @@ plexi skill draft --from-session latest --as command --out <path>
 ```
 
 Drafts print to stdout unless `--out` names a new file. They never install a skill
-or edit commands. Review pane ids and paths, replace redacted values through the
-secret workflow, and choose a task-specific name for suggested `--subcontext`
-arguments. Failed, incomplete and redacted calls remain review comments. Session
-inspection and drafting do not add calls to the trace they are reading.
+or edit `<repo>/.plexi-<channel>/commands.toml` / `~/.plexi-<channel>/commands.toml`
+(stable: `<repo>/.plexi/commands.toml` / `~/.plexi/commands.toml`). Review pane ids
+and paths, replace redacted values through the secret workflow, and choose a
+task-specific name for suggested `--subcontext` arguments. Failed, incomplete and
+redacted calls remain review comments. Session inspection and drafting do not add
+calls to the trace they are reading.
 
 The command map below comes from this binary's CLI and experiment ownership.
 Use each command's `--help` for its full argument contract. Installed skills

@@ -439,7 +439,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
     print!(
         r#"### User command shortcuts (`[keys]`)
 
-Bind chords to user commands defined in `commands.toml` using `"<chord>" = "run:<name>"` (for example `"cmd+shift+p" = "run:play"`). Reserved Plexi shortcuts are rejected by `plexi config check`.
+Bind chords to user commands defined in `~/.plexi-<channel>/commands.toml` or `<repo>/.plexi-<channel>/commands.toml` (`~/.plexi/commands.toml` and `<repo>/.plexi/commands.toml` on stable) using `"<chord>" = "run:<name>"` (for example `"cmd+shift+p" = "run:play"`). Keybindings resolve the workspace from the adopted/host workspace root, falling back to the active context root (`run_user_command_by_name`), with precedence workspace `commands.toml` > global `commands.toml` > global `scripts/`, and re-read `commands.toml` on every invocation without a restart. Reserved Plexi shortcuts are rejected by `plexi config check`.
 
 "#
     );

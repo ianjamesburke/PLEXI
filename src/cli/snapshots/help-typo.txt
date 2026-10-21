@@ -20,7 +20,7 @@ Options:
   -V, --version          Print version
 
 Workspace:
-  run           Run a named command from workspace or global commands.toml (or global scripts)
+  run           Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
   workspace     Set up a .plexi/ workspace in your project folder
   secret        Store and retrieve secrets (API keys, passwords, tokens)
   agent         Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).

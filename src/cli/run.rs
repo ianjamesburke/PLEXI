@@ -664,21 +664,23 @@ pub(crate) fn format_list_commands_for_root(
         .is_some_and(|root| root.join(&commands_file) != super::global_commands_path() && root.join(&commands_file).exists());
 
     if cmds.is_empty() {
+        let global_path = super::global_commands_path();
         if has_ws_toml {
             return Ok(format!(
-                "No commands defined in {commands_file}.\n\n\
+                "No commands defined in {commands_file} (or {}).\n\n\
                  Add a command:\n\
                  \x20 [commands]\n\
                  \x20 dev = \"npm run dev\"\n\
-                 \x20 build = {{ run = \"cargo build\", description = \"Build the project\" }}\n"
+                 \x20 build = {{ run = \"cargo build\", description = \"Build the project\" }}\n",
+                global_path.display()
             ));
         }
-        return Ok(
-            "No workspace commands configured.\n\n\
+        return Ok(format!(
+            "No workspace commands configured ({commands_file}; global: {}).\n\n\
              To add project commands:\n\
-             \x20 plexi workspace init\n"
-                .to_string(),
-        );
+             \x20 plexi workspace init\n",
+            global_path.display()
+        ));
     }
 
     let mut out = String::from("Available commands:\n");
@@ -944,10 +946,11 @@ pub fn run_command_for_root(
                         "run_command: secrets required but workspace context unavailable in {}",
                         cwd.display()
                     );
+                    let channel_dir = crate::config::workspace_channel_dir();
                     eprintln!(
                         "error: command requires secrets but workspace is not fully initialized."
                     );
-                    eprintln!("  → plexi workspace init   (creates workspace.toml + secrets.toml)");
+                    eprintln!("  → plexi workspace init   (creates {channel_dir}/workspace.toml + {channel_dir}/secrets.toml)");
                     eprintln!("  → plexi secret set <NAME>  (then store the required secrets)");
                     return fail(1);
                 }

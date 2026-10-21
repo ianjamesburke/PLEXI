@@ -49,7 +49,16 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// commands still parse, so the `exit_if_feature_disabled` backstop in `main`
 /// keeps producing the standard unavailable message.
 pub fn gated_command() -> clap::Command {
+    let ws_commands = crate::cli::commands_file();
+    let global_commands = crate::cli::global_commands_path();
+    let global_scripts = crate::config::config_dir().join("scripts");
+    let run_paths = format!(
+        "Active channel paths:\n  Workspace: <repo>/{ws_commands}\n  Global:    {}\n  Scripts:   {}",
+        global_commands.display(),
+        global_scripts.display()
+    );
     gate_command(Cli::command(), crate::release::feature_enabled)
+        .mut_subcommand("run", |sub| sub.after_help(run_paths))
 }
 
 /// Hide every path owned by an experiment that `enabled` reports off.
@@ -553,6 +562,31 @@ mod tests {
                     .count();
                 assert_eq!(n, 1, "`{}` in {n} HELP_GROUPS entries", sub.get_name());
             }
+        }
+    }
+
+    #[test]
+    fn run_help_lists_per_channel_commands_toml_paths() {
+        let _g = crate::config::set_test_channel("alpha");
+        let mut cmd = gated_command();
+        let run_sub = cmd.find_subcommand_mut("run").unwrap();
+        let help = run_sub.render_long_help().to_string();
+        for needle in [
+            "~/.plexi-alpha/commands.toml",
+            "~/.plexi-beta/commands.toml",
+            "~/.plexi/commands.toml",
+            "<repo>/.plexi-alpha/commands.toml",
+            "resolve_workspace_root_stopping_at",
+            "resolve_commands_workspace_root",
+            "effective_commands_workspace_root",
+            "run_user_command_by_name",
+            "workspace `commands.toml` > global `commands.toml` > global `scripts/`",
+            "no host restart is needed",
+        ] {
+            assert!(
+                help.contains(needle),
+                "run --help missing `{needle}`:\n{help}"
+            );
         }
     }
 }
