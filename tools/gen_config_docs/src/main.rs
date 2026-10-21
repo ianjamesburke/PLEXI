@@ -297,6 +297,7 @@ plexi config reset
         "notifications",
         "ai",
         "keybindings",
+        "keys",
         "agents",
         "cli",
         "permissions",
@@ -433,6 +434,15 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
         }
         println!();
     }
+
+    // ── User command shortcuts ───────────────────────────────────────────────
+    print!(
+        r#"### User command shortcuts (`[keys]`)
+
+Bind chords to user commands defined in `commands.toml` using `"<chord>" = "run:<name>"` (for example `"cmd+shift+p" = "run:play"`). Reserved Plexi shortcuts are rejected by `plexi config check`.
+
+"#
+    );
 
     // ── CLI ──────────────────────────────────────────────────────────────────
     println!("### CLI (`[cli]`)\n");

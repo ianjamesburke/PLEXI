@@ -149,6 +149,8 @@ pub enum Action {
     OpenNotesPicker,
     /// Close the active context with a confirm dialog. Bound to Cmd+Shift+W.
     CloseContext,
+    /// Run a user-authored command from `commands.toml` (bound via `[keys]` `"<chord>" = "run:<name>"`).
+    RunUserCommand(String),
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -214,6 +216,8 @@ pub struct KeyBindings {
     pub park_context: (egui::Modifiers, egui::Key),
     pub open_notes_picker: (egui::Modifiers, egui::Key),
     pub close_context: (egui::Modifiers, egui::Key),
+    /// User-command bindings configured via `[keys] "<chord>" = "run:<name>"`.
+    pub user_commands: Vec<((egui::Modifiers, egui::Key), String)>,
 }
 
 fn cmd() -> egui::Modifiers {
@@ -320,6 +324,7 @@ impl Default for KeyBindings {
             park_context: (cmd_shift(), egui::Key::U),
             open_notes_picker: (cmd(), egui::Key::O),
             close_context: (cmd_shift(), egui::Key::W),
+            user_commands: Vec::new(),
         }
     }
 }
@@ -594,6 +599,198 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     bindings
 }
 
+fn reserved_host_shortcuts(
+    bindings: &KeyBindings,
+) -> std::collections::HashMap<u64, &'static str> {
+    let defaults = KeyBindings::default();
+    let mut reserved = std::collections::HashMap::new();
+    for (source, b) in [("default", &defaults), ("configured", bindings)] {
+        let _ = source;
+        let entries: &[(&'static str, (egui::Modifiers, egui::Key))] = &[
+            ("quit", b.quit),
+            ("close_pane", b.close_pane),
+            ("toggle_command_palette", b.toggle_command_palette),
+            ("split_horizontal", b.split_horizontal),
+            ("split_vertical", b.split_vertical),
+            ("split_right", b.split_right),
+            ("split_down", b.split_down),
+            ("swap_pane_left", b.swap_pane_left),
+            ("swap_pane_down", b.swap_pane_down),
+            ("swap_pane_up", b.swap_pane_up),
+            ("swap_pane_right", b.swap_pane_right),
+            ("send_pane_left", b.send_pane_left),
+            ("send_pane_down", b.send_pane_down),
+            ("send_pane_up", b.send_pane_up),
+            ("send_pane_right", b.send_pane_right),
+            ("navigate_left", b.navigate_left),
+            ("navigate_down", b.navigate_down),
+            ("navigate_up", b.navigate_up),
+            ("navigate_right", b.navigate_right),
+            ("new_tab", b.new_tab),
+            ("next_tab", b.next_tab),
+            ("prev_tab", b.prev_tab),
+            ("next_context", b.next_context),
+            ("prev_context", b.prev_context),
+            ("move_context_up", b.move_context_up),
+            ("move_context_down", b.move_context_down),
+            ("nav_back", b.nav_back),
+            ("focus_history_forward", b.focus_history_forward),
+            ("toggle_sidebar", b.toggle_sidebar),
+            ("toggle_zoom", b.toggle_zoom),
+            ("toggle_shortcuts", b.toggle_shortcuts),
+            ("rename_context", b.rename_context),
+            ("rename_pane", b.rename_pane),
+            ("new_context", b.new_context),
+            ("new_page_right", b.new_page_right),
+            ("toggle_minimap", b.toggle_minimap),
+            ("scroll_up", b.scroll_up),
+            ("scroll_down", b.scroll_down),
+            ("increase_font_size", b.increase_font_size),
+            ("decrease_font_size", b.decrease_font_size),
+            ("next_blocked_agent", b.next_blocked_agent),
+            ("open_agents", b.open_agents),
+            ("open_file_browser", b.open_file_browser),
+            ("open_quick_note", b.open_quick_note),
+            ("open_config", b.open_config),
+            ("reload_config", b.reload_config),
+            ("open_secrets_manager", b.open_secrets_manager),
+            ("open_assistant", b.open_assistant),
+            ("force_reload_app", b.force_reload_app),
+            ("toggle_notification_modal", b.toggle_notification_modal),
+            ("open_scratchpad", b.open_scratchpad),
+            ("context_zoom_out", b.context_zoom_out),
+            ("push_to_subcontext", b.push_to_subcontext),
+            ("new_child_context", b.new_child_context),
+            ("set_context_root_from_cwd", b.set_context_root_from_cwd),
+            ("hide_pane", b.hide_pane),
+            ("park_context", b.park_context),
+            ("open_notes_picker", b.open_notes_picker),
+            ("close_context", b.close_context),
+        ];
+        for (name, (mods, key)) in entries {
+            reserved.insert(binding_id(*mods, *key), *name);
+        }
+    }
+    for (key, label) in [
+        (egui::Key::Num1, "switch_context_1"),
+        (egui::Key::Num2, "switch_context_2"),
+        (egui::Key::Num3, "switch_context_3"),
+        (egui::Key::Num4, "switch_context_4"),
+        (egui::Key::Num5, "switch_context_5"),
+        (egui::Key::Num6, "switch_context_6"),
+        (egui::Key::Num7, "switch_context_7"),
+        (egui::Key::Num8, "switch_context_8"),
+        (egui::Key::Num9, "switch_context_9"),
+    ] {
+        reserved.insert(binding_id(cmd(), key), label);
+    }
+    reserved.insert(binding_id(egui::Modifiers::NONE, egui::Key::Escape), "close_app");
+    reserved
+}
+
+/// Validate `[keys]` entries (`"<chord>" = "run:<command>"`) against reserved
+/// Plexi shortcuts and syntax rules. Returns human-readable error strings for
+/// `plexi config check`.
+pub fn validate_user_keys(
+    keys: &std::collections::HashMap<String, String>,
+    bindings: &KeyBindings,
+) -> Vec<String> {
+    let reserved = reserved_host_shortcuts(bindings);
+    let mut errors = Vec::new();
+    let mut sorted_entries: Vec<(&String, &String)> = keys.iter().collect();
+    sorted_entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut seen_user: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
+    for (chord, target) in sorted_entries {
+        let Some((mods, key)) = parse_key_combo(chord) else {
+            errors.push(format!("invalid key chord `{chord}` in [keys]"));
+            continue;
+        };
+        let Some(cmd_name) = target.strip_prefix("run:").map(str::trim).filter(|s| !s.is_empty())
+        else {
+            errors.push(format!(
+                "invalid [keys] target `{target}` for `{chord}` (expected `run:<command>`)"
+            ));
+            continue;
+        };
+        let _ = cmd_name;
+        let id = binding_id(mods, key);
+        if let Some(reserved_name) = reserved.get(&id) {
+            errors.push(format!(
+                "[keys] `{chord}` (\"{target}\") conflicts with reserved shortcut `{reserved_name}`"
+            ));
+            continue;
+        }
+        if let Some(prev_chord) = seen_user.insert(id, chord.as_str()) {
+            errors.push(format!(
+                "[keys] `{chord}` duplicates key chord `{prev_chord}`"
+            ));
+        }
+    }
+    errors
+}
+
+impl KeyBindings {
+    /// Apply validated `[keys]` user-command bindings to this `KeyBindings`.
+    /// Entries that fail validation or collide with reserved shortcuts are logged
+    /// and skipped.
+    pub fn apply_user_keys(
+        &mut self,
+        user_keys: Option<&std::collections::HashMap<String, String>>,
+    ) {
+        self.user_commands.clear();
+        let Some(keys) = user_keys else {
+            return;
+        };
+        let reserved = reserved_host_shortcuts(self);
+        let mut sorted_entries: Vec<(&String, &String)> = keys.iter().collect();
+        sorted_entries.sort_by(|a, b| a.0.cmp(b.0));
+        let mut seen_user: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        for (chord, target) in sorted_entries {
+            let Some((mods, key)) = parse_key_combo(chord) else {
+                log::warn!("keys: ignoring invalid chord '{chord}'");
+                continue;
+            };
+            let Some(cmd_name) = target
+                .strip_prefix("run:")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                log::warn!("keys: ignoring invalid target '{target}' for '{chord}' (expected 'run:<name>')");
+                continue;
+            };
+            let id = binding_id(mods, key);
+            if let Some(reserved_name) = reserved.get(&id) {
+                log::error!(
+                    "keys: '{chord}' ('{target}') conflicts with reserved shortcut '{reserved_name}' — ignoring"
+                );
+                continue;
+            }
+            if !seen_user.insert(id) {
+                log::error!("keys: duplicate user chord '{chord}' — ignoring");
+                continue;
+            }
+            self.user_commands.push(((mods, key), cmd_name.to_string()));
+        }
+        if !self.user_commands.is_empty() {
+            log::info!(
+                "keys: registered {} user command binding(s)",
+                self.user_commands.len()
+            );
+        }
+    }
+}
+
+pub fn build_key_bindings_with_user_keys(
+    overrides: Option<&KeybindingsConfig>,
+    user_keys: Option<&std::collections::HashMap<String, String>>,
+) -> KeyBindings {
+    let mut bindings = build_key_bindings(overrides);
+    bindings.apply_user_keys(user_keys);
+    bindings
+}
+
 /// Context under which a binding is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingContext {
@@ -663,7 +860,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry {
             modifiers: b.toggle_command_palette.0,
             key: b.toggle_command_palette.1,
-            exact: false,
+            exact: true,
             no_repeat: false,
             context: BindingContext::Global,
             action: Action::ToggleCommandPalette,
@@ -1133,6 +1330,17 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             action: Action::CloseApp,
         },
     ];
+
+    for ((modifiers, key), cmd_name) in &b.user_commands {
+        entries.push(BindingEntry {
+            modifiers: *modifiers,
+            key: *key,
+            exact: true,
+            no_repeat: true,
+            context: BindingContext::Normal,
+            action: Action::RunUserCommand(cmd_name.clone()),
+        });
+    }
 
     // Sort: exact before non-exact; within each group, higher modifier count first.
     // This eliminates ordering bugs — the table author never needs to worry about

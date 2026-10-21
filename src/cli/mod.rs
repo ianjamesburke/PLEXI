@@ -21,12 +21,12 @@ pub struct SecretsConfig {
     pub required: Vec<String>,
 }
 
-/// A command entry: either a bare string (`build = "cargo build"`) or an inline table
-/// (`build = { run = "cargo build", description = "..." }`).
-/// The old nested-section form (`[commands.build]\nrun = "..."`) is TOML-equivalent to the
-/// inline-table form and parses identically — no migration needed.
-#[derive(Deserialize)]
-#[serde(untagged)]
+/// A command entry: a bare string (`build = "cargo build"`), an inline table
+/// (`build = { run = "cargo build", description = "..." }`), or a multi-step
+/// workflow (`[commands.play]\nsteps = ["pane new --right -- mixer", ...]`).
+/// The nested-section form (`[commands.build]\nrun = "..."`) is TOML-equivalent to the
+/// inline-table form and parses identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandEntry {
     Simple(String),
     Full(CommandDef),
@@ -37,6 +37,20 @@ impl CommandEntry {
         match self {
             CommandEntry::Simple(s) => s,
             CommandEntry::Full(d) => &d.run,
+        }
+    }
+
+    pub fn steps(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Full(d) => &d.steps,
+        }
+    }
+
+    pub fn on_load(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Full(d) => &d.on_load,
         }
     }
 
@@ -55,12 +69,97 @@ impl CommandEntry {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandDef {
     pub run: String,
+    pub steps: Vec<String>,
+    pub on_load: Vec<String>,
     pub description: Option<String>,
-    #[serde(default)]
     pub secrets: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+    Single(String),
+    Many(Vec<String>),
+}
+
+impl StringOrVec {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::Single(s) => vec![s],
+            Self::Many(v) => v,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCommandDef {
+    run: Option<String>,
+    steps: Option<Vec<String>>,
+    on_load: Option<StringOrVec>,
+    description: Option<String>,
+    #[serde(default)]
+    secrets: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for CommandEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)?;
+        match value {
+            toml::Value::String(s) => Ok(CommandEntry::Simple(s)),
+            toml::Value::Table(_) => {
+                let raw: RawCommandDef = value.try_into().map_err(serde::de::Error::custom)?;
+                let on_load = raw.on_load.map(StringOrVec::into_vec).unwrap_or_default();
+                if on_load.iter().any(|step| step.trim().is_empty()) {
+                    return Err(serde::de::Error::custom(
+                        "`on_load` cannot contain an empty step",
+                    ));
+                }
+                match (raw.run, raw.steps) {
+                    (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                        "command entry cannot specify both `run` and `steps`",
+                    )),
+                    (None, None) => Err(serde::de::Error::custom(
+                        "command entry must specify `run` or `steps`",
+                    )),
+                    (Some(run), None) => Ok(CommandEntry::Full(CommandDef {
+                        run,
+                        steps: Vec::new(),
+                        on_load,
+                        description: raw.description,
+                        secrets: raw.secrets,
+                    })),
+                    (None, Some(steps)) => {
+                        if steps.is_empty() {
+                            return Err(serde::de::Error::custom("`steps` cannot be empty"));
+                        }
+                        if steps.iter().any(|step| step.trim().is_empty()) {
+                            return Err(serde::de::Error::custom(
+                                "`steps` cannot contain an empty step",
+                            ));
+                        }
+                        let run = steps.join(" && ");
+                        Ok(CommandEntry::Full(CommandDef {
+                            run,
+                            steps,
+                            on_load,
+                            description: raw.description,
+                            secrets: raw.secrets,
+                        }))
+                    }
+                }
+            }
+            _ => Err(serde::de::Error::custom(
+                "command entry must be a string or a table with `run` or `steps`",
+            )),
+        }
+    }
 }
 
 /// List executable files in a scripts directory.
@@ -107,6 +206,15 @@ pub const COMMANDS_TEMPLATE: &str = "\
 # hello = \"echo hi\"
 # dev = { run = \"npm run dev\", description = \"Start the dev server\" }
 # deploy = { run = \"./deploy.sh\", description = \"Deploy\", secrets = [\"API_KEY\"] }
+#
+# Multi-step workflow (`steps` run in order and stop at the first failure;
+# bind to a shortcut in config.toml with `[keys]` `\"cmd+shift+p\" = \"run:play\"`):
+# [commands.play]
+# description = \"Start mixer + muted nooise\"
+# steps = [
+#   \"pane new --right -- mixer\",
+#   \"pane new --down -- nooise --mute\",
+# ]
 
 [commands]
 ";
@@ -202,9 +310,13 @@ pub struct ResolvedUserCommand {
     pub name: String,
     pub scope: UserCommandScope,
     pub description: Option<String>,
-    /// Shell snippet for `commands.toml` entries (shown as preview text).
+    /// Shell snippet or joined step preview for `commands.toml` entries (shown as preview text).
     /// `None` for global scripts — the run target is the script file itself.
     pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_load: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
 }
@@ -232,6 +344,8 @@ pub fn resolve_user_commands_checked(
                 scope: UserCommandScope::Global,
                 description: None,
                 run: None,
+                steps: Vec::new(),
+                on_load: Vec::new(),
                 secrets: Vec::new(),
             },
         );
@@ -251,6 +365,8 @@ pub fn resolve_user_commands_checked(
                         scope: UserCommandScope::Global,
                         description: entry.description().map(|s| s.to_string()),
                         run: Some(entry.run().to_string()),
+                        steps: entry.steps().to_vec(),
+                        on_load: entry.on_load().to_vec(),
                         secrets: merged_secret_names(&config, entry),
                     },
                 );
@@ -279,6 +395,8 @@ pub fn resolve_user_commands_checked(
                                 scope: UserCommandScope::Workspace,
                                 description: entry.description().map(|s| s.to_string()),
                                 run: Some(entry.run().to_string()),
+                                steps: entry.steps().to_vec(),
+                                on_load: entry.on_load().to_vec(),
                                 secrets: merged_secret_names(&config, entry),
                             },
                         );
@@ -1625,9 +1743,13 @@ pub use pane::{
     pane_state_cli, pane_status_cli,
 };
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
-pub use run::{run_command, run_list_commands};
+pub use run::{
+    parse_step, run_command, run_list_commands, run_steps_with, ParsedStep, StepRunReport,
+};
 #[cfg(test)]
 pub(crate) use run::format_list_commands_for_root;
+#[cfg(test)]
+pub use run::run_command_for_root;
 pub use validate::validate_cli;
 pub use workspace::{
     folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,

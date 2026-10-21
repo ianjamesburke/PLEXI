@@ -4970,6 +4970,8 @@ mod tests {
                 crate::cli::ResolvedUserCommand {
                     name: "build".to_string(),
                     run: Some("cargo build".to_string()),
+                    steps: Vec::new(),
+                    on_load: Vec::new(),
                     description: Some("Build the project".to_string()),
                     scope: crate::cli::UserCommandScope::Workspace,
                     secrets: Vec::new(),
@@ -4977,6 +4979,8 @@ mod tests {
                 crate::cli::ResolvedUserCommand {
                     name: "test".to_string(),
                     run: Some("cargo test".to_string()),
+                    steps: Vec::new(),
+                    on_load: Vec::new(),
                     description: None,
                     scope: crate::cli::UserCommandScope::Workspace,
                     secrets: Vec::new(),
@@ -4984,6 +4988,8 @@ mod tests {
                 crate::cli::ResolvedUserCommand {
                     name: "deploy".to_string(),
                     run: None,
+                    steps: Vec::new(),
+                    on_load: Vec::new(),
                     description: None,
                     scope: crate::cli::UserCommandScope::Global,
                     secrets: Vec::new(),

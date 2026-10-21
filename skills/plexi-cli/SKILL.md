@@ -206,9 +206,14 @@ plexi skill install --agent pi
   `plexi secret --help`. `plexi run` merges global (`<profile>/commands.toml` +
   `<profile>/scripts/`) and workspace (`.plexi/commands.toml`) commands per name
   (workspace wins per command name) and tags each row `[workspace]` or `[global]`;
-  `plexi run --json` returns `[{name, scope, description, run, secrets}]` (secret
+  `plexi run --json` returns `[{name, scope, description, run, steps, on_load, secrets}]` (secret
   names only, never values), and `plexi run <name> [args...]` executes the named
-  command with scoped secrets injected. `secret list` first reconciles its index with the
+  command with scoped secrets injected. `[commands.<name>]` in `commands.toml`
+  supports chained `steps = [...]` (Plexi CLI subcommands like `"pane new --right -- <cmd>"`
+  or `"app open strudel --split down"`, or shell snippets, with `$1`/`$@` substitution
+  and `step <i>/<n> failed: <cmd> (exit <code>)` error reporting), optional `on_load`
+  steps (`plexi pane new --on-load <step>`), and `[keys]` bindings (`"<chord>" = "run:<name>"`)
+  in `config.toml` checked against reserved shortcuts by `plexi config check`. `secret list` first reconciles its index with the
   keychain, so it also shows keys added outside Plexi. A legacy-format secrets
   index is migrated the first time `secret get` or `secret list` runs, not at
   CLI startup.

@@ -244,6 +244,10 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `open_notes_picker` | open notes picker |
 | `close_context` | close context |
 
+### User command shortcuts (`[keys]`)
+
+Bind chords to user commands defined in `commands.toml` using `"<chord>" = "run:<name>"` (for example `"cmd+shift+p" = "run:play"`). Reserved Plexi shortcuts are rejected by `plexi config check`.
+
 ### CLI (`[cli]`)
 
 | Field | Type | Default | Description |
@@ -365,6 +369,10 @@ model_high   = "anthropic/claude-fable-5"
 # toggle_command_palette = "cmd+p"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"
+
+# [keys]
+# Bind a chord to a user command from commands.toml ("<chord>" = "run:<name>"):
+# "cmd+shift+p" = "run:play"
 
 [agents]
 # Silent desktop attention alerts while Plexi is not focused.

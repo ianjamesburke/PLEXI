@@ -990,7 +990,10 @@ impl PlexiApp {
 
         // Replace the cached config
         self.config = fresh;
-        self.key_bindings = crate::host::keys::build_key_bindings(self.config.keybindings.as_ref());
+        self.key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
+            self.config.keybindings.as_ref(),
+            self.config.keys.as_ref(),
+        );
         self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
