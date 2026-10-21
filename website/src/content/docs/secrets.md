@@ -5,8 +5,8 @@ order: 6
 ---
 
 Plexi has a built-in secrets store scoped to each workspace. On macOS, secrets
-are stored through the system keychain. On Linux, they are stored in a
-mode-`0600` file in the Plexi profile; that file is not encrypted at rest.
+are stored through the system keychain. On Linux, global, workspace, and
+folder secrets share the backend described under [Linux storage](#linux-storage).
 Secrets are available to apps through the host-brokered `secrets.get`
 capability.
 
@@ -80,8 +80,10 @@ one read.
 plexi secret list
 ```
 
-Lists all stored secret keys. Values are not shown. Names injected into
-terminals are marked.
+Lists global and current-workspace secret names, plus folder entries when
+`folder_secrets` is enabled. Values are not shown. Workspace names injected
+into human terminals are marked. `--global` excludes workspace and folder
+entries in both text and JSON output.
 
 `plexi secret list --json` returns the app's names-only inventory, including
 `scope`, `last_used` (Unix seconds or `null` when unknown), and `grant`
@@ -110,3 +112,31 @@ SDK v3 apps use module-level `init(size, args)`, `update(event)`, and `view()`. 
 ## Workspace Scoping
 
 Secrets are scoped by workspace root path — a secret set inside one project is not visible to another project at a different path. Use `--global` to share a secret across all workspaces on the machine.
+
+## Linux storage
+
+Global, workspace, and folder secrets use Secret Service through `secret-tool`
+when available, or a labeled AES-256-GCM encrypted-file fallback. The selected
+backend is recorded in `folder-secrets-backend.txt` in the channel profile and
+reused; a later service outage does not silently select a different backend.
+
+The fallback stores ciphertext in `folder-secrets.enc` in the channel profile.
+Its key is `folder-secret.key` under the operating system's local data directory
+in `plexi`, outside the profile. This is encrypted file storage, not an OS
+keyring or isolation from other processes running as the same user.
+
+`PLEXI_FOLDER_SECRETS_BACKEND=encrypted-file-fallback` forces the fallback for
+the process without probing Secret Service or changing the recorded choice.
+An unsupported override logs a warning and also uses the fallback without
+contacting Secret Service. The override applies to global and workspace
+secrets as well as folder secrets; `folder_secrets` controls the folder scope,
+not the backend used by global or workspace secrets.
+
+On the first global or workspace store operation in a process, Plexi attempts
+to copy a legacy plaintext `secrets.json` into the selected backend. These are
+upserts: a legacy account replaces the same account in the destination. Plexi
+removes the legacy file only after every write succeeds. A read or write failure
+is logged and leaves the source intact; partial destination writes may remain.
+A removal failure is logged and also leaves the source. Migration is attempted
+once per process, so retrying requires a new process. New secrets use the
+selected backend, never the legacy plaintext file.
