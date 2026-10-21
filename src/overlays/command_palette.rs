@@ -1239,6 +1239,7 @@ impl PlexiApp {
             let secondary = match (&cmd.description, &cmd.run) {
                 (Some(desc), _) => desc.clone(),
                 (None, Some(run)) => run.clone(),
+                (None, None) if !cmd.steps.is_empty() => format!("{} steps", cmd.steps.len()),
                 (None, None) => "global script".to_string(),
             };
             let search_text =
@@ -1922,17 +1923,495 @@ impl PlexiApp {
         }
     }
 
-    /// Execute a user-authored command by opening a terminal pane that runs
-    /// `plexi run <name>` in the focused workspace cwd. Routing through the CLI
-    /// keeps secret injection, workspace scoping, and the security inventory
-    /// true — the host never re-implements command execution.
+    /// Execute a user-authored command. Stepped commands (`steps = [...]`) or
+    /// commands with `on_load` execute their steps directly through the host's
+    /// step runner; single-line `run` commands open a terminal pane that runs
+    /// `plexi run <name>` in the focused workspace cwd.
     fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
         let cwd = self.palette_workspace_root.clone();
         log::info!("palette: running user command '{name}' scope={scope:?} cwd={cwd:?}");
+        let resolved = self
+            .palette_commands
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
+            .or_else(|| {
+                crate::cli::resolve_user_commands(cwd.as_deref())
+                    .into_iter()
+                    .find(|c| c.name == name)
+            });
+        if let Some(ref cmd) = resolved {
+            if !cmd.steps.is_empty() || !cmd.on_load.is_empty() {
+                let _ = self.run_user_command_by_name(name);
+                return;
+            }
+        }
         self.windows[self.active_window].clear_zoom();
         let initial_cmd = format!("plexi run {}", shell_single_quote(name));
         self.split_focused(false, Some(&initial_cmd), false, false, cwd);
         self.mark_workspace_dirty();
+    }
+
+    /// Execute a named user command directly against the host. Used by `[keys]`
+    /// `"<chord>" = "run:<name>"` bindings and by stepped palette commands.
+    pub(crate) fn run_user_command_by_name(
+        &mut self,
+        name: &str,
+    ) -> Option<crate::cli::StepRunReport> {
+        let ws_root = self
+            .palette_workspace_root
+            .clone()
+            .or_else(crate::config::active_workspace_root)
+            .or_else(|| Some(self.router.active().root.clone()));
+        let cmd = crate::cli::resolve_user_commands(ws_root.as_deref())
+            .into_iter()
+            .find(|c| c.name == name)?;
+        self.windows[self.active_window].clear_zoom();
+        let steps: Vec<String> = if !cmd.steps.is_empty() {
+            cmd.steps.clone()
+        } else if let Some(ref run_line) = cmd.run {
+            if matches!(
+                crate::cli::parse_step(run_line),
+                crate::cli::ParsedStep::PlexiCli(_)
+            ) {
+                vec![run_line.clone()]
+            } else {
+                let initial_cmd = format!("plexi run {}", shell_single_quote(name));
+                self.split_focused(false, Some(&initial_cmd), false, false, ws_root);
+                self.mark_workspace_dirty();
+                return Some(crate::cli::StepRunReport {
+                    exit_code: 0,
+                    total_steps: 1,
+                    completed_steps: 1,
+                    failed_step_index: None,
+                    failed_step: None,
+                    error_message: None,
+                });
+            }
+        } else {
+            let initial_cmd = format!("plexi run {}", shell_single_quote(name));
+            self.split_focused(false, Some(&initial_cmd), false, false, ws_root);
+            self.mark_workspace_dirty();
+            return Some(crate::cli::StepRunReport {
+                exit_code: 0,
+                total_steps: 1,
+                completed_steps: 1,
+                failed_step_index: None,
+                failed_step: None,
+                error_message: None,
+            });
+        };
+
+        log::info!(
+            "user_command: running '{}' ({} step(s)) in {:?}",
+            name,
+            steps.len(),
+            ws_root
+        );
+        let report = crate::cli::run_steps_with(&steps, &[], |_step_num, rendered, parsed| {
+            self.execute_host_step(rendered, parsed, ws_root.as_deref(), None)
+        });
+        if !cmd.on_load.is_empty() && report.exit_code == 0 {
+            let focused = self.focused_pane_id();
+            let on_load_report =
+                crate::cli::run_steps_with(&cmd.on_load, &[], |_step_num, rendered, parsed| {
+                    self.execute_host_step(rendered, parsed, ws_root.as_deref(), focused)
+                });
+            self.mark_workspace_dirty();
+            return Some(on_load_report);
+        }
+        self.mark_workspace_dirty();
+        Some(report)
+    }
+
+    fn focused_pane_id(&self) -> Option<u64> {
+        let win = self.windows.get(self.active_window)?;
+        let tile_id = win.focused_pane?;
+        match win.tree.tiles.get(tile_id) {
+            Some(egui_tiles::Tile::Pane(pane_id)) => Some(*pane_id),
+            _ => None,
+        }
+    }
+
+    fn execute_host_step(
+        &mut self,
+        rendered: &str,
+        parsed: &crate::cli::ParsedStep,
+        ws_root: Option<&std::path::Path>,
+        default_pane_id: Option<u64>,
+    ) -> i32 {
+        match parsed {
+            crate::cli::ParsedStep::PlexiCli(argv) => {
+                self.execute_host_cli_step(argv, ws_root, default_pane_id)
+            }
+            crate::cli::ParsedStep::Shell(sh) => {
+                let mut command = std::process::Command::new("sh");
+                command.arg("-c").arg(sh);
+                if let Some(root) = ws_root {
+                    command.current_dir(root);
+                }
+                if let Some(pid) = default_pane_id.or_else(|| self.focused_pane_id()) {
+                    command.env("PLEXI_PANE_ID", pid.to_string());
+                }
+                match command.status() {
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(e) => {
+                        log::error!("user_command: shell step '{}' failed: {e}", rendered);
+                        1
+                    }
+                }
+            }
+        }
+    }
+
+    fn execute_host_cli_step(
+        &mut self,
+        argv: &[String],
+        ws_root: Option<&std::path::Path>,
+        default_pane_id: Option<u64>,
+    ) -> i32 {
+        use clap::Parser;
+        use crate::cli::args::{AppCmd, Cli, Commands, PaneCmd};
+
+        let cli = match Cli::try_parse_from(argv) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("user_command: invalid CLI step {:?}: {e}", argv);
+                return 2;
+            }
+        };
+
+        static HOST_STEP_SEQ: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let next_resp_path = || {
+            let seq = HOST_STEP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::env::temp_dir().join(format!(
+                "plexi-host-step-{}-{}.json",
+                std::process::id(),
+                seq
+            ))
+        };
+
+        let layout_from_dir = |down: bool,
+                               left: bool,
+                               up: bool,
+                               right: bool,
+                               tab: bool,
+                               window: bool,
+                               overlay: bool|
+         -> Option<String> {
+            if down {
+                Some("split_v".to_string())
+            } else if left {
+                Some("split_left".to_string())
+            } else if up {
+                Some("split_above".to_string())
+            } else if right {
+                Some("split_h".to_string())
+            } else if tab {
+                Some("tab".to_string())
+            } else if window {
+                Some("new_window".to_string())
+            } else if overlay {
+                Some("overlay".to_string())
+            } else {
+                None
+            }
+        };
+
+        match cli.command {
+            Some(Commands::Pane { cmd }) => match cmd {
+                PaneCmd::New {
+                    cmd,
+                    name,
+                    down,
+                    left,
+                    up,
+                    right,
+                    tab,
+                    window,
+                    overlay,
+                    from,
+                    ephemeral,
+                    no_focus,
+                    cwd,
+                    worktree,
+                    result_schema,
+                    on_load,
+                    extra_args,
+                    agent,
+                    boot_timeout,
+                } => {
+                    let layout = Some(
+                        layout_from_dir(down, left, up, right, tab, window, overlay)
+                            .unwrap_or_else(|| "split_h".to_string()),
+                    );
+                    let app_id = (cmd.as_deref() == Some("agents") && agent.is_none())
+                        .then_some("agents");
+                    let is_app = app_id.is_some();
+                    let type_id = if let Some(a) = app_id {
+                        a.to_string()
+                    } else {
+                        "terminal".to_string()
+                    };
+                    let args: Vec<String> = if is_app {
+                        extra_args
+                    } else if let Some(c) = cmd {
+                        let joined = std::iter::once(c.as_str())
+                            .chain(extra_args.iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        vec![joined]
+                    } else {
+                        Vec::new()
+                    };
+                    let parsed_result_schema = match result_schema.as_deref() {
+                        Some(spec) => {
+                            let base = cwd
+                                .as_deref()
+                                .map(std::path::PathBuf::from)
+                                .or_else(|| ws_root.map(std::path::Path::to_path_buf));
+                            match crate::host::pane_result::parse_schema_spec(
+                                spec,
+                                base.as_deref(),
+                            ) {
+                                Ok(s) => Some(s),
+                                Err(_) => return 1,
+                            }
+                        }
+                        None => None,
+                    };
+                    let resp_path = next_resp_path();
+                    let resp_str = resp_path.to_string_lossy().into_owned();
+                    let req = crate::protocol::AppRequest::SpawnPane {
+                        type_id,
+                        layout,
+                        args,
+                        from_pane_id: from.or(default_pane_id),
+                        request_id: None,
+                        response_file: Some(resp_str),
+                        ephemeral,
+                        cwd: cwd.or_else(|| {
+                            ws_root.map(|p| p.to_string_lossy().into_owned())
+                        }),
+                        no_focus,
+                        path: None,
+                        workspace_root: ws_root
+                            .map(|p| p.to_string_lossy().into_owned()),
+                        target_context: None,
+                        context_name: None,
+                        name,
+                        agent_cmd: agent,
+                        boot_timeout_secs: boot_timeout,
+                        worktree,
+                        result_schema: parsed_result_schema,
+                        peer_ancestry: None,
+                    };
+                    self.handle_pane_ipc_request(req);
+                    let mut created_pane_id = self.focused_pane_id();
+                    if let Ok(content) = std::fs::read_to_string(&resp_path) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if val.get("error").is_some() {
+                                return 1;
+                            }
+                            if let Some(pid) = val.get("pane_id").and_then(|v| v.as_u64()) {
+                                created_pane_id = Some(pid);
+                            }
+                        }
+                    }
+                    if !on_load.is_empty() {
+                        let report = crate::cli::run_steps_with(
+                            &on_load,
+                            &[],
+                            |_step_num, rendered, parsed| {
+                                self.execute_host_step(
+                                    rendered,
+                                    parsed,
+                                    ws_root,
+                                    created_pane_id,
+                                )
+                            },
+                        );
+                        return report.exit_code;
+                    }
+                    0
+                }
+                PaneCmd::Name { first, second } => {
+                    let (pane_id, name) = match second {
+                        Some(title) => match first.parse::<u64>() {
+                            Ok(id) => (Some(id), title),
+                            Err(_) => return 1,
+                        },
+                        None => (None, first),
+                    };
+                    let Some(pid) = pane_id
+                        .or(default_pane_id)
+                        .or_else(|| self.focused_pane_id())
+                    else {
+                        return 1;
+                    };
+                    let exists = self
+                        .windows
+                        .iter()
+                        .any(|w| w.panes.contains_key(&pid));
+                    if !exists {
+                        return 1;
+                    }
+                    self.handle_pane_ipc_request(crate::protocol::AppRequest::SetPaneTitle {
+                        pane_id: pid,
+                        name,
+                    });
+                    0
+                }
+                PaneCmd::Focus { pane_id } => {
+                    let exists = self
+                        .windows
+                        .iter()
+                        .any(|w| w.panes.contains_key(&pane_id));
+                    if !exists {
+                        return 1;
+                    }
+                    self.handle_pane_ipc_request(crate::protocol::AppRequest::FocusPane {
+                        pane_id,
+                    });
+                    0
+                }
+                PaneCmd::Close { pane_id } => {
+                    let Some(pid) = pane_id
+                        .or(default_pane_id)
+                        .or_else(|| self.focused_pane_id())
+                    else {
+                        return 1;
+                    };
+                    let resp_path = next_resp_path();
+                    let resp_str = resp_path.to_string_lossy().into_owned();
+                    self.handle_pane_ipc_request(crate::protocol::AppRequest::ClosePane {
+                        pane_id: pid,
+                        response_file: Some(resp_str),
+                    });
+                    if let Ok(content) = std::fs::read_to_string(&resp_path) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if val.get("error").is_some() {
+                                return 1;
+                            }
+                        }
+                    }
+                    0
+                }
+                PaneCmd::Send {
+                    pane_id,
+                    text,
+                    submit,
+                    paste,
+                } => {
+                    let resp_path = next_resp_path();
+                    let resp_str = resp_path.to_string_lossy().into_owned();
+                    self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                        pane_id,
+                        text,
+                        submit,
+                        paste,
+                        response_file: Some(resp_str),
+                    });
+                    if let Ok(content) = std::fs::read_to_string(&resp_path) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if val.get("error").is_some() {
+                                return 1;
+                            }
+                        }
+                    }
+                    0
+                }
+                PaneCmd::Key { pane_id, key } => {
+                    let resp_path = next_resp_path();
+                    let resp_str = resp_path.to_string_lossy().into_owned();
+                    self.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+                        pane_id,
+                        key,
+                        response_file: Some(resp_str),
+                    });
+                    if let Ok(content) = std::fs::read_to_string(&resp_path) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if val.get("error").is_some() {
+                                return 1;
+                            }
+                        }
+                    }
+                    0
+                }
+                _ => 1,
+            },
+            Some(Commands::App {
+                cmd:
+                    AppCmd::Open {
+                        type_id,
+                        mcp,
+                        cli: cli_flag,
+                        extra_args,
+                        down,
+                        left,
+                        up,
+                        right,
+                        tab,
+                        window,
+                        split,
+                        from,
+                    },
+            }) => {
+                let layout = match split.as_deref() {
+                    Some("down") => Some("split_v".to_string()),
+                    Some("right") => Some("split_h".to_string()),
+                    Some("left") => Some("split_left".to_string()),
+                    Some("up") => Some("split_above".to_string()),
+                    Some("tab") => Some("tab".to_string()),
+                    Some("window") => Some("new_window".to_string()),
+                    Some(_) => return 1,
+                    None => layout_from_dir(down, left, up, right, tab, window, false),
+                };
+                let (target_type_id, target_args) = if let Some(tid) = type_id {
+                    (tid, extra_args)
+                } else if !mcp.is_empty() {
+                    ("mcp-renderer".to_string(), mcp)
+                } else if let Some(bin) = cli_flag {
+                    ("cli-renderer".to_string(), vec![bin])
+                } else {
+                    return 1;
+                };
+                let resp_path = next_resp_path();
+                let resp_str = resp_path.to_string_lossy().into_owned();
+                let req = crate::protocol::AppRequest::SpawnPane {
+                    type_id: target_type_id,
+                    layout,
+                    args: target_args,
+                    from_pane_id: from.or(default_pane_id),
+                    request_id: None,
+                    response_file: Some(resp_str),
+                    ephemeral: false,
+                    cwd: ws_root.map(|p| p.to_string_lossy().into_owned()),
+                    no_focus: false,
+                    path: None,
+                    workspace_root: ws_root.map(|p| p.to_string_lossy().into_owned()),
+                    target_context: None,
+                    context_name: None,
+                    name: None,
+                    agent_cmd: None,
+                    boot_timeout_secs: None,
+                    worktree: None,
+                    result_schema: None,
+                    peer_ancestry: None,
+                };
+                self.handle_pane_ipc_request(req);
+                if let Ok(content) = std::fs::read_to_string(&resp_path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if val.get("error").is_some() {
+                            return 1;
+                        }
+                    }
+                }
+                0
+            }
+            _ => 1,
+        }
     }
 
     /// Resolve a stable palette target against current host state, then focus
@@ -3245,6 +3724,183 @@ mod tests {
                 .find_open_text_editor_pane_any_window(&global_commands)
                 .is_some(),
             "global commands.toml must be opened in a text-editor split"
+        );
+    }
+
+    #[test]
+    fn two_step_play_command_opens_two_panes_via_cli_palette_and_bound_key_and_shows_in_pane_list()
+    {
+        use crate::testing::HostHarness;
+        use std::io::BufRead;
+
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let initial_count = h.pane_count();
+        assert_eq!(initial_count, 1);
+
+        let ws_commands = h
+            .workspace_root()
+            .join(crate::config::workspace_channel_dir())
+            .join("commands.toml");
+        std::fs::create_dir_all(ws_commands.parent().unwrap()).unwrap();
+        std::fs::write(
+            &ws_commands,
+            r#"
+[commands.play]
+description = "Open mixing terminal + editor"
+steps = [
+  "pane new --right --name mixer -- echo mix",
+  "app open text-editor --split down",
+]
+"#,
+        )
+        .unwrap();
+
+        let ws_root = h.workspace_root().to_path_buf();
+        h.app.palette_workspace_root = Some(ws_root.clone());
+
+        // 1. Trigger `plexi run play` via CLI over a real Unix socket serviced by the harness.
+        let sock_dir = tempfile::tempdir().unwrap();
+        let sock_path = sock_dir.path().join("notify.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let _sg = crate::cli::test_env::socket_env_guard();
+        crate::cli::set_command_socket_override(sock_path.clone());
+
+        let ws_for_cli = ws_root.clone();
+        let cli_handle = std::thread::spawn(move || {
+            crate::cli::run_command_for_root(Some(&ws_for_cli), &ws_for_cli, "play", &[])
+        });
+
+        while !cli_handle.is_finished() {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
+                    if let Ok(req) =
+                        serde_json::from_str::<crate::protocol::AppRequest>(line.trim())
+                    {
+                        h.app.handle_pane_ipc_request(req);
+                    }
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let report = cli_handle.join().unwrap();
+        assert_eq!(report.exit_code, 0, "plexi run play must exit 0");
+        assert_eq!(
+            h.pane_count(),
+            initial_count + 2,
+            "two-step command must open two panes in one call via plexi run play"
+        );
+
+        // Verify `plexi pane list --json` (`ListPanes`) shows both new panes.
+        let list_file = sock_dir.path().join("pane-list.json");
+        h.app
+            .handle_pane_ipc_request(crate::protocol::AppRequest::ListPanes {
+                response_file: list_file.to_string_lossy().into_owned(),
+                context_id: None,
+            });
+        let list_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&list_file).unwrap()).unwrap();
+        let panes_arr = list_json.as_array().expect("pane list JSON array");
+        assert_eq!(panes_arr.len(), 3, "pane list --json must show all 3 panes");
+        assert!(
+            panes_arr
+                .iter()
+                .any(|p| p["type"] == "terminal" && p["title"] == "mixer"),
+            "pane list --json must include the mixer terminal pane: {panes_arr:?}"
+        );
+        assert!(
+            panes_arr
+                .iter()
+                .any(|p| p["type"] == "app" && p["title"].as_str().is_some_and(|t| t.starts_with("note-"))),
+            "pane list --json must include the text-editor app pane: {panes_arr:?}"
+        );
+
+        // 2. Trigger `play` from the Command Palette and verify it also opens two panes.
+        let before_palette = h.pane_count();
+        h.app.palette_commands = crate::cli::resolve_user_commands(Some(&ws_root));
+        h.app
+            .run_palette_selection(PaletteAction::RunUserCommand {
+                name: "play".to_string(),
+                scope: crate::cli::UserCommandScope::Workspace,
+            });
+        assert_eq!(
+            h.pane_count(),
+            before_palette + 2,
+            "selecting play in the command palette must open two panes"
+        );
+
+        // 3. Bind `[keys] "cmd+shift+p" = "run:play"` in config.toml and press Cmd+Shift+P.
+        let cfg_path = h.profile_dir().join("config.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"
+config_version = 1
+
+[keys]
+"cmd+shift+p" = "run:play"
+"#,
+        )
+        .unwrap();
+        h.app.reload_config();
+        let before_key = h.pane_count();
+        h.press_key(
+            egui::Key::P,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        );
+        assert_eq!(
+            h.pane_count(),
+            before_key + 2,
+            "pressing bound key cmd+shift+p (run:play) must trigger the two-step command"
+        );
+    }
+
+    #[test]
+    fn pane_new_on_load_reuses_step_runner() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let ws_commands = h
+            .workspace_root()
+            .join(crate::config::workspace_channel_dir())
+            .join("commands.toml");
+        std::fs::create_dir_all(ws_commands.parent().unwrap()).unwrap();
+        std::fs::write(
+            &ws_commands,
+            r#"
+[commands.boot]
+steps = [
+  "pane new --right --on-load 'pane name ReadyPane'",
+]
+"#,
+        )
+        .unwrap();
+
+        let ws_root = h.workspace_root().to_path_buf();
+        h.app.palette_workspace_root = Some(ws_root);
+        let report = h
+            .app
+            .run_user_command_by_name("boot")
+            .expect("boot command must resolve");
+        assert_eq!(report.exit_code, 0);
+
+        let list_dir = tempfile::tempdir().unwrap();
+        let list_file = list_dir.path().join("pane-list-onload.json");
+        h.app
+            .handle_pane_ipc_request(crate::protocol::AppRequest::ListPanes {
+                response_file: list_file.to_string_lossy().into_owned(),
+                context_id: None,
+            });
+        let list_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&list_file).unwrap()).unwrap();
+        let panes_arr = list_json.as_array().unwrap();
+        assert!(
+            panes_arr.iter().any(|p| p["title"] == "ReadyPane"),
+            "pane new --on-load must run through the step runner and rename the new pane: {panes_arr:?}"
         );
     }
 }

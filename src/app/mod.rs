@@ -1343,7 +1343,10 @@ impl PlexiApp {
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
-        let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
+        let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
+            config.keybindings.as_ref(),
+            config.keys.as_ref(),
+        );
         let features = crate::features::FeatureFlags::from_config(&config);
         let notifications_enabled = config
             .notifications
@@ -2480,7 +2483,10 @@ impl PlexiApp {
         frame_tick: crate::platform::logging::FrameTick,
         config: config::PlexiConfig,
     ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::AppRequest>) {
-        let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
+        let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
+            config.keybindings.as_ref(),
+            config.keys.as_ref(),
+        );
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         configure_egui_ctx(&ctx, &colors);
@@ -4292,6 +4298,10 @@ impl eframe::App for PlexiApp {
                         self.router.current_depth()
                     );
                     self.zoom_out_of_context();
+                }
+                Action::RunUserCommand(ref name) => {
+                    log::info!("keys: executing user command binding 'run:{name}'");
+                    let _ = self.run_user_command_by_name(name);
                 }
             }
         }

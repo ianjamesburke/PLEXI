@@ -104,20 +104,28 @@ pub enum Commands {
     /// Global commands (`~/.plexi/commands.toml` and executable files in `~/.plexi/scripts/`)
     /// and workspace commands (`.plexi/commands.toml`) merge by name, with workspace entries
     /// overriding global entries of the same name. `plexi run` with no arguments lists both
-    /// scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, secrets}]`
+    /// scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]`
     /// (secret names only, never values). Any secrets listed in a command definition are injected
     /// as environment variables automatically when the command runs.
     ///
+    /// Multi-step commands (`steps = [...]`) execute each Plexi CLI invocation or shell snippet
+    /// sequentially, substituting `$1`, `$2`, … and `$@` from extra arguments, and stop at the
+    /// first failing step with `step <i>/<n> failed: <cmd> (exit <code>)`.
+    ///
+    /// Key binding: bind any user command to a shortcut in `config.toml` under `[keys]`, e.g.
+    /// `[keys]` `"cmd+shift+p" = "run:play"` (validated by `plexi config check` against reserved shortcuts).
+    ///
     /// Example: plexi run dev
+    /// Example: plexi run play
     /// Example: plexi run --json
     #[command(next_help_heading = "Workspace")]
     Run {
         /// Command name to run (omit to list available commands)
         command: Option<String>,
-        /// Print available commands as JSON (`[{name, scope, description, run, secrets}]`)
+        /// Print available commands as JSON (`[{name, scope, description, run, steps, secrets}]`)
         #[arg(long)]
         json: bool,
-        /// Extra arguments forwarded to the command as $1, $2, … positional params
+        /// Extra arguments forwarded to the command as $1, $2, … and $@ positional params
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
     },
@@ -1188,6 +1196,9 @@ pub enum AppCmd {
         /// New window
         #[arg(long, conflicts_with_all = ["down", "left", "up", "right", "tab"])]
         window: bool,
+        /// Split direction or placement (down, left, up, right, tab, window)
+        #[arg(long, value_name = "DIR", value_parser = ["down", "left", "up", "right", "tab", "window"], conflicts_with_all = ["down", "left", "up", "right", "tab", "window"])]
+        split: Option<String>,
         /// Open the new pane relative to this pane ID. Defaults to the calling
         /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
@@ -1724,6 +1735,12 @@ pub enum PaneCmd {
         /// satisfy before the host accepts it.
         #[arg(long, value_name = "JSON_OR_PATH")]
         result_schema: Option<String>,
+        /// Chained steps to run sequentially after the pane opens (reuses the command step runner)
+        #[arg(long = "on-load", value_name = "STEP")]
+        on_load: Vec<String>,
+        /// Extra arguments forwarded to the command (for example after `--`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with = "agent")]
+        extra_args: Vec<String>,
     },
     /// Rename a pane.
     ///
@@ -1744,6 +1761,9 @@ pub enum PaneCmd {
         /// With a numeric argument, returns panes in that specific context.
         #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
         context: Option<String>,
+        /// Output as a JSON array (accepted for compatibility; JSON is the default format).
+        #[arg(long)]
+        json: bool,
     },
     /// Move the visible focus to a specific pane.
     ///
@@ -3529,6 +3549,19 @@ mod tests {
         };
         assert!(!open);
         assert!(!no_open);
+    }
+
+    #[test]
+    fn pane_list_accepts_json_flag() {
+        let cli = Cli::try_parse_from(["plexi", "pane", "list", "--json"]).unwrap();
+        let Some(Commands::Pane {
+            cmd: super::PaneCmd::List { context, json },
+        }) = cli.command
+        else {
+            panic!("expected pane list command");
+        };
+        assert_eq!(context, None);
+        assert!(json);
     }
 
     #[test]

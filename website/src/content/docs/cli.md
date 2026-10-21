@@ -242,15 +242,19 @@ Example: plexi command-view allow --tool assistant.turn
 
 Run a named command from workspace or global commands.toml (or global scripts).
 
-Global commands (`~/.plexi/commands.toml` and executable files in `~/.plexi/scripts/`) and workspace commands (`.plexi/commands.toml`) merge by name, with workspace entries overriding global entries of the same name. `plexi run` with no arguments lists both scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, secrets}]` (secret names only, never values). Any secrets listed in a command definition are injected as environment variables automatically when the command runs.
+Global commands (`~/.plexi/commands.toml` and executable files in `~/.plexi/scripts/`) and workspace commands (`.plexi/commands.toml`) merge by name, with workspace entries overriding global entries of the same name. `plexi run` with no arguments lists both scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret names only, never values). Any secrets listed in a command definition are injected as environment variables automatically when the command runs.
 
-Example: plexi run dev Example: plexi run --json
+Multi-step commands (`steps = [...]`) execute each Plexi CLI invocation or shell snippet sequentially, substituting `$1`, `$2`, … and `$@` from extra arguments, and stop at the first failing step with `step <i>/<n> failed: <cmd> (exit <code>)`.
+
+Key binding: bind any user command to a shortcut in `config.toml` under `[keys]`, e.g. `[keys]` `"cmd+shift+p" = "run:play"` (validated by `plexi config check` against reserved shortcuts).
+
+Example: plexi run dev Example: plexi run play Example: plexi run --json
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<command>` | string | no | Command name to run (omit to list available commands) |
-| `--json` | flag | no | Print available commands as JSON (`[{name, scope, description, run, secrets}]`) |
-| `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command as $1, $2, … positional params |
+| `--json` | flag | no | Print available commands as JSON (`[{name, scope, description, run, steps, secrets}]`) |
+| `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command as $1, $2, … and $@ positional params |
 
 ## `plexi workspace`
 
@@ -1196,6 +1200,7 @@ Default placement is a sibling split to the right — the calling pane is never 
 | `--right` / `-r` | flag | no | Split right |
 | `--tab` | flag | no | New tab |
 | `--window` | flag | no | New window |
+| `--split` | string | no | Split direction or placement (down, left, up, right, tab, window) |
 | `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
@@ -1602,6 +1607,8 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 | `--cwd` | string | no | Working directory |
 | `--worktree` | string | no | Create or check out an isolated git worktree for <BRANCH> via `wtp` and start the pane inside it. When the pane closes, the host automatically reclaims the worktree if clean and unmoved, or retains it and reports its path if dirty or ahead |
 | `--result-schema` | string | no | Declare a JSON Schema (inline JSON object or path to a `.json` file) that the pane's structured return (`plexi pane result write`) must satisfy before the host accepts it |
+| `--on-load` | string (repeatable) | no | Chained steps to run sequentially after the pane opens (reuses the command step runner) |
+| `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command (for example after `--`) |
 
 ### `plexi pane name`
 
@@ -1623,6 +1630,7 @@ Filter by context: `--context` (no value) returns panes in the caller's context 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--context` | string | no | Filter by context. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With a numeric argument, returns panes in that specific context |
+| `--json` | flag | no | Output as a JSON array (accepted for compatibility; JSON is the default format) |
 
 ### `plexi pane focus`
 

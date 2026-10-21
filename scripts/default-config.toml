@@ -78,6 +78,10 @@ model_high   = "anthropic/claude-fable-5"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"
 
+# [keys]
+# Bind a chord to a user command from commands.toml ("<chord>" = "run:<name>"):
+# "cmd+shift+p" = "run:play"
+
 [agents]
 # Silent desktop attention alerts while Plexi is not focused.
 os_notifications = true

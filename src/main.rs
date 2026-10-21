@@ -807,23 +807,24 @@ fn main() -> eframe::Result {
                                 right,
                                 tab,
                                 window,
+                                split,
                                 from: from_pane_id,
                                 extra_args,
                             } => {
-                                let layout: Option<String> = if down {
-                                    Some("split_v".into())
-                                } else if left {
-                                    Some("split_left".into())
-                                } else if up {
-                                    Some("split_above".into())
-                                } else if right {
-                                    Some("split_h".into())
-                                } else if tab {
-                                    Some("tab".into())
-                                } else if window {
-                                    Some("new_window".into())
-                                } else {
-                                    None
+                                let layout: Option<String> = match split.as_deref() {
+                                    Some("down") => Some("split_v".into()),
+                                    Some("left") => Some("split_left".into()),
+                                    Some("up") => Some("split_above".into()),
+                                    Some("right") => Some("split_h".into()),
+                                    Some("tab") => Some("tab".into()),
+                                    Some("window") => Some("new_window".into()),
+                                    _ if down => Some("split_v".into()),
+                                    _ if left => Some("split_left".into()),
+                                    _ if up => Some("split_above".into()),
+                                    _ if right => Some("split_h".into()),
+                                    _ if tab => Some("tab".into()),
+                                    _ if window => Some("new_window".into()),
+                                    _ => None,
                                 }; // default: overlay
                                 let mode_count = type_id.is_some() as u8
                                     + (!mcp.is_empty()) as u8
@@ -1237,7 +1238,7 @@ fn main() -> eframe::Result {
                             };
                             std::process::exit(cli::pane_set_title_cli(pane_id, &name))
                         }
-                        PaneCmd::List { context } => {
+                        PaneCmd::List { context, json: _ } => {
                             let (context_id, current) = match context.as_deref() {
                                 None => (None, false),
                                 Some("current") => (None, true),
@@ -1536,6 +1537,8 @@ fn main() -> eframe::Result {
                             cwd,
                             worktree,
                             result_schema,
+                            on_load,
+                            extra_args,
                             agent,
                             boot_timeout,
                         } => {
@@ -1568,9 +1571,11 @@ fn main() -> eframe::Result {
                                 cwd: cwd.as_deref(),
                                 ephemeral,
                                 no_focus,
+                                extra_args: &extra_args,
                                 agent: agent.as_ref(),
                                 worktree: worktree.as_deref(),
                                 result_schema: result_schema.as_deref(),
+                                on_load: &on_load,
                                 ..Default::default()
                             }));
                         }

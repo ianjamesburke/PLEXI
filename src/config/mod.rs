@@ -29,12 +29,18 @@ pub enum ConfigDiagnostic {
         /// true → error (config key completely removed); false → warning (migration path still works).
         error: bool,
     },
+    InvalidKeyBinding {
+        path: String,
+        error: String,
+    },
 }
 
 impl ConfigDiagnostic {
     pub fn is_error(&self) -> bool {
         match self {
-            Self::ReadError { .. } | Self::ParseError { .. } => true,
+            Self::ReadError { .. }
+            | Self::ParseError { .. }
+            | Self::InvalidKeyBinding { .. } => true,
             Self::DeprecatedSection { error, .. } => *error,
             Self::UnknownKey { .. } => false,
         }
@@ -46,6 +52,7 @@ impl std::fmt::Display for ConfigDiagnostic {
         match self {
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
+            Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
             Self::UnknownKey { path, table, key } => {
                 if table.is_empty() {
                     write!(f, "{path}: unknown key `{key}`")
@@ -79,12 +86,14 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "confirm_close",
     "confirm_context_close",
     "keybindings",
+    "keys",
     "focus_history_depth",
     "agents",
     "cli",
     "marketplace",
     "cloud",
     "permissions",
+    "file_handlers",
     "experiments",
     "pane_gap",
     "pane_title_font_size",
@@ -239,12 +248,25 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
         }
     };
 
-    if let Err(e) = toml::from_str::<PlexiConfig>(&data) {
-        diags.push(ConfigDiagnostic::ParseError {
-            path: path_str,
-            error: e.to_string(),
-        });
-        return diags;
+    let parsed_cfg = match toml::from_str::<PlexiConfig>(&data) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            diags.push(ConfigDiagnostic::ParseError {
+                path: path_str,
+                error: e.to_string(),
+            });
+            return diags;
+        }
+    };
+
+    if let Some(ref user_keys) = parsed_cfg.keys {
+        let bindings = crate::host::keys::build_key_bindings(parsed_cfg.keybindings.as_ref());
+        for err in crate::host::keys::validate_user_keys(user_keys, &bindings) {
+            diags.push(ConfigDiagnostic::InvalidKeyBinding {
+                path: path_str.clone(),
+                error: err,
+            });
+        }
     }
 
     if let Ok(value) = toml::from_str::<toml::Value>(&data) {
@@ -520,6 +542,8 @@ pub struct PlexiConfig {
     /// Set to false to close contexts immediately on Cmd+Shift+W without a confirmation dialog (default: true).
     pub confirm_context_close: Option<bool>,
     pub keybindings: Option<KeybindingsConfig>,
+    /// User-command shortcut bindings (`[keys] "<chord>" = "run:<command>"`).
+    pub keys: Option<std::collections::HashMap<String, String>>,
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
@@ -1755,6 +1779,11 @@ impl PlexiConfig {
         match (self.keybindings.as_mut(), other.keybindings) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.keybindings = Some(incoming),
+            _ => {}
+        }
+        match (self.keys.as_mut(), other.keys) {
+            (Some(existing), Some(incoming)) => existing.extend(incoming),
+            (None, Some(incoming)) => self.keys = Some(incoming),
             _ => {}
         }
         match (self.agents.as_mut(), other.agents) {

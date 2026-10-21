@@ -8,21 +8,25 @@ use std::path::{Path, PathBuf};
 /// response when the host answered with something else). Shared by all spawn
 /// paths.
 pub(super) fn wait_for_response(response_file: &str) -> i32 {
+    wait_for_response_with_id(response_file).0
+}
+
+fn wait_for_response_with_id(response_file: &str) -> (i32, Option<u64>) {
     let content = match super::poll_rpc(response_file, "pane") {
         Ok(content) => content,
-        Err(code) => return code,
+        Err(code) => return (code, None),
     };
     if let Err(code) = super::check_reply_error(&content) {
-        return code;
+        return (code, None);
     }
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
             println!("{pid}");
-            return 0;
+            return (0, Some(pid));
         }
     }
     print!("{content}");
-    0
+    (0, None)
 }
 
 /// A `plexi pane new --agent` request: launch this shell command in the new
@@ -151,6 +155,7 @@ pub struct PaneNewCliArgs<'a> {
     pub agent: Option<&'a AgentBootRequest>,
     pub worktree: Option<&'a str>,
     pub result_schema: Option<&'a str>,
+    pub on_load: &'a [String],
 }
 
 /// Unified pane spawning. All CLI spawn paths funnel through here.
@@ -173,6 +178,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         agent,
         worktree,
         result_schema,
+        on_load,
     } = args;
     let parsed_result_schema = match result_schema {
         Some(spec) => {
@@ -272,10 +278,14 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             Ok(response_file) => response_file,
             Err(code) => return code,
         };
-        return match agent {
-            Some(agent) => wait_for_agent_boot(&response_file, agent),
-            None => wait_for_response(&response_file),
+        let (code, created_pane_id) = match agent {
+            Some(agent) => (wait_for_agent_boot(&response_file, agent), None),
+            None => wait_for_response_with_id(&response_file),
         };
+        if code == 0 && !on_load.is_empty() {
+            return super::run::run_on_load_steps(on_load, created_pane_id).exit_code;
+        }
+        return code;
     }
 
     // `--agent` never queues: its whole contract is that the printed pane id
@@ -332,6 +342,9 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             match crate::cli::queued_spawn_pane_id(&content) {
                 Ok(pane_id) => {
                     println!("{pane_id}");
+                    if !on_load.is_empty() {
+                        return super::run::run_on_load_steps(on_load, Some(pane_id)).exit_code;
+                    }
                     0
                 }
                 Err(error) => {
