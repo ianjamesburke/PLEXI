@@ -597,6 +597,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | Subcommand | Description |
 |---|---|
 | `team` | Inspect or run a stored team of independent ranking agents. |
+| `next` | Focus the next live agent needing attention (needs-you, blocked, done-unseen) |
 | `fleet` | Show tasks and their workers, ordered by attention, with blocking reasons |
 | `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
 | `list` | List active agents from both workspace and global tiers |
@@ -661,6 +662,14 @@ Run independent team members in one task and wait for RESULT.md
 | `--option` | string (repeatable) | no | Replace the stored options; repeat for each option (at least two) |
 | `--timeout` | string | no | Host-side deadline in seconds; a timed-out run fails and stops its members Default: `600`. |
 | `--json` | flag | no |  |
+
+### `plexi agent next`
+
+Focus the next live agent needing attention (needs-you, blocked, done-unseen)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print the focused pane id, or null when none needs attention, as JSON |
 
 ### `plexi agent fleet`
 

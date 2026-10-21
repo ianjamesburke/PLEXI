@@ -414,9 +414,9 @@ mod attention_tests {
             event: None,
             blocked_reason: None,
         };
-        h.app.handle_pane_ipc_request(report.clone());
-        h.app.handle_pane_ipc_request(report);
-        h.app.service_agent_attention(&h.app.ctx.clone());
+        h.inject_ipc(report.clone());
+        h.inject_ipc(report);
+        h.hidden_frame();
         let notifications: Vec<_> = h
             .app
             .pending_notifications
@@ -424,6 +424,11 @@ mod attention_tests {
             .filter(|n| n.agent_source_pane() == agent)
             .collect();
         assert_eq!(notifications.len(), 1);
+        assert!(h.app.notification_is_visible(notifications[0]));
+        assert_eq!(
+            notifications[0].source_context_id,
+            h.app.windows[0].context_id
+        );
         let view = h.app.agents_view(crate::protocol::FleetFilter::All);
         let row = view
             .tasks
@@ -486,8 +491,12 @@ impl PlexiApp {
                 .to_owned(),
         };
         // Both inboxes read this same event through the notification queue.
-        let notification =
+        let mut notification =
             super::notifications::PendingNotification::from_agent_event(pane_id, &event);
+        if let Some(win) = self.windows.iter().find(|w| w.panes.contains_key(&pane_id)) {
+            notification.source_context_id = win.context_id;
+            notification.source_window_id = win.window_id;
+        }
         self.pending_notifications
             .retain(|n| n.notify_id != notification.notify_id);
         self.enqueue_notification(

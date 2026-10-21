@@ -90,7 +90,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results"];
+const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results", "os_notifications"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_PERMISSIONS: &[&str] = &[
     "soft_grant_days",
