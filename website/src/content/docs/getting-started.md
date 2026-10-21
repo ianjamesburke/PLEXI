@@ -81,11 +81,11 @@ Plexi opens with a single terminal pane. From there:
 
 Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and app bundle — you can run all three simultaneously.
 
-| Channel | Binary | Profile |
-|---------|--------|---------|
-| Stable | `plexi` | `~/.plexi/` |
-| Beta | `plexi-beta` | `~/.plexi-beta/` |
-| Alpha | `plexi-alpha` | `~/.plexi-alpha/` |
+| Channel | Binary | Profile | Workspace Dir |
+|---------|--------|---------|---------------|
+| Stable | `plexi` | `~/.plexi/` | `<repo>/.plexi/` |
+| Beta | `plexi-beta` | `~/.plexi-beta/` | `<repo>/.plexi-beta/` |
+| Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `<repo>/.plexi-alpha/` |
 
 Stable v1 keeps Assistant, marketplace, and MCP client surfaces gated. Use a
 beta or worktree channel only when you are explicitly testing those features.

@@ -251,7 +251,7 @@ pub fn install_workspace_pack_cli() -> i32 {
     };
 
     if outcomes.is_empty() {
-        println!("No apps declared in .plexi/apps.toml.");
+        println!("No apps declared in {channel_dir}/apps.toml.");
         return 0;
     }
 

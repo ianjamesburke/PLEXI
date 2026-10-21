@@ -210,7 +210,9 @@ pub fn workspace_secret_set(
                     log::info!("secret_set:cli: stored globally account={account}");
                     println!("Stored '{friendly}' globally (plexi:user:{effective_friendly})");
                     print_tip(&format!(
-                        "reference '{friendly}' in commands.toml under `[secrets] required = [\"{friendly}\"]`."
+                        "reference '{friendly}' in {}/commands.toml (or {}) under `[secrets] required = [\"{friendly}\"]`.",
+                        crate::config::workspace_channel_dir(),
+                        super::global_commands_path().display()
                     ));
                     0
                 }
@@ -258,7 +260,7 @@ pub fn workspace_secret_set(
                 );
                 let channel_dir = crate::config::workspace_channel_dir();
                 print_tip(&format!(
-                    "Route written to {channel_dir}/secrets.toml — use in commands.toml: [secrets] required = [\"{friendly}\"]"
+                    "Route written to {channel_dir}/secrets.toml — use in {channel_dir}/commands.toml: [secrets] required = [\"{friendly}\"]"
                 ));
                 print_tip(&format!(
                     "'{friendly}' is not added to terminal environments. Agent panes never receive workspace secrets; a pane reads it with plexi secret get after you click Allow."

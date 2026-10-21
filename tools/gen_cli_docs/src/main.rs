@@ -32,7 +32,7 @@ The `plexi` CLI is the primary way to interact with a running Plexi instance fro
 
 Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, local app runtime, and CLI/MCP app wrappers. Assistant, marketplace, MCP client, and routine surfaces are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
 
-Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). A channel-named binary always targets its own profile; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` when run inside a Plexi pane.
+Each channel has its own binary, profile (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-beta`), and workspace directory (`<repo>/.plexi`, `<repo>/.plexi-alpha`, `<repo>/.plexi-beta`). A channel-named binary always targets its own profile and workspace directory; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` / `PLEXI_CHANNEL` when run inside a Plexi pane.
 
 "#
     );

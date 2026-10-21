@@ -6,7 +6,8 @@ pub(super) fn commands_file() -> String {
     format!("{}/commands.toml", crate::config::workspace_channel_dir())
 }
 
-/// Parsed .plexi/commands.toml
+/// Parsed workspace (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
+/// or global (`~/.plexi-<channel>/commands.toml`, or `~/.plexi/commands.toml` on stable) commands file.
 #[derive(Deserialize)]
 pub struct PlexiCommands {
     #[serde(default)]
@@ -194,12 +195,15 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
 }
 
 /// Default starter template written when `Edit commands` creates a missing
-/// workspace or global `commands.toml`.
+/// workspace (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
+/// or global (`~/.plexi-<channel>/commands.toml`, or `~/.plexi/commands.toml` on stable) `commands.toml`.
 pub const COMMANDS_TEMPLATE: &str = "\
 # Plexi Commands
 #
-# Define named shell commands for this scope. Run them from the command
-# palette (Cmd+P) or the terminal (`plexi run <name>`, `plexi run --json`).
+# Define named shell commands for this channel scope (global: ~/.plexi-<channel>/commands.toml,
+# or ~/.plexi/commands.toml on stable; workspace: <repo>/.plexi-<channel>/commands.toml,
+# or <repo>/.plexi/commands.toml on stable). Run them from the command palette (Cmd+P)
+# or the terminal (`plexi run <name>`, `plexi run --json`).
 # Workspace commands override global commands of the same name.
 #
 # [commands]
