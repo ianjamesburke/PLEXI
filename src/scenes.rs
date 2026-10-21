@@ -2812,12 +2812,12 @@ impl HeadlessBackend {
         match phase {
             "seed" => {
                 let result = self.h.with_app_mut(|app| -> Result<Vec<(&str, u64)>, String> {
-                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "sleep 120", "Coordinate", None, false, None, None, None, None, false)?;
+                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "sleep 120", "Coordinate", None, false, None, None, None, None, false, None)?;
                     let (_, tile) = app.find_pane_in_any_window(parent).ok_or("missing parent")?;
                     app.windows[app.active_window].focused_pane = Some(tile);
                     let mut members = vec![("lead", parent)];
                     for role in ["implementer", "tester"] {
-                        let (child, _) = app.spawn_agent_worker_pane(role, "pi", "sleep 120", "Verify", Some("agent-tools-scene"), true, Some(parent), None, None, None, true)?;
+                        let (child, _) = app.spawn_agent_worker_pane(role, "pi", "sleep 120", "Verify", Some("agent-tools-scene"), true, Some(parent), None, None, None, true, None)?;
                         app.agent_tool_children.insert(child, Some(parent));
                         members.push((role, child));
                     }

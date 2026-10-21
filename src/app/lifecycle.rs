@@ -3930,7 +3930,7 @@ impl PlexiApp {
                     *parent_pane_id,
                     cwd.as_deref().map(std::path::PathBuf::from),
                     result_schema.clone(),
-                    None, false);
+                    None, false, None);
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         if let Some(ref custom_name) = name {
@@ -4284,7 +4284,7 @@ impl PlexiApp {
                     record.parent_pane_id,
                     Some(record.cwd.clone()),
                     None,
-                    None, false);
+                    None, false, None);
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         for win in &mut self.windows {

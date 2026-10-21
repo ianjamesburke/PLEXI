@@ -585,11 +585,11 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let parent = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false).unwrap();
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
             let (_, tile) = app.find_pane_in_any_window(parent).unwrap();
             app.windows[app.active_window].focused_pane = Some(tile);
             for role in ["implementer", "tester"] {
-                let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true).unwrap();
+                let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true, None).unwrap();
                 app.agent_tool_children.insert(child, Some(parent));
             }
             parent

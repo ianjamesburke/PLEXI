@@ -406,6 +406,7 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
          When blocked, ask the parent agent with: plexi agent ask \"<question>\"",
         definition.id
     );
+    contract.push_str("\nAfter asking, wait for the parent's reply with: plexi pane message recv --timeout 300. Retry on timeout; continue the task after reading the reply.");
     if let Some(schema) = definition
         .harness
         .as_ref()
