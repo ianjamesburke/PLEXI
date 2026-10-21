@@ -131,13 +131,21 @@ impl App for AgentsApp {
         {
             return KeyDisposition::Passthrough;
         }
-        if input.key_pressed(egui::Key::J) || input.key_pressed(egui::Key::K) {
+        // Native pane driving can deliver a key event; printable scene/OS input
+        // can arrive as text. Treat the pair as one shortcut, never two actions.
+        let pressed = |key, text: &str| {
+            input.key_pressed(key)
+                || input.events().iter().any(|event| {
+                    matches!(event, egui::Event::Text(value) if value == text)
+                })
+        };
+        if pressed(egui::Key::J, "j") || pressed(egui::Key::K, "k") {
             let rows = self.rows();
             let at = rows
                 .iter()
                 .position(|r| Some(r.pane_id) == self.selected)
                 .unwrap_or(0);
-            let next = if input.key_pressed(egui::Key::J) {
+            let next = if pressed(egui::Key::J, "j") {
                 (at + 1).min(rows.len().saturating_sub(1))
             } else {
                 at.saturating_sub(1)
@@ -145,11 +153,11 @@ impl App for AgentsApp {
             self.selected = rows.get(next).map(|r| r.pane_id);
         } else if input.key_pressed(egui::Key::Enter) {
             self.jump();
-        } else if input.key_pressed(egui::Key::A) {
+        } else if pressed(egui::Key::A, "a") {
             self.answer();
-        } else if input.key_pressed(egui::Key::X) {
+        } else if pressed(egui::Key::X, "x") {
             self.dismiss();
-        } else if input.key_pressed(egui::Key::F) {
+        } else if pressed(egui::Key::F, "f") {
             self.filter = self.filter.next();
             self.selected = self.rows().first().map(|r| r.pane_id);
         } else {

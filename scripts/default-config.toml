@@ -72,7 +72,7 @@ model_high   = "anthropic/claude-fable-5"
 # assistant = true
 
 # [keybindings]
-open_agents = "cmd+alt+a"
+# open_agents = "cmd+alt+a"
 # toggle_command_palette = "cmd+p"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"
