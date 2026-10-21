@@ -412,6 +412,206 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Rename a context through the same commit handler as the desktop editor.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "context_rename",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "context_id",
+            "name",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Close a context, honoring the desktop confirmation policy.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "context_close",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "context_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set a context's parked state.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "parked": {
+              "type": "boolean"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "context_park",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "context_id",
+            "parked",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set pane visibility without changing its identity or focus.",
+          "properties": {
+            "hidden": {
+              "type": "boolean"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_visibility",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "hidden",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Focus a pane and toggle its zoom, including portal navigation.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_zoom",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Focus a pane and swap it with its directional neighbor.",
+          "properties": {
+            "direction": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_swap",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "direction",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reload the running host configuration from disk.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "reload_config",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Step through the host's pane focus history.",
+          "properties": {
+            "forward": {
+              "type": "boolean"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "focus_history",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "forward",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Process-lifetime resource admission. Identity is stamped by the socket listener.",
           "properties": {
             "holder_pid": {

@@ -4042,10 +4042,13 @@ impl eframe::App for PlexiApp {
                     self.open_rename_for_focused();
                 }
                 Action::HidePane => {
-                    if let Some(pane_id) = self.fleet_focused_pane() {
-                        if let Some((win, _)) = self.find_pane_in_any_window(pane_id) {
-                            let hidden = !self.windows[win].panes[&pane_id].is_hidden();
-                            let _ = self.set_pane_hidden(pane_id, hidden);
+                    let win = &self.windows[self.active_window];
+                    let target = win.focused_pane
+                        .and_then(|tile| Self::find_pane_in_tile(&win.tree, tile))
+                        .and_then(|id| win.panes.get(&id).map(|pane| (id, !pane.is_hidden())));
+                    if let Some((pane_id, hidden)) = target {
+                        if let Err(error) = self.set_pane_hidden(pane_id, hidden) {
+                            log::warn!("pane_hide: {error}");
                         }
                     }
                 }

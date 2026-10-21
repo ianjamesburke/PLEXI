@@ -112,7 +112,7 @@ impl PlexiApp {
         self.windows[win]
             .panes
             .get_mut(&pane_id)
-            .unwrap()
+            .ok_or_else(|| format!("pane {pane_id} has no runtime"))?
             .set_hidden(hidden);
         log::info!("pane_hide: pane={pane_id} hidden={hidden}");
         self.mark_workspace_dirty();
