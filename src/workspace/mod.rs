@@ -83,6 +83,12 @@ pub struct SavedPane {
 /// Persisted agent session state for an agent terminal pane.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct SavedAgentSession {
+    #[serde(default)]
+    pub fleet_seen: bool,
+    #[serde(default)]
+    pub fleet_done_unseen: bool,
+    #[serde(default)]
+    pub fleet_since: u64,
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
@@ -809,6 +815,9 @@ mod tests {
             launch: None,
             slots: slots.clone(),
             agent_session: Some(SavedAgentSession {
+                fleet_seen: false,
+                fleet_done_unseen: false,
+                fleet_since: 0,
                 harness: "claude".to_string(),
                 config_name: Some("implementer".to_string()),
                 session_id: Some("sess-42".to_string()),

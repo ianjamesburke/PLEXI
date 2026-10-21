@@ -752,6 +752,10 @@ pub enum AgentRestoreMode {
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
 #[derive(Deserialize, Default, Clone)]
 pub struct AgentsConfig {
+    /// Idle ephemeral worker stall threshold in seconds (default 120).
+    pub stalled_after_secs: Option<u64>,
+    /// Show agent jump rows in the command palette (default false).
+    pub palette_agent_results: Option<bool>,
     /// Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions.
     pub low: Option<String>,
     /// Standard work. Default: claude sonnet with --dangerously-skip-permissions.
@@ -764,6 +768,8 @@ pub struct AgentsConfig {
 
 impl AgentsConfig {
     fn overlay(&mut self, other: Self) {
+        if other.stalled_after_secs.is_some() { self.stalled_after_secs = other.stalled_after_secs; }
+        if other.palette_agent_results.is_some() { self.palette_agent_results = other.palette_agent_results; }
         if other.low.is_some() {
             self.low = other.low;
         }

@@ -610,6 +610,19 @@ impl Pane {
                     .clone()
                     .or_else(|| agent.as_ref().and_then(|a| a.session_id.clone()));
                 let changed = prev_state != new_state || prev_session != new_session;
+                if prev_state != new_state {
+                    t.fleet_since = crate::platform::clock::now_secs();
+                    if new_state == Some(crate::protocol::AgentState::Completed)
+                        || (prev_state == Some(crate::protocol::AgentState::Working)
+                            && new_state == Some(crate::protocol::AgentState::Idle)) {
+                        t.fleet_done_unseen = true;
+                        t.fleet_seen = false;
+                    } else if new_state == Some(crate::protocol::AgentState::Working) {
+                        t.fleet_done_unseen = false;
+                        t.fleet_seen = false;
+                        t.agent_completed = false;
+                    }
+                }
                 t.agent_reported_at = agent.as_ref().map(|_| std::time::Instant::now());
                 t.agent = agent;
                 (true, changed)
@@ -689,6 +702,9 @@ impl Pane {
 // ---------------------------------------------------------------------------
 
 pub struct TerminalPane {
+    pub fleet_seen: bool,
+    pub fleet_done_unseen: bool,
+    pub fleet_since: u64,
     /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
     pub id: PaneId,
     pub backend: TerminalBackend,
@@ -814,6 +830,9 @@ impl TerminalPane {
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
             hidden: false,
+            fleet_seen: false,
+            fleet_done_unseen: false,
+            fleet_since: crate::platform::clock::now_secs(),
             agent: None,
             agent_reported_at: None,
             observed_agent: None,
@@ -939,6 +958,9 @@ impl TerminalPane {
             if self.parent_pane_id.is_some() {
                 s.parent_pane_id = self.parent_pane_id;
             }
+            s.fleet_seen = self.fleet_seen;
+            s.fleet_done_unseen = self.fleet_done_unseen;
+            s.fleet_since = self.fleet_since;
             s.ephemeral = self.ephemeral;
             if s.tail_preview.is_none() {
                 s.tail_preview = self.tail_preview.clone();
@@ -976,6 +998,9 @@ impl TerminalPane {
             .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
 
         Some(crate::workspace::SavedAgentSession {
+            fleet_seen: self.fleet_seen,
+            fleet_done_unseen: self.fleet_done_unseen,
+            fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
             session_id,

@@ -11468,6 +11468,9 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                fleet_seen: false,
+                                fleet_done_unseen: false,
+                                fleet_since: 0,
                                 harness: "claude".to_string(),
                                 config_name: Some("lead".to_string()),
                                 session_id: Some("sess-active-10".to_string()),
@@ -11533,6 +11536,9 @@ mod agent_state_restoration_tests {
                         launch: None,
                         slots: bg_slots,
                         agent_session: Some(SavedAgentSession {
+                            fleet_seen: false,
+                            fleet_done_unseen: false,
+                            fleet_since: 0,
                             harness: "codex".to_string(),
                             config_name: Some("worker".to_string()),
                             session_id: Some("thread-bg-20".to_string()),
@@ -11567,6 +11573,9 @@ mod agent_state_restoration_tests {
                         launch: None,
                         slots: HashMap::new(),
                         agent_session: Some(SavedAgentSession {
+                            fleet_seen: false,
+                            fleet_done_unseen: false,
+                            fleet_since: 0,
                             harness: "pi".to_string(),
                             config_name: Some("scout".to_string()),
                             session_id: Some("pi-done-30".to_string()),
@@ -11851,6 +11860,9 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                fleet_seen: false,
+                                fleet_done_unseen: false,
+                                fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 session_id: None,
@@ -11876,6 +11888,9 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                fleet_seen: false,
+                                fleet_done_unseen: false,
+                                fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 session_id: Some("pi-unpersisted-11".to_string()),
@@ -11901,6 +11916,9 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                fleet_seen: false,
+                                fleet_done_unseen: false,
+                                fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 session_id: Some("pi-persisted-12".to_string()),
@@ -11938,6 +11956,9 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                fleet_seen: false,
+                                fleet_done_unseen: false,
+                                fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 session_id: None,
@@ -11963,6 +11984,9 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                fleet_seen: false,
+                                fleet_done_unseen: false,
+                                fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 session_id: Some("pi-unpersisted-21".to_string()),
