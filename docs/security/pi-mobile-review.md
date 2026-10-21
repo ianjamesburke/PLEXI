@@ -47,8 +47,8 @@ However, installing `pi-mobile@0.4.0` globally into `~/.pi/agent/` **as-is** int
 | **Remote SSH tunnel (optional `/remote add`)** | Remote `127.0.0.1:7878` → local `127.0.0.1:<port>` | Only active if `npx pi-mobile add <ssh-host>` is explicitly used; remote Pi connects over SSH port-forward using `enrol` token in `~/.pi/agent/pi-mobile/hub.json` (`0600`) | `bin/pi-mobile.mjs:130-152`, `src/hub.ts:261-319`, `src/link.ts:155-184` |
 
 **Findings:**
-- **No LAN / `0.0.0.0` listener:** `HubServer.start()` calls `this.server.listen(this.config.port, "127.0.0.1", ...)` (`src/hub.ts:183`). If port `7878` is already bound by another local Pi process, `PeerLink` connects to `127.0.0.1:7878` as a follower (`src/link.ts:24-39, 97-112`); if the holder exits, remaining peers re-elect a leader on `127.0.0.1:7878` after a random 80–280 ms jitter (`src/link.ts:192-198`).
-- **Automatic `tailscale serve` mutation:** Unless `config.tailscale === false` (`~/.pi/agent/pi-mobile/config.json`), `PI_MOBILE_TAILSCALE=off` (`src/hub.ts:205`), or `config.publicUrl` is set, starting the hub automatically executes `tailscale serve --bg --https=<port> http://127.0.0.1:7878` (`bin/tailscale.mjs:123-138`) on the first available port in `[443, 8443, 10000]`. `bin/pi-mobile.mjs:96` only calls `stopServe(config.port)` on `npx pi-mobile off` or `npx pi-mobile uninstall`, meaning background Tailscale Serve rules persist across Pi restarts once enabled.
+- **No LAN / `0.0.0.0` listener:** `Hub.listen()` calls `this.server.listen(this.config.port, "127.0.0.1", ...)` (`src/hub.ts:181-189`). If port `7878` is already bound by another local Pi process, `Bridge` connects to `127.0.0.1:7878` over loopback (`src/link.ts:25-48, 86-140`); if the hub holder exits, remaining linked Pi processes re-elect a new hub on `127.0.0.1:7878` after a random 80–280 ms jitter (`src/link.ts:144-160`).
+- **Automatic `tailscale serve` mutation:** Unless `config.tailscale === false` (`~/.pi/agent/pi-mobile/config.json`), `PI_MOBILE_TAILSCALE=off` (`src/link.ts:31`), or `config.publicUrl` is set (`src/hub.ts:206`), starting the hub automatically executes `tailscale serve --bg --https=<port> http://127.0.0.1:7878` (`bin/tailscale.mjs:123-141`) on the first available port in `[443, 8443, 10000]`. Neither `bin/tailscale.mjs` nor `src/hub.ts` ever runs `tailscale serve ... off`, meaning background Tailscale Serve rules persist across Pi restarts once enabled until manually removed with `tailscale serve --https=<port> off`.
 - **Same-machine loopback exposure:** Any process running on `localhost` can connect to `127.0.0.1:7878` to fetch unauthenticated static web assets (`/`, `/app.js`, `/style.css`, `/nacl.js`, `/qr.js` at `src/hub.ts:471-505`), though `/api/rpc`, `/api/stream`, and `Upgrade: pi-mobile-link` require either a paired device key (`devices.json`, `0600`) or `~/.pi/agent/pi-mobile/link.secret` (`0600`).
 
 ---
@@ -91,14 +91,15 @@ Data leaves the Pi process across three distinct boundaries:
 - **APNs / Push Relay (`src/hub.ts:386-400`, `src/apns.ts:74-85`, `src/relay.ts:48-73`):** Only used if a native mobile app registers an APNs token or relay capability (`rpc("apnsRegister")` / `rpc("relayRegister")`). The payload inner content is `seal(device.key, payload)`, while the outer APNs alert is static `"pi" / "New activity"` (`src/apns.ts:76`, `src/relay.ts:53`).
 
 #### C. To Third-Party Cloud AI APIs (via bundled `pi-speech@0.1.0` when Dictation / Voice is used)
-- **Dictation STT (`pi-speech/src/host.ts:85-107`, `src/stt.ts:284-299, 419-444`):**
+- **Config location (`pi-speech/src/config.ts:76-83, 103-109`):** `loadVoiceConfig()` reads `~/.pi/agent/pi-speech/config.json` (`speechDir()` = `join(agentDir(), "pi-speech")`), with keys defined by `VoiceConfig` (`stt?: "auto" | "apple" | "openai"`, `realtime?: "auto" | "off"`, `tts?: "auto" | "off"`, `model?: string`, `locale?: string`, etc. at `pi-speech/src/config.ts:9-36`).
+- **Dictation STT (`pi-speech/src/host.ts:85-101`, `src/stt.ts:284-299, 419-444`):**
   - Extracts repository vocabulary from `cwd` (`git ls-files`, `git rev-parse --show-toplevel`, `git grep` on modified files, plus the last 30 session messages; `pi-speech/src/vocab.ts:113-140`).
   - On macOS 26+ (`darwinMajor() >= 26`), default `stt: "auto"` uses Apple's on-device `SpeechTranscriber` (`pi-speech/src/stt.ts:190-280, 419-424`). If `stt: "openai"` is configured or on older macOS when `OPENAI_API_KEY` is present in `process.env`, audio + up to 80 repo vocabulary identifiers are `POST`ed to `https://api.openai.com/v1/audio/transcriptions` (`gpt-4o-transcribe`, `pi-speech/src/stt.ts:284-299`).
-- **Dictation LLM Distillation (`pi-speech/src/distill.ts:73-112`, `src/model.ts:77-112`):**
-  - Unless `/dictate raw` (`distill: false`) is used, `DictationHost.transcribe()` sends the raw spoken transcript + repo vocabulary + recent session messages to a fast model in Pi's `ctx.modelRegistry` (`claude-haiku-4-5`, `gpt-5.4-mini`, `gemini-2.5-flash`, etc.) using the active Pi provider credentials.
+- **Dictation LLM Distillation (`pi-speech/src/host.ts:86, 98-107`, `src/distill.ts:73-112`, `src/model.ts:77-112`):**
+  - `distill` is a **per-request parameter** (`p.distill === false` in `VoiceHost.transcribe(p)` at `pi-speech/src/host.ts:86, 98`, passed by `/dictate raw` in the terminal), **not** a field in `~/.pi/agent/pi-speech/config.json` (`VoiceConfig`). Whenever `p.distill !== false` (the phone default) or when the phone calls `distill`, `brief`, `details`, or `draftFinish` (`src/bridge.ts:435-468`), `VoiceHost` sends the spoken transcript / run digest + repo vocabulary + recent session messages to a fast model in Pi's `ctx.modelRegistry` (`registryComplete` at `pi-speech/src/model.ts:77-112`) using the active Pi provider credentials.
 - **Realtime Voice Mode (`pi-speech/src/host.ts:142-176`, `src/realtime.ts:248-337`, `src/tts.ts:22-67`):**
-  - Starting voice mode on the phone (`rpc("voiceSession")` at `src/hub.ts:593-602`) or terminal (`/voice`) reads `process.env.OPENAI_API_KEY` or `ctx.modelRegistry.getApiKeyForProvider("openai-codex")` (`pi-speech/src/host.ts:142-147`) and `POST`s the WebRTC SDP offer + system instructions (including project name and 60 repo vocabulary symbols) to `https://chatgpt.com/backend-api/codex/realtime/calls` or `https://api.openai.com/v1/realtime/calls` (`gpt-realtime-2`).
-  - Fallback TTS (`pi-speech/src/tts.ts:34-43`) sends text to `https://api.openai.com/v1/audio/speech` (`gpt-4o-mini-tts`) when `OPENAI_API_KEY` is set.
+  - Unless `realtime: "off"` is set in `~/.pi/agent/pi-speech/config.json` (`pi-speech/src/config.ts:17`, checked at `pi-speech/src/host.ts:152`), starting voice mode on the phone (`voiceSession` at `src/bridge.ts:439, 463`) or terminal (`/voice`) reads `process.env.OPENAI_API_KEY` or `ctx.modelRegistry.getApiKeyForProvider("openai-codex")` (`pi-speech/src/host.ts:142-147`) and `POST`s the WebRTC SDP offer + system instructions (including project name and 60 repo vocabulary symbols) to `https://chatgpt.com/backend-api/codex/realtime/calls` or `https://api.openai.com/v1/realtime/calls` (`gpt-realtime-2`).
+  - Unless `tts: "off"` is set in `~/.pi/agent/pi-speech/config.json` (`pi-speech/src/config.ts:29`, checked by `ttsTarget` at `pi-speech/src/tts.ts:24`), fallback TTS (`pi-speech/src/tts.ts:34-43`) sends text to `https://api.openai.com/v1/audio/speech` (`gpt-4o-mini-tts`) when `OPENAI_API_KEY` is set.
 
 ---
 
@@ -129,28 +130,25 @@ Data leaves the Pi process across three distinct boundaries:
 
 #### Extension Collision with Plexi's `packages/pi-voice` (Stint `0839`)
 - Ian's `~/.pi/agent/settings.json` already loads `/Users/ianburke/Documents/GitHub/PLEXI/packages/pi-voice` (local Parakeet v3 STT + Kitten TTS).
-- `pi-mobile/src/index.ts:88-98` unconditionally calls `registerDictation(pi, complete)` and `registerVoiceMode(pi, complete)` from `pi-speech`, registering a competing `/voice` slash command (`pi-speech/src/voice.ts:289`).
+- `pi-mobile/src/index.ts:88-98` unconditionally calls `registerDictation(pi, complete)` and `registerVoiceMode(pi, complete)` from `pi-speech`, registering a competing `/voice` slash command (`pi-speech/src/voice.ts:289`), and `src/index.ts:122` attaches `b.voice = voice` (`VoiceHost`), which exposes the phone speech RPCs (`transcribe`, `distill`, `brief`, `details`, `voiceSession`, `speak`, `voices`, `learn`, `voiceState`, `draftStart`, `draftChunk`, `draftState`, `draftFinish`, `draftEdit`, `draftClose` in `src/bridge.ts:435-468`). Simply removing `registerDictation` / `registerVoiceMode` stops the terminal slash-command collision, whereas removing `b.voice = voice` (`src/index.ts:122`) is required to disable phone speech RPCs completely (`src/bridge.ts:451` then rejects them with `"voice is not available in this pi"`).
 
 ---
 
 ### 6. How `/remote` Exposes the Pi Head (and Other Sessions)
 
-`pi-mobile` has two sharing modes controlled by `shouldShare()` (`src/index.ts:138-140`):
+`pi-mobile` has two sharing modes controlled by `shouldShare()` (`src/index.ts:148`):
 
 ```ts
-function shouldShare(): boolean {
-  if (g[HIDDEN]) return false;
-  return loadConfig().enabled || (pi.getFlag("remote") === true && !g[FLAG_OFF]);
-}
+const shouldShare = () => !g[HIDDEN] && (loadConfig().enabled || (pi.getFlag("remote") === true && !g[FLAG_OFF]));
 ```
 
-1. **What `/remote` (or `/remote on`) does (`src/index.ts:273-294`):**
-   - If `config.enabled` in `~/.pi/agent/pi-mobile/config.json` is `false`, running `/remote` immediately writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json` (`src/index.ts:278-280`) and starts sharing.
-   - Because **every** running Pi process with `pi-mobile` loaded polls `~/.pi/agent/pi-mobile/config.json` every 1,500 ms via `watchFile( configPath, { interval: 1500 }, ... )` (`src/index.ts:166-171`) and checks `shouldShare()` on `session_start` (`src/index.ts:148-156`), flipping `config.enabled = true` **automatically exposes every active and future Pi session on the machine** to the hub and paired phones!
+1. **What `/remote` and `/remote pair` do (`src/index.ts:278-292, 319-320`):**
+   - Both `connect()` (`/remote`) and `pair()` (`/remote pair`) call `enable()` (`src/index.ts:278-282`), which clears `g[HIDDEN]` and writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json` whenever `cfg.enabled` is `false`.
+   - Because **every** running Pi process with `pi-mobile` loaded polls `~/.pi/agent/pi-mobile/config.json` every 1,500 ms via `watchFile(configPath(), { interval: 1500, persistent: false }, sync)` (`src/index.ts:167-171`) and checks `shouldShare()` on `session_start` (`src/index.ts:148-158`), flipping `config.enabled = true` **automatically exposes every active and future Pi session on the machine** to the hub and paired phones!
    - Ephemeral worker panes spawned by `plexi agent spawn` pass `--no-extensions` (stint `0842`), so they do not load `~/.pi/agent/` packages, **but** any interactive Pi pane (including `babysitter-v3` head/worker panes or ad-hoc `pi` terminals) that loads extensions will join the hub automatically whenever `config.enabled === true`.
 2. **Per-session sharing (`pi --remote` with `config.enabled: false`):**
-   - Starting Pi with `pi --remote` sets `pi.getFlag("remote") === true` (`src/index.ts:100-103`) for **that single Pi process only**.
-   - However, if the user subsequently types `/remote` inside that session while `config.enabled` is `false`, lines `278-281` of `src/index.ts` still flip `config.enabled = true` globally unless `/remote pair` is used or `src/index.ts` is patched not to mutate `config.enabled` when `--remote` is active.
+   - Starting Pi with `pi --remote` sets `pi.getFlag("remote") === true` (`src/index.ts:85, 148`) for **that single Pi process only**, so it links to the hub on startup without needing `config.enabled === true`.
+   - However, because `connect()` and `pair()` both call `enable()` (`src/index.ts:278-282, 286, 320`), running `/remote` or `/remote pair` inside a `pi --remote` session still writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json` unless `enable()` is patched not to mutate `config.json` when `pi.getFlag("remote") === true` (or `"enabled": false` is restored in `config.json` immediately after pairing).
 
 ---
 
@@ -165,8 +163,8 @@ Does `pi-mobile` allow a paired phone to bypass Plexi's stint `0788` click-only 
 | **Seal / journal fault (`NeedsYouKind::Integrity`)** | Rust host broker (`NeedsYouKind::surface_may_resolve`) | **NO** | Neither `approve` nor `deny` is permitted from `ResolveSurface::Socket` or `ResolveSurface::Phone` (`src/broker/gate.rs:104-106`). |
 | **Keychain signing-key recovery (`NeedsYouKind::Keychain`)** | Rust host broker (`NeedsYouKind::surface_may_resolve`) | **NO** | Neither `approve` nor `deny` is permitted from `ResolveSurface::Socket` or `ResolveSurface::Phone` (`src/broker/gate.rs:104-106, 1341`). |
 | **Secret read (`plexi secret get <KEY>`)** | Rust host command handler (`src/app/secret_get.rs`, `src/workspace/secrets/pane_read.rs`) | **NO** | `plexi secret get` blocks waiting for a real pointer click on the desktop `draw_approval_banner` (`!synthetic_frame && any_released`) and cannot be approved over `PLEXI_SOCKET` or by `ctx.ui`. |
-| **Creative / blocking question (`NeedsYouKind::Question` / `BlockedRun`) when `prompt_in_pi_ui: true`** | `PermissionMonitor::answer_needs_you_from` (`src/broker/gate.rs:1353-1403`) + `@plexi/pi` `needsYouAskTool` (`packages/pi-plexi/src/tools.ts:410-425`) | **YES (answers question only; never mints a grant)** | When `plexi_needs_you_ask` is called with `wait_for_answer: true` and `prompt_in_pi_ui: true`, `@plexi/pi` holds the host-minted one-time `ui_token` and calls `ctx.ui.select(...)` (`packages/pi-plexi/src/tools.ts:410-420`). Because `pi-mobile`'s `AgentBridge.installUiBridge` (`src/bridge.ts:588-605`) monkey-patches `ctx.ui.select` to forward the prompt to paired phones (`rpc("answer")`), a phone answer resolves `ctx.ui.select` inside the Pi process, which then submits `ui_token` to `plexi needs-you answer`. Note: `answer_needs_you_from` strictly checks `matches!(kind, Some(NeedsYouKind::Question \| NeedsYouKind::BlockedRun))` (`src/broker/gate.rs:1369-1372`) and **never mints a `GrantRecord`**. |
-| **Pi-internal extension dialogs (`ctx.ui.select` / `confirm` / `input`) & user prompts (`pi.sendUserMessage`)** | Pi extension runtime inside the terminal pane | **YES** | `AgentBridge.installUiBridge` (`src/bridge.ts:588-605`) and `AgentBridge.send` (`src/bridge.ts:421-443`) explicitly bridge Pi TUI dialogs and user turns to the phone. |
+| **Creative / blocking question (`NeedsYouKind::Question` / `BlockedRun`) when `prompt_in_pi_ui: true`** | `PermissionMonitor::answer_needs_you_from` (`src/broker/gate.rs:1353-1403`) + `@plexi/pi` `needsYouAskTool` (`packages/pi-plexi/src/tools.ts:410-425`) | **YES (answers question only; never mints a grant)** | When `plexi_needs_you_ask` is called with `wait_for_answer: true` and `prompt_in_pi_ui: true`, `@plexi/pi` holds the host-minted one-time `ui_token` and calls `ctx.ui.select(...)` (`packages/pi-plexi/src/tools.ts:410-420`). Because `pi-mobile`'s `patchUI` (`src/bridge.ts:588-605`) monkey-patches `ctx.ui.select` to forward the prompt to paired phones (`rpc("answer")`), a phone answer resolves `ctx.ui.select` inside the Pi process, which then submits `ui_token` to `plexi needs-you answer`. Note: `answer_needs_you_from` strictly checks `matches!(kind, Some(NeedsYouKind::Question \| NeedsYouKind::BlockedRun))` (`src/broker/gate.rs:1369-1372`) and **never mints a `GrantRecord`**. |
+| **Pi-internal extension dialogs (`ctx.ui.select` / `confirm` / `input`) & user prompts (`pi.sendUserMessage`)** | Pi extension runtime inside the terminal pane | **YES** | `patchUI` (`src/bridge.ts:588-605`) and `Bridge.send` (`src/bridge.ts:528-552`) explicitly bridge Pi TUI dialogs and user turns to the phone. |
 
 **Bottom line on `0788`:**
 `pi-mobile` **cannot** weaken or bypass `0788` for any security-granting (`ApprovalClick`, `PermissionChange`), integrity (`Integrity`), Keychain (`Keychain`), or secret-reading (`plexi secret get`) gate, because those gates are enforced in the Rust host process (`PermissionMonitor`) on real desktop pointer events and reject all `ResolveSurface::Socket` approvals. The only cross-over is non-grant `NeedsYouKind::Question` items when `prompt_in_pi_ui: true` is used, where `pi-mobile`'s `ctx.ui.select` monkey-patch allows the phone to pick a choice using `@plexi/pi`'s `ui_token`.
@@ -180,8 +178,10 @@ Does `pi-mobile` allow a paired phone to bypass Plexi's stint `0788` click-only 
 Specifically:
 1. **Pin exact version `0.4.0`** (never floating `npm:pi-mobile`) and verify the tarball SHA-256 (`b9c6b512201fd1c3b347524b93781497d74dab02a27ecb5728931cde8e453c97`) before loading.
 2. **Pre-seed `~/.pi/agent/pi-mobile/config.json` with `"enabled": false` and `"tailscale": false`** so `pi-mobile` never auto-shares all Pi sessions on startup and never mutates `tailscale serve` behind the scenes.
-3. **Neutralize the `pi-speech` `/voice` collision and cloud-speech egress** if Ian is already using Plexi's local `packages/pi-voice` (`0839`): either patch out the two `registerDictation` / `registerVoiceMode` calls in `src/index.ts:96-97` in a local unpacked copy under `~/.pi/agent/extensions/pi-mobile-local`, or set `"stt": "apple", "tts": "off"` in `~/.pi/agent/pi-speech.json` (`0600`) so `pi-speech` never sends audio or text to OpenAI TTS/Whisper.
-4. **Opt in per-session with `pi --remote`** on the specific Pi head session you want on the phone, and use `/remote pair` (not bare `/remote`, which flips `"enabled": true` globally in `config.json`) when pairing.
+3. **Neutralize the `pi-speech` `/voice` collision and cloud-speech egress:**
+   - Pre-seed `~/.pi/agent/pi-speech/config.json` (`0600`, read by `loadVoiceConfig()` at `pi-speech/src/config.ts:76-83, 103-109`) with `"stt": "apple"`, `"realtime": "off"`, and `"tts": "off"` (`pi-speech/src/config.ts:11, 17, 29`) so `pi-speech` never calls OpenAI Whisper (`pi-speech/src/stt.ts:419-424`), OpenAI/ChatGPT Realtime (`pi-speech/src/host.ts:152`), or OpenAI TTS (`pi-speech/src/tts.ts:24`). Note that `distill: false` is a per-request parameter on `VoiceHost.transcribe(p)` (`pi-speech/src/host.ts:86, 98`), not a config file setting, so phone speech RPCs (`transcribe`, `distill`, `brief`, `details`, `draftFinish` at `src/bridge.ts:435-468`) will still invoke `registryComplete` (`pi-speech/src/model.ts:77-112`) if `b.voice` is attached.
+   - Because Ian's `~/.pi/agent/settings.json` already loads `/Users/ianburke/Documents/GitHub/PLEXI/packages/pi-voice` (`0839`), unpack `pi-mobile-0.4.0.tgz` locally and comment out `registerDictation(pi, complete)` and `registerVoiceMode(pi, complete)` (`src/index.ts:92-93`) to prevent `/voice` and `/dictate` slash-command collisions — and also comment out `b.voice = voice` (`src/index.ts:122`) if you want phone speech RPCs completely disabled (`src/bridge.ts:451`).
+4. **Opt in per-session with `pi --remote`** on the specific Pi head session you want on the phone, and note that both `/remote` and `/remote pair` call `enable()` (`src/index.ts:278-286, 319-320`), which sets `"enabled": true` in `~/.pi/agent/pi-mobile/config.json` unless `enable()` is patched in the local unpacked copy or `"enabled": false` is restored after pairing.
 
 ---
 
@@ -189,10 +189,12 @@ Specifically:
 
 If Ian approves installing `pi-mobile` for his Pi head, run these exact steps in an external terminal:
 
-### Step 1: Pre-seed locked-down configs (`0700` dir, `0600` files)
+### Step 1: Pre-seed locked-down configs (`0700` dirs, `0600` files)
+
+`pi-mobile` reads `~/.pi/agent/pi-mobile/config.json` (`src/store.ts:54-67`) and `pi-speech` reads `~/.pi/agent/pi-speech/config.json` (`pi-speech/src/config.ts:76-83, 103-109`):
 
 ```bash
-mkdir -p -m 700 ~/.pi/agent/pi-mobile
+mkdir -p -m 700 ~/.pi/agent/pi-mobile ~/.pi/agent/pi-speech
 
 cat > ~/.pi/agent/pi-mobile/config.json <<'EOF'
 {
@@ -203,14 +205,14 @@ cat > ~/.pi/agent/pi-mobile/config.json <<'EOF'
 EOF
 chmod 600 ~/.pi/agent/pi-mobile/config.json
 
-cat > ~/.pi/agent/pi-speech.json <<'EOF'
+cat > ~/.pi/agent/pi-speech/config.json <<'EOF'
 {
   "stt": "apple",
-  "tts": "off",
-  "distill": false
+  "realtime": "off",
+  "tts": "off"
 }
 EOF
-chmod 600 ~/.pi/agent/pi-speech.json
+chmod 600 ~/.pi/agent/pi-speech/config.json
 ```
 
 ### Step 2: Verify tarball hash and install pinned `pi-mobile@0.4.0`
@@ -226,7 +228,7 @@ shasum -a 256 pi-mobile-0.4.0.tgz
 pi install npm:pi-mobile@0.4.0
 ```
 
-*(Note: If keeping `/Users/ianburke/Documents/GitHub/PLEXI/packages/pi-voice` enabled in `~/.pi/agent/settings.json`, unpack `pi-mobile-0.4.0.tgz` to a local directory, comment out `registerDictation(pi, complete)` and `registerVoiceMode(pi, complete)` at `src/index.ts:96-97` so `/voice` does not collide with `pi-voice`, and install that local directory via `pi install <path>` instead.)*
+*(Note: Because `/Users/ianburke/Documents/GitHub/PLEXI/packages/pi-voice` is active in `~/.pi/agent/settings.json`, unpack `pi-mobile-0.4.0.tgz` to a local directory, comment out `registerDictation(pi, complete)` and `registerVoiceMode(pi, complete)` at `src/index.ts:92-93` to avoid the terminal `/voice` command collision, and also comment out `b.voice = voice` at `src/index.ts:122` so phone speech RPCs in `src/bridge.ts:435-468` are rejected at `src/bridge.ts:451` rather than calling `registryComplete` for distillation/briefs; then install that local directory via `pi install <path>`.)*
 
 ### Step 3: Configure Tailscale Serve explicitly (tailnet-only HTTPS, no Funnel)
 
@@ -265,18 +267,31 @@ pi --remote
 ```
 
 Inside that Pi head session:
-1. Run `/remote pair` (do **not** run bare `/remote`, which sets `"enabled": true` globally for all Pi sessions).
-2. Scan the one-time QR code with your phone on the same tailnet within 10 minutes.
+1. Run `/remote pair` and scan the one-time QR code with your phone on the same tailnet within 10 minutes.
+2. Because `pair()` calls `enable()` (`src/index.ts:278-282, 319-320`), which writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json`, immediately reset `"enabled": false` in `~/.pi/agent/pi-mobile/config.json` after pairing (or no-op `enable()` in `src/index.ts:278-282` when `pi.getFlag("remote") === true`) so other Pi sessions on the machine do not auto-join while the `pi --remote` head session stays shared via its `--remote` flag (`src/index.ts:148`).
 3. Verify paired devices with `/remote devices`.
 
 ### Step 5: Teardown / Revocation
 
-```bash
-# Revoke all paired phones and stop sharing:
-npx pi-mobile@0.4.0 revoke --all
-npx pi-mobile@0.4.0 off
+`bin/pi-mobile.mjs` (`bin/pi-mobile.mjs:221-263`) only supports multi-machine SSH commands (`add <ssh-host>`, `remove <name>`, `machines`, `enrol`); device revocation and stopping sharing are interactive `/remote` subcommands inside Pi (`src/index.ts:227-230, 370-401`):
 
-# Remove the Tailscale Serve rule:
-tailscale serve --https=8443 off
-tailscale serve status
-```
+1. **Inside Pi (interactive):**
+   - Run `/remote devices` → select a device or **`Revoke all`** → confirm (`src/index.ts:387-401`, which calls `hubRequest("revoke", { ids })` at `src/hub.ts:641-647` to delete keys from `~/.pi/agent/pi-mobile/devices.json`, clear push subscriptions, and drop active SSE streams).
+   - Run `/remote off` → select **`Only this session`** or **`Every session on this machine`** (`src/index.ts:370-385`).
+2. **From an external shell (when Pi is not running, plus Tailscale Serve teardown):**
+   ```bash
+   # Disable machine-wide sharing and wipe paired device keys on disk:
+   cat > ~/.pi/agent/pi-mobile/config.json <<'EOF'
+   {
+     "enabled": false,
+     "port": 7878,
+     "tailscale": false
+   }
+   EOF
+   printf '[]\n' > ~/.pi/agent/pi-mobile/devices.json
+   chmod 600 ~/.pi/agent/pi-mobile/config.json ~/.pi/agent/pi-mobile/devices.json
+
+   # Remove the Tailscale Serve rule:
+   tailscale serve --https=8443 off
+   tailscale serve status
+   ```
