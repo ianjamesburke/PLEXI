@@ -1669,6 +1669,7 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
         crate::host::event_subscriptions::HostPublishRequest,
     >::channel(wake, "event_publish");
 
+    let trace_profile = crate::config::config_dir();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
@@ -1678,6 +1679,7 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
             let peer_pid = resolve_socket_peer_pid(&stream);
             let peer_ancestry = peer_pid.map(capture_peer_ancestry);
             handle_socket_connection(
+                &trace_profile,
                 stream,
                 mailbox.clone(),
                 subscribe_mailbox.clone(),

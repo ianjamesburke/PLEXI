@@ -688,7 +688,18 @@ const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 /// only variants that carry a `peer_pid` field — so `handle_pane_ipc_request`
 /// can resolve the sender pane from a value the client never controlled,
 /// instead of trusting the wire-supplied `source_context_id`/`source_pane_id`.
+#[cfg(test)]
 pub(crate) fn handle_socket_line(
+    line: &str,
+    mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
+    peer_ancestry: Option<&[u32]>,
+    ack_writer: &mut impl std::io::Write,
+) {
+    handle_socket_line_in(&crate::config::config_dir(), line, mailbox, peer_ancestry, ack_writer);
+}
+
+pub(crate) fn handle_socket_line_in(
+    profile: &std::path::Path,
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     peer_ancestry: Option<&[u32]>,
@@ -696,7 +707,7 @@ pub(crate) fn handle_socket_line(
 ) {
     if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line) {
         if frame["type"] == "cli_trace" {
-            match crate::host::flight_recorder::handle_cli_trace(&crate::config::config_dir(), &frame) {
+            match crate::host::flight_recorder::handle_cli_trace(profile, &frame) {
                 Ok(()) => {
                     if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
                         log::warn!("cli_trace: acknowledgement failed: {error}");
@@ -821,6 +832,7 @@ fn spawn_socket_listener(
     // Teardown removes exactly this socket, so it has to know which one it is.
     quit::record_notify_socket(&path);
     let listener_path = path.clone();
+    let trace_profile = crate::config::config_dir();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let stream = match stream {
@@ -851,8 +863,10 @@ fn spawn_socket_listener(
             let mailbox = mailbox.clone();
             let subscribe_mailbox = subscribe_mailbox.clone();
             let publish_mailbox = publish_mailbox.clone();
+            let trace_profile = trace_profile.clone();
             std::thread::spawn(move || {
                 handle_socket_connection(
+                    &trace_profile,
                     stream,
                     mailbox,
                     subscribe_mailbox,
@@ -870,6 +884,7 @@ fn spawn_socket_listener(
 /// because they keep the socket open and stream NDJSON back — a transport the
 /// normal request/response-file path does not support.
 fn handle_socket_connection(
+    trace_profile: &std::path::Path,
     stream: crate::platform::ipc::IpcStream,
     mailbox: ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
@@ -949,7 +964,7 @@ fn handle_socket_connection(
         }
     }
     // Normal path: first line plus any remaining lines as AppRequests.
-    handle_socket_line(&first, &mailbox, peer_ancestry.as_deref(), &mut write_half);
+    handle_socket_line_in(trace_profile, &first, &mailbox, peer_ancestry.as_deref(), &mut write_half);
     loop {
         let line = match read_socket_frame(&mut reader) {
             Ok(Some(line)) => line,
@@ -963,7 +978,7 @@ fn handle_socket_connection(
         if line.is_empty() {
             continue;
         }
-        handle_socket_line(&line, &mailbox, peer_ancestry.as_deref(), &mut write_half);
+        handle_socket_line_in(trace_profile, &line, &mailbox, peer_ancestry.as_deref(), &mut write_half);
     }
 }
 

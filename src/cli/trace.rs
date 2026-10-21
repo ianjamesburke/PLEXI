@@ -54,7 +54,8 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let profile = dir.path().to_path_buf();
         let server = std::thread::spawn(move || {
-            let _profile = crate::config::set_test_profile_dir(profile.clone());
+            let wrong_profile = tempfile::tempdir().unwrap();
+            let _profile = crate::config::set_test_profile_dir(wrong_profile.path().to_path_buf());
             crate::host::flight_recorder::adopt_session(&profile, "sess-socket");
             let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
                 egui::Context::default(),
@@ -67,7 +68,7 @@ mod tests {
                 std::io::BufReader::new(stream.try_clone().unwrap())
                     .read_line(&mut line)
                     .unwrap();
-                crate::app::handle_socket_line(&line, &mailbox, None, &mut stream);
+                crate::app::handle_socket_line_in(&profile, &line, &mailbox, None, &mut stream);
             }
         });
         let id = uuid::Uuid::new_v4().to_string();
