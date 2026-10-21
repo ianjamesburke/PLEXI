@@ -192,6 +192,9 @@ struct PaletteFocusTarget {
 enum PaletteCommand {
     Host(crate::host::keys::Action),
     OpenWorkspaceConfig,
+    /// Open the effective `commands.toml` (workspace if in a workspace, else
+    /// global) in a `text-editor` split, creating it from a template if absent.
+    EditCommands,
     /// Open the Needs attention review (`overlays::attention`).
     OpenAttention,
 }
@@ -227,6 +230,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         name: "Open workspace config",
         description: "Edit config for the active workspace scope",
         search_text: "open workspace config settings preferences config.toml configuration scoped project local",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::EditCommands,
+        name: "Edit commands",
+        description: "Edit commands.toml for the active workspace or global profile",
+        search_text: "edit commands commands.toml alias aliases hub scripts run workspace global",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
@@ -820,7 +829,9 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
         PaletteCommand::Host(Action::NavBackApp) => bindings.nav_back,
-        PaletteCommand::OpenWorkspaceConfig | PaletteCommand::OpenAttention => return None,
+        PaletteCommand::OpenWorkspaceConfig
+        | PaletteCommand::EditCommands
+        | PaletteCommand::OpenAttention => return None,
         PaletteCommand::Host(other) => {
             log_missing_palette_shortcut_once(other);
             return None;
@@ -1730,7 +1741,32 @@ impl PlexiApp {
                 let path = crate::config::ensure_workspace_config_file(&root);
                 self.open_config_in_editor(path);
             }
+            PaletteCommand::EditCommands => {
+                let ws_root = self.effective_commands_workspace_root();
+                let path = crate::cli::ensure_commands_file(ws_root.as_deref());
+                log::info!(
+                    "palette: opening commands.toml at {} (workspace_root={:?})",
+                    path.display(),
+                    ws_root
+                );
+                self.open_config_in_editor_with_cwd(path, ws_root);
+            }
         }
+    }
+
+    fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.palette_workspace_root.clone().or_else(|| {
+            let win = &self.windows[self.active_window];
+            let focused_tile = win
+                .focused_pane
+                .or_else(|| win.tree.root.and_then(|r| win.find_first_pane_in(r)));
+            focused_tile
+                .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
+                .and_then(|cwd| crate::cli::resolve_commands_workspace_root(&cwd))
+                .or_else(|| {
+                    crate::cli::resolve_commands_workspace_root(&self.router.active().root)
+                })
+        })
     }
 
     fn run_palette_host_binding(&mut self, action: crate::host::keys::Action) {
@@ -2071,10 +2107,10 @@ mod tests {
                         "needs attention is a palette-only entry with no host chord"
                     );
                 }
-                PaletteCommand::OpenWorkspaceConfig => {
+                PaletteCommand::OpenWorkspaceConfig | PaletteCommand::EditCommands => {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),
-                        "workspace config is a palette-only handoff with no host chord"
+                        "workspace config / edit commands are palette-only handoffs with no host chord"
                     );
                 }
                 PaletteCommand::Host(action) => {
@@ -3076,6 +3112,139 @@ mod tests {
         assert!(
             search.contains("chad"),
             "renamed pane title must appear in palette search_text; got: {search:?}"
+        );
+    }
+
+    #[test]
+    fn palette_exposes_edit_commands() {
+        assert_eq!(
+            palette_command_matches("edit commands"),
+            vec![PaletteCommand::EditCommands]
+        );
+        assert_eq!(
+            palette_command_matches("commands.toml"),
+            vec![PaletteCommand::EditCommands]
+        );
+    }
+
+    #[test]
+    fn palette_edit_commands_creates_template_opens_split_and_hot_reloads_on_save() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let first_pane = h.add_test_pane();
+        h.focus_pane(first_pane);
+        let ws_root = h.app.windows[0]
+            .panes
+            .get(&first_pane)
+            .and_then(|p| p.as_app())
+            .expect("test app pane")
+            .workspace_root
+            .clone();
+        let channel_dir = ws_root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&channel_dir).expect("create workspace channel dir");
+        let commands_path = channel_dir.join("commands.toml");
+        assert!(
+            !commands_path.exists(),
+            "commands.toml starts absent before Edit commands"
+        );
+
+        // Open the palette in this workspace via Cmd+P: no user commands yet.
+        h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+        assert!(h.app.show_command_palette);
+        assert_eq!(
+            h.app.palette_workspace_root.as_deref(),
+            Some(ws_root.as_path())
+        );
+        assert!(
+            !h.app.palette_commands.iter().any(|c| c.name == "hello"),
+            "hello must not exist before editing commands.toml"
+        );
+
+        // Select "Edit commands": creates commands.toml from template and opens a split editor.
+        h.app
+            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::EditCommands));
+        assert!(!h.app.show_command_palette);
+        assert!(
+            commands_path.exists(),
+            "Edit commands must create commands.toml from template when absent"
+        );
+        let template_disk =
+            std::fs::read_to_string(&commands_path).expect("read created commands.toml");
+        assert_eq!(template_disk, crate::cli::COMMANDS_TEMPLATE);
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            2,
+            "Edit commands must open text-editor in a split pane"
+        );
+
+        let editor_pane_id = h
+            .app
+            .find_open_text_editor_pane_any_window(&commands_path)
+            .expect("commands.toml open in text-editor pane");
+
+        // Add `hello = "echo hi"` in the open editor and save with Cmd+S.
+        h.text_editor_mut(editor_pane_id)
+            .test_set_unsaved("[commands]\nhello = \"echo hi\"\n");
+        h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+
+        let saved_disk =
+            std::fs::read_to_string(&commands_path).expect("read saved commands.toml");
+        assert!(
+            saved_disk.contains("hello = \"echo hi\""),
+            "Cmd+S must persist commands.toml edit to disk"
+        );
+
+        // Reopen the palette via Cmd+P: `hello` hot-reloads into `palette_commands`.
+        h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+        assert!(h.app.show_command_palette);
+        let hello = h
+            .app
+            .palette_commands
+            .iter()
+            .find(|c| c.name == "hello")
+            .expect("reopened palette must hot-reload hello from saved commands.toml");
+        assert_eq!(hello.run.as_deref(), Some("echo hi"));
+        assert_eq!(hello.scope, crate::cli::UserCommandScope::Workspace);
+
+        // `plexi run` and `plexi run --json` list it with scope.
+        let human = crate::cli::format_list_commands_for_root(Some(&ws_root), false)
+            .expect("human list");
+        assert!(human.contains("hello") && human.contains("[workspace]"));
+        let json = crate::cli::format_list_commands_for_root(Some(&ws_root), true)
+            .expect("json list");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let arr = parsed.as_array().expect("json array");
+        assert!(arr.iter().any(|item| {
+            item["name"] == "hello"
+                && item["scope"] == "workspace"
+                && item["run"] == "echo hi"
+        }));
+    }
+
+    #[test]
+    fn palette_edit_commands_falls_back_to_global_when_not_in_workspace() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let global_commands = h.profile_dir().join("commands.toml");
+        assert!(!global_commands.exists());
+
+        h.app
+            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::EditCommands));
+
+        assert!(
+            global_commands.exists(),
+            "Edit commands outside a workspace must create global commands.toml from template"
+        );
+        let disk = std::fs::read_to_string(&global_commands).expect("read global commands.toml");
+        assert_eq!(disk, crate::cli::COMMANDS_TEMPLATE);
+        assert!(
+            h.app
+                .find_open_text_editor_pane_any_window(&global_commands)
+                .is_some(),
+            "global commands.toml must be opened in a text-editor split"
         );
     }
 }

@@ -34,7 +34,11 @@ in that case. Start with `plexi agent --help` for the create/spawn flow:
    - On startup or after a restart, call `plexi_needs_you_reconcile` (or `/plexi-reconcile`) to inspect open and resolved `Needs you` items and `ContinuationRecord`s for this session/pane.
    - If a continuation is already `completed` with a receipt, do not repeat the mutation.
 
-5. **Agents (`plexi agent --help`)**:
+5. **User commands (`plexi_run` / `plexi run`)**:
+   - Call `plexi_run` with no `command` (or run `plexi run --json`) to list merged workspace + global commands (`[{name, scope, description, run, secrets}]`, secret names only).
+   - Call `plexi_run` with `command: "<name>"` and optional `args` (or run `plexi run <name> [args...]`) to execute a named workspace or global command.
+
+6. **Agents (`plexi agent --help`)**:
    - Run `plexi agent list` first to see whether a matching agent already exists in the workspace or global tier.
    - If not, create one with `plexi agent create <slug> --cli <pi|claude|codex|agy> [--model <model>] --persona "<markdown>" [--result-schema '<json>'] [--ephemeral]` (defaults to workspace `.plexi/agents/<slug>/`; pass `--global` for reusable user-wide agents).
    - Inspect with `plexi agent show <slug>` before spawning if unsure what CLI, model, or command it uses.

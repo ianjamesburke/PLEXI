@@ -415,7 +415,8 @@ impl Window {
     }
 
     pub(crate) fn get_focused_pane_cwd(&self, tile_id: TileId) -> Option<PathBuf> {
-        let pane_id = match self.tree.tiles.get(tile_id)? {
+        let pane_tile = self.find_first_pane_in(tile_id)?;
+        let pane_id = match self.tree.tiles.get(pane_tile)? {
             Tile::Pane(id) => *id,
             _ => return None,
         };

@@ -203,7 +203,12 @@ plexi skill install --agent pi
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
   project secrets: `plexi workspace --help`, `plexi run --help`, and
-  `plexi secret --help`. `secret list` first reconciles its index with the
+  `plexi secret --help`. `plexi run` merges global (`<profile>/commands.toml` +
+  `<profile>/scripts/`) and workspace (`.plexi/commands.toml`) commands per name
+  (workspace wins per command name) and tags each row `[workspace]` or `[global]`;
+  `plexi run --json` returns `[{name, scope, description, run, secrets}]` (secret
+  names only, never values), and `plexi run <name> [args...]` executes the named
+  command with scoped secrets injected. `secret list` first reconciles its index with the
   keychain, so it also shows keys added outside Plexi. A legacy-format secrets
   index is migrated the first time `secret get` or `secret list` runs, not at
   CLI startup.

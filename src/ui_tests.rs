@@ -4972,18 +4972,21 @@ mod tests {
                     run: Some("cargo build".to_string()),
                     description: Some("Build the project".to_string()),
                     scope: crate::cli::UserCommandScope::Workspace,
+                    secrets: Vec::new(),
                 },
                 crate::cli::ResolvedUserCommand {
                     name: "test".to_string(),
                     run: Some("cargo test".to_string()),
                     description: None,
                     scope: crate::cli::UserCommandScope::Workspace,
+                    secrets: Vec::new(),
                 },
                 crate::cli::ResolvedUserCommand {
                     name: "deploy".to_string(),
                     run: None,
                     description: None,
                     scope: crate::cli::UserCommandScope::Global,
+                    secrets: Vec::new(),
                 },
             ];
             app.show_command_palette = true;

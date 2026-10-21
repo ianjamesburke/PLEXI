@@ -99,16 +99,24 @@ pub enum Commands {
         follow: bool,
     },
     // ── Workspace ─────────────────────────────────────────────────────────────
-    /// Run a named command from your project's .plexi/commands.toml file.
+    /// Run a named command from workspace or global commands.toml (or global scripts).
     ///
-    /// Define shell commands in .plexi/commands.toml and run them by name here.
-    /// Any secrets listed in the command definition are injected as environment variables automatically.
+    /// Global commands (`~/.plexi/commands.toml` and executable files in `~/.plexi/scripts/`)
+    /// and workspace commands (`.plexi/commands.toml`) merge by name, with workspace entries
+    /// overriding global entries of the same name. `plexi run` with no arguments lists both
+    /// scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, secrets}]`
+    /// (secret names only, never values). Any secrets listed in a command definition are injected
+    /// as environment variables automatically when the command runs.
     ///
     /// Example: plexi run dev
+    /// Example: plexi run --json
     #[command(next_help_heading = "Workspace")]
     Run {
         /// Command name to run (omit to list available commands)
         command: Option<String>,
+        /// Print available commands as JSON (`[{name, scope, description, run, secrets}]`)
+        #[arg(long)]
+        json: bool,
         /// Extra arguments forwarded to the command as $1, $2, … positional params
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,

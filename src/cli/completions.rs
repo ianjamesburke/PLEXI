@@ -59,37 +59,22 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
 
 /// Output completion candidates for `plexi run <TAB>`.
 ///
-/// Called by the hidden `_complete-run` subcommand. Emits one name per line.
-/// Sources (in order):
-///  1. Commands from the workspace's channel-scoped `commands.toml` when the current
-///     directory contains one.
-///  2. Global scripts from `config_dir()/scripts/` as a fallback.
+/// Called by the hidden `_complete-run` subcommand. Emits one name per line,
+/// merging global (`config_dir()/commands.toml` + `config_dir()/scripts/`) and
+/// workspace (`.plexi[-channel]/commands.toml`) commands with workspace winning
+/// on name collisions.
 pub fn complete_run_cli() -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(_) => return 1,
     };
-    let commands_file = super::commands_file();
-    let config_path = cwd.join(&commands_file);
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = toml::from_str::<super::PlexiCommands>(&contents) {
-            let mut names: Vec<&String> = config.commands.keys().collect();
-            names.sort();
-            for name in names {
-                let entry = &config.commands[name];
-                if let Some(desc) = entry.description() {
-                    println!("{name}:{desc}");
-                } else {
-                    println!("{name}");
-                }
-            }
-            return 0;
+    let ws_root = super::resolve_commands_workspace_root(&cwd);
+    for cmd in super::resolve_user_commands(ws_root.as_deref()) {
+        if let Some(desc) = cmd.description.as_deref() {
+            println!("{}:{desc}", cmd.name);
+        } else {
+            println!("{}", cmd.name);
         }
-    }
-    // Fallback: global scripts
-    let scripts_dir = crate::config::config_dir().join("scripts");
-    for name in super::list_global_scripts(&scripts_dir) {
-        println!("{name}");
     }
     0
 }

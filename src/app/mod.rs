@@ -4040,8 +4040,10 @@ impl eframe::App for PlexiApp {
                         // Resolve focused pane workspace once at open-time — not per draw-frame —
                         // to avoid filesystem traversal in the egui hot path.
                         let win = &self.windows[self.active_window];
-                        self.palette_workspace_root = win
+                        let focused_tile = win
                             .focused_pane
+                            .or_else(|| win.tree.root.and_then(|r| win.find_first_pane_in(r)));
+                        self.palette_workspace_root = focused_tile
                             .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
                             .and_then(|cwd| crate::app::registry::resolve_workspace_root(&cwd));
                         log::info!(
