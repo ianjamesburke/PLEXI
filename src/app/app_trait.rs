@@ -280,6 +280,9 @@ pub trait App: Send {
         vec![]
     }
 
+    /// Bind host-owned runtime identity before any external work is serviced.
+    fn bind_host_identity(&mut self, _pane_id: u64, _context_id: u64) {}
+
     /// Pump asynchronous work while the app's context is off-screen.
     fn background_tick(&mut self) {}
 

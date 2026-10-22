@@ -11,7 +11,8 @@
 //!   ambient process access, so an app physically cannot spawn a server. More
 //!   importantly it must not be able to: an app-supplied argv would be
 //!   arbitrary native code execution wearing a capability's clothes.
-//! - **The app owns the protocol.** This module never parses a JSON-RPC body,
+//! - **The app owns the protocol.** The native MCP visualizer and Python bridge
+//!   share this transport. This module never parses a JSON-RPC body,
 //!   never knows what `tools/list` means, and never decides what a tool is. It
 //!   moves newline-delimited JSON between a configured child process and the
 //!   owning pane. MCP semantics — initialize, discovery, schema translation,

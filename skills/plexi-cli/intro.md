@@ -17,6 +17,14 @@ plexi skill install --agent codex
 plexi skill install --agent pi
 ```
 
+## Use a configured MCP server
+
+For a configured MCP server, `plexi app open --mcp <server-id>` opens its tools,
+resources and prompts when the MCP client experiment is enabled. Supply the
+configured id, such as `filesystem`. Approve connection and endpoint requests
+in Needs You, then retry in the pane. Use j/k, Enter, Tab and Esc to operate the
+generated lists and forms; Copy copies the displayed result.
+
 ## Coordinate workers
 
 Reuse an existing registry role when it fits. Inspect its settings before

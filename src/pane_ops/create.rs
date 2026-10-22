@@ -122,6 +122,7 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
                 crate::app::text_editor_app::TextEditorApp::new_with_workspace(path, ws_root),
             ))
         }
+        "mcp-renderer" => Some(Box::new(crate::render::mcp_renderer_app::McpRendererApp::new(args, cwd.to_path_buf()))),
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
             Some(Box::new(
@@ -1269,7 +1270,7 @@ impl PlexiApp {
 
     pub(crate) fn open_builtin_app_pane(
         &mut self,
-        app: Box<dyn App>,
+        mut app: Box<dyn App>,
         permissions: crate::app::permissions::AppPermissions,
         workspace_root: PathBuf,
         group: Option<String>,
@@ -1280,12 +1281,14 @@ impl PlexiApp {
         let app_name = app.display_name();
         let manifest_id = app_type_id.clone();
         let group_for_pane = group.clone();
+        let context_id = self.windows[self.active_window].context_id;
         let placed = self.place_app_pane(
             &app_type_id,
             group,
             hint,
             share,
             move |id, linked_pane_id, overlay_replaced| {
+                app.bind_host_identity(id, context_id);
                 Pane::App(Box::new(crate::host::pane::AppPane {
                     pip_status: None,
                     id,

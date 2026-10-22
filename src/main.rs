@@ -925,7 +925,7 @@ fn main() -> eframe::Result {
                                     }
                                 } else if !mcp.is_empty() {
                                     let title = cli::mcp_pane_title(&mcp);
-                                    log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
+                                    log::info!("app_open:cli: launching mcp-renderer with server id {:?}, auto-title={title:?}", mcp);
                                     cli::trace::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
                                         name: Some(title.as_str()),
                                         layout: layout.as_deref(),

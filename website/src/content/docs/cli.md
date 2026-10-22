@@ -1243,7 +1243,7 @@ Default placement is a sibling split to the right — the calling pane is never 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<type_id>` | string | no | App id or path to open (mutually exclusive with --mcp and --cli) |
-| `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
+| `--mcp` | string (repeatable) | no | Explore a configured stdio MCP server in a Plexi pane.  Example: plexi app open --mcp filesystem |
 | `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi app open --cli git |
 | `--down` / `-d` | flag | no | Split below |
 | `--left` / `-l` | flag | no | Split left |
