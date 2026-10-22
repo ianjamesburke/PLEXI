@@ -566,6 +566,18 @@ impl PlexiApp {
         (active, capture)
     }
 
+    pub(crate) fn focused_builtin_editor_captures_shortcuts(&self) -> bool {
+        let context = &self.windows[self.active_window];
+        context
+            .focused_pane
+            .and_then(|tile_id| match context.tree.tiles.get(tile_id) {
+                Some(egui_tiles::Tile::Pane(pane_id)) => context.panes.get(pane_id),
+                _ => None,
+            })
+            .and_then(|p| p.as_app())
+            .is_some_and(|a| a.runtime.captures_editor_shortcuts())
+    }
+
     /// Returns `true` when the current top focus layer is a non-critical modal
     /// that QuickNote (Cmd+0) is allowed to dismiss and replace.
     ///

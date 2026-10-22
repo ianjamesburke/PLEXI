@@ -3799,10 +3799,20 @@ impl eframe::App for PlexiApp {
         // contracts determine which unclaimed events remain in the router.
         let (app_active, keyboard_capture_active) = self.focused_app_capture_state();
         let overlay_open = self.input_captured_by_overlay();
+        let skip_toggle_shortcuts = !overlay_open
+            && !self.show_shortcuts
+            && self.focused_builtin_editor_captures_shortcuts();
+        let filtered_bindings: Option<Vec<keys::BindingEntry>> = skip_toggle_shortcuts.then(|| {
+            self.binding_table
+                .iter()
+                .filter(|b| b.action != Action::ToggleShortcuts)
+                .cloned()
+                .collect()
+        });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
         let mut poll_actions_result = keys::poll_actions(
             &mut router_input,
-            &self.binding_table,
+            filtered_bindings.as_deref().unwrap_or(&self.binding_table),
             &mut self.claimed_host_key_releases,
             /* app_active */ false,
             keyboard_capture_active,
@@ -3954,7 +3964,7 @@ impl eframe::App for PlexiApp {
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
         poll_actions_result.extend(keys::poll_actions(
             &mut router_input,
-            &self.binding_table,
+            filtered_bindings.as_deref().unwrap_or(&self.binding_table),
             &mut self.claimed_host_key_releases,
             app_active,
             keyboard_capture_active,
@@ -4149,13 +4159,8 @@ impl eframe::App for PlexiApp {
                         self.palette_scroll_reset = true;
                         // Resolve focused pane workspace once at open-time — not per draw-frame —
                         // to avoid filesystem traversal in the egui hot path.
-                        let win = &self.windows[self.active_window];
-                        let focused_tile = win
-                            .focused_pane
-                            .or_else(|| win.tree.root.and_then(|r| win.find_first_pane_in(r)));
-                        self.palette_workspace_root = focused_tile
-                            .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
-                            .and_then(|cwd| crate::app::registry::resolve_workspace_root(&cwd));
+                        self.palette_workspace_root = None;
+                        self.palette_workspace_root = self.effective_commands_workspace_root();
                         log::info!(
                             "palette: opened, focused workspace = {:?}",
                             self.palette_workspace_root
@@ -4267,12 +4272,7 @@ impl eframe::App for PlexiApp {
                     self.scroll_focused_pane(-3);
                 }
                 Action::CloseApp => {
-                    if self.windows[self.active_window].zoomed_pane.is_some() {
-                        self.windows[self.active_window].clear_zoom();
-                        log::info!("zoom: Escape restored pane layout");
-                    } else {
-                        self.close_focused_app();
-                    }
+                    self.close_focused_app();
                 }
                 Action::NextBlockedAgent => { self.next_blocked_agent(); },
                 Action::OpenAgents => self.open_agents_pane(),
@@ -4434,21 +4434,8 @@ impl eframe::App for PlexiApp {
         // swallowing a key before the terminal processes it. `poll_actions`
         // above already claimed global hotkeys from the same buffer, so the
         // terminal only ever sees what the global allowlist left behind.
-        // Terminal Escape remains terminal-owned, even when it also restores
-        // the host layout. Do not consume it: TUIs must receive the same byte.
-        if !self.input_captured_by_overlay()
-            && self.windows[self.active_window].zoomed_pane.is_some()
-            && self.windows[self.active_window].focused_pane
-                .and_then(|tile| Self::find_pane_in_tile(&self.windows[self.active_window].tree, tile))
-                .and_then(|id| self.windows[self.active_window].panes.get(&id))
-                .is_some_and(|pane| pane.as_terminal().is_some())
-            && ctx.input(|input| input.events.iter().any(|event| matches!(event,
-                egui::Event::Key { key: egui::Key::Escape, modifiers, pressed: true, .. }
-                    if *modifiers == egui::Modifiers::NONE)))
-        {
-            self.windows[self.active_window].clear_zoom();
-            log::info!("zoom: Escape restored terminal layout; key forwarded to PTY");
-        }
+        // Bare Escape while zoomed goes to the pane with no layout change
+        // (stint 0898: Cmd+Enter is the only zoom toggle).
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
         // Host focus (keyboard nav, a click handled before this pass) is
         // already current. egui focus still belongs to last frame until

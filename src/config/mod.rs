@@ -33,6 +33,12 @@ pub enum ConfigDiagnostic {
         path: String,
         error: String,
     },
+    MisplacedTable {
+        path: String,
+        table: String,
+        source_file: &'static str,
+        target_config_path: String,
+    },
 }
 
 impl ConfigDiagnostic {
@@ -42,7 +48,7 @@ impl ConfigDiagnostic {
             | Self::ParseError { .. }
             | Self::InvalidKeyBinding { .. } => true,
             Self::DeprecatedSection { error, .. } => *error,
-            Self::UnknownKey { .. } => false,
+            Self::UnknownKey { .. } | Self::MisplacedTable { .. } => false,
         }
     }
 }
@@ -53,6 +59,15 @@ impl std::fmt::Display for ConfigDiagnostic {
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
             Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
+            Self::MisplacedTable {
+                path,
+                table,
+                source_file,
+                target_config_path,
+            } => write!(
+                f,
+                "{path}: [{table}] is ignored in {source_file}; put it in {target_config_path}"
+            ),
             Self::UnknownKey { path, table, key } => {
                 if table.is_empty() {
                     write!(f, "{path}: unknown key `{key}`")
@@ -271,7 +286,23 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
 
     if let Ok(value) = toml::from_str::<toml::Value>(&data) {
         if let Some(table) = value.as_table() {
-            check_unknown_keys(table, "", KNOWN_TOP_LEVEL, &path_str, &mut diags);
+            let target_commands_path = matching_commands_display_path(path);
+            for key in table.keys() {
+                if KNOWN_COMMANDS_TOP_LEVEL.contains(&key.as_str()) {
+                    diags.push(ConfigDiagnostic::MisplacedTable {
+                        path: path_str.clone(),
+                        table: key.clone(),
+                        source_file: "config.toml",
+                        target_config_path: target_commands_path.clone(),
+                    });
+                } else if !KNOWN_TOP_LEVEL.contains(&key.as_str()) {
+                    diags.push(ConfigDiagnostic::UnknownKey {
+                        path: path_str.clone(),
+                        table: String::new(),
+                        key: key.clone(),
+                    });
+                }
+            }
 
             if table.contains_key("experiments") {
                 if let Err(error) = experiments_from_path(path) {
@@ -351,6 +382,89 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
                     error: false, // still works via fallback; migrate at your convenience
                 });
+            }
+        }
+    }
+
+    diags
+}
+
+const KNOWN_COMMANDS_TOP_LEVEL: &[&str] = &["commands", "secrets"];
+
+/// Format the matching `config.toml` display path for a `commands.toml` path:
+/// `~/.plexi-<channel>/config.toml` for the global commands file, or
+/// `<repo>/.plexi-<channel>/config.toml` for a workspace commands file.
+pub fn matching_config_display_path(commands_path: &Path) -> String {
+    if commands_path == crate::cli::global_commands_path() {
+        format!("~/{}/config.toml", workspace_channel_dir())
+    } else {
+        commands_path
+            .with_file_name("config.toml")
+            .display()
+            .to_string()
+    }
+}
+
+/// Format the matching `commands.toml` display path for a `config.toml` path.
+pub fn matching_commands_display_path(cfg_path: &Path) -> String {
+    if cfg_path == config_path() {
+        format!("~/{}/commands.toml", workspace_channel_dir())
+    } else {
+        cfg_path
+            .with_file_name("commands.toml")
+            .display()
+            .to_string()
+    }
+}
+
+pub fn validate_commands_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
+    let path_str = path.display().to_string();
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            return vec![ConfigDiagnostic::ReadError {
+                path: path_str,
+                error: e.to_string(),
+            }];
+        }
+    };
+    validate_commands_from_str(&data, path)
+}
+
+pub fn validate_commands_from_str(data: &str, path: &Path) -> Vec<ConfigDiagnostic> {
+    let mut diags = Vec::new();
+    let path_str = path.display().to_string();
+
+    if let Err(e) = toml::from_str::<crate::cli::PlexiCommands>(data) {
+        diags.push(ConfigDiagnostic::ParseError {
+            path: path_str,
+            error: e.to_string(),
+        });
+        return diags;
+    }
+
+    if let Ok(value) = toml::from_str::<toml::Value>(data) {
+        if let Some(table) = value.as_table() {
+            let target_config_path = matching_config_display_path(path);
+            for (key, val) in table {
+                if KNOWN_COMMANDS_TOP_LEVEL.contains(&key.as_str()) {
+                    continue;
+                }
+                if KNOWN_TOP_LEVEL.contains(&key.as_str()) || val.is_table() {
+                    diags.push(ConfigDiagnostic::MisplacedTable {
+                        path: path_str.clone(),
+                        table: key.clone(),
+                        source_file: "commands.toml",
+                        target_config_path: target_config_path.clone(),
+                    });
+                } else {
+                    diags.push(ConfigDiagnostic::UnknownKey {
+                        path: path_str.clone(),
+                        table: String::new(),
+                        key: key.clone(),
+                    });
+                }
             }
         }
     }

@@ -81,6 +81,10 @@ pub enum EditorCommand {
     /// Markdown Backspace: remove an empty structure marker; plain (smart)
     /// backspace everywhere else.
     MarkdownBackspace,
+    /// Cmd+/ (Ctrl+/): toggle line comments with the given comment token
+    /// (e.g. `"#"` or `"//"`) on every line touched by the selection, or on
+    /// the cursor line when collapsed.
+    ToggleComment(String),
     SetCursor(Cursor),
     /// Move the head only (mouse drag / shift-click).
     ExtendTo(Cursor),
@@ -237,6 +241,7 @@ impl Document {
                     None => self.delete(true),
                 }
             }
+            EditorCommand::ToggleComment(token) => self.toggle_comment(&token),
             EditorCommand::SetCursor(cursor) => {
                 self.set_selection(Selection::collapsed(movement::clamp(&self.buffer, cursor)));
             }
@@ -624,6 +629,116 @@ impl Document {
             } else {
                 c
             }
+        };
+        let after = Selection::new(shift(selection_before.anchor), shift(selection_before.head));
+        self.commit_with_selection(ops, selection_before, after);
+    }
+
+    /// Toggle line comments (`token`, e.g. `"#"` or `"//"`) across the lines
+    /// touched by the selection (or the cursor line when collapsed) as one
+    /// undoable transaction.
+    ///
+    /// VS Code rule: if every non-blank touched line starts with `token` after
+    /// leading whitespace, remove one `<token> ` (or `<token>`) after leading
+    /// whitespace on each non-blank line; otherwise insert `<token> ` at the
+    /// minimum indentation of all non-blank touched lines. Blank lines are left
+    /// untouched.
+    fn toggle_comment(&mut self, token: &str) {
+        if token.is_empty() {
+            return;
+        }
+        let selection_before = self.selection;
+        let (first, last) = self.indent_line_range();
+        let lines: Vec<(usize, String)> = (first..=last)
+            .map(|line| (line, movement::line_text(&self.buffer, line)))
+            .collect();
+        let non_blank: Vec<&(usize, String)> = lines
+            .iter()
+            .filter(|(_, text)| !text.trim().is_empty())
+            .collect();
+        if non_blank.is_empty() {
+            return;
+        }
+        let all_commented = non_blank
+            .iter()
+            .all(|(_, text)| text.trim_start().starts_with(token));
+        let token_chars = token.chars().count();
+        let prefix = format!("{token} ");
+        let prefix_chars = token_chars + 1;
+
+        let mut ops = Vec::new();
+        let mut line_edits: Vec<Option<(usize, isize)>> = vec![None; last - first + 1];
+
+        if all_commented {
+            for (line, text) in lines.iter().rev() {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let indent_chars = text.chars().take_while(|c| c.is_whitespace()).count();
+                let rest: String = text.chars().skip(indent_chars).collect();
+                let remove_chars = if rest.starts_with(&prefix) {
+                    prefix_chars
+                } else {
+                    token_chars
+                };
+                let pos = self.buffer.line_to_char(*line) + indent_chars;
+                ops.push(EditOperation::Delete {
+                    pos,
+                    text: self.buffer.slice(pos, pos + remove_chars),
+                });
+                line_edits[*line - first] = Some((indent_chars, -(remove_chars as isize)));
+            }
+            log::info!(
+                "editor: toggle_comment uncommented lines {first}..={last} with token {token:?}"
+            );
+        } else {
+            let min_indent = non_blank
+                .iter()
+                .map(|(_, text)| text.chars().take_while(|c| c.is_whitespace()).count())
+                .min()
+                .unwrap_or(0);
+            for (line, text) in lines.iter().rev() {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let pos = self.buffer.line_to_char(*line) + min_indent;
+                ops.push(EditOperation::Insert {
+                    pos,
+                    text: prefix.clone(),
+                });
+                line_edits[*line - first] = Some((min_indent, prefix_chars as isize));
+            }
+            log::info!(
+                "editor: toggle_comment commented lines {first}..={last} with token {token:?} at indent {min_indent}"
+            );
+        }
+
+        if ops.is_empty() {
+            return;
+        }
+
+        let shift = |c: Cursor| {
+            if c.line >= first && c.line <= last {
+                if let Some((edit_col, delta)) = line_edits[c.line - first] {
+                    if delta > 0 {
+                        let added = delta as usize;
+                        if c.column >= edit_col {
+                            return Cursor::new(c.line, c.column + added);
+                        }
+                    } else if delta < 0 {
+                        let removed = (-delta) as usize;
+                        if c.column > edit_col {
+                            let new_col = if c.column >= edit_col + removed {
+                                c.column - removed
+                            } else {
+                                edit_col
+                            };
+                            return Cursor::new(c.line, new_col);
+                        }
+                    }
+                }
+            }
+            c
         };
         let after = Selection::new(shift(selection_before.anchor), shift(selection_before.head));
         self.commit_with_selection(ops, selection_before, after);
@@ -1350,5 +1465,51 @@ mod tests {
         d.apply(EditorCommand::Redo);
         assert_eq!(d.text(), "z");
         assert_eq!(d.cursor(), Cursor::new(0, 1));
+    }
+
+    #[test]
+    fn toggle_comment_single_line_selection_mixed_indented_blank_and_undo() {
+        // 1. Single line comment and uncomment, keeping cursor on the same character.
+        let mut d = doc("hello = \"echo hi\"\nworld = \"echo bye\"");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 5)));
+        d.apply(EditorCommand::ToggleComment("#".into()));
+        assert_eq!(d.text(), "# hello = \"echo hi\"\nworld = \"echo bye\"");
+        assert_eq!(d.cursor(), Cursor::new(0, 7));
+
+        d.apply(EditorCommand::ToggleComment("#".into()));
+        assert_eq!(d.text(), "hello = \"echo hi\"\nworld = \"echo bye\"");
+        assert_eq!(d.cursor(), Cursor::new(0, 5));
+
+        //Also uncomments bare `#` without trailing space.
+        let mut bare = doc("#hello = 1");
+        bare.apply(EditorCommand::SetCursor(Cursor::new(0, 3)));
+        bare.apply(EditorCommand::ToggleComment("#".into()));
+        assert_eq!(bare.text(), "hello = 1");
+        assert_eq!(bare.cursor(), Cursor::new(0, 2));
+
+        // 2. Multi-line selection with mixed state + blank lines + indentation:
+        //    comments all non-blank lines at minimum indent, leaves blank lines untouched,
+        //    preserves selected text, and undoes in a single step.
+        let orig = "  # a = 1\n\n    b = 2\n  c = 3";
+        let mut m = doc(orig);
+        m.apply(EditorCommand::SetCursor(Cursor::new(0, 4)));
+        m.apply(EditorCommand::ExtendTo(Cursor::new(3, 7)));
+        assert_eq!(m.selected_text(), "a = 1\n\n    b = 2\n  c = 3");
+
+        m.apply(EditorCommand::ToggleComment("#".into()));
+        assert_eq!(m.text(), "  # # a = 1\n\n  #   b = 2\n  # c = 3");
+
+        // All non-blank lines are now commented -> toggling again uncomments one `# ` from each.
+        m.apply(EditorCommand::ToggleComment("#".into()));
+        assert_eq!(m.text(), orig);
+        assert_eq!(m.selected_text(), "a = 1\n\n    b = 2\n  c = 3");
+
+        // Comment two un-commented indented lines and verify single-step Undo.
+        let mut ind = doc("    first = 1\n\n  second = 2");
+        ind.apply(EditorCommand::SelectAll);
+        ind.apply(EditorCommand::ToggleComment("#".into()));
+        assert_eq!(ind.text(), "  #   first = 1\n\n  # second = 2");
+        ind.apply(EditorCommand::Undo);
+        assert_eq!(ind.text(), "    first = 1\n\n  second = 2");
     }
 }

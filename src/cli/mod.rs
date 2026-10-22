@@ -68,6 +68,13 @@ impl CommandEntry {
             CommandEntry::Full(d) => &d.secrets,
         }
     }
+
+    pub fn split(&self) -> bool {
+        match self {
+            CommandEntry::Simple(_) => false,
+            CommandEntry::Full(d) => d.split,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +84,7 @@ pub struct CommandDef {
     pub on_load: Vec<String>,
     pub description: Option<String>,
     pub secrets: Vec<String>,
+    pub split: bool,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +112,8 @@ struct RawCommandDef {
     description: Option<String>,
     #[serde(default)]
     secrets: Vec<String>,
+    #[serde(default)]
+    split: bool,
 }
 
 impl<'de> Deserialize<'de> for CommandEntry {
@@ -135,6 +145,7 @@ impl<'de> Deserialize<'de> for CommandEntry {
                         on_load,
                         description: raw.description,
                         secrets: raw.secrets,
+                        split: raw.split,
                     })),
                     (None, Some(steps)) => {
                         if steps.is_empty() {
@@ -152,6 +163,7 @@ impl<'de> Deserialize<'de> for CommandEntry {
                             on_load,
                             description: raw.description,
                             secrets: raw.secrets,
+                            split: raw.split,
                         }))
                     }
                 }
@@ -323,6 +335,8 @@ pub struct ResolvedUserCommand {
     pub on_load: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub split: bool,
 }
 
 /// Resolve merged global + workspace user commands, returning an error string if
@@ -351,6 +365,7 @@ pub fn resolve_user_commands_checked(
                 steps: Vec::new(),
                 on_load: Vec::new(),
                 secrets: Vec::new(),
+                split: false,
             },
         );
     }
@@ -372,6 +387,7 @@ pub fn resolve_user_commands_checked(
                         steps: entry.steps().to_vec(),
                         on_load: entry.on_load().to_vec(),
                         secrets: merged_secret_names(&config, entry),
+                        split: entry.split(),
                     },
                 );
             }
@@ -402,6 +418,7 @@ pub fn resolve_user_commands_checked(
                                 steps: entry.steps().to_vec(),
                                 on_load: entry.on_load().to_vec(),
                                 secrets: merged_secret_names(&config, entry),
+                                split: entry.split(),
                             },
                         );
                     }
@@ -933,14 +950,20 @@ fn resolve_command_socket_from(
     ambient_socket.map(std::path::PathBuf::from)
 }
 
-static COMMAND_SOCKET_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> =
-    std::sync::OnceLock::new();
+static COMMAND_SOCKET_OVERRIDE: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
 
 pub fn set_command_socket_override(path: std::path::PathBuf) {
-    if COMMAND_SOCKET_OVERRIDE.set(path.clone()).is_err() {
-        log::warn!("cli: command socket override was already set; keeping the first path");
-    } else {
+    if let Ok(mut guard) = COMMAND_SOCKET_OVERRIDE.lock() {
         log::info!("cli: set explicit command socket override path={path:?}");
+        *guard = Some(path);
+    }
+}
+
+#[cfg(test)]
+pub fn clear_command_socket_override() {
+    if let Ok(mut guard) = COMMAND_SOCKET_OVERRIDE.lock() {
+        *guard = None;
     }
 }
 
@@ -949,8 +972,12 @@ fn command_socket_available_from(explicit_override: bool, ambient_socket: bool) 
 }
 
 pub(super) fn command_socket_available() -> bool {
+    let has_override = COMMAND_SOCKET_OVERRIDE
+        .lock()
+        .ok()
+        .is_some_and(|g| g.is_some());
     command_socket_available_from(
-        COMMAND_SOCKET_OVERRIDE.get().is_some(),
+        has_override,
         std::env::var_os("PLEXI_SOCKET").is_some(),
     )
 }
@@ -1136,9 +1163,9 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     let channel = command_binary_channel();
     let ambient = std::env::var_os("PLEXI_SOCKET");
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let explicit = COMMAND_SOCKET_OVERRIDE.get();
+    let explicit = COMMAND_SOCKET_OVERRIDE.lock().ok().and_then(|g| g.clone());
     let socket = resolve_command_socket_from(
-        explicit.map(std::path::PathBuf::as_path),
+        explicit.as_deref(),
         channel.as_deref(),
         ambient.as_deref(),
         &home,
@@ -1873,12 +1900,13 @@ pub use pane::{
 };
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{
-    parse_step, run_command, run_list_commands, run_steps_with, ParsedStep, StepRunReport,
+    parse_step, run_command, run_list_commands, run_steps_with, substitute_step_args, ParsedStep,
+    StepRunReport,
 };
 #[cfg(test)]
 pub(crate) use run::format_list_commands_for_root;
 #[cfg(test)]
-pub use run::run_command_for_root;
+pub use run::{run_command_for_root, run_command_for_root_from_pane};
 pub use validate::validate_cli;
 pub use workspace::{
     folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,

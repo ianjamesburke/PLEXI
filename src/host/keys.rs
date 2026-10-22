@@ -804,6 +804,7 @@ pub enum BindingContext {
 }
 
 /// A single entry in the declarative binding table.
+#[derive(Clone)]
 pub struct BindingEntry {
     pub modifiers: egui::Modifiers,
     pub key: egui::Key,

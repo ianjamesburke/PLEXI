@@ -256,41 +256,150 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub fn config_check(scope: ConfigScope) -> i32 {
-    log::info!("config_check: validating config files scope={scope:?}");
-    let paths = match config_paths_for_scope(scope, false) {
-        Ok(paths) => paths,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return 1;
-        }
-    };
-    let mut diags = Vec::new();
-    for path in &paths {
-        diags.extend(crate::config::validate_from_path(path));
-    }
-    if diags.is_empty() {
-        for path in paths {
-            if path.exists() {
-                println!("✓ {} is valid", path.display());
-            }
-        }
+fn count_config_keybindings(path: &std::path::Path) -> usize {
+    let Ok(data) = std::fs::read_to_string(path) else {
         return 0;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&data) else {
+        return 0;
+    };
+    let Some(table) = value.as_table() else {
+        return 0;
+    };
+    let keys_count = table
+        .get("keys")
+        .and_then(|v| v.as_table())
+        .map_or(0, |t| t.len());
+    let kb_count = table
+        .get("keybindings")
+        .and_then(|v| v.as_table())
+        .map_or(0, |t| t.len());
+    keys_count + kb_count
+}
+
+fn count_commands_entries(path: &std::path::Path) -> usize {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&data) else {
+        return 0;
+    };
+    value
+        .as_table()
+        .and_then(|t| t.get("commands"))
+        .and_then(|v| v.as_table())
+        .map_or(0, |t| t.len())
+}
+
+pub fn config_check_report(
+    scope: ConfigScope,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<(String, i32), String> {
+    let global_cfg = crate::config::config_path();
+    let global_cmds = crate::cli::global_commands_path();
+
+    let mut targets: Vec<(PathBuf, PathBuf, &'static str)> = Vec::new();
+    match scope {
+        ConfigScope::Global => {
+            targets.push((global_cfg, global_cmds, "global"));
+        }
+        ConfigScope::Workspace => {
+            let root = workspace_root.ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+            let ws_cfg = crate::config::workspace_config_path(root);
+            let ws_cmds = root.join(crate::cli::commands_file());
+            targets.push((ws_cfg, ws_cmds, "workspace"));
+        }
+        ConfigScope::Effective => {
+            if let Some(root) = workspace_root {
+                let ws_cfg = crate::config::workspace_config_path(root);
+                let ws_cmds = root.join(crate::cli::commands_file());
+                if ws_cfg != global_cfg {
+                    targets.push((ws_cfg, ws_cmds, "workspace"));
+                }
+            }
+            targets.push((global_cfg, global_cmds, "global"));
+        }
+    }
+
+    let mut diags = Vec::new();
+    let mut file_lines = Vec::new();
+    let mut total_files = 0usize;
+    let mut total_commands = 0usize;
+    let mut total_keybindings = 0usize;
+
+    for (cfg_path, cmds_path, scope_label) in &targets {
+        total_files += 2;
+        diags.extend(crate::config::validate_from_path(cfg_path));
+        diags.extend(crate::config::validate_commands_from_path(cmds_path));
+
+        let kb_count = count_config_keybindings(cfg_path);
+        let cmd_count = count_commands_entries(cmds_path);
+        total_keybindings += kb_count;
+        total_commands += cmd_count;
+
+        let cfg_status = if cfg_path.exists() {
+            "valid"
+        } else {
+            "not present (defaults)"
+        };
+        let cmds_status = if cmds_path.exists() {
+            "valid"
+        } else {
+            "not present"
+        };
+        file_lines.push(format!(
+            "✓ {} ({scope_label}): {cfg_status} ({kb_count} keybindings)",
+            cfg_path.display()
+        ));
+        file_lines.push(format!(
+            "✓ {} ({scope_label}): {cmds_status} ({cmd_count} commands)",
+            cmds_path.display()
+        ));
+    }
+
+    if diags.is_empty() {
+        let mut out = file_lines.join("\n");
+        out.push('\n');
+        out.push_str(&format!(
+            "OK: {total_files} files checked, {total_commands} commands, {total_keybindings} keybindings\n"
+        ));
+        return Ok((out, 0));
     }
 
     let has_errors = diags.iter().any(|d| d.is_error());
+    let mut out = String::new();
     for d in &diags {
         if d.is_error() {
-            eprintln!("✗ {d}");
+            out.push_str(&format!("✗ {d}\n"));
         } else {
-            eprintln!("⚠ {d}");
+            out.push_str(&format!("⚠ {d}\n"));
         }
     }
+    if !has_errors {
+        out.push_str(&format!(
+            "OK (with warnings): {total_files} files checked, {total_commands} commands, {total_keybindings} keybindings\n"
+        ));
+    }
 
-    if has_errors {
-        1
-    } else {
-        0
+    Ok((out, if has_errors { 1 } else { 0 }))
+}
+
+pub fn config_check(scope: ConfigScope) -> i32 {
+    log::info!("config_check: validating config files scope={scope:?}");
+    let ws_root = crate::config::active_workspace_root();
+    match config_check_report(scope, ws_root.as_deref()) {
+        Ok((report, code)) => {
+            if code == 0 {
+                print!("{report}");
+            } else {
+                eprint!("{report}");
+            }
+            code
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            1
+        }
     }
 }
 
@@ -767,6 +876,89 @@ mod tests {
         assert!(
             !global_path.exists(),
             "default workspace operations must not touch global config"
+        );
+    }
+
+    #[test]
+    fn config_check_reports_ok_summary_and_flags_misplaced_commands_and_config_tables() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_cfg = crate::config::workspace_config_path(workspace.path());
+        let ws_cmds = workspace.path().join(crate::cli::commands_file());
+        std::fs::create_dir_all(ws_cfg.parent().unwrap()).unwrap();
+
+        std::fs::write(
+            &ws_cfg,
+            "config_version = 1\n\n[keys]\n\"cmd+shift+p\" = \"run:gs\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &ws_cmds,
+            "[commands]\ngs = \"git status -sb\"\nbuild = \"cargo build\"\n",
+        )
+        .unwrap();
+
+        let (report, code) =
+            config_check_report(ConfigScope::Effective, Some(workspace.path())).unwrap();
+        assert_eq!(code, 0, "clean config + commands must exit 0:\n{report}");
+        assert!(
+            report.contains("OK: 4 files checked, 2 commands, 1 keybindings"),
+            "clean config check must include OK summary with file, command, and keybinding counts:\n{report}"
+        );
+        assert!(
+            report.contains("(workspace)") && report.contains("(global)"),
+            "summary must list scopes:\n{report}"
+        );
+
+        // Misplaced `[commands]` in config.toml must warn naming commands.toml (exit 0 for warnings).
+        std::fs::write(&ws_cfg, "config_version = 1\n\n[commands]\ngs = \"git status\"\n").unwrap();
+        let (bad_cfg_report, bad_cfg_code) =
+            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+        assert_eq!(bad_cfg_code, 0, "warnings exit 0:\n{bad_cfg_report}");
+        assert!(
+            bad_cfg_report.contains("[commands] is ignored in config.toml; put it in")
+                && bad_cfg_report.contains("commands.toml"),
+            "misplaced [commands] in config.toml must point to commands.toml:\n{bad_cfg_report}"
+        );
+
+        // Restore clean config.toml and put misplaced `[theme]` + `[keys]` in workspace commands.toml.
+        std::fs::write(&ws_cfg, "config_version = 1\n").unwrap();
+        std::fs::write(
+            &ws_cmds,
+            "[commands]\ngs = \"git status\"\n\n[theme]\npreset = \"dracula\"\n\n[keys]\n\"cmd+shift+p\" = \"run:gs\"\n",
+        )
+        .unwrap();
+        let (bad_cmds_report, bad_cmds_code) =
+            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+        assert_eq!(bad_cmds_code, 0, "warnings exit 0:\n{bad_cmds_report}");
+        assert!(
+            bad_cmds_report.contains(&format!(
+                "[theme] is ignored in commands.toml; put it in {}",
+                ws_cfg.display()
+            )) && bad_cmds_report.contains(&format!(
+                "[keys] is ignored in commands.toml; put it in {}",
+                ws_cfg.display()
+            )),
+            "misplaced config tables in workspace commands.toml must point to workspace config.toml:\n{bad_cmds_report}"
+        );
+
+        // Global commands.toml with misplaced `[keys]` points to `~/.plexi-<channel>/config.toml`.
+        let global_cmds = crate::cli::global_commands_path();
+        std::fs::write(
+            &global_cmds,
+            "[commands]\nhi = \"echo hi\"\n\n[keys]\n\"cmd+shift+y\" = \"run:hi\"\n",
+        )
+        .unwrap();
+        let (global_report, global_code) =
+            config_check_report(ConfigScope::Global, Some(workspace.path())).unwrap();
+        assert_eq!(global_code, 0);
+        let expected_global_cfg = format!("~/{}/config.toml", crate::config::workspace_channel_dir());
+        assert!(
+            global_report.contains(&format!(
+                "[keys] is ignored in commands.toml; put it in {expected_global_cfg}"
+            )),
+            "misplaced [keys] in global commands.toml must point to {expected_global_cfg}:\n{global_report}"
         );
     }
 }
