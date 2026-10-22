@@ -50,6 +50,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn minimap_attention_entry_time_survives_geometry_changes() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let windows = [MiniWindow { grid_x:0, grid_y:0, panes:vec![MiniPane {
+            pane_id:Some(7), norm_rect:egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),
+            kind:PaneKind::Terminal, focused:false,has_content:false,title:None,active:true,
+            activity:Some(AgentState::NeedsYou),
+        }] }];
+        let key = egui::Id::new(("minimap_attention",Some(7_u64))).with("attention_entered");
+        for n in 0..2 {
+            let _ = ctx.run_ui(egui::RawInput { time:Some(n as f64),..Default::default() }, |ui| {
+                let area = egui::Rect::from_min_size(egui::pos2(20.0*n as f32,0.0),egui::vec2(300.0,160.0));
+                paint_portal_minimap(ui.painter(),area,&windows,&colors,n as f64);
+            });
+            assert_eq!(ctx.data(|d| d.get_temp::<f64>(key)),Some(0.0), "moving a portal must not re-enter NeedsYou");
+        }
+    }
+
+    #[test]
     fn tab_drop_marker_tracks_insert_edge() {
         let bar = egui::Rect::from_min_size(egui::pos2(10.0, 0.0), egui::vec2(300.0, 20.0));
         let tab_width = 100.0;
@@ -319,6 +338,8 @@ pub enum PaneKind {
 /// A single pane slot within one window's minimap.
 #[derive(Clone)]
 pub struct MiniPane {
+    /// Stable pane identity keeps entry effects independent of minimap geometry.
+    pub pane_id: Option<PaneId>,
     /// Normalized [0,1]×[0,1] rect within its window body.
     pub norm_rect: egui::Rect,
     pub kind: PaneKind,
@@ -1145,7 +1166,7 @@ pub(crate) fn paint_portal_minimap(
 
             // Focused pane or escalated pane: semantic tint + border
             let needs_you = matches!(pane.activity, Some(AgentState::NeedsYou));
-            crate::ui::activity::paint_attention_chrome(painter, cell, colors.state_needs_you, egui::Id::new(("minimap_attention", area.min.x.to_bits(), area.min.y.to_bits(), cell.min.x.to_bits(), cell.min.y.to_bits())), needs_you);
+            crate::ui::activity::paint_attention_chrome(painter, cell, colors.state_needs_you, egui::Id::new(("minimap_attention", pane.pane_id)), needs_you);
             if let Some(esc_col) = cell_escalation_col.filter(|_| !needs_you) {
                 let tint = egui::Color32::from_rgba_unmultiplied(
                     esc_col.r(),
@@ -1228,7 +1249,7 @@ pub(crate) fn paint_portal_minimap(
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
             if let Some(state) = activity_dot {
                 let color = if is_error_cell {
-                    colors.danger
+                    colors.state_error
                 } else {
                     crate::ui::activity::dot_color_from_time(state, colors, time, 0)
                 };

@@ -1731,6 +1731,7 @@ mod tests {
             &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
         );
         let mk = |kind, focused, activity, x0: f32, x1: f32| MiniPane {
+            pane_id: Some((x0 * 1000.0) as u64),
             norm_rect: egui::Rect::from_min_max(egui::pos2(x0, 0.0), egui::pos2(x1, 1.0)),
             kind,
             focused,
