@@ -21,6 +21,7 @@
             "needs_you",
             "idle",
             "interrupted",
+            "failed",
             "completed"
           ],
           "type": "string"

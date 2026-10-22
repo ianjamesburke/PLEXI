@@ -311,6 +311,9 @@ impl HarnessAdapter {
             }
         }
         parts.push(self.task_flag.to_string());
+        // Plexi workers may operate in ordinary folders. This disables only
+        // Codex's repository check, leaving its sandbox and approvals intact.
+        if self.harness == AgentHarness::Codex { parts.push("--skip-git-repo-check".into()); }
         parts.push(shell_quote_arg(task));
         parts.join(" ")
     }
@@ -344,6 +347,7 @@ impl HarnessAdapter {
             flags.push("<AGENT.md>".to_string());
         }
         flags.push(self.task_flag.to_string());
+        if self.harness == AgentHarness::Codex { flags.push("--skip-git-repo-check".into()); }
         flags.join(" ")
     }
 
@@ -1222,6 +1226,13 @@ pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
     0
 }
 
+/// Report print-mode worker exit even when the interactive pane shell stays alive.
+/// Repository checks, sandbox settings, and approval flags remain harness-owned.
+pub(crate) fn supervised_worker_command(command: &str, reporter: &str, harness: &str) -> String {
+    let body = format!("( {command}\n); plexi_worker_exit=$?; {reporter} agent report --state failed --agent {} --event HarnessExit --detail \"harness exited with code $plexi_worker_exit without agent done\"", shell_quote_arg(harness));
+    format!("/bin/sh -c {}", shell_quote_arg(&body))
+}
+
 /// `plexi agent report --state <state>` — report agent state to host via socket.
 pub fn agent_report_cli(
     state: &str,
@@ -1240,11 +1251,12 @@ pub fn agent_report_cli(
         "blocked" => "blocked",
         "needs_you" | "needs-you" => "needs_you",
         "interrupted" => "interrupted",
+        "failed" => "failed",
         "completed" => "completed",
         "idle" => "idle",
         other => {
             eprintln!(
-                "error: unknown state '{other}'; expected working, blocked, needs_you, interrupted, completed, or idle"
+                "error: unknown state '{other}'; expected working, blocked, needs_you, interrupted, failed, completed, or idle"
             );
             return 1;
         }
@@ -2574,6 +2586,31 @@ mod agent_tests {
     }
 
     #[test]
+    fn supervised_worker_reports_nonzero_and_clean_exit_without_completion() {
+        for (command, code) in [("exit 1", 1), ("true", 0), ("printf 'output\\n'; exit 7", 7)] {
+            let wrapped = super::supervised_worker_command(command, "printf '%s\\n'", "script");
+            let output = std::process::Command::new("/bin/sh").args(["-c", &wrapped]).output().unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains("HarnessExit"), "{text}");
+            assert!(text.contains(&format!("harness exited with code {code} without agent done")), "{text}");
+        }
+    }
+    #[test]
+    fn codex_worker_command_in_non_git_directory_skips_only_repo_check() {
+        let cwd = tempfile::tempdir().unwrap();
+        assert!(!cwd.path().join(".git").exists());
+        let adapter = super::harness_adapter("codex").unwrap();
+        let command = adapter.spawn_command("submit a ballot", None, None);
+        // A shell function records the exact argv delivered in the non-git cwd.
+        let probe = format!("codex() {{ printf '%s\\n' \"$@\"; }}; {command}");
+        let output = std::process::Command::new("/bin/sh").args(["-c", &probe]).current_dir(cwd.path()).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "exec\n--skip-git-repo-check\nsubmit a ballot\n");
+        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "exec --skip-git-repo-check");
+        assert!(!command.contains("--dangerously"));
+    }
+    #[test]
     fn multi_cli_harness_adapters_build_spawn_resume_and_capture_session_ids() {
         let claude = super::harness_adapter("claude").expect("claude adapter");
         assert_eq!(
@@ -2593,7 +2630,7 @@ mod agent_tests {
         assert_eq!(codex.resume_command("thread-99"), "codex resume thread-99");
         assert_eq!(
             codex.spawn_command("run tests", None, None),
-            "codex exec 'run tests'"
+            "codex exec --skip-git-repo-check 'run tests'"
         );
         assert_eq!(
             codex.capture_session_id(&serde_json::json!({"thread_id": "t-99"})),
@@ -2692,7 +2729,7 @@ mod agent_tests {
         let codex_cmd =
             super::build_agent_spawn_command(&codex_def, codex_adapter, "Run suite").unwrap();
         assert!(
-            codex_cmd.starts_with("codex --model gpt-5-codex exec "),
+            codex_cmd.starts_with("codex --model gpt-5-codex exec --skip-git-repo-check "),
             "unexpected codex command: {codex_cmd}"
         );
         assert!(!codex_cmd.contains("--append-system-prompt"));

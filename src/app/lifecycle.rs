@@ -3211,6 +3211,17 @@ impl PlexiApp {
                     "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail_present={}",
                     detail.is_some()
                 );
+                if event.as_deref() == Some("HarnessExit") {
+                    if self.pane_results.get(pane_id).is_some_and(|r| r.committed.is_some()) {
+                        let ephemeral = self.windows.iter().find_map(|w| w.panes.get(pane_id)).and_then(|p| p.as_terminal()).is_some_and(|t| t.ephemeral);
+                        if ephemeral { self.close_pane_by_id(*pane_id); }
+                        return;
+                    }
+                    let tail = self.windows.iter().find_map(|w| w.panes.get(pane_id)).and_then(|p| p.as_terminal()).and_then(|t| t.capture_tail_preview());
+                    let reason = format!("{}{}", detail.as_deref().unwrap_or("harness exited without agent done"), tail.map(|tail| format!("\n{tail}")).unwrap_or_default());
+                    self.mark_agent_failed(*pane_id, &reason);
+                    return;
+                }
                 let mut found = false;
                 let mut dirty = false;
                 let mut has_parent_pane = false;

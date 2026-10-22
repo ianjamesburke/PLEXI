@@ -2915,7 +2915,12 @@ pub enum AgentCmd {
     /// Scripts receive PLEXI_AGENT_TASK, PLEXI_TEAM_OPTIONS and PLEXI_TEAM_RUN_ID.
     /// Real harnesses report the same JSON through agent done.
     /// At least three members independently rank every option once. Borda awards
-    /// N-1 down to 0 points; ties follow options order. The host writes RESULT.md.
+    /// N-1 down to 0 points. Optional tie_break = "Defer" selects a tied leader;
+    /// default: last option. If that option is not tied, use the last tied option.
+    /// Optional quorum = 2 requires that many valid ballots; default: all members.
+    /// The host always writes RESULT.md with COMPLETE, PARTIAL, or FAILED status,
+    /// member outcomes and valid ballots. Below quorum there is no winner.
+    /// Failed/timed-out member panes stay open for inspection.
     /// Grants use existing head/delegation admission; a team is not authority.
     /// Format v0 may change. consult-experts uses pi, claude and codex by default.
     #[command(verbatim_doc_comment)]
@@ -3106,7 +3111,7 @@ pub enum AgentCmd {
     ///
     /// Example: plexi agent report --state working --agent claude-code
     Report {
-        /// State to report: working, blocked, needs_you, or idle
+        /// State to report: working, blocked, needs_you, idle, interrupted, failed, or completed
         #[arg(long)]
         state: String,
         /// Agent name (e.g. "claude-code")
@@ -3376,7 +3381,7 @@ pub enum AgentTeamCmd {
         /// Replace the stored options; repeat for each option (at least two).
         #[arg(long = "option")]
         options: Vec<String>,
-        /// Host-side deadline in seconds; a timed-out run fails and stops its members.
+        /// Host-side deadline in seconds; unfinished members are reported as timed out.
         #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..=86400))]
         timeout: u64,
     },

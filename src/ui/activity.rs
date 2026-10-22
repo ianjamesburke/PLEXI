@@ -53,6 +53,7 @@ pub fn escalation_color(
         Some(AgentState::NeedsYou) => Some(needs_you_color(colors)),
         Some(AgentState::Blocked) => Some(blocked_color(colors)),
         Some(AgentState::Interrupted) => Some(colors.warning),
+        Some(AgentState::Failed) => Some(colors.danger),
         Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
     }
 }
@@ -66,6 +67,7 @@ pub fn escalation_label(state: Option<&AgentState>, is_error: bool) -> Option<&'
         Some(AgentState::NeedsYou) => Some("NEEDS YOU"),
         Some(AgentState::Blocked) => Some("BLOCKED"),
         Some(AgentState::Interrupted) => Some("INTERRUPTED"),
+        Some(AgentState::Failed) => Some("FAILED"),
         Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
     }
 }
@@ -115,6 +117,7 @@ pub fn dot_color_from_time(
         }
         AgentState::Idle | AgentState::Completed => colors.pip_idle,
         AgentState::Interrupted => colors.warning,
+        AgentState::Failed => colors.danger,
         AgentState::Blocked => blocked_color(colors),
         AgentState::NeedsYou => needs_you_color(colors),
     }

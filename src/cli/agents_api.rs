@@ -533,7 +533,9 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
     };
     let (payload, json_out, timeout) = match cmd {
         AgentTeamCmd::Show { name } => match crate::agent::team::load(&workspace, &name) {
-            Ok(team) => {
+            Ok(mut team) => {
+                team.tie_break = Some(team.tie_break().to_string());
+                team.quorum = Some(team.quorum());
                 log::info!(
                     "agent_team: show name={name} workspace={}",
                     workspace.display()
@@ -584,19 +586,16 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
         Ok(body) => body,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&body) {
-        return code;
-    }
-    if json_out {
-        println!("{body}");
-    } else {
-        match serde_json::from_str::<Value>(&body) {
-            Ok(value) => println!("{}", value["result_path"].as_str().unwrap_or(&body)),
-            Err(error) => {
-                eprintln!("error: invalid team reply: {error}");
-                return 1;
-            }
-        }
-    }
+    let value = match serde_json::from_str::<Value>(&body) {
+        Ok(value) => value,
+        Err(error) => { eprintln!("error: invalid team reply: {error}"); return 1; }
+    };
+    if json_out { println!("{body}"); }
+    else { println!("{}", team_run_text(&value)); }
+    if let Err(code) = super::check_reply_error(&body) { return code; }
     0
+}
+
+pub(crate) fn team_run_text(value: &Value) -> String {
+    format!("{}\nRESULT.md: {}", value["report"].as_str().unwrap_or_else(|| value["error"].as_str().unwrap_or("No team report returned")), value["result_path"].as_str().unwrap_or("unavailable"))
 }

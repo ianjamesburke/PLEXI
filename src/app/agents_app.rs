@@ -86,7 +86,7 @@ impl AgentsApp {
                 ("!", crate::ui::activity::needs_you_color(colors))
             }
             DisplayState::Blocked => ("■", crate::ui::activity::blocked_color(colors)),
-            DisplayState::Stalled => ("▲", colors.danger),
+            DisplayState::Stalled | DisplayState::Failed => ("▲", colors.danger),
             DisplayState::DoneUnseen => ("◆", colors.success),
             DisplayState::Working => ("●", colors.pip_working),
             DisplayState::Idle => ("○", colors.text_dim),
@@ -240,6 +240,11 @@ impl App for AgentsApp {
                                                     )
                                                     .truncate(),
                                                 );
+                                            }
+                                            if row.display_state == DisplayState::Failed {
+                                                if let Some(reason) = &row.tail {
+                                                    ui.add(egui::Label::new(reason).truncate()).on_hover_text(reason);
+                                                }
                                             }
                                             if !row.events.is_empty() {
                                                 ui.small(format!(

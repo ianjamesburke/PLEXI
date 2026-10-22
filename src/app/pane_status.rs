@@ -32,7 +32,9 @@ pub(crate) fn composite_status(
     let agent_state = agent.map(|state| state.state.as_str());
     let detail = agent.and_then(|state| state.detail.clone());
 
-    let (verdict, confidence) = if last_buffer_line.as_deref().is_some_and(is_tool_call_tail) {
+    let (verdict, confidence) = if agent.is_some_and(|a| a.state == AgentState::Failed) {
+        ("failed", "high")
+    } else if last_buffer_line.as_deref().is_some_and(is_tool_call_tail) {
         ("working", "high")
     } else {
         match agent.map(|state| &state.state) {
