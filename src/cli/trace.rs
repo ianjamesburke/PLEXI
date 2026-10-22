@@ -169,10 +169,11 @@ mod tests {
     fn cli_trace_redacts_pane_and_agent_free_text() {
         let sentinel = "SENTINEL_SECRET_DO_NOT_PERSIST";
         let cases = vec![
-            ["plexi", "pane", "send", "42", sentinel, "--submit"].map(str::to_string),
-            ["plexi", "agent", "call", "reviewer", "--task", sentinel].map(str::to_string),
-            ["plexi", "agent", "ask", sentinel].map(str::to_string),
-            [
+            vec!["plexi", "pane", "send", "42", sentinel, "--submit"],
+            vec!["plexi", "--socket", "/tmp/host.sock", "agent", "call", "reviewer", "--task", sentinel],
+            vec!["plexi", "agent", "ask", "--pane-id", "42", sentinel],
+            vec!["plexi", "pane", "send", "42", "<text len=SENTINEL_SECRET>"],
+            vec![
                 "plexi",
                 "agent",
                 "done",
@@ -180,10 +181,10 @@ mod tests {
                 sentinel,
                 "--result",
                 sentinel,
-            ]
-            .map(str::to_string),
+            ],
         ];
         for argv in cases {
+            let argv = argv.into_iter().map(str::to_string).collect::<Vec<_>>();
             let safe = redact_argv(&argv, &[]);
             let rendered = safe.join(" ");
             assert!(!rendered.contains(sentinel), "{rendered}");
@@ -341,11 +342,24 @@ fn secret_assignment(key: &str, known: &[String]) -> bool {
 }
 
 fn text_placeholder(text: &str) -> String {
-    if text.starts_with("<text len=") && text.ends_with('>') {
+    if is_text_placeholder(text) {
         return text.to_string();
     }
     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
     format!("<text len={} sha256={}>", text.chars().count(), &hash[..8])
+}
+
+fn is_text_placeholder(text: &str) -> bool {
+    let Some(body) = text.strip_prefix("<text len=").and_then(|body| body.strip_suffix('>')) else {
+        return false;
+    };
+    let Some((len, hash)) = body.split_once(" sha256=") else {
+        return false;
+    };
+    !len.is_empty()
+        && len.bytes().all(|byte| byte.is_ascii_digit())
+        && hash.len() == 8
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Returns a replacement for an argv element that is known to contain free text.
@@ -353,24 +367,31 @@ fn text_placeholder(text: &str) -> String {
 /// the prompt, PTY input, or structured agent result itself.
 fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
     let arg = argv.get(index)?;
-    let command = argv.get(1).map(String::as_str);
-    let subcommand = argv.get(2).map(String::as_str);
+    let (command_index, command) = top_level_command(argv)?;
+    let subcommand_index = command_index + 1;
+    let subcommand = argv.get(subcommand_index).map(String::as_str);
 
-    let positional = match (command, subcommand) {
-        (Some("pane"), Some("send")) => index == 4,
-        (Some("pane"), Some("message")) => argv.get(3).is_some_and(|v| v == "send") && index == 5,
-        (Some("agent"), Some("ask")) => index == 3,
-        (Some("agent"), Some("message")) => index == 4,
-        (Some("command-view"), Some("send")) => index == 4,
+    let positional = match (command.as_str(), subcommand) {
+        ("pane", Some("send")) => positional_after(argv, subcommand_index + 1, 2, &[])
+            .is_some_and(|content| index == content),
+        ("pane", Some("message")) if argv.get(subcommand_index + 1).is_some_and(|v| v == "send") => {
+            positional_after(argv, subcommand_index + 2, 2, &[]).is_some_and(|content| index == content)
+        }
+        ("agent", Some("ask")) => positional_after(argv, subcommand_index + 1, 1, &["--pane-id"])
+            .is_some_and(|content| index == content),
+        ("agent", Some("message")) => positional_after(argv, subcommand_index + 1, 2, &[])
+            .is_some_and(|content| index == content),
+        ("command-view", Some("send")) => positional_after(argv, subcommand_index + 1, 2, &[])
+            .is_some_and(|content| index == content),
         _ => false,
     };
     if positional {
         return Some(text_placeholder(arg));
     }
 
-    let content_flags: &[&str] = match command {
-        Some("agent") => &["--task", "--prompt", "--summary", "--result", "--persona"],
-        Some("assistant") => &["--text"],
+    let content_flags: &[&str] = match command.as_str() {
+        "agent" => &["--task", "--prompt", "--summary", "--result", "--persona"],
+        "assistant" => &["--text"],
         _ => &[],
     };
     if let Some((flag, value)) = arg.split_once('=') {
@@ -380,6 +401,46 @@ fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
     }
     if index > 0 && content_flags.contains(&argv[index - 1].as_str()) {
         return Some(text_placeholder(arg));
+    }
+    None
+}
+
+fn positional_after(argv: &[String], start: usize, wanted: usize, value_flags: &[&str]) -> Option<usize> {
+    let mut positional = 0;
+    let mut index = start;
+    while let Some(arg) = argv.get(index) {
+        if value_flags.contains(&arg.as_str()) {
+            index += 2;
+            continue;
+        }
+        if value_flags.iter().any(|flag| arg.strip_prefix(flag).is_some_and(|suffix| suffix.starts_with('=')))
+            || arg.starts_with('-')
+        {
+            index += 1;
+            continue;
+        }
+        positional += 1;
+        if positional == wanted {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn top_level_command(argv: &[String]) -> Option<(usize, &String)> {
+    let mut index = 1;
+    while let Some(arg) = argv.get(index) {
+        if matches!(arg.as_str(), "pane" | "agent" | "assistant" | "command-view") {
+            return Some((index, arg));
+        }
+        if matches!(arg.as_str(), "--profile" | "--socket") {
+            index += 2;
+        } else if arg.starts_with("--profile=") || arg.starts_with("--socket=") || arg == "--json" {
+            index += 1;
+        } else {
+            return None;
+        }
     }
     None
 }

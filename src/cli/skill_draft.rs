@@ -191,7 +191,7 @@ fn build_draft(
                     .to_string(),
             );
         }
-        let withheld = status != Some(0) || command.contains("<redacted>");
+        let withheld = status != Some(0) || command.contains("<redacted>") || command.contains("<text len=");
         if withheld {
             notes.push(format!(
                 "Review-only call (exit={}): {command}{repeat}",
@@ -405,5 +405,21 @@ mod tests {
         assert!(!suggested);
         assert!(command.contains("'a'\"'\"'b; $(oops)'"));
         assert!(!command.contains("review-me"));
+    }
+
+    #[test]
+    fn cli_trace_draft_withholds_content_redacted_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        recorder::adopt_session(dir.path(), "sess-content-redacted");
+        recorder::handle_cli_trace(
+            dir.path(),
+            &json!({"id":uuid::Uuid::new_v4().to_string(), "phase":"exit", "exit_code":0,
+            "argv":["plexi", "pane", "send", "19", "<text len=9 sha256=deadbeef>"]}),
+        )
+        .unwrap();
+        let draft = build_draft(dir.path(), "sess-content-redacted", DraftOptions::default(), "command").unwrap();
+        let parsed: toml::Value = toml::from_str(&draft).unwrap();
+        assert!(parsed["commands"]["session_draft"]["steps"].as_array().unwrap().is_empty());
+        assert!(draft.contains("Review-only call"));
     }
 }
