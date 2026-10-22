@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://plexiapp.com/sitemap-index.xml
+Sitemap: https://plexiapp.com/sitemap.xml
