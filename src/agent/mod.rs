@@ -1223,7 +1223,7 @@ impl AgentHost {
 
         let request = AiBrokerRequest {
             app_id: format!("agent:{}", agent.def.id),
-            model_tier: agent.def.default_tier,
+            model_mode: match agent.def.default_tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
             concrete_model: agent
                 .def
                 .model_routes

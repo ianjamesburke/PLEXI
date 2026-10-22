@@ -181,11 +181,6 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("agents.high", "string", "Command for high-tier agent tasks"),
     // ai.*
     (
-        "ai.backend",
-        "string",
-        "AI backend: openrouter (default) or ollama",
-    ),
-    (
         "ai.per_app_daily_usd",
         "float",
         "Per-app daily spend cap in USD (default 1.00)",
@@ -195,38 +190,6 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "float",
         "Global daily spend cap in USD (default 10.00)",
     ),
-    (
-        "ai.openrouter.api_key_env",
-        "string",
-        "Env var for OpenRouter API key (default OPENROUTER_API_KEY)",
-    ),
-    (
-        "ai.openrouter.model_low",
-        "string",
-        "OpenRouter low-tier model",
-    ),
-    (
-        "ai.openrouter.model_medium",
-        "string",
-        "OpenRouter medium-tier model",
-    ),
-    (
-        "ai.openrouter.model_high",
-        "string",
-        "OpenRouter high-tier model",
-    ),
-    (
-        "ai.ollama.host",
-        "string",
-        "Ollama host URL (default http://localhost:11434)",
-    ),
-    ("ai.ollama.model_low", "string", "Ollama low-tier model"),
-    (
-        "ai.ollama.model_medium",
-        "string",
-        "Ollama medium-tier model",
-    ),
-    ("ai.ollama.model_high", "string", "Ollama high-tier model"),
     // cli.*
     (
         "cli.tips",

@@ -2576,7 +2576,7 @@ impl PlexiApp {
             .or_else(crate::config::active_workspace_root)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
+            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
         );
         let mut app = crate::assistant::AssistantApp::new(
             workspace_root.clone(),
@@ -2688,7 +2688,7 @@ impl PlexiApp {
             workspace_root.display()
         );
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
+            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
         );
         let app = Box::new(crate::assistant::AssistantApp::new(
             workspace_root.clone(),
@@ -2742,7 +2742,7 @@ impl PlexiApp {
             .or_else(crate::config::active_workspace_root)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
+            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
         );
         let app = Box::new(crate::assistant::AssistantApp::new(
             workspace_root.clone(),

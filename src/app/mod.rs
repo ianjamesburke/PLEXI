@@ -5288,8 +5288,8 @@ pub(crate) fn restore_workspace(
                         )
                     {
                         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
-                            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
-                                config.ai.clone(),
+                            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                                config.ai.clone(), config.resolved_model_modes(),
                             ));
                         pane_entry = Some(crate::pane_ops::restore_assistant_pane(
                             saved_pane.id,

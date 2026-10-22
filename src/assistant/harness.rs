@@ -415,7 +415,7 @@ impl AiBroker for ScriptedBroker {
         let mut trace = self.trace.lock().unwrap();
         trace.push(OrchestrationEvent::Selection {
             agent,
-            tier: request.model_tier.as_str().to_string(),
+            tier: request.model_mode.as_str().to_string(),
             provider: route.map(|route| route.provider.clone()),
             model: route.map(|route| route.model.clone()),
         });
