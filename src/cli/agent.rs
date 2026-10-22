@@ -408,7 +408,7 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
          You are agent `{}` running in a Plexi pane.\n\
          You have one non-interactive turn. Do not ask for confirmation.\n\
          Always finish by running: plexi agent done --summary \"<one line>\" --result '<json>'.\n\
-         If the task does not fit the result schema, run plexi agent done --summary \"<why>\" --result '{}' or plexi agent ask \"<question>\".",
+         If the task does not fit the result schema, run plexi agent done --summary \"<why>\" --result '{{}}' or plexi agent ask \"<question>\".",
         definition.id
     );
     contract.push_str("\nAfter asking, wait for the parent's reply with: plexi pane message recv --timeout 300. Retry on timeout; continue the task after reading the reply.");

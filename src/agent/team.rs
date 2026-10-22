@@ -125,6 +125,26 @@ mod tests {
         assert_eq!(aggregate(&team, &ballots).unwrap()[0].0, "Proceed");
     }
     #[test]
+    fn unreported_member_does_not_mask_a_genuine_failed_member() {
+        let team = builtin();
+        let ballot = Ballot {
+            ranking: team.options.clone(),
+            rationale: "valid".into(),
+        };
+        let report = report(
+            &team,
+            "Choose",
+            &[
+                MemberOutcome::Ballot(ballot),
+                MemberOutcome::ExitedWithoutReport("final text".into()),
+                MemberOutcome::Failed("exit 2".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(report.status, "FAILED");
+        assert!(!report.text.contains("Quorum degraded"));
+    }
+    #[test]
     fn stored_team_rejects_unknown_fields_and_path_traversal() {
         let root = tempfile::tempdir().unwrap();
         assert!(load(root.path(), "../other").is_err());
@@ -356,7 +376,13 @@ pub(crate) fn report(
     }).collect();
     // A clean single-turn harness exit can still carry useful final text. It is an
     // abstention, not a failed vote: publish the remaining ballots as degraded.
-    let degraded = !unreported.is_empty() && !ballots.is_empty();
+    let has_hard_failure = outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, MemberOutcome::Failed(_) | MemberOutcome::TimedOut));
+    let degraded = !unreported.is_empty()
+        && !ballots.is_empty()
+        && !has_hard_failure
+        && ballots.len() + unreported.len() >= team.quorum();
     let status = if ballots.len() < team.quorum() && !degraded {
         "FAILED"
     } else if ballots.len() < team.members.len() {

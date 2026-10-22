@@ -584,6 +584,22 @@ impl PlexiApp {
             .enumerate()
             .map(|(i, _)| {
                 let (pane, _) = run.members.get(i)?;
+                let terminal = self
+                    .windows
+                    .iter()
+                    .find_map(|w| w.panes.get(pane))
+                    .and_then(|p| p.as_terminal());
+                if terminal
+                    .and_then(|terminal| terminal.agent.as_ref())
+                    .is_some_and(|agent| agent.state == crate::protocol::AgentState::ExitedUnreported)
+                {
+                    let text = self.pane_results.get(pane).and_then(|r| r.committed.as_ref())
+                        .and_then(|value| value.get("unvalidated_text").or_else(|| value.get("text")))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    return Some(MemberOutcome::ExitedWithoutReport(text));
+                }
                 if let Some(value) = self
                     .pane_results
                     .get(pane)
@@ -597,11 +613,7 @@ impl PlexiApp {
                         Err(error) => MemberOutcome::Failed(format!("invalid ballot: {error}")),
                     });
                 }
-                let Some(terminal) = self
-                    .windows
-                    .iter()
-                    .find_map(|w| w.panes.get(pane))
-                    .and_then(|p| p.as_terminal())
+                let Some(terminal) = terminal
                 else {
                     return Some(MemberOutcome::Failed(
                         "pane closed before completion".into(),
@@ -618,18 +630,6 @@ impl PlexiApp {
                             .clone()
                             .unwrap_or_else(|| "harness failed".into()),
                     ));
-                }
-                if let Some(agent) = terminal
-                    .agent
-                    .as_ref()
-                    .filter(|a| a.state == crate::protocol::AgentState::ExitedUnreported)
-                {
-                    let text = self.pane_results.get(pane).and_then(|r| r.committed.as_ref())
-                        .and_then(|value| value.get("unvalidated_text").or_else(|| value.get("text")))
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    return Some(MemberOutcome::ExitedWithoutReport(text));
                 }
                 if terminal.exited {
                     return Some(MemberOutcome::Failed(format!(
