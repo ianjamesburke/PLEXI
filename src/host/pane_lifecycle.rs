@@ -117,7 +117,7 @@ impl PaneLifecycleEvent {
     ) -> Self {
         match provenance.raw_event.as_deref() {
             Some("Stop" | "agent_end") => Self::TurnFinished { provenance },
-            Some("StopFailure") => Self::TurnFailed { provenance },
+            Some("HarnessExit" | "StopFailure") => Self::TurnFailed { provenance },
             Some("SessionEnd" | "session_shutdown") => Self::SessionEnded { provenance },
             Some("SessionStart" | "session_start") => Self::SessionStarted { provenance },
             Some("PermissionRequest") => Self::AgentBlocked {
@@ -145,6 +145,7 @@ impl PaneLifecycleEvent {
                 AgentState::Idle | AgentState::Interrupted | AgentState::Completed => {
                     Self::AgentIdle { provenance }
                 }
+                AgentState::Failed => Self::TurnFailed { provenance },
                 AgentState::Working => Self::AgentWorking { provenance },
                 AgentState::Blocked | AgentState::NeedsYou => Self::AgentBlocked {
                     reason: reason.unwrap_or(AgentBlockedReason::Unknown),

@@ -311,7 +311,7 @@ fn render_name_bar_and_tabs(
     let has_escalation = is_error
         || matches!(
             agent_state,
-            Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted)
+            Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted | AgentState::Failed)
         );
     if matches!(agent_state, Some(AgentState::Working)) && !is_error {
         LOG_WORKING_NO_ESCALATION.call_once(|| {
@@ -534,7 +534,7 @@ fn render_name_bar_and_tabs(
             if !galley.is_empty() {
                 let title_col = if matches!(
                     agent_state,
-                    Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted)
+                    Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted | AgentState::Failed)
                 ) || is_error
                 {
                     colors.text_primary

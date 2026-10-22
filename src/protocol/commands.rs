@@ -11,6 +11,7 @@ pub enum AgentState {
     NeedsYou,
     Idle,
     Interrupted,
+    Failed,
     Completed,
 }
 
@@ -22,6 +23,7 @@ impl AgentState {
             AgentState::NeedsYou => "needs_you",
             AgentState::Idle => "idle",
             AgentState::Interrupted => "interrupted",
+            AgentState::Failed => "failed",
             AgentState::Completed => "completed",
         }
     }

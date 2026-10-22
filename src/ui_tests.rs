@@ -4688,7 +4688,7 @@ mod tests {
             ("Implementer", AgentState::Blocked, Some("Which branch should receive the fix?")),
             ("Reviewer", AgentState::NeedsYou, Some("Approve the deployment plan")),
             ("Tester", AgentState::Completed, None),
-            ("Researcher", AgentState::Interrupted, None),
+            ("Researcher", AgentState::Failed, Some("harness exited with code 1 without agent done")),
             ("Writer", AgentState::Idle, None),
             ("Runner", AgentState::Working, None),
         ] {

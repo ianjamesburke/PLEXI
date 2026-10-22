@@ -1692,7 +1692,16 @@ impl PlexiApp {
         settings
             .env
             .insert("PLEXI_AGENT_TASK".into(), task.to_string());
-        super::apply_initial_cmd(&mut settings, cmd, ephemeral);
+        let supervised;
+        let worker_command = if harness == "team" { cmd } else {
+            let exe = std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
+            let reporter = format!("{} --socket {}", crate::host::shell::shell_quote(&exe.to_string_lossy()), crate::host::shell::shell_quote(&crate::platform::ipc::endpoint()));
+            supervised = crate::cli::agent::supervised_worker_command(cmd, &reporter, harness);
+            &supervised
+        };
+        // Completion closes ephemeral workers after the exit report; failures
+        // retain the shell and its output for inspection.
+        super::apply_initial_cmd(&mut settings, worker_command, false);
 
         let Some(mut pane) = TerminalPane::new(
             new_id,

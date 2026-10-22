@@ -21,7 +21,7 @@ mod tests {
         (h, workspace)
     }
     #[test]
-    fn team_timeout_closes_members_and_revokes_runs_without_publishing_result() {
+    fn team_timeout_keeps_members_and_revokes_runs_with_failed_report() {
         let (mut h, workspace) = scripted_fixture();
         let reply = workspace.join("timeout.json");
         h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
@@ -38,10 +38,10 @@ mod tests {
         let response: Value =
             serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["ok"], false);
-        assert!(!workspace.join("out/RESULT.md").exists());
+        assert!(workspace.join("out/RESULT.md").exists());
         assert!(h.app.team_runs.is_empty());
         for pane in panes {
-            assert!(h.app.find_pane_in_any_window(pane).is_none());
+            assert!(h.app.find_pane_in_any_window(pane).is_some());
         }
         for id in run_ids {
             let run = crate::agent::heads::handle_request(
@@ -50,6 +50,87 @@ mod tests {
             );
             assert_eq!(run["run"]["active"], false);
         }
+    }
+    #[test]
+    fn team_failed_members_keep_ballot_and_evidence_below_quorum() {
+        check_failed_team(None, 1, "FAILED");
+    }
+    #[test]
+    fn team_quorum_publishes_partial_winner_and_excluded_member() {
+        check_failed_team(Some(2), 2, "PARTIAL");
+    }
+    fn check_failed_team(quorum: Option<usize>, valid: usize, status: &str) {
+        let (mut h, workspace) = scripted_fixture();
+        if let Some(quorum) = quorum {
+            let path = workspace
+                .join(crate::config::workspace_channel_dir())
+                .join("teams/test-team.toml");
+            let raw = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(path, format!("quorum = {quorum}\n{raw}")).unwrap();
+        }
+        let reply = workspace.join("reply.json");
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        let root = h.app.team_runs[0].root_pane;
+        let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
+        for (i, pane) in panes.iter().enumerate() {
+            let request = if i < valid {
+                json!({"type":"agent_done", "pane_id":pane,
+                    "result":json!({"ranking":["Proceed","Experiment","Defer"],"rationale":format!("Valid ballot {i}")}).to_string(),
+                    "response_file":workspace.join(format!("done-{i}.json"))})
+            } else {
+                json!({"type":"set_agent_state","pane_id":pane,"state":"failed","agent":"script",
+                    "event":"HarnessExit","detail":format!("harness exited with code {i} without agent done")})
+            };
+            h.inject_ipc(serde_json::from_value(request).unwrap());
+        }
+        h.hidden_frame();
+        assert!(
+            h.app.team_runs.is_empty(),
+            "terminal failures must not wait for the deadline"
+        );
+        let response: Value =
+            serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
+        assert_eq!(response["status"], status);
+        let report = std::fs::read_to_string(workspace.join("out/RESULT.md")).unwrap();
+        assert!(report.contains(status));
+        assert!(report.contains("Valid ballot 0"));
+        assert!(report.contains("failed: harness exited with code 2"));
+        assert_eq!(report.contains("## Borda ranking"), quorum.is_some());
+        if quorum.is_some() {
+            assert!(report.contains("Excluded: strategist"));
+        }
+        for pane in panes.into_iter().chain([root]) {
+            assert!(h.app.find_pane_in_any_window(pane).is_some());
+        }
+    }
+    #[test]
+    fn accepted_ballot_survives_late_harness_exit() {
+        let (mut h, workspace) = scripted_fixture();
+        let reply = workspace.join("reply.json");
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        let pane = h.app.team_runs[0].members[0].0;
+        h.inject_ipc(serde_json::from_value(json!({"type":"agent_done","pane_id":pane,
+            "result":json!({"ranking":["Proceed","Experiment","Defer"],"rationale":"Accepted"}).to_string(),
+            "response_file":workspace.join("done.json")})).unwrap());
+        h.hidden_frame();
+        h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":pane,"state":"failed","agent":"script","event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
+        h.hidden_frame();
+        assert!(h.app.pane_results[&pane].committed.is_some());
+        let terminal = h
+            .app
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane))
+            .unwrap()
+            .as_terminal()
+            .unwrap();
+        assert!(terminal.agent_completed);
+        assert_ne!(
+            terminal.agent.as_ref().unwrap().state,
+            crate::protocol::AgentState::Failed
+        );
+        h.app.team_runs[0].deadline = std::time::Instant::now();
+        h.hidden_frame();
     }
     #[test]
     fn team_preserves_existing_result_and_refuses_caller_grant_widening() {
@@ -165,7 +246,7 @@ mod tests {
     }
 }
 use super::PlexiApp;
-use crate::agent::team::{Ballot, Team};
+use crate::agent::team::{Ballot, MemberOutcome, Team};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -310,7 +391,10 @@ impl PlexiApp {
             caller,
             Some(workspace.clone()),
             None,
-            None, false, None);
+            None,
+            false,
+            None,
+        );
         let (root_pane, context_id) = match spawned {
             Ok(ids) => ids,
             Err(error) => {
@@ -355,7 +439,7 @@ impl PlexiApp {
         );
         if let Err(error) = self.spawn_team_members(&mut run) {
             // finish_team has already replied and retired the partial task.
-            self.finish_team(&run, Err(error));
+            self.finish_team(&run, Some(&error));
             return Ok(());
         }
         self.team_runs.push(run);
@@ -404,7 +488,10 @@ impl PlexiApp {
                 Some(run.root_pane),
                 Some(run.workspace.clone()),
                 Some(run.team.schema()),
-                Some(&field(&child, "run_token")?), false, None)?;
+                Some(&field(&child, "run_token")?),
+                false,
+                None,
+            )?;
             run.members.push((pane, head));
             crate::host::flight_recorder::record(
                 "team_member_spawn",
@@ -421,40 +508,71 @@ impl PlexiApp {
         }
         Ok(())
     }
+    fn team_member_outcomes(&self, run: &TeamRun) -> Vec<Option<MemberOutcome>> {
+        run.team
+            .members
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let Some((pane, _)) = run.members.get(i) else {
+                    return None;
+                };
+                if let Some(value) = self
+                    .pane_results
+                    .get(pane)
+                    .and_then(|r| r.committed.clone())
+                {
+                    return Some(match serde_json::from_value::<Ballot>(value) {
+                        Ok(ballot) => match ballot.validate(&run.team) {
+                            Ok(()) => MemberOutcome::Ballot(ballot),
+                            Err(error) => MemberOutcome::Failed(error),
+                        },
+                        Err(error) => MemberOutcome::Failed(format!("invalid ballot: {error}")),
+                    });
+                }
+                let Some(terminal) = self
+                    .windows
+                    .iter()
+                    .find_map(|w| w.panes.get(pane))
+                    .and_then(|p| p.as_terminal())
+                else {
+                    return Some(MemberOutcome::Failed(
+                        "pane closed before completion".into(),
+                    ));
+                };
+                if let Some(agent) = terminal
+                    .agent
+                    .as_ref()
+                    .filter(|a| a.state == crate::protocol::AgentState::Failed)
+                {
+                    return Some(MemberOutcome::Failed(
+                        agent
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| "harness failed".into()),
+                    ));
+                }
+                if terminal.exited {
+                    return Some(MemberOutcome::Failed(format!(
+                        "harness exited {:?} without agent done",
+                        terminal.exit_status
+                    )));
+                }
+                None
+            })
+            .collect()
+    }
     pub(crate) fn service_team_runs(&mut self, ctx: &egui::Context) {
         for run in std::mem::take(&mut self.team_runs) {
-            let values: Option<Vec<_>> = run
-                .members
-                .iter()
-                .map(|(pane, _)| self.pane_results.get(pane)?.committed.clone())
-                .collect();
-            let outcome = if let Some(values) = values {
-                Some(
-                    values
-                        .into_iter()
-                        .map(serde_json::from_value::<Ballot>)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| e.to_string())
-                        .and_then(|ballots| {
-                            crate::agent::team::report(&run.team, &run.question, &ballots)
-                        }),
-                )
-            } else if run.deadline <= Instant::now() {
-                Some(Err(
-                    "team deadline exceeded before every member submitted a valid ranking".into(),
-                ))
-            } else if run
-                .members
-                .iter()
-                .any(|(id, _)| self.find_pane_in_any_window(*id).is_none())
-                || self.find_pane_in_any_window(run.root_pane).is_none()
+            let root_closed = self.find_pane_in_any_window(run.root_pane).is_none();
+            if run.deadline <= Instant::now()
+                || root_closed
+                || self.team_member_outcomes(&run).iter().all(Option::is_some)
             {
-                Some(Err("team pane closed before completion".into()))
-            } else {
-                None
-            };
-            if let Some(outcome) = outcome {
-                self.finish_team(&run, outcome);
+                self.finish_team(
+                    &run,
+                    root_closed.then_some("team coordinator closed before completion"),
+                );
             } else {
                 self.team_runs.push(run);
             }
@@ -463,50 +581,86 @@ impl PlexiApp {
             ctx.request_repaint_after(deadline.saturating_duration_since(Instant::now()));
         }
     }
-    fn finish_team(&mut self, run: &TeamRun, outcome: Result<String, String>) {
-        let outcome = outcome.and_then(|report| {
+    fn finish_team(&mut self, run: &TeamRun, failure: Option<&str>) {
+        let outcomes: Vec<_> = self
+            .team_member_outcomes(run)
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| {
+                    failure
+                        .map(|reason| MemberOutcome::Failed(reason.into()))
+                        .unwrap_or(MemberOutcome::TimedOut)
+                })
+            })
+            .collect();
+        // Keep every pane and valid ballot. Missing/failed members remain inspectable.
+        for ((pane, _), outcome) in run.members.iter().zip(&outcomes) {
+            if !matches!(outcome, MemberOutcome::Ballot(_)) {
+                self.mark_agent_failed(*pane, &outcome.summary());
+            }
+        }
+        let report = crate::agent::team::report(&run.team, &run.question, &outcomes);
+        let status = report.as_ref().map(|r| r.status).unwrap_or("FAILED");
+        let report_text = report.as_ref().map(|r| r.text.clone()).unwrap_or_default();
+        let mut outcome = report.and_then(|report| {
             use std::io::Write;
             let mut file = tempfile::NamedTempFile::new_in(&run.out)
                 .map_err(|e| format!("create result: {e}"))?;
-            file.write_all(report.as_bytes())
+            file.write_all(report.text.as_bytes())
                 .map_err(|e| format!("write result: {e}"))?;
             file.persist_noclobber(run.out.join("RESULT.md"))
                 .map_err(|e| format!("publish result: {e}"))?;
             Ok(())
         });
-        let mut outcome = outcome;
         for id in run.run_ids.iter().rev() {
             if let Err(error) = api(&run.workspace, "finish_run", json!({"id":id})) {
                 log::error!("agent_team: finish run {id}: {error}");
                 outcome = Err(error);
             }
         }
-        let reply = match outcome {
-            Ok(()) => {
-                for win in &mut self.windows {
-                    if let Some(t) = win
-                        .panes
-                        .get_mut(&run.root_pane)
-                        .and_then(|p| p.as_terminal_mut())
-                    {
-                        t.agent_completed = true;
+        let summaries: Vec<_> = run
+            .team
+            .members
+            .iter()
+            .zip(&outcomes)
+            .map(|(member, outcome)| format!("{}: {}", member.role, outcome.summary()))
+            .collect();
+        let ok = outcome.is_ok() && status != "FAILED";
+        let error = outcome
+            .err()
+            .or_else(|| (!ok).then(|| "team failed: quorum not met".into()));
+        if ok {
+            for win in &mut self.windows {
+                if let Some(t) = win
+                    .panes
+                    .get_mut(&run.root_pane)
+                    .and_then(|p| p.as_terminal_mut())
+                {
+                    t.agent_completed = true;
+                    if let Some(agent) = &mut t.agent {
+                        agent.state = crate::protocol::AgentState::Completed;
+                        agent.detail = Some(format!("{status}: {}", summaries.join("; ")));
                     }
                 }
-                json!({"ok":true,"task_pane":run.root_pane,"members":run.members.iter().map(|(p,_)| p).collect::<Vec<_>>(),"result_path":run.out.join("RESULT.md")})
             }
-            Err(error) => {
-                log::error!("agent_team: task={} failed: {error}", run.root_pane);
-                for (pane, _) in &run.members {
-                    self.close_pane_by_id(*pane);
-                }
-                self.close_pane_by_id(run.root_pane);
-                json!({"ok":false,"error":error,"task_pane":run.root_pane})
-            }
-        };
+        } else {
+            self.mark_agent_failed(
+                run.root_pane,
+                &format!(
+                    "{}; {}",
+                    error.as_deref().unwrap_or("team failed"),
+                    summaries.join("; ")
+                ),
+            );
+        }
+        let reply = json!({"ok":ok,"status":if error.is_some() { "FAILED" } else { status },
+            "error":error,"task_pane":run.root_pane,"members":run.members.iter().map(|(p,_)| p).collect::<Vec<_>>(),
+            "member_summaries":summaries,"report":report_text,"result_path":run.out.join("RESULT.md")});
         log::info!(
-            "agent_team: finished task={} ok={}",
+            "agent_team: finished task={} status={} error={:?}",
             run.root_pane,
-            reply["ok"]
+            reply["status"],
+            error
         );
         crate::host::flight_recorder::record(
             "team_finish",
@@ -515,6 +669,31 @@ impl PlexiApp {
             None,
             reply.clone(),
         );
+        self.refresh_portal_context_states();
+        self.mark_workspace_dirty();
         crate::rpc::write_json_response(&run.response_file, reply);
+    }
+
+    pub(crate) fn mark_agent_failed(&mut self, pane_id: u64, reason: &str) {
+        let reason = reason.strip_prefix("failed: ").unwrap_or(reason);
+        log::info!("agent_worker: failed pane={pane_id}: {reason}");
+        for win in &mut self.windows {
+            if let Some(pane) = win.panes.get_mut(&pane_id) {
+                let agent = pane.agent().cloned();
+                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                    pane_id,
+                    state: crate::protocol::AgentState::Failed,
+                    agent: agent
+                        .as_ref()
+                        .map(|a| a.agent.clone())
+                        .unwrap_or_else(|| "worker".into()),
+                    detail: Some(reason.into()),
+                    session_id: agent.and_then(|a| a.session_id),
+                }));
+                break;
+            }
+        }
+        self.refresh_portal_context_states();
+        self.mark_workspace_dirty();
     }
 }

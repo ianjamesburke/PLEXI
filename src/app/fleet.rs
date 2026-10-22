@@ -153,13 +153,13 @@ impl PlexiApp {
                         .or_else(|| report.map(|a| a.agent.clone()))
                         .unwrap_or_else(|| "unknown".into()),
                     context_name: context_name.clone(),
-                    state,
+                    state: state.clone(),
                     since: t.fleet_since,
                     ephemeral: t.ephemeral,
                     seen: t.fleet_seen,
                     done_unseen: t.fleet_done_unseen,
                     blocked_on,
-                    tail: t.capture_tail_preview(),
+                    tail: if state == AgentState::Failed { report.and_then(|a| a.detail.clone()).map(|reason| format!("failed: {reason}")) } else { t.capture_tail_preview() },
                     result: self
                         .pane_results
                         .get(&pane_id)
