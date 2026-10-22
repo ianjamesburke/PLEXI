@@ -71,6 +71,70 @@ fn same_workspace_window_bottom(context_id: u64, window_id: u64, pane_id: u64) -
     }
 }
 
+/// Set up the child half of a conjoined agent view without spawning a PTY.
+/// The parent remains in window 0; window 1 is the active child sub-context.
+fn conjoined_navigation_fixture(h: &mut HostHarness) -> (u64, egui_tiles::TileId, u64) {
+    let parent = h.add_test_pane();
+    let child_context_id = h.app.windows[0].context_id + 1;
+    h.app
+        .windows
+        .push(same_workspace_window_right(child_context_id, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Agent tools".into(),
+        root: crate::testing::scratch_context_root("agent-tools"),
+        description: None,
+        context_id: child_context_id,
+        parent_id: Some(h.app.windows[0].context_id),
+        depth: 1,
+        parked: false,
+    });
+    let (child_tile, child) = h.app.add_app_pane_in_window(1, "child");
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    h.app.windows[1].focused_pane = Some(child_tile);
+    h.app.conjoined_contexts.insert(child_context_id, parent);
+    (parent, child_tile, child)
+}
+
+#[test]
+fn navigate_right_moves_from_conjoined_parent_to_last_focused_child() {
+    let mut h = HostHarness::new();
+    let (parent, child_tile, child) = conjoined_navigation_fixture(&mut h);
+    h.app.conjoined_parent_focus = Some(parent);
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+
+    assert_eq!(h.app.conjoined_parent_focus, None);
+    assert_eq!(h.app.windows[1].focused_pane, Some(child_tile));
+    assert_eq!(h.app.fleet_focused_pane(), Some(child));
+}
+
+#[test]
+fn navigate_right_from_conjoined_parent_falls_back_to_first_child() {
+    let mut h = HostHarness::new();
+    let (parent, child_tile, child) = conjoined_navigation_fixture(&mut h);
+    h.app.windows[1].focused_pane = None;
+    h.app.conjoined_parent_focus = Some(parent);
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+
+    assert_eq!(h.app.conjoined_parent_focus, None);
+    assert_eq!(h.app.windows[1].focused_pane, Some(child_tile));
+    assert_eq!(h.app.fleet_focused_pane(), Some(child));
+}
+
+#[test]
+fn navigate_left_from_child_boundary_focuses_conjoined_parent() {
+    let mut h = HostHarness::new();
+    let (parent, child_tile, _child) = conjoined_navigation_fixture(&mut h);
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Left));
+
+    assert_eq!(h.app.conjoined_parent_focus, Some(parent));
+    assert_eq!(h.app.windows[1].focused_pane, Some(child_tile));
+    assert_eq!(h.app.fleet_focused_pane(), Some(parent));
+}
+
 /// Regression guard for #791: pane_navigate with a pane in the active
 /// window must set focused_pane and return true.
 #[test]
