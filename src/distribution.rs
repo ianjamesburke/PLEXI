@@ -43,6 +43,13 @@ pub fn check_runtime() -> Result<(), String> {
     Ok(())
 }
 
+/// Read-only package freshness probe; unpackaged developer binaries have nothing to seed.
+pub fn profile_needs_seeding() -> Result<bool, String> {
+    Ok(resources()?.is_some()
+        && !std::fs::read_to_string(crate::config::config_dir().join(".package_definitions_build"))
+            .is_ok_and(|build| build == env!("PLEXI_BUILD_ID")))
+}
+
 /// Seed package-owned definitions by build while retaining user settings/data.
 pub fn seed_profile() -> Result<(), String> {
     let Some(resources) = resources()? else {

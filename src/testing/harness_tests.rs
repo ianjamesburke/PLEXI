@@ -11775,7 +11775,8 @@ mod agent_state_restoration_tests {
         assert!(rec.slots.contains_key("summary"));
 
         let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
-        assert_eq!(fleet.tasks.iter().flat_map(|t| &t.rows).find(|r| r.pane_id == worker_id).unwrap().display_state, crate::agent::fleet::DisplayState::DoneUnseen);
+        assert!(fleet.tasks.iter().flat_map(|t| &t.rows).all(|r| r.pane_id != worker_id),
+            "closed runs belong in history, not the live fleet");
         h.app.mark_agent_seen(worker_id);
         let restored_history = crate::workspace::load_agent_history();
         assert_eq!(restored_history.len(), 1, "seen updates replace the same run in the ledger projection");

@@ -1148,22 +1148,39 @@ pub fn set_profile(name: Option<String>) {
     let _ = PROFILE_OVERRIDE.set(normalized);
 }
 
-/// Ensure the profile directory exists and the Python SDK is up to date.
-/// Returns `true` if the profile directory was newly created (first launch),
-/// `false` if it already existed.
-///
-/// The embedded SDK is extracted only when missing or when the binary version
-/// changed since the last extract, so manual edits and symlinks in the profile
-/// SDK dir survive normal app launches.
-pub fn lock_profile_initialization() -> Result<std::fs::File, String> {
+/// Read-only freshness check shared by both sides of the initialization lock.
+fn profile_initialization_needed() -> Result<bool, String> {
+    let dir = config_dir();
+    let sdk = dir.join("sdk");
+    Ok(!dir.join("apps").is_dir()
+        || !sdk.join("plexi_sdk").is_dir()
+        || !sdk.join("pyproject.toml").is_file()
+        || !std::fs::read_to_string(sdk.join(".sdk_version"))
+            .is_ok_and(|version| version.trim() == env!("PLEXI_BUILD_ID"))
+        || crate::cli::install_host::core_pack_needs_seeding(&dir.join("apps"))
+        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("apps")).is_empty()
+        || crate::distribution::profile_needs_seeding()?)
+}
+
+/// Fresh profiles need no writable files. Re-check after acquiring the lock:
+/// another process may have completed initialization while we waited.
+pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
+    if !profile_initialization_needed()? {
+        return Ok(None);
+    }
     let dir = config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(dir.join("initialization.lock")).map_err(|e| format!("open profile initialization lock: {e}"))?;
     lock.lock().map_err(|e| format!("lock profile initialization: {e}"))?;
-    Ok(lock)
+    if !profile_initialization_needed()? {
+        return Ok(None);
+    }
+    Ok(Some(lock))
 }
 
+/// Ensure the apps directory and embedded SDK exist. Caller holds the initialization lock.
+/// Returns whether this is the first launch (no apps directory yet).
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
     // Install metadata may have created the profile before the first app launch.
@@ -2888,6 +2905,39 @@ mod tests {
 
 #[cfg(test)]
 mod distribution_profile_tests {
+    #[test]
+    fn initialized_read_only_profile_never_opens_initialization_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        super::ensure_profile_initialized();
+        crate::cli::install_host::apply_core_pack_always(&crate::cli::install_host::GitCloner, &dir.path().join("apps"));
+        // A directory at the lock path makes any read-write open fail, even as root.
+        std::fs::create_dir(dir.path().join("initialization.lock")).unwrap();
+        #[cfg(unix)]
+        let original_permissions = {
+            use std::os::unix::fs::PermissionsExt;
+            let original = std::fs::metadata(dir.path()).unwrap().permissions();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+            original
+        };
+        let result = super::lock_profile_initialization();
+        #[cfg(unix)]
+        std::fs::set_permissions(dir.path(), original_permissions).unwrap();
+        assert!(matches!(result, Ok(None)), "fresh profile attempted a write lock: {result:?}");
+    }
+
+    #[test]
+    fn stale_profile_still_requires_exclusive_initialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        assert!(super::lock_profile_initialization().unwrap().is_some());
+        super::ensure_profile_initialized();
+        crate::cli::install_host::apply_core_pack_always(&crate::cli::install_host::GitCloner, &dir.path().join("apps"));
+        assert!(super::lock_profile_initialization().unwrap().is_none());
+        std::fs::write(dir.path().join("sdk/.sdk_version"), "old-build").unwrap();
+        assert!(super::lock_profile_initialization().unwrap().is_some());
+    }
+
     #[test]
     fn installer_metadata_does_not_suppress_first_launch_seeding() {
         let dir = tempfile::tempdir().unwrap();

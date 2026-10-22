@@ -3078,7 +3078,9 @@ pub enum AgentCmd {
     ///
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
     /// a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`,
-    /// and launches the worker pane.
+    /// and launches the worker pane. Codex workers (including calls and team members) use
+    /// `exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true`.
+    /// They can write in their workspace and use the network; Plexi adds no profile writable root.
     ///
     /// Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
     Spawn {
