@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "6.0.1"
+skill_version: "6.1.0"
 plexi_version: "0.4.0"
 last_verified: "2026-10-22"
 ---
@@ -125,23 +125,37 @@ sharing a capacity limit.
 ## Draft a workflow from a session
 
 The host captures CLI argv with caller pane, agent session, timestamps and the
-CLI exit code. Secret-setting values, secret options and `KEY=value` assignments
-are redacted before recording. Interrupted calls, including a host shutdown,
+CLI exit code. Secret-setting values, secret options, known secret names and
+uppercase environment assignments such as `API_KEY=value` are redacted before
+recording. Ordinary grants such as `agents.ping=allow` remain readable. Interrupted calls, including a host shutdown,
 retain an unknown exit status. This diagnostic trace is not an authorization log.
 
 ```bash
+plexi debug session show --cli
+plexi debug session show --cli --pane <id> --utc
 plexi debug session show --cli --pane <id> --json
 plexi skill draft --from-session latest --pane <id>
 plexi skill draft --from-session latest --as command --out <path>
 ```
 
+Session text uses shell-quoted commands with the executable basename, clips long
+arguments, and shows local timestamps with a zone and a date for older rows.
+The header identifies the resolved session and its full recorded time range.
+Use `--utc` for UTC timestamps or `--json` for complete recorded argv.
+
+Drafts default to the calling pane (`PLEXI_PANE_ID`). Use `--pane` to target a
+different pane or `--all-panes` to include the whole session; outside a pane,
+omitting both includes all panes. Agent bookkeeping and pane polling are omitted
+unless `--include-internal` is set. Consecutive identical calls collapse with a
+repeat note. Failed and incomplete calls are omitted unless `--include-failed`
+is set, which keeps them as review comments. Redacted calls always stay comments.
+
 Drafts print to stdout unless `--out` names a new file. They never install a skill
 or edit `<repo>/.plexi-<channel>/commands.toml` / `~/.plexi-<channel>/commands.toml`
 (stable: `<repo>/.plexi/commands.toml` / `~/.plexi/commands.toml`). Review pane ids
 and paths, replace redacted values through the secret workflow, and choose a
-task-specific name for suggested `--subcontext` arguments. Failed, incomplete and
-redacted calls remain review comments. Session inspection and drafting do not add
-calls to the trace they are reading.
+task-specific name for suggested `--subcontext` arguments. Session inspection and
+drafting do not add calls to the trace they are reading.
 
 The command map below comes from this binary's CLI and experiment ownership.
 Use each command's `--help` for its full argument contract. Installed skills

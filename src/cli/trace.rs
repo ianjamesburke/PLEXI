@@ -84,7 +84,7 @@ mod tests {
         let calls = crate::host::flight_recorder::cli_calls(rows.clone(), Some(19));
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["data"]["exit_code"], 0);
-        assert!(crate::cli::debug::render_line(&calls[0]).contains("--right"));
+        assert!(crate::cli::debug::render_line(&calls[0], false).contains("--right"));
         let completed = rows.iter().find(|row| row["kind"] == "cli_call").unwrap();
         assert_eq!(completed["data"]["exit_code"], 0);
     }
@@ -106,6 +106,57 @@ mod tests {
         assert!(!text.contains("other"), "{text}");
         assert!(!text.contains("private value"), "{text}");
         assert_eq!(redact_argv(&safe, &["CUSTOM_NAME".into()]), safe);
+    }
+
+    #[test]
+    fn cli_trace_preserves_grants_but_redacts_real_secrets() {
+        let argv = [
+            "plexi",
+            "agent",
+            "spawn",
+            "--grant",
+            "agents.ping=allow",
+            "tool.name=ask",
+            "tool.name=deny",
+            "mode=allow",
+            "--token",
+            "abc",
+            "API_KEY=x",
+            "echo agents.ping=allow API_KEY='two words' password=hidden",
+        ]
+        .map(str::to_string);
+        let safe = redact_argv(&argv, &[]);
+        assert_eq!(&safe[4..8], &argv[4..8]);
+        assert_eq!(safe[9], "<redacted>");
+        assert_eq!(safe[10], "API_KEY=<redacted>");
+        assert_eq!(
+            safe[11],
+            "echo agents.ping=allow API_KEY=<redacted> password=<redacted>"
+        );
+        assert_eq!(redact_argv(&safe, &[]), safe);
+    }
+
+    #[test]
+    fn cli_trace_persistence_preserves_grants_and_masks_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = &crate::host::flight_recorder::handle_cli_trace;
+        crate::host::flight_recorder::adopt_session(dir.path(), "sess-grants");
+        recorder(
+            dir.path(),
+            &json!({"id":uuid::Uuid::new_v4().to_string(),
+            "phase":"exit", "exit_code":0, "pane_id":19,
+            "argv":["plexi", "agent", "spawn", "--grant", "agents.ping=allow",
+                "--token", "abc", "API_KEY=x", "--key", "private"]}),
+        )
+        .unwrap();
+        let (rows, _) =
+            crate::host::flight_recorder::read_session(dir.path(), "sess-grants").unwrap();
+        let calls = crate::host::flight_recorder::cli_calls(rows, Some(19));
+        let argv = &calls[0]["data"]["argv"];
+        assert_eq!(argv[4], "agents.ping=allow");
+        assert_eq!(argv[6], "<redacted>");
+        assert_eq!(argv[7], "API_KEY=<redacted>");
+        assert_eq!(argv[9], "<redacted>");
     }
 
     #[test]
@@ -236,6 +287,8 @@ fn secret_name(name: &str, known: &[String]) -> bool {
     known
         .iter()
         .any(|name| name.eq_ignore_ascii_case(&normalized))
+        || normalized == "KEY"
+        || normalized.ends_with("_KEY")
         || [
             "SECRET",
             "TOKEN",
@@ -250,8 +303,17 @@ fn secret_name(name: &str, known: &[String]) -> bool {
         .any(|part| normalized.contains(part))
 }
 
+fn secret_assignment(key: &str, known: &[String]) -> bool {
+    let env_name = !key.is_empty()
+        && key
+            .chars()
+            .enumerate()
+            .all(|(i, c)| c == '_' || c.is_ascii_uppercase() || (i > 0 && c.is_ascii_digit()));
+    env_name || secret_name(key, known)
+}
+
 /// Redact before transport and again before persistence. Keep option names so
-/// the sequence remains useful, but never retain env assignment values.
+/// the sequence remains useful; mask uppercase env assignments and secret keys.
 pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
@@ -267,12 +329,7 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
                 return "<redacted>".to_string();
             }
             if let Some((key, _)) = arg.split_once('=') {
-                if (!key.is_empty()
-                    && key.chars().enumerate().all(|(i, c)| {
-                        c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
-                    }))
-                    || (!key.contains(char::is_whitespace) && secret_name(key, known))
-                {
+                if !key.contains(char::is_whitespace) && secret_assignment(key, known) {
                     return format!("{key}=<redacted>");
                 }
             }
@@ -305,12 +362,18 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
             // Also sanitize assignment strings embedded in a shell command or prompt.
             static ASSIGNMENT: OnceLock<regex::Regex> = OnceLock::new();
             let re = ASSIGNMENT.get_or_init(|| {
-                regex::Regex::new(r#"\b[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)"#)
-                    .expect("static assignment regex")
+                regex::Regex::new(
+                    r#"(^|[^A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]*)=(?:"[^"]*"|'[^']*'|[^\s]+)"#,
+                )
+                .expect("static assignment regex")
             });
             re.replace_all(arg, |caps: &regex::Captures<'_>| {
-                let key = caps[0].split_once('=').expect("matched assignment").0;
-                format!("{key}=<redacted>")
+                let key = &caps[2];
+                if secret_assignment(key, known) {
+                    format!("{}{key}=<redacted>", &caps[1])
+                } else {
+                    caps[0].to_string()
+                }
             })
             .into_owned()
         })

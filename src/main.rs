@@ -483,8 +483,21 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Skill { cmd } => match cmd {
-                        SkillCmd::Draft { from_session, pane, format, out } => {
-                            cli::trace::exit(cli::skill_draft::skill_draft_cli(&from_session, pane, &format, out.as_deref()))
+                        SkillCmd::Draft {
+                            from_session, pane, all_panes, include_internal, include_failed, format, out,
+                        } => {
+                            let options = cli::skill_draft::DraftOptions {
+                                pane: cli::skill_draft::resolve_pane(
+                                    pane,
+                                    all_panes,
+                                    std::env::var("PLEXI_PANE_ID").ok().as_deref(),
+                                ),
+                                include_internal,
+                                include_failed,
+                            };
+                            cli::trace::exit(cli::skill_draft::skill_draft_cli(
+                                &from_session, options, &format, out.as_deref(),
+                            ))
                         }
                         SkillCmd::Install { agent } => {
                             cli::trace::exit(cli::skill_install::skill_install_cli(&agent))
@@ -1953,12 +1966,14 @@ fn main() -> eframe::Result {
                                 pane,
                                 join_agents,
                                 cli,
+                                utc,
                             } => cli::trace::exit(cli::debug::debug_session_show_cli(
                                 session.as_deref(),
                                 pane,
                                 join_agents,
                                 cli,
                                 json,
+                                utc,
                             )),
                         },
                     },

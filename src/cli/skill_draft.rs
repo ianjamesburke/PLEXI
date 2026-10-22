@@ -4,12 +4,32 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
 
-pub fn skill_draft_cli(session: &str, pane: Option<u64>, format: &str, out: Option<&Path>) -> i32 {
-    let result = build_draft(&crate::config::config_dir(), session, pane, format)
+#[derive(Clone, Copy, Default)]
+pub struct DraftOptions {
+    pub pane: Option<u64>,
+    pub include_internal: bool,
+    pub include_failed: bool,
+}
+
+pub fn resolve_pane(pane: Option<u64>, all_panes: bool, caller: Option<&str>) -> Option<u64> {
+    if all_panes {
+        None
+    } else {
+        pane.or_else(|| caller.and_then(|s| s.parse().ok()))
+    }
+}
+
+pub fn skill_draft_cli(
+    session: &str,
+    options: DraftOptions,
+    format: &str,
+    out: Option<&Path>,
+) -> i32 {
+    let result = build_draft(&crate::config::config_dir(), session, options, format)
         .and_then(|draft| write_draft(&draft, out, &mut std::io::stdout().lock()));
     match result {
         Ok(()) => {
-            log::info!("skill draft: session={session} pane={pane:?} format={format} out={out:?}");
+            log::info!("skill draft: session={session} pane={:?} include_internal={} include_failed={} format={format} out={out:?}", options.pane, options.include_internal, options.include_failed);
             0
         }
         Err(error) => {
@@ -49,15 +69,58 @@ fn quote(arg: &str) -> String {
     }
 }
 
+pub(crate) fn shell_command(argv: &[String]) -> String {
+    argv.iter()
+        .enumerate()
+        .map(|(i, arg)| {
+            let arg = if i == 0 {
+                Path::new(arg)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(arg)
+            } else {
+                arg
+            };
+            quote(arg)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn internal_call(row: &Value) -> bool {
+    let Some(argv) = row["data"]["argv"].as_array() else {
+        return false;
+    };
+    // Only the command prefix counts; never match words inside payload arguments.
+    let mut words = argv.iter().skip(1).filter_map(Value::as_str);
+    let mut args = Vec::new();
+    while let Some(word) = words.next() {
+        match word {
+            "--json" => continue,
+            "--socket" | "--profile" => {
+                words.next();
+                continue;
+            }
+            _ if word.starts_with("--socket=") || word.starts_with("--profile=") => continue,
+            _ => args.push(word),
+        }
+        if args.len() == 3 {
+            break;
+        }
+    }
+    matches!(
+        args.as_slice(),
+        ["agent", "done" | "report", ..]
+            | ["pane", "capture" | "list" | "wait", ..]
+            | ["pane", "slot", "wait", ..]
+    )
+}
+
 fn command_for(row: &Value) -> Result<(String, bool), String> {
     let mut argv: Vec<String> = serde_json::from_value(row["data"]["argv"].clone())
         .map_err(|error| format!("invalid captured argv: {error}"))?;
     if argv.is_empty() {
         return Err("empty captured argv".into());
-    }
-    // Keep the channel identity, but do not bake a build-machine binary path in.
-    if let Some(name) = Path::new(&argv[0]).file_name().and_then(|s| s.to_str()) {
-        argv[0] = name.to_string();
     }
     let spawn = argv.windows(2).any(|pair| pair == ["agent", "spawn"]);
     let suggest = spawn
@@ -74,19 +137,13 @@ fn command_for(row: &Value) -> Result<(String, bool), String> {
             ["--subcontext".into(), "review-me".into()],
         );
     }
-    Ok((
-        argv.iter()
-            .map(|arg| quote(arg))
-            .collect::<Vec<_>>()
-            .join(" "),
-        suggest,
-    ))
+    Ok((shell_command(&argv), suggest))
 }
 
 fn build_draft(
     profile: &Path,
     session: &str,
-    pane: Option<u64>,
+    options: DraftOptions,
     format: &str,
 ) -> Result<String, String> {
     let id = recorder::resolve_session(profile, session)?;
@@ -96,14 +153,37 @@ fn build_draft(
             "session {id} has {skipped} unreadable rows; repair it before drafting"
         ));
     }
+    let pane = options.pane;
     let calls = recorder::cli_calls(rows, pane);
     if calls.is_empty() {
         return Err(format!("no captured CLI calls in {id} for pane {pane:?}"));
     }
     let mut steps = Vec::new();
     let mut notes = Vec::new();
+    let mut groups: Vec<(Value, usize)> = Vec::new();
     for row in calls {
+        if (!options.include_internal && internal_call(&row))
+            || (!options.include_failed && row["data"]["exit_code"].as_i64() != Some(0))
+        {
+            continue;
+        }
+        if let Some((last, count)) = groups.last_mut() {
+            if last["data"]["argv"] == row["data"]["argv"]
+                && last["data"]["exit_code"] == row["data"]["exit_code"]
+            {
+                *count += 1;
+                continue;
+            }
+        }
+        groups.push((row, 1));
+    }
+    for (row, count) in groups {
         let (command, suggested) = command_for(&row)?;
+        let repeat = if count > 1 {
+            format!(" # repeated {count}x")
+        } else {
+            String::new()
+        };
         let status = row["data"]["exit_code"].as_i64();
         if suggested {
             notes.push(
@@ -114,12 +194,15 @@ fn build_draft(
         let withheld = status != Some(0) || command.contains("<redacted>");
         if withheld {
             notes.push(format!(
-                "Review-only call (exit={}): {command}",
+                "Review-only call (exit={}): {command}{repeat}",
                 status
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "unknown".into())
             ));
         } else {
+            if !repeat.is_empty() {
+                notes.push(format!("{command}{repeat}"));
+            }
             steps.push(command);
         }
     }
@@ -178,7 +261,16 @@ mod tests {
         recorder::handle_cli_trace(dir.path(), &json!({"id":id,"phase":"exit","exit_code":0,"pane_id":19,"argv":["plexi-alpha","agent","spawn","researcher","--task","Audit auth's $(danger)"]}))
             .unwrap();
         let before = std::fs::read_dir(dir.path()).unwrap().count();
-        let draft = build_draft(dir.path(), "sess-draft", Some(19), "skill").unwrap();
+        let draft = build_draft(
+            dir.path(),
+            "sess-draft",
+            DraftOptions {
+                pane: Some(19),
+                ..Default::default()
+            },
+            "skill",
+        )
+        .unwrap();
         assert!(draft.starts_with("---\nname:"));
         assert!(draft.contains("--subcontext review-me"));
         let mut stdout = Vec::new();
@@ -187,7 +279,8 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), before);
         assert!(!dir.path().join("skills").exists());
         assert!(!dir.path().join("commands.toml").exists());
-        let command = build_draft(dir.path(), "sess-draft", None, "command").unwrap();
+        let command =
+            build_draft(dir.path(), "sess-draft", DraftOptions::default(), "command").unwrap();
         let parsed: toml::Value = toml::from_str(&command).unwrap();
         assert!(parsed["commands"]["session_draft"]["steps"][0]
             .as_str()
@@ -197,7 +290,112 @@ mod tests {
         write_draft(&draft, Some(&path), &mut stdout).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), draft);
         assert!(write_draft("overwrite", Some(&path), &mut stdout).is_err());
-        assert!(build_draft(dir.path(), "sess-draft", Some(20), "skill").is_err());
+        assert!(build_draft(
+            dir.path(),
+            "sess-draft",
+            DraftOptions {
+                pane: Some(20),
+                ..Default::default()
+            },
+            "skill"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn internal_calls_allow_global_flags_without_matching_payloads() {
+        for argv in [
+            vec!["plexi", "--json", "pane", "list"],
+            vec!["plexi", "--socket", "/tmp/socket", "agent", "report"],
+            vec!["plexi", "pane", "--profile=alpha", "slot", "wait"],
+        ] {
+            assert!(internal_call(&json!({"data":{"argv":argv}})));
+        }
+        assert!(!internal_call(
+            &json!({"data":{"argv":["plexi", "pane", "send", "19", "agent", "done"]}})
+        ));
+    }
+
+    #[test]
+    fn draft_scope_filters_and_repeat_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        recorder::adopt_session(dir.path(), "sess-filter");
+        let record = |pane, argv: &[&str], status| {
+            recorder::handle_cli_trace(
+                dir.path(),
+                &json!({"id":uuid::Uuid::new_v4().to_string(),
+                "phase":"exit", "pane_id":pane, "argv":argv, "exit_code":status}),
+            )
+            .unwrap();
+        };
+        record(20, &["plexi", "run", "other-pane"], 0);
+        for args in [
+            vec!["plexi", "agent", "done"],
+            vec!["plexi", "agent", "report"],
+            vec!["plexi", "pane", "list"],
+            vec!["plexi", "pane", "capture"],
+            vec!["plexi", "pane", "wait"],
+            vec!["plexi", "pane", "slot", "wait"],
+        ] {
+            record(19, &args, 0);
+        }
+        recorder::handle_cli_trace(
+            dir.path(),
+            &json!({"id":uuid::Uuid::new_v4().to_string(),
+            "phase":"start", "pane_id":19, "argv":["plexi", "run", "incomplete"]}),
+        )
+        .unwrap();
+        for _ in 0..4 {
+            record(19, &["plexi", "run", "hi"], 1);
+        }
+        for _ in 0..3 {
+            record(19, &["plexi", "pane", "new", "--right"], 0);
+        }
+        let options = DraftOptions {
+            pane: resolve_pane(None, false, Some("19")),
+            ..Default::default()
+        };
+        let draft = build_draft(dir.path(), "latest", options, "command").unwrap();
+        let parsed: toml::Value = toml::from_str(&draft).unwrap();
+        assert_eq!(
+            parsed["commands"]["session_draft"]["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!draft.contains("other-pane"));
+        assert!(!draft.contains("run hi"));
+        assert!(!draft.contains("run incomplete"));
+        assert!(!draft.contains("agent done"));
+        assert!(!draft.contains("pane slot wait"));
+        assert!(draft.contains("# repeated 3x"));
+        let inclusive = build_draft(
+            dir.path(),
+            "latest",
+            DraftOptions {
+                include_internal: true,
+                include_failed: true,
+                ..options
+            },
+            "skill",
+        )
+        .unwrap();
+        assert!(inclusive.contains("Review-only call (exit=unknown): plexi run incomplete"));
+        assert!(inclusive.contains("agent done"));
+        assert!(inclusive.contains("pane slot wait"));
+        assert_eq!(
+            inclusive
+                .matches("Review-only call (exit=1): plexi run hi # repeated 4x")
+                .count(),
+            1
+        );
+        assert_eq!(resolve_pane(Some(20), false, Some("19")), Some(20));
+        assert_eq!(resolve_pane(None, true, Some("19")), None);
+        assert_eq!(resolve_pane(None, false, None), None);
+        assert_eq!(resolve_pane(None, false, Some("invalid")), None);
+        let all = build_draft(dir.path(), "latest", DraftOptions::default(), "skill").unwrap();
+        assert!(all.contains("other-pane"));
     }
 
     #[test]
