@@ -2598,7 +2598,13 @@ mod agent_tests {
             let text = String::from_utf8(output.stdout).unwrap();
             assert!(text.contains("HarnessExit"), "{text}");
             assert!(text.contains(&format!("harness exited with code {code} without agent done")), "{text}");
-            assert!(text.contains(if code == 0 { "--state exited_unreported" } else { "--state failed" }), "{text}");
+            let args: Vec<_> = text.lines().collect();
+            assert!(
+                args.windows(2).any(|pair| {
+                    pair == ["--state", if code == 0 { "exited_unreported" } else { "failed" }]
+                }),
+                "{text}"
+            );
         }
     }
     #[test]
