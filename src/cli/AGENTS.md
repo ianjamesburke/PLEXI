@@ -127,6 +127,10 @@ separately from the installed generation. `update --rollback` restores the retai
 generation. Uninstall retains user data and removes only recorded ownership.
 The package and activation contract is `scripts/DISTRIBUTION.md`.
 
+When `host stop` cannot reach its socket, it reads the matching host PID/session
+record and performs the same marker-scoped pane cleanup before terminating that
+exact host PID. A stale record never authorizes cleanup.
+
 ## Traps
 
 - **Agent tool requests must be stamped as protocol variants.** `agent_tool_cli` validates and serializes `AppRequest` before transport. Do not inject shared JSON fields across command variants: `AgentCall` owns `cwd`, while `AgentMessage` does not. Socket regression coverage lives in `agent_tool_message_cli_socket_round_trip_and_wait`.

@@ -1452,6 +1452,7 @@ impl PlexiApp {
         let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
         let profile_dir = crate::config::config_dir();
+        crate::host::process_cleanup::record_session_marker(&profile_dir);
 
         // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl.
         // Per-context routing (stint 0724 Phase E) is decided per-record at

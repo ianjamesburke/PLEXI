@@ -4,6 +4,7 @@
 //! host launched through `plexi host start`.
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use std::path::Path;
 #[cfg(unix)]
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,6 +25,27 @@ static ROOTS: Mutex<BTreeMap<u32, RootProcess>> = Mutex::new(BTreeMap::new());
 
 pub(crate) fn session_marker() -> &'static str {
     SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+const SESSION_RECORD: &str = "pane-session";
+
+/// Persist just enough identity for `host stop` to clean panes when its socket
+/// is already unavailable.  The PID check prevents a stale record from ever
+/// selecting another host's panes.
+pub(crate) fn record_session_marker(profile: &Path) {
+    let path = profile.join(SESSION_RECORD);
+    if let Err(error) = std::fs::write(&path, format!("{}\n{}\n", std::process::id(), session_marker())) {
+        log::warn!("quit: could not record pane session marker at {path:?}: {error}");
+    }
+}
+
+pub(crate) fn recorded_session_marker(profile: &Path, host_pid: u32) -> Option<String> {
+    let path = profile.join(SESSION_RECORD);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut lines = content.lines();
+    let recorded_pid = lines.next()?.parse::<u32>().ok()?;
+    let marker = lines.next()?.to_string();
+    (recorded_pid == host_pid && !marker.is_empty()).then_some(marker)
 }
 
 #[derive(Debug)]
@@ -99,6 +121,16 @@ pub(crate) struct KillReport {
 /// `default_grace` is the caller's budget between HUP/TERM and SIGKILL;
 /// `PLEXI_QUIT_GRACE_MS` overrides it when set.
 pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
+    stop_pane_processes_for_marker(session_marker(), default_grace)
+}
+
+/// Stop pane groups belonging to `marker`, bounded across process and tmux
+/// cleanup. This is also the socket-failure fallback used by `host stop`.
+pub(crate) fn stop_pane_processes_for_marker(marker: &str, default_grace: Duration) -> KillReport {
+    stop_pane_processes_with_tmux(marker, default_grace, "tmux")
+}
+
+fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &str) -> KillReport {
     let grace = match std::env::var("PLEXI_QUIT_GRACE_MS") {
         Ok(value) => match value.parse::<u64>() {
             Ok(ms) => Duration::from_millis(ms.min(30_000)),
@@ -110,25 +142,29 @@ pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
         Err(_) => default_grace,
     };
     let start = Instant::now();
-    stop_marked_tmux_sessions(session_marker());
-    let tmux = start.elapsed();
+    let deadline = start + (grace + Duration::from_millis(250)).min(Duration::from_millis(2500));
+    let mut report = stop_marked_processes(marker, grace, deadline);
+    // Pane HUP/TERM must never wait on a stuck tmux server. Tmux consumes only
+    // the remaining shared budget after pane groups have been signaled.
+    let tmux_start = Instant::now();
+    stop_marked_tmux_sessions(tmux, marker, deadline);
+    report.tmux = tmux_start.elapsed();
     KillReport {
         grace,
-        tmux,
-        ..stop_marked_processes(session_marker(), grace)
+        ..report
     }
 }
 
 // Shutdown helpers must not let an unresponsive tmux server stall host exit.
-fn quit_helper(args: &[&str], deadline: Instant) -> std::io::Result<std::process::Output> {
+fn quit_helper(program: &str, args: &[&str], deadline: Instant) -> std::io::Result<std::process::Output> {
     if Instant::now() >= deadline {
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "quit helper deadline elapsed",
         ));
     }
-    let mut child = std::process::Command::new(args[0])
-        .args(&args[1..])
+    let mut child = std::process::Command::new(program)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -152,9 +188,8 @@ fn quit_helper(args: &[&str], deadline: Instant) -> std::io::Result<std::process
 /// An existing tmux server does not necessarily propagate a client's env to
 /// sessions. Only an explicit matching session environment proves ownership;
 /// never kill an unmarked shared server or a user-selected custom socket.
-fn stop_marked_tmux_sessions(marker: &str) {
-    let deadline = Instant::now() + Duration::from_millis(500);
-    let sessions = match quit_helper(&["tmux", "list-sessions", "-F", "#{session_id}"], deadline) {
+fn stop_marked_tmux_sessions(tmux: &str, marker: &str, deadline: Instant) {
+    let sessions = match quit_helper(tmux, &["list-sessions", "-F", "#{session_id}"], deadline) {
         Ok(output) if output.status.success() => output,
         Ok(_) => return, // No default server is a normal state.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
@@ -170,7 +205,7 @@ fn stop_marked_tmux_sessions(marker: &str) {
             break;
         }
         let env = match quit_helper(
-            &["tmux", "show-environment", "-t", session, SESSION_ENV],
+            tmux, &["show-environment", "-t", session, SESSION_ENV],
             deadline,
         ) {
             Ok(output) => output,
@@ -180,7 +215,7 @@ fn stop_marked_tmux_sessions(marker: &str) {
             }
         };
         if env.status.success() && String::from_utf8_lossy(&env.stdout).trim() == expected {
-            match quit_helper(&["tmux", "kill-session", "-t", session], deadline) {
+            match quit_helper(tmux, &["kill-session", "-t", session], deadline) {
                 Ok(output) if output.status.success() => {
                     log::info!("quit: stopped marked tmux session={session}")
                 }
@@ -195,7 +230,7 @@ fn stop_marked_tmux_sessions(marker: &str) {
 }
 
 #[cfg(unix)]
-fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
+fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant) -> KillReport {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let start = Instant::now();
     let session = marker;
@@ -299,7 +334,7 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
         }
     }
     let signaled = Instant::now();
-    let deadline = signaled + grace;
+    let deadline = (signaled + grace).min(total_deadline);
     let tracked: Vec<_> = identities
         .keys()
         .map(|pid| sysinfo::Pid::from_u32(*pid))
@@ -359,7 +394,7 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
 }
 
 #[cfg(not(unix))]
-fn stop_marked_processes(_marker: &str, _grace: Duration) -> KillReport {
+fn stop_marked_processes(_marker: &str, _grace: Duration, _total_deadline: Instant) -> KillReport {
     log::warn!("quit: explicit pane process-group teardown requires Unix");
     KillReport::default()
 }
@@ -373,8 +408,24 @@ mod tests {
     fn unresponsive_quit_helper_is_killed_at_deadline() {
         let start = Instant::now();
         let error =
-            quit_helper(&["/bin/sleep", "600"], start + Duration::from_millis(30)).unwrap_err();
+            quit_helper("/bin/sleep", &["600"], start + Duration::from_millis(30)).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn unresponsive_tmux_stays_within_total_pane_cleanup_cap() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tmux = dir.path().join("tmux");
+        std::fs::write(&tmux, "#!/bin/sh\nsleep 600\n").unwrap();
+        std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let start = Instant::now();
+        let _ = stop_pane_processes_with_tmux(
+            &uuid::Uuid::new_v4().to_string(),
+            Duration::from_millis(30),
+            tmux.to_str().unwrap(),
+        );
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
@@ -427,7 +478,11 @@ mod tests {
             registrations.push(PaneProcessGroup::record_for(child.id(), &marker));
             children.push(FixtureChild(child));
         }
-        let report = stop_marked_processes(&marker, Duration::from_millis(30));
+        let report = stop_marked_processes(
+            &marker,
+            Duration::from_millis(30),
+            Instant::now() + Duration::from_secs(1),
+        );
         assert_eq!(report.groups, 2);
         assert_eq!(report.escalated, 2);
         for mut child in children {
@@ -520,7 +575,11 @@ mod tests {
         let registration = PaneProcessGroup::record_for(child.0.id(), &marker);
 
         let start = Instant::now();
-        let report = stop_marked_processes(&marker, Duration::from_secs(5));
+        let report = stop_marked_processes(
+            &marker,
+            Duration::from_secs(5),
+            Instant::now() + Duration::from_secs(5),
+        );
         let elapsed = start.elapsed();
         drop(registration);
         assert_eq!(report.groups, 1);
