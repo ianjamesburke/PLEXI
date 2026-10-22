@@ -110,9 +110,11 @@ class ComponentState:
         if _in_view:
             raise RuntimeError("component state.set() called inside view() - return SetState from update() instead")
         _require_component_name(name)
-        components = _all_component_values(self.scope)
-        components.setdefault(self.key, {})[name] = value
-        return state.patch({_COMPONENT_STATE_NAMESPACE: components}, scope=self.scope, persist=persist)
+        return state.patch(
+            {_COMPONENT_STATE_NAMESPACE: {self.key: {name: value}}},
+            scope=self.scope,
+            persist=persist,
+        )
 
     def use_state(self, name: str, default: Any = None) -> tuple[Any, ComponentSetter]:
         """Return the current value and a setter suitable for ``update()``."""

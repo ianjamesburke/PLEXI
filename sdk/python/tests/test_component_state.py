@@ -30,7 +30,7 @@ def test_component_state_isolated_by_explicit_key_and_returns_effects() -> None:
     _v3_state._state = _snapshot(effect.data)
     assert left.get("count", 0) == 2
     assert right.set("count", 3) == SetState({
-        "__plexi_component_state__": {"left": {"count": 2}, "right": {"count": 3}}
+        "__plexi_component_state__": {"right": {"count": 3}}
     })
 
 
