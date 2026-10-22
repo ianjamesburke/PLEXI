@@ -692,6 +692,7 @@ fn python_init_payload(
         "app_id": config.app_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
+        "feature_flags": ["keyed_tree_delta"],
         "states": { default_scope.as_str(): state },
         "state_scopes": scope_names,
         "theme": config.theme,
@@ -1046,7 +1047,12 @@ impl HeadlessPythonSession {
                             "tree_delta missing 'changed' array".to_string(),
                         )
                     })?;
-                apply_tree_delta(base, changed)?
+                apply_tree_delta(
+                    base,
+                    changed,
+                    message.get("added").and_then(Value::as_array),
+                    message.get("removed").and_then(Value::as_array),
+                )?
             }
             _ => {
                 let raw = message.get("tree").ok_or_else(|| {
@@ -1604,7 +1610,9 @@ fn decode_tree_delta(
         .and_then(Value::as_array)
         .ok_or_else(|| "tree_delta missing 'changed' array".to_string())?;
     let tree_started = std::time::Instant::now();
-    let tree = apply_tree_delta(base, changed).map_err(|error| error.to_string())?;
+    let added = value.get("added").and_then(Value::as_array);
+    let removed = value.get("removed").and_then(Value::as_array);
+    let tree = apply_tree_delta(base, changed, added, removed).map_err(|error| error.to_string())?;
     Ok(DecodedOutput::Tree {
         frame_id: value.get("frame_id").and_then(Value::as_u64),
         tree: Arc::new(tree),
@@ -1622,13 +1630,14 @@ fn decode_tree_delta(
 fn apply_tree_delta(
     base: &PythonUiTree,
     changed: &[Value],
+    added: Option<&Vec<Value>>,
+    removed: Option<&Vec<Value>>,
 ) -> Result<PythonUiTree, WasmPythonError> {
     let mut tree = base.tree.clone();
     let mut canvas_fits = base.canvas_fits.clone();
     for patch in changed {
         let id = required_u32(patch, "id")?;
-        let index = id as usize;
-        let slot = tree.nodes.get_mut(index).ok_or_else(|| {
+        let slot = tree.nodes.iter_mut().find(|node| node.id == id).ok_or_else(|| {
             WasmPythonError::BridgeJson(format!(
                 "tree_delta id {id} out of range (arena has {} nodes)",
                 base.tree.nodes.len()
@@ -1676,6 +1685,30 @@ fn apply_tree_delta(
                 }
             }
             *slot = node;
+        }
+    }
+    let mut remove_ids = std::collections::HashSet::new();
+    if let Some(removed) = removed {
+        for raw_id in removed {
+            let id = raw_id.as_u64().filter(|id| *id <= u32::MAX as u64)
+                .ok_or_else(|| WasmPythonError::BridgeJson("keyed tree_delta removal is not a u32 id".to_string()))? as u32;
+            if !remove_ids.insert(id) || !tree.nodes.iter().any(|node| node.id == id) {
+                return Err(WasmPythonError::BridgeJson("keyed tree_delta removes an unknown or duplicate id".to_string()));
+            }
+        }
+    }
+    tree.nodes.retain(|node| !remove_ids.contains(&node.id));
+    for id in &remove_ids {
+        canvas_fits.remove(id);
+    }
+    if let Some(added) = added {
+        for raw_node in added {
+            let node = decode_indexed_node(raw_node)?;
+            if tree.nodes.iter().any(|existing| existing.id == node.id) {
+                return Err(WasmPythonError::BridgeJson(format!("keyed tree_delta adds duplicate id {}", node.id)));
+            }
+            if let Some(fit) = canvas_fit_for_node(raw_node)? { canvas_fits.insert(node.id, fit); }
+            tree.nodes.push(node);
         }
     }
     Ok(PythonUiTree { tree, canvas_fits })
@@ -3844,6 +3877,7 @@ impl LivePythonPane {
             "type": "init", "app_id": self.app_id,
             "workspace_root": self.config.workspace_root,
             "capabilities": self.config.capabilities,
+            "feature_flags": ["keyed_tree_delta"],
             "states": self.states_json(),
             "state_scopes": self.scope_names(),
             "theme": {},
@@ -10426,7 +10460,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":1,"key":"0/0","data":{"type":"Text","text":"score=7"}}"#,
         )];
-        let patched = apply_tree_delta(&base, &changed).expect("apply delta");
+        let patched = apply_tree_delta(&base, &changed, None, None).expect("apply delta");
 
         let UiNodeData::Text(text) = &patched.tree.nodes[1].data else {
             panic!("expected text node");
@@ -10446,7 +10480,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r##"{"id":2,"key":"0/1","commands_changed":[[1,{"type":"rect","x":120.0,"y":100.0,"w":20.0,"h":20.0,"fill":"#ff0000","radius":0.0}]]}"##,
         )];
-        let patched = apply_tree_delta(&base, &changed).expect("apply canvas delta");
+        let patched = apply_tree_delta(&base, &changed, None, None).expect("apply canvas delta");
 
         let UiNodeData::Canvas(canvas) = &patched.tree.nodes[2].data else {
             panic!("expected canvas node");
@@ -10467,7 +10501,37 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":99,"key":"x","data":{"type":"Empty"}}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_adds_removes_and_reorders_stable_nodes() {
+        let base = decode_python_ui_tree_value(&encoded_value(r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Column","children":[1,2],"align":"start","grow":false}},
+              {"id":1,"key":"0/@a","data":{"type":"Text","text":"a"}},
+              {"id":2,"key":"0/@b","data":{"type":"Text","text":"b"}}
+            ]
+        }"#)).expect("base");
+        let changed = [encoded_value(r#"{"id":0,"key":"0","data":{"type":"Column","children":[3,1],"align":"start","grow":false}}"#)];
+        let added = vec![encoded_value(r#"{"id":3,"key":"0/@new","data":{"type":"Text","text":"new"}}"#)];
+        let removed = vec![json!(2)];
+        let patched = apply_tree_delta(&base, &changed, Some(&added), Some(&removed))
+            .expect("keyed delta applies");
+        let UiNodeData::Column(root) = &patched.tree.nodes[0].data else {
+            panic!("expected root column");
+        };
+        assert_eq!(root.children, vec![3, 1]);
+        assert!(patched.tree.nodes.iter().any(|node| node.id == 1));
+        assert!(patched.tree.nodes.iter().any(|node| node.id == 3));
+        assert!(!patched.tree.nodes.iter().any(|node| node.id == 2));
+    }
+
+    #[test]
+    fn keyed_delta_duplicate_added_id_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let added = vec![encoded_value(r#"{"id":1,"key":"duplicate","data":{"type":"Text","text":"x"}}"#)];
+        assert!(apply_tree_delta(&base, &[], Some(&added), None).is_err());
     }
 
     fn continuous_wake(
@@ -10609,7 +10673,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":1,"key":"0/0","commands_changed":[[0,{"type":"rect"}]]}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
     }
 
     #[test]
@@ -10618,7 +10682,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":2,"key":"0/1","commands_changed":[[9,{"type":"rect"}]]}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
     }
 
     #[test]
