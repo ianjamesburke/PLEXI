@@ -184,7 +184,10 @@ pub fn env_for_cwd(
     for name in names {
         let folder = &best[&name].1;
         let account = account_name(folder, &name);
-        let Some(value) = store.get(&account) else {
+        let Some(value) = store
+            .get_interactive(&account)
+            .map_err(|error| error.to_string())?
+        else {
             log::warn!(
                 "folder_secrets: listed name={name} folder={} but the store returned no value",
                 folder.display()
@@ -251,15 +254,15 @@ pub fn read_folder_secret(
     let folder_str = folder.to_string_lossy().into_owned();
     let input = read_input_json(name, &folder_str);
     let account = account_name(&folder, name);
-    Ok(admitted_read(
+    admitted_read(
         monitor,
         actor,
         SECRET_READ_TOOL,
         &input,
         &folder,
         &format!("name={name} folder={folder_str}"),
-        || store.get(&account),
-    ))
+        || store.get_interactive(&account),
+    )
 }
 
 /// Admit `tool` for `actor`, then call `fetch` only when a grant covers this
@@ -272,8 +275,10 @@ pub(super) fn admitted_read(
     input: &str,
     workspace_root: &Path,
     label: &str,
-    fetch: impl FnOnce() -> Option<Zeroizing<String>>,
-) -> ReadResult {
+    fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
+) -> Result<ReadResult, String> {
+    static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let admission_guard = ADMISSION.lock().unwrap_or_else(|error| error.into_inner());
     let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
     let admission = monitor.admit(AdmitRequest {
         call_id: &call_id,
@@ -289,7 +294,7 @@ pub(super) fn admitted_read(
         instance_id: 0,
         target_type: TargetType::Secret,
     });
-    match admission {
+    Ok(match admission {
         Admission::Required { pending_request_id } => {
             log::info!(
                 "secrets: {tool} permission_required {label} actor={} pending={pending_request_id}",
@@ -314,11 +319,23 @@ pub(super) fn admitted_read(
                 .note_use(&actor.id, &call_id, &grant_id, &fingerprint, &resource, "")
                 .is_err()
             {
-                log::info!("secrets: {tool} blocked before fetch {label} actor={}", actor.id);
-                return ReadResult::Denied;
+                log::info!(
+                    "secrets: {tool} blocked before fetch {label} actor={}",
+                    actor.id
+                );
+                return Ok(ReadResult::Denied);
             }
+            // Claim the one-shot grant before a blocking authentication read.
+            // Otherwise two workers can both pass admission with the same
+            // grant. Release this short lock before any Keychain UI waits.
+            monitor.consume_once(&grant_id, None);
+            drop(admission_guard);
             let value = fetch();
-            let outcome = if value.is_some() { "ok" } else { "missing" };
+            let outcome = match &value {
+                Ok(Some(_)) => "ok",
+                Ok(None) => "missing",
+                Err(error) => error.outcome(),
+            };
             if monitor
                 .note_outcome(
                     &actor.id,
@@ -334,22 +351,21 @@ pub(super) fn admitted_read(
                 .is_err()
             {
                 log::info!("secrets: {tool} audit failed after fetch; withholding {label}");
-                return ReadResult::Denied;
+                return Ok(ReadResult::Denied);
             }
-            // A human "Allow once" is GrantDuration::Once. Spending it here
-            // is what makes the next read ask again. Always grants are left
-            // in place; consume_once ignores them.
-            monitor.consume_once(&grant_id, None);
             log::info!(
                 "secrets: {tool} allowed {label} actor={} grant={grant_id} outcome={outcome}",
                 actor.id
             );
             match value {
-                Some(value) => ReadResult::Value(value),
-                None => ReadResult::NotFound,
+                Ok(Some(value)) => ReadResult::Value(value),
+                Ok(None) => ReadResult::NotFound,
+                // A failed approved read is terminal. Never re-admit it or
+                // mint a second pending request in an authentication retry.
+                Err(error) => return Err(error.to_string()),
             }
         }
-    }
+    })
 }
 
 /// One folder-secret ask the Assistant sheet can show. The value is not here.
@@ -1105,6 +1121,8 @@ mod tests {
 
     #[test]
     fn build_env_injects_only_inside_the_folder() {
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let root = scratch();
         let _profile = crate::config::set_test_profile_dir(root.path().join("profile"));
         let folder_a = root.path().join("A");
@@ -1176,5 +1194,145 @@ mod tests {
         assert!(blob.contains("allow_once"));
         assert!(blob.contains("FOLDER_E2E_SECRET"));
         assert!(!blob.contains(value));
+    }
+}
+
+#[cfg(test)]
+mod approval_retry_tests {
+    use super::super::store::SecretError;
+    use super::*;
+
+    #[test]
+    fn concurrent_secret_requests_cannot_share_one_approval() {
+        let monitor = PermissionMonitor::ephemeral();
+        let root = tempfile::tempdir().unwrap();
+        let actor = SecretActor { kind: ActorType::Agent, id: "pane:0957-concurrent".into() };
+        const INPUT: &str = r#"{"name":"FOO","scope":"global"}"#;
+        let first = admitted_read(&monitor, &actor, "secret.get", INPUT, root.path(), "FOO", || panic!("unapproved fetch")).unwrap();
+        let ReadResult::PermissionRequired { pending_id } = first else { panic!("expected approval") };
+        monitor.approve_pending(&pending_id, gate::ApprovalChoice::Once).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let timeout = crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        std::thread::scope(|threads| {
+            let target = (&monitor, &actor, root.path());
+            let worker = threads.spawn(move || admitted_read(
+                target.0, target.1, "secret.get", INPUT, target.2, "FOO", || {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv_timeout(timeout).unwrap();
+                    Ok(None)
+                },
+            ));
+            started_rx.recv_timeout(timeout).unwrap();
+            // While the approved request is waiting in Keychain, a separate
+            // request must not fetch with that same one-shot authorization.
+            let second = admitted_read(&monitor, &actor, "secret.get", INPUT, root.path(), "FOO", || Ok(None));
+            finish_tx.send(()).unwrap();
+            assert!(matches!(worker.join().unwrap(), Ok(ReadResult::NotFound)));
+            assert!(matches!(second, Ok(ReadResult::PermissionRequired { .. })));
+        });
+    }
+
+    #[test]
+    fn one_approval_retry_finishes_even_when_keychain_fails_or_item_is_missing() {
+        for failure in [None, Some(-25293), Some(-50)] {
+            let monitor = PermissionMonitor::ephemeral();
+            let root = tempfile::tempdir().unwrap();
+            let actor = SecretActor {
+                kind: ActorType::Agent,
+                id: "pane:0957".into(),
+            };
+            let reads = std::cell::Cell::new(0);
+            let read = || {
+                admitted_read(
+                    &monitor,
+                    &actor,
+                    "secret.get",
+                    r#"{"name":"FOO","scope":"global"}"#,
+                    root.path(),
+                    "FOO",
+                    || {
+                        reads.set(reads.get() + 1);
+                        match failure {
+                            None => Ok(None),
+                            Some(-25293) => Err(SecretError::Authentication(-25293)),
+                            _ => Err(SecretError::Backend("test failure".into())),
+                        }
+                    },
+                )
+            };
+            let ReadResult::PermissionRequired { pending_id } = read().unwrap() else {
+                panic!("expected approval")
+            };
+            assert_eq!(reads.get(), 0);
+            monitor
+                .approve_pending(&pending_id, gate::ApprovalChoice::Once)
+                .unwrap();
+            let result = read();
+            if failure.is_none() {
+                assert!(matches!(result, Ok(ReadResult::NotFound)));
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(reads.get(), 1);
+            assert!(
+                monitor.list_pending().is_empty(),
+                "an approved retry must not post a new banner"
+            );
+            let expected = match failure {
+                None => "missing",
+                Some(-25293) => "auth_failed",
+                _ => "backend_error",
+            };
+            assert!(monitor
+                .audit_records()
+                .iter()
+                .any(|row| row.decision == expected));
+            // A different command still needs its own approval: do not turn a
+            // one-shot failure into a reusable grant.
+            assert!(matches!(read(), Ok(ReadResult::PermissionRequired { .. })));
+            assert_eq!(reads.get(), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod lazy_startup_tests {
+    use super::*;
+    #[test]
+    fn disabled_folder_bindings_and_agent_startup_never_read_values() {
+        let root = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(root.path().join("profile"));
+        let _shared = crate::config::set_test_shared_dir(root.path().join("shared"));
+        let folder = root.path().join("project");
+        std::fs::create_dir(&folder).unwrap();
+        super::super::init_workspace(&folder, &crate::config::workspace_channel_dir()).unwrap();
+        set_folder_secret(
+            super::super::folder_store(),
+            "DEMO_TOKEN_0957",
+            &folder,
+            "test-only",
+        )
+        .unwrap();
+        for enabled in [false, true] {
+            let features = if enabled {
+                vec![crate::release::ReleaseFeature::FolderSecrets]
+            } else {
+                vec![]
+            };
+            let _features = crate::release::set_test_experiments(&features);
+            super::super::store::take_test_value_reads();
+            let mut env = crate::host::shell::build_env_with_secrets(Some(&folder), !enabled);
+            crate::host::shell::withhold_folder_secrets(&mut env, Some(&folder));
+            assert!(!env.contains_key("DEMO_TOKEN_0957"));
+            assert_eq!(
+                super::super::store::take_test_value_reads(),
+                0,
+                "disabled bindings and withheld agent secrets need names only"
+            );
+        }
+        super::super::folder_store()
+            .delete(&account_name(&folder, "DEMO_TOKEN_0957"))
+            .unwrap();
     }
 }

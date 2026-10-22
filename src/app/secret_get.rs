@@ -144,7 +144,11 @@ impl PlexiApp {
             Ok(scope) => scope,
             Err(error) => {
                 log::warn!("secret_get: workspace config unreadable: {error}");
-                write_reply(&reply_path, serde_json::json!({"status": "error", "error": error}), false);
+                write_reply(
+                    &reply_path,
+                    serde_json::json!({"status": "error", "error": error}),
+                    false,
+                );
                 return;
             }
         };
@@ -159,27 +163,59 @@ impl PlexiApp {
                 SecretScope::Global => "global".to_string(),
             }
         );
-        let result = crate::workspace::secrets::read_pane_secret(
-            &monitor,
-            crate::workspace::secrets::system_store(),
-            &actor,
-            name,
-            &scope,
-            &crate::config::config_dir(),
-        );
-        let (body, holds_value) = match result {
-            Ok(ReadResult::Value(value)) => {
-                (serde_json::json!({"status": "value", "value": value.as_str()}), true)
-            }
-            Ok(ReadResult::PermissionRequired { pending_id }) => (
-                serde_json::json!({"status": "permission_required", "pending_request_id": pending_id}),
-                false,
-            ),
-            Ok(ReadResult::Denied) => (serde_json::json!({"status": "denied"}), false),
-            Ok(ReadResult::NotFound) => (serde_json::json!({"status": "not_found"}), false),
-            Err(error) => (serde_json::json!({"status": "error", "error": error}), false),
+        // Keychain authentication can wait for a human. Keep servicing the
+        // host while the exact admitted request finishes; no re-admission loop.
+        let name = name.to_string();
+        let profile = crate::config::config_dir();
+        let failure_path = reply_path.clone();
+        let repaint = self.ctx.clone();
+        let read = move || {
+            let result = crate::workspace::secrets::read_pane_secret(
+                &monitor,
+                crate::workspace::secrets::system_store(),
+                &actor,
+                &name,
+                &scope,
+                &profile,
+            );
+            let (body, holds_value) = match result {
+                Ok(ReadResult::Value(value)) => (
+                    serde_json::json!({"status": "value", "value": value.as_str()}),
+                    true,
+                ),
+                Ok(ReadResult::PermissionRequired { pending_id }) => (
+                    serde_json::json!({"status": "permission_required", "pending_request_id": pending_id}),
+                    false,
+                ),
+                Ok(ReadResult::Denied) => (serde_json::json!({"status": "denied"}), false),
+                Ok(ReadResult::NotFound) => (serde_json::json!({"status": "not_found"}), false),
+                Err(error) => (
+                    serde_json::json!({"status": "error", "error": error}),
+                    false,
+                ),
+            };
+            write_reply(&reply_path, body, holds_value);
+            // Admission ran off-thread: wake an idle host to display a newly
+            // pending banner (or remove a consumed one) without another input.
+            repaint.request_repaint();
         };
-        write_reply(&reply_path, body, holds_value);
+        #[cfg(not(test))]
+        if let Err(error) = std::thread::Builder::new()
+            .name("secret-get".into())
+            .spawn(read)
+        {
+            log::error!("secret_get: could not start read worker: {error}");
+            write_reply(
+                &failure_path,
+                serde_json::json!({"status": "error", "error": "could not start secret read"}),
+                false,
+            );
+        }
+        #[cfg(test)]
+        {
+            let _ = failure_path;
+            read();
+        }
     }
 }
 

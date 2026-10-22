@@ -47,6 +47,8 @@ mod store;
 mod index;
 
 pub use store::{NonDestructiveStore, SecretStore};
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) use store::keychain_call_lock;
 
 // Only test code outside this module names these. `SecretError` is named from
 // the macOS keychain-counting tests; every platform's tests name the in-memory

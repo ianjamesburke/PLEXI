@@ -59,15 +59,22 @@ pub fn read_pane_secret(
         SecretScope::Workspace { root, .. } => root.as_path(),
         SecretScope::Global => global_root,
     };
-    Ok(admitted_read(
+    admitted_read(
         monitor,
         actor,
         SECRET_GET_TOOL,
         &input,
         workspace_root,
         &format!("name={name} scope={label}"),
-        || accounts.iter().find_map(|account| store.get(account)),
-    ))
+        || {
+            for account in &accounts {
+                if let Some(value) = store.get_interactive(account)? {
+                    return Ok(Some(value));
+                }
+            }
+            Ok(None)
+        },
+    )
 }
 
 #[cfg(test)]

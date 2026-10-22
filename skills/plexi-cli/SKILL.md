@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "6.1.0"
+skill_version: "6.1.1"
 plexi_version: "0.4.0"
 last_verified: "2026-10-22"
 ---
@@ -181,6 +181,13 @@ still returns user-scope names. Use `--global`, change directory into the pane's
 context, or select an owned context with `--context <id|name|root>`. An agent
 needs a `secret.list` approval to use an explicit context; ask the human to
 review the request in Needs you, then retry. Listing never returns values.
+
+For `secret get`, retry once after the human approves the pending request.
+A not-set or Keychain authentication error ends that request: follow the printed
+repair guidance instead of repeatedly asking for approval. A changed binary
+signature may require authorizing Plexi in Keychain Access or re-running
+`secret set NAME` with the current channel binary. Keychain authentication may
+show a system dialog; it does not always use Touch ID.
 
 Folder bindings require the `folder_secrets` experiment, which is off by
 default. Disabled bindings appear as a hidden count. Enable it with
