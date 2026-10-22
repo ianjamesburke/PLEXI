@@ -161,7 +161,7 @@ fn parse_grant_spec(spec: &str) -> Result<ToolGrant, String> {
         .ok_or_else(|| format!("grant '{spec}' must be tool=allow[:hard|:soft]|ask|deny"))?;
     let tool = tool.trim();
     let raw_decision = raw_decision.trim();
-    if tool.is_empty() || tool.contains('/') || tool.contains(' ') {
+    if tool.is_empty() || tool == "*" || tool.contains('/') || tool.contains(' ') {
         return Err(format!("grant tool '{tool}' is not a tool name"));
     }
     let (decision, kind) = match raw_decision {
@@ -194,7 +194,7 @@ fn decision_rank(decision: &str) -> u8 {
 
 fn covers(parent: &[ToolGrant], requested: &ToolGrant) -> bool {
     parent.iter().any(|grant| {
-        grant.tool == requested.tool
+        (grant.tool == "*" || grant.tool == requested.tool)
             && decision_rank(&requested.decision) <= decision_rank(&grant.decision)
     })
 }
@@ -877,6 +877,19 @@ fn pane_session_grants(workspace: &Path, pane_id: u64) -> Vec<ToolGrant> {
         .collect()
 }
 
+fn user_context_authority_grants(workspace: &Path, context_root: &Path) -> Vec<ToolGrant> {
+    if workspace == context_root {
+        vec![ToolGrant {
+            tool: "*".to_string(),
+            decision: "allow".to_string(),
+            kind: GrantKind::Hard,
+            expires_at: None,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
 pub fn handle_request(op: &str, payload: &Value) -> Value {
     let Some(workspace_raw) = payload.get("workspace").and_then(|v| v.as_str()) else {
         return json!({"ok": false, "error_code": "invalid_argument", "error": "workspace is required"});
@@ -887,6 +900,38 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
     };
     monitor().expire_soft_grants();
     let caller_pane = payload.get("caller_pane").and_then(|v| v.as_u64());
+    let caller_context_root = payload
+        .get("caller_context_root")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .and_then(|raw| canonical_workspace(Path::new(raw)).ok());
+    let caller_context_denied = payload
+        .get("caller_context_denied")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || caller_context_root
+            .as_ref()
+            .is_some_and(|ctx_root| ctx_root != &workspace);
+    if caller_context_denied {
+        let actor = caller_pane
+            .map(|p| format!("pane:{p}"))
+            .unwrap_or_else(|| "pane:unknown".to_string());
+        let call_id = format!("agents-api-{op}-{}", uuid::Uuid::new_v4());
+        let resource = workspace.display().to_string();
+        monitor().note_denial(&actor, &call_id, &resource, op, "context_scope_violation");
+        log::info!(
+            "agents_api: op={op} denied caller_pane={caller_pane:?} workspace={} outside caller context root {caller_context_root:?}",
+            workspace.display()
+        );
+        return json!({
+            "ok": false,
+            "error_code": "permission_denied",
+            "error": format!(
+                "pane has no authority over context '{}' (authority is scoped to its own context root)",
+                workspace.display()
+            ),
+        });
+    }
     log::info!("agents_api: op={op} workspace={}", workspace.display());
     match op {
         "create_head" => {
@@ -902,18 +947,33 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .get("caller_head")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let caller_human_pane = payload
+                .get("caller_human_pane")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let (parent_owned, denial_owned) = if let Some(pane_id) = caller_pane {
                 if caller_head.is_empty() {
-                    let pane_grants = pane_session_grants(&workspace, pane_id);
-                    if pane_grants.is_empty() {
-                        log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
-                    } else {
+                    if caller_human_pane {
+                        let ctx_root = caller_context_root.as_deref().unwrap_or(&workspace);
+                        let user_grants = user_context_authority_grants(&workspace, ctx_root);
                         log::info!(
-                            "agents_api: create_head pane={caller_pane:?} session_grants={}",
-                            pane_grants.len()
+                            "agents_api: create_head pane={caller_pane:?} human_owned=true context_root={} authority_grants={}",
+                            ctx_root.display(),
+                            user_grants.len()
                         );
+                        (Some(user_grants), "user".to_string())
+                    } else {
+                        let pane_grants = pane_session_grants(&workspace, pane_id);
+                        if pane_grants.is_empty() {
+                            log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
+                        } else {
+                            log::info!(
+                                "agents_api: create_head pane={caller_pane:?} session_grants={}",
+                                pane_grants.len()
+                            );
+                        }
+                        (Some(pane_grants), "pane".to_string())
                     }
-                    (Some(pane_grants), "pane".to_string())
                 } else {
                     match find_head(&workspace, caller_head) {
                         Ok(card) => {
@@ -1290,7 +1350,7 @@ fn invoke(
         workspace_root: workspace,
         context_id: 0,
         package_id: PACKAGE,
-        instance_id: caller_pane.unwrap_or(0),
+        instance_id: 0,
         target_type: TargetType::HostTool,
     });
     match admission {

@@ -215,6 +215,10 @@ impl HostHarness {
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
         let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        let ws_path = workspace_dir.path().to_path_buf();
+        let _ = crate::workspace::secrets::ensure_app_state_gitignore(&ws_path);
+        app.router.get_mut(0).root = ws_path.clone();
+        app.windows[0].path = ws_path;
         app.set_initial_context_id_for_test(reserve_test_context_id());
         // `add_test_pane` draws from `next_pane_id`. Launches draw from
         // `HostModel`, which starts at 1 in every `new_for_test`. Seed a

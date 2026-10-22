@@ -95,6 +95,9 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
             log::warn!("secrets_manager: reconcile failed, listing indexed names: {error}")
         }
     }
+    if !global_only {
+        crate::cli::workspace::enforce_pane_context_scope(cwd, false, "secret.list")?;
+    }
     let mut targets = vec![SecretTarget::Global];
     if !global_only {
         if let Some(target) = workspace_target(cwd)? {
@@ -140,8 +143,14 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
     if !global_only
         && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
     {
+        let scope_root = crate::app::registry::resolve_workspace_root(cwd)
+            .map(|p| crate::platform::path::canonical_or_self(&p))
+            .unwrap_or_else(|| crate::platform::path::canonical_or_self(cwd));
         for meta in super::list_folder_secrets(super::folder_store()) {
-            add(meta.name, SecretTarget::Folder(meta.folder));
+            let folder_canon = crate::platform::path::canonical_or_self(&meta.folder);
+            if folder_canon == scope_root {
+                add(meta.name, SecretTarget::Folder(meta.folder));
+            }
         }
     }
     entries.sort_by(|a, b| {

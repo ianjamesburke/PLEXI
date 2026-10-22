@@ -753,6 +753,25 @@ pub(crate) fn handle_socket_line_in(
                         p.as_ref().map(|pids| pids.len()).unwrap_or(0)
                     );
                 }
+                crate::protocol::AppRequest::AgentsApi { payload, .. } => {
+                    if let Some(obj) = payload.as_object_mut() {
+                        match peer_ancestry {
+                            Some(pids) if !pids.is_empty() => {
+                                obj.insert(
+                                    "peer_ancestry".to_string(),
+                                    serde_json::json!(pids),
+                                );
+                                log::info!(
+                                    "pane_ipc: stamped agents_api peer ancestry ({} pid(s))",
+                                    pids.len()
+                                );
+                            }
+                            _ => {
+                                obj.remove("peer_ancestry");
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
             if needs_identity_ack {
@@ -2042,6 +2061,101 @@ impl PlexiApp {
             .and_then(|app| app.runtime.bound_head().map(str::to_string))
     }
 
+    /// True when `pane_id` is a live human-owned terminal pane with no bound
+    /// agent head. App panes, agent panes, head-bound panes, and panes spawned
+    /// by an agent (including via `plexi pane new`) return `false`.
+    pub(crate) fn is_human_owned_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> bool {
+        if self.bound_head_for_pane(pane_id).is_some() {
+            return false;
+        }
+        let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) else {
+            return false;
+        };
+        self.windows
+            .get(win_idx)
+            .and_then(|win| win.panes.get(&pane_id))
+            .and_then(|pane| pane.as_terminal())
+            .is_some_and(|term| term.is_human_owned())
+    }
+
+    /// Canonical context root that bounds a pane's authority.
+    pub(crate) fn pane_context_authority_root(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<std::path::PathBuf> {
+        let origin = self.origin_for_pane(pane_id)?;
+        let raw_root = crate::platform::path::canonical_or_self(&origin.context_root);
+        let ws_root = crate::app::registry::resolve_workspace_root(&raw_root)
+            .map(|p| crate::platform::path::canonical_or_self(&p));
+        // If `raw_root` is deeper than `ws_root` (a subdirectory context inside a
+        // parent workspace), the context's own `raw_root` is the narrower authority
+        // root. Otherwise use the resolved workspace root when present.
+        Some(match ws_root {
+            Some(ws) if raw_root.starts_with(&ws) && raw_root != ws => raw_root,
+            Some(ws) => ws,
+            None => raw_root,
+        })
+    }
+
+    /// True when `pane_id` has context authority over `target_path`.
+    ///
+    /// Authority is limited to `pane_id`'s context root. Subdirectory contexts
+    /// are isolated units: a pane in context A has no authority over context B,
+    /// including when B is a nested context or nested workspace inside A's directory.
+    pub(crate) fn pane_may_access_context_root(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+        target_path: &std::path::Path,
+    ) -> bool {
+        let Some(pane_root) = self.pane_context_authority_root(pane_id) else {
+            return false;
+        };
+        let target_canon = crate::platform::path::canonical_or_self(target_path);
+        if !target_canon.starts_with(&pane_root) {
+            return false;
+        }
+        if target_canon != pane_root {
+            // Check 1: another context in the router is rooted at a deeper
+            // directory under `pane_root` that contains `target_canon`.
+            let shadowed_by_nested_context = self.router.iter().any(|ctx| {
+                let ctx_root = crate::platform::path::canonical_or_self(&ctx.root);
+                ctx_root != pane_root
+                    && ctx_root.starts_with(&pane_root)
+                    && target_canon.starts_with(&ctx_root)
+            });
+            if shadowed_by_nested_context {
+                return false;
+            }
+            // Check 2: workspace config resolution on disk resolves `target_canon`
+            // to a nested workspace root different from `pane_root`.
+            if let Some(ws) = crate::app::registry::resolve_workspace_root(&target_canon) {
+                if crate::platform::path::canonical_or_self(&ws) != pane_root {
+                    return false;
+                }
+            }
+            // Check 3: agent lookup root or folder secrets scope at a nested path.
+            if let Some(agent_ws) =
+                crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
+            {
+                if crate::platform::path::canonical_or_self(&agent_ws) != pane_root {
+                    return false;
+                }
+            }
+            let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
+                crate::workspace::secrets::folder_store(),
+            )
+            .iter()
+            .any(|meta| {
+                let f = crate::platform::path::canonical_or_self(&meta.folder);
+                f != pane_root && f.starts_with(&pane_root) && target_canon.starts_with(&f)
+            });
+            if nested_folder_secret {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Resolve a notify-socket peer's pre-captured ancestor chain
     /// (`capture_peer_ancestry`) to the pane that owns it, by matching each
     /// candidate pid against every live terminal pane's shell pid
@@ -2937,6 +3051,7 @@ impl PlexiApp {
         env.remove("PLEXI_EPHEMERAL");
         env.remove("PLEXI_AGENT_HARNESS");
         env.remove("PLEXI_AGENT_ROLE");
+        env.remove("PLEXI_AGENT_SPAWNED");
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
         // Host MCP discovery. The bearer is registered against this trusted
@@ -2973,6 +3088,7 @@ impl PlexiApp {
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
         if agent_pane {
+            env.insert("PLEXI_AGENT_SPAWNED".into(), "1".into());
             shell::withhold_terminal_secrets(&mut env, working_directory.as_deref());
         }
         crate::broker::seal::scrub_pane_env(&mut env, agent_pane);

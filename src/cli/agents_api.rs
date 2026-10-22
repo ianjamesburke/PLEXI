@@ -260,6 +260,19 @@ fn call_in(op: &str, mut payload: Value, json_out: bool, timeout: std::time::Dur
         "workspace".to_string(),
         Value::String(workspace.to_string_lossy().into_owned()),
     );
+    if !obj.contains_key("caller_pane") {
+        if let Ok(pane) = std::env::var("PLEXI_PANE_ID") {
+            if let Ok(pane_id) = pane.parse::<u64>() {
+                obj.insert("caller_pane".to_string(), json!(pane_id));
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        obj.insert(
+            "caller_cwd".to_string(),
+            Value::String(cwd.to_string_lossy().into_owned()),
+        );
+    }
     log::info!("agents_api:cli: op={op} workspace={}", workspace.display());
     let content = match super::request_with(
         json!({"type": "agents_api", "op": op, "payload": payload}),

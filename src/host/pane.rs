@@ -712,6 +712,10 @@ pub struct TerminalPane {
     pub ephemeral: bool,
     /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
     pub parent_pane_id: Option<u64>,
+    /// True when the pane was spawned for or by an agent (including plain shells
+    /// created by an agent via `plexi pane new`). Disqualifies the pane from
+    /// human-owned user authority (`is_human_owned`).
+    pub agent_spawned: bool,
     /// Configured or hook-detected CLI agent harness (`claude`, `codex`, `pi`, `agy`).
     pub agent_harness: Option<String>,
     /// Latest captured CLI agent session ID for resume (`claude --resume <id>`, etc.).
@@ -787,6 +791,13 @@ impl TerminalPane {
             .and_then(|v| v.parse::<u64>().ok());
         let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
         let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
+        let agent_spawned = settings
+            .env
+            .get("PLEXI_AGENT_SPAWNED")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            || parent_pane_id.is_some()
+            || agent_harness.is_some()
+            || agent_role.is_some();
         let last_resumed_command = settings.env.get("PLEXI_RESUME_COMMAND").cloned();
         #[cfg(test)]
         let spawn_env = settings.env.clone();
@@ -809,6 +820,7 @@ impl TerminalPane {
             font_size: default_font_size,
             ephemeral,
             parent_pane_id,
+            agent_spawned,
             agent_harness,
             agent_session_id: None,
             agent_role,
@@ -846,6 +858,15 @@ impl TerminalPane {
             || self.agent.is_some()
             || self.observed_agent.is_some()
             || self.standby_session.is_some()
+    }
+
+    /// True when this terminal pane is a human-owned user session: spawned
+    /// directly by the host for the user, with no agent harness, agent role,
+    /// hook/observed agent run, Standby session, parent pane, or agent-spawned
+    /// lineage (`PLEXI_AGENT_SPAWNED`). Panes an agent creates (including via
+    /// `plexi pane new`) never qualify.
+    pub fn is_human_owned(&self) -> bool {
+        !self.is_agent_pane() && !self.agent_spawned && self.parent_pane_id.is_none()
     }
 
     /// True when this agent pane is currently in lightweight `[Plexi Standby]`.

@@ -273,11 +273,26 @@ impl PlexiApp {
             }
         }
         let parent_grants: Vec<_> = union.iter().map(|(t, d)| format!("{t}={d}")).collect();
+        let caller_human = caller.is_some_and(|p| self.is_human_owned_pane(p));
+        let caller_ctx_root = caller.and_then(|p| self.pane_context_authority_root(p));
+        let caller_ctx_denied = caller.is_some_and(|p| {
+            let ws_canon = crate::platform::path::canonical_or_self(&workspace);
+            caller_ctx_root.as_ref() != Some(&ws_canon)
+                || !self.pane_may_access_context_root(p, &workspace)
+        });
         api(
             &workspace,
             "create_head",
-            json!({"name":id,"temporary":true,"grants":parent_grants,
-            "caller_pane":caller,"caller_head":caller.and_then(|p| self.bound_head_for_pane(p))}),
+            json!({
+                "name": id,
+                "temporary": true,
+                "grants": parent_grants,
+                "caller_pane": caller,
+                "caller_head": caller.and_then(|p| self.bound_head_for_pane(p)),
+                "caller_human_pane": caller_human,
+                "caller_context_root": caller_ctx_root,
+                "caller_context_denied": caller_ctx_denied,
+            }),
         )?;
         let parent = api(
             &workspace,

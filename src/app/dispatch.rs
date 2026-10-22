@@ -1007,6 +1007,7 @@ impl PlexiApp {
                                 options: crate::pane_ops::create::TerminalSpawnOptions {
                                     initial_cmd: initial_cmd.as_deref(),
                                     close_on_exit,
+                                    agent_pane: true,
                                     ..Default::default()
                                 },
                             },
