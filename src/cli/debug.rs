@@ -301,10 +301,18 @@ pub(crate) fn merge_timeline(rows: Vec<Value>, agents: Vec<Value>) -> Vec<Value>
 
 fn clip(text: &str) -> String {
     let one_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() <= LINE_TEXT_MAX {
-        one_line
+    truncate_line(&one_line)
+}
+
+fn clip_command(command: &str) -> String {
+    truncate_line(&command.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))
+}
+
+fn truncate_line(text: &str) -> String {
+    if text.chars().count() <= LINE_TEXT_MAX {
+        text.to_string()
     } else {
-        let cut: String = one_line.chars().take(LINE_TEXT_MAX).collect();
+        let cut: String = text.chars().take(LINE_TEXT_MAX).collect();
         format!("{cut}…")
     }
 }
@@ -319,7 +327,7 @@ fn summary_of(row: &Value) -> String {
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "unknown".into()),
             serde_json::from_value::<Vec<String>>(d["argv"].clone())
-                .map(|argv| clip(&super::skill_draft::shell_command(&argv)))
+                .map(|argv| clip_command(&super::skill_draft::shell_command(&argv)))
                 .unwrap_or_else(|_| "<invalid argv>".into())
         ),
         "timeline_event" => format!(
@@ -498,6 +506,11 @@ mod tests {
         assert!(!line.contains("generations"));
         assert!(line.contains('…'));
         assert_eq!(row["data"]["argv"][4].as_str().unwrap().len(), 300);
+        let spaced = json!({"kind":"cli_call", "data":{"exit_code":0,
+            "argv":["plexi", "pane", "send", "19", "two  spaces\nnext line"]}});
+        let line = render_line(&spaced, true);
+        assert!(line.contains("'two  spaces\\nnext line'"), "{line}");
+        assert!(!line.contains('\n'));
     }
 
     #[test]

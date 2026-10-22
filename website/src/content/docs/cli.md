@@ -2393,6 +2393,7 @@ With `--join-agents`, recorded agent session ids are resolved to their transcrip
 | `<session>` | string | no | Session id (`sess-…`) or `latest`. Omitted means `latest` |
 | `--pane` | string | no | Only records for this pane (and the calls it made) |
 | `--cli` | flag | no | Show only CLI argv calls and their exit codes. Secret values, known secret options, and KEY=value assignments are redacted at capture |
+| `--utc` | flag | no | Render timestamps in UTC instead of local time (text output only) |
 | `--join-agents` | flag | no | Interleave external agent transcripts |
 
 ## `plexi experiments`
@@ -2451,7 +2452,10 @@ Prints for review; installs nothing (never edits `<repo>/.plexi-<channel>/comman
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--from-session` | string | yes | Recorded host session id, or latest |
-| `--pane` | string | no | Include only this caller pane's calls |
+| `--pane` | string | no | Target this pane instead of PLEXI_PANE_ID (without either, includes all panes) |
+| `--all-panes` | flag | no | Include calls from every pane instead of the calling pane |
+| `--include-internal` | flag | no | Include agent bookkeeping and pane polling calls |
+| `--include-failed` | flag | no | Include failed or incomplete calls as review-only notes |
 | `--as` | string | no | Output format: SKILL.md or commands.toml snippet Default: `skill`. |
 | `--out` | string | no | Write the draft to a new file instead of stdout; never installs it |
 

@@ -313,7 +313,7 @@ fn secret_assignment(key: &str, known: &[String]) -> bool {
 }
 
 /// Redact before transport and again before persistence. Keep option names so
-/// the sequence remains useful, but never retain env assignment values.
+/// the sequence remains useful; mask uppercase env assignments and secret keys.
 pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
