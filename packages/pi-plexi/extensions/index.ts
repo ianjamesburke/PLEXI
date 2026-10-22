@@ -1,3 +1,4 @@
+import { registerModelModes } from "../src/model-modes.ts";
 import {
   detectAttachment,
   verifyLiveIdentity,
@@ -23,6 +24,7 @@ export interface PiPlexiExtensionOptions {
 
 export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
   return function registerPiPlexi(pi: any) {
+    registerModelModes(pi);
     markPiPlexiPackageActive();
     migrateLegacyPiHook({ homeDir: options.homeDir });
 

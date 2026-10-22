@@ -31,6 +31,7 @@
     "@earendil-works/pi-tui": "1.3.0"
   },
   "scripts": {
-    "test": "node --test ./tests/pi-plexi.test.mjs"
+    "test": "node ./tests/run-isolated.mjs",
+    "migrate-model-modes": "node ./src/migrate-model-modes.mjs"
   }
 }
