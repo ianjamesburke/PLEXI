@@ -23,7 +23,7 @@ import plexi_sdk as sdk
 from plexi_sdk import _v3_state, effects, events
 from plexi_sdk._keys import normalize_key as _normalize_key
 from plexi_sdk._v3_delta import node_patch as _node_patch
-from plexi_sdk._v3_state import StateSnapshot
+from plexi_sdk._v3_state import _COMPONENT_STATE_NAMESPACE, StateSnapshot
 
 
 _LOCK = threading.Lock()
@@ -669,12 +669,12 @@ class V3AppRuntime:
         state_changed = False
         for effect in app_effects or []:
             if isinstance(effect, effects.SetState):
-                self._scope_dict(getattr(effect, "scope", None)).update(effect.data)
+                self._merge_state_effect(self._scope_dict(getattr(effect, "scope", None)), effect.data)
                 state_changed = True
             elif isinstance(effect, effects.PersistState):
                 scope_name = self._resolve_scope(getattr(effect, "scope", None))
                 scoped = self._scoped_values[scope_name]
-                scoped.update(effect.data)
+                self._merge_state_effect(scoped, effect.data)
                 state_changed = True
                 _emit({
                     "type": "save_app_state",
@@ -873,6 +873,30 @@ class V3AppRuntime:
                 })
         if state_changed:
             self._set_state(in_view=False)
+
+    @staticmethod
+    def _merge_state_effect(scoped: dict, updates: dict) -> None:
+        """Apply an effect while preserving independent component updates."""
+        component_updates = updates.get(_COMPONENT_STATE_NAMESPACE)
+        if not isinstance(component_updates, dict):
+            scoped.update(updates)
+            return
+        scoped.update({
+            key: value
+            for key, value in updates.items()
+            if key != _COMPONENT_STATE_NAMESPACE
+        })
+        existing = scoped.get(_COMPONENT_STATE_NAMESPACE)
+        components = dict(existing) if isinstance(existing, dict) else {}
+        for component_key, values in component_updates.items():
+            previous = components.get(component_key)
+            merged = dict(previous) if isinstance(previous, dict) else {}
+            if isinstance(values, dict):
+                merged.update(values)
+            else:
+                merged = values
+            components[component_key] = merged
+        scoped[_COMPONENT_STATE_NAMESPACE] = components
 
 
 def _host_log(level: str, msg: str) -> None:

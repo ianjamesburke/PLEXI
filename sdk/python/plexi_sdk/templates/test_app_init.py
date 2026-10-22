@@ -9,12 +9,16 @@ over stdin/stdout — no running Plexi host or display required. See
 """
 import json
 import shutil
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
+from plexi_sdk import StateSnapshot, _v3_state
+from plexi_sdk._v3_runtime import V3AppRuntime
 from plexi_sdk.effects import ExposeTools, ToolResult
-from plexi_sdk.events import ToolCall
+from plexi_sdk.events import ToolCall, UiAction
 from plexi_sdk.testing import AppHarness
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -51,13 +55,26 @@ def test_renders_without_overlap(size):
 
 def test_counter_template_has_two_independent_keyed_counters():
     """The scaffold demonstrates one local state namespace per counter key."""
-    source = APP.read_text()
-    assert 'component("left-counter")' in source
-    assert 'component("right-counter")' in source
-    assert 'selected.set("count", count + 1)' in source
-    ui_source = (APP_DIR / "app" / "ui.py").read_text()
-    assert 'key="left-counter"' in ui_source
-    assert 'key="right-counter"' in ui_source
+    spec = importlib.util.spec_from_file_location("scaffold_main", APP)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(APP_DIR))
+    try:
+        spec.loader.exec_module(module)
+        _v3_state._state = StateSnapshot.empty()
+        _v3_state._in_view = False
+
+        effects = module.update(UiAction("left:increment"))
+        runtime = V3AppRuntime.__new__(V3AppRuntime)
+        runtime._scopes = ["global"]
+        runtime._scoped_values = {"global": {}}
+        runtime._apply_effects(effects)
+
+        components = runtime._scoped_values["global"]["__plexi_component_state__"]
+        assert components["left-counter"]["count"] == 1
+        assert components.get("right-counter", {}).get("count", 0) == 0
+    finally:
+        sys.path.remove(str(APP_DIR))
 
 
 def test_snapshot(tmp_path):

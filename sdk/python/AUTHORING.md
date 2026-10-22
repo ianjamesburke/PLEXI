@@ -100,10 +100,11 @@ def view():
     return Keyed(Button(str(count), on_click="invoice:add"), key="invoice-total")
 ```
 
-Use `Keyed(child, key="...")` for repeated siblings. Keys are explicit so
-list identity and component state remain stable as the view is rebuilt. Do not
-call a component setter in `view()`; it returns the same deferred state effect
-as `state.set()` and belongs in `update()`.
+Use `Keyed(child, key="...")` for children generated from data. Its UI key and
+the `component(...)` key are independent strings: the former identifies a child
+in the rebuilt UI tree, while the latter names local state. `Keyed` does not
+send its key to the host yet. Do not call a component setter in `view()`; it
+returns the same deferred state effect as `state.set()` and belongs in `update()`.
 
 ## Two Rendering Modes
 

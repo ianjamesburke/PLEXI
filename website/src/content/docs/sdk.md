@@ -621,6 +621,10 @@ PaymentFailed(reason: str)
 
 ## State and Logging
 
+### `ComponentSetter`
+
+A deferred component-state update returned by ``use_state``.
+
 ### `StateSnapshot`
 
 ```python

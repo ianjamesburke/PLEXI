@@ -1000,9 +1000,6 @@ def base_name(node):
         return base_name(node.func)
     return ""
 
-def has_explicit_key(call):
-    return any(keyword.arg == "key" for keyword in call.keywords)
-
 def child_list(call):
     for keyword in call.keywords:
         if keyword.arg in ("children", "actions", "buttons"):
@@ -1026,13 +1023,20 @@ def view_warnings(view, component_state_names):
         if base_name(node.func) not in container_names:
             continue
         children = child_list(node)
-        if not isinstance(children, (ast.List, ast.Tuple)):
+        if isinstance(children, (ast.List, ast.Tuple)):
             continue
-        calls = [item for item in children.elts if isinstance(item, ast.Call)]
-        for name in {base_name(item.func) for item in calls}:
-            siblings = [item for item in calls if base_name(item.func) == name]
-            if len(siblings) > 1 and any(not has_explicit_key(item) for item in siblings):
-                warnings.append(f"repeated {name} siblings at line {node.lineno} need explicit key= values")
+        if not isinstance(children, (ast.ListComp, ast.GeneratorExp, ast.SetComp)):
+            continue
+        item = children.elt
+        is_keyed = (
+            isinstance(item, ast.Call)
+            and base_name(item.func) == "Keyed"
+            and any(keyword.arg == "key" for keyword in item.keywords)
+        )
+        if not is_keyed:
+            warnings.append(
+                f"generated children at line {node.lineno} must wrap each item in Keyed(..., key=...)"
+            )
     return warnings
 
 functions = []
@@ -1233,7 +1237,7 @@ def view():
     }
 
     #[test]
-    fn sdk_analysis_warns_about_keyless_siblings_and_view_state_mutation() {
+    fn sdk_analysis_warns_about_unkeyed_generated_children_and_view_state_mutation() {
         let dir = TempDir::new().unwrap();
         let entry = dir.path().join("main.py");
         fs::write(
@@ -1246,7 +1250,7 @@ def init(size, args): return []
 def update(event): return []
 def view():
     state.set("count", 1)
-    return Column([Button("one"), Button("two")])
+    return Column([Button(item) for item in ["one", "two"]])
 "#,
         )
         .unwrap();
@@ -1265,10 +1269,34 @@ def view():
             analysis
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("repeated Button siblings")),
+                .any(|warning| warning.contains("wrap each item in Keyed(..., key=...)")),
             "{:?}",
             analysis.warnings
         );
+    }
+
+    #[test]
+    fn sdk_analysis_skips_fixed_literal_children_and_accepts_keyed_comprehensions() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        fs::write(
+            &entry,
+            r#"
+from plexi_sdk.ui import Button, Column, Keyed
+
+def init(size, args): return []
+def update(event): return []
+def view():
+    fixed = Column([Button("one"), Button("two")])
+    generated = Column([Keyed(Button(item), key=item) for item in ["three", "four"]])
+    return Column([fixed, generated])
+"#,
+        )
+        .unwrap();
+
+        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
+            .expect("analysis should run");
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
     }
 
     #[test]

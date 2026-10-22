@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Mapping, Optional, Protocol
 
 from .effects import PersistState, SetState
 
@@ -9,6 +9,12 @@ from .effects import PersistState, SetState
 # Kept inside the existing app-state payload so the runtime, restore path, and
 # PersistState transport remain deliberately unaware of component state.
 _COMPONENT_STATE_NAMESPACE = "__plexi_component_state__"
+
+
+class ComponentSetter(Protocol):
+    """A deferred component-state update returned by ``use_state``."""
+
+    def __call__(self, value: Any, *, persist: bool = False) -> SetState | PersistState: ...
 
 
 @dataclass(frozen=True)
@@ -108,7 +114,7 @@ class ComponentState:
         components.setdefault(self.key, {})[name] = value
         return state.patch({_COMPONENT_STATE_NAMESPACE: components}, scope=self.scope, persist=persist)
 
-    def use_state(self, name: str, default: Any = None) -> tuple[Any, Callable[[Any], SetState | PersistState]]:
+    def use_state(self, name: str, default: Any = None) -> tuple[Any, ComponentSetter]:
         """Return the current value and a setter suitable for ``update()``."""
         _require_component_name(name)
 
@@ -129,7 +135,7 @@ def use_state(
     default: Any = None,
     *,
     scope: Optional[str] = None,
-) -> tuple[Any, Callable[[Any], SetState | PersistState]]:
+) -> tuple[Any, ComponentSetter]:
     """Read local state for component ``key`` and return its effect setter."""
     return component(key, scope=scope).use_state(name, default)
 
