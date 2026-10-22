@@ -43,17 +43,27 @@ const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
-fn standby_view_rects(content_rect: egui::Rect, font_size: f32) -> (egui::Rect, egui::Rect) {
-    let banner_height = (font_size * 3.5).min(content_rect.height());
+fn standby_view_rects(
+    content_rect: egui::Rect,
+    banner_height: f32,
+    hint_height: f32,
+) -> (egui::Rect, egui::Rect, egui::Rect) {
+    let hint_height = hint_height.min(content_rect.height());
+    let available_banner_height = (content_rect.height() - hint_height).max(0.0);
+    let banner_height = banner_height.min(available_banner_height);
     let banner_rect = egui::Rect::from_min_size(
         content_rect.min,
         Vec2::new(content_rect.width(), banner_height),
     );
     let tail_rect = egui::Rect::from_min_max(
         egui::pos2(content_rect.min.x, banner_rect.max.y),
-        content_rect.max,
+        egui::pos2(content_rect.max.x, content_rect.max.y - hint_height),
     );
-    (banner_rect, tail_rect)
+    let hint_rect = egui::Rect::from_min_size(
+        egui::pos2(content_rect.min.x, content_rect.max.y - hint_height),
+        Vec2::new(content_rect.width(), hint_height),
+    );
+    (banner_rect, tail_rect, hint_rect)
 }
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
@@ -190,10 +200,23 @@ pub fn render(
             .and_then(|session| session.standby_scrollback_tail.clone())
             .unwrap_or_default()
             .join("\n");
+        let (banner, hint) = banner.rsplit_once('\n').unwrap_or((&banner, "[Enter] resume"));
         let content_rect = rect.shrink2(Vec2::new(16.0, 12.0));
-        // The Standby label is always three terminal-font lines. Reserve it before
-        // laying out scrollback so a full tail cannot clip the identity or Enter hint.
-        let (banner_rect, tail_rect) = standby_view_rects(content_rect, terminal.font_size);
+        let font = egui::FontId::monospace(terminal.font_size);
+        let banner_height = ui.fonts_mut(|fonts| {
+            fonts
+                .layout(banner.to_owned(), font.clone(), colors.accent, content_rect.width())
+                .size()
+                .y
+        });
+        let hint_height = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(hint.to_owned(), font.clone(), colors.accent)
+                .size()
+                .y
+        });
+        let (banner_rect, tail_rect, hint_rect) =
+            standby_view_rects(content_rect, banner_height, hint_height);
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(banner_rect),
             |ui| {
@@ -206,6 +229,15 @@ pub fn render(
                 );
             },
         );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(hint_rect), |ui| {
+            ui.set_clip_rect(hint_rect);
+            ui.label(
+                egui::RichText::new(hint)
+                    .monospace()
+                    .size(terminal.font_size)
+                    .color(colors.accent),
+            );
+        });
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(tail_rect),
             |ui| {
@@ -728,14 +760,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_standby_view_reserves_banner_above_default_twenty_line_tail() {
+    fn narrow_wrapped_standby_banner_keeps_enter_hint_visible() {
         let content = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 88.0));
-        let (banner, tail) = standby_view_rects(content, 14.0);
+        // A realistic long pane name + cwd wraps to four terminal lines at this width.
+        let (banner, tail, hint) = standby_view_rects(content, 56.0, 14.0);
 
         assert_eq!(banner.min, content.min);
-        assert!(banner.height() >= 49.0, "three-line banner remains visible");
+        assert_eq!(banner.height(), 56.0);
         assert_eq!(tail.min.y, banner.max.y);
-        assert!(tail.height() > 0.0, "the twenty-line tail is clipped below the banner");
-        assert!(banner.max.y <= content.max.y);
+        assert_eq!(tail.max.y, hint.min.y);
+        assert_eq!(hint.max, content.max, "Enter hint has its own reserved line");
     }
 }
