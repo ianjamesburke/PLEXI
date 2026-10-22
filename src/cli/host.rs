@@ -672,16 +672,15 @@ fn detach_from_terminal(cmd: &mut std::process::Command) {
     }
 }
 
-/// Detach a restart coordinator twice: the first child creates a new session,
-/// then exits after forking the process that will actually exec the
-/// coordinator.  That grandchild is reparented before the caller pane's
-/// process group is torn down.
+/// Detach a restart coordinator twice and report the grandchild PID before it
+/// execs. The first child creates a new session, then exits after forking the
+/// process that will actually exec the coordinator.
 #[cfg(unix)]
-fn detach_restart_coordinator(cmd: &mut std::process::Command) {
+fn detach_restart_coordinator(cmd: &mut std::process::Command, report_fd: libc::c_int) {
     use std::os::unix::process::CommandExt as _;
-    // SAFETY: this runs after fork and before exec. `setsid`, `fork`, and
-    // `_exit` are async-signal-safe POSIX calls and work on macOS as well as
-    // Linux. The grandchild retains the exec path supplied by Command.
+    // SAFETY: this runs after fork and before exec. `setsid`, `fork`, `write`,
+    // `close`, and `_exit` are async-signal-safe POSIX calls and work on macOS
+    // as well as Linux. The grandchild retains the exec path supplied by Command.
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -689,11 +688,79 @@ fn detach_restart_coordinator(cmd: &mut std::process::Command) {
             }
             match libc::fork() {
                 -1 => Err(std::io::Error::last_os_error()),
-                0 => Ok(()),
-                _ => libc::_exit(0),
+                0 => {
+                    let pid = (libc::getpid() as u32).to_ne_bytes();
+                    if libc::write(report_fd, pid.as_ptr().cast(), pid.len())
+                        != pid.len() as libc::ssize_t
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    libc::close(report_fd);
+                    Ok(())
+                }
+                _ => {
+                    libc::close(report_fd);
+                    libc::_exit(0)
+                }
             }
         });
     }
+}
+
+/// Spawn the coordinator through the same setsid-plus-double-fork path used
+/// by caller-host restarts. The pipe reports the grandchild PID and lets this
+/// process reap the short-lived intermediate child.
+#[cfg(unix)]
+pub(crate) fn spawn_restart_coordinator(
+    command: &mut std::process::Command,
+) -> std::io::Result<u32> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` is valid writable storage for the two pipe descriptors.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let read_fd = fds[0];
+    let write_fd = fds[1];
+    detach_restart_coordinator(command, write_fd);
+    let mut intermediate = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            // SAFETY: these descriptors were created by this function.
+            unsafe {
+                libc::close(read_fd);
+                libc::close(write_fd);
+            }
+            return Err(error);
+        }
+    };
+    // The child has its own descriptor after fork; close this copy before
+    // waiting so a failure cannot make the read appear permanently open.
+    // SAFETY: this descriptor belongs to this process.
+    unsafe {
+        libc::close(write_fd);
+    }
+    let mut pid = [0_u8; std::mem::size_of::<u32>()];
+    // SAFETY: `pid` is writable for exactly the requested byte count.
+    let read = unsafe { libc::read(read_fd, pid.as_mut_ptr().cast(), pid.len()) };
+    // SAFETY: this descriptor belongs to this process.
+    unsafe {
+        libc::close(read_fd);
+    }
+    intermediate.wait()?;
+    if read != pid.len() as libc::ssize_t {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "restart coordinator did not report its grandchild pid",
+        ));
+    }
+    Ok(u32::from_ne_bytes(pid))
+}
+
+#[cfg(windows)]
+pub(crate) fn spawn_restart_coordinator(
+    command: &mut std::process::Command,
+) -> std::io::Result<u32> {
+    command.spawn().map(|child| child.id())
 }
 
 #[cfg(unix)]
@@ -794,8 +861,6 @@ fn restart_coordinator_command(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(unix)]
-    detach_restart_coordinator(&mut command);
     command
 }
 
@@ -822,16 +887,16 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
             std::env::vars().collect(),
             channel.as_deref(),
         );
-        match child.spawn() {
-            Ok(child) => {
+        match spawn_restart_coordinator(&mut child) {
+            Ok(coordinator_pid) => {
                 log::info!(
                     "host_restart: detached coordinator pid={} caller pane will close",
-                    child.id()
+                    coordinator_pid
                 );
                 if json {
                     println!(
                         "{}",
-                        serde_json::json!({"restarting": true, "coordinator_pid": child.id()})
+                        serde_json::json!({"restarting": true, "coordinator_pid": coordinator_pid})
                     );
                 } else {
                     println!("Restarting; this pane will close. The saved workspace will restore.");

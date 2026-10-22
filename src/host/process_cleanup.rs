@@ -630,6 +630,93 @@ mod tests {
     }
 
     #[test]
+    fn scrubbed_restart_coordinator_is_not_killed_by_old_session_marker() {
+        const FIXTURE_ENV: &str = "PLEXI_TEST_RESTART_COORDINATOR_FIXTURE";
+        const EVIDENCE_ENV: &str = "PLEXI_TEST_RESTART_COORDINATOR_EVIDENCE";
+        if std::env::var(FIXTURE_ENV).as_deref() == Ok("marked-parent") {
+            let _marker = std::env::var(SESSION_ENV).expect("marked fixture marker");
+            let evidence = std::path::PathBuf::from(
+                std::env::var(EVIDENCE_ENV).expect("fixture evidence path"),
+            );
+            let env = crate::cli::host::restart_coordinator_env(
+                std::env::vars().collect(),
+                None,
+            );
+            let mut command = std::process::Command::new("/bin/sleep");
+            command
+                .arg("600")
+                .env_clear()
+                .envs(env)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let coordinator = crate::cli::host::spawn_restart_coordinator(&mut command)
+                .expect("spawn reparented coordinator");
+            std::fs::write(&evidence, coordinator.to_string()).expect("write coordinator pid");
+            // The outer test's marker sweep must kill this marked parent while
+            // the scrubbed, double-forked coordinator remains alive.
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+
+        let old_marker = uuid::Uuid::new_v4().to_string();
+        let evidence = tempfile::NamedTempFile::new().expect("fixture evidence");
+        let mut parent = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "host::process_cleanup::tests::scrubbed_restart_coordinator_is_not_killed_by_old_session_marker",
+                "--nocapture",
+            ])
+            .env(SESSION_ENV, &old_marker)
+            .env(FIXTURE_ENV, "marked-parent")
+            .env(EVIDENCE_ENV, evidence.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        unsafe {
+            parent.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut parent = parent.spawn().expect("spawn marked parent fixture");
+        let _registration = PaneProcessGroup::record_for(parent.id(), &old_marker);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let coordinator = loop {
+            if let Ok(pid) = std::fs::read_to_string(evidence.path()) {
+                if let Ok(pid) = pid.trim().parse::<u32>() {
+                    break pid;
+                }
+            }
+            assert!(Instant::now() < deadline, "coordinator fixture did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let report = stop_marked_processes(&old_marker, Duration::from_millis(20));
+        assert!(report.groups >= 1, "marked parent was not selected: {report:?}");
+        assert!(!parent.wait().expect("reap marked parent").success());
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(coordinator)]),
+            true,
+            sysinfo::ProcessRefreshKind::new(),
+        );
+        assert!(
+            system
+                .process(sysinfo::Pid::from_u32(coordinator))
+                .is_some_and(|process| process.status() != sysinfo::ProcessStatus::Zombie),
+            "old host marker sweep killed or zombified reparented coordinator"
+        );
+        // This is our exact fixture pid, never a broad process lookup.
+        unsafe {
+            libc::kill(coordinator as i32, libc::SIGKILL);
+        }
+    }
+
+    #[test]
     fn host_exit_paths_reap_pane_processes() {
         const CHILD_ENV: &str = "PLEXI_TEST_QUIT_PATH";
         if let Ok(mode) = std::env::var(CHILD_ENV) {
