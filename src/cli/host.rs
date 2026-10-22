@@ -682,7 +682,7 @@ fn detach_restart_coordinator(cmd: &mut std::process::Command, report_fd: libc::
     // `close`, and `_exit` are async-signal-safe POSIX calls and work on macOS
     // as well as Linux. The grandchild retains the exec path supplied by Command.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }

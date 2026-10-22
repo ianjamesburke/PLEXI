@@ -662,7 +662,8 @@ mod tests {
 
         let old_marker = uuid::Uuid::new_v4().to_string();
         let evidence = tempfile::NamedTempFile::new().expect("fixture evidence");
-        let mut parent = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut parent = std::process::Command::new(std::env::current_exe().unwrap());
+        parent
             .args([
                 "--exact",
                 "host::process_cleanup::tests::scrubbed_restart_coordinator_is_not_killed_by_old_session_marker",
