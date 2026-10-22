@@ -502,9 +502,6 @@ impl PlexiApp {
             if let Some((window_id, tile_id)) = current_focus {
                 self.write_focus_journal_checkpoint(window_id, tile_id, now);
             }
-            if had_previous_focus {
-                self.resume_focused_standby_pane();
-            }
             return if had_previous_focus {
                 FocusLogOutcome::Transition
             } else {
@@ -786,7 +783,6 @@ impl PlexiApp {
             }
             self.context_active_window.insert(ctx_id, window_id);
             self.restore_minimap_for_context(ctx_id);
-            self.resume_focused_standby_pane();
             log::info!(
                 "focus_history: back — to window={window_id} tile={tile_id:?} ctx={ctx_id} minimap_visible={} history_len={}",
                 self.minimap.visible,
@@ -837,7 +833,6 @@ impl PlexiApp {
             }
             self.context_active_window.insert(ctx_id, window_id);
             self.restore_minimap_for_context(ctx_id);
-            self.resume_focused_standby_pane();
             log::info!(
                 "focus_history: forward — to window={window_id} tile={tile_id:?} ctx={ctx_id} minimap_visible={} future_len={}",
                 self.minimap.visible,
@@ -1246,7 +1241,6 @@ impl PlexiApp {
                 "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id} ctx_id={ctx_id} not found in router"
             );
         }
-        self.resume_standby_pane(pane_id);
         true
     }
 

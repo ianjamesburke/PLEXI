@@ -11507,6 +11507,7 @@ mod agent_state_restoration_tests {
                                 tail_preview: Some(
                                     "Compiling plexi v0.9.0\nRunning tests...".to_string(),
                                 ),
+                                standby_scrollback_tail: None,
                             }),
                         },
                         SavedPane {
@@ -11574,7 +11575,12 @@ mod agent_state_restoration_tests {
                             last_detail: Some("Need API schema clarification".to_string()),
                             parent_pane_id: Some(10),
                             ephemeral: false,
-                            tail_preview: Some("Waiting on parent answer".to_string()),
+                                tail_preview: Some("Waiting on parent answer".to_string()),
+                            standby_scrollback_tail: Some(vec![
+                                "Waiting on parent answer".to_string(),
+                                "".to_string(),
+                                "Press Enter when ready".to_string(),
+                            ]),
                         }),
                     }],
                     focused_pane: Some(bg_root),
@@ -11614,6 +11620,7 @@ mod agent_state_restoration_tests {
                             parent_pane_id: Some(10),
                             ephemeral: true,
                             tail_preview: Some("Done.".to_string()),
+                            standby_scrollback_tail: None,
                         }),
                     }],
                     focused_pane: Some(ephemeral_root),
@@ -11677,9 +11684,22 @@ mod agent_state_restoration_tests {
             bg_term.is_standby(),
             "background context agent pane must restore in Standby under restore_mode = lazy"
         );
+        let banner = bg_term.standby_banner().expect("standby banner");
+        assert!(banner.contains("[Plexi Standby] worker-codex ·"), "{banner}");
+        assert!(banner.contains("codex · resumes session thread-bg-20 (blocked)"), "{banner}");
+        assert!(banner.contains("[Enter] resume"), "{banner}");
+        assert!(!banner.contains("untracked"), "{banner}");
         assert_eq!(
-            bg_term.standby_banner().as_deref(),
-            Some("[Plexi Standby] codex session thread-bg-20 (blocked) — Press Enter or focus to resume")
+            bg_term
+                .standby_session
+                .as_ref()
+                .and_then(|session| session.standby_scrollback_tail.as_ref())
+                .expect("saved standby tail"),
+            &vec![
+                "Waiting on parent answer".to_string(),
+                "".to_string(),
+                "Press Enter when ready".to_string(),
+            ]
         );
         assert_eq!(bg_term.slots.get("question"), Some(&slot_file));
         assert_eq!(
@@ -11699,7 +11719,20 @@ mod agent_state_restoration_tests {
             "Standby child pane's Blocked state must roll up onto parent PortalPane immediately on restore"
         );
 
-        // 4. Focusing or sending input to the Standby pane resumes it via its Harness Adapter.
+        // 4. Focus moves onto Standby without launching its agent.
+        h.app.reconcile_focus_logging(std::time::Duration::ZERO);
+        h.app.active_window = bg_win_idx;
+        h.app.windows[bg_win_idx].navigate_to(bg_root);
+        h.app.reconcile_focus_logging(std::time::Duration::ZERO);
+        assert!(
+            h.app.windows[bg_win_idx].panes[&20]
+                .as_terminal()
+                .expect("background terminal after focus")
+                .is_standby(),
+            "focus must not resume a Standby pane"
+        );
+
+        // 5. Explicit pane input resumes it via its Harness Adapter.
         let send_resp = temp_response(tmp.path(), "send-standby");
         h.inject_ipc(AppRequest::SendToPane {
             pane_id: 20,
@@ -11721,6 +11754,52 @@ mod agent_state_restoration_tests {
         assert_eq!(
             bg_term_after.last_resumed_command.as_deref(),
             Some("codex resume thread-bg-20")
+        );
+    }
+
+    #[test]
+    fn enter_resumes_a_standby_pane() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let cwd = tempfile::tempdir().expect("cwd");
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("terminal pane")
+            .as_terminal_mut()
+            .expect("terminal pane");
+        terminal.standby_cwd = Some(cwd.path().to_path_buf());
+        terminal.standby_session = Some(SavedAgentSession {
+            fleet_result: None,
+            fleet_seen: false,
+            fleet_done_unseen: false,
+            fleet_since: 0,
+            harness: "codex".to_string(),
+            config_name: Some("worker".to_string()),
+            session_id: Some("thread-enter".to_string()),
+            last_state: AgentState::Idle,
+            last_blocked_reason: None,
+            last_detail: None,
+            parent_pane_id: None,
+            ephemeral: false,
+            tail_preview: None,
+            standby_scrollback_tail: Some(vec!["saved line".to_string()]),
+        });
+
+        h.inject_ipc(AppRequest::KeyPane {
+            pane_id,
+            key: "enter".to_string(),
+            response_file: None,
+        });
+        h.hidden_frame();
+
+        let terminal = h.app.windows[0].panes[&pane_id]
+            .as_terminal()
+            .expect("terminal pane after Enter");
+        assert!(!terminal.is_standby(), "Enter must dismiss Standby");
+        assert_eq!(
+            terminal.last_resumed_command.as_deref(),
+            Some("codex resume thread-enter")
         );
     }
 
@@ -11912,6 +11991,7 @@ mod agent_state_restoration_tests {
                                 parent_pane_id: None,
                                 ephemeral: false,
                                 tail_preview: None,
+                                standby_scrollback_tail: None,
                             }),
                         },
                         // Pane 11: Pi agent pane with unpersisted `session_id` (no file on disk) -> bare `pi` launch.
@@ -11942,6 +12022,7 @@ mod agent_state_restoration_tests {
                                 parent_pane_id: None,
                                 ephemeral: false,
                                 tail_preview: None,
+                                standby_scrollback_tail: None,
                             }),
                         },
                         // Pane 12: Pi agent pane with persisted `session_id` on disk -> `pi --session pi-persisted-12`.
@@ -11972,6 +12053,7 @@ mod agent_state_restoration_tests {
                                 parent_pane_id: None,
                                 ephemeral: false,
                                 tail_preview: None,
+                                standby_scrollback_tail: None,
                             }),
                         },
                     ],
@@ -12014,6 +12096,7 @@ mod agent_state_restoration_tests {
                                 parent_pane_id: None,
                                 ephemeral: false,
                                 tail_preview: None,
+                                standby_scrollback_tail: None,
                             }),
                         },
                         // Pane 21: Standby Pi pane with missing `session_id` -> bare `pi` on wake.
@@ -12044,6 +12127,7 @@ mod agent_state_restoration_tests {
                                 parent_pane_id: None,
                                 ephemeral: false,
                                 tail_preview: None,
+                                standby_scrollback_tail: None,
                             }),
                         },
                     ],

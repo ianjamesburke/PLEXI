@@ -698,7 +698,6 @@ impl PlexiApp {
                 ctx.navigate_to(pane_tile);
             }
         }
-        self.resume_focused_standby_pane();
     }
 
     pub(crate) fn switch_to_tab(&mut self, container_tile: TileId, idx: usize) {
@@ -726,7 +725,6 @@ impl PlexiApp {
                 ctx.navigate_to(pane_tile);
             }
         }
-        self.resume_focused_standby_pane();
         log::info!("tab_click: switched to tab index={idx} in container={container_tile:?}");
     }
 
@@ -1194,9 +1192,6 @@ impl PlexiApp {
             self.navigate_page(dx, dy);
             self.active_window != old_active_window
         };
-        if moved {
-            self.resume_focused_standby_pane();
-        }
         moved
     }
 

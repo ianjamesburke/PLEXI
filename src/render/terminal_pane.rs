@@ -171,37 +171,35 @@ pub fn render(
     if let Some(banner) = terminal.standby_banner() {
         let rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
-        let tail = terminal.tail_preview.clone();
-        let response = ui.interact(
-            rect,
-            egui::Id::new(("plexi_standby_banner", *pane_id)),
-            egui::Sense::click(),
-        );
+        let tail = terminal
+            .standby_session
+            .as_ref()
+            .and_then(|session| session.standby_scrollback_tail.clone())
+            .unwrap_or_default()
+            .join("\n");
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 12.0))),
             |ui| {
-                ui.vertical(|ui| {
+                ui.set_clip_rect(rect);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    if !tail.is_empty() {
+                        ui.label(
+                            egui::RichText::new(&tail)
+                                .monospace()
+                                .size((terminal.font_size - 1.0).max(9.0))
+                                .color(colors.text_dim),
+                        );
+                        ui.add_space(8.0);
+                    }
                     ui.label(
                         egui::RichText::new(&banner)
                             .monospace()
                             .size(terminal.font_size)
                             .color(colors.accent),
                     );
-                    if let Some(tail) = tail.as_deref().filter(|s| !s.trim().is_empty()) {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(tail)
-                                .monospace()
-                                .size((terminal.font_size - 1.0).max(9.0))
-                                .color(colors.text_dim),
-                        );
-                    }
                 });
             },
         );
-        if response.clicked() {
-            terminal.resume_from_standby();
-        }
         if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
     crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
         return (false, tab_action);

@@ -2048,21 +2048,6 @@ impl PlexiApp {
         resumed
     }
 
-    /// If the currently focused pane in the active window is in `[Plexi Standby]`,
-    /// resume it immediately.
-    pub(crate) fn resume_focused_standby_pane(&mut self) -> bool {
-        let Some(win) = self.windows.get(self.active_window) else {
-            return false;
-        };
-        let Some(tile_id) = win.focused_pane else {
-            return false;
-        };
-        let Some(pane_id) = Self::find_pane_in_tile(&win.tree, tile_id) else {
-            return false;
-        };
-        self.resume_standby_pane(pane_id)
-    }
-
     /// Search ALL windows (not just the active one) for a pane by ID.
     /// Returns (window_index, tile_id). O(n*m) but n is typically 1-3.
     pub(crate) fn find_pane_in_any_window(

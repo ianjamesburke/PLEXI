@@ -1643,7 +1643,6 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
 
         self.apply_context_transition_effects();
-        self.resume_focused_standby_pane();
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {
@@ -2203,7 +2202,9 @@ impl PlexiApp {
                         runtime_kind: None,
                         launch: None,
                         slots: t.slots.clone(),
-                        agent_session: t.build_saved_agent_session(),
+                        agent_session: t.build_saved_agent_session_with_scrollback(
+                            self.config.standby_scrollback_lines(),
+                        ),
                     });
                 } else if let Some(a) = pane.as_app() {
                     // A headless Assistant is hidden and absent from the tile
