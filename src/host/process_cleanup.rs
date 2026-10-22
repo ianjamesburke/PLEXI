@@ -313,6 +313,14 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
         let live: Vec<u32> = identities
             .iter()
             .filter_map(|(pid, start)| {
+                let mut status = 0;
+                // A pane root is normally our child. Reap it when it exits:
+                // macOS can otherwise retain an unreaped zombie in sysinfo's
+                // process table for the entire quit grace period.
+                if unsafe { libc::waitpid(*pid as i32, &mut status, libc::WNOHANG) } == *pid as i32
+                {
+                    return None;
+                }
                 system
                     .process(sysinfo::Pid::from_u32(*pid))
                     .filter(|p| {
@@ -373,6 +381,11 @@ mod tests {
     struct FixtureChild(std::process::Child);
     impl Drop for FixtureChild {
         fn drop(&mut self) {
+            match self.0.try_wait() {
+                Ok(Some(_)) => return,
+                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => return,
+                Ok(None) | Err(_) => {}
+            }
             // Isolated fixture groups only, including assertion-failure cleanup.
             unsafe {
                 libc::kill(-(self.0.id() as i32), libc::SIGKILL);
@@ -418,7 +431,10 @@ mod tests {
         assert_eq!(report.groups, 2);
         assert_eq!(report.escalated, 2);
         for mut child in children {
-            assert!(!child.0.wait().expect("reap").success());
+            match child.0.wait() {
+                Ok(status) => assert!(!status.success()),
+                Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ECHILD)),
+            }
         }
     }
 
@@ -513,8 +529,10 @@ mod tests {
             elapsed < Duration::from_secs(2),
             "teardown took {elapsed:?}"
         );
-        let status = child.0.wait().expect("reap zsh");
-        assert_ne!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+        match child.0.wait() {
+            Ok(status) => assert_ne!(status.signal(), Some(libc::SIGKILL), "{status:?}"),
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ECHILD)),
+        }
     }
 
     #[test]
