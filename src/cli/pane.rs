@@ -2300,8 +2300,8 @@ mod pane_result_tests {
                         crate::rpc::write_json_response(
                             rf,
                             serde_json::json!([
-                                { "context_id": 1, "name": "main", "parked": false },
-                                { "context_id": 2, "name": "sprint-alpha", "parked": true },
+                                { "context_id": 1, "name": { "auto": "main" }, "parked": false },
+                                { "context_id": 2, "name": { "custom": "sprint-alpha" }, "parked": true },
                                 { "context_id": 3, "name": "sprint-beta", "parked": false },
                             ]),
                         );

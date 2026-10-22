@@ -446,6 +446,26 @@ pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<Re
 pub mod args;
 pub use args::{resolve_target_from_candidates, ContextTarget, PaneTarget};
 
+fn extract_context_name(entry: &serde_json::Value) -> String {
+    let Some(name_val) = entry.get("name") else {
+        return String::new();
+    };
+    if let Ok(cn) = serde_json::from_value::<crate::host::context::ContextName>(name_val.clone()) {
+        return cn.displayed().to_string();
+    }
+    if let Some(s) = name_val.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = name_val.as_object() {
+        for key in ["custom", "auto"] {
+            if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 impl ContextTarget {
     /// Resolve this target to a numeric context ID:
     /// 1. Numeric ID -> returns immediately without a socket round-trip.
@@ -472,8 +492,8 @@ impl ContextTarget {
             .iter()
             .filter_map(|v| {
                 let id = v.get("context_id")?.as_u64()?;
-                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                Some((id, name.to_string()))
+                let name = extract_context_name(v);
+                Some((id, name))
             })
             .collect();
         match resolve_target_from_candidates("context", q, &candidates) {
