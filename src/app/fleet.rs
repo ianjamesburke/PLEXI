@@ -282,6 +282,24 @@ mod tests {
     use crate::testing::HostHarness;
 
     #[test]
+    fn attention_reload_projects_config_without_restart_on_hidden_frame() {
+        let mut h = HostHarness::new();
+        let path = crate::config::config_path();
+        std::fs::write(&path, "[attention]\nstyle='loud'\nintensity=0.5\ndock='none'\n[theme]\nstate_preset='mono'\n").unwrap();
+        h.app.reload_config();
+        h.hidden_frame();
+        let visual = crate::ui::activity::attention(&h.app.ctx);
+        assert!(visual.loud);
+        assert!(visual.alpha <= 0.5);
+        assert_eq!(h.app.colors.state_working, h.app.colors.state_waiting);
+        std::fs::write(&path, "[attention]\nstyle='off'\n").unwrap();
+        h.app.reload_config();
+        h.hidden_frame();
+        assert_eq!(crate::ui::activity::attention(&h.app.ctx).alpha, 0.0);
+        assert!(!crate::ui::activity::attention(&h.app.ctx).animate);
+    }
+
+    #[test]
     fn fleet_notifications_share_queue_and_suppress_focused_agents() {
         let mut h = HostHarness::new();
         h.app.notifications_enabled = true;
@@ -618,6 +636,7 @@ mod attention_tests {
 
 #[derive(Default)]
 pub(crate) struct AttentionState {
+    dock: crate::platform::attention::DockState,
     reports: std::collections::HashMap<u64, AgentState>,
     pending_os: Vec<(u64, AgentState, crate::agent::fleet::AgentEvent)>,
     toast_until: Option<std::time::Instant>,
@@ -735,6 +754,12 @@ impl PlexiApp {
                 .and_then(|a| a.os_notifications)
                 .unwrap_or(true);
         let focused = crate::platform::attention::app_focused(ctx);
+        let attention = self.config.attention.unwrap_or_default();
+        crate::ui::activity::set_attention(ctx, attention, crate::platform::attention::reduce_motion());
+        self.agent_attention.dock.sync(
+            crate::overlays::attention::open_items().into_iter().map(|item| item.id).collect(),
+            attention.dock.unwrap_or_default(), focused,
+        );
         let live: std::collections::HashSet<_> = self
             .windows
             .iter()

@@ -58,7 +58,7 @@ const PIP_TEXT_GAP: f32 = style::SPACE_SM;
 /// Status-pip radius. Shared with the portal minimap so activity dots are the
 /// same size everywhere they appear (sidebar rows + portal previews).
 pub(crate) const PANE_DOT_RADIUS: f32 = 4.0;
-const PANE_DOT_SPACING: f32 = 11.0;
+const PANE_DOT_SPACING: f32 = 16.0;
 const PANE_DOT_MAX: usize = 8;
 /// Air between the dots and the capsule's stroke, on each axis.
 const WINDOW_GROUP_PAD_X: f32 = 7.0;
@@ -425,18 +425,6 @@ fn paint_pips(
     is_dragging: bool,
 ) {
     let t = ui.input(|i| i.time);
-    let has_working = dots
-        .activities
-        .iter()
-        .any(|s| matches!(s, Some(crate::protocol::AgentState::Working)));
-    if has_working {
-        // Pulse animation only needs ~10fps. An unconditional request_repaint
-        // here is self-perpetuating and pins the whole window at display
-        // refresh for as long as any agent is Working.
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(100));
-    }
-
     let painter = ui.painter();
     let ppp = painter.pixels_per_point();
     let cy = origin.y.round_to_pixel_center(ppp);
@@ -484,11 +472,7 @@ fn paint_pips(
                 color = color.gamma_multiply(0.4);
             }
             let center = Pos2::new(cx, cy).round_to_pixel_center(ppp);
-            if dots.hidden_set.contains(&dot_i) {
-                painter.circle_stroke(center, PANE_DOT_RADIUS, Stroke::new(1.0_f32, color));
-            } else {
-                painter.circle_filled(center, PANE_DOT_RADIUS, color);
-            }
+            crate::ui::activity::paint_pip(ui.painter(), center, PANE_DOT_RADIUS, agent_state, color, dots.hidden_set.contains(&dot_i));
         }
 
         // The pin is intentionally neutral: dot color describes agent activity,
@@ -610,6 +594,13 @@ impl SidebarRow {
                 style::RADIUS_SM,
                 with_alpha(colors.bg_hover, row_alpha),
             );
+        }
+
+        if self.pane_dots.as_ref().is_some_and(|dots| dots.activities.iter().any(|s| matches!(s, Some(crate::protocol::AgentState::NeedsYou)))) {
+            let visual = crate::ui::activity::attention(ui.ctx());
+            if visual.alpha > 0.0 {
+                ui.painter().rect_filled(selection_inset(card), style::RADIUS_SM, colors.state_needs_you.gamma_multiply(0.16 * visual.alpha));
+            }
         }
 
         // --- Index gutter ---------------------------------------------------

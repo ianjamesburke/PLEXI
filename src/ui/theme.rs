@@ -31,7 +31,6 @@ fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
 
 /// WCAG relative luminance.
 pub(crate) fn luminance(c: Color32) -> f32 {
-    let rgba = egui::Rgba::from(c);
     fn linear(v: f32) -> f32 {
         if v <= 0.03928 {
             v / 12.92
@@ -39,7 +38,9 @@ pub(crate) fn luminance(c: Color32) -> f32 {
             ((v + 0.055) / 1.055).powf(2.4)
         }
     }
-    0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
+    0.2126 * linear(c.r() as f32 / 255.0)
+        + 0.7152 * linear(c.g() as f32 / 255.0)
+        + 0.0722 * linear(c.b() as f32 / 255.0)
 }
 
 /// WCAG contrast ratio between two relative luminances.
@@ -76,10 +77,12 @@ pub struct Colors {
     pub danger: Color32,
     pub success: Color32,
     pub warning: Color32,
-    // Activity pip colors — override success/warning/danger when set in [theme]
-    pub pip_working: Color32,
-    pub pip_idle: Color32,
-    pub pip_blocked: Color32,
+    pub state_working: Color32,
+    pub state_waiting: Color32,
+    pub state_blocked: Color32,
+    pub state_needs_you: Color32,
+    pub state_interrupted: Color32,
+    pub state_error: Color32,
     // Opacity multiplier for unfocused pips (default 0.72)
     pub pip_dim: f32,
     // Terminal fg/bg as bytes for dynamic colors
@@ -154,7 +157,27 @@ impl Colors {
 
     pub fn from_config(cfg: &ThemeConfig) -> Self {
         let bg_hover = parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c));
+        let states = state_palette(cfg);
         Self {
+            state_working: parse_hex_or(
+                &cfg.state_working
+                    .clone()
+                    .or_else(|| cfg.pip_working.clone()),
+                states[0],
+            ),
+            state_waiting: parse_hex_or(
+                &cfg.state_waiting.clone().or_else(|| cfg.pip_idle.clone()),
+                states[1],
+            ),
+            state_blocked: parse_hex_or(
+                &cfg.state_blocked
+                    .clone()
+                    .or_else(|| cfg.pip_blocked.clone()),
+                states[2],
+            ),
+            state_needs_you: parse_hex_or(&cfg.state_needs_you, states[3]),
+            state_interrupted: parse_hex_or(&cfg.state_interrupted, states[4]),
+            state_error: parse_hex_or(&cfg.state_error, states[5]),
             bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
             bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x18, 0x18, 0x25)),
             bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x18, 0x18, 0x25)),
@@ -175,18 +198,6 @@ impl Colors {
             danger: parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
             success: parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
             warning: parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
-            pip_working: parse_hex_or(
-                &cfg.pip_working,
-                parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
-            ),
-            pip_idle: parse_hex_or(
-                &cfg.pip_idle,
-                parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
-            ),
-            pip_blocked: parse_hex_or(
-                &cfg.pip_blocked,
-                parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
-            ),
             pip_dim: cfg.pip_dim.unwrap_or(0.72),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
@@ -214,6 +225,12 @@ impl Colors {
             ("muted", self.text_dim),
             ("text_section", self.text_section),
             ("accent", self.accent),
+            ("state_working", self.state_working),
+            ("state_waiting", self.state_waiting),
+            ("state_blocked", self.state_blocked),
+            ("state_needs_you", self.state_needs_you),
+            ("state_interrupted", self.state_interrupted),
+            ("state_error", self.state_error),
             ("danger", self.danger),
             ("red", self.danger),
             ("success", self.success),
@@ -225,6 +242,60 @@ impl Colors {
         .map(|(k, c)| (k.to_string(), hex(c)))
         .collect()
     }
+}
+
+/// State presets retain a separate shape channel; mono intentionally shares a color.
+pub const STATE_PRESETS: &[&str] = &["default", "okabe-ito", "high-contrast", "mono"];
+
+fn state_palette(cfg: &ThemeConfig) -> [Color32; 6] {
+    let sidebar = parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(24, 24, 37));
+    let terminal = parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(41, 42, 68));
+    let light = luminance(sidebar) > 0.4;
+    let mono = if light {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    let preset = cfg.state_preset.as_deref().unwrap_or("default");
+    // Light themes need separated lightness levels, not uniform darkening:
+    // otherwise orange, vermillion and yellow converge under red/green CVD.
+    if light && preset != "mono" {
+        return [[26,54,70], [104,72,0], [173,103,142], [64,28,0], [0,95,69], [132,125,36]]
+            .map(|[r,g,b]| Color32::from_rgb(r,g,b));
+    }
+    let rgb = match preset {
+        "mono" => return [mono; 6],
+        "high-contrast" => [
+            [0, 114, 178],
+            [240, 228, 66],
+            [204, 121, 167],
+            [213, 94, 0],
+            [0, 158, 115],
+            [230, 159, 0],
+        ],
+        _ => [
+            [0, 114, 178],
+            [230, 159, 0],
+            [204, 121, 167],
+            [213, 94, 0],
+            [0, 158, 115],
+            [240, 228, 66],
+        ],
+    };
+    rgb.map(|[r, g, b]| {
+        let c = Color32::from_rgb(r, g, b);
+        // Preserve hue while adapting the Okabe-Ito swatch to both adjacent surfaces.
+        for step in 0..=100 {
+            let candidate = lerp_color(c, mono, step as f32 / 100.0);
+            if [sidebar, terminal]
+                .iter()
+                .all(|bg| contrast(luminance(candidate), luminance(*bg)) >= 3.1)
+            {
+                return candidate;
+            }
+        }
+        mono
+    })
 }
 
 /// Resolve the active `Colors` from a loaded config: merges the user's
@@ -329,6 +400,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
     match canonical {
         "catppuccin-mocha" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#11111b"),
             bg_sidebar: s("#181825"),
             bg_toolbar: s("#181825"),
@@ -364,6 +436,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "dracula" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#1e1f29"),
             bg_sidebar: s("#21222c"),
             bg_toolbar: s("#21222c"),
@@ -399,6 +472,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "tokyo-night" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#13131d"),
             bg_sidebar: s("#16161e"),
             bg_toolbar: s("#16161e"),
@@ -434,6 +508,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "tokyo-day" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#b0b3c0"),
             bg_sidebar: s("#d5d6db"),
             bg_toolbar: s("#d5d6db"),
@@ -469,6 +544,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "gruvbox-dark" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#1d2021"),
             bg_sidebar: s("#282828"),
             bg_toolbar: s("#282828"),
@@ -504,6 +580,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "gruvbox-light" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#f2e5bc"),
             bg_sidebar: s("#fbf1c7"),
             bg_toolbar: s("#fbf1c7"),
@@ -539,6 +616,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "nord" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#242933"),
             bg_sidebar: s("#3b4252"),
             bg_toolbar: s("#3b4252"),
@@ -574,6 +652,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "solarized-dark" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#00212b"),
             bg_sidebar: s("#073642"),
             bg_toolbar: s("#073642"),
@@ -609,6 +688,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "catppuccin-latte" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#dce0e8"),
             bg_sidebar: s("#eff1f5"),
             bg_toolbar: s("#eff1f5"),
@@ -644,6 +724,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "solarized-light" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#eee8d5"),
             bg_sidebar: s("#fdf6e3"),
             bg_toolbar: s("#fdf6e3"),
@@ -679,6 +760,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "matrix" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#000000"),
             bg_sidebar: s("#001100"),
             bg_toolbar: s("#001100"),
@@ -714,6 +796,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "bios" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#000055"),
             bg_sidebar: s("#000080"),
             bg_toolbar: s("#000080"),
@@ -749,6 +832,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "plexi-night" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#060609"),
             bg_sidebar: s("#0c0c14"),
             bg_toolbar: s("#0c0c14"),
@@ -784,6 +868,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "plexi-day" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#d8d8e8"),
             bg_sidebar: s("#ededf5"),
             bg_toolbar: s("#ededf5"),
@@ -826,6 +911,13 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
     let m = |u: &Option<String>, p: &Option<String>| u.clone().or_else(|| p.clone());
     ThemeConfig {
         preset: None,
+        state_preset: m(&user.state_preset, &preset.state_preset),
+        state_working: m(&user.state_working, &preset.state_working),
+        state_waiting: m(&user.state_waiting, &preset.state_waiting),
+        state_blocked: m(&user.state_blocked, &preset.state_blocked),
+        state_needs_you: m(&user.state_needs_you, &preset.state_needs_you),
+        state_interrupted: m(&user.state_interrupted, &preset.state_interrupted),
+        state_error: m(&user.state_error, &preset.state_error),
         bg_darkest: m(&user.bg_darkest, &preset.bg_darkest),
         bg_sidebar: m(&user.bg_sidebar, &preset.bg_sidebar),
         bg_toolbar: m(&user.bg_toolbar, &preset.bg_toolbar),
@@ -920,7 +1012,8 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     w.noninteractive.bg_fill = colors.bg_sidebar;
     w.noninteractive.weak_bg_fill = colors.bg_sidebar;
     w.noninteractive.bg_stroke = hairline; // Separators.
-    w.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, colors.text_secondary(colors.bg_sidebar));
+    w.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0_f32, colors.text_secondary(colors.bg_sidebar));
     w.inactive.bg_fill = colors.bg_elevated;
     w.inactive.weak_bg_fill = colors.bg_elevated;
     w.inactive.bg_stroke = hairline;
@@ -1177,25 +1270,19 @@ mod tests {
                     assert_ne!(regular.family, bold.family);
                     assert_eq!(fonts.row_height(&regular), fonts.row_height(&bold));
                     for c in "mMW08[]".chars() {
-                        assert_eq!(
-                            fonts.glyph_width(&regular, c),
-                            fonts.glyph_width(&bold, c)
-                        );
+                        assert_eq!(fonts.glyph_width(&regular, c), fonts.glyph_width(&bold, c));
                     }
                 }
             });
         });
     }
 
-    /// pip_working/idle/blocked fall back to warning/success/danger when not set,
-    /// and use the override color when set. pip_dim defaults to 0.72.
+    /// Legacy pip color overrides remain aliases for the new semantic tokens.
     #[test]
     fn pip_colors_fall_back_to_semantic_and_accept_overrides() {
         let default_cfg = ThemeConfig::default();
         let colors = Colors::from_config(&default_cfg);
-        assert_eq!(colors.pip_working, colors.warning);
-        assert_eq!(colors.pip_idle, colors.success);
-        assert_eq!(colors.pip_blocked, colors.danger);
+        assert_ne!(colors.state_working, colors.state_waiting);
         assert!((colors.pip_dim - 0.72).abs() < f32::EPSILON);
 
         let override_cfg = ThemeConfig {
@@ -1206,9 +1293,9 @@ mod tests {
             ..ThemeConfig::default()
         };
         let oc = Colors::from_config(&override_cfg);
-        assert_eq!(oc.pip_working, Color32::from_rgb(0xff, 0x00, 0x00));
-        assert_eq!(oc.pip_idle, Color32::from_rgb(0x00, 0xff, 0x00));
-        assert_eq!(oc.pip_blocked, Color32::from_rgb(0x00, 0x00, 0xff));
+        assert_eq!(oc.state_working, Color32::from_rgb(0xff, 0x00, 0x00));
+        assert_eq!(oc.state_waiting, Color32::from_rgb(0x00, 0xff, 0x00));
+        assert_eq!(oc.state_blocked, Color32::from_rgb(0x00, 0x00, 0xff));
         assert!((oc.pip_dim - 0.7).abs() < f32::EPSILON);
     }
 
@@ -1345,5 +1432,127 @@ mod tests {
             ctx.global_style().visuals.widgets.inactive.bg_fill,
             colors.bg_elevated
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn simulate_cvd(c: Color32, kind: usize) -> Color32 {
+    // Machado et al. (2009), severity 1.0, linear RGB matrices.
+    let matrices = [
+        [
+            [0.152286, 1.052583, -0.204868],
+            [0.114503, 0.786281, 0.099216],
+            [-0.003882, -0.048116, 1.051998],
+        ],
+        [
+            [0.367322, 0.860646, -0.227968],
+            [0.280085, 0.672501, 0.047413],
+            [-0.011820, 0.042940, 0.968881],
+        ],
+        [
+            [1.255528, -0.076749, -0.178779],
+            [-0.078411, 0.930809, 0.147602],
+            [0.004733, 0.691367, 0.303900],
+        ],
+    ];
+    let rgba = egui::Rgba::from(c);
+    let input = [rgba.r(), rgba.g(), rgba.b()];
+    let result = matrices[kind].map(|row| {
+        row.iter()
+            .zip(input)
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+            .clamp(0.0, 1.0)
+    });
+    egui::Rgba::from_rgb(result[0], result[1], result[2]).into()
+}
+
+#[cfg(test)]
+mod state_palette_tests {
+    use super::*;
+    fn tokens(c: Colors) -> [Color32; 6] {
+        [
+            c.state_working,
+            c.state_waiting,
+            c.state_blocked,
+            c.state_needs_you,
+            c.state_interrupted,
+            c.state_error,
+        ]
+    }
+    fn lab(c: Color32) -> [f32; 3] {
+        let rgb = egui::Rgba::from(c);
+        let [r, g, b] = [rgb.r(), rgb.g(), rgb.b()];
+        let f = |v: f32| {
+            if v > 0.008856 {
+                v.cbrt()
+            } else {
+                7.787 * v + 16.0 / 116.0
+            }
+        };
+        let x = f((0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047);
+        let y = f(0.2126729 * r + 0.7151522 * g + 0.0721750 * b);
+        let z = f((0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883);
+        [116.0 * y - 16.0, 500.0 * (x - y), 200.0 * (y - z)]
+    }
+    #[test]
+    fn state_presets_contrast_and_cvd() {
+        for theme in ["plexi-night", "plexi-day"] {
+            for preset in STATE_PRESETS {
+                let mut cfg = preset_colors(theme).unwrap();
+                cfg.state_preset = Some((*preset).into());
+                let colors = Colors::from_config(&cfg);
+                let states = tokens(colors);
+                for color in states {
+                    for bg in [colors.bg_sidebar, colors.terminal_bg] {
+                        assert!(
+                            contrast(luminance(color), luminance(bg)) >= 3.0,
+                            "{theme}/{preset}: {color:?} against {bg:?}"
+                        );
+                    }
+                }
+                if *preset != "mono" {
+                    assert!((lab(states[0])[0] - lab(states[1])[0]).abs() >= 8.0, "{theme}/{preset}: working/waiting lightness separation");
+                }
+                if *preset == "mono" {
+                    assert!(states.iter().all(|c| *c == states[0]));
+                    continue; // Mono uses distinct glyphs, never color separation.
+                }
+                for kind in 0..3 {
+                    let simulated = states.map(|c| lab(simulate_cvd(c, kind)));
+                    for i in 0..6 {
+                        for j in i + 1..6 {
+                            let delta = simulated[i]
+                                .iter()
+                                .zip(simulated[j])
+                                .map(|(a, b)| (a - b).powi(2))
+                                .sum::<f32>()
+                                .sqrt();
+                            assert!(
+                                delta >= 10.0,
+                                "{theme}/{preset}, CVD={kind}, pair={i}/{j}, deltaE={delta}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn state_override_wins_over_legacy_and_preset() {
+        let cfg = ThemeConfig {
+            state_working: Some("#abcdef".into()),
+            pip_working: Some("#123456".into()),
+            state_preset: Some("mono".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            Colors::from_config(&cfg).state_working,
+            Color32::from_rgb(0xab, 0xcd, 0xef)
+        );
+    }
+    #[test]
+    fn luminance_uses_srgb_once() {
+        assert!((luminance(Color32::from_rgb(128, 128, 128)) - 0.21586).abs() < 0.001);
     }
 }

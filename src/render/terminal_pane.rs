@@ -82,6 +82,7 @@ pub fn render(
                 .map(|_| AgentState::NeedsYou)
         })
         .or_else(|| tab_activities.get(pane_id).cloned());
+    let needs_you = matches!(pane_agent_state, Some(AgentState::NeedsYou));
     let border_escalation_color =
         crate::ui::activity::escalation_color(pane_agent_state.as_ref(), is_error, colors);
 
@@ -119,7 +120,8 @@ pub fn render(
                 ui.colored_label(exit_color, "[process exited]");
             });
         });
-        paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
+    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
         // Auto-close on any keypress. Keyboard events were taken out of `ctx`
         // before the render pass (stint 0387), so read them from the
         // host-supplied buffer rather than `ui.input()`.
@@ -200,7 +202,8 @@ pub fn render(
         if response.clicked() {
             terminal.resume_from_standby();
         }
-        paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
+    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
         return (false, tab_action);
     }
 
@@ -228,7 +231,8 @@ pub fn render(
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
-    paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+    if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
+    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
 
     (false, tab_action)
 }
@@ -306,7 +310,8 @@ fn render_name_bar_and_tabs(
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
     let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id));
-    let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors);
+    let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
+        .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
     let escalation_lbl = crate::ui::activity::escalation_label(agent_state, is_error);
     let has_escalation = is_error
         || matches!(
@@ -449,7 +454,7 @@ fn render_name_bar_and_tabs(
                 },
             );
         });
-    } else if has_name || outside_workspace || has_escalation {
+    } else if has_name || outside_workspace || has_escalation || agent_state.is_some() {
         let bar_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
@@ -477,11 +482,7 @@ fn render_name_bar_and_tabs(
 
         if is_error {
             let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-            ui.painter().circle_filled(
-                egui::pos2(cx, bar_rect.center().y),
-                TAB_PIP_RADIUS,
-                colors.danger,
-            );
+            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
         } else if let Some(state) = agent_state {
             paint_activity_dot(ui, bar_rect, state, colors);
         }
@@ -582,12 +583,7 @@ fn paint_activity_dot(
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-    ui.painter()
-        .circle_filled(egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, color);
-    if matches!(state, AgentState::Working) {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(100));
-    }
+    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(state), color, false);
 }
 
 fn paint_status_badge(

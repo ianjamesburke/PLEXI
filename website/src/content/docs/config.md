@@ -38,6 +38,7 @@ plexi config reset
 | `pane_title_font_size` | float | 11.0 | Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0]. |
 | `osc_pane_title` | bool | true | Apply OSC 0/1/2 title sequences from terminal processes as pane names. Defaults to true; set false to keep terminal pane names manual-only. |
 | `theme_preset` | string | — | — |
+| `attention` | AttentionConfig | — | — |
 | `confirm_quit` | bool | true | Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true). |
 | `confirm_close` | bool | true | Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true). |
 | `confirm_context_close` | bool | true | Set to false to close contexts immediately on Cmd+Shift+W without a confirmation dialog (default: true). |
@@ -53,6 +54,13 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `preset` | string | — | Theme preset name. Applied first; individual color fields override the preset. |
+| `state_preset` | string | default | Agent states: default, okabe-ito, high-contrast, mono. Default: default. |
+| `state_working` | string | — | — |
+| `state_waiting` | string | — | — |
+| `state_blocked` | string | — | — |
+| `state_needs_you` | string | — | — |
+| `state_interrupted` | string | — | — |
+| `state_error` | string | — | — |
 | `bg_darkest` | string | — | — |
 | `bg_sidebar` | string | — | — |
 | `bg_toolbar` | string | — | — |
@@ -307,6 +315,14 @@ confirm_context_close = true
 osc_pane_title = true
 
 [theme]
+# Agent state colors retain distinct shapes in every preset.
+state_preset = "default" # default | okabe-ito | high-contrast | mono
+# state_working = "#0072b2"
+# state_waiting = "#e69f00"
+# state_blocked = "#cc79a7"
+# state_needs_you = "#d55e00"
+# state_interrupted = "#009e73"
+# state_error = "#f0e442"
 preset = "catppuccin-mocha"
 # Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-day
 # Uncomment to override individual colors:
@@ -421,4 +437,9 @@ tips = true
 # account_url     = "https://plexiapp.com"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
+
+[attention]
+style = "normal" # off | subtle | normal | loud
+intensity = 1.0 # 0.0..1.0, scales halo and border opacity
+dock = "badge" # none | badge | bounce-once | bounce-until-focused
 ```

@@ -15,6 +15,128 @@ pub(crate) fn app_focused(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.viewport().focused.unwrap_or(true))
 }
 
+/// Read the system accessibility preference on the UI thread; tests stay hermetic.
+pub(crate) fn reduce_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    if !cfg!(test) {
+        let reduced =
+            objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+        static OBSERVED: std::sync::Once = std::sync::Once::new();
+        OBSERVED.call_once(|| log::info!("attention: native Reduce Motion observed={reduced}"));
+        return reduced;
+    }
+    false
+}
+
+#[derive(Default)]
+pub(crate) struct DockState {
+    items: Vec<String>,
+    mode: crate::config::AttentionDock,
+    request: Option<isize>,
+}
+
+/// Count the shared open attention records, not agent pips (permission items count too).
+pub(crate) fn dock_badge(count: usize, mode: crate::config::AttentionDock) -> Option<String> {
+    (count > 0 && mode != crate::config::AttentionDock::None).then(|| count.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DockPlan { changed: bool, cancel: bool, bounce: bool }
+
+fn dock_plan(previous: &[String], items: &[String], old_mode: crate::config::AttentionDock, mode: crate::config::AttentionDock, focused: bool) -> DockPlan {
+    let new_item = items.iter().any(|id| !previous.contains(id));
+    DockPlan {
+        changed: items != previous || mode != old_mode,
+        cancel: focused || items.is_empty() || mode != old_mode,
+        bounce: !focused && !items.is_empty() && (new_item || mode != old_mode)
+            && matches!(mode, crate::config::AttentionDock::BounceOnce | crate::config::AttentionDock::BounceUntilFocused),
+    }
+}
+
+impl DockState {
+    pub(crate) fn sync(
+        &mut self,
+        mut items: Vec<String>,
+        mode: crate::config::AttentionDock,
+        focused: bool,
+    ) {
+        items.sort();
+        let DockPlan { changed, cancel, bounce } = dock_plan(&self.items, &items, self.mode, mode, focused);
+        if changed || (cancel && self.request.is_some()) {
+            log::info!(
+                "attention: Dock open={} mode={mode:?} focused={focused}",
+                items.len()
+            );
+        }
+        #[cfg(target_os = "macos")]
+        if !cfg!(test) {
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                if changed {
+                    let badge = dock_badge(items.len(), mode)
+                        .map(|s| objc2_foundation::NSString::from_str(&s));
+                    app.dockTile().setBadgeLabel(badge.as_deref());
+                }
+                if cancel {
+                    if let Some(request) = self.request.take() {
+                        app.cancelUserAttentionRequest(request);
+                    }
+                }
+                if bounce {
+                    use crate::config::AttentionDock;
+                    use objc2_app_kit::NSRequestUserAttentionType as Request;
+                    let kind = match mode {
+                        AttentionDock::BounceOnce => Some(Request::InformationalRequest),
+                        AttentionDock::BounceUntilFocused => Some(Request::CriticalRequest),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        if let Some(request) = self.request.take() {
+                            app.cancelUserAttentionRequest(request);
+                        }
+                        self.request = Some(app.requestUserAttention(kind));
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (bounce, dock_badge(items.len(), mode));
+        }
+        self.items = items;
+        self.mode = mode;
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+    use crate::config::AttentionDock;
+    #[test]
+    fn dock_bounces_once_per_new_item_and_cancels_when_focused_or_cleared() {
+        let mode = AttentionDock::BounceUntilFocused;
+        let one = vec!["request-a".to_string()];
+        let replacement = vec!["request-b".to_string()];
+        assert!(dock_plan(&[],&one,mode,mode,false).bounce);
+        assert!(!dock_plan(&one,&one,mode,mode,false).bounce);
+        assert!(dock_plan(&one,&replacement,mode,mode,false).bounce);
+        let focused = dock_plan(&one,&replacement,mode,mode,true);
+        assert!(focused.cancel); assert!(!focused.bounce);
+        let empty = dock_plan(&one,&[],mode,mode,false);
+        assert!(empty.cancel); assert!(!empty.bounce);
+        let disabled = dock_plan(&one,&one,mode,AttentionDock::None,false);
+        assert!(disabled.cancel); assert!(!disabled.bounce);
+        assert!(!dock_plan(&[],&one,AttentionDock::Badge,AttentionDock::Badge,false).bounce);
+    }
+
+    #[test]
+    fn badge_counts_open_records_and_clears_zero() {
+        assert_eq!(dock_badge(3, AttentionDock::Badge), Some("3".into()));
+        assert_eq!(dock_badge(0, AttentionDock::Badge), None);
+        assert_eq!(dock_badge(3, AttentionDock::None), None);
+    }
+}
+
 pub(crate) fn raise(id: u64, state: &AgentState, event: &AgentEvent, ctx: &egui::Context) {
     if cfg!(test) {
         return;

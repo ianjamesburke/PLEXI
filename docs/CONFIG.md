@@ -55,6 +55,10 @@ Available presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tok
 
 Known color keys: bg_darkest, bg_sidebar, bg_toolbar, terminal_bg, bg_hover, bg_sidebar_hover, bg_active, text_primary, text_dim, text_section, accent, border, foreground, background, black, red, green, yellow, blue, magenta, cyan, white, bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white, bright_foreground.
 
+Agent state colors are independent of the overall theme. Search **Settings: agent states** in the command palette to select a preset, or set `theme.state_preset`. State glyphs remain distinct even in the mono preset. Individual `theme.state_*` overrides take precedence; legacy `pip_working`, `pip_idle`, and `pip_blocked` overrides remain supported.
+
+The `[attention]` table controls NeedsYou emphasis and Dock delivery. Changes apply through the config watcher. Reduce Motion keeps the attention ring static; Working alone does not animate. For accepted values and defaults, see the [generated configuration reference](../website/src/content/docs/config.md).
+
 ## AI
 
 OpenRouter is the default cloud backend. Store the key in the global Plexi secret store:

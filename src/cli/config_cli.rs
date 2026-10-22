@@ -49,6 +49,16 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "integer",
         "Number of focus history entries to retain",
     ),
+    ("attention.style", "string", "Attention style: off, subtle, normal (default), loud"),
+    ("attention.intensity", "float", "Attention halo and border intensity, 0 to 1 (default 1)"),
+    ("attention.dock", "string", "Dock mode: none, badge (default), bounce-once, bounce-until-focused"),
+    ("theme.state_preset", "string", "Agent states: default, okabe-ito, high-contrast, mono"),
+    ("theme.state_working", "string", "Agent working color (#rrggbb)"),
+    ("theme.state_waiting", "string", "Agent waiting color (#rrggbb)"),
+    ("theme.state_blocked", "string", "Agent blocked color (#rrggbb)"),
+    ("theme.state_needs_you", "string", "Agent needs you color (#rrggbb)"),
+    ("theme.state_interrupted", "string", "Agent interrupted color (#rrggbb)"),
+    ("theme.state_error", "string", "Agent error color (#rrggbb)"),
     // theme.*
     (
         "theme.preset",
