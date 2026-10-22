@@ -886,12 +886,20 @@ impl ToolDispatcher {
                         return ToolCallResult::err(message);
                     }
                 };
+                // Waiting desktop presenters observe a decision already committed by
+                // the banner. Do not submit it a second time: the monitor rejects
+                // duplicate decisions. Re-admission below still checks revocation.
+                let decided = if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
+                    Ok(())
+                } else {
+                    self.monitor.approve_pending(pending_request_id, choice)
+                };
                 if matches!(
                     choice,
                     crate::broker::gate::ApprovalChoice::Deny
                         | crate::broker::gate::ApprovalChoice::DenyAlways
                 ) {
-                    return match self.monitor.approve_pending(pending_request_id, choice) {
+                    return match decided {
                         Ok(()) => ToolCallResult::coded(
                             "permission_denied",
                             &call_id,
@@ -903,7 +911,7 @@ impl ToolDispatcher {
                         }
                     };
                 }
-                if let Err(error) = self.monitor.approve_pending(pending_request_id, choice) {
+                if let Err(error) = decided {
                     log::error!("tool_dispatch: {error}");
                     return ToolCallResult::err(error);
                 }

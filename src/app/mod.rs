@@ -1,3 +1,4 @@
+mod approval_keyboard;
 mod cli_actions;
 pub mod account;
 pub mod command_view_app;
@@ -618,6 +619,7 @@ pub struct PlexiApp {
     /// Last pending id the banner logged, so a painted sheet is one info
     /// line rather than one per frame.
     approval_banner_logged: Option<String>,
+    approval_keyboard: approval_keyboard::ApprovalKeyboard,
     // Drop after the host resources that may still refer to these test paths.
     #[cfg(test)]
     _test_scratch: Option<tempfile::TempDir>,
@@ -1709,6 +1711,7 @@ impl PlexiApp {
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
                     approval_banner_logged: None,
+                    approval_keyboard: Default::default(),
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -1973,6 +1976,7 @@ impl PlexiApp {
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
             approval_banner_logged: None,
+            approval_keyboard: Default::default(),
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -2913,6 +2917,7 @@ impl PlexiApp {
                 pending_pane_drags: HashMap::new(),
                 pending_pane_pointer_frames: HashMap::new(),
                 approval_banner_logged: None,
+                approval_keyboard: Default::default(),
             };
         // Launch paths allocate through HostModel, which otherwise starts at 1
         // in every test process. Seed a private block so a pane drop in one
@@ -3720,6 +3725,12 @@ impl eframe::App for PlexiApp {
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }
         }
+        if self.approval_keyboard.id.is_some()
+            && (ctx.input(|input| input.pointer.any_pressed() || !input.focused)
+                || self.focus_stack.last() != Some(&FocusKind::ApprovalBanner))
+        {
+            self.leave_approval();
+        }
         // Unified overlay dispatch: each overlay owns its complete keyboard
         // contract via a `*_handle_key` method that returns `Consumed`, preventing
         // `dispatch_app_key_events` and `poll_actions` from seeing those events.
@@ -4296,6 +4307,7 @@ impl eframe::App for PlexiApp {
                     self.close_focused_app();
                 }
                 Action::NextBlockedAgent => { self.next_blocked_agent(); },
+                Action::FocusApproval => { self.focus_approval(); },
                 Action::OpenAgents => self.open_agents_pane(),
                 Action::OpenFileBrowser => {
                     self.open_file_browser();

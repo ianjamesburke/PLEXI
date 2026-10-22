@@ -126,11 +126,19 @@ toggle_command_palette = "cmd+p"
 open_config            = "cmd+comma"
 ```
 
+`focus_approval` defaults to Cmd+Alt+P and focuses the oldest pending permission
+banner. After its dimmed hint arms, `a` allows once, `d` denies, and Escape leaves
+the request pending and returns keyboard focus. Typing in a pane never decides a
+request. Shift+A opens confirmation for the banner's **Always deny** choice;
+Enter confirms after a fresh arm delay, and Escape leaves it pending. Session
+approval has no default decision key. See `ApprovalKeyboard` in
+`src/app/approval_keyboard.rs` for the delay and focus contract.
+
 Modifiers: cmd, shift, ctrl, alt. Aliases: command, control, opt, option.
 
 Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down, left, right, open_bracket, close_bracket, backslash, slash, comma, period, equals, minus.
 
-Known actions: quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_app, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
+Known actions: focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_app, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
 
 Unknown keys or conflicting overrides log a warning at startup and keep the default binding.
 

@@ -308,6 +308,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "browse notes note picker open find global context",
     },
     PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::FocusApproval),
+        name: "Focus oldest approval",
+        description: "Focus the permission banner for a keyboard decision",
+        search_text: "attention approval permission keyboard allow deny",
+    },
+    PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::OpenAgents),
         name: "Open Agents pane",
         description: "Review tasks, workers and blocking reasons",
@@ -865,6 +871,7 @@ fn palette_host_binding(
     use crate::host::keys::Action;
     let binding = match command {
         PaletteCommand::Host(Action::NextBlockedAgent) => bindings.next_blocked_agent,
+        PaletteCommand::Host(Action::FocusApproval) => bindings.focus_approval,
         PaletteCommand::Host(Action::OpenAgents) => bindings.open_agents,
         PaletteCommand::Host(Action::OpenSecretsManager) => bindings.open_secrets_manager,
         PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
@@ -1875,6 +1882,7 @@ impl PlexiApp {
                 self.mark_workspace_dirty();
             }
             crate::host::keys::Action::NextBlockedAgent => { self.next_blocked_agent(); },
+            crate::host::keys::Action::FocusApproval => { self.focus_approval(); },
             crate::host::keys::Action::OpenAgents => self.open_agents_pane(),
             crate::host::keys::Action::OpenSecretsManager => self.open_secrets_manager(),
             crate::host::keys::Action::OpenConfig => {

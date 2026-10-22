@@ -436,6 +436,7 @@ pub struct PermissionMonitor {
     store: Arc<Mutex<GrantStore>>,
     pending: Mutex<Vec<Pending>>,
     /// Choices already applied, so a sheet and a dispatcher can both approve once.
+    decision_lock: Mutex<()>,
     resolutions: Mutex<std::collections::HashMap<String, ApprovalChoice>>,
     session_id: String,
     credentials: Mutex<std::collections::HashMap<String, SessionCredential>>,
@@ -834,6 +835,7 @@ impl PermissionMonitor {
         Self {
             store,
             pending: Mutex::new(Vec::new()),
+            decision_lock: Mutex::new(()),
             resolutions: Mutex::new(std::collections::HashMap::new()),
             session_id,
             credentials: Mutex::new(std::collections::HashMap::new()),
@@ -1071,24 +1073,10 @@ impl PermissionMonitor {
     }
 
     pub fn approve_pending(&self, pending_id: &str, choice: ApprovalChoice) -> Result<(), String> {
-        if let Some(previous) = self
-            .resolutions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(pending_id)
-            .copied()
-        {
-            return if previous == choice {
-                let _ = self.close_needs_you(
-                    pending_id,
-                    resolution_for_choice(choice),
-                    decision_for_choice(choice),
-                    "",
-                );
-                Ok(())
-            } else {
-                Err(format!("pending {pending_id} already resolved"))
-            };
+        // Serialize the check and grant mutation, including concurrent desktop decisions.
+        let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.resolutions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(pending_id) {
+            return Err(format!("pending {pending_id} already resolved"));
         }
         let pending = {
             let rows = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -3949,26 +3937,6 @@ fn mutation_label(outcome: &PermissionMutation) -> &'static str {
     }
 }
 
-fn resolution_for_choice(choice: ApprovalChoice) -> NeedsYouResolution {
-    match choice {
-        ApprovalChoice::Deny | ApprovalChoice::DenyAlways => NeedsYouResolution::Denied,
-        ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always | ApprovalChoice::AllowTool => {
-            NeedsYouResolution::Approved
-        }
-    }
-}
-
-fn decision_for_choice(choice: ApprovalChoice) -> &'static str {
-    match choice {
-        ApprovalChoice::Once => "allow_once",
-        ApprovalChoice::Session => "allow_session",
-        ApprovalChoice::Always => "allow_until",
-        ApprovalChoice::AllowTool => "allow_tool_session",
-        ApprovalChoice::Deny => "deny",
-        ApprovalChoice::DenyAlways => "deny_always",
-    }
-}
-
 /// Info line for the host log. Tests also retain it so a denial can be asserted.
 pub fn trace_gate(line: impl AsRef<str>) {
     let line = line.as_ref();
@@ -4860,6 +4828,21 @@ mod tests {
         let caller = PermissionCaller { human: false, actor_id: row.actor_id.clone() };
         assert!(matches!(monitor.mutate_entry(&grant.grant_id, "revoke", &caller), PermissionMutation::Applied { .. }));
         assert!(matches!(admit_of(&monitor, &row, next), Admission::Required { .. }));
+    }
+
+    #[test]
+    fn approval_single_decision_rejects_repeated_and_concurrent_answers() {
+        let monitor = std::sync::Arc::new(PermissionMonitor::ephemeral());
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &binding("ignored"), "{}") else {
+            panic!("requires approval");
+        };
+        let results = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8).map(|_| scope.spawn(|| monitor.approve_pending(&pending_request_id, ApprovalChoice::Once))).collect();
+            threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert!(monitor.approve_pending(&pending_request_id, ApprovalChoice::Deny).is_err());
+        assert!(monitor.list_pending().is_empty());
     }
 
     #[test]
