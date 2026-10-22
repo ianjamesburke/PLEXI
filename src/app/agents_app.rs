@@ -241,6 +241,11 @@ impl App for AgentsApp {
                                                     .truncate(),
                                                 );
                                             }
+                                            if row.display_state == DisplayState::Failed {
+                                                if let Some(reason) = &row.tail {
+                                                    ui.add(egui::Label::new(reason).truncate()).on_hover_text(reason);
+                                                }
+                                            }
                                             if !row.events.is_empty() {
                                                 ui.small(format!(
                                                     "{} notifications",

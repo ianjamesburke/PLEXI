@@ -73,6 +73,12 @@ mod tests {
         let root = h.app.team_runs[0].root_pane;
         let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
         for (i, pane) in panes.iter().enumerate() {
+            if i >= valid {
+                h.app.park_agent_tool_wait(
+                    *pane,
+                    workspace.join(format!("wait-{i}.json")).to_str().unwrap(),
+                );
+            }
             let request = if i < valid {
                 json!({"type":"agent_done", "pane_id":pane,
                     "result":json!({"ranking":["Proceed","Experiment","Defer"],"rationale":format!("Valid ballot {i}")}).to_string(),
@@ -91,6 +97,32 @@ mod tests {
         let response: Value =
             serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["status"], status);
+        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        for (i, pane) in panes.iter().enumerate().skip(valid) {
+            let terminal = h
+                .app
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(pane))
+                .unwrap();
+            assert_eq!(
+                terminal.agent().unwrap().state,
+                crate::protocol::AgentState::Failed
+            );
+            let row = fleet
+                .tasks
+                .iter()
+                .flat_map(|task| &task.rows)
+                .find(|row| row.pane_id == *pane)
+                .unwrap();
+            assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Failed);
+            assert!(row.tail.as_ref().unwrap().contains("harness exited"));
+            let wait: Value = serde_json::from_str(
+                &std::fs::read_to_string(workspace.join(format!("wait-{i}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(wait["status"], "failed");
+        }
         let report = std::fs::read_to_string(workspace.join("out/RESULT.md")).unwrap();
         assert!(report.contains(status));
         assert!(report.contains("Valid ballot 0"));
@@ -514,9 +546,7 @@ impl PlexiApp {
             .iter()
             .enumerate()
             .map(|(i, _)| {
-                let Some((pane, _)) = run.members.get(i) else {
-                    return None;
-                };
+                let (pane, _) = run.members.get(i)?;
                 if let Some(value) = self
                     .pane_results
                     .get(pane)
@@ -677,9 +707,23 @@ impl PlexiApp {
     pub(crate) fn mark_agent_failed(&mut self, pane_id: u64, reason: &str) {
         let reason = reason.strip_prefix("failed: ").unwrap_or(reason);
         log::info!("agent_worker: failed pane={pane_id}: {reason}");
+        let mut provenance = crate::host::pane_lifecycle::Provenance {
+            source: crate::host::pane_lifecycle::Source::Hook,
+            agent_label: "worker".into(),
+            session_id: None,
+            raw_event: Some("WorkerFailed".into()),
+        };
         for win in &mut self.windows {
             if let Some(pane) = win.panes.get_mut(&pane_id) {
                 let agent = pane.agent().cloned();
+                if let Some(agent) = &agent {
+                    provenance.agent_label = agent.agent.clone();
+                    provenance.session_id = agent.session_id.clone();
+                }
+                if let Some(terminal) = pane.as_terminal_mut() {
+                    terminal.agent_completed = false;
+                    terminal.fleet_done_unseen = false;
+                }
                 let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
                     pane_id,
                     state: crate::protocol::AgentState::Failed,
@@ -693,6 +737,14 @@ impl PlexiApp {
                 break;
             }
         }
+        self.emit_pane_lifecycle(
+            pane_id,
+            crate::host::pane_lifecycle::PaneLifecycleEvent::TurnFailed { provenance },
+        );
+        self.finish_agent_tool_waits(
+            pane_id,
+            json!({"ok":false,"pane_id":pane_id,"status":"failed","error":reason}),
+        );
         self.refresh_portal_context_states();
         self.mark_workspace_dirty();
     }

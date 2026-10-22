@@ -3220,9 +3220,6 @@ impl PlexiApp {
                     let tail = self.windows.iter().find_map(|w| w.panes.get(pane_id)).and_then(|p| p.as_terminal()).and_then(|t| t.capture_tail_preview());
                     let reason = format!("{}{}", detail.as_deref().unwrap_or("harness exited without agent done"), tail.map(|tail| format!("\n{tail}")).unwrap_or_default());
                     self.mark_agent_failed(*pane_id, &reason);
-                    self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::TurnFailed { provenance: Provenance {
-                        source: Source::Hook, agent_label: agent.clone(), session_id: session_id.clone(), raw_event: event.clone(),
-                    }});
                     return;
                 }
                 let mut found = false;
