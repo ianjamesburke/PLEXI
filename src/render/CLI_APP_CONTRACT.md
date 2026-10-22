@@ -1,6 +1,6 @@
-# CLI-Backed App Contract (`plexi app open --cli`)
+# UI upcycle: CLI app contract (`plexi app open --cli`)
 
-Plexi can turn any command-line tool into a GUI without an SDK. You point it at a
+UI upcycle turns a command-line interface into a keyboard-native, clickable Plexi app without an SDK. You point it at a
 binary, Plexi resolves a UI descriptor for that binary, and a native host app —
 the **`cli-renderer`** — draws a navigable command list, per-command forms, and
 runs the assembled command in a linked terminal pane.
@@ -19,6 +19,34 @@ The renderer is implemented in `src/render/cli_renderer_app.rs`. The open path i
 `src/cli/open.rs` and `src/cli/descriptor.rs`. The linked-terminal dispatch is
 `src/app/canvas_bindings.rs`.
 
+## Shared list and form API
+
+`src/render/descriptor_widgets.rs` owns the reusable UI upcycle widgets for CLI
+and MCP visualizers. Both consume `Command` and `ArgSpec` from
+`app::plexi_descriptor`; an MCP adapter can build a `PlexiDescriptor` in memory.
+
+- `command_list` paints one command level and returns a clicked index. The owner
+  supplies the selected index, handles arrows/Enter, and chooses when to scroll.
+- `form_fields` paints arguments in caller-provided order and edits a
+  `HashMap<String, String>` keyed by field name. Seed defaults before opening a
+  form. Bools use `"true"` or an empty value; other fields retain literal strings.
+  Supply the pane ID and set `focus_first` when opening a form to claim its first
+  text field through the host focus registry.
+
+The caller owns breadcrumbs, validation, submit/back actions, preview, result
+presentation and transport. CLI submission assembles shell arguments and sends
+them to the linked terminal. MCP submission must convert the named values to
+its tool's JSON schema and call the MCP transport. The widgets issue no commands
+and request no terminal. Use unique field names within a form and a pane-scoped
+egui UI. `CliRendererApp::from_descriptor` is the in-memory CLI adapter; it still
+uses terminal execution and is not an MCP transport.
+
+The Command Palette exposes `UI upcycle: git`, `UI upcycle: cargo`, and
+`UI upcycle: gh`. These open the curated registry descriptor (including any
+channel-local override) without probing a binary on the UI thread. The CLI
+launch path below supports arbitrary binaries and the full resolution chain.
+The corresponding binaries must be available in the linked terminal's PATH.
+
 ---
 
 ## 1. What a CLI-backed app is (and is not)
@@ -26,8 +54,8 @@ The renderer is implemented in `src/render/cli_renderer_app.rs`. The open path i
 A CLI-backed app is **not** a PGAP subprocess. There is no Python, no manifest,
 no `Init` handshake, and no per-app capability set. It is a single compiled-in
 host app — `CliRendererApp`, registered as the builtin id `"cli-renderer"` in
-`builtin_factory` (`src/pane_ops/create.rs`) — parameterized by one argument:
-the path to a resolved descriptor JSON file.
+`builtin_factory` (`src/pane_ops/create.rs`) — parameterized by a resolved descriptor. The CLI launch passes its JSON file
+path; the curated palette launch passes the descriptor in memory.
 
 Because it is a native builtin, the renderer runs on the host UI thread with the
 host's privileges. It is a *UI generator over a descriptor*, not a sandbox. The
@@ -43,8 +71,8 @@ Two distinct things share the word "CLI":
 | **Descriptor resolution** (Tier 1/2/3) | `src/cli/descriptor.rs`, run by the `plexi` CLI process at open time | One-shot, before the pane exists |
 | **The renderer pane** (`cli-renderer`) | `src/render/cli_renderer_app.rs`, a host app | Lives as long as the pane is open |
 
-The descriptor is resolved *once*, frozen to a temp file, and handed to the
-renderer. The renderer never re-resolves. This is load-bearing for
+The descriptor is resolved once and handed to the renderer. CLI launches
+freeze it to a temp file; palette launches pass it in memory. The renderer never re-resolves. This is load-bearing for
 [§4 Descriptor caching and invalidation](#4-descriptor-caching-and-invalidation).
 
 ---
@@ -71,7 +99,7 @@ non-zero — no pane is created. If the temp write fails, it prints
 
 ### 2.2 Inside the renderer: load
 `CliRendererApp::new(descriptor_path)` (`src/render/cli_renderer_app.rs`) is
-the only constructor. On construction it reads and parses the descriptor file
+the file-backed constructor; `from_descriptor` accepts an already resolved descriptor. On construction it reads and parses the descriptor file
 and sets the initial `View`:
 
 | Outcome | View | Logged |
@@ -135,7 +163,7 @@ All run paths call `execute` or its shared command-queue helper:
  its assembled command for the matching terminal-ready event.
 - Otherwise it assembles the command string with `build_command_string`
  — binary name + breadcrumb path + flags + positional args, with
- space-containing values single-quoted and bool flags rendered bare — and
+ shell metacharacters quoted as literal arguments and bool flags rendered bare — and
  enqueues `AppCommand::RunInLinkedTerminal { terminal_pane_id, command, echo: true }`.
 
 The host drains it (`src/app/mod.rs`) into
@@ -171,7 +199,7 @@ where the durable cache (and its invalidation) actually lives.
 ## 4. Descriptor caching and invalidation
 
 There are two caches in this system, at two layers. The renderer pane itself
-holds neither — it only ever sees a finished temp file.
+holds neither; it keeps the resolved descriptor supplied at launch.
 
 ### 4.1 The temp snapshot (per-open, ephemeral)
 
@@ -269,8 +297,7 @@ the contract above is channel-specific.
 
 Per the Channel-Agnostic CLI Rule (root `CLAUDE.md`): to target a specific
 channel's running instance, invoke the full binary name
-(`plexi-alpha app open --cli git`, `plexi-pr-817 app open --cli git`). The bare
-`plexi` name routes to the `main` channel binary.
+(`plexi-alpha app open --cli git`, `plexi-pr-817 app open --cli git`). See `src/cli/AGENTS.md` for the bare binary and channel routing rules.
 
 ---
 

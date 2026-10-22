@@ -199,6 +199,7 @@ enum PaletteCommand {
     SwitchCommandsScope,
     /// Open the Needs attention review (`overlays::attention`).
     OpenAttention,
+    UiUpcycle(&'static str),
 }
 
 struct PaletteCommandEntry {
@@ -209,6 +210,24 @@ struct PaletteCommandEntry {
 }
 
 const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
+    PaletteCommandEntry {
+        command: PaletteCommand::UiUpcycle("git"),
+        name: "UI upcycle: git",
+        description: "Open git's curated command list and forms",
+        search_text: "ui upcycle git cli visualizer commands forms",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::UiUpcycle("cargo"),
+        name: "UI upcycle: cargo",
+        description: "Open cargo's curated command list and forms",
+        search_text: "ui upcycle cargo cli visualizer commands forms",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::UiUpcycle("gh"),
+        name: "UI upcycle: gh",
+        description: "Open gh's curated command list and forms",
+        search_text: "ui upcycle gh cli visualizer commands forms",
+    },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),
         name: "Split right",
@@ -847,7 +866,8 @@ fn palette_host_binding(
         PaletteCommand::OpenWorkspaceConfig
         | PaletteCommand::EditCommands
         | PaletteCommand::SwitchCommandsScope
-        | PaletteCommand::OpenAttention => return None,
+        | PaletteCommand::OpenAttention
+        | PaletteCommand::UiUpcycle(_) => return None,
         PaletteCommand::Host(other) => {
             log_missing_palette_shortcut_once(other);
             return None;
@@ -1750,6 +1770,21 @@ impl PlexiApp {
     /// metadata cannot drift onto a private palette-only command enum.
     fn run_palette_command(&mut self, command: PaletteCommand) {
         match command {
+            PaletteCommand::UiUpcycle(binary) => {
+                match crate::cli::registry::lookup(binary, None) {
+                    Ok(descriptor) => {
+                        let root = self.effective_commands_workspace_root()
+                            .unwrap_or_else(|| self.router.active().root.clone());
+                        log::info!("palette: UI upcycle opening curated CLI '{binary}'");
+                        self.open_builtin_app_pane(
+                            Box::new(crate::render::cli_renderer_app::CliRendererApp::from_descriptor(descriptor)),
+                            crate::app::permissions::AppPermissions::builtin(),
+                            root, None, None, None,
+                        );
+                    }
+                    Err(error) => log::error!("palette: UI upcycle '{binary}' descriptor failed: {error}"),
+                }
+            }
             PaletteCommand::Host(action) => self.run_palette_host_binding(action),
             PaletteCommand::OpenAttention => self.open_attention_overlay("palette"),
             PaletteCommand::OpenWorkspaceConfig => {
@@ -2752,7 +2787,8 @@ mod tests {
                 }
                 PaletteCommand::OpenWorkspaceConfig
                 | PaletteCommand::EditCommands
-                | PaletteCommand::SwitchCommandsScope => {
+                | PaletteCommand::SwitchCommandsScope
+                | PaletteCommand::UiUpcycle(_) => {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),
                         "workspace config / edit commands are palette-only handoffs with no host chord"
@@ -3758,6 +3794,19 @@ mod tests {
             search.contains("chad"),
             "renamed pane title must appear in palette search_text; got: {search:?}"
         );
+    }
+
+    #[test]
+    fn palette_ui_upcycle_launches_curated_cli_descriptors() {
+        let mut h = crate::testing::HostHarness::new();
+        for binary in ["git", "cargo", "gh"] {
+            let commands = palette_command_matches(&format!("ui upcycle {binary}"));
+            assert_eq!(commands.len(), 1, "UI upcycle entry for {binary}");
+            h.app.run_palette_command(commands[0].clone());
+            assert!(h.app.windows.iter().flat_map(|w| w.panes.values()).any(|pane| {
+                pane.as_app().is_some_and(|app| app.name == binary)
+            }), "{binary} renderer opened");
+        }
     }
 
     #[test]

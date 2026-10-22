@@ -567,7 +567,7 @@ fn find_tile_for_pane(
 /// return verbatim. We don't escape *every* path because the common
 /// case (alphanumerics, slashes, dots, dashes, underscores) is shell-
 /// safe and quoting a clean path uglifies the typed command.
-fn quote_for_shell(path: &str) -> String {
+pub(crate) fn quote_for_shell(path: &str) -> String {
     if path.is_empty() {
         return "''".to_string();
     }

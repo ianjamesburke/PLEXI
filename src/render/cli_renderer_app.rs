@@ -6,6 +6,7 @@
 //! the assembled command in a linked terminal pane.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
+use crate::app::canvas_bindings::quote_for_shell;
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, ROOT_COMMAND_NAME};
 use crate::ui::{
     app_chrome::AppChrome,
@@ -126,6 +127,20 @@ impl CliRendererApp {
             }
         };
 
+        Self::with_descriptor(descriptor, view, descriptor_path)
+    }
+
+    /// Open an already resolved descriptor without a temporary file.
+    pub fn from_descriptor(descriptor: PlexiDescriptor) -> Self {
+        log::info!("CliRendererApp: UI upcycle opened '{}'", descriptor.name);
+        Self::with_descriptor(Some(descriptor), View::Loading, String::new())
+    }
+
+    fn with_descriptor(
+        descriptor: Option<PlexiDescriptor>,
+        view: View,
+        descriptor_path: String,
+    ) -> Self {
         let binary_name = descriptor
             .as_ref()
             .map(|d| d.name.clone())
@@ -265,12 +280,12 @@ impl CliRendererApp {
         let Some(d) = &self.descriptor else {
             return String::new();
         };
-        let mut parts = vec![d.name.clone()];
+        let mut parts = vec![quote_for_shell(&d.name)];
         parts.extend(
             self.cmd_path
                 .iter()
                 .filter(|name| name.as_str() != ROOT_COMMAND_NAME)
-                .cloned(),
+                .map(|name| quote_for_shell(name)),
         );
 
         if let Some(cmd) = self.current_command() {
@@ -282,16 +297,12 @@ impl CliRendererApp {
                     match flag.ty {
                         ArgType::Bool => {
                             if val == "true" {
-                                parts.push(flag.name.clone());
+                                parts.push(quote_for_shell(&flag.name));
                             }
                         }
                         _ => {
-                            parts.push(flag.name.clone());
-                            if val.contains(' ') {
-                                parts.push(format!("'{val}'"));
-                            } else {
-                                parts.push(val.clone());
-                            }
+                            parts.push(quote_for_shell(&flag.name));
+                            parts.push(quote_for_shell(val));
                         }
                     }
                 }
@@ -299,11 +310,7 @@ impl CliRendererApp {
             for arg in &cmd.args {
                 if let Some(val) = self.field_values.get(&arg.name) {
                     if !val.is_empty() {
-                        if val.contains(' ') {
-                            parts.push(format!("'{val}'"));
-                        } else {
-                            parts.push(val.clone());
-                        }
+                        parts.push(quote_for_shell(val));
                     }
                 }
             }
@@ -357,27 +364,7 @@ impl CliRendererApp {
     // ── Rendering helpers ────────────────────────────────────────────────────
 
     fn render_list(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
-        // Snapshot command data as owned values to avoid borrowing self in closures.
-        struct CmdRow {
-            name: String,
-            description: Option<String>,
-            has_children: bool,
-        }
-        let rows: Vec<CmdRow> = self
-            .commands_at_path()
-            .iter()
-            .map(|c| CmdRow {
-                name: if c.name == ROOT_COMMAND_NAME {
-                    format!("Run {}", self.binary_name)
-                } else {
-                    c.name.clone()
-                },
-                description: c.description.clone(),
-                has_children: !c.commands.is_empty(),
-            })
-            .collect();
-
-        if rows.is_empty() {
+        if self.commands_at_path().is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new("No commands found")
@@ -418,11 +405,8 @@ impl CliRendererApp {
         let has_path = !self.cmd_path.is_empty();
 
         // Shared AppBar header
-        let header_rect = AppChrome::new(colors).paint_app_bar(
-            ui,
-            &title,
-            top_desc.as_deref().unwrap_or(""),
-        );
+        let header_rect =
+            AppChrome::new(colors).paint_app_bar(ui, &title, top_desc.as_deref().unwrap_or(""));
         #[cfg(test)]
         {
             self.last_header_rect = Some(header_rect);
@@ -455,30 +439,19 @@ impl CliRendererApp {
         // the command palette, sidebar, and PGAP list views exactly.
         let mut clicked_idx: Option<usize> = None;
         let selection_changed = self.selected != self.last_selected;
+        let rows = self.commands_at_path();
         egui::ScrollArea::vertical()
             .animated(false)
             .max_height(list_max_h)
             .show(ui, |ui| {
-                for (i, row) in rows.iter().enumerate() {
-                    let is_selected = i == self.selected;
-                    // A trailing "›" marks command groups (rows that drill into
-                    // a sub-list rather than open a form).
-                    let mut list_row =
-                        crate::ui::list::ListRow::new(&row.name).selected(is_selected);
-                    if let Some(desc) = &row.description {
-                        list_row = list_row.secondary(desc);
-                    }
-                    if row.has_children {
-                        list_row = list_row.chip("›");
-                    }
-                    let resp = list_row.show(ui, colors);
-                    if is_selected {
-                        resp.scroll_into_view(ui, selection_changed);
-                    }
-                    if resp.row_clicked() {
-                        clicked_idx = Some(i);
-                    }
-                }
+                clicked_idx = super::descriptor_widgets::command_list(
+                    ui,
+                    colors,
+                    rows.iter().copied(),
+                    &format!("Run {}", self.binary_name),
+                    self.selected,
+                    selection_changed,
+                );
             });
         self.last_selected = self.selected;
 
@@ -525,18 +498,15 @@ impl CliRendererApp {
             d.name.clone()
         } else {
             format!("{} {path}", d.name)
-        } ;
+        };
         let cmd_desc = cmd.description.clone();
         let args: Vec<ArgSpec> = cmd.args.clone();
         let flags: Vec<ArgSpec> = cmd.flags.clone();
         let has_fields = !args.is_empty() || !flags.is_empty();
 
         // Shared AppBar header
-        let header_rect = AppChrome::new(colors).paint_app_bar(
-            ui,
-            &title,
-            cmd_desc.as_deref().unwrap_or(""),
-        );
+        let header_rect =
+            AppChrome::new(colors).paint_app_bar(ui, &title, cmd_desc.as_deref().unwrap_or(""));
         #[cfg(test)]
         {
             self.last_header_rect = Some(header_rect);
@@ -564,18 +534,20 @@ impl CliRendererApp {
         let footer_h = HintBar::new(&form_hints).band_height(ui, true);
 
         let mut should_execute = false;
-        let mut want_focus = self.pending_focus;
         egui::ScrollArea::vertical()
             .max_height((ui.available_height() - footer_h).max(40.0))
             .show(ui, |ui| {
                 // Arg fields. On a freshly opened form, the first text field grabs
                 // keyboard focus so the user can type immediately.
                 if has_fields {
-                    for arg in args.iter().chain(flags.iter()) {
-                        if self.render_field(ui, colors, arg, want_focus, pane_key) {
-                            want_focus = false;
-                        }
-                    }
+                    super::descriptor_widgets::form_fields(
+                        ui,
+                        colors,
+                        args.iter().chain(flags.iter()),
+                        &mut self.field_values,
+                        self.pending_focus,
+                        pane_key,
+                    );
                     ui.add_space(style::SPACE_SM);
                 }
 
@@ -659,106 +631,6 @@ impl CliRendererApp {
         }
         #[cfg(not(test))]
         let _ = hint_resp;
-    }
-
-    /// Renders one arg/flag field. When `want_focus` is true and this field is
-    /// a text input, it requests keyboard focus and returns true so the caller
-    /// stops offering focus to later fields.
-    fn render_field(
-        &mut self,
-        ui: &mut egui::Ui,
-        colors: &crate::ui::theme::Colors,
-        arg: &ArgSpec,
-        want_focus: bool,
-        pane_key: u64,
-    ) -> bool {
-        let mut took_focus = false;
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            ui.vertical(|ui| {
-                // Label
-                let required = arg.required.unwrap_or(false);
-                let label_text = if required {
-                    format!("{}*", arg.name)
-                } else {
-                    arg.name.clone()
-                };
-                ui.label(
-                    RichText::new(&label_text)
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_primary),
-                );
-
-                if let Some(desc) = &arg.description {
-                    if !desc.is_empty() {
-                        ui.label(
-                            RichText::new(desc)
-                                .size(style::TEXT_HINT)
-                                .color(colors.text_dim),
-                        );
-                    }
-                }
-
-                // Input
-                let val = self.field_values.entry(arg.name.clone()).or_default();
-
-                match arg.ty {
-                    ArgType::Bool => {
-                        let mut checked = val == "true";
-                        if ui.checkbox(&mut checked, "").changed() {
-                            *val = if checked {
-                                "true".into()
-                            } else {
-                                String::new()
-                            };
-                        }
-                    }
-                    ArgType::Enum => {
-                        if let Some(options) = &arg.enum_values {
-                            egui::ComboBox::from_id_salt(&arg.name)
-                                .selected_text(if val.is_empty() {
-                                    "(select)"
-                                } else {
-                                    val.as_str()
-                                })
-                                .show_ui(ui, |ui| {
-                                    for opt in options {
-                                        ui.selectable_value(val, opt.clone(), opt);
-                                    }
-                                });
-                        }
-                    }
-                    _ => {
-                        let placeholder = arg.placeholder.as_deref().unwrap_or("");
-                        ui.set_max_width(ui.available_width() - style::SPACE_MD);
-                        let resp = crate::ui::text_field::styled_text_input(
-                            ui,
-                            val,
-                            placeholder,
-                            egui::Id::new(("cli_renderer_field", arg.name.as_str())),
-                            colors,
-                        );
-                        crate::ui::focus::register_text_surface(
-                            ui.ctx(),
-                            crate::ui::focus::SurfaceKey::Pane(pane_key),
-                            resp.id,
-                        );
-                        if want_focus {
-                            crate::ui::focus::claim_text_surface(
-                                ui.ctx(),
-                                crate::ui::focus::SurfaceKey::Pane(pane_key),
-                                resp.id,
-                            );
-                            took_focus = true;
-                            log::info!("CliRendererApp: auto-focused field '{}'", arg.name);
-                        }
-                    }
-                }
-
-                ui.add_space(style::SPACE_SM);
-            });
-        });
-        took_focus
     }
 }
 
@@ -1137,6 +1009,166 @@ mod tests {
     }
 
     #[test]
+    fn ui_upcycle_registry_keyboard_walks_emit_expected_commands() {
+        let cases: &[(&str, &[&str], &str, &str, &str)] = &[
+            (
+                "git",
+                &["log"],
+                "--author",
+                "Ada Lovelace",
+                "git log --author 'Ada Lovelace'",
+            ),
+            (
+                "cargo",
+                &["build"],
+                "--target",
+                "aarch64-apple-darwin",
+                "cargo build --target aarch64-apple-darwin",
+            ),
+            ("gh", &["pr", "view"], "number", "123", "gh pr view 123"),
+        ];
+        for (binary, path, field, value, expected) in cases {
+            let descriptor = crate::cli::registry::lookup_with_backends(
+                &[&crate::cli::registry::EmbeddedBackend],
+                binary,
+                None,
+            )
+            .expect("shipped descriptor");
+            let mut app = CliRendererApp::from_descriptor(descriptor);
+            app.view = View::List;
+            app.terminal_pane_id = 42;
+            for segment in *path {
+                let index = app
+                    .commands_at_path()
+                    .iter()
+                    .position(|c| c.name == *segment)
+                    .unwrap();
+                for _ in 0..index {
+                    assert_eq!(
+                        press_key(&mut app, egui::Key::ArrowDown, egui::Modifiers::NONE),
+                        KeyDisposition::Consumed
+                    );
+                }
+                assert_eq!(
+                    press_key(&mut app, egui::Key::Enter, egui::Modifiers::NONE),
+                    KeyDisposition::Consumed
+                );
+            }
+            assert_eq!(app.view, View::Form, "{binary}");
+            app.field_values.insert((*field).into(), (*value).into());
+            press_key(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
+            assert!(app.take_pending_commands().iter().any(|command| matches!(command,
+                AppCommand::RunInLinkedTerminal { terminal_pane_id: 42, command, .. } if command == expected
+            )), "{binary}");
+            press_key(&mut app, egui::Key::Escape, egui::Modifiers::NONE);
+            assert_eq!(app.view, View::List);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires installed git, cargo and gh; local CLI launch acceptance"]
+    fn ui_upcycle_installed_cli_commands_produce_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (binary, path, field, value, output_hint) in [
+            (
+                "git",
+                vec!["init"],
+                "directory",
+                "git workspace",
+                "Initialized empty Git repository",
+            ),
+            (
+                "cargo",
+                vec!["new"],
+                "path",
+                "sample_package",
+                "Creating binary",
+            ),
+            ("gh", vec!["pr", "view"], "number", "", "Display the title"),
+        ] {
+            let descriptor = crate::cli::registry::lookup_with_backends(
+                &[&crate::cli::registry::EmbeddedBackend],
+                binary,
+                None,
+            )
+            .unwrap();
+            let mut app = CliRendererApp::from_descriptor(descriptor);
+            app.view = View::List;
+            app.terminal_pane_id = 42;
+            for segment in path {
+                let index = app
+                    .commands_at_path()
+                    .iter()
+                    .position(|c| c.name == segment)
+                    .unwrap();
+                for _ in 0..index {
+                    press_key(&mut app, egui::Key::ArrowDown, egui::Modifiers::NONE);
+                }
+                press_key(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
+            }
+            app.field_values.insert(field.into(), value.into());
+            press_key(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
+            let command = app
+                .take_pending_commands()
+                .into_iter()
+                .find_map(|c| match c {
+                    AppCommand::RunInLinkedTerminal { command, .. } => Some(command),
+                    _ => None,
+                })
+                .unwrap();
+            // gh help exercises the emitted nested command without account/network access.
+            let command = if binary == "gh" {
+                format!("{command} --help")
+            } else {
+                command
+            };
+            let output = std::process::Command::new("sh")
+                .args(["-c", &command])
+                .current_dir(tmp.path())
+                .env("LC_ALL", "C")
+                .output()
+                .unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success(), "{command}: {text}");
+            assert!(text.contains(output_hint), "{command}: {text}");
+        }
+    }
+
+    #[test]
+    fn form_values_round_trip_through_shell_as_literal_arguments() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0);
+        for value in [
+            "it's ready",
+            "$(printf changed)",
+            "a;b",
+            "line\nbreak",
+            "*.rs",
+        ] {
+            app.field_values.clear();
+            app.field_values.insert("name".into(), value.into());
+            let command = app.build_command_string();
+            let output = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    &format!("demo() {{ printf '%s' \"$2\"; }}; {command}"),
+                ])
+                .output()
+                .expect("shell round trip");
+            assert!(output.status.success(), "{command}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                value,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
     fn generated_root_form_omits_synthetic_command_name() {
         let (mut app, _dir) = app_from_fixture();
         let root = Command {
@@ -1295,7 +1327,7 @@ mod tests {
         // Production's post-frame focus reconciler applies the form's claim
         // only when this pane owns input. Reproduce that hand-off here before
         // feeding the next frame's focused-field key event.
-        let field_id = egui::Id::new(("cli_renderer_field", "name"));
+        let field_id = egui::Id::new(("descriptor_field", 1_u64, "name"));
         let surfaces = crate::ui::focus::drain_text_surfaces(&ctx);
         assert_eq!(
             surfaces.claim_for(crate::ui::focus::SurfaceKey::Pane(1)),
