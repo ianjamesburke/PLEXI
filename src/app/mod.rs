@@ -4483,7 +4483,7 @@ impl eframe::App for PlexiApp {
         // eframe stops here: it has destroyed the window but will only end the
         // process on a later winit event that a chrome close need never send
         // (see `quit`). Finish the quit ourselves.
-        quit::exit_host("window closed");
+        quit::exit_host(quit::ExitReason::WindowClosed);
     }
 }
 

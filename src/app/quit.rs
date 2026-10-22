@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 impl super::PlexiApp {
     pub(crate) fn working_agent_count(&self) -> usize {
@@ -149,14 +150,57 @@ pub(crate) fn release_notify_socket() -> SocketRelease {
     }
 }
 
+/// Why the host is exiting. Each path owns its pane-process grace.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ExitReason {
+    WindowClosed,
+    HostStop,
+    UpdateRestart,
+}
+
+impl ExitReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::WindowClosed => "window closed",
+            Self::HostStop => "host stop",
+            Self::UpdateRestart => "update restart",
+        }
+    }
+
+    /// The user is watching a window close, so keep it short. `host stop` and
+    /// update restarts keep 2s so agent processes can flush.
+    fn grace(self) -> Duration {
+        match self {
+            Self::WindowClosed => Duration::from_millis(500),
+            Self::HostStop | Self::UpdateRestart => Duration::from_secs(2),
+        }
+    }
+}
+
 /// Tear the host down and end the process. Never returns.
-pub(crate) fn exit_host(reason: &str) -> ! {
-    let killed = crate::host::process_cleanup::stop_pane_processes();
-    log::info!("quit: killed {} pane process groups ({} SIGKILL) reason={reason}", killed.groups, killed.escalated);
+pub(crate) fn exit_host(reason: ExitReason) -> ! {
+    let start = Instant::now();
+    let reason_label = reason.label();
+    let k = crate::host::process_cleanup::stop_pane_processes(reason.grace());
+    log::info!(
+        "quit: killed {} pane process groups ({} SIGKILL) reason={reason_label} grace_ms={} tmux_ms={} scan_ms={} hup_term_ms={} grace_waited_ms={} kill_ms={} total_ms={}",
+        k.groups,
+        k.escalated,
+        k.grace.as_millis(),
+        k.tmux.as_millis(),
+        k.scan.as_millis(),
+        k.signal.as_millis(),
+        k.grace_waited.as_millis(),
+        k.kill.as_millis(),
+        start.elapsed().as_millis()
+    );
     // A kill skips this, so the next start can tell a clean quit from a death.
     crate::broker::integrity::mark_clean_shutdown(&crate::config::config_dir());
     let socket = release_notify_socket();
-    log::info!("quit_phase: process exit — reason={reason} notify_socket={socket:?}");
+    log::info!(
+        "quit_phase: process exit — reason={reason_label} notify_socket={socket:?} total_ms={}",
+        start.elapsed().as_millis()
+    );
     // The log file is the only record of a quit; flush before the fd dies.
     log::logger().flush();
     // Deliberately *before* eframe's own `painter.destroy()`, which runs after

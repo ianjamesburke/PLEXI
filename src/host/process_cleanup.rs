@@ -82,25 +82,41 @@ impl Drop for PaneProcessGroup {
     }
 }
 
+/// Outcome and per-phase cost of one teardown, logged by `exit_host` so a
+/// quit-latency regression is visible in the log without guessing.
 #[derive(Default, Debug)]
 pub(crate) struct KillReport {
     pub groups: usize,
     pub escalated: usize,
+    pub grace: Duration,
+    pub tmux: Duration,
+    pub scan: Duration,
+    pub signal: Duration,
+    pub grace_waited: Duration,
+    pub kill: Duration,
 }
 
-pub(crate) fn stop_pane_processes() -> KillReport {
+/// `default_grace` is the caller's budget between HUP/TERM and SIGKILL;
+/// `PLEXI_QUIT_GRACE_MS` overrides it when set.
+pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
     let grace = match std::env::var("PLEXI_QUIT_GRACE_MS") {
         Ok(value) => match value.parse::<u64>() {
             Ok(ms) => Duration::from_millis(ms.min(30_000)),
             Err(error) => {
                 log::warn!("quit: invalid PLEXI_QUIT_GRACE_MS: {error}");
-                Duration::from_secs(2)
+                default_grace
             }
         },
-        Err(_) => Duration::from_secs(2),
+        Err(_) => default_grace,
     };
+    let start = Instant::now();
     stop_marked_tmux_sessions(session_marker());
-    stop_marked_processes(session_marker(), grace)
+    let tmux = start.elapsed();
+    KillReport {
+        grace,
+        tmux,
+        ..stop_marked_processes(session_marker(), grace)
+    }
 }
 
 // Shutdown helpers must not let an unresponsive tmux server stall host exit.
@@ -181,6 +197,7 @@ fn stop_marked_tmux_sessions(marker: &str) {
 #[cfg(unix)]
 fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let start = Instant::now();
     let session = marker;
     let marker = std::ffi::OsString::from(format!("{SESSION_ENV}={marker}"));
     let mut system = System::new();
@@ -264,18 +281,25 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
             }
         }
     };
-    for group in &groups {
-        signal(-*group, libc::SIGTERM);
-    }
-    for pid in &owned {
-        if !process_groups
-            .get(pid)
-            .is_some_and(|group| groups.contains(group))
-        {
-            signal(*pid as i32, libc::SIGTERM);
+    let scanned = Instant::now();
+    // HUP first, like a terminal going away: interactive shells ignore TERM
+    // but exit (saving history) on HUP. TERM follows for daemons that only
+    // honor TERM.
+    for sig in [libc::SIGHUP, libc::SIGTERM] {
+        for group in &groups {
+            signal(-*group, sig);
+        }
+        for pid in &owned {
+            if !process_groups
+                .get(pid)
+                .is_some_and(|group| groups.contains(group))
+            {
+                signal(*pid as i32, sig);
+            }
         }
     }
-    let deadline = std::time::Instant::now() + grace;
+    let signaled = Instant::now();
+    let deadline = signaled + grace;
     let tracked: Vec<_> = identities
         .keys()
         .map(|pid| sysinfo::Pid::from_u32(*pid))
@@ -297,11 +321,12 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
                     .map(|_| *pid)
             })
             .collect();
-        if live.is_empty() || std::time::Instant::now() >= deadline {
+        if live.is_empty() || Instant::now() >= deadline {
             break live;
         }
         std::thread::sleep(Duration::from_millis(25));
     };
+    let waited = Instant::now();
     let mut escalated = BTreeSet::new();
     for pid in survivors {
         let group = unsafe { libc::getpgid(pid as i32) };
@@ -317,6 +342,11 @@ fn stop_marked_processes(marker: &str, grace: Duration) -> KillReport {
     KillReport {
         groups: groups.len(),
         escalated: escalated.len(),
+        scan: scanned - start,
+        signal: signaled - scanned,
+        grace_waited: waited - signaled,
+        kill: waited.elapsed(),
+        ..KillReport::default()
     }
 }
 
@@ -391,6 +421,102 @@ mod tests {
             assert!(!child.0.wait().expect("reap").success());
         }
     }
+
+    /// Pane roots are interactive shells on a pty, which ignore SIGTERM. Quit
+    /// must end them with HUP inside the grace, not by SIGKILL at its end.
+    #[test]
+    fn interactive_zsh_pane_root_exits_on_hup_without_escalation() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::ExitStatusExt;
+        let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
+            .into_iter()
+            .map(std::path::Path::new)
+            .find(|path| path.exists())
+        else {
+            eprintln!("skipping: zsh is not installed");
+            return;
+        };
+        let (mut master, slave) = unsafe {
+            let (mut master, mut slave) = (0, 0);
+            let rc = libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+            (
+                std::fs::File::from_raw_fd(master),
+                std::fs::File::from_raw_fd(slave),
+            )
+        };
+        let marker = uuid::Uuid::new_v4().to_string();
+        let rc_dir = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(zsh);
+        command
+            .args(["-f", "-i"])
+            .env(SESSION_ENV, &marker)
+            .env("ZDOTDIR", rc_dir.path())
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave);
+        unsafe {
+            // Same shape as a pane: own session, pty as controlling terminal.
+            command.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = FixtureChild(command.spawn().expect("spawn zsh -i"));
+        drop(command); // Close our copies of the slave so EOF reaches the reader.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut reader = master.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        // The expansion only appears once zsh has read and run the line, so
+        // its signal dispositions are installed.
+        master.write_all(b"echo READY_$((40+2))\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut output = Vec::new();
+        while !String::from_utf8_lossy(&output).contains("READY_42") {
+            let left = deadline.saturating_duration_since(Instant::now());
+            output.extend(rx.recv_timeout(left).expect("zsh -i never became ready"));
+        }
+        // Precondition: the fixture reproduces the bug (TERM alone is ignored).
+        unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) };
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            unsafe { libc::kill(child.0.id() as i32, 0) },
+            0,
+            "zsh -i died on SIGTERM"
+        );
+        let registration = PaneProcessGroup::record_for(child.0.id(), &marker);
+
+        let start = Instant::now();
+        let report = stop_marked_processes(&marker, Duration::from_secs(5));
+        let elapsed = start.elapsed();
+        drop(registration);
+        assert_eq!(report.groups, 1);
+        assert_eq!(report.escalated, 0, "zsh -i needed SIGKILL");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "teardown took {elapsed:?}"
+        );
+        let status = child.0.wait().expect("reap zsh");
+        assert_ne!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    }
+
     #[test]
     fn host_exit_paths_reap_pane_processes() {
         const CHILD_ENV: &str = "PLEXI_TEST_QUIT_PATH";
