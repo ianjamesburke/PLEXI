@@ -3225,6 +3225,41 @@ impl PlexiApp {
                         return;
                     }
                     let tail = self.windows.iter().find_map(|w| w.panes.get(pane_id)).and_then(|p| p.as_terminal()).and_then(|t| t.capture_tail_preview());
+                    if *state == crate::protocol::AgentState::ExitedUnreported {
+                        let final_output = tail.unwrap_or_default();
+                        let result_state = self.pane_results.entry(*pane_id).or_default();
+                        let fallback = if let Some(schema) = result_state.schema.as_ref() {
+                            let candidate = serde_json::json!({"unvalidated_text": final_output});
+                            let schema_error = crate::host::pane_result::validate_instance(schema, &candidate)
+                                .err()
+                                .map(|errors| errors.join("; "))
+                                .unwrap_or_else(|| "final output was not submitted through agent done and is unvalidated".into());
+                            serde_json::json!({
+                                "unvalidated": true,
+                                "source": "final_output",
+                                "unvalidated_text": final_output,
+                                "schema_error": schema_error,
+                            })
+                        } else {
+                            serde_json::json!({
+                                "unvalidated": true,
+                                "source": "final_output",
+                                "text": final_output,
+                            })
+                        };
+                        // A clean harness exit has no second turn to repair a schema mismatch.
+                        // Retain its final text for async callers without representing it as validated.
+                        result_state.committed = Some(fallback.clone());
+                        result_state.last_invalid_error = None;
+                        result_state.last_validation_errors.clear();
+                        self.complete_result_waits(*pane_id);
+                        self.finish_agent_tool_waits(*pane_id, serde_json::json!({
+                            "ok": true, "pane_id": pane_id, "status": "exited_unreported",
+                            "result": fallback,
+                        }));
+                        self.mark_agent_exited_unreported(*pane_id, detail.as_deref().unwrap_or("harness exited without agent done"));
+                        return;
+                    }
                     let reason = format!("{}{}", detail.as_deref().unwrap_or("harness exited without agent done"), tail.map(|tail| format!("\n{tail}")).unwrap_or_default());
                     self.mark_agent_failed(*pane_id, &reason);
                     return;

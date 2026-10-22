@@ -406,8 +406,9 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
     let mut contract = format!(
         "# Plexi worker contract\n\
          You are agent `{}` running in a Plexi pane.\n\
-         Finish by running: plexi agent done --summary \"<one line>\" --result '<json>'\n\
-         When blocked, ask the parent agent with: plexi agent ask \"<question>\"",
+         You have one non-interactive turn. Do not ask for confirmation.\n\
+         Always finish by running: plexi agent done --summary \"<one line>\" --result '<json>'.\n\
+         If the task does not fit the result schema, run plexi agent done --summary \"<why>\" --result '{{}}' or plexi agent ask \"<question>\".",
         definition.id
     );
     contract.push_str("\nAfter asking, wait for the parent's reply with: plexi pane message recv --timeout 300. Retry on timeout; continue the task after reading the reply.");
@@ -1229,7 +1230,9 @@ pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
 /// Report print-mode worker exit even when the interactive pane shell stays alive.
 /// Repository checks, sandbox settings, and approval flags remain harness-owned.
 pub(crate) fn supervised_worker_command(command: &str, reporter: &str, harness: &str) -> String {
-    let body = format!("( {command}\n); plexi_worker_exit=$?; {reporter} agent report --state failed --agent {} --event HarnessExit --detail \"harness exited with code $plexi_worker_exit without agent done\"", shell_quote_arg(harness));
+    // Keep worker model scopes explicit here when pi gains a supported flag. Do not inherit or edit
+    // the user's ~/.pi model patterns: the harness owns that configuration.
+    let body = format!("( {command}\n); plexi_worker_exit=$?; if [ $plexi_worker_exit -eq 0 ]; then plexi_worker_state=exited_unreported; else plexi_worker_state=failed; fi; {reporter} agent report --state $plexi_worker_state --agent {} --event HarnessExit --detail \"harness exited with code $plexi_worker_exit without agent done\"", shell_quote_arg(harness));
     format!("/bin/sh -c {}", shell_quote_arg(&body))
 }
 
@@ -1252,11 +1255,12 @@ pub fn agent_report_cli(
         "needs_you" | "needs-you" => "needs_you",
         "interrupted" => "interrupted",
         "failed" => "failed",
+        "exited_unreported" | "exited-unreported" => "exited_unreported",
         "completed" => "completed",
         "idle" => "idle",
         other => {
             eprintln!(
-                "error: unknown state '{other}'; expected working, blocked, needs_you, interrupted, failed, completed, or idle"
+                "error: unknown state '{other}'; expected working, blocked, needs_you, interrupted, failed, exited_unreported, completed, or idle"
             );
             return 1;
         }
@@ -2594,6 +2598,13 @@ mod agent_tests {
             let text = String::from_utf8(output.stdout).unwrap();
             assert!(text.contains("HarnessExit"), "{text}");
             assert!(text.contains(&format!("harness exited with code {code} without agent done")), "{text}");
+            let args: Vec<_> = text.lines().collect();
+            assert!(
+                args.windows(2).any(|pair| {
+                    pair == ["--state", if code == 0 { "exited_unreported" } else { "failed" }]
+                }),
+                "{text}"
+            );
         }
     }
     #[test]

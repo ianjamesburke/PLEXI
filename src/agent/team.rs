@@ -125,6 +125,26 @@ mod tests {
         assert_eq!(aggregate(&team, &ballots).unwrap()[0].0, "Proceed");
     }
     #[test]
+    fn unreported_member_does_not_mask_a_genuine_failed_member() {
+        let team = builtin();
+        let ballot = Ballot {
+            ranking: team.options.clone(),
+            rationale: "valid".into(),
+        };
+        let report = report(
+            &team,
+            "Choose",
+            &[
+                MemberOutcome::Ballot(ballot),
+                MemberOutcome::ExitedWithoutReport("final text".into()),
+                MemberOutcome::Failed("exit 2".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(report.status, "FAILED");
+        assert!(!report.text.contains("Quorum degraded"));
+    }
+    #[test]
     fn stored_team_rejects_unknown_fields_and_path_traversal() {
         let root = tempfile::tempdir().unwrap();
         assert!(load(root.path(), "../other").is_err());
@@ -316,6 +336,7 @@ fn table_cell(s: &str) -> String {
 #[derive(Clone, Debug)]
 pub(crate) enum MemberOutcome {
     Ballot(Ballot),
+    ExitedWithoutReport(String),
     Failed(String),
     TimedOut,
 }
@@ -323,6 +344,7 @@ impl MemberOutcome {
     pub(crate) fn summary(&self) -> String {
         match self {
             Self::Ballot(ballot) => format!("ballot: {}", ballot.ranking.join(" → ")),
+            Self::ExitedWithoutReport(text) => format!("exited without report (not a valid ballot): {text}"),
             Self::Failed(reason) => format!("failed: {reason}"),
             Self::TimedOut => "timed out".into(),
         }
@@ -348,7 +370,20 @@ pub(crate) fn report(
             _ => None,
         })
         .collect();
-    let status = if ballots.len() < team.quorum() {
+    let unreported: Vec<_> = outcomes.iter().filter_map(|outcome| match outcome {
+        MemberOutcome::ExitedWithoutReport(text) => Some(text),
+        _ => None,
+    }).collect();
+    // A clean single-turn harness exit can still carry useful final text. It is an
+    // abstention, not a failed vote: publish the remaining ballots as degraded.
+    let has_hard_failure = outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, MemberOutcome::Failed(_) | MemberOutcome::TimedOut));
+    let degraded = !unreported.is_empty()
+        && !ballots.is_empty()
+        && !has_hard_failure
+        && ballots.len() + unreported.len() >= team.quorum();
+    let status = if ballots.len() < team.quorum() && !degraded {
         "FAILED"
     } else if ballots.len() < team.members.len() {
         "PARTIAL"
@@ -361,6 +396,9 @@ pub(crate) fn report(
         team.members.len(),
         ballots.len()
     );
+    if degraded {
+        text.push_str(&format!("\nQuorum degraded: {} of {} valid ballots; {} exited without report.\n", ballots.len(), team.members.len(), unreported.len()));
+    }
     let excluded: Vec<_> = team
         .members
         .iter()
@@ -376,8 +414,12 @@ pub(crate) fn report(
             text.push_str(&format!("\n{}\n", ballot.rationale));
         }
     }
-    if ballots.len() >= team.quorum() {
-        let scores = aggregate(team, &ballots)?;
+    if ballots.len() >= team.quorum() || degraded {
+        let mut aggregation_team = team.clone();
+        if degraded {
+            aggregation_team.quorum = Some(ballots.len());
+        }
+        let scores = aggregate(&aggregation_team, &ballots)?;
         let tied: Vec<_> = team
             .options
             .iter()

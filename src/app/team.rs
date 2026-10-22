@@ -59,6 +59,43 @@ mod tests {
     fn team_quorum_publishes_partial_winner_and_excluded_member() {
         check_failed_team(Some(2), 2, "PARTIAL");
     }
+    #[test]
+    fn clean_unreported_member_degrades_quorum_and_commits_fallback_result() {
+        let (mut h, workspace) = scripted_fixture();
+        let reply = workspace.join("reply.json");
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
+        for (i, pane) in panes.iter().take(2).enumerate() {
+            h.inject_ipc(serde_json::from_value(json!({"type":"agent_done","pane_id":pane,
+                "result":json!({"ranking":["Proceed","Experiment","Defer"],"rationale":format!("Valid ballot {i}")}).to_string(),
+                "response_file":workspace.join(format!("done-{i}.json"))})).unwrap());
+        }
+        h.hidden_frame();
+        h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":panes[2],"state":"exited_unreported","agent":"script",
+            "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
+        h.hidden_frame();
+        let response: Value = serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
+        assert_eq!(response["status"], "PARTIAL");
+        assert_eq!(h.app.pane_results[&panes[2]].committed.as_ref().unwrap()["unvalidated"], true);
+        let report = std::fs::read_to_string(workspace.join("out/RESULT.md")).unwrap();
+        assert!(report.contains("Quorum degraded: 2 of 3 valid ballots"));
+        assert!(report.contains("exited without report (not a valid ballot)"));
+    }
+    #[test]
+    fn clean_unreported_schema_fallback_is_not_presented_as_valid() {
+        let (mut h, workspace) = scripted_fixture();
+        let reply = workspace.join("reply.json");
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        let pane = h.app.team_runs[0].members[0].0;
+        h.app.pane_results.entry(pane).or_default().set_schema(json!({"type":"object","required":["ranking"]}), None).unwrap();
+        h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":pane,"state":"exited_unreported","agent":"script",
+            "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
+        h.hidden_frame();
+        let fallback = h.app.pane_results[&pane].committed.as_ref().unwrap();
+        assert_eq!(fallback["source"], "final_output");
+        assert_eq!(fallback["unvalidated"], true);
+        assert!(fallback["schema_error"].as_str().is_some_and(|s| !s.is_empty()));
+    }
     fn check_failed_team(quorum: Option<usize>, valid: usize, status: &str) {
         let (mut h, workspace) = scripted_fixture();
         if let Some(quorum) = quorum {
@@ -547,6 +584,22 @@ impl PlexiApp {
             .enumerate()
             .map(|(i, _)| {
                 let (pane, _) = run.members.get(i)?;
+                let terminal = self
+                    .windows
+                    .iter()
+                    .find_map(|w| w.panes.get(pane))
+                    .and_then(|p| p.as_terminal());
+                if terminal
+                    .and_then(|terminal| terminal.agent.as_ref())
+                    .is_some_and(|agent| agent.state == crate::protocol::AgentState::ExitedUnreported)
+                {
+                    let text = self.pane_results.get(pane).and_then(|r| r.committed.as_ref())
+                        .and_then(|value| value.get("unvalidated_text").or_else(|| value.get("text")))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    return Some(MemberOutcome::ExitedWithoutReport(text));
+                }
                 if let Some(value) = self
                     .pane_results
                     .get(pane)
@@ -560,11 +613,7 @@ impl PlexiApp {
                         Err(error) => MemberOutcome::Failed(format!("invalid ballot: {error}")),
                     });
                 }
-                let Some(terminal) = self
-                    .windows
-                    .iter()
-                    .find_map(|w| w.panes.get(pane))
-                    .and_then(|p| p.as_terminal())
+                let Some(terminal) = terminal
                 else {
                     return Some(MemberOutcome::Failed(
                         "pane closed before completion".into(),
@@ -623,9 +672,9 @@ impl PlexiApp {
                 })
             })
             .collect();
-        // Keep every pane and valid ballot. Missing/failed members remain inspectable.
+        // Keep every pane and valid ballot. A clean unreported exit remains a warning.
         for ((pane, _), outcome) in run.members.iter().zip(&outcomes) {
-            if !matches!(outcome, MemberOutcome::Ballot(_)) {
+            if !matches!(outcome, MemberOutcome::Ballot(_) | MemberOutcome::ExitedWithoutReport(_)) {
                 self.mark_agent_failed(*pane, &outcome.summary());
             }
         }
@@ -745,6 +794,32 @@ impl PlexiApp {
             pane_id,
             json!({"ok":false,"pane_id":pane_id,"status":"failed","error":reason}),
         );
+        self.refresh_portal_context_states();
+        self.mark_workspace_dirty();
+    }
+
+    pub(crate) fn mark_agent_exited_unreported(&mut self, pane_id: u64, reason: &str) {
+        log::info!("agent_worker: exited without report pane={pane_id}: {reason}");
+        for win in &mut self.windows {
+            if let Some(pane) = win.panes.get_mut(&pane_id) {
+                let agent = pane.agent().cloned();
+                if let Some(terminal) = pane.as_terminal_mut() {
+                    terminal.agent_completed = false;
+                    terminal.fleet_done_unseen = true;
+                    terminal.fleet_seen = false;
+                    terminal.fleet_since = crate::platform::clock::now_secs();
+                }
+                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                    pane_id,
+                    state: crate::protocol::AgentState::ExitedUnreported,
+                    agent: agent.as_ref().map(|a| a.agent.clone()).unwrap_or_else(|| "worker".into()),
+                    detail: Some(reason.into()),
+                    session_id: agent.and_then(|a| a.session_id),
+                }));
+                break;
+            }
+        }
+        self.report_agent_attention(pane_id, &crate::protocol::AgentState::ExitedUnreported, Some(reason));
         self.refresh_portal_context_states();
         self.mark_workspace_dirty();
     }

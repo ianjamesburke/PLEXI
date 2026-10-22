@@ -55,6 +55,7 @@ pub enum DisplayState {
     DoneUnseen,
     Stalled,
     Failed,
+    ExitedUnreported,
 }
 impl DisplayState {
     pub fn label(self) -> &'static str {
@@ -65,13 +66,14 @@ impl DisplayState {
             Self::DoneUnseen => "done-unseen",
             Self::Stalled => "stalled",
             Self::Failed => "failed",
+            Self::ExitedUnreported => "exited without report",
         }
     }
     fn rank(self, needs_you: bool) -> u8 {
         match self {
             Self::Blocked if needs_you => 0,
             Self::Blocked => 1,
-            Self::Stalled | Self::Failed => 2,
+            Self::Stalled | Self::Failed | Self::ExitedUnreported => 2,
             Self::DoneUnseen => 3,
             Self::Working => 4,
             Self::Idle => 5,
@@ -157,6 +159,7 @@ impl AgentTask {
             DisplayState::Blocked,
             DisplayState::Stalled,
             DisplayState::Failed,
+            DisplayState::ExitedUnreported,
             DisplayState::DoneUnseen,
             DisplayState::Idle,
         ]
@@ -215,6 +218,7 @@ impl AgentsView {
                 AgentState::NeedsYou | AgentState::Blocked => DisplayState::Blocked,
                 AgentState::Interrupted => DisplayState::Stalled,
                 AgentState::Failed => DisplayState::Failed,
+                AgentState::ExitedUnreported => DisplayState::ExitedUnreported,
                 AgentState::Completed if !seen => DisplayState::DoneUnseen,
                 AgentState::Idle if r.done_unseen && !seen => DisplayState::DoneUnseen,
                 AgentState::Idle
