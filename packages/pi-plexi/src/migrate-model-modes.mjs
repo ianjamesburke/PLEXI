@@ -42,7 +42,7 @@ export function migrateSettings(settings) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Expected settings object');
   if (result.defaultProvider === 'ian-router') result.defaultProvider = 'plexi';
   if (result.defaultModel === 'auto') result.defaultModel = 'fast';
-  result.defaultThinkingLevel = 'medium';
+  result.defaultThinkingLevel = 'low';
   result.enabledModels = ['plexi/fast', 'plexi/slow'];
   if (result.packages) result.packages = result.packages.map(entry => {
     const source = typeof entry === 'string' ? entry : entry.source;

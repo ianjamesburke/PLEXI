@@ -464,8 +464,8 @@ pub fn config_edit(scope: ConfigScope) -> i32 {
     }
 }
 
-pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
-    log::info!("config_get: resolving key={key} scope={scope:?}");
+pub fn config_get(key: &str, scope: ConfigScope, json: bool) -> i32 {
+    log::info!("config_get: resolving key={key} scope={scope:?} json={json}");
 
     // Load the selected config as a raw TOML value and walk the dot-separated key.
     let paths = match config_paths_for_scope(scope, false) {
@@ -475,10 +475,30 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
             return 1;
         }
     };
-    config_get_from_paths(key, &paths)
+    config_get_from_paths_with_json(key, &paths, json)
 }
 
 fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
+    config_get_from_paths_with_json(key, paths, false)
+}
+
+fn config_get_from_paths_with_json(key: &str, paths: &[PathBuf], json: bool) -> i32 {
+    if json && (key == "models" || key == "models.fast" || key == "models.slow") {
+        let mut config = crate::config::PlexiConfig::default();
+        for path in paths {
+            match crate::config::PlexiConfig::load_from_path_for_cli(path) {
+                Ok(Some(next)) => config.overlay_for_cli(next),
+                Ok(None) => {}
+                Err(error) => { eprintln!("error: could not parse {}: {error}", path.display()); return 1; }
+            }
+        }
+        let modes = config.resolved_model_modes();
+        let value = match key { "models.fast" => serde_json::to_value(modes.fast), "models.slow" => serde_json::to_value(modes.slow), _ => serde_json::to_value(modes) };
+        match value {
+            Ok(value) => { println!("{}", serde_json::to_string(&value).expect("JSON serializes")); return 0; }
+            Err(error) => { eprintln!("error: could not serialize resolved {key}: {error}"); return 1; }
+        }
+    }
     let mut root = toml::Value::Table(toml::map::Map::new());
     for path in paths {
         match std::fs::read_to_string(path) {
@@ -576,10 +596,17 @@ fn config_paths_for_scope(
     scope: ConfigScope,
     _include_missing_workspace: bool,
 ) -> Result<Vec<PathBuf>, String> {
-    Ok(vec![config_path_for_scope(
-        scope,
-        crate::config::active_workspace_root().as_deref(),
-    )?])
+    let workspace = crate::config::active_workspace_root();
+    match scope {
+        ConfigScope::Global => Ok(vec![crate::config::config_path()]),
+        ConfigScope::Workspace => Ok(vec![config_path_for_scope(scope, workspace.as_deref())?]),
+        // Machine-readable reads match the host's field-level global + workspace
+        // merge, so `config get --json models` is safe for pi-plexi in a workspace.
+        ConfigScope::Effective => Ok(match workspace {
+            Some(root) => vec![crate::config::config_path(), crate::config::workspace_config_path(&root)],
+            None => vec![crate::config::config_path()],
+        }),
+    }
 }
 
 /// Resolve the one config file selected by a config command. With no explicit

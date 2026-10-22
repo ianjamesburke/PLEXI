@@ -31,6 +31,7 @@ Experiments are read from the global config only. A workspace `.plexi` config th
 plexi config list                  Print all known keys with type, value, and description.
 plexi config list --json           Same, as a JSON array.
 plexi config get KEY               Print a value from the selected config file.
+plexi config get --json models     Print resolved pi-plexi FAST/SLOW targets as JSON.
 plexi config set KEY=VALUE ...     Write one or more keys in-place (e.g. theme.preset=dracula).
 plexi config edit                  Open config.toml in $EDITOR.
 plexi config check                 Validate known keys and TOML syntax.
@@ -60,6 +61,23 @@ Agent state colors are independent of the overall theme and default to the `okab
 The `[attention]` table controls NeedsYou emphasis and Dock delivery. Changes apply through the config watcher. Reduce Motion keeps the attention ring static; Working alone does not animate. For accepted values and defaults, see the [generated configuration reference](../website/src/content/docs/config.md).
 
 ## AI
+
+## Pi FAST/SLOW model modes
+
+`pi-plexi` reads the resolved targets with `plexi config get --json models`.
+Configure either mode globally or in workspace config; omitted fields inherit
+the built-in value. See the generated configuration reference for field details
+and allowed thinking levels.
+
+```toml
+[models.fast]
+model = "deepseek/deepseek-v4.1-flash"
+thinking = "low"
+
+[models.slow]
+model = "openai/gpt-6-astra"
+thinking = "high"
+```
 
 OpenRouter is the default cloud backend. Store the key in the global Plexi secret store:
 

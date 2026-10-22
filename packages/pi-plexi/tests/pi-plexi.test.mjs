@@ -19,9 +19,10 @@ function makeFakePiHarness() {
   const tools = new Map();
   const commands = new Map();
   const listeners = new Map();
+  const virtualModels = [];
 
   const pi = {
-    registerVirtualModel() {},
+    registerVirtualModel(model) { virtualModels.push(model); },
     registerTool(def) {
       tools.set(def.name, def);
     },
@@ -39,8 +40,38 @@ function makeFakePiHarness() {
     },
   };
 
-  return { pi, tools, commands, listeners };
+  return { pi, tools, commands, listeners, virtualModels };
 }
+
+test("model modes load resolved config through the channel-aware Plexi CLI", async () => {
+  const { pi, commands, virtualModels } = makeFakePiHarness();
+  const calls = [];
+  const runner = async (_bin, args) => {
+    calls.push(args);
+    if (args.join(" ") === "config get --json models") return { exitCode: 0, stdout: JSON.stringify({ fast: { provider: "openrouter", model: "custom/flash", thinking: "minimal" }, slow: { provider: "openrouter", model: "custom/slow", thinking: "xhigh" } }), stderr: "" };
+    return { exitCode: 0, stdout: "[]", stderr: "" };
+  };
+  createPiPlexiExtension({ env: {}, runner, homeDir: mkdtempSync(join(tmpdir(), "pi-model-config-")) })(pi);
+  await pi.emit("session_start", {}, {});
+  const fast = virtualModels.find((model) => model.id === "fast");
+  const target = { reasoning: true };
+  assert.deepEqual(fast.route({}, { modelRegistry: { find(provider, id) { assert.deepEqual([provider, id], ["openrouter", "custom/flash"]); return target; } } }), { model: target, thinkingLevel: "minimal" });
+  assert.deepEqual(fast.thinkingLevels, ["minimal"]);
+  const options = await commands.get("models").handler("", { ui: { async select(_title, values) { assert.ok(values[0].includes("custom/flash")); return undefined; } } });
+  assert.equal(options, undefined);
+  assert.ok(calls.some((args) => args.join(" ") === "config get --json models"));
+});
+
+test("invalid model mode config falls back to built-in FAST defaults", async () => {
+  const { pi, virtualModels } = makeFakePiHarness();
+  const runner = async (_bin, args) => args[0] === "config"
+    ? { exitCode: 0, stdout: JSON.stringify({ fast: { provider: "openrouter", model: "bad", thinking: "turbo" }, slow: { provider: "openrouter", model: "ok", thinking: "high" } }), stderr: "" }
+    : { exitCode: 0, stdout: "[]", stderr: "" };
+  createPiPlexiExtension({ env: {}, runner, homeDir: mkdtempSync(join(tmpdir(), "pi-model-fallback-")) })(pi);
+  await pi.emit("session_start", {}, {});
+  const fast = virtualModels.find((model) => model.id === "fast"), target = { reasoning: true };
+  assert.deepEqual(fast.route({}, { modelRegistry: { find(provider, id) { assert.deepEqual([provider, id], ["openrouter", "deepseek/deepseek-v4.1-flash"]); return target; } } }), { model: target, thinkingLevel: "low" });
+});
 
 test("Acceptance 1 & 9: package loads cleanly, registers tools/commands, and migrates legacy Pi hook without touching unknown files", async () => {
   const tempHome = mkdtempSync(join(tmpdir(), "pi-plexi-home-"));

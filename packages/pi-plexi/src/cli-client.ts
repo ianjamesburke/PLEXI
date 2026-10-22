@@ -150,6 +150,15 @@ export class PlexiCliClient {
     }
   }
 
+  /** Config lives on disk, so this intentionally works before host attachment. */
+  async getModelModes(): Promise<CliResult<any>> {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...this.config.env, PLEXI_PI_PACKAGE_ACTIVE: "1" };
+    const res = await this.runner(this.config.plexiBin, ["config", "get", "--json", "models"], { env, timeoutMs: 2_000 });
+    if (res.exitCode !== 0) return { ok: false, exitCode: res.exitCode, stdout: res.stdout, stderr: res.stderr, error: res.stderr || res.stdout || "config get failed" };
+    try { return { ok: true, exitCode: 0, stdout: res.stdout, stderr: res.stderr, data: JSON.parse(res.stdout) }; }
+    catch (error) { return { ok: false, exitCode: 1, stdout: res.stdout, stderr: res.stderr, error: `Failed to parse JSON output: ${(error as Error).message}` }; }
+  }
+
   async listPanes(): Promise<CliResult<any[]>> {
     return this.runJson<any[]>(["pane", "list"]);
   }

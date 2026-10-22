@@ -1,4 +1,4 @@
-import { registerModelModes } from "../src/model-modes.ts";
+import { DEFAULT_MODEL_MODES, modesFromConfig, registerModelModes } from "../src/model-modes.ts";
 import {
   detectAttachment,
   verifyLiveIdentity,
@@ -24,7 +24,7 @@ export interface PiPlexiExtensionOptions {
 
 export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
   return function registerPiPlexi(pi: any) {
-    registerModelModes(pi);
+    const modelModes = registerModelModes(pi);
     markPiPlexiPackageActive();
     migrateLegacyPiHook({ homeDir: options.homeDir });
 
@@ -32,6 +32,14 @@ export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
       checkSocketExists: options.checkSocketExists,
     });
     const client = new PlexiCliClient(attachConfig, options.runner);
+    let warnedModelConfig = false;
+    const refreshModelModes = async () => {
+      const result = await client.getModelModes();
+      const modes = result.ok ? modesFromConfig(result.data) : undefined;
+      if (modes) { modelModes.setModes(modes); warnedModelConfig = false; }
+      else { modelModes.setModes([...DEFAULT_MODEL_MODES]); if (!warnedModelConfig) { warnedModelConfig = true; console.warn(`[pi-plexi] model mode config unavailable; using built-in defaults (${result.error || "invalid models config"})`); } }
+    };
+    void refreshModelModes();
     let lastContext: any = undefined;
 
     const refreshUi = async (ctx?: any) => {
@@ -116,6 +124,7 @@ export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
 
     pi.on("session_start", async (_event: any, ctx: any) => {
       lastContext = ctx;
+      await refreshModelModes();
       attachConfig = detectAttachment(options.env ?? process.env, {
         checkSocketExists: options.checkSocketExists,
       });

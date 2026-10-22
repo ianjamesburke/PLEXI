@@ -2,7 +2,7 @@ pub mod edit;
 pub mod watcher;
 
 use crate::protocol::ModelTier;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 // ── Config validation (#1116) ───────────────────────────────────────────────
@@ -33,6 +33,7 @@ pub enum ConfigDiagnostic {
         path: String,
         error: String,
     },
+    InvalidValue { path: String, key: String, error: String },
     MisplacedTable {
         path: String,
         table: String,
@@ -46,7 +47,8 @@ impl ConfigDiagnostic {
         match self {
             Self::ReadError { .. }
             | Self::ParseError { .. }
-            | Self::InvalidKeyBinding { .. } => true,
+            | Self::InvalidKeyBinding { .. }
+            | Self::InvalidValue { .. } => true,
             Self::DeprecatedSection { error, .. } => *error,
             Self::UnknownKey { .. } | Self::MisplacedTable { .. } => false,
         }
@@ -59,6 +61,7 @@ impl std::fmt::Display for ConfigDiagnostic {
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
             Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
+            Self::InvalidValue { path, key, error } => write!(f, "{path}: {key}: {error}"),
             Self::MisplacedTable {
                 path,
                 table,
@@ -98,6 +101,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "log",
     "notifications",
     "ai",
+    "models",
     "confirm_quit",
     "confirm_close",
     "confirm_context_close",
@@ -188,6 +192,8 @@ const KNOWN_AI_LOCAL: &[&str] = &[
     "model_medium",
     "model_high",
 ];
+const KNOWN_MODE_NAMES: &[&str] = &["fast", "slow"];
+const KNOWN_MODEL_MODE: &[&str] = &["provider", "model", "thinking"];
 const KNOWN_MARKETPLACE: &[&str] = &[
     "registry_url",
     "cdn_url",
@@ -362,6 +368,14 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     check_unknown_keys(lo, "ai.local", KNOWN_AI_LOCAL, &path_str, &mut diags);
                 }
             }
+            if let Some(toml::Value::Table(t)) = table.get("models") {
+                check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
+                for mode in KNOWN_MODE_NAMES {
+                    if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
+                        check_unknown_keys(mode_table, &format!("models.{mode}"), KNOWN_MODEL_MODE, &path_str, &mut diags);
+                    }
+                }
+            }
             if let Some(toml::Value::Table(t)) = table.get("keybindings") {
                 check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
             }
@@ -395,6 +409,23 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
                     error: false, // still works via fallback; migrate at your convenience
                 });
+            }
+        }
+    }
+
+    if let Some(models) = parsed_cfg.models.as_ref() {
+        for (name, mode) in [("fast", models.fast.as_ref()), ("slow", models.slow.as_ref())] {
+            if let Some(mode) = mode {
+                for (field, value) in [("provider", mode.provider.as_deref()), ("model", mode.model.as_deref())] {
+                    if value.is_some_and(|v| v.is_empty() || v.chars().any(char::is_whitespace)) {
+                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.{field}"), error: "must be a non-empty string without whitespace".into() });
+                    }
+                }
+                if let Some(thinking) = mode.thinking.as_deref() {
+                    if !THINKING_LEVELS.contains(&thinking) {
+                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.thinking"), error: format!("{thinking:?} is not one of {}", THINKING_LEVELS.join("|")) });
+                    }
+                }
             }
         }
     }
@@ -663,6 +694,9 @@ pub struct PlexiConfig {
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
+    /// Pi FAST/SLOW targets (`[models.fast]` and `[models.slow]`). Every field
+    /// is optional and resolves to the built-in target when omitted.
+    pub models: Option<ModelModesConfig>,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
@@ -691,6 +725,47 @@ pub struct PlexiConfig {
     /// Unmapped extensions fall through to manifest associations, then builtin
     /// media players, then the OS default.
     pub file_handlers: Option<std::collections::HashMap<String, String>>,
+}
+
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// FAST/SLOW target overrides for pi-plexi.
+#[derive(Deserialize, Default, Clone)]
+pub struct ModelModesConfig {
+    /// FAST target override. Unset fields use the FAST defaults.
+    pub fast: Option<ModelModeConfig>,
+    /// SLOW target override. Unset fields use the SLOW defaults.
+    pub slow: Option<ModelModeConfig>,
+}
+
+/// One pi-plexi target. Provider, model, and thinking can each be overridden independently.
+#[derive(Deserialize, Default, Clone)]
+pub struct ModelModeConfig {
+    /// Model registry provider. Must be non-empty and contain no whitespace.
+    pub provider: Option<String>,
+    /// Provider model identifier. Must be non-empty and contain no whitespace.
+    pub model: Option<String>,
+    /// Pi thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+    pub thinking: Option<String>,
+}
+
+/// Fully resolved pi-plexi target returned by `plexi config get --json models`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelMode { pub provider: String, pub model: String, pub thinking: String }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelModes { pub fast: ResolvedModelMode, pub slow: ResolvedModelMode }
+
+impl ModelModeConfig {
+    fn overlay(&mut self, other: Self) { if other.provider.is_some() { self.provider = other.provider; } if other.model.is_some() { self.model = other.model; } if other.thinking.is_some() { self.thinking = other.thinking; } }
+    fn resolve(&self, default: ResolvedModelMode) -> ResolvedModelMode { ResolvedModelMode { provider: self.provider.clone().unwrap_or(default.provider), model: self.model.clone().unwrap_or(default.model), thinking: self.thinking.clone().unwrap_or(default.thinking) } }
+}
+impl ModelModesConfig {
+    fn overlay(&mut self, other: Self) { match (self.fast.as_mut(), other.fast) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.fast = Some(b), _ => {} } match (self.slow.as_mut(), other.slow) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.slow = Some(b), _ => {} } }
+    fn resolved(&self) -> ResolvedModelModes { ResolvedModelModes {
+        fast: self.fast.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "deepseek/deepseek-v4.1-flash".into(), thinking: "low".into() }),
+        slow: self.slow.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "openai/gpt-6-astra".into(), thinking: "high".into() }),
+    } }
 }
 
 /// CLI behavior configuration.
@@ -1849,6 +1924,10 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 }
 
 impl PlexiConfig {
+    /// Resolve pi-plexi FAST/SLOW targets with defaults applied field-by-field.
+    pub fn resolved_model_modes(&self) -> ResolvedModelModes {
+        self.models.as_ref().map(ModelModesConfig::resolved).unwrap_or_else(|| ModelModesConfig::default().resolved())
+    }
     pub fn osc_pane_title_enabled(&self) -> bool {
         self.osc_pane_title.unwrap_or(true)
     }
@@ -1903,6 +1982,15 @@ impl PlexiConfig {
                 log::warn!("Failed to parse config file {}: {e}", path.display());
                 Some(Self::default())
             }
+        }
+    }
+
+    /// CLI-only strict parser used by machine-readable config access.
+    pub(crate) fn load_from_path_for_cli(path: &Path) -> Result<Option<Self>, String> {
+        match std::fs::read_to_string(path) {
+            Ok(data) => toml::from_str(&data).map(Some).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -1977,6 +2065,11 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.ai = Some(incoming),
             _ => {}
         }
+        match (self.models.as_mut(), other.models) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.models = Some(incoming),
+            _ => {}
+        }
         match (self.keybindings.as_mut(), other.keybindings) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.keybindings = Some(incoming),
@@ -2008,6 +2101,8 @@ impl PlexiConfig {
             _ => {}
         }
     }
+
+    pub(crate) fn overlay_for_cli(&mut self, other: Self) { self.overlay(other); }
 }
 
 impl CloudConfig {
@@ -2447,6 +2542,44 @@ mod tests {
         fs::write(&path, "font_size = 14.0\n[theme]\npreset = \"dracula\"\n").unwrap();
         let diags = validate_from_path(&path);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn model_modes_resolve_defaults_and_partial_overrides() {
+        let defaults = PlexiConfig::default().resolved_model_modes();
+        assert_eq!(defaults.fast.model, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(defaults.fast.thinking, "low");
+        let cfg: PlexiConfig = toml::from_str("[models.fast]\nmodel = \"custom/flash\"\n").unwrap();
+        let modes = cfg.resolved_model_modes();
+        assert_eq!(modes.fast.provider, "openrouter");
+        assert_eq!(modes.fast.model, "custom/flash");
+        assert_eq!(modes.fast.thinking, "low");
+    }
+
+    #[test]
+    fn model_modes_workspace_overlay_merges_fields() {
+        let mut global: PlexiConfig = toml::from_str("[models.fast]\nprovider = \"global\"\nmodel = \"global/model\"\n").unwrap();
+        global.overlay(toml::from_str("[models.fast]\nthinking = \"high\"\n").unwrap());
+        let fast = global.resolved_model_modes().fast;
+        assert_eq!((fast.provider.as_str(), fast.model.as_str(), fast.thinking.as_str()), ("global", "global/model", "high"));
+    }
+
+    #[test]
+    fn resolved_model_modes_json_has_both_named_targets() {
+        let value = serde_json::to_value(PlexiConfig::default().resolved_model_modes()).unwrap();
+        assert_eq!(value["fast"]["provider"], "openrouter");
+        assert_eq!(value["fast"]["thinking"], "low");
+        assert_eq!(value["slow"]["model"], "openai/gpt-6-astra");
+    }
+
+    #[test]
+    fn model_modes_validation_names_bad_paths() {
+        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("config.toml");
+        fs::write(&path, "[models.fast]\nthinking = \"turbo\"\nprovider = \"bad provider\"\n[models.turbo]\nmodel = \"x\"\n").unwrap();
+        let rendered = validate_from_path(&path).into_iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(rendered.contains("models.fast.thinking: \"turbo\" is not one of off|minimal|low|medium|high|xhigh"), "{rendered}");
+        assert!(rendered.contains("models.fast.provider"), "{rendered}");
+        assert!(rendered.contains("unknown key `turbo` in [models]"), "{rendered}");
     }
 
     #[test]

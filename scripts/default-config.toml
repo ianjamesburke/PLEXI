@@ -52,6 +52,17 @@ model_low    = "qwen/qwen3.6-flash"
 model_medium = "xiaomi/mimo-v2.5"
 model_high   = "anthropic/claude-fable-5"
 
+# Pi FAST/SLOW aliases. Each field may be overridden independently; omitted
+# fields use these defaults. pi-plexi reads them with `plexi config get --json models`.
+# [models.fast]
+# provider = "openrouter"
+# model = "deepseek/deepseek-v4.1-flash"
+# thinking = "low"             # off | minimal | low | medium | high | xhigh
+# [models.slow]
+# provider = "openrouter"
+# model = "openai/gpt-6-astra"
+# thinking = "high"
+
 # [ai.ollama]
 # host         = "http://localhost:11434"
 # model_low    = "llama3.2:3b"

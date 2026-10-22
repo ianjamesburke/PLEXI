@@ -167,6 +167,16 @@ plexi secret set openrouter-api-key --global
 | `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
 | `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
 
+### Pi model modes (`[models.fast]`, `[models.slow]`)
+
+pi-plexi reads resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `provider` | string | — | Model registry provider. Must be non-empty and contain no whitespace. |
+| `model` | string | — | Provider model identifier. Must be non-empty and contain no whitespace. |
+| `thinking` | string | — | Pi thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. |
+
 ### Agents (`[agents]`)
 
 Command templates for dispatching coding agents. `{cmd}` is replaced with the prompt or slash command at dispatch time.
@@ -351,6 +361,17 @@ api_key_env  = "OPENROUTER_API_KEY"
 model_low    = "qwen/qwen3.6-flash"
 model_medium = "xiaomi/mimo-v2.5"
 model_high   = "anthropic/claude-fable-5"
+
+# Pi FAST/SLOW aliases. Each field may be overridden independently; omitted
+# fields use these defaults. pi-plexi reads them with `plexi config get --json models`.
+# [models.fast]
+# provider = "openrouter"
+# model = "deepseek/deepseek-v4.1-flash"
+# thinking = "low"             # off | minimal | low | medium | high | xhigh
+# [models.slow]
+# provider = "openrouter"
+# model = "openai/gpt-6-astra"
+# thinking = "high"
 
 # [ai.ollama]
 # host         = "http://localhost:11434"

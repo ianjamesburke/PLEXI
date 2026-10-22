@@ -296,6 +296,7 @@ plexi config reset
         "log",
         "notifications",
         "ai",
+        "models",
         "keybindings",
         "keys",
         "agents",
@@ -392,6 +393,10 @@ plexi secret set openrouter-api-key --global
     if let Some(s) = structs.get("LocalBackendConfig") {
         emit_table(&s.fields);
     }
+
+    println!("### Pi model modes (`[models.fast]`, `[models.slow]`)\n");
+    println!("pi-plexi reads resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently.\n");
+    if let Some(s) = structs.get("ModelModeConfig") { emit_table(&s.fields); }
 
     // ── Agents ───────────────────────────────────────────────────────────────
     print!(
