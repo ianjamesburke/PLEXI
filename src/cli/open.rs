@@ -338,20 +338,25 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
     }
     log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?} worktree={worktree:?}");
     match crate::cli::queue_spawn_and_wait(queue_payload, "pane new", &format!("open {type_id}")) {
-        Ok(content) => {
-            match crate::cli::queued_spawn_pane_id(&content) {
-                Ok(pane_id) => {
-                    println!("{pane_id}");
-                    if !on_load.is_empty() {
-                        return super::run::run_on_load_steps(on_load, Some(pane_id)).exit_code;
-                    }
-                    0
+        Ok(Some(content)) => match crate::cli::queued_spawn_pane_id(&content) {
+            Ok(pane_id) => {
+                println!("{pane_id}");
+                if !on_load.is_empty() {
+                    return super::run::run_on_load_steps(on_load, Some(pane_id)).exit_code;
                 }
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    1
-                }
+                0
             }
+            Err(error) => {
+                eprintln!("error: {error}");
+                1
+            }
+        },
+        Ok(None) => {
+            println!("queued pane request accepted; pane id is not available yet. Check `pane list` before retrying.");
+            if !on_load.is_empty() {
+                eprintln!("on-load steps were not run because the pane id is not available yet");
+            }
+            0
         }
         Err(code) => code,
     }
@@ -793,7 +798,7 @@ fn open_app_by_path(
     });
     log::info!("open_app_by_path: queued path={abs_path}");
     match crate::cli::queue_spawn(queue_payload, "open", &format!("open {abs_path}")) {
-        Ok(()) => 0,
+        Ok(_) => 0,
         Err(code) => code,
     }
 }

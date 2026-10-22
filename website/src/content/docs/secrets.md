@@ -1,14 +1,13 @@
 ---
 title: Secrets
-description: Store and access secrets inside Plexi apps.
+description: Store secrets and control workspace access.
 order: 6
 ---
 
 Plexi has a built-in secrets store scoped to each workspace. On macOS, secrets
 are stored through the system keychain. On Linux, global, workspace, and
 folder secrets share the backend described under [Linux storage](#linux-storage).
-Secrets are available to apps through the host-brokered `secrets.get`
-capability.
+For app access, see [Using Secrets in an App](#using-secrets-in-an-app).
 
 ## Set a Secret
 
@@ -85,10 +84,58 @@ Lists global and current-workspace secret names, plus folder entries when
 into human terminals are marked. `--global` excludes workspace and folder
 entries in both text and JSON output.
 
+From a pane whose current directory is outside its context root, the default
+list still shows global names. It skips workspace and folder entries and says
+which context was skipped and why. JSON includes this in `skipped` metadata.
+
+To inspect a specific live context by name, id, or root:
+
+```sh
+plexi secret list --context my-project
+```
+
+Run this from a human-owned Plexi pane. It requests names only, including for
+another context. An agent needs an exact `secret.list` grant for that context;
+a refusal points to the host's Needs you approval. This does not grant value
+access.
+
 `plexi secret list --json` returns the app's names-only inventory, including
 `scope`, `last_used` (Unix seconds or `null` when unknown), and `grant`
 (actor-specific permission descriptions). Add `--global` to restrict it to
 global secrets.
+
+## Folder Secrets (Experiment)
+
+Folder secrets are an experiment, off by default in V1. To try them:
+
+```sh
+plexi experiments enable folder_secrets
+plexi host restart
+```
+
+When restarting from a pane on that host, use `plexi host restart --yes`.
+Restart closes that pane and restores the saved workspace in a new host
+process. You can also stop and start the host from an outside terminal.
+
+Set a secret for a directory (the command prompts for the value):
+
+```sh
+plexi secret set MY_API_KEY --folder /path/to/project
+plexi secret list
+plexi secret rm MY_API_KEY --folder /path/to/project
+```
+
+A folder secret applies to that directory and its descendants. Listing from
+a subdirectory includes matching ancestor-folder names within the pane's
+context boundary. With the experiment off, stored folder secrets stay stored;
+the list reports matching entries as hidden and explains how to turn the
+experiment on. `--global` excludes folder entries.
+
+Folder-secret grants are not supported in V1. The experimental `secret grant`
+and `secret read` commands exist behind the off-by-default `folder_secrets`
+gate, but they are not a supported V1 agent/app access flow. The experimental
+`secret rm` and `secret exec` commands are gated too. Grant/read support is
+post-V1.
 
 ## Delete a Secret
 
@@ -100,14 +147,18 @@ To update a secret, run `plexi secret set` again with the new value. The old val
 
 ## Using Secrets in an App
 
-Declare `secrets.get` in your app's `manifest.toml`:
+Declaring `secrets.get` reserves the capability in the manifest and protocol:
 
 ```toml
 [app.capabilities]
 capabilities = ["secrets.get"]
 ```
 
-SDK v3 apps use module-level `init(size, args)`, `update(event)`, and `view()`. The public Python SDK does not yet expose a module-level secret-read effect; until that lands, this page is the source of truth for CLI storage, workspace scoping, and manifest capability declaration.
+The Python SDK does not expose a guest secret-read effect in V1. Declaring the
+capability alone does not give a Python app a way to read a secret. AI keys
+resolve host-side in the broker. Human terminals can receive workspace secrets
+through the injection setting described above; agent panes have those values
+withheld and must use permission-controlled reads.
 
 ## Workspace Scoping
 
@@ -117,7 +168,7 @@ Secrets are scoped by workspace root path — a secret set inside one project is
 
 A human-owned terminal pane (a shell opened by the host for you, with no agent head or agent role attached and not spawned by an agent) carries your user authority by default, **scoped to that pane's context root**:
 
-- **Context isolation (including nested directories):** Subdirectory contexts are isolated units. A pane in context A has no authority over context B's secrets, heads, or grants, including when context B is nested inside A's directory. Attempts to read, list, or grant secrets or heads belonging to another context root are refused (`permission_denied`).
+- **Context isolation (including nested directories):** Subdirectory contexts are isolated units. A pane in context A has no authority over context B's secrets, heads, or grants, including when context B is nested inside A's directory. Implicit workspace-secret reads and agent-head operations outside that boundary are refused (`permission_denied`). The explicit names-only `secret list --context` inspection described above is a separate user-authorized operation; it does not widen value access.
 - **Agents are narrowed by grants:** Agents and heads created from a human-owned pane receive only the grants explicitly passed with `--grant` (checked as a subset of the human pane's context authority). An agent-spawned pane (including a plain shell created by an agent via `plexi pane new`) never inherits human authority and requires explicit grants.
 - **Not an OS file-access boundary:** This boundary governs the Plexi API (`agents_api` and host tools), secrets, and grant scoping. It is **not** an operating-system filesystem sandbox: a process running in the pane still runs as your OS user and can read or write any file on disk that your OS user can access.
 

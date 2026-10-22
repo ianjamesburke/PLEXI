@@ -55,9 +55,10 @@ curl -fsSL https://plexiapp.com/install | bash
 It verifies the release archive's SHA-256 checksum before installing it.
 
 Linux support is X11-only; Wayland is not supported. This is not an apt, yay,
-AUR, Flatpak, AppImage, `.deb`, or `.rpm` package. Linux secrets are stored in a
-mode-`0600` file and are not encrypted at rest; hardware video decoding is not
-implemented. See [Linux support](docs/linux-support-plan.md) for limitations.
+AUR, Flatpak, AppImage, `.deb`, or `.rpm` package. Linux secrets use Secret Service via `secret-tool`, or an AES-256-GCM
+encrypted-file fallback with key material outside the profile. See
+[Linux secret storage](https://plexiapp.com/docs/secrets/#linux-storage).
+Hardware video decoding is not implemented. See [Linux support](docs/linux-support-plan.md) for limitations.
 
 ### Windows (x64)
 
@@ -301,7 +302,9 @@ Full current runtime reference: [`docs/wasm-runtime.md`](docs/wasm-runtime.md). 
 ## Secrets management *(in development)*
 
 Workspace-scoped secrets store credentials in the macOS Keychain on macOS and
-in a mode-`0600`, unencrypted file on Linux. Secrets use canonical
+through Secret Service or the AES-256-GCM encrypted-file fallback on Linux
+(key material stays outside the profile; see
+[Linux storage](https://plexiapp.com/docs/secrets/#linux-storage)). Secrets use canonical
 environment-variable names (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.) as
 their primary identity. A workspace value wins over a global fallback value —
 two workspaces can hold different values for the same key.

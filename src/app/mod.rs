@@ -720,6 +720,11 @@ pub(crate) fn handle_socket_line_in(
     }
     match serde_json::from_str::<crate::protocol::AppRequest>(line) {
         Ok(mut cmd) => {
+            // Fire-and-forget wakes can disconnect before peer lookup. Keep
+            // missing-identity diagnostics for requests that use identity.
+            if peer_ancestry.is_none() && !matches!(cmd, crate::protocol::AppRequest::Wake) {
+                log::warn!("pane_ipc: request arrived without a verified socket peer identity");
+            }
             let needs_identity_ack = matches!(
                 cmd,
                 crate::protocol::AppRequest::Notify { .. }
@@ -1049,7 +1054,7 @@ fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u
         )
     };
     if rc != 0 || pid <= 0 {
-        log::warn!("pane_ipc: LOCAL_PEERPID getsockopt failed (rc={rc})");
+        log::debug!("pane_ipc: LOCAL_PEERPID getsockopt failed (rc={rc})");
         return None;
     }
     Some(pid as u32)
