@@ -129,6 +129,7 @@ struct SdkAnalysis {
 struct PythonAstReport {
     functions: Vec<String>,
     legacy_app_classes: Vec<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -999,16 +1000,62 @@ def base_name(node):
         return base_name(node.func)
     return ""
 
+def child_list(call):
+    for keyword in call.keywords:
+        if keyword.arg in ("children", "actions", "buttons"):
+            return keyword.value
+    return call.args[0] if call.args else None
+
+def view_warnings(view, component_state_names):
+    warnings = []
+    container_names = {"Column", "HStack", "Row", "Card", "Grid", "Section", "Actions", "ActionBar"}
+    component_state_names = set(component_state_names)
+    for node in ast.walk(view):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and base_name(node.value.func) == "component":
+            component_state_names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    for node in ast.walk(view):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("set", "patch"):
+            owner = node.func.value
+            if isinstance(owner, ast.Name) and (owner.id == "state" or owner.id in component_state_names):
+                warnings.append(f"view state mutation at line {node.lineno} — return state effects from update(), never call setters in view()")
+        if base_name(node.func) not in container_names:
+            continue
+        children = child_list(node)
+        if isinstance(children, (ast.List, ast.Tuple)):
+            continue
+        if not isinstance(children, (ast.ListComp, ast.GeneratorExp, ast.SetComp)):
+            continue
+        item = children.elt
+        is_keyed = (
+            isinstance(item, ast.Call)
+            and base_name(item.func) == "Keyed"
+            and any(keyword.arg == "key" for keyword in item.keywords)
+        )
+        if not is_keyed:
+            warnings.append(
+                f"generated children at line {node.lineno} must wrap each item in Keyed(..., key=...)"
+            )
+    return warnings
+
 functions = []
 legacy_app_classes = []
+warnings = []
+component_state_names = set()
+for node in tree.body:
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and base_name(node.value.func) == "component":
+        component_state_names.update(target.id for target in node.targets if isinstance(target, ast.Name))
 for node in tree.body:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         functions.append(node.name)
+        if node.name == "view":
+            warnings.extend(view_warnings(node, component_state_names))
     if isinstance(node, ast.ClassDef):
         if any(base_name(base) == "App" for base in node.bases):
             legacy_app_classes.append(node.name)
 
-json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes}, sys.stdout)
+json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes, "warnings": warnings}, sys.stdout)
 "#;
 
     let output = std::process::Command::new(python)
@@ -1035,6 +1082,7 @@ json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes}, sy
         has_update: report.functions.iter().any(|name| name == "update"),
         has_view: report.functions.iter().any(|name| name == "view"),
         legacy_app_classes: report.legacy_app_classes,
+        warnings: report.warnings,
         ..Default::default()
     };
 
@@ -1186,6 +1234,69 @@ def view():
             "{:?}",
             analysis.errors
         );
+    }
+
+    #[test]
+    fn sdk_analysis_warns_about_unkeyed_generated_children_and_view_state_mutation() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        fs::write(
+            &entry,
+            r#"
+from plexi_sdk import state
+from plexi_sdk.ui import Button, Column
+
+def init(size, args): return []
+def update(event): return []
+def view():
+    state.set("count", 1)
+    return Column([Button(item) for item in ["one", "two"]])
+"#,
+        )
+        .unwrap();
+
+        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
+            .expect("analysis should run");
+        assert!(
+            analysis
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("state mutation")),
+            "{:?}",
+            analysis.warnings
+        );
+        assert!(
+            analysis
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("wrap each item in Keyed(..., key=...)")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
+    fn sdk_analysis_skips_fixed_literal_children_and_accepts_keyed_comprehensions() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        fs::write(
+            &entry,
+            r#"
+from plexi_sdk.ui import Button, Column, Keyed
+
+def init(size, args): return []
+def update(event): return []
+def view():
+    fixed = Column([Button("one"), Button("two")])
+    generated = Column([Keyed(Button(item), key=item) for item in ["three", "four"]])
+    return Column([fixed, generated])
+"#,
+        )
+        .unwrap();
+
+        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
+            .expect("analysis should run");
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
     }
 
     #[test]

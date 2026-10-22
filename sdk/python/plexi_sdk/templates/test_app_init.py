@@ -9,6 +9,7 @@ over stdin/stdout — no running Plexi host or display required. See
 """
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,22 @@ def test_renders_without_overlap(size):
     with AppHarness(str(APP), width=width, height=height) as h:
         h.run(1)
         h.assert_no_overlap()
+
+
+def test_counter_template_has_two_independent_keyed_counters():
+    """The scaffold demonstrates one local state namespace per counter key."""
+    with AppHarness(str(APP)) as h:
+        h.run(1)
+        h.ui_action("left:increment")
+        h.run(1)
+        h.ui_action("left:increment")
+        h.run(1)
+        h.ui_action("right:increment")
+        commands = h.run(1)
+
+    rendered = json.dumps(commands)
+    assert '"text": "2"' in rendered
+    assert '"text": "1"' in rendered
 
 
 def test_snapshot(tmp_path):

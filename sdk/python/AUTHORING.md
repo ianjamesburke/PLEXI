@@ -77,6 +77,35 @@ def view():
 - `view()` must be **pure**. Calling `state.set()` inside `view()` raises
   `RuntimeError`. All mutation flows through effects returned from `update()`.
 
+## Keyed Component State
+
+Reusable components own state through an explicit, stable key. Declare it once
+with `component("invoice-total")`, read its value in `view()`, and return its
+setter from `update()`. The SDK stores this under a reserved part of the normal
+state snapshot, so restore and `persist=True` continue to use the existing
+state machinery.
+
+```python
+from plexi_sdk import component
+
+total = component("invoice-total")
+
+def update(event):
+    if event.handler_id == "invoice:add":
+        return [total.set("count", total.get("count", 0) + 1)]
+    return []
+
+def view():
+    count, _set_count = total.use_state("count", 0)
+    return Keyed(Button(str(count), on_click="invoice:add"), key="invoice-total")
+```
+
+Use `Keyed(child, key="...")` for children generated from data. Its UI key and
+the `component(...)` key are independent strings: the former identifies a child
+in the rebuilt UI tree, while the latter names local state. `Keyed` does not
+send its key to the host yet. Do not call a component setter in `view()`; it
+returns the same deferred state effect as `state.set()` and belongs in `update()`.
+
 ## Two Rendering Modes
 
 Pick one per app:

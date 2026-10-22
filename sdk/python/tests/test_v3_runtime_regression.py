@@ -834,6 +834,49 @@ class TestState:
         finally:
             proc.kill()
 
+    def test_component_setters_merge_seeded_state_within_one_update(self, tmp_path):
+        """Several setters preserve existing component values in one update."""
+        app = tmp_path / "component_state_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk import component
+            from plexi_sdk.events import UiAction
+            from plexi_sdk.ui import Text
+
+            LEFT = component("left")
+            RIGHT = component("right")
+
+            def init(size, args):
+                return []
+
+            def update(event):
+                if isinstance(event, UiAction) and event.handler_id == "reset-all":
+                    return [
+                        LEFT.set("count", 6),
+                        RIGHT.set("count", 6),
+                    ]
+                return []
+
+            def view():
+                return Text(
+                    f"left={LEFT.get('count', 0)} "
+                    f"right={RIGHT.get('count', 0)}"
+                )
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc, state={
+                "__plexi_component_state__": {
+                    "left": {"count": 5},
+                    "right": {"count": 5},
+                },
+            })
+            _render(proc, frame_id=1)
+            _send_event(proc, {"type": "ui_action", "handler_id": "reset-all"})
+            events = _render(proc, frame_id=2)
+            assert "left=6 right=6" in json.dumps(events)
+        finally:
+            proc.kill()
+
 
 class TestWireFormat:
     def _text_app(self, tmp_path: Path) -> Path:

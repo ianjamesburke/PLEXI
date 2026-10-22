@@ -70,6 +70,7 @@ _NOT_A_WIDGET = {
 # a newly exported widget can't slip past this guardrail untested.
 _FACTORIES = {
     "Column": lambda: ui.Column([]),
+    "Keyed": lambda: ui.Keyed(ui.Label("content"), key="content"),
     "Card": lambda: ui.Card([]),
     "HStack": lambda: ui.HStack([]),
     "Row": lambda: ui.Row([]),

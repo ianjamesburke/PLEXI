@@ -18,7 +18,7 @@ from ._version import __version__
 
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
-from ._v3_state import StateSnapshot, log, state
+from ._v3_state import ComponentState, StateSnapshot, component, log, state, use_state
 from . import effects as effects
 from . import events as events
 from . import tools as tools
