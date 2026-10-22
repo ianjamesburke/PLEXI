@@ -1641,7 +1641,7 @@ pub(super) fn open_github_ephemeral(
         "open github",
         &format!("open github:{owner}/{repo}"),
     ) {
-        Ok(()) => 0,
+        Ok(_) => 0,
         Err(code) => code,
     }
 }

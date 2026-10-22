@@ -12649,3 +12649,33 @@ fn agent_tool_call_protocol_accepts_blocking_and_async_requests() {
         assert!(serde_json::from_value::<crate::protocol::AppRequest>(request).is_ok());
     }
 }
+
+/// A nudge must consume a queued request even when idle polling just ran.
+#[test]
+fn queued_spawn_wake_bypasses_idle_throttle_while_hidden() {
+    let mut h = HostHarness::new();
+    let queue = crate::config::config_dir().join("spawn-queue");
+    std::fs::create_dir_all(&queue).unwrap();
+    let response = crate::rpc::response_file("wake-spawn", "json");
+    let request = queue.join("wake.json");
+    std::fs::write(
+        &request,
+        serde_json::json!({
+            "type_id": "text-editor", "name": "wake-regression",
+            "response_file": response,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    h.app.last_notify_poll = std::time::Instant::now();
+    h.hidden_frame();
+    assert!(request.exists(), "idle polling remains throttled");
+    h.app.last_notify_poll = std::time::Instant::now();
+    h.inject_ipc(AppRequest::Wake);
+    h.hidden_frame();
+    assert!(
+        !request.exists(),
+        "wake must consume the queue in this logic pass"
+    );
+    assert!(read_json_response(&response)["pane_id"].as_u64().is_some());
+}

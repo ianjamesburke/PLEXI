@@ -4472,10 +4472,10 @@ impl PlexiApp {
                 write_json_response(response_file, payload);
             }
             crate::protocol::AppRequest::Wake => {
-                // No-op: the wake effect is the socket listener's repaint
-                // request — by the time this arm runs, a frame is already
-                // in flight and queued work (spawn-queue, channels) drains.
-                log::debug!("pane_ipc: kind=wake (no-op)");
+                // A wake may arrive just after the throttled idle poll. Drain
+                // here, in this logic pass, without waiting for another event.
+                log::info!("pane_ipc: kind=wake draining queued spawns");
+                self.drain_spawn_queue();
             }
             crate::protocol::AppRequest::Shutdown => {
                 // Sent by `plexi host stop` over a direct notify.sock

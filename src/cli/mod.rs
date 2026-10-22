@@ -590,6 +590,7 @@ pub mod introspect;
 pub mod registry;
 pub mod setup;
 mod pane_caller;
+mod queued_spawn;
 #[cfg(test)]
 mod skill_surface;
 pub mod experiments;
@@ -1737,7 +1738,7 @@ pub(super) fn queue_spawn(
     mut payload: serde_json::Value,
     intent: &str,
     summary: &str,
-) -> Result<(), i32> {
+) -> Result<std::path::PathBuf, i32> {
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         log::warn!("queue_spawn: could not create {queue_dir:?}: {e}");
@@ -1760,7 +1761,7 @@ pub(super) fn queue_spawn(
     // instant, so every record carries a uuid as well.
     let nanos = crate::platform::clock::now_nanos();
     let file = queue_dir.join(format!("{nanos}-{}.json", uuid::Uuid::new_v4()));
-    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+    if let Err(e) = crate::platform::fs::atomic_write(&file, payload.to_string().as_bytes()) {
         log::warn!("queue_spawn: could not write {file:?}: {e}");
         eprintln!("error: could not write spawn request: {e}");
         return Err(1);
@@ -1769,7 +1770,7 @@ pub(super) fn queue_spawn(
     log::info!("queue_spawn: queued '{intent}' as {file:?}");
     println!("queued: {summary}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
-    Ok(())
+    Ok(file)
 }
 
 /// Queue a spawn for a running host and wait for the host's launch result.
@@ -1783,7 +1784,7 @@ pub(super) fn queue_spawn_and_wait(
     mut payload: serde_json::Value,
     intent: &str,
     summary: &str,
-) -> Result<String, i32> {
+) -> Result<Option<String>, i32> {
     let response_file = crate::rpc::response_file("queued-spawn-response", "json");
     let Some(fields) = payload.as_object_mut() else {
         log::error!("queue_spawn_and_wait: '{intent}' payload is not a JSON object");
@@ -1794,12 +1795,17 @@ pub(super) fn queue_spawn_and_wait(
         "response_file".to_string(),
         serde_json::Value::String(response_file.clone()),
     );
-    queue_spawn(payload, intent, summary)?;
-    poll_rpc_with(
-        &response_file,
-        "queued pane",
+    let queue_file = queue_spawn(payload, intent, summary)?;
+    queued_spawn::wait(
+        &queue_file,
+        std::path::Path::new(&response_file),
         std::time::Duration::from_secs(10),
     )
+    .map_err(|error| {
+        log::warn!("queued spawn: {error}");
+        eprintln!("error: {error}");
+        1
+    })
 }
 
 /// Decode the definitive reply to an outside-pane queued spawn.

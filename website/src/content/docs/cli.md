@@ -367,7 +367,7 @@ Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`). Scripts sho
 
 Store and retrieve secrets (API keys, passwords, tokens).
 
-Secrets use macOS Keychain or, on Linux, Secret Service with a labeled encrypted-file fallback. Global, workspace, and folder scopes share that Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for backend selection and legacy plaintext migration. With folder secrets (experiment folder_secrets, off by default; enable with `plexi experiments enable folder_secrets`) enabled, `secret set NAME --folder` binds a value to a directory. A new human terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
+Secrets use macOS Keychain or, on Linux, Secret Service with a labeled encrypted-file fallback. Global, workspace, and folder scopes share that Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for backend selection and legacy plaintext migration. Folder secrets are an experiment, off by default in V1. Enable with `plexi experiments enable folder_secrets`, then `plexi host restart` (add `--yes` from a pane on that host). `secret set NAME --folder DIR` binds a value to a directory. New human terminal panes opened there or below it can receive the value as an environment variable. Folder-secret grant/read commands are experimental and are not supported in V1.
 
 Same-user native processes are not isolated from each other. A process running as this user can still read a value that a pane already holds. Folder secrets stop accidental injection into the wrong directory.
 
@@ -396,7 +396,7 @@ Use --from-env to read the value from an existing environment variable instead o
 | `--from-env` | flag | no | Read the value from the environment variable named FRIENDLY_NAME instead of prompting |
 | `--global` | flag | no | Store this secret globally so it's available in all projects, not just this one |
 | `--alias` | string | no | Use a different platform-store entry name than the canonical env var name. On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
-| `--folder` | string | no | Bind the secret to this directory. The value is stored in the OS keychain (or the labeled encrypted-file fallback) and injected into panes whose cwd is this directory or a subdirectory. Requires experiment folder_secrets. Enable: plexi experiments enable folder_secrets Example: plexi secret set OPENAI_API_KEY --folder ~/code/client-a |
+| `--folder` | string | no | Bind the secret to this directory. The value is stored in the OS keychain (or the labeled encrypted-file fallback) and injected into new human terminal panes opened in this directory or a subdirectory. Requires experiment folder_secrets, off by default in V1. Enable: plexi experiments enable folder_secrets, then plexi host restart (add --yes from a pane on that host). Example: plexi secret set OPENAI_API_KEY --folder ~/code/client-a |
 
 ### `plexi secret get`
 
