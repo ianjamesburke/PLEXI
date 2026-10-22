@@ -146,6 +146,7 @@ impl PaneLifecycleEvent {
                     Self::AgentIdle { provenance }
                 }
                 AgentState::Failed => Self::TurnFailed { provenance },
+                AgentState::ExitedUnreported => Self::AgentReported { provenance },
                 AgentState::Working => Self::AgentWorking { provenance },
                 AgentState::Blocked | AgentState::NeedsYou => Self::AgentBlocked {
                     reason: reason.unwrap_or(AgentBlockedReason::Unknown),

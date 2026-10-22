@@ -159,7 +159,9 @@ impl PlexiApp {
                     seen: t.fleet_seen,
                     done_unseen: t.fleet_done_unseen,
                     blocked_on,
-                    tail: if state == AgentState::Failed { report.and_then(|a| a.detail.clone()).map(|reason| format!("failed: {reason}")) } else { t.capture_tail_preview() },
+                    tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
+                        report.and_then(|a| a.detail.clone()).map(|reason| format!("{}: {reason}", if state == AgentState::Failed { "failed" } else { "exited without report" }))
+                    } else { t.capture_tail_preview() },
                     result: self
                         .pane_results
                         .get(&pane_id)
@@ -687,7 +689,7 @@ impl PlexiApp {
             .retain(|(id, _, _)| *id != pane_id);
         if !matches!(
             state,
-            AgentState::NeedsYou | AgentState::Blocked | AgentState::Completed
+            AgentState::NeedsYou | AgentState::Blocked | AgentState::Completed | AgentState::ExitedUnreported
         ) {
             self.clear_agent_attention_notification(pane_id);
             return;
@@ -705,6 +707,7 @@ impl PlexiApp {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(match state {
                     AgentState::Completed => "Completed",
+                    AgentState::ExitedUnreported => "Warning: exited without report",
                     _ => "blocked (no reason reported)",
                 })
                 .to_owned(),

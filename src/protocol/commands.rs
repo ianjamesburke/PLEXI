@@ -12,6 +12,7 @@ pub enum AgentState {
     Idle,
     Interrupted,
     Failed,
+    ExitedUnreported,
     Completed,
 }
 
@@ -24,6 +25,7 @@ impl AgentState {
             AgentState::Idle => "idle",
             AgentState::Interrupted => "interrupted",
             AgentState::Failed => "failed",
+            AgentState::ExitedUnreported => "exited_unreported",
             AgentState::Completed => "completed",
         }
     }

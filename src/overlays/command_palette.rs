@@ -741,6 +741,7 @@ fn agent_state_label(state: &crate::protocol::AgentState) -> &'static str {
         crate::protocol::AgentState::Idle => "idle",
         crate::protocol::AgentState::Interrupted => "interrupted",
         crate::protocol::AgentState::Failed => "failed",
+        crate::protocol::AgentState::ExitedUnreported => "exited without report",
         crate::protocol::AgentState::Completed => "completed",
     }
 }
