@@ -635,7 +635,17 @@ impl PlexiApp {
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
                 let child_agent_strips = self.child_agent_strips();
+                let pane_lineage = self.pane_lineage();
+                let lineage_log_id = egui::Id::new("visible_pane_lineage");
+                if ui.ctx().data(|d| d.get_temp::<HashMap<PaneId, String>>(lineage_log_id)).as_ref() != Some(&pane_lineage) {
+                    if !pane_lineage.is_empty() {
+                        log::info!("pane lineage: visible children={pane_lineage:?}");
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
+                }
+                let focus_painter = ui.painter().clone();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
+                let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
                 let ui = if let Some(rect) = right {
                     child_ui = ui.new_child(egui::UiBuilder::new().id_salt("conjoined-children").max_rect(rect));
@@ -659,7 +669,7 @@ impl PlexiApp {
                     None
                 };
                 let tab_info = ctx.compute_tab_info();
-                let pane_names: HashMap<PaneId, String> = ctx
+                let mut pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
@@ -674,9 +684,16 @@ impl PlexiApp {
                             match p {
                                 crate::host::pane::Pane::Terminal(_) => "Terminal".to_string(),
                                 crate::host::pane::Pane::App(a) => a.name.clone(),
-                                crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
+                                crate::host::pane::Pane::Portal(_) => portal_info.get(&id)
+                                    .map(|preview| preview.context_name.clone())
+                                    .unwrap_or_else(|| "Portal".to_string()),
                             }
                         };
+                        let label = if let Some(parent) = pane_lineage.get(&id) {
+                            let label = format!("↳ {label} · child of {parent}");
+                            pane_names.insert(id, label.clone());
+                            label
+                        } else { label };
                         (id, label)
                     })
                     .collect();
@@ -790,6 +807,7 @@ impl PlexiApp {
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     child_agent_strips,
+                    pane_lineage,
                     child_agent_dive: None,
                     theme: self.theme.clone(),
                     new_focused: None,
@@ -833,8 +851,8 @@ impl PlexiApp {
                 // Paint the active pane focus outline using the parent painter which
                 // has the full window clip rect. paint_on_top_of_tile cannot do this —
                 // its painter is clipped to the tile rect, making Outside strokes invisible.
-                if zoomed_pane.is_none() && owner_pane.is_some_and(|id| behavior.panes.contains_key(&id)) {
-                    if let Some(tile_id) = ctx.focused_pane {
+                if zoomed_pane.is_none() {
+                    if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
                             let gap = behavior.pane_gap;
                             let stroke_color = if let Some(ref flash) = self.click_flash {
@@ -854,7 +872,7 @@ impl PlexiApp {
                                 self.colors.accent
                             };
                             let stroke = egui::Stroke::new(gap, stroke_color);
-                            ui.painter().rect_stroke(
+                            focus_painter.rect_stroke(
                                 rect,
                                 0.0,
                                 stroke,

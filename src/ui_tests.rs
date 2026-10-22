@@ -614,6 +614,86 @@ mod tests {
         h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
     }
 
+    fn wait_for_lineage_fixture(h: &mut PlexiUiHarness, panes: &[u64]) {
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| panes.iter().all(|id| {
+                let (win, _) = app.find_pane_in_any_window(*id).unwrap();
+                app.windows[win].panes.get_mut(id).unwrap().as_terminal_mut().unwrap()
+                    .backend.capture_lines(30).iter().any(|line| line.contains("Lead:") || line.contains("Researcher:"))
+            }));
+            if ready { break; }
+            assert!(Instant::now() < deadline, "lineage terminal fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    // Agent lineage and pinned-parent input ownership cannot be seeded by scenes.
+    #[test]
+    fn screenshot_child_lineage_and_focus_outline() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let (parent, child) = h.with_app_mut(|app| {
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review research\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
+            let (child, _) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: checking source evidence\\n'; sleep 120", "Review evidence", Some("lineage-preview"), true, Some(parent), None, None, None, true, None).unwrap();
+            assert!(app.dive_into_agent_children(parent));
+            (parent, child)
+        });
+        wait_for_lineage_fixture(&mut h, &[parent, child]);
+        h.focus_pane(child).unwrap();
+        h.run_steps(3);
+        let (rect, accent, gap) = h.with_app(|app| {
+            assert_eq!(app.visual_owner_pane(), Some(child));
+            assert_ne!(app.visual_owner_pane(), Some(parent));
+            (app.visible_pane_rect(child).unwrap(), app.colors.accent, app.config.pane_gap.unwrap_or(4.0))
+        });
+        assert!(h.harness().output().shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
+                && r.stroke.color == accent && r.stroke.width == gap
+                && r.stroke_kind == egui::StrokeKind::Outside)
+        }), "focused child must have the ordinary outside accent outline");
+        let mut texts = Vec::new();
+        for shape in &h.harness().output().shapes {
+            gallery_text_shapes(&shape.shape, &mut texts);
+        }
+        assert!(texts.iter().any(|(_, text)| text.contains("researcher") && text.contains("child of lead")), "{texts:?}");
+        assert!(!texts.iter().any(|(_, text)| text.starts_with("↳ lead")));
+        h.save_screenshot(&evidence_png!()).unwrap();
+    }
+
+    #[test]
+    fn screenshot_portal_lineage_and_focus_outline() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let (parent, child, portal) = h.with_app_mut(|app| {
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: coordinate research\\n'; sleep 120", "Review", None, false, None, None, None, None, false, None).unwrap();
+            let (child, context) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: working\\n'; sleep 120", "Research", Some("research"), true, Some(parent), None, None, None, false, None).unwrap();
+            let portal = app.windows.iter().flat_map(|w| w.panes.iter())
+                .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id)).unwrap();
+            (parent, child, portal)
+        });
+        wait_for_lineage_fixture(&mut h, &[parent, child]);
+        h.focus_pane(portal).unwrap();
+        h.run_steps(3);
+        let (rect, accent, gap) = h.with_app(|app| {
+            assert!(!app.pane_lineage().contains_key(&parent));
+            (app.visible_pane_rect(portal).unwrap(), app.colors.accent, app.config.pane_gap.unwrap_or(4.0))
+        });
+        assert!(h.harness().output().shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
+                && r.stroke.color == accent && r.stroke.width == gap
+                && r.stroke_kind == egui::StrokeKind::Outside)
+        }));
+        assert!(h.harness().query_by_label("↳ research · child of lead").is_some());
+        h.save_screenshot(&evidence_png!()).unwrap();
+        h.with_app_mut(|app| {
+            let (win, _) = app.find_pane_in_any_window(parent).unwrap();
+            app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap().name = None;
+            assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
+        });
+    }
+
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         let active_window = h.with_app(|app| app.active_window);
         add_focused_pane_to_window(h, active_window)

@@ -375,6 +375,7 @@ impl Default for PortalPreview {
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
     pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
+    pub pane_lineage: HashMap<PaneId, String>,
     pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
@@ -662,8 +663,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             );
                             ui.painter().circle_filled(dot_rect.center(), 3.5, sc);
                         }
+                        let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
+                            format!("↳ {} · child of {parent}", preview.context_name)
+                        } else { preview.context_name.clone() };
                         ui.label(
-                            egui::RichText::new(&preview.context_name)
+                            egui::RichText::new(title)
                                 .size(style::TEXT_BODY)
                                 .strong()
                                 .color(colors_for_portal.text_primary),
@@ -770,6 +774,18 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 {
                     self.portal_zoom_request = Some(target_ctx_id);
                 }
+            }
+        }
+
+        // A quiet inset guide indicates containment without competing with the
+        // shared outside focus outline or the portal's inside status border.
+        if self.pane_lineage.contains_key(pane_id) {
+            let guide = pane_rect.shrink(4.0);
+            if guide.is_positive() {
+                ui.painter().line_segment(
+                    [guide.left_top(), guide.left_bottom()],
+                    egui::Stroke::new(1.5_f32, self.colors.accent.gamma_multiply(0.45)),
+                );
             }
         }
 
