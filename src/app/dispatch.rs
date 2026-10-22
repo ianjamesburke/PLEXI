@@ -41,7 +41,6 @@ impl PlexiApp {
             return;
         };
         let pane_id = *pane_id;
-        let zoomed = self.windows[active].zoomed_pane.is_some();
         let Some(pane) = self.windows[active].panes.get_mut(&pane_id) else {
             return;
         };
@@ -191,20 +190,14 @@ impl PlexiApp {
             );
             return;
         }
-        // TextInput Escape has already had first refusal. At the pane level,
-        // Escape restores zoom before an app can interpret it as pane close.
-        if zoomed && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-            self.windows[active].clear_zoom();
-            log::info!("zoom: Escape restored app layout pane={pane_id}");
-            return;
-        }
         // The app classifies keys from the frame's ownership-transfer buffer
-        // (stint 0387) rather than a second read of `ctx`. If it consumed the
-        // key, also claim Escape/ArrowUp out of the buffer so `poll_actions`
-        // (which takes the same buffer later this frame) can't re-fire CloseApp
-        // for keys the app already handled — e.g. Escape exiting search mode in
-        // the file browser rather than closing the pane, or ArrowUp recalling a
-        // prior message in the assistant.
+        // (stint 0387) rather than a second read of `ctx`. Bare Escape while
+        // zoomed reaches `handle_key` without un-zooming (stint 0898). If the
+        // app consumed the key, also claim Escape/ArrowUp out of the buffer so
+        // `poll_actions` (which takes the same buffer later this frame) can't
+        // re-fire CloseApp for keys the app already handled — e.g. Escape
+        // exiting search mode in the file browser rather than closing the
+        // pane, or ArrowUp recalling a prior message in the assistant.
         let disposition = app_pane.runtime.handle_key(input);
         if disposition == crate::app::app_trait::KeyDisposition::Consumed {
             input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
@@ -309,6 +302,20 @@ impl PlexiApp {
     /// released on the next modal-free pass, exactly as before.
     pub(super) fn service_app_commands(&mut self, ctx: &egui::Context) {
         self.sync_agents_panes(ctx);
+        let mut config_saved = false;
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                if let Some(app_pane) = pane.as_app_mut() {
+                    if app_pane.runtime.take_config_saved() {
+                        config_saved = true;
+                    }
+                }
+            }
+        }
+        if config_saved {
+            log::info!("config: reloading after builtin editor saved config.toml");
+            self.reload_config();
+        }
         // eframe skips `App::ui` entirely while the window is hidden
         // (minimized or fully occluded) — the active context's own panes
         // then get no `ui()` pass either, so they need the same headless

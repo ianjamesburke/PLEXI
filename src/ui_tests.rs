@@ -5009,6 +5009,7 @@ mod tests {
                     description: Some("Build the project".to_string()),
                     scope: crate::cli::UserCommandScope::Workspace,
                     secrets: Vec::new(),
+                    split: false,
                 },
                 crate::cli::ResolvedUserCommand {
                     name: "test".to_string(),
@@ -5018,6 +5019,7 @@ mod tests {
                     description: None,
                     scope: crate::cli::UserCommandScope::Workspace,
                     secrets: Vec::new(),
+                    split: false,
                 },
                 crate::cli::ResolvedUserCommand {
                     name: "deploy".to_string(),
@@ -5027,6 +5029,7 @@ mod tests {
                     description: None,
                     scope: crate::cli::UserCommandScope::Global,
                     secrets: Vec::new(),
+                    split: false,
                 },
             ];
             app.show_command_palette = true;
@@ -7041,5 +7044,41 @@ mod tests {
         h.run_steps(2);
         h.save_screenshot(&evidence_png!("_search_todo"))
             .expect("render file_browser search with `todo`");
+    }
+
+    #[test]
+    fn screenshot_edit_commands_header_scope_banner() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 820.0);
+        add_focused_pane(&mut h);
+        let ws_dir = tempfile::Builder::new()
+            .prefix("plexi-ws-")
+            .tempdir_in("/tmp")
+            .unwrap_or_else(|_| tempfile::tempdir().unwrap());
+        let ws_channel_dir = ws_dir.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&ws_channel_dir).unwrap();
+        let ws_cmds = ws_channel_dir.join("commands.toml");
+        std::fs::write(
+            &ws_cmds,
+            "[commands]\ngs = \"git status -sb\"\n\n[commands.play]\ndescription = \"Open mixer + editor\"\nsteps = [\n  \"pane new --right --name mixer -- echo mix\",\n  \"app open text-editor --split down\",\n]\n",
+        )
+        .unwrap();
+
+        h.with_app_mut(|app| {
+            app.palette_workspace_root = Some(ws_dir.path().to_path_buf());
+            app.open_config_in_editor_with_cwd(ws_cmds.clone(), Some(ws_dir.path().to_path_buf()));
+        });
+        h.run_steps(3);
+        assert!(
+            h.host_has_label("WORKSPACE"),
+            "Edit commands header must render WORKSPACE scope badge"
+        );
+        assert!(
+            h.host_has_label("Switch to global"),
+            "Edit commands header must render Switch to global action"
+        );
+        let out = evidence_png!();
+        h.save_screenshot(&out)
+            .expect("render edit_commands header scope banner");
+        let _ = std::fs::remove_file(&out);
     }
 }

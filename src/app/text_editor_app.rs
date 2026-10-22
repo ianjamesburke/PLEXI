@@ -160,6 +160,14 @@ pub struct TextEditorApp {
     prompt: Option<Prompt>,
     /// Armed lazily from `service_external`; re-armed when `path` moves.
     watch: Option<(PathBuf, crate::host::path_watch::PathWatch)>,
+    /// Associated workspace root when opened from a workspace context, used to
+    /// switch between workspace and global `commands.toml` (stint 0878).
+    workspace_root: Option<PathBuf>,
+    /// Inline validation warnings/errors for `commands.toml` (stint 0883).
+    commands_diagnostics: Vec<String>,
+    /// Set when `config.toml` is saved so the host reloads config immediately
+    /// on the next frame (stint 0881).
+    config_saved: bool,
 }
 
 /// The file changed on disk while the buffer held unsaved edits, or vanished.
@@ -216,7 +224,21 @@ fn pick_change_set(
 }
 
 impl TextEditorApp {
+    #[cfg(test)]
     pub fn new(path: PathBuf) -> Self {
+        Self::new_with_workspace(path, None)
+    }
+
+    pub fn new_with_workspace(path: PathBuf, workspace_root: Option<PathBuf>) -> Self {
+        let inferred_ws_root = workspace_root.or_else(|| {
+            if path.file_name().and_then(|n| n.to_str()) == Some("commands.toml")
+                && path != crate::cli::global_commands_path()
+            {
+                path.parent().and_then(|p| p.parent()).map(Path::to_path_buf)
+            } else {
+                None
+            }
+        });
         let (raw, load_error) = match std::fs::read_to_string(&path) {
             Ok(s) => (s, None),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
@@ -249,7 +271,7 @@ impl TextEditorApp {
         if is_note {
             position_caret_at_end(&mut doc, &mut view);
         }
-        Self {
+        let mut app = Self {
             path,
             doc,
             view,
@@ -279,7 +301,12 @@ impl TextEditorApp {
             external: None,
             prompt: None,
             watch: None,
-        }
+            workspace_root: inferred_ws_root,
+            commands_diagnostics: Vec::new(),
+            config_saved: false,
+        };
+        app.refresh_commands_diagnostics();
+        app
     }
 
     /// Test constructor: treat `path` as a note regardless of the machine's
@@ -811,6 +838,135 @@ impl TextEditorApp {
         if let Some(bar) = &mut self.find_bar {
             bar.recompute(&content);
         }
+        self.refresh_commands_diagnostics();
+    }
+
+    pub(crate) fn is_commands_file(&self) -> bool {
+        self.path.file_name().and_then(|n| n.to_str()) == Some("commands.toml")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_input_released(&self) -> bool {
+        self.input_released
+    }
+
+    pub(crate) fn is_config_file(&self) -> bool {
+        self.path.file_name().and_then(|n| n.to_str()) == Some("config.toml")
+    }
+
+    pub(crate) fn commands_scope(&self) -> Option<crate::cli::UserCommandScope> {
+        if !self.is_commands_file() {
+            return None;
+        }
+        let global_path = crate::cli::global_commands_path();
+        if self.path == global_path || note_path_identity(&self.path) == note_path_identity(&global_path) {
+            Some(crate::cli::UserCommandScope::Global)
+        } else {
+            Some(crate::cli::UserCommandScope::Workspace)
+        }
+    }
+
+    fn alternate_commands_target(&self) -> Option<(PathBuf, crate::cli::UserCommandScope)> {
+        match self.commands_scope()? {
+            crate::cli::UserCommandScope::Workspace => Some((
+                crate::cli::global_commands_path(),
+                crate::cli::UserCommandScope::Global,
+            )),
+            crate::cli::UserCommandScope::Global => {
+                let root = self
+                    .workspace_root
+                    .clone()
+                    .or_else(crate::config::adopted_workspace_root)?;
+                let ws_path = root.join(crate::cli::commands_file());
+                let global_path = crate::cli::global_commands_path();
+                if ws_path == global_path || note_path_identity(&ws_path) == note_path_identity(&global_path) {
+                    None
+                } else {
+                    Some((ws_path, crate::cli::UserCommandScope::Workspace))
+                }
+            }
+        }
+    }
+
+    pub(crate) fn switch_commands_scope_in_place(&mut self) -> bool {
+        let Some((_, target_scope)) = self.alternate_commands_target() else {
+            return false;
+        };
+        let target_path = match target_scope {
+            crate::cli::UserCommandScope::Global => crate::cli::ensure_commands_file(None),
+            crate::cli::UserCommandScope::Workspace => {
+                let Some(root) = self
+                    .workspace_root
+                    .clone()
+                    .or_else(crate::config::adopted_workspace_root)
+                else {
+                    return false;
+                };
+                crate::cli::ensure_commands_file(Some(&root))
+            }
+        };
+        log::info!(
+            "text_editor: switching commands.toml scope to {} ({})",
+            target_scope.as_str(),
+            target_path.display()
+        );
+        self.restore_state(&serde_json::json!({
+            "path": target_path.to_string_lossy(),
+        }));
+        self.reclaim_editor_focus = true;
+        true
+    }
+
+    fn refresh_commands_diagnostics(&mut self) {
+        if self.is_commands_file() {
+            self.commands_diagnostics =
+                crate::config::validate_commands_from_str(&self.composed(), &self.path)
+                    .into_iter()
+                    .map(|d| d.to_string())
+                    .collect();
+        } else {
+            self.commands_diagnostics.clear();
+        }
+    }
+
+    fn show_commands_diagnostics_banner(
+        &self,
+        ui: &mut egui::Ui,
+        colors: &crate::ui::theme::Colors,
+    ) {
+        if self.commands_diagnostics.is_empty() {
+            return;
+        }
+        for diag in &self.commands_diagnostics {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(crate::ui::style::SPACE_SM);
+                ui.label(
+                    egui::RichText::new(format!("⚠ {diag}"))
+                        .size(crate::ui::style::TEXT_CAPTION)
+                        .color(colors.warning),
+                );
+            });
+        }
+    }
+
+    fn toggle_comment(&mut self) -> bool {
+        let Some(token) = self.mode.line_comment_token() else {
+            return false;
+        };
+        let rev_before = self.doc.revision();
+        self.doc.apply(EditorCommand::ToggleComment(token.to_string()));
+        if self.doc.revision() != rev_before {
+            self.last_edit = Some(Instant::now());
+            let text = self.doc.text();
+            if let Some(bar) = &mut self.find_bar {
+                bar.recompute(&text);
+            }
+            log::info!(
+                "text_editor: toggled line comment ({token}) for {:?}",
+                self.path
+            );
+        }
+        true
     }
 
     /// Prompt answer. Returns true when `key` was one of the prompt's keys.
@@ -1001,6 +1157,10 @@ impl TextEditorApp {
                 self.disk_hash = Some(fnv1a64(document.as_bytes()));
                 self.external = None;
                 self.last_save_result = Some("ok".to_string());
+                self.refresh_commands_diagnostics();
+                if self.is_config_file() {
+                    self.config_saved = true;
+                }
                 log::info!(
                     "notes_editor: semantic save completed path={:?} bytes={} result=ok",
                     self.path,
@@ -1617,6 +1777,8 @@ struct EditorChrome {
     file_name: String,
     save_indicator: &'static str,
     dirty: bool,
+    commands_scope_badge: Option<&'static str>,
+    commands_switch_label: Option<&'static str>,
 }
 
 impl TextEditorApp {
@@ -1625,11 +1787,30 @@ impl TextEditorApp {
     /// stem when the title was empty) and files painted nothing. One chrome
     /// model feeds the bar and `semantic_state`.
     fn editor_chrome(&self) -> EditorChrome {
-        let file_name = self
-            .path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "untitled".to_string());
+        let (file_name, commands_scope_badge) = match self.commands_scope() {
+            Some(crate::cli::UserCommandScope::Workspace) => (
+                format!("{} (workspace)", self.path.display()),
+                Some("WORKSPACE"),
+            ),
+            Some(crate::cli::UserCommandScope::Global) => (
+                format!(
+                    "~/{}/commands.toml (global)",
+                    crate::config::workspace_channel_dir()
+                ),
+                Some("GLOBAL"),
+            ),
+            None => (
+                self.path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "untitled".to_string()),
+                None,
+            ),
+        };
+        let commands_switch_label = self.alternate_commands_target().map(|(_, scope)| match scope {
+            crate::cli::UserCommandScope::Global => "Switch to global",
+            crate::cli::UserCommandScope::Workspace => "Switch to workspace",
+        });
         let title = self.note_title.trim();
         let title = (self.mode.is_markdown() && !title.is_empty()).then(|| title.to_string());
         EditorChrome {
@@ -1641,6 +1822,8 @@ impl TextEditorApp {
                 self.external,
             ),
             dirty: self.last_edit.is_some(),
+            commands_scope_badge,
+            commands_switch_label,
         }
     }
 }
@@ -1671,7 +1854,8 @@ fn paint_editor_header(
     ui: &mut egui::Ui,
     colors: &crate::ui::theme::Colors,
     chrome: &EditorChrome,
-) {
+) -> bool {
+    let mut switched_scope = false;
     let bar_rect = egui::Rect::from_min_size(
         ui.cursor().min,
         egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
@@ -1708,10 +1892,33 @@ fn paint_editor_header(
                     .color(colors.warning),
             );
         }
-        ui.label(
-            egui::RichText::new(&chrome.file_name)
-                .size(crate::ui::style::TEXT_HINT)
-                .color(name_color),
+        if let Some(badge) = chrome.commands_scope_badge {
+            ui.label(
+                egui::RichText::new(badge)
+                    .size(crate::ui::style::TEXT_HINT)
+                    .color(colors.accent),
+            );
+        }
+        let right_reserve = if chrome.commands_switch_label.is_some() {
+            175.0
+        } else {
+            85.0
+        };
+        let max_name_w = (ui.available_width() - right_reserve).max(40.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(max_name_w, NOTE_HEADER_BAR_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_max_width(max_name_w);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&chrome.file_name)
+                            .size(crate::ui::style::TEXT_HINT)
+                            .color(name_color),
+                    )
+                    .truncate(),
+                );
+            },
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(crate::ui::style::SPACE_SM);
@@ -1720,9 +1927,23 @@ fn paint_editor_header(
                     .size(crate::ui::style::TEXT_HINT)
                     .color(save_color),
             );
+            if let Some(switch_label) = chrome.commands_switch_label {
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(switch_label)
+                            .size(crate::ui::style::TEXT_HINT)
+                            .color(colors.accent),
+                    )
+                    .frame(false),
+                );
+                if btn.clicked() {
+                    switched_scope = true;
+                }
+            }
         });
     });
     ui.add_space(crate::ui::style::SPACE_XS);
+    switched_scope
 }
 
 impl App for TextEditorApp {
@@ -1748,6 +1969,9 @@ impl App for TextEditorApp {
     }
 
     fn display_name(&self) -> String {
+        if let Some(scope) = self.commands_scope() {
+            return format!("commands.toml [{}]", scope.as_str());
+        }
         self.path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -1756,6 +1980,18 @@ impl App for TextEditorApp {
 
     fn keyboard_capture(&self) -> bool {
         false
+    }
+
+    fn take_config_saved(&mut self) -> bool {
+        std::mem::take(&mut self.config_saved)
+    }
+
+    fn switch_commands_scope(&mut self) -> bool {
+        self.switch_commands_scope_in_place()
+    }
+
+    fn captures_editor_shortcuts(&self) -> bool {
+        !self.input_released
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
@@ -1778,6 +2014,26 @@ impl App for TextEditorApp {
                 .matches_logically(egui::Modifiers::COMMAND)
         {
             self.explicit_save();
+            return KeyDisposition::Consumed;
+        }
+        // Cmd+Shift+G: switch commands.toml scope (workspace <-> global).
+        if self.is_commands_file()
+            && input.key_pressed(egui::Key::G)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT)
+        {
+            self.switch_commands_scope_in_place();
+            return KeyDisposition::Consumed;
+        }
+        // Cmd+/: toggle line comment in the editor.
+        if !self.input_released
+            && input.key_pressed(egui::Key::Slash)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND)
+            && self.toggle_comment()
+        {
             return KeyDisposition::Consumed;
         }
         // Cmd+G: toggle Live Preview / source. (Obsidian uses Cmd+E, but the
@@ -1931,7 +2187,9 @@ impl App for TextEditorApp {
         // One header for notes and files opened from the browser: file name
         // always, frontmatter title when a note has one, and the same save
         // indicator. The YAML block itself stays out of the buffer.
-        paint_editor_header(ui, colors, &self.editor_chrome());
+        if paint_editor_header(ui, colors, &self.editor_chrome()) {
+            self.switch_commands_scope_in_place();
+        }
 
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         // The editor is this pane's default text surface (stint 0429): the
@@ -2001,6 +2259,22 @@ impl App for TextEditorApp {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
                 self.explicit_save();
             }
+            if self.is_commands_file()
+                && ui.input_mut(|i| {
+                    i.consume_key(
+                        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                        egui::Key::G,
+                    )
+                })
+            {
+                self.switch_commands_scope_in_place();
+            }
+            if editor_focused
+                && !self.input_released
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash))
+            {
+                self.toggle_comment();
+            }
             if self.mode.is_markdown()
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::G))
             {
@@ -2053,6 +2327,7 @@ impl App for TextEditorApp {
             }
         }
 
+        self.show_commands_diagnostics_banner(ui, colors);
         self.show_change_banner(ui, colors);
         self.show_prompt(ui, colors);
 
@@ -2418,6 +2693,7 @@ impl App for TextEditorApp {
                 self.load_error = load_error;
                 self.last_edit = None;
                 self.find_bar = None;
+                self.refresh_commands_diagnostics();
             }
         }
     }
@@ -2523,6 +2799,8 @@ impl App for TextEditorApp {
             "file_name": chrome.file_name,
             "header_title": chrome.title,
             "save_indicator": chrome.save_indicator,
+            "commands_scope": self.commands_scope().map(|s| s.as_str()),
+            "commands_diagnostics": self.commands_diagnostics,
             "active_markdown_block": {
                 "start": line_start_char,
                 "end": line_end_char,
@@ -4346,5 +4624,86 @@ mod data_safety_tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         assert_eq!(app.doc.text(), "from an agent");
+    }
+
+    #[test]
+    fn commands_editor_surfaces_misplaced_config_tables_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmds_path = dir.path().join("commands.toml");
+        std::fs::write(
+            &cmds_path,
+            "[commands]\ngs = \"git status\"\n\n[keys]\n\"cmd+shift+p\" = \"run:gs\"\n",
+        )
+        .unwrap();
+
+        let mut app = TextEditorApp::new(cmds_path.clone());
+        assert!(app.is_commands_file());
+        assert!(
+            app.commands_diagnostics
+                .iter()
+                .any(|d| d.to_string().contains("[keys] is ignored in") && d.to_string().contains("config.toml")),
+            "commands.toml editor must surface misplaced [keys] diagnostic inline, got: {:?}",
+            app.commands_diagnostics
+        );
+
+        app.test_set_unsaved("[commands]\ngs = \"git status\"\n");
+        app.explicit_save();
+        assert!(
+            app.commands_diagnostics.is_empty(),
+            "saving valid commands.toml must clear inline diagnostics, got: {:?}",
+            app.commands_diagnostics
+        );
+    }
+
+    #[test]
+    fn cmd_slash_toggles_comment_in_focused_editor_and_opens_shortcuts_overlay_outside_editor() {
+        let mut h = crate::testing::HostHarness::new();
+        let non_editor_pane = h.add_test_pane();
+        h.focus_pane(non_editor_pane).run_frames(2);
+
+        // Outside the built-in editor, Cmd+/ toggles the keyboard shortcuts overlay.
+        assert!(!h.app.show_shortcuts);
+        h.press_key(egui::Key::Slash, egui::Modifiers::COMMAND);
+        assert!(
+            h.app.show_shortcuts,
+            "Cmd+/ outside the built-in editor must open the shortcuts overlay"
+        );
+        h.press_key(egui::Key::Slash, egui::Modifiers::COMMAND);
+        assert!(
+            !h.app.show_shortcuts,
+            "Cmd+/ again must close the shortcuts overlay"
+        );
+
+        // Open commands.toml in the built-in editor and focus it.
+        let dir = tempfile::tempdir().unwrap();
+        let cmds_path = dir.path().join("commands.toml");
+        std::fs::write(&cmds_path, "[commands]\nhello = \"echo hi\"\n").unwrap();
+        h.app.open_config_in_editor(cmds_path.clone());
+        let editor_id = h
+            .app
+            .find_open_text_editor_pane_any_window(&cmds_path)
+            .expect("commands.toml open in editor");
+        h.focus_pane(editor_id).run_frames(2);
+
+        // Move cursor to line 1 (`hello = "echo hi"`) via ArrowDown and press Cmd+/.
+        h.press_key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.press_key(egui::Key::Slash, egui::Modifiers::COMMAND);
+        assert!(
+            !h.app.show_shortcuts,
+            "Cmd+/ inside a focused editor pane must NOT open the shortcuts overlay"
+        );
+        assert_eq!(
+            h.text_editor_mut(editor_id).doc.text(),
+            "[commands]\n# hello = \"echo hi\"\n",
+            "Cmd+/ must comment the current line in commands.toml"
+        );
+
+        // Cmd+Z undoes the comment toggle in a single undo step.
+        h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(
+            h.text_editor_mut(editor_id).doc.text(),
+            "[commands]\nhello = \"echo hi\"\n",
+            "Cmd+Z must undo the Cmd+/ comment toggle in one step"
+        );
     }
 }

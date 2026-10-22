@@ -152,7 +152,11 @@ impl PlexiApp {
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
                                     );
-                                    shortcut_description(ui, "Zoom pane / enter context", colors);
+                                    shortcut_description(
+                                        ui,
+                                        "Toggle zoom (Esc passes to pane)",
+                                        colors,
+                                    );
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -249,6 +253,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "R"], "Rename pane"),
                                         (&["\u{2318}", "\u{21E7}", "R"], "Rename context"),
                                         (&["\u{2318}", "\u{21E7}", "I"], "Set context root"),
+                                        (&["\u{2318}", "/"], "Toggle comment (editor)"),
                                         (&["\u{2318}", "/"], "This help"),
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];

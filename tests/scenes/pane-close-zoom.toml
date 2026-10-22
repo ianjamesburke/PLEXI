@@ -1,4 +1,4 @@
-# Escape restores zoom, Cmd+W cancels a modal before reaching the pane.
+# Cmd+Enter toggles zoom both ways; Cmd+W cancels a modal before reaching the pane.
 size = [1168.0, 720.0]
 
 [[steps]]
@@ -10,7 +10,7 @@ focus = "second"
 [[steps]]
 key = { target = "host", value = "cmd+enter" }
 [[steps]]
-key = { target = "host", value = "escape" }
+key = { target = "host", value = "cmd+enter" }
 [[steps]]
 assert = { target = "second", exists = true, pane_count = 2 }
 [[steps]]

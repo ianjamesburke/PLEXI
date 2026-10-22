@@ -116,9 +116,11 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
                 .first()
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(new_scratch_note_path);
-            Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(
-                path,
-            )))
+            let ws_root = crate::cli::resolve_commands_workspace_root(cwd)
+                .or_else(|| Some(cwd.to_path_buf()));
+            Some(Box::new(
+                crate::app::text_editor_app::TextEditorApp::new_with_workspace(path, ws_root),
+            ))
         }
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
@@ -2009,6 +2011,25 @@ impl PlexiApp {
                 path.display()
             ),
         }
+    }
+
+    pub(crate) fn switch_focused_commands_editor_scope(&mut self) -> bool {
+        let Some(pane_id) = self.focused_pane_id() else {
+            return false;
+        };
+        let Some(app_pane) = self.windows[self.active_window]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_app_mut())
+        else {
+            return false;
+        };
+        let switched = app_pane.runtime.switch_commands_scope();
+        if switched {
+            app_pane.name = app_pane.runtime.display_name();
+            self.mark_workspace_dirty();
+        }
+        switched
     }
 
     /// Launch an installed app with an explicit layout and args override.

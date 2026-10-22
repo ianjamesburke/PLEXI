@@ -61,6 +61,22 @@ impl EditorMode {
         }
     }
 
+    /// Line-comment token for this mode's language (`#` for TOML/shell/Python/YAML,
+    /// `//` for Rust/JS/TS/C/Go/Java/Swift, `None` for Markdown/plain/unknown).
+    #[must_use]
+    pub fn line_comment_token(&self) -> Option<&'static str> {
+        let lang = self.language()?;
+        match lang.to_ascii_lowercase().as_str() {
+            "toml" | "sh" | "bash" | "zsh" | "py" | "yaml" | "yml" | "rb" | "conf" | "ini" => {
+                Some("#")
+            }
+            "rs" | "js" | "ts" | "jsx" | "tsx" | "c" | "h" | "cpp" | "hpp" | "cc" | "go"
+            | "java" | "swift" => Some("//"),
+            "sql" | "lua" => Some("--"),
+            _ => None,
+        }
+    }
+
     /// Short name for logging.
     #[must_use]
     pub fn describe(&self) -> String {

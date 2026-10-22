@@ -413,6 +413,24 @@ pub trait App: Send {
     /// Receive the host-owned fleet projection without disk or socket reads.
     fn sync_agents_view(&mut self, _view: &crate::agent::fleet::AgentsView) {}
 
+    /// True once after a builtin editor saves `config.toml` so the host can
+    /// immediately reload config and `[keys]` bindings without waiting on a
+    /// filesystem watcher or restart.
+    fn take_config_saved(&mut self) -> bool {
+        false
+    }
+
+    /// Switch an open `commands.toml` editor between workspace and global scope.
+    fn switch_commands_scope(&mut self) -> bool {
+        false
+    }
+
+    /// True when this builtin editor currently owns keyboard shortcuts like
+    /// `Cmd+/` (toggle line comment) so the host does not intercept them.
+    fn captures_editor_shortcuts(&self) -> bool {
+        false
+    }
+
     /// Concrete-type access for host tests that assert on app-internal state
     /// through `AppRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
     /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.

@@ -1721,6 +1721,9 @@ fn translate_key(
         Key::Z if modifiers.command && modifiers.shift => Some(EditorCommand::Redo),
         Key::Z if modifiers.command => Some(EditorCommand::Undo),
         Key::Y if modifiers.command => Some(EditorCommand::Redo),
+        Key::Slash if modifiers.command && !modifiers.shift && !modifiers.alt => mode
+            .line_comment_token()
+            .map(|token| EditorCommand::ToggleComment(token.to_string())),
         _ => None,
     }
 }

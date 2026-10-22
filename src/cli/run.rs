@@ -397,6 +397,16 @@ pub fn dispatch_cli_step(
         crate::cli::set_command_socket_override(socket);
     }
 
+    let default_from_pane_id = env_vars
+        .iter()
+        .find(|(k, _)| k == "PLEXI_PANE_ID")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .or_else(|| {
+            std::env::var("PLEXI_PANE_ID")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+        });
+
     match parsed.command {
         Some(Commands::Pane { cmd }) => match cmd {
             PaneCmd::New {
@@ -436,7 +446,7 @@ pub fn dispatch_cli_step(
                     cmd: cmd.as_deref(),
                     name: name.as_deref(),
                     layout: Some(layout),
-                    from_pane_id: from_id,
+                    from_pane_id: from_id.or(default_from_pane_id),
                     cwd: effective_cwd.as_deref(),
                     ephemeral,
                     no_focus,
@@ -551,7 +561,7 @@ pub fn dispatch_cli_step(
                 },
         }) => {
             let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref()) {
-                Ok(id) => id,
+                Ok(id) => id.or(default_from_pane_id),
                 Err(code) => return code,
             };
             let layout = match split.as_deref() {
@@ -835,6 +845,19 @@ pub fn run_command_for_root(
     command_name: &str,
     extra_args: &[String],
 ) -> StepRunReport {
+    run_command_for_root_from_pane(ws_root, cwd, command_name, extra_args, None)
+}
+
+/// Execute a named command against an explicit `workspace_root`, `cwd`, and
+/// optional `invoker_pane_id` (used when `PLEXI_PANE_ID` is not set in the
+/// process environment, such as in-process test callers).
+pub fn run_command_for_root_from_pane(
+    ws_root: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+    command_name: &str,
+    extra_args: &[String],
+    invoker_pane_id: Option<u64>,
+) -> StepRunReport {
     let fail = |code: i32| StepRunReport {
         exit_code: code,
         total_steps: 0,
@@ -1020,10 +1043,15 @@ pub fn run_command_for_root(
             steps
         };
         all_steps.extend(on_load);
-        let env_vars: Vec<(String, String)> = resolved
+        let mut env_vars: Vec<(String, String)> = resolved
             .iter()
             .map(|(k, v)| (k.clone(), v.as_str().to_string()))
             .collect();
+        if let Some(pane_id) = invoker_pane_id {
+            if !env_vars.iter().any(|(k, _)| k == "PLEXI_PANE_ID") {
+                env_vars.push(("PLEXI_PANE_ID".to_string(), pane_id.to_string()));
+            }
+        }
         let report = execute_steps(&all_steps, extra_args, Some(cwd), &env_vars);
         if report.exit_code == 0 {
             print_tip("run `plexi run` to see all available commands.");

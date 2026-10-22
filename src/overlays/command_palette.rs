@@ -195,6 +195,8 @@ enum PaletteCommand {
     /// Open the effective `commands.toml` (workspace if in a workspace, else
     /// global) in a `text-editor` split, creating it from a template if absent.
     EditCommands,
+    /// Switch the focused `commands.toml` editor between workspace and global scope.
+    SwitchCommandsScope,
     /// Open the Needs attention review (`overlays::attention`).
     OpenAttention,
 }
@@ -236,6 +238,18 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         name: "Edit commands",
         description: "Edit commands.toml for the active workspace or global profile",
         search_text: "edit commands commands.toml alias aliases hub scripts run workspace global",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::SwitchCommandsScope,
+        name: "Switch commands scope",
+        description: "Switch commands editor between workspace and global scope",
+        search_text: "switch commands scope toggle global workspace",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::ToggleShortcuts),
+        name: "Keyboard shortcuts",
+        description: "Show keyboard shortcuts reference",
+        search_text: "keyboard shortcuts keybindings help reference cheatsheet",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
@@ -829,8 +843,10 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
         PaletteCommand::Host(Action::NavBackApp) => bindings.nav_back,
+        PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
         PaletteCommand::OpenWorkspaceConfig
         | PaletteCommand::EditCommands
+        | PaletteCommand::SwitchCommandsScope
         | PaletteCommand::OpenAttention => return None,
         PaletteCommand::Host(other) => {
             log_missing_palette_shortcut_once(other);
@@ -1638,7 +1654,7 @@ impl PlexiApp {
                                     ui.add_space(style::SPACE_XS);
                                 }
                                 let chips: &[&str] = match scope {
-                                    crate::cli::UserCommandScope::Workspace => &["run", "ws"],
+                                    crate::cli::UserCommandScope::Workspace => &["run", "workspace"],
                                     crate::cli::UserCommandScope::Global => &["run", "global"],
                                 };
                                 let row_response = ListRow::new(name.as_str())
@@ -1752,10 +1768,13 @@ impl PlexiApp {
                 );
                 self.open_config_in_editor_with_cwd(path, ws_root);
             }
+            PaletteCommand::SwitchCommandsScope => {
+                self.switch_focused_commands_editor_scope();
+            }
         }
     }
 
-    fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
+    pub(crate) fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
         self.palette_workspace_root.clone().or_else(|| {
             let win = &self.windows[self.active_window];
             let focused_tile = win
@@ -1791,6 +1810,9 @@ impl PlexiApp {
                 self.open_config_in_editor(path);
             }
             crate::host::keys::Action::ReloadConfig => self.reload_config(),
+            crate::host::keys::Action::ToggleShortcuts => {
+                self.show_shortcuts = !self.show_shortcuts;
+            }
             crate::host::keys::Action::OpenNotesPicker => self.open_notes_picker(),
             crate::host::keys::Action::OpenQuickNote => {
                 self.open_quick_note_modal();
@@ -1925,48 +1947,41 @@ impl PlexiApp {
 
     /// Execute a user-authored command. Stepped commands (`steps = [...]`) or
     /// commands with `on_load` execute their steps directly through the host's
-    /// step runner; single-line `run` commands open a terminal pane that runs
-    /// `plexi run <name>` in the focused workspace cwd.
+    /// step runner; single-line `run` commands run in the focused terminal pane
+    /// when it is an idle shell (unless `split = true`), or open a new split
+    /// pane when focused on a busy shell, agent pane, or app pane.
     fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
         let cwd = self.palette_workspace_root.clone();
         log::info!("palette: running user command '{name}' scope={scope:?} cwd={cwd:?}");
-        let resolved = self
-            .palette_commands
-            .iter()
-            .find(|c| c.name == name)
-            .cloned()
-            .or_else(|| {
-                crate::cli::resolve_user_commands(cwd.as_deref())
-                    .into_iter()
-                    .find(|c| c.name == name)
-            });
-        if let Some(ref cmd) = resolved {
-            if !cmd.steps.is_empty() || !cmd.on_load.is_empty() {
-                let _ = self.run_user_command_by_name(name);
-                return;
-            }
+        if self.run_user_command_by_name(name).is_none() {
+            self.windows[self.active_window].clear_zoom();
+            let initial_cmd = format!("plexi run {}", shell_single_quote(name));
+            self.split_focused(false, Some(&initial_cmd), false, false, cwd);
+            self.mark_workspace_dirty();
         }
-        self.windows[self.active_window].clear_zoom();
-        let initial_cmd = format!("plexi run {}", shell_single_quote(name));
-        self.split_focused(false, Some(&initial_cmd), false, false, cwd);
-        self.mark_workspace_dirty();
     }
 
     /// Execute a named user command directly against the host. Used by `[keys]`
-    /// `"<chord>" = "run:<name>"` bindings and by stepped palette commands.
+    /// `"<chord>" = "run:<name>"` bindings and by palette user commands.
     pub(crate) fn run_user_command_by_name(
         &mut self,
         name: &str,
     ) -> Option<crate::cli::StepRunReport> {
         let ws_root = self
-            .palette_workspace_root
-            .clone()
-            .or_else(crate::config::active_workspace_root)
+            .effective_commands_workspace_root()
+            .or_else(crate::config::adopted_workspace_root)
             .or_else(|| Some(self.router.active().root.clone()));
         let cmd = crate::cli::resolve_user_commands(ws_root.as_deref())
             .into_iter()
-            .find(|c| c.name == name)?;
+            .find(|c| c.name == name)
+            .or_else(|| {
+                self.palette_commands
+                    .iter()
+                    .find(|c| c.name == name)
+                    .cloned()
+            })?;
         self.windows[self.active_window].clear_zoom();
+        let invoker_pane_id = self.focused_pane_id();
         let steps: Vec<String> = if !cmd.steps.is_empty() {
             cmd.steps.clone()
         } else if let Some(ref run_line) = cmd.run {
@@ -1976,8 +1991,29 @@ impl PlexiApp {
             ) {
                 vec![run_line.clone()]
             } else {
-                let initial_cmd = format!("plexi run {}", shell_single_quote(name));
-                self.split_focused(false, Some(&initial_cmd), false, false, ws_root);
+                let shell_cmd = if cmd.secrets.is_empty() {
+                    crate::cli::substitute_step_args(run_line, &[])
+                } else {
+                    format!("plexi run {}", shell_single_quote(name))
+                };
+                self.dispatch_single_line_user_command(
+                    name,
+                    &shell_cmd,
+                    cmd.split,
+                    ws_root.clone(),
+                );
+                if !cmd.on_load.is_empty() {
+                    let focused = self.focused_pane_id();
+                    let on_load_report = crate::cli::run_steps_with(
+                        &cmd.on_load,
+                        &[],
+                        |_step_num, rendered, parsed| {
+                            self.execute_host_step(rendered, parsed, ws_root.as_deref(), focused)
+                        },
+                    );
+                    self.mark_workspace_dirty();
+                    return Some(on_load_report);
+                }
                 self.mark_workspace_dirty();
                 return Some(crate::cli::StepRunReport {
                     exit_code: 0,
@@ -1989,8 +2025,22 @@ impl PlexiApp {
                 });
             }
         } else {
-            let initial_cmd = format!("plexi run {}", shell_single_quote(name));
-            self.split_focused(false, Some(&initial_cmd), false, false, ws_root);
+            let shell_cmd = format!("plexi run {}", shell_single_quote(name));
+            self.dispatch_single_line_user_command(
+                name,
+                &shell_cmd,
+                cmd.split,
+                ws_root.clone(),
+            );
+            if !cmd.on_load.is_empty() {
+                let focused = self.focused_pane_id();
+                let on_load_report =
+                    crate::cli::run_steps_with(&cmd.on_load, &[], |_step_num, rendered, parsed| {
+                        self.execute_host_step(rendered, parsed, ws_root.as_deref(), focused)
+                    });
+                self.mark_workspace_dirty();
+                return Some(on_load_report);
+            }
             self.mark_workspace_dirty();
             return Some(crate::cli::StepRunReport {
                 exit_code: 0,
@@ -2003,13 +2053,14 @@ impl PlexiApp {
         };
 
         log::info!(
-            "user_command: running '{}' ({} step(s)) in {:?}",
+            "user_command: running '{}' ({} step(s)) in {:?} (invoker_pane={:?})",
             name,
             steps.len(),
-            ws_root
+            ws_root,
+            invoker_pane_id
         );
         let report = crate::cli::run_steps_with(&steps, &[], |_step_num, rendered, parsed| {
-            self.execute_host_step(rendered, parsed, ws_root.as_deref(), None)
+            self.execute_host_step(rendered, parsed, ws_root.as_deref(), invoker_pane_id)
         });
         if !cmd.on_load.is_empty() && report.exit_code == 0 {
             let focused = self.focused_pane_id();
@@ -2024,10 +2075,63 @@ impl PlexiApp {
         Some(report)
     }
 
-    fn focused_pane_id(&self) -> Option<u64> {
+    fn dispatch_single_line_user_command(
+        &mut self,
+        name: &str,
+        shell_cmd: &str,
+        force_split: bool,
+        ws_root: Option<std::path::PathBuf>,
+    ) {
+        if !force_split {
+            if let Some(pane_id) = self.focused_idle_shell_pane_id() {
+                log::info!(
+                    "user_command: running '{}' in focused idle shell pane {} (cmd={:?})",
+                    name,
+                    pane_id,
+                    shell_cmd
+                );
+                self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                    pane_id,
+                    text: shell_cmd.to_string(),
+                    submit: true,
+                    paste: false,
+                    response_file: None,
+                });
+                return;
+            }
+        }
+        log::info!(
+            "user_command: splitting for '{}' (split={}, cmd={:?})",
+            name,
+            force_split,
+            shell_cmd
+        );
+        self.split_focused(false, Some(shell_cmd), false, false, ws_root);
+    }
+
+    pub(crate) fn focused_idle_shell_pane_id(&self) -> Option<u64> {
+        let pane_id = self.focused_pane_id()?;
+        if self.submit_in_flight(pane_id) {
+            return None;
+        }
         let win = self.windows.get(self.active_window)?;
-        let tile_id = win.focused_pane?;
-        match win.tree.tiles.get(tile_id) {
+        let pane = win.panes.get(&pane_id)?;
+        if pane.agent().is_some() {
+            return None;
+        }
+        match pane {
+            crate::host::pane::Pane::Terminal(t) if t.is_idle_shell() => Some(pane_id),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn focused_pane_id(&self) -> Option<u64> {
+        let win = self.windows.get(self.active_window)?;
+        let pane_tile = win
+            .focused_pane
+            .and_then(|t| win.find_first_pane_in(t))
+            .or_else(|| win.tree.root.and_then(|r| win.find_first_pane_in(r)))?;
+        match win.tree.tiles.get(pane_tile) {
             Some(egui_tiles::Tile::Pane(pane_id)) => Some(*pane_id),
             _ => None,
         }
@@ -2646,7 +2750,9 @@ mod tests {
                         "needs attention is a palette-only entry with no host chord"
                     );
                 }
-                PaletteCommand::OpenWorkspaceConfig | PaletteCommand::EditCommands => {
+                PaletteCommand::OpenWorkspaceConfig
+                | PaletteCommand::EditCommands
+                | PaletteCommand::SwitchCommandsScope => {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),
                         "workspace config / edit commands are palette-only handoffs with no host chord"
@@ -3961,6 +4067,422 @@ steps = [
         assert!(
             panes_arr.iter().any(|p| p["title"] == "ReadyPane"),
             "pane new --on-load must run through the step runner and rename the new pane: {panes_arr:?}"
+        );
+    }
+
+    #[test]
+    fn edit_commands_shows_scope_and_path_switches_scope_in_place_and_saves_reloads() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let first_pane = h.add_test_pane();
+        h.focus_pane(first_pane);
+        let ws_root = h.workspace_root().to_path_buf();
+        let ws_channel_dir = ws_root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&ws_channel_dir).unwrap();
+        let ws_commands_path = ws_channel_dir.join("commands.toml");
+        let global_commands_path = h.profile_dir().join("commands.toml");
+
+        // Open Edit commands in a workspace: opens workspace commands.toml with `[workspace]` scope.
+        h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+        h.app
+            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::EditCommands));
+        assert_eq!(h.pane_count(), 2);
+
+        let editor_pane_id = h
+            .app
+            .find_open_text_editor_pane_any_window(&ws_commands_path)
+            .expect("workspace commands.toml open in editor");
+        assert_eq!(
+            h.text_editor_mut(editor_pane_id).commands_scope(),
+            Some(crate::cli::UserCommandScope::Workspace)
+        );
+        assert_eq!(
+            h.app.windows[0].panes[&editor_pane_id]
+                .as_app()
+                .unwrap()
+                .name,
+            "commands.toml [workspace]"
+        );
+
+        // Switch scope via `PaletteCommand::SwitchCommandsScope`: switches in-place to global
+        // commands.toml without opening a second editor pane.
+        h.focus_pane(editor_pane_id);
+        h.app
+            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::SwitchCommandsScope));
+        assert_eq!(
+            h.pane_count(),
+            2,
+            "switching commands scope must replace the buffer in-place, not open a third pane"
+        );
+        assert!(
+            global_commands_path.exists(),
+            "switching to global scope must ensure global commands.toml exists"
+        );
+        assert_eq!(
+            h.text_editor_mut(editor_pane_id).commands_scope(),
+            Some(crate::cli::UserCommandScope::Global)
+        );
+        assert_eq!(
+            h.app.windows[0].panes[&editor_pane_id]
+                .as_app()
+                .unwrap()
+                .name,
+            "commands.toml [global]"
+        );
+
+        // Save an edit to global commands.toml via Cmd+S: `take_config_saved()` triggers `reload_config()`
+        // and the new global command is immediately available.
+        h.text_editor_mut(editor_pane_id)
+            .test_set_unsaved("[commands]\nglobal_hi = \"echo from_global\"\n");
+        h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+        h.run_frames(1);
+
+        h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+        let global_cmd = h
+            .app
+            .palette_commands
+            .iter()
+            .find(|c| c.name == "global_hi")
+            .expect("saved global commands.toml must immediately populate palette_commands");
+        assert_eq!(global_cmd.scope, crate::cli::UserCommandScope::Global);
+        assert_eq!(global_cmd.run.as_deref(), Some("echo from_global"));
+        h.app.show_command_palette = false;
+
+        // Switch back to workspace scope in-place.
+        assert!(h.text_editor_mut(editor_pane_id).switch_commands_scope_in_place());
+        assert_eq!(
+            h.text_editor_mut(editor_pane_id).commands_scope(),
+            Some(crate::cli::UserCommandScope::Workspace)
+        );
+    }
+
+    #[test]
+    fn single_line_user_command_runs_in_focused_idle_shell_and_splits_when_busy_agent_app_or_split_true()
+    {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let app_pane = *h.app.windows[0]
+            .panes
+            .keys()
+            .find(|&&id| id != term)
+            .expect("initial app pane");
+
+        let ws_root = h.workspace_root().to_path_buf();
+        let ws_commands = ws_root
+            .join(crate::config::workspace_channel_dir())
+            .join("commands.toml");
+        std::fs::create_dir_all(ws_commands.parent().unwrap()).unwrap();
+        std::fs::write(
+            &ws_commands,
+            r#"
+[commands]
+in_place = "echo IN_PLACE_0879"
+
+[commands.forced_split]
+run = "echo SPLIT_0879"
+split = true
+"#,
+        )
+        .unwrap();
+        h.app.palette_workspace_root = Some(ws_root.clone());
+        h.app.palette_commands = crate::cli::resolve_user_commands(Some(&ws_root));
+
+        // 1. Focused pane is an idle shell terminal: `in_place` runs in the current pane (no split).
+        h.focus_pane(term).run_frames(2);
+        assert_eq!(
+            h.app.focused_idle_shell_pane_id(),
+            Some(term),
+            "settled terminal pane with no child process must be recognized as an idle shell"
+        );
+        let count_before = h.pane_count();
+        h.terminal_backend(term).enable_input_tap();
+        h.app
+            .run_palette_selection(PaletteAction::RunUserCommand {
+                name: "in_place".to_string(),
+                scope: crate::cli::UserCommandScope::Workspace,
+            });
+        assert_eq!(
+            h.pane_count(),
+            count_before,
+            "single-line user command on an idle shell pane must NOT open a split pane"
+        );
+        let tapped = h.terminal_backend(term).take_input_tap();
+        let tapped_str = String::from_utf8_lossy(&tapped).into_owned();
+        assert!(
+            tapped_str.contains("echo IN_PLACE_0879"),
+            "idle shell pane must receive the command text directly; got: {tapped_str:?}"
+        );
+
+        // Wait for the submitted newline / in-flight submit to clear, then verify `split = true` splits.
+        h.app.pending_submits.clear();
+        let count_before_forced = h.pane_count();
+        h.app.run_user_command_by_name("forced_split").unwrap();
+        assert_eq!(
+            h.pane_count(),
+            count_before_forced + 1,
+            "`split = true` on a command definition must open a new split pane even from an idle shell"
+        );
+
+        // 2. When the focused terminal pane is busy (activity = Working) or an agent pane,
+        //    running `in_place` falls back to splitting so we never type into a running program.
+        h.focus_pane(term);
+        h.app.windows[0]
+            .panes
+            .get_mut(&term)
+            .unwrap()
+            .as_terminal_mut()
+            .unwrap()
+            .activity = Some(crate::protocol::AgentState::Working);
+        assert_eq!(
+            h.app.focused_idle_shell_pane_id(),
+            None,
+            "busy terminal must not be treated as an idle shell"
+        );
+        let count_before_busy = h.pane_count();
+        h.app.run_user_command_by_name("in_place").unwrap();
+        assert_eq!(
+            h.pane_count(),
+            count_before_busy + 1,
+            "running a user command while focused on a busy terminal must fall back to a split pane"
+        );
+
+        // 3. When the focused pane is an app pane, running `in_place` also falls back to splitting.
+        h.focus_pane(app_pane);
+        assert_eq!(h.app.focused_idle_shell_pane_id(), None);
+        let count_before_app = h.pane_count();
+        h.app.run_user_command_by_name("in_place").unwrap();
+        assert_eq!(
+            h.pane_count(),
+            count_before_app + 1,
+            "running a user command while focused on an app pane must fall back to a split pane"
+        );
+    }
+
+    #[test]
+    fn open_panes_pick_up_newly_added_edited_and_removed_commands_without_restart() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        h.focus_pane(pane_id);
+        let ws_root = h.workspace_root().to_path_buf();
+        let ws_commands = ws_root
+            .join(crate::config::workspace_channel_dir())
+            .join("commands.toml");
+        std::fs::create_dir_all(ws_commands.parent().unwrap()).unwrap();
+        std::fs::write(&ws_commands, "[commands]\nalpha = \"pane name AlphaV1\"\n").unwrap();
+
+        // Deliberately leave `palette_workspace_root = None` to prove `[keys]` `run:<name>`
+        // resolves from the focused pane's workspace rather than host process cwd.
+        h.app.palette_workspace_root = None;
+        h.app.run_user_command_by_name("alpha").expect("alpha v1");
+        assert_eq!(
+            h.app.windows[0].panes[&pane_id].as_app().unwrap().name,
+            "AlphaV1"
+        );
+
+        // While the pane stays open, add `beta` and edit `alpha` on disk.
+        std::fs::write(
+            &ws_commands,
+            "[commands]\nalpha = \"pane name AlphaV2\"\nbeta = \"pane name BetaAdded\"\n",
+        )
+        .unwrap();
+
+        // 1. Command Palette open (`Cmd+P`) picks up `beta` and updated `alpha`.
+        h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+        assert!(
+            h.app
+                .palette_commands
+                .iter()
+                .any(|c| c.name == "alpha" && c.run.as_deref() == Some("pane name AlphaV2"))
+        );
+        assert!(
+            h.app
+                .palette_commands
+                .iter()
+                .any(|c| c.name == "beta" && c.run.as_deref() == Some("pane name BetaAdded"))
+        );
+        h.app.show_command_palette = false;
+        h.app.palette_workspace_root = None;
+
+        // 2. `[keys]` `run:<name>` (`run_user_command_by_name`) executes updated `alpha` and new `beta`.
+        h.app.run_user_command_by_name("alpha").expect("alpha v2");
+        assert_eq!(
+            h.app.windows[0].panes[&pane_id].as_app().unwrap().name,
+            "AlphaV2"
+        );
+        h.app.run_user_command_by_name("beta").expect("beta added");
+        assert_eq!(
+            h.app.windows[0].panes[&pane_id].as_app().unwrap().name,
+            "BetaAdded"
+        );
+
+        // 3. Remove `beta` from `commands.toml` while the pane stays open:
+        //    palette, `run_user_command_by_name`, and `plexi run` all stop resolving `beta`.
+        std::fs::write(&ws_commands, "[commands]\nalpha = \"pane name AlphaV2\"\n").unwrap();
+        h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+        assert!(!h.app.palette_commands.iter().any(|c| c.name == "beta"));
+        h.app.show_command_palette = false;
+        h.app.palette_workspace_root = None;
+        assert!(
+            h.app.run_user_command_by_name("beta").is_none(),
+            "removed command must no longer resolve via run_user_command_by_name"
+        );
+        let cli_removed = crate::cli::run_command_for_root(Some(&ws_root), &ws_root, "beta", &[]);
+        assert_eq!(cli_removed.exit_code, 1);
+        assert_eq!(cli_removed.total_steps, 0);
+    }
+
+    #[test]
+    fn stepped_command_splits_anchor_to_invoking_pane_on_every_trigger_unless_explicit_from() {
+        use crate::testing::HostHarness;
+        use std::io::BufRead;
+
+        let mut h = HostHarness::new();
+        let invoker = h.add_test_pane();
+        h.focus_pane(invoker);
+
+        let ws_root = h.workspace_root().to_path_buf();
+        let ws_commands = ws_root
+            .join(crate::config::workspace_channel_dir())
+            .join("commands.toml");
+        std::fs::create_dir_all(ws_commands.parent().unwrap()).unwrap();
+        std::fs::write(
+            &ws_commands,
+            r#"
+[commands.layout2]
+steps = [
+  "pane new --right --name step-right -- echo r",
+  "pane new --down --name step-down -- echo d",
+]
+"#,
+        )
+        .unwrap();
+        h.app.palette_workspace_root = Some(ws_root.clone());
+
+        // Trigger 1 via host step runner (palette / hotkey):
+        // Step 1 splits right of `invoker` (creating a Horizontal container [invoker, step-right]).
+        // Step 2 splits down from `invoker` (anchoring to `invoker`, NOT `step-right`!).
+        // Therefore `invoker` and `step-down` share a Vertical container, while `step-right` is the
+        // right sibling of that Vertical container!
+        let report1 = h.app.run_user_command_by_name("layout2").unwrap();
+        assert_eq!(report1.exit_code, 0);
+        assert_eq!(h.pane_count(), 3);
+
+        let step_down_id = *h.app.windows[0]
+            .panes
+            .iter()
+            .find_map(|(id, p)| {
+                (p.as_terminal().and_then(|t| t.name.as_deref()) == Some("step-down")).then_some(id)
+            })
+            .expect("step-down pane");
+        let step_right_id = *h.app.windows[0]
+            .panes
+            .iter()
+            .find_map(|(id, p)| {
+                (p.as_terminal().and_then(|t| t.name.as_deref()) == Some("step-right"))
+                    .then_some(id)
+            })
+            .expect("step-right pane");
+
+        let invoker_tile = h.app.windows[0].tree.tiles.find_pane(&invoker).unwrap();
+        let down_tile = h.app.windows[0]
+            .tree
+            .tiles
+            .find_pane(&step_down_id)
+            .unwrap();
+        let right_tile = h.app.windows[0]
+            .tree
+            .tiles
+            .find_pane(&step_right_id)
+            .unwrap();
+        let invoker_parent = h.app.windows[0]
+            .tree
+            .tiles
+            .parent_of(invoker_tile)
+            .expect("invoker parent container");
+        let down_parent = h.app.windows[0]
+            .tree
+            .tiles
+            .parent_of(down_tile)
+            .expect("step-down parent container");
+        let right_parent = h.app.windows[0]
+            .tree
+            .tiles
+            .parent_of(right_tile)
+            .expect("step-right parent container");
+        assert_eq!(
+            invoker_parent, down_parent,
+            "step 2 (--down) must anchor to the invoking pane on the first trigger, not chain off step 1 (--right)"
+        );
+        assert_ne!(
+            right_parent, down_parent,
+            "step-right must not be the split anchor for step-down"
+        );
+
+        // Trigger 2 via CLI (`run_command_for_root_from_pane`) from `step_right_id` with an explicit
+        // `--from` override on step 2: verify step 1 anchors to `step_right_id` and step 2 honors `--from`.
+        std::fs::write(
+            &ws_commands,
+            format!(
+                r#"
+[commands.cli_anchor]
+steps = [
+  "pane new --right --name cli-s1 -- echo 1",
+  "pane new --down --from {invoker} --name cli-s2 -- echo 2",
+]
+"#
+            ),
+        )
+        .unwrap();
+
+        let sock_dir = tempfile::tempdir().unwrap();
+        let sock_path = sock_dir.path().join("notify.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let _sg = crate::cli::test_env::socket_env_guard();
+        crate::cli::set_command_socket_override(sock_path.clone());
+
+        let ws_for_cli = ws_root.clone();
+        let cli_handle = std::thread::spawn(move || {
+            crate::cli::run_command_for_root_from_pane(
+                Some(&ws_for_cli),
+                &ws_for_cli,
+                "cli_anchor",
+                &[],
+                Some(step_right_id),
+            )
+        });
+
+        let mut seen_from_ids = Vec::new();
+        while !cli_handle.is_finished() {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
+                    if let Ok(req) =
+                        serde_json::from_str::<crate::protocol::AppRequest>(line.trim())
+                    {
+                        if let crate::protocol::AppRequest::SpawnPane { from_pane_id, .. } = &req {
+                            seen_from_ids.push(*from_pane_id);
+                        }
+                        h.app.handle_pane_ipc_request(req);
+                    }
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let cli_report = cli_handle.join().unwrap();
+        crate::cli::clear_command_socket_override();
+        assert_eq!(cli_report.exit_code, 0);
+        assert_eq!(
+            seen_from_ids,
+            vec![Some(step_right_id), Some(invoker)],
+            "step 1 must default to invoking pane ({step_right_id}) and step 2 must honor explicit --from ({invoker})"
         );
     }
 }

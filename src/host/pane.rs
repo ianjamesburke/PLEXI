@@ -869,6 +869,22 @@ impl TerminalPane {
         !self.is_agent_pane() && !self.agent_spawned && self.parent_pane_id.is_none()
     }
 
+    /// True when this terminal pane is running an idle shell (not exited, not an
+    /// agent pane, and no foreground child process is running on the PTY).
+    pub fn is_idle_shell(&self) -> bool {
+        if self.exited || self.is_agent_pane() {
+            return false;
+        }
+        if matches!(
+            self.activity,
+            Some(crate::protocol::AgentState::Working | crate::protocol::AgentState::Completed)
+        ) {
+            return false;
+        }
+        let shell_pid = self.backend.child_pid();
+        let fg = self.backend.foreground_pid();
+        !fg.is_some_and(|fg| fg > 0 && fg != shell_pid as i32)
+    }
     /// True when this agent pane is currently in lightweight `[Plexi Standby]`.
     pub fn is_standby(&self) -> bool {
         self.standby_session.is_some()
@@ -1296,6 +1312,27 @@ impl AppRuntime {
     pub fn clear_relay_pairing_sheet(&mut self) {
         if let AppRuntime::Builtin(app) = self {
             app.clear_relay_pairing_sheet();
+        }
+    }
+
+    pub fn take_config_saved(&mut self) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.take_config_saved(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+        }
+    }
+
+    pub fn switch_commands_scope(&mut self) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.switch_commands_scope(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+        }
+    }
+
+    pub fn captures_editor_shortcuts(&self) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.captures_editor_shortcuts(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
         }
     }
 

@@ -41,6 +41,7 @@ impl SocketEnvGuard {
 
 impl Drop for SocketEnvGuard {
     fn drop(&mut self) {
+        super::clear_command_socket_override();
         match self.previous.as_deref() {
             Some(value) => restore(value),
             None => std::env::remove_var("PLEXI_SOCKET"),
