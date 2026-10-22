@@ -727,6 +727,127 @@ fn uninstall_accepts_absent_socket_beyond_unix_path_limit() {
     assert!(shutdown_complete(None, &socket));
 }
 
+fn restart_closes_caller(
+    pane: Option<&str>,
+    source_socket: Option<&Path>,
+    target_socket: &Path,
+) -> bool {
+    pane.is_some_and(|id| !id.is_empty()) && source_socket == Some(target_socket)
+}
+
+pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
+    let channel = crate::config::build_channel();
+    let socket = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let pane = std::env::var("PLEXI_PANE_ID").ok();
+    let source = std::env::var_os("PLEXI_SOCKET").map(PathBuf::from);
+    let own_host = restart_closes_caller(pane.as_deref(), source.as_deref(), &socket);
+    if own_host && !yes {
+        eprintln!("error: restarting this host will close this pane. Run `plexi host restart --yes` to confirm.");
+        return 1;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            eprintln!("error: locate restart executable: {error}");
+            return 1;
+        }
+    };
+    if own_host {
+        let mut child = std::process::Command::new(&exe);
+        child
+            .args(["host", "restart"])
+            .env_remove("PLEXI_PANE_ID")
+            .env_remove("PLEXI_CONTEXT_ROOT")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        detach_from_terminal(&mut child);
+        match child.spawn() {
+            Ok(child) => {
+                log::info!(
+                    "host_restart: detached coordinator pid={} caller pane will close",
+                    child.id()
+                );
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"restarting": true, "coordinator_pid": child.id()})
+                    );
+                } else {
+                    println!("Restarting; this pane will close. The saved workspace will restore.");
+                }
+                return 0;
+            }
+            Err(error) => {
+                log::error!("host_restart: coordinator spawn failed: {error}");
+                eprintln!("error: {error}");
+                return 1;
+            }
+        }
+    }
+    log::info!("host_restart: channel={channel:?}");
+    let pid = running_build_info()
+        .as_ref()
+        .and_then(reported_pid)
+        .or_else(|| detect_pid(&socket));
+    if !shutdown_complete(pid, &socket) {
+        let stopped = std::process::Command::new(&exe)
+            .args(["host", "stop"])
+            .output();
+        match stopped {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+                return 1;
+            }
+            Err(error) => {
+                eprintln!("error: host stop: {error}");
+                return 1;
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(35);
+        while !shutdown_complete(pid, &socket) {
+            if Instant::now() >= deadline {
+                eprintln!("error: previous host has not exited; restart aborted");
+                return 1;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    } else if !json {
+        println!("not running; starting");
+    }
+    // Reuse the public start handler without seed panes; capture its human output for JSON callers.
+    match std::process::Command::new(&exe)
+        .args(["host", "start"])
+        .output()
+    {
+        Ok(output) if output.status.success() => host_status_cli(json),
+        Ok(output) => {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            1
+        }
+        Err(error) => {
+            log::error!("host_restart: start failed: {error}");
+            eprintln!("error: host start: {error}");
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn restart_confirmation_only_for_the_callers_host() {
+    let socket = Path::new("/scratch/alpha/notify.sock");
+    assert!(restart_closes_caller(Some("1"), Some(socket), socket));
+    assert!(!restart_closes_caller(
+        Some("1"),
+        Some(Path::new("/scratch/beta/notify.sock")),
+        socket
+    ));
+    assert!(!restart_closes_caller(None, Some(socket), socket));
+}
+
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));

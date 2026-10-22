@@ -433,6 +433,13 @@ impl PlexiApp {
             } => {
                 self.handle_needs_you_api(op, payload, peer_ancestry, response_file);
             }
+            crate::protocol::AppRequest::PaneSecretList {
+                context,
+                peer_ancestry,
+                response_file,
+            } => {
+                self.serve_secret_list(context, peer_ancestry, response_file);
+            }
             crate::protocol::AppRequest::PaneSecretGet {
                 name,
                 global,

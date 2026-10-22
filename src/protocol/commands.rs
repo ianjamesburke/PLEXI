@@ -1110,6 +1110,13 @@ pub enum AppRequest {
         peer_ancestry: Vec<u32>,
         response_file: String,
     },
+    /// Names-only explicit-context inventory, admitted for the host-stamped peer.
+    PaneSecretList {
+        context: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        peer_ancestry: Vec<u32>,
+        response_file: String,
+    },
     /// `plexi secret get` from a terminal pane. The host admits `secret.get`
     /// for the pane named by `peer_ancestry` and answers `status` `value`,
     /// `permission_required` (with `pending_request_id`), `denied`, or

@@ -1669,12 +1669,18 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         "context A inventory must not include sibling or nested context secrets"
     );
     assert!(
-        secret_inventory(&root_b, false).is_err(),
-        "listing sibling context B from pane in context A must be refused"
+        secret_inventory(&root_b, false)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.scope == "global"),
+        "listing sibling context B must retain only global names"
     );
     assert!(
-        secret_inventory(&nested_b, false).is_err(),
-        "listing nested context B from pane in context A must be refused"
+        secret_inventory(&nested_b, false)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.scope == "global"),
+        "listing nested context B must retain only global names"
     );
     assert_eq!(
         crate::cli::workspace::folder_secret_read(

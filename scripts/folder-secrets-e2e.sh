@@ -175,6 +175,8 @@ SECRET_B="fsb-${SECRET_B}"
 
 KEYCHAIN_BEFORE="$(user_keychain_snapshot)"
 
+"$PLEXI" experiments enable folder_secrets >"$WORK/experiment.out" 2>"$WORK/experiment.err" || exit 1
+
 # ── set ──────────────────────────────────────────────────────────────────────
 set_out="$(printf '%s\n' "$SECRET" | "$PLEXI" secret set FOLDER_E2E_SECRET --folder "$DIR_A" 2>"$WORK/set.err")"
 set_code=$?

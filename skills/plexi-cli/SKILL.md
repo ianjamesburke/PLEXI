@@ -161,6 +161,22 @@ The command map below comes from this binary's CLI and experiment ownership.
 Use each command's `--help` for its full argument contract. Installed skills
 omit entries for experiments that are off.
 
+## Inspect secret names and restart
+
+`plexi secret list --json` returns `entries` and `skipped`. An out-of-scope cwd
+still returns user-scope names. Use `--global`, change directory into the pane's
+context, or select an owned context with `--context <id|name|root>`. An agent
+needs a `secret.list` approval to use an explicit context; ask the human to
+review the request in Needs you, then retry. Listing never returns values.
+
+Folder bindings require the `folder_secrets` experiment, which is off by
+default. Disabled bindings appear as a hidden count. Enable it with
+`plexi experiments enable folder_secrets` and restart using `plexi host restart`.
+A restart restores the saved workspace. From a pane of the host being restarted,
+`--yes` confirms that the pane will close; a detached coordinator completes the
+restart. From another host or terminal, restart waits and prints the new pid and
+pane count (`--json` is supported).
+
 ## Feature map
 
 - `plexi lease`: Acquire process-lifetime capacity before starting work
@@ -533,6 +549,7 @@ omit entries for experiments that are off.
 - `plexi update`: Update this channel's managed package, or restore its previous generation
 - `plexi uninstall`: Remove this channel's recorded package and launchers
 - `plexi host`: Launch, stop, or check a headless-friendly Plexi host from the CLI
+- `plexi host restart`: Restart this channel, restoring the saved workspace
 - `plexi host start`: Launch this channel's app bundle detached and wait for readiness
 - `plexi host stop`: Stop the running host and every pane agent for this channel
 - `plexi host log`: Write one info-level marker line into the running host's channel log

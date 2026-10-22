@@ -735,6 +735,7 @@ pub(crate) fn handle_socket_line_in(
                 | crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::ListAppTools { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::PaneSecretGet { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::PaneSecretList { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::NeedsYouApi { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::ResourceLease { peer_ancestry: p, .. } => {
                     // Overwrite any client-supplied ancestry. A missing capture

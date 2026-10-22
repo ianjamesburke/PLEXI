@@ -4,7 +4,7 @@ use super::{SecretStore, WorkspaceConfig};
 use crate::broker::gate::PermissionMonitor;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecretTarget {
     Global,
     Workspace { id: String, root: PathBuf },
@@ -60,7 +60,7 @@ impl SecretTarget {
     }
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SecretEntry {
     pub name: String,
     pub scope: String,
@@ -68,7 +68,6 @@ pub struct SecretEntry {
     pub last_used: Option<u64>,
     /// Live actor-specific permissions, not a promise that every caller is allowed.
     pub grant: Vec<String>,
-    #[serde(skip)]
     pub target: SecretTarget,
 }
 
@@ -79,9 +78,63 @@ pub fn workspace_target(cwd: &Path) -> Result<Option<SecretTarget>, String> {
     Ok(WorkspaceConfig::load(&root)?.map(|cfg| SecretTarget::Workspace { id: cfg.id, root }))
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum SkippedSecrets {
+    OutsidePaneContext {
+        scope: String,
+        path: PathBuf,
+        pane_context_root: PathBuf,
+        pane_context_name: Option<String>,
+    },
+    ExperimentDisabled {
+        scope: String,
+        experiment: String,
+        count: usize,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SecretInventory {
+    pub entries: Vec<SecretEntry>,
+    pub skipped: Vec<SkippedSecrets>,
+}
+
+pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry>, String> {
+    Ok(secret_inventory_report(cwd, global_only)?.entries)
+}
+
+pub fn secret_inventory_report(cwd: &Path, global_only: bool) -> Result<SecretInventory, String> {
+    let mut skipped = Vec::new();
+    let allowed = global_only
+        || crate::cli::workspace::enforce_pane_context_scope(cwd, false, "secret.list").is_ok();
+    let pane_root = crate::cli::workspace::active_pane_context_root();
+    if !allowed {
+        if let Some(root) = &pane_root {
+            skipped.push(SkippedSecrets::OutsidePaneContext {
+                scope: "workspace".into(),
+                path: cwd.to_path_buf(),
+                pane_context_root: root.clone(),
+                pane_context_name: std::env::var("PLEXI_CONTEXT_NAME").ok(),
+            });
+        }
+    }
+    inventory_for_scope(cwd, global_only || !allowed, pane_root.as_deref(), skipped)
+}
+
+/// Only the host may use this after admitting an explicit context request.
+pub(crate) fn inventory_for_context(root: &Path) -> Result<SecretInventory, String> {
+    inventory_for_scope(root, false, Some(root), Vec::new())
+}
+
 /// Reconcile first, list names without reading values, then attach the same
 /// permission metadata for both native UI and CLI.
-pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry>, String> {
+fn inventory_for_scope(
+    cwd: &Path,
+    global_only: bool,
+    pane_root: Option<&Path>,
+    mut skipped: Vec<SkippedSecrets>,
+) -> Result<SecretInventory, String> {
     match super::reconcile_index_with_keychain() {
         Ok(report) if !report.is_noop() => log::info!(
             "secrets_manager: reconciled index adopted={} renamed={} stale={} conflicts={}",
@@ -95,13 +148,21 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
             log::warn!("secrets_manager: reconcile failed, listing indexed names: {error}")
         }
     }
-    if !global_only {
-        crate::cli::workspace::enforce_pane_context_scope(cwd, false, "secret.list")?;
-    }
     let mut targets = vec![SecretTarget::Global];
     if !global_only {
         if let Some(target) = workspace_target(cwd)? {
-            targets.push(target);
+            if let (SecretTarget::Workspace { root, .. }, Some(pane_root)) = (&target, pane_root) {
+                if !crate::platform::path::canonical_or_self(root).starts_with(pane_root) {
+                    skipped.push(SkippedSecrets::OutsidePaneContext {
+                        scope: "workspace".into(), path: root.clone(),
+                        pane_context_root: pane_root.to_path_buf(), pane_context_name: None,
+                    });
+                } else {
+                    targets.push(target);
+                }
+            } else {
+                targets.push(target);
+            }
         }
     }
     let mut entries = Vec::new();
@@ -140,17 +201,30 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
             }
         }
     }
-    if !global_only
-        && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
-    {
-        let scope_root = crate::app::registry::resolve_workspace_root(cwd)
-            .map(|p| crate::platform::path::canonical_or_self(&p))
-            .unwrap_or_else(|| crate::platform::path::canonical_or_self(cwd));
+    if !global_only {
+        let cwd = crate::platform::path::canonical_or_self(cwd);
+        let enabled =
+            crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
+        let mut hidden = 0;
         for meta in super::list_folder_secrets(super::folder_store()) {
-            let folder_canon = crate::platform::path::canonical_or_self(&meta.folder);
-            if folder_canon == scope_root {
-                add(meta.name, SecretTarget::Folder(meta.folder));
+            let folder = crate::platform::path::canonical_or_self(&meta.folder);
+            if cwd.starts_with(&folder) && pane_root.is_none_or(|root| folder.starts_with(root)) {
+                if enabled {
+                    add(meta.name, SecretTarget::Folder(meta.folder));
+                } else {
+                    hidden += 1;
+                }
             }
+        }
+        if hidden > 0 {
+            log::info!(
+                "secret_list: hidden folder entries count={hidden} experiment=folder_secrets"
+            );
+            skipped.push(SkippedSecrets::ExperimentDisabled {
+                scope: "folder".into(),
+                experiment: "folder_secrets".into(),
+                count: hidden,
+            });
         }
     }
     entries.sort_by(|a, b| {
@@ -164,7 +238,7 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
             .then(a.scope.cmp(&b.scope))
             .then(a.name.cmp(&b.name))
     });
-    Ok(entries)
+    Ok(SecretInventory { entries, skipped })
 }
 
 pub enum Mutation<'a> {
@@ -313,6 +387,35 @@ fn parse_env(text: &str) -> Result<Vec<(String, zeroize::Zeroizing<String>)>, St
 mod tests {
     use super::*;
     use crate::workspace::secrets::{InMemoryKeychain, NonDestructiveStore};
+
+    #[test]
+    fn fresh_profile_folder_secrets_are_off() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        assert!(!crate::release::feature_enabled(
+            crate::release::ReleaseFeature::FolderSecrets
+        ));
+    }
+
+    #[test]
+    fn inventory_outside_pane_scope_still_lists_global_names() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let own = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let name = format!("PARTIAL_{}", uuid::Uuid::new_v4().simple());
+        let store = super::super::system_store();
+        let account = super::super::keychain_user_name(&name);
+        store.set(&account, "not-for-output").unwrap();
+        let _scope = crate::cli::workspace::set_test_pane_context_root(own.path());
+        let report = secret_inventory_report(other.path(), false).unwrap();
+        assert!(report.entries.iter().any(|entry| entry.name == name));
+        assert!(report.entries.iter().all(|entry| entry.scope == "global"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["skipped"][0]["reason"], "outside_pane_context");
+        assert!(json["skipped"][0]["pane_context_root"].is_string());
+        store.delete(&account).unwrap();
+    }
 
     #[test]
     fn audited_mutations_and_import_keep_values_out_of_audit() {
