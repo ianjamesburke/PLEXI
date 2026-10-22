@@ -54,7 +54,7 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `preset` | string | — | Theme preset name. Applied first; individual color fields override the preset. |
-| `state_preset` | string | default | Agent states: default, okabe-ito, high-contrast, mono. Default: default. |
+| `state_preset` | string | okabe-ito | Agent states: default, okabe-ito, high-contrast, mono. Default: okabe-ito. |
 | `state_working` | string | — | — |
 | `state_waiting` | string | — | — |
 | `state_blocked` | string | — | — |
@@ -316,7 +316,7 @@ osc_pane_title = true
 
 [theme]
 # Agent state colors retain distinct shapes in every preset.
-state_preset = "default" # default | okabe-ito | high-contrast | mono
+state_preset = "okabe-ito" # default | okabe-ito | high-contrast | mono
 # state_working = "#0072b2"
 # state_waiting = "#e69f00"
 # state_blocked = "#cc79a7"

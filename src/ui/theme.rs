@@ -256,7 +256,7 @@ fn state_palette(cfg: &ThemeConfig) -> [Color32; 6] {
     } else {
         Color32::WHITE
     };
-    let preset = cfg.state_preset.as_deref().unwrap_or("default");
+    let preset = cfg.state_preset.as_deref().unwrap_or("okabe-ito");
     // Light themes need separated lightness levels, not uniform darkening:
     // otherwise orange, vermillion and yellow converge under red/green CVD.
     if light && preset != "mono" {
