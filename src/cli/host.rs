@@ -960,7 +960,17 @@ fn terminate_host_process(pid: u32) -> std::io::Result<()> {
 #[cfg(unix)]
 fn host_pid_alive(pid: u32) -> bool {
     // SAFETY: signal 0 observes only the exact, previously identified host pid.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) | Some(libc::EPERM) => {
+            log::debug!("host_stop: probe pid={pid} unavailable: {error}");
+        }
+        _ => log::warn!("host_stop: probe pid={pid} failed: {error}"),
+    }
+    false
 }
 
 #[cfg(unix)]
