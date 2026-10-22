@@ -64,6 +64,8 @@ test('refuses real and HOME .pi paths and symlink escapes before writing', () =>
   assert.throws(() => safePath(join(userInfo().homedir, '.pi/agent')), /Refusing/);
   assert.throws(() => safePath(join(process.env.HOME, '.pi/agent')), /Refusing/);
   const { root, profile, backup } = fixture();
+  symlinkSync(join(process.env.HOME, '.pi'), join(root, 'missing-home-pi'));
+  assert.throws(() => safePath(join(root, 'missing-home-pi/agent')), /Refusing/);
   symlinkSync(join(userInfo().homedir, '.pi'), join(root, 'personal'));
   assert.throws(() => safePath(join(root, 'personal/agent')), /Refusing/);
   symlinkSync(join(userInfo().homedir, '.pi'), join(profile, 'escape'));

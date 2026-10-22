@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +9,13 @@ const inside = (path, root) => { const rel = relative(root, path); return !rel |
 function canonical(path) {
   const absolute = resolve(path);
   if (existsSync(absolute)) return realpathSync(absolute);
+  // existsSync is false for a dangling symlink. Resolve its destination too,
+  // so a not-yet-created personal profile cannot bypass the refusal.
+  try {
+    if (lstatSync(absolute).isSymbolicLink()) return canonical(resolve(dirname(absolute), readlinkSync(absolute)));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   return join(canonical(dirname(absolute)), absolute.slice(dirname(absolute).length + 1));
 }
 export function safePath(path) {
