@@ -31,3 +31,56 @@ pi -ne \
 - `/plexi-status` — refresh the live workspace snapshot and widget.
 - `/plexi-reconcile` — reconcile pending/resolved `Needs you` items and continuations for this session/pane.
 - `/plexi-watch <app> <stream>` — subscribe to an app event stream in the current context.
+
+## FAST and SLOW
+
+The package registers `plexi/fast` (FAST) and `plexi/slow` (SLOW) even outside
+Plexi. These are explicit selections, with no prompt classifier or fallback.
+The bootstrap targets live in `src/model-modes.ts`. Each selected alias requires
+its exact target and thinking capability; missing targets produce an error.
+Inactive aliases do not resolve targets or change the selected model.
+
+## Scratch-profile migration and rollback
+
+The migration helper accepts an explicit **agent directory** (`settings.json`
+lives directly inside it). It refuses the current HOME's `.pi` tree and the OS
+user's real `.pi` tree, including symlink aliases. There is no personal-cutover
+override. Stop processes using the scratch profile before backup or rollback.
+
+Run these commands from `packages/pi-plexi`. Create fixtures only in the scratch
+directory; do not point these commands at a personal profile.
+
+```sh
+PI_SCRATCH=$(mktemp -d)
+mkdir -p "$PI_SCRATCH/agent/extensions" "$PI_SCRATCH/agent/agents"
+printf '%s\n' '{"defaultProvider":"ian-router","defaultModel":"auto","packages":["npm:@alexlikevibe/pi-jev"]}' > "$PI_SCRATCH/agent/settings.json"
+
+# Explicit backup (refuses an existing destination and verifies byte equality).
+env HOME="$PI_SCRATCH" PI_CODING_AGENT_DIR="$PI_SCRATCH/agent" \
+  node src/migrate-model-modes.mjs backup \
+  --profile "$PI_SCRATCH/agent" --backup "$PI_SCRATCH/before-fast"
+
+# Uses the verified backup above, or creates one if absent.
+env HOME="$PI_SCRATCH" PI_CODING_AGENT_DIR="$PI_SCRATCH/agent" \
+  node src/migrate-model-modes.mjs migrate \
+  --profile "$PI_SCRATCH/agent" --backup "$PI_SCRATCH/before-fast"
+
+# Restores and verifies original bytes; preserves the backup for reapplication.
+env HOME="$PI_SCRATCH" PI_CODING_AGENT_DIR="$PI_SCRATCH/agent" \
+  node src/migrate-model-modes.mjs rollback \
+  --profile "$PI_SCRATCH/agent" --backup "$PI_SCRATCH/before-fast"
+```
+
+Backup covers settings, the subscription router, and agent Markdown files.
+Migration atomically replaces settings and removes the backed-up subscription
+router. It converts the old default to FAST, sets the alias cycle, and appends
+Pi 1.3.0's force-exclude filter `-extensions/routing.ts` to pi-jev's package
+entry. Existing package filters, compaction, `/jev`, unrelated settings and
+`jev.json` remain intact. An already-disabled extension list stays disabled.
+Repeated migration is a no-op; a changed source or corrupt backup fails before
+migration. Rollback restores the backed-up files, so use it before making
+unrelated edits to those files.
+
+`npm test` uses a temporary HOME and `PI_CODING_AGENT_DIR` for the tests and
+asserts that a read-only snapshot of the real user's `.pi` files (paths, sizes,
+mtimes and SHA-256 contents) is unchanged afterward.

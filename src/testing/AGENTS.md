@@ -21,6 +21,8 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 
 ## Traps
 
+- **Single-thread libtest changes child stdout framing.** With `RUST_TEST_THREADS=1`, `--nocapture` can put a test-name prefix on the same line as the child's JSON response. `agent_tool_message_cli_socket_round_trip_and_wait` searches for a line starting with `{` and fails to find it under that framing. Keep the repository's default test concurrency for the full gate; a serial run is not an interchangeable flake diagnostic until that parser handles prefixed output.
+
 - **Harness AccessKit defaults can hide broken installed pane semantics.** The harness eagerly captures semantic trees; native startup uses `configure_native_semantics`, whose eager capture is experimental. Core `GetPaneState` must activate internal tree capture independently, without enabling the experiment or activating the OS adapter. Startup regressions must disable the harness's eager capture and call the production initializer before querying and rendering.
 
 - **PTY completion waits must distinguish command echo from executed output.** A substring in an echoed setup command can satisfy `wait_for_output` before the shell runs the command under test. See `pane_command_enter_runs_ambiguous_prefix_alias_instead_of_completing` for a result marker split across shell literals so only execution prints the complete marker.

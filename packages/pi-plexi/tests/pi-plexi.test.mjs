@@ -21,6 +21,7 @@ function makeFakePiHarness() {
   const listeners = new Map();
 
   const pi = {
+    registerVirtualModel() {},
     registerTool(def) {
       tools.set(def.name, def);
     },
