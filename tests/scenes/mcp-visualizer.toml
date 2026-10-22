@@ -6,13 +6,22 @@ size = [900.0, 760.0]
 open = { kind = "builtin", id = "mcp-renderer", as = "mcp", args = ["unconfigured-fixture"] }
 
 [[steps]]
-assert = { target = "mcp", exists = true, focused = true }
+assert = { target = "mcp", exists = true, tree_contains = '"view":"tools"' }
 
 [[steps]]
 key = { target = "mcp", value = "tab" }
+
+[[steps]]
+assert = { target = "mcp", tree_contains = '"view":"resources"' }
 
 [[steps]]
 key = { target = "mcp", value = "esc" }
 
 [[steps]]
 assert = { target = "mcp", exists = true }
+
+[[steps]]
+assert_label = { target = "mcp", label = "Connect / retry" }
+
+[[steps]]
+shot = "mcp-visualizer.png"

@@ -536,7 +536,7 @@ impl App for McpRendererApp {
     }
     fn semantic_state(&self) -> Option<Value> {
         Some(
-            json!({"server":self.server,"tools":self.entries[0].iter().map(|e|&e.command.name).collect::<Vec<_>>(),"resources":self.entries[1].len(),"prompts":self.entries[2].len(),"result":self.result,"form":self.form}),
+            json!({"server":self.server,"view":(["tools","resources","prompts"][self.tab]),"tools":self.entries[0].iter().map(|e|&e.command.name).collect::<Vec<_>>(),"resources":self.entries[1].len(),"prompts":self.entries[2].len(),"result":self.result,"form":self.form}),
         )
     }
 }
