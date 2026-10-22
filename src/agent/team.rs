@@ -127,11 +127,77 @@ mod tests {
     #[test]
     fn stored_team_rejects_unknown_fields_and_path_traversal() {
         let root = tempfile::tempdir().unwrap();
-        assert!(load(root.path(), "../other").is_err());
+        assert!(load(Some(root.path()), "../other").is_err());
         let mut team = builtin();
         team.members[1].role = team.members[0].role.clone();
         assert!(team.validate().is_err());
         assert!(toml::from_str::<Team>("version=0\nunknown=true").is_err());
+    }
+    #[test]
+    fn workspace_team_overrides_global_then_builtin() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_dir = workspace
+            .path()
+            .join(crate::config::workspace_channel_dir())
+            .join("teams");
+        let global_dir = crate::config::config_dir().join("teams");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::fs::create_dir_all(&global_dir).unwrap();
+
+        let mut global = builtin();
+        global.options[0] = "Global".into();
+        std::fs::write(
+            global_dir.join("consult-experts.toml"),
+            toml::to_string(&global).unwrap(),
+        )
+        .unwrap();
+        let mut local = global.clone();
+        local.options[0] = "Workspace".into();
+        std::fs::write(
+            workspace_dir.join("consult-experts.toml"),
+            toml::to_string(&local).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            load(Some(workspace.path()), "consult-experts")
+                .unwrap()
+                .options[0],
+            "Workspace"
+        );
+        std::fs::remove_file(workspace_dir.join("consult-experts.toml")).unwrap();
+        assert_eq!(
+            load(Some(workspace.path()), "consult-experts")
+                .unwrap()
+                .options[0],
+            "Global"
+        );
+        std::fs::remove_file(global_dir.join("consult-experts.toml")).unwrap();
+        assert_eq!(load(None, "consult-experts").unwrap().options[0], "Proceed");
+    }
+    #[test]
+    fn missing_team_lists_workspace_global_and_builtin_searches() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let error = load(Some(workspace.path()), "missing-team").unwrap_err();
+        let workspace_path = workspace
+            .path()
+            .join(".plexi-alpha/teams/missing-team.toml")
+            .display()
+            .to_string();
+        let global_path = profile
+            .path()
+            .join("teams/missing-team.toml")
+            .display()
+            .to_string();
+        assert!(error.contains("built-in team: consult-experts"));
+        assert!(error.contains(".plexi-alpha"));
+        assert!(error.find(&workspace_path).unwrap() < error.find(&global_path).unwrap());
     }
 }
 pub(crate) fn builtin() -> Team {
@@ -163,20 +229,27 @@ fn valid_name(name: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
-pub(crate) fn load(workspace: &Path, name: &str) -> Result<Team, String> {
+/// Resolve a team definition. A workspace definition, when present, shadows the
+/// channel profile definition; built-ins are the final fallback.
+pub(crate) fn load(workspace: Option<&Path>, name: &str) -> Result<Team, String> {
     if !valid_name(name) {
         return Err("team name must contain only lowercase letters, digits and hyphens".into());
     }
-    let paths = [
-        workspace
-            .join(crate::config::workspace_channel_dir())
-            .join("teams")
-            .join(format!("{name}.toml")),
+    let mut paths = Vec::with_capacity(2);
+    if let Some(workspace) = workspace {
+        paths.push(
+            workspace
+                .join(crate::config::workspace_channel_dir())
+                .join("teams")
+                .join(format!("{name}.toml")),
+        );
+    }
+    paths.push(
         crate::config::config_dir()
             .join("teams")
             .join(format!("{name}.toml")),
-    ];
-    for path in paths {
+    );
+    for path in &paths {
         match std::fs::read_to_string(&path) {
             Ok(raw) => {
                 let team: Team =
@@ -191,7 +264,14 @@ pub(crate) fn load(workspace: &Path, name: &str) -> Result<Team, String> {
     if name == "consult-experts" {
         Ok(builtin())
     } else {
-        Err(format!("team '{name}' not found"))
+        Err(format!(
+            "team '{name}' not found; searched:\n{}\nbuilt-in team: consult-experts",
+            paths
+                .iter()
+                .map(|path| format!("  {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
     }
 }
 impl Team {

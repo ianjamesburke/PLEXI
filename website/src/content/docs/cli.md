@@ -676,7 +676,7 @@ Run independent team members in one task and wait for RESULT.md
 |---|---|---|---|
 | `<name>` | string | yes |  |
 | `--question` | string | yes |  |
-| `--out` | string | no | Output directory (default: a new team-results/<run-id> in the workspace) |
+| `--out` | string | no | Output directory (default: team-results/<run-id> in a workspace, or the channel profile's sessions/teams/ outside one) |
 | `--option` | string (repeatable) | no | Replace the stored options; repeat for each option (at least two) |
 | `--timeout` | string | no | Host-side deadline in seconds; unfinished members are reported as timed out Default: `600`. |
 

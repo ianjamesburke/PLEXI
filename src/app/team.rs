@@ -193,6 +193,41 @@ mod tests {
     }
 
     #[test]
+    fn global_team_run_defaults_output_under_profile_sessions() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let global_teams = profile.path().join("teams");
+        std::fs::create_dir_all(&global_teams).unwrap();
+        let mut team = crate::agent::team::builtin();
+        for member in &mut team.members {
+            member.harness = "script".into();
+            member.command = Some("true".into());
+        }
+        std::fs::write(
+            global_teams.join("global-team.toml"),
+            toml::to_string(&team).unwrap(),
+        )
+        .unwrap();
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let reply = profile.path().join("reply.json");
+        h.app
+            .start_team(
+                &json!({
+                    "workspace": profile.path(), "name": "global-team", "question": "Choose",
+                    "global_scope": true, "timeout": 60
+                }),
+                reply.to_str().unwrap(),
+            )
+            .unwrap();
+        let out = &h.app.team_runs[0].out;
+        assert!(
+            out.starts_with(profile.path().join("sessions/teams")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn team_run_collects_three_agent_done_results_while_hidden_and_records_trace() {
         let mut h = HostHarness::new();
         h.add_test_pane();
@@ -334,7 +369,9 @@ impl PlexiApp {
         if question.trim().is_empty() {
             return Err("question cannot be empty".into());
         }
-        let mut team = crate::agent::team::load(&workspace, &name)?;
+        let team_workspace = payload["team_workspace"].as_str().map(Path::new);
+        let global_scope = payload["global_scope"].as_bool().unwrap_or(false);
+        let mut team = crate::agent::team::load(team_workspace, &name)?;
         if let Some(options) = payload["options"].as_array().filter(|a| !a.is_empty()) {
             team.options = options
                 .iter()
@@ -358,7 +395,16 @@ impl PlexiApp {
         let out = payload["out"]
             .as_str()
             .map(PathBuf::from)
-            .unwrap_or_else(|| workspace.join("team-results").join(&id));
+            .unwrap_or_else(|| {
+                if global_scope {
+                    crate::config::config_dir()
+                        .join("sessions")
+                        .join("teams")
+                        .join(&id)
+                } else {
+                    workspace.join("team-results").join(&id)
+                }
+            });
         if !out.is_absolute() {
             return Err("output directory must be absolute".into());
         }
@@ -387,12 +433,20 @@ impl PlexiApp {
         }
         let parent_grants: Vec<_> = union.iter().map(|(t, d)| format!("{t}={d}")).collect();
         let caller_human = caller.is_some_and(|p| self.is_human_owned_pane(p));
-        let caller_ctx_root = caller.and_then(|p| self.pane_context_authority_root(p));
-        let caller_ctx_denied = caller.is_some_and(|p| {
-            let ws_canon = crate::platform::path::canonical_or_self(&workspace);
-            caller_ctx_root.as_ref() != Some(&ws_canon)
-                || !self.pane_may_access_context_root(p, &workspace)
-        });
+        // Outside a workspace, the profile is the execution scope. Use it for
+        // the head API's grant and context checks rather than treating the
+        // caller's unrelated cwd as a required workspace.
+        let caller_ctx_root = if global_scope {
+            Some(workspace.clone())
+        } else {
+            caller.and_then(|p| self.pane_context_authority_root(p))
+        };
+        let caller_ctx_denied = !global_scope
+            && caller.is_some_and(|p| {
+                let ws_canon = crate::platform::path::canonical_or_self(&workspace);
+                caller_ctx_root.as_ref() != Some(&ws_canon)
+                    || !self.pane_may_access_context_root(p, &workspace)
+            });
         api(
             &workspace,
             "create_head",

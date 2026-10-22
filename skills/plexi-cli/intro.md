@@ -71,6 +71,19 @@ The parent sends the reply. Role-scoped `agent call` and `agent handoff` use
 caller only after a compatible successor launches. Tool children attach to
 the parent's child strip; Cmd+Down opens that view and Cmd+Escape returns.
 
+## Run a stored team
+
+`agent team run <name>` looks for a team in the nearest workspace, then the
+active channel profile, then built-ins. A global or built-in team can run from
+any directory; its default `RESULT.md` is written under the active profile's
+`sessions/teams/` directory. Pass a relative `--out` to place the report under
+the current directory instead.
+
+```bash
+plexi agent team show consult-experts
+plexi agent team run consult-experts --question "Which option is safest?"
+```
+
 ## Inspect apps and request human decisions
 
 Discover live tools and their schemas before calling them. A mutating call
