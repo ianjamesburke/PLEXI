@@ -465,10 +465,14 @@ mod tests {
             read_to.is_some(),
             "handle_connection must set a socket read timeout"
         );
-        assert_eq!(
-            write_to,
-            Some(configured_timeout),
-            "handle_connection must set the configured socket write timeout"
+        // Kernels may round SO_SNDTIMEO up to a scheduler tick (for example,
+        // Linux reports 752 ms for 750 ms). Still reject an unset timeout or
+        // the client's unrelated five-second timeout.
+        assert!(
+            write_to.is_some_and(|timeout| {
+                timeout >= configured_timeout && timeout < configured_timeout * 2
+            }),
+            "handle_connection must set the configured socket write timeout: {write_to:?}"
         );
         let (status, json) = parse_status_and_body(&resp);
         assert_eq!(status, 200);

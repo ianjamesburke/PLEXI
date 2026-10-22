@@ -21,9 +21,9 @@ mod tests {
         ];
         let redacted = redact_argv(&argv.map(str::to_string), &["CUSTOM_TOKEN".into()]);
         assert_eq!(redacted[4], "<redacted>");
-        assert_eq!(redacted[5], "KEY=<redacted>");
+        assert!(is_text_placeholder(&redacted[5]));
         assert_eq!(redacted[7], "<redacted>");
-        assert_eq!(redacted[8], "--secret=<redacted>");
+        assert!(!redacted[8].contains("other"));
         assert!(!redacted.join(" ").contains("private"));
     }
 
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_trace_preserves_grants_but_redacts_real_secrets() {
+    fn cli_trace_invalid_content_call_fails_closed_and_redacts_secrets() {
         let argv = [
             "plexi",
             "agent",
@@ -126,18 +126,15 @@ mod tests {
         ]
         .map(str::to_string);
         let safe = redact_argv(&argv, &[]);
-        assert_eq!(&safe[4..8], &argv[4..8]);
+        assert!(safe[4..8].iter().all(|arg| is_text_placeholder(arg)));
         assert_eq!(safe[9], "<redacted>");
-        assert_eq!(safe[10], "API_KEY=<redacted>");
-        assert_eq!(
-            safe[11],
-            "echo agents.ping=allow API_KEY=<redacted> password=<redacted>"
-        );
+        assert!(is_text_placeholder(&safe[10]));
+        assert!(is_text_placeholder(&safe[11]));
         assert_eq!(redact_argv(&safe, &[]), safe);
     }
 
     #[test]
-    fn cli_trace_persistence_preserves_grants_and_masks_secrets() {
+    fn cli_trace_persistence_fails_closed_for_invalid_content_calls() {
         let dir = tempfile::tempdir().unwrap();
         let recorder = &crate::host::flight_recorder::handle_cli_trace;
         crate::host::flight_recorder::adopt_session(dir.path(), "sess-grants");
@@ -153,10 +150,48 @@ mod tests {
             crate::host::flight_recorder::read_session(dir.path(), "sess-grants").unwrap();
         let calls = crate::host::flight_recorder::cli_calls(rows, Some(19));
         let argv = &calls[0]["data"]["argv"];
-        assert_eq!(argv[4], "agents.ping=allow");
+        assert!(is_text_placeholder(argv[4].as_str().unwrap()));
         assert_eq!(argv[6], "<redacted>");
-        assert_eq!(argv[7], "API_KEY=<redacted>");
+        assert!(is_text_placeholder(argv[7].as_str().unwrap()));
         assert_eq!(argv[9], "<redacted>");
+    }
+
+    #[test]
+    fn cli_trace_valid_passthrough_retains_secret_redaction() {
+        let argv = [
+            "plexi",
+            "run",
+            "worker",
+            "--token",
+            "private",
+            "API_KEY=value",
+            "--custom-name",
+            "hidden",
+            "agents.ping=allow",
+        ]
+        .map(str::to_string);
+        let safe = redact_argv(&argv, &["CUSTOM_NAME".into()]);
+        assert_eq!(safe[4], "<redacted>");
+        assert_eq!(safe[5], "API_KEY=<redacted>");
+        assert_eq!(safe[7], "<redacted>");
+        assert_eq!(safe[8], "agents.ping=allow");
+        assert_eq!(redact_argv(&safe, &["CUSTOM_NAME".into()]), safe);
+    }
+
+    #[test]
+    fn cli_trace_valid_grants_are_not_content() {
+        let argv = [
+            "plexi",
+            "agent",
+            "head",
+            "create",
+            "reviewer",
+            "--grant",
+            "agents.ping=allow",
+            "--grant=tool.name=ask",
+        ]
+        .map(str::to_string);
+        assert_eq!(redact_argv(&argv, &[]), argv);
     }
 
     #[test]
@@ -166,11 +201,126 @@ mod tests {
     }
 
     #[test]
+    fn cli_trace_grammar_sentinels() {
+        let cases: &[&[&str]] = &[
+            &[
+                "--json",
+                "--profile=alpha",
+                "pane",
+                "send",
+                "42",
+                "SENTINEL",
+            ],
+            &["agent", "--json", "ask", "SENTINEL"],
+            &["agent", "ask", "--socket", "/tmp/host.sock", "SENTINEL"],
+            &["agent", "ask", "--pane-id=42", "SENTINEL"],
+            &["pane", "message", "--json", "send", "42", "-SENTINEL"],
+            &["pane", "send", "42", "-SENTINEL"],
+            &["pane", "send", "42", "--secret-SENTINEL"],
+            &["pane", "result", "write", "SENTINEL"],
+            &["pane", "result", "write", "42", "SENTINEL"],
+            &["pane", "result", "--write=SENTINEL"],
+            &["pane", "send", "42", "--", "--SENTINEL"],
+            &["agent", "ask", "--", "-SENTINEL"],
+            &["agent", "call", "reviewer", "--task=SENTINEL"],
+            &[
+                "agent",
+                "team",
+                "run",
+                "consult-experts",
+                "--question=SENTINEL",
+                "--option",
+                "SENTINEL",
+                "--option=SENTINEL",
+            ],
+            &[
+                "agent",
+                "done",
+                "--result=SENTINEL",
+                "--summary",
+                "SENTINEL",
+            ],
+            &["pane", "heartbeat", "42", "--text", "SENTINEL"],
+            &[
+                "needs-you",
+                "ask",
+                "--summary",
+                "SENTINEL",
+                "--choice=SENTINEL",
+            ],
+            &["needs-you", "answer", "id", "--answer=SENTINEL"],
+            &["note", "add", "SENTINEL"],
+            &["pane", "slot", "write", "summary", "SENTINEL"],
+            &["pane", "send", "42", "--submit", "SENTINEL"],
+            &["pane", "submit", "42", "SENTINEL"], // invalid legacy command
+            &["agent", "call", "--unknown", "SENTINEL", "--task=-SENTINEL"],
+            &["--unknown", "SENTINEL", "pane", "send", "42", "SENTINEL"],
+            &["pane", "send", "42", "<text len=SENTINEL>"],
+            &["pane", "send", "42", "SENTINEL", "unexpected"],
+            &["pane", "send", "42", "SENTINEL_SECRET=value", "unexpected"],
+            &[
+                "pane",
+                "send",
+                "42",
+                "--SENTINEL_SECRET=value",
+                "unexpected",
+            ],
+        ];
+        for case in cases {
+            let argv: Vec<String> = std::iter::once("plexi")
+                .chain(case.iter().copied())
+                .map(str::to_string)
+                .collect();
+            let safe = redact_argv(&argv, &[]);
+            assert!(!safe.join(" ").contains("SENTINEL"), "{case:?}: {safe:?}");
+            assert_eq!(redact_argv(&safe, &[]), safe, "{case:?}");
+        }
+    }
+
+    #[test]
+    fn cli_trace_mapping_preserves_ids_flags_and_duplicate_values() {
+        for argv in [
+            vec!["plexi", "agent", "call", "same", "--task", "same"],
+            vec!["plexi", "pane", "send", "same", "same", "--submit"],
+            vec![
+                "plexi", "agent", "--json", "ask", "--socket", "same", "same",
+            ],
+        ] {
+            let argv: Vec<String> = argv.into_iter().map(str::to_string).collect();
+            let safe = redact_argv(&argv, &[]);
+            assert_eq!(
+                safe.iter().filter(|arg| arg.as_str() == "same").count(),
+                1,
+                "{safe:?}"
+            );
+            assert_eq!(
+                safe.iter().filter(|arg| is_text_placeholder(arg)).count(),
+                1,
+                "{safe:?}"
+            );
+            for (before, after) in argv.iter().zip(&safe) {
+                if before != "same" {
+                    assert_eq!(before, after);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cli_trace_redacts_pane_and_agent_free_text() {
         let sentinel = "SENTINEL_SECRET_DO_NOT_PERSIST";
         let cases = vec![
             vec!["plexi", "pane", "send", "42", sentinel, "--submit"],
-            vec!["plexi", "--socket", "/tmp/host.sock", "agent", "call", "reviewer", "--task", sentinel],
+            vec![
+                "plexi",
+                "--socket",
+                "/tmp/host.sock",
+                "agent",
+                "call",
+                "reviewer",
+                "--task",
+                sentinel,
+            ],
             vec!["plexi", "agent", "ask", "--pane-id", "42", sentinel],
             vec!["plexi", "pane", "send", "42", "<text len=SENTINEL_SECRET>"],
             vec![
@@ -342,7 +492,7 @@ fn secret_assignment(key: &str, known: &[String]) -> bool {
 }
 
 fn text_placeholder(text: &str) -> String {
-    if is_text_placeholder(text) {
+    if text == "<redacted>" || is_text_placeholder(text) {
         return text.to_string();
     }
     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
@@ -350,7 +500,10 @@ fn text_placeholder(text: &str) -> String {
 }
 
 fn is_text_placeholder(text: &str) -> bool {
-    let Some(body) = text.strip_prefix("<text len=").and_then(|body| body.strip_suffix('>')) else {
+    let Some(body) = text
+        .strip_prefix("<text len=")
+        .and_then(|body| body.strip_suffix('>'))
+    else {
         return false;
     };
     let Some((len, hash)) = body.split_once(" sha256=") else {
@@ -362,134 +515,166 @@ fn is_text_placeholder(text: &str) -> bool {
         && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Returns a replacement for an argv element that is known to contain free text.
-/// Keep command names, ids, and flags useful in the flight trace without retaining
-/// the prompt, PTY input, or structured agent result itself.
-fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
-    let arg = argv.get(index)?;
-    let (command_index, command) = top_level_command(argv)?;
-    let subcommand_index = next_non_global(argv, command_index + 1)?;
-    let subcommand = argv.get(subcommand_index).map(String::as_str);
+/// These are free-form payload IDs in the clap tree, not spellings or offsets.
+fn content_id(id: &str) -> bool {
+    matches!(
+        id,
+        "text"
+            | "task"
+            | "question"
+            | "summary"
+            | "result"
+            | "prompt"
+            | "persona"
+            | "message"
+            | "answer"
+            | "choices"
+            | "options"
+            | "input"
+            | "payload"
+            | "receipt"
+            | "description"
+            | "content"
+    )
+}
 
-    let positional = match (command.as_str(), subcommand) {
-        ("pane", Some("send")) => positional_after(argv, subcommand_index + 1, 2, &[])
-            .is_some_and(|content| index == content),
-        ("pane", Some("message")) if next_non_global(argv, subcommand_index + 1).is_some_and(|i| argv[i] == "send") => {
-            positional_after(argv, next_non_global(argv, subcommand_index + 1).unwrap() + 1, 2, &[]).is_some_and(|content| index == content)
+fn content_values(matches: &clap::ArgMatches) -> Vec<String> {
+    content_values_at(matches, &[])
+}
+
+fn content_values_at(matches: &clap::ArgMatches, path: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    for id in matches.ids().filter(|id| {
+        content_id(id.as_str())
+            || (path == ["pane", "result"] && id.as_str() == "write")
+            || (path == ["pane", "result", "write"]
+                && (id.as_str() == "second"
+                    || (id.as_str() == "first" && !matches.contains_id("second"))))
+    }) {
+        if matches.value_source(id.as_str()) == Some(clap::parser::ValueSource::CommandLine) {
+            if let Some(raw) = matches.get_raw(id.as_str()) {
+                values.extend(raw.map(|value| value.to_string_lossy().into_owned()));
+            }
         }
-        ("agent", Some("ask")) => positional_after(argv, subcommand_index + 1, 1, &["--pane-id"])
-            .is_some_and(|content| index == content),
-        ("agent", Some("message")) => positional_after(argv, subcommand_index + 1, 2, &[])
-            .is_some_and(|content| index == content),
-        ("command-view", Some("send")) => positional_after(argv, subcommand_index + 1, 2, &[])
-            .is_some_and(|content| index == content),
-        _ => false,
+    }
+    if let Some((name, child)) = matches.subcommand() {
+        let mut path = path.to_vec();
+        path.push(name);
+        values.extend(content_values_at(child, &path));
+    }
+    values
+}
+
+/// On an invalid invocation, retain only grammar-recognized flags and the
+/// unambiguous command prefix. Unknown hyphen tokens might themselves be text.
+fn fail_closed(command: &clap::Command, argv: &[String]) -> Vec<Option<String>> {
+    fn flags(command: &clap::Command, out: &mut Vec<String>) {
+        for arg in command.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                out.push(format!("--{long}"));
+            }
+            if let Some(short) = arg.get_short() {
+                out.push(format!("-{short}"));
+            }
+        }
+        for child in command.get_subcommands() {
+            flags(child, out);
+        }
+    }
+    let mut known = vec!["--".to_string()];
+    flags(command, &mut known);
+    let mut node = command;
+    let mut prefix = true;
+    argv.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if index == 0 {
+                return None;
+            }
+            if prefix {
+                if let Some(child) = node.find_subcommand(arg) {
+                    node = child;
+                    return None;
+                }
+                // Once a token is ambiguous, do not guess further command positions.
+                prefix = false;
+            }
+            if known.contains(arg) {
+                return None;
+            }
+            if let Some((flag, value)) = arg.split_once('=') {
+                if known.iter().any(|known| known == flag) {
+                    return Some(format!("{flag}={}", text_placeholder(value)));
+                }
+            }
+            Some(text_placeholder(arg))
+        })
+        .collect()
+}
+
+fn redact_content(argv: &[String]) -> (Vec<Option<String>>, bool) {
+    use clap::CommandFactory;
+    // main uses this same grammar through help::gated_command. Its additional
+    // transforms only hide help and consult runtime profiles; tracing must not.
+    let command = super::args::Cli::command();
+    let Ok(matches) = command.clone().try_get_matches_from(argv) else {
+        return (fail_closed(&command, argv), true);
     };
-    if positional {
-        return Some(text_placeholder(arg));
+    let values = content_values(&matches);
+    let mut replacements = vec![None; argv.len()];
+    // Clap indices are logical indices (equals syntax and short clusters expand
+    // them), not argv offsets. Reparse candidate substitutions to prove ownership
+    // instead. This also disambiguates a payload equal to an id or command name.
+    let mut marker = "plexi_trace_content_probe".to_string();
+    while argv.iter().any(|arg| arg.contains(&marker)) {
+        marker.push('_');
     }
-
-    let content_flags: &[&str] = match command.as_str() {
-        "agent" => &["--task", "--prompt", "--summary", "--result", "--persona", "--question", "--option"],
-        "assistant" => &["--text"],
-        _ => &[],
-    };
-    if let Some((flag, value)) = arg.split_once('=') {
-        if content_flags.contains(&flag) {
-            return Some(format!("{flag}={}", text_placeholder(value)));
+    for value in values {
+        let mut mapped = false;
+        for (index, arg) in argv.iter().enumerate().skip(1) {
+            let prefix = if arg == &value {
+                ""
+            } else if let Some((flag, rhs)) = arg.split_once('=') {
+                if rhs != value || !flag.starts_with('-') {
+                    continue;
+                }
+                &arg[..flag.len() + 1]
+            } else {
+                continue;
+            };
+            let mut probe = argv.to_vec();
+            probe[index] = format!("{prefix}{marker}");
+            if command
+                .clone()
+                .try_get_matches_from(&probe)
+                .ok()
+                .is_some_and(|parsed| content_values(&parsed).contains(&marker))
+            {
+                replacements[index] = Some(format!("{prefix}{}", text_placeholder(&value)));
+                mapped = true;
+            }
         }
-    }
-    if previous_non_global(argv, index).is_some_and(|previous| content_flags.contains(&argv[previous].as_str())) {
-        return Some(text_placeholder(arg));
-    }
-    None
-}
-
-fn positional_after(argv: &[String], start: usize, wanted: usize, value_flags: &[&str]) -> Option<usize> {
-    let mut positional = 0;
-    let mut index = start;
-    while let Some(arg) = argv.get(index) {
-        if arg == "--" {
-            index += 1;
-            continue;
-        }
-        if is_global_option(arg) {
-            index += if global_takes_value(arg) { 2 } else { 1 };
-            continue;
-        }
-        if value_flags.contains(&arg.as_str()) {
-            index += 2;
-            continue;
-        }
-        if value_flags.iter().any(|flag| arg.strip_prefix(flag).is_some_and(|suffix| suffix.starts_with('='))) {
-            index += 1;
-            continue;
-        }
-        positional += 1;
-        if positional == wanted {
-            return Some(index);
-        }
-        index += 1;
-    }
-    None
-}
-
-fn is_global_option(arg: &str) -> bool {
-    matches!(arg, "--profile" | "--socket" | "--json") || arg.starts_with("--profile=") || arg.starts_with("--socket=")
-}
-
-fn global_takes_value(arg: &str) -> bool { matches!(arg, "--profile" | "--socket") }
-
-fn next_non_global(argv: &[String], mut index: usize) -> Option<usize> {
-    while let Some(arg) = argv.get(index) {
-        if is_global_option(arg) { index += if global_takes_value(arg) { 2 } else { 1 }; } else { return Some(index); }
-    }
-    None
-}
-
-fn previous_non_global(argv: &[String], before: usize) -> Option<usize> {
-    let mut previous = None;
-    let mut index = 0;
-    while index < before {
-        let arg = &argv[index];
-        if is_global_option(arg) {
-            index += if global_takes_value(arg) { 2 } else { 1 };
-        } else {
-            previous = Some(index);
-            index += 1;
+        if !mapped {
+            return (fail_closed(&command, argv), true);
         }
     }
-    previous
-}
-
-fn top_level_command(argv: &[String]) -> Option<(usize, &String)> {
-    let mut index = 1;
-    while let Some(arg) = argv.get(index) {
-        if matches!(arg.as_str(), "pane" | "agent" | "assistant" | "command-view") {
-            return Some((index, arg));
-        }
-        if matches!(arg.as_str(), "--profile" | "--socket") {
-            index += 2;
-        } else if arg.starts_with("--profile=") || arg.starts_with("--socket=") || arg == "--json" {
-            index += 1;
-        } else {
-            return None;
-        }
-    }
-    None
+    (replacements, false)
 }
 
 /// Redact before transport and again before persistence. Keep option names so
 /// the sequence remains useful; mask uppercase env assignments, secret keys,
 /// and command arguments that carry free-form user or agent text.
 pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
+    let (content, fallback) = redact_content(argv);
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
     argv.iter()
         .enumerate()
         .map(|(index, arg)| {
-            if let Some(redacted) = redact_content_arg(argv, index) {
-                return redacted;
+            if !fallback {
+                if let Some(redacted) = &content[index] {
+                    return redacted.clone();
+                }
             }
             if hide_next {
                 hide_next = false;
@@ -500,6 +685,11 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
                 return "<redacted>".to_string();
             }
             if let Some((key, _)) = arg.split_once('=') {
+                // In an invalid call, even an assignment's key can be payload.
+                // Only retain an option prefix that the grammar recognized.
+                if let Some(redacted) = &content[index] {
+                    return redacted.clone();
+                }
                 if !key.contains(char::is_whitespace) && secret_assignment(key, known) {
                     return format!("{key}=<redacted>");
                 }
@@ -508,6 +698,10 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
                 || known.iter().any(|name| name.eq_ignore_ascii_case(arg))
             {
                 hide_next = true;
+                return content[index].clone().unwrap_or_else(|| arg.clone());
+            }
+            if let Some(redacted) = &content[index] {
+                return redacted.clone();
             }
             if arg.starts_with("--") && !arg.contains(char::is_whitespace) {
                 return arg.clone();
