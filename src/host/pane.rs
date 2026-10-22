@@ -18,12 +18,17 @@ fn short_session_id(id: &str) -> &str {
     &id[..end]
 }
 
-fn standby_session_line(session: &crate::workspace::SavedAgentSession) -> String {
+fn standby_session_line(
+    session: &crate::workspace::SavedAgentSession,
+    cached_resume_command: Option<&str>,
+) -> String {
     match (
         crate::cli::AgentHarness::parse(&session.harness),
         session.session_id.as_deref().filter(|id| !id.trim().is_empty()),
     ) {
-        (Some(harness), Some(id)) if harness.restore_command(Some(id)) != harness.adapter().binary => {
+        (Some(harness), Some(id))
+            if cached_resume_command.is_some_and(|command| command != harness.adapter().binary) =>
+        {
             format!(
                 "{} · resumes session {} ({})",
                 session.harness,
@@ -770,6 +775,8 @@ pub struct TerminalPane {
     /// When present, this background/sub-context agent pane was restored into lightweight
     /// `[Plexi Standby]` and has not yet launched its agent CLI process.
     pub standby_session: Option<crate::workspace::SavedAgentSession>,
+    /// Resume command captured when entering Standby, so rendering never probes session files.
+    pub standby_resume_command: Option<String>,
     /// Working directory captured when entering `[Plexi Standby]`.
     pub standby_cwd: Option<PathBuf>,
     /// Most recent CLI resume invocation dispatched by startup restore or Standby wake.
@@ -868,6 +875,7 @@ impl TerminalPane {
             tail_preview: None,
             agent_completed: false,
             standby_session: None,
+            standby_resume_command: None,
             standby_cwd: None,
             last_resumed_command,
             pty_title: None,
@@ -944,7 +952,7 @@ impl TerminalPane {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "unknown directory".to_string());
-        let session_line = standby_session_line(s);
+        let session_line = standby_session_line(s, self.standby_resume_command.as_deref());
         Some(format!(
             "[Plexi Standby] {label} · {cwd}\n{session_line}\n[Enter] resume"
         ))
@@ -954,6 +962,7 @@ impl TerminalPane {
     /// into the terminal's PTY in its restored `cwd`.
     pub fn resume_from_standby(&mut self) -> Option<String> {
         let standby = self.standby_session.take()?;
+        self.standby_resume_command = None;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
         let cmd = harness.map(|h| h.restore_command(standby.session_id.as_deref()));
         if let Some(ref resume_cmd) = cmd {
@@ -1252,18 +1261,19 @@ mod agent_source_tests {
     #[test]
     fn standby_banner_describes_resume_and_new_session_cases() {
         assert_eq!(
-            standby_session_line(&saved_session("codex", Some("thread-0123456789"))),
+            standby_session_line(
+                &saved_session("codex", Some("thread-0123456789")),
+                Some("codex resume thread-0123456789"),
+            ),
             "codex · resumes session thread-01234 (blocked)"
         );
         assert_eq!(
-            standby_session_line(&saved_session("claude", None)),
+            standby_session_line(&saved_session("claude", None), Some("claude")),
             "claude · no saved session, Enter starts a new one"
         );
 
-        let sessions = tempfile::tempdir().expect("sessions dir");
-        let _sessions_guard = crate::cli::agent::set_test_pi_sessions_dir(sessions.path().to_path_buf());
         assert_eq!(
-            standby_session_line(&saved_session("pi", Some("missing-session"))),
+            standby_session_line(&saved_session("pi", Some("missing-session")), Some("pi")),
             "pi · session missing-sess not found, Enter starts a new one"
         );
     }

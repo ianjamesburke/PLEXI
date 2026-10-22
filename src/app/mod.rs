@@ -5471,6 +5471,15 @@ pub(crate) fn restore_workspace(
                             }
                         }
                     }
+                    let standby_resume_command = (!should_auto_resume)
+                        .then(|| {
+                            effective_session.as_ref().and_then(|session| {
+                                crate::cli::AgentHarness::parse(&session.harness).map(|harness| {
+                                    harness.restore_command(session.session_id.as_deref())
+                                })
+                            })
+                        })
+                        .flatten();
                     if let Some(mut pane) = TerminalPane::new(
                         saved_pane.id,
                         egui_ctx.clone(),
@@ -5505,6 +5514,7 @@ pub(crate) fn restore_workspace(
                             });
                             if !should_auto_resume {
                                 pane.standby_session = Some(session);
+                                pane.standby_resume_command = standby_resume_command;
                                 pane.standby_cwd = cwd.clone();
                                 log::info!(
                                     "workspace_restore: restored agent pane {} into standby ({})",

@@ -43,6 +43,19 @@ const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
+fn standby_view_rects(content_rect: egui::Rect, font_size: f32) -> (egui::Rect, egui::Rect) {
+    let banner_height = (font_size * 3.5).min(content_rect.height());
+    let banner_rect = egui::Rect::from_min_size(
+        content_rect.min,
+        Vec2::new(content_rect.width(), banner_height),
+    );
+    let tail_rect = egui::Rect::from_min_max(
+        egui::pos2(content_rect.min.x, banner_rect.max.y),
+        content_rect.max,
+    );
+    (banner_rect, tail_rect)
+}
+
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
 /// Returns (close_exited, tab_action).
@@ -177,10 +190,26 @@ pub fn render(
             .and_then(|session| session.standby_scrollback_tail.clone())
             .unwrap_or_default()
             .join("\n");
+        let content_rect = rect.shrink2(Vec2::new(16.0, 12.0));
+        // The Standby label is always three terminal-font lines. Reserve it before
+        // laying out scrollback so a full tail cannot clip the identity or Enter hint.
+        let (banner_rect, tail_rect) = standby_view_rects(content_rect, terminal.font_size);
         ui.scope_builder(
-            egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 12.0))),
+            egui::UiBuilder::new().max_rect(banner_rect),
             |ui| {
-                ui.set_clip_rect(rect);
+                ui.set_clip_rect(banner_rect);
+                ui.label(
+                    egui::RichText::new(&banner)
+                        .monospace()
+                        .size(terminal.font_size)
+                        .color(colors.accent),
+                );
+            },
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(tail_rect),
+            |ui| {
+                ui.set_clip_rect(tail_rect);
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     if !tail.is_empty() {
                         ui.label(
@@ -189,14 +218,7 @@ pub fn render(
                                 .size((terminal.font_size - 1.0).max(9.0))
                                 .color(colors.text_dim),
                         );
-                        ui.add_space(8.0);
                     }
-                    ui.label(
-                        egui::RichText::new(&banner)
-                            .monospace()
-                            .size(terminal.font_size)
-                            .color(colors.accent),
-                    );
                 });
             },
         );
@@ -699,4 +721,21 @@ fn is_terminal_outside_workspace(
     terminal.outside_workspace_checked_at = Some(Instant::now());
     terminal.outside_workspace_root = Some(root.to_path_buf());
     outside_workspace
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_standby_view_reserves_banner_above_default_twenty_line_tail() {
+        let content = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 88.0));
+        let (banner, tail) = standby_view_rects(content, 14.0);
+
+        assert_eq!(banner.min, content.min);
+        assert!(banner.height() >= 49.0, "three-line banner remains visible");
+        assert_eq!(tail.min.y, banner.max.y);
+        assert!(tail.height() > 0.0, "the twenty-line tail is clipped below the banner");
+        assert!(banner.max.y <= content.max.y);
+    }
 }

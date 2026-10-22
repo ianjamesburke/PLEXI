@@ -12209,6 +12209,21 @@ mod agent_state_restoration_tests {
 
         // Waking standby panes 20 (`session_id: None`) and 21 (missing `session_id`) dispatches bare `pi`.
         for pane_id in [20, 21] {
+            let (win_idx, _) = h
+                .app
+                .find_pane_in_any_window(pane_id)
+                .expect("standby pane exists");
+            assert_eq!(
+                h.app.windows[win_idx].panes[&pane_id]
+                    .as_terminal()
+                    .expect("terminal pane")
+                    .standby_resume_command
+                    .as_deref(),
+                Some("pi"),
+                "Standby display must use the restore-time availability cache"
+            );
+        }
+        for pane_id in [20, 21] {
             let send_resp = temp_response(tmp.path(), &format!("wake-{pane_id}"));
             h.inject_ipc(AppRequest::SendToPane {
                 pane_id,
