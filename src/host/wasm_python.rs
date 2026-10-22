@@ -1481,26 +1481,14 @@ fn decode_loop(
             let message_type = value.get("type").and_then(Value::as_str);
             let output = match message_type {
                 Some("component_tree") => {
-                    match decode_full_tree(&value, json_time, bytes, &mut last_tree) {
-                        Some(DecodedOutput::DecodeError(reason)) => {
-                            last_tree = None;
-                            if !awaiting_full {
-                                awaiting_full = true;
-                                log::warn!(
-                                "app::{app_id}: full tree could not be applied ({reason}); requesting full-tree resync"
-                            );
-                                if let Err(error) =
-                                    stdin.push_json_line(&json!({"type": "request_full_tree"}))
-                                {
-                                    log::error!(
-                                    "app::{app_id}: failed to request full-tree resync: {error}"
-                                );
-                                }
-                            }
-                            None
-                        }
-                        output => output,
+                    let output = decode_full_tree(&value, json_time, bytes, &mut last_tree);
+                    if matches!(output, Some(DecodedOutput::DecodeError(_))) {
+                        // A malformed full tree is a guest bug, not state drift.
+                        // Surface it to the pane; requesting another full tree would
+                        // only repeat the same invalid payload.
+                        last_tree = None;
                     }
+                    output
                 }
                 Some("tree_delta") => {
                     match decode_tree_delta(&value, json_time, bytes, &last_tree) {
@@ -10896,6 +10884,47 @@ execution = "cloud"
         assert!(
             rx.try_recv().is_err(),
             "no frame should be emitted for an unapplyable delta"
+        );
+
+        stdout.close();
+        handle.join().expect("decoder thread");
+    }
+
+    #[test]
+    fn decoder_thread_surfaces_invalid_full_tree_without_requesting_resync() {
+        let stdout = DrainableOutput::default();
+        let stdin = AppendableStdin::default();
+        let stdin_probe = stdin.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint: RepaintHook = Arc::new(Mutex::new(None));
+        let reader = stdout.clone();
+        let handle = std::thread::spawn(move || {
+            decode_loop(
+                reader,
+                stdin,
+                "test".to_string(),
+                tx,
+                repaint,
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                Arc::new(Mutex::new(WakeScheduleState::default())),
+            );
+        });
+
+        // A full tree with no tree payload cannot be repaired by asking the
+        // guest for another full tree: surface the guest error to the pane.
+        stdout.push_bytes(b"{\"type\":\"component_tree\",\"frame_id\":1}\n");
+
+        let output = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("full-tree decode error");
+        assert!(matches!(
+            output,
+            DecodedOutput::DecodeError(reason) if reason == "component_tree message missing 'tree'"
+        ));
+        let request = drain_appendable_stdin(&stdin_probe, std::time::Duration::from_millis(100));
+        assert!(
+            request.is_empty(),
+            "invalid full trees must not request a resync, got {request:?}"
         );
 
         stdout.close();
