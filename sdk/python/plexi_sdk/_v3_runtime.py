@@ -111,6 +111,8 @@ class V3AppRuntime:
         self._force_full_tree = True
         self._prefer_full_tree = False
         self._tree_size_check_in = 0
+        self._keyed_tree_delta = False
+        self._next_tree_node_id = 0
         self._frame_id = 0
         self._app_id = ""
         self._workspace_root = ""
@@ -338,6 +340,7 @@ class V3AppRuntime:
         self._app_id = ev.get("app_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
+        self._keyed_tree_delta = "keyed_tree_delta" in ev.get("feature_flags", [])
         # Host-provided launch args (plexi app open <id> -- <args>, scene
         # `open` args). Under the CPython-in-WASM bridge the process argv
         # carries no app args, so the init event is their only route to
@@ -424,6 +427,12 @@ class V3AppRuntime:
         after, and remembered in between (see the interval's docstring for why
         measuring every frame is not affordable).
         """
+        # Stable arena ids are an extension negotiated with the host. Older
+        # hosts still interpret a node id as its positional arena slot, so
+        # changing ids for their full frames would make their next delta patch
+        # the wrong node.
+        if getattr(self, "_keyed_tree_delta", False):
+            encoded = self._stabilize_tree_ids(encoded)
         prev = self._last_tree
         self._last_tree = encoded
         nodes = encoded["nodes"]
@@ -434,7 +443,6 @@ class V3AppRuntime:
             force_full
             or prev is None
             or encoded["root"] != prev["root"]
-            or len(nodes) != len(prev["nodes"])
         ):
             self._tree_size_check_in = 0
             _emit(full)
@@ -444,8 +452,20 @@ class V3AppRuntime:
             self._tree_size_check_in -= 1
             _emit(full)
             return
+        old_by_id = {node["id"]: node for node in prev["nodes"]}
+        new_by_id = {node["id"]: node for node in nodes}
+        added = [node for node in nodes if node["id"] not in old_by_id]
+        removed = [node["id"] for node in prev["nodes"] if node["id"] not in new_by_id]
+        structural = self._keyed_structure_only(prev, encoded)
+        if (added or removed or structural) and not (self._keyed_tree_delta and structural):
+            self._tree_size_check_in = 0
+            _emit(full)
+            return
         changed: list[dict] = []
-        for node, old in zip(nodes, prev["nodes"]):
+        for node in nodes:
+            old = old_by_id.get(node["id"])
+            if old is None:
+                continue
             if node == old:
                 continue
             if node["key"] != old["key"]:
@@ -453,9 +473,10 @@ class V3AppRuntime:
                 _emit(full)
                 return
             changed.append(_node_patch(node, old))
-        delta_line = _dump_line(
-            {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
-        )
+        delta = {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
+        if added or removed:
+            delta.update({"added": added, "removed": removed})
+        delta_line = _dump_line(delta)
         if measure:
             full_line = _dump_line(full)
             self._prefer_full_tree = len(full_line) <= len(delta_line)
@@ -464,6 +485,76 @@ class V3AppRuntime:
             return
         self._tree_size_check_in -= 1
         _emit_line(delta_line)
+
+    def _stabilize_tree_ids(self, encoded: dict) -> dict:
+        """Give keyed paths durable arena ids while leaving unkeyed frames positional."""
+        prev_by_key = {node["key"]: node["id"] for node in (self._last_tree or {}).get("nodes", [])}
+        keys = [node["key"] for node in encoded["nodes"]]
+        next_id = getattr(self, "_next_tree_node_id", 0)
+        if not isinstance(next_id, int):
+            next_id = 0
+        # Never reuse an id that appeared in a prior full tree. In particular,
+        # a duplicate-key frame cannot retain keys, but it must not fall back
+        # to positional ids that collide with ids already handed out.
+        next_id = max([next_id, *(node["id"] + 1 for node in (self._last_tree or {}).get("nodes", []))])
+        mapping: dict[int, int] = {}
+        if len(keys) != len(set(keys)):
+            # Duplicate keys cannot identify a durable node. Give this whole
+            # frame fresh ids so it remains a valid full tree and forces a
+            # clean resync point for the next keyed frame.
+            for node in encoded["nodes"]:
+                mapping[node["id"]] = next_id
+                next_id += 1
+        else:
+            used_ids = set(prev_by_key.values())
+            for node in encoded["nodes"]:
+                old_id = node["id"]
+                stable_id = prev_by_key.get(node["key"])
+                if stable_id is None:
+                    while next_id in used_ids:
+                        next_id += 1
+                    stable_id = next_id
+                    next_id += 1
+                mapping[old_id] = stable_id
+                used_ids.add(stable_id)
+        self._next_tree_node_id = next_id
+        def remap_data(data: dict) -> dict:
+            data = dict(data)
+            if data.get("type") in ("Column", "Row", "DataTable"):
+                data["children"] = [mapping[item] for item in data.get("children", [])]
+            elif data.get("type") == "ListView":
+                data["items"] = [mapping[item] for item in data.get("items", [])]
+            elif data.get("type") in ("Scroll", "Pinned"):
+                data["child"] = mapping[data["child"]]
+            return data
+        return {"root": mapping[encoded["root"]], "nodes": [
+            {**node, "id": mapping[node["id"]], "data": remap_data(node["data"])}
+            for node in encoded["nodes"]
+        ]}
+
+    @staticmethod
+    def _keyed_structure_only(previous: dict, current: dict) -> bool:
+        """Whether all changed child lists contain direct explicit Keyed children."""
+        old_by_id = {node["id"]: node for node in previous["nodes"]}
+        new_by_id = {node["id"]: node for node in current["nodes"]}
+        old_keys = {node["key"] for node in previous["nodes"]}
+        new_keys = {node["key"] for node in current["nodes"]}
+        if not all("/@" in key for key in old_keys ^ new_keys):
+            return False
+        saw_structure = bool(old_keys ^ new_keys)
+        for node_id in old_by_id.keys() & new_by_id.keys():
+            old, new = old_by_id[node_id], new_by_id[node_id]
+            field = {"Column": "children", "Row": "children", "DataTable": "children",
+                     "ListView": "items"}.get(new["data"].get("type"))
+            if field is None or old["data"].get(field, []) == new["data"].get(field, []):
+                continue
+            saw_structure = True
+            parent_key = new["key"] + "/@"
+            for child_id in [*old["data"].get(field, []), *new["data"].get(field, [])]:
+                child = old_by_id.get(child_id) or new_by_id.get(child_id)
+                if child is None or not child["key"].startswith(parent_key):
+                    return False
+        return saw_structure
 
     def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))

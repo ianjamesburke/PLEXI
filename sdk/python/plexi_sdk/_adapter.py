@@ -160,9 +160,19 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
     def flatten(node: Any, key: str) -> int:
         node_id = len(arena)
         arena.append({"id": node_id, "key": key, "data": {"type": "Pending"}})
-        explicit_key = getattr(node, "key", "") or key
+        # An explicit Keyed key is a path segment, not a replacement for the
+        # path accumulated above it.  That makes the key unique in the tree
+        # and keeps every descendant on that keyed identity when siblings move.
+        own_key = getattr(node, "key", "") or (
+            node.get("_plexi_key", "") if isinstance(node, dict) else ""
+        )
+        # `flatten` receives a positional child address. Replace that final
+        # address segment for Keyed rather than appending to it: the keyed node
+        # is the direct child of its container, regardless of its list index.
+        key_parent = key.rsplit("/", 1)[0] if "/" in key else ""
+        explicit_key = f"{key_parent}/@{own_key}" if own_key else key
         if isinstance(node, dict):
-            data = node
+            data = {k: v for k, v in node.items() if k != "_plexi_key"}
         elif hasattr(node, "to_node"):
             data = node.to_node()
         elif is_dataclass(node):

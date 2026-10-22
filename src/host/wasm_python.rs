@@ -692,6 +692,7 @@ fn python_init_payload(
         "app_id": config.app_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
+        "feature_flags": ["keyed_tree_delta"],
         "states": { default_scope.as_str(): state },
         "state_scopes": scope_names,
         "theme": config.theme,
@@ -1046,7 +1047,12 @@ impl HeadlessPythonSession {
                             "tree_delta missing 'changed' array".to_string(),
                         )
                     })?;
-                apply_tree_delta(base, changed)?
+                apply_tree_delta(
+                    base,
+                    changed,
+                    message.get("added").and_then(Value::as_array),
+                    message.get("removed").and_then(Value::as_array),
+                )?
             }
             _ => {
                 let raw = message.get("tree").ok_or_else(|| {
@@ -1475,7 +1481,14 @@ fn decode_loop(
             let message_type = value.get("type").and_then(Value::as_str);
             let output = match message_type {
                 Some("component_tree") => {
-                    decode_full_tree(&value, json_time, bytes, &mut last_tree)
+                    let output = decode_full_tree(&value, json_time, bytes, &mut last_tree);
+                    if matches!(output, Some(DecodedOutput::DecodeError(_))) {
+                        // A malformed full tree is a guest bug, not state drift.
+                        // Surface it to the pane; requesting another full tree would
+                        // only repeat the same invalid payload.
+                        last_tree = None;
+                    }
+                    output
                 }
                 Some("tree_delta") => {
                     match decode_tree_delta(&value, json_time, bytes, &last_tree) {
@@ -1604,7 +1617,9 @@ fn decode_tree_delta(
         .and_then(Value::as_array)
         .ok_or_else(|| "tree_delta missing 'changed' array".to_string())?;
     let tree_started = std::time::Instant::now();
-    let tree = apply_tree_delta(base, changed).map_err(|error| error.to_string())?;
+    let added = value.get("added").and_then(Value::as_array);
+    let removed = value.get("removed").and_then(Value::as_array);
+    let tree = apply_tree_delta(base, changed, added, removed).map_err(|error| error.to_string())?;
     Ok(DecodedOutput::Tree {
         frame_id: value.get("frame_id").and_then(Value::as_u64),
         tree: Arc::new(tree),
@@ -1622,13 +1637,14 @@ fn decode_tree_delta(
 fn apply_tree_delta(
     base: &PythonUiTree,
     changed: &[Value],
+    added: Option<&Vec<Value>>,
+    removed: Option<&Vec<Value>>,
 ) -> Result<PythonUiTree, WasmPythonError> {
     let mut tree = base.tree.clone();
     let mut canvas_fits = base.canvas_fits.clone();
     for patch in changed {
         let id = required_u32(patch, "id")?;
-        let index = id as usize;
-        let slot = tree.nodes.get_mut(index).ok_or_else(|| {
+        let slot = tree.nodes.iter_mut().find(|node| node.id == id).ok_or_else(|| {
             WasmPythonError::BridgeJson(format!(
                 "tree_delta id {id} out of range (arena has {} nodes)",
                 base.tree.nodes.len()
@@ -1678,6 +1694,31 @@ fn apply_tree_delta(
             *slot = node;
         }
     }
+    let mut remove_ids = std::collections::HashSet::new();
+    if let Some(removed) = removed {
+        for raw_id in removed {
+            let id = raw_id.as_u64().filter(|id| *id <= u32::MAX as u64)
+                .ok_or_else(|| WasmPythonError::BridgeJson("keyed tree_delta removal is not a u32 id".to_string()))? as u32;
+            if !remove_ids.insert(id) || !tree.nodes.iter().any(|node| node.id == id) {
+                return Err(WasmPythonError::BridgeJson("keyed tree_delta removes an unknown or duplicate id".to_string()));
+            }
+        }
+    }
+    tree.nodes.retain(|node| !remove_ids.contains(&node.id));
+    for id in &remove_ids {
+        canvas_fits.remove(id);
+    }
+    if let Some(added) = added {
+        for raw_node in added {
+            let node = decode_indexed_node(raw_node)?;
+            if tree.nodes.iter().any(|existing| existing.id == node.id) {
+                return Err(WasmPythonError::BridgeJson(format!("keyed tree_delta adds duplicate id {}", node.id)));
+            }
+            if let Some(fit) = canvas_fit_for_node(raw_node)? { canvas_fits.insert(node.id, fit); }
+            tree.nodes.push(node);
+        }
+    }
+    validate_python_ui_tree(&tree)?;
     Ok(PythonUiTree { tree, canvas_fits })
 }
 
@@ -3844,6 +3885,7 @@ impl LivePythonPane {
             "type": "init", "app_id": self.app_id,
             "workspace_root": self.config.workspace_root,
             "capabilities": self.config.capabilities,
+            "feature_flags": ["keyed_tree_delta"],
             "states": self.states_json(),
             "state_scopes": self.scope_names(),
             "theme": {},
@@ -5654,6 +5696,7 @@ fn decode_ui_tree_value(value: &Value) -> Result<UiTree, WasmPythonError> {
 
 fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPythonError> {
     let tree = decode_ui_tree_value(value)?;
+    validate_python_ui_tree(&tree)?;
     let mut canvas_fits = HashMap::new();
     for node in value
         .get("nodes")
@@ -5666,6 +5709,41 @@ fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPython
         }
     }
     Ok(PythonUiTree { tree, canvas_fits })
+}
+
+/// A decoded tree is only renderable when its arena ids and every edge resolve.
+/// Treat violations as bridge desyncs so the decoder asks the guest for a full
+/// frame instead of letting the renderer silently skip missing nodes.
+fn validate_python_ui_tree(tree: &UiTree) -> Result<(), WasmPythonError> {
+    let ids: std::collections::HashSet<u32> = tree.nodes.iter().map(|node| node.id).collect();
+    if ids.len() != tree.nodes.len() {
+        return Err(WasmPythonError::BridgeJson(
+            "ui tree contains duplicate node ids".to_string(),
+        ));
+    }
+    if !ids.contains(&tree.root) {
+        return Err(WasmPythonError::BridgeJson(
+            "ui tree root is not present in its arena".to_string(),
+        ));
+    }
+    for node in &tree.nodes {
+        let references: &[u32] = match &node.data {
+            UiNodeData::Column(column) => &column.children,
+            UiNodeData::Row(row) => &row.children,
+            UiNodeData::ListView(list) => &list.items,
+            UiNodeData::Scroll(scroll) => std::slice::from_ref(&scroll.child),
+            UiNodeData::Padding(padding) => std::slice::from_ref(&padding.child),
+            UiNodeData::Pinned(pinned) => std::slice::from_ref(&pinned.child),
+            _ => &[],
+        };
+        if references.iter().any(|id| !ids.contains(id)) {
+            return Err(WasmPythonError::BridgeJson(format!(
+                "ui tree node {} references a missing child",
+                node.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The `CanvasFit` an encoded node maps to, or `None` when it is not a canvas.
@@ -5778,7 +5856,7 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
             format!("{}{raw_key}", super::wasm_render::CARD_NODE_KEY_PREFIX)
         }
     } else if matches!(kind, "DataTable" | "data_table" | "table" | "Table") {
-        encode_table_node_key(data)?
+        encode_table_node_key(data, raw_key)?
     } else {
         raw_key
     };
@@ -5789,7 +5867,10 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
     })
 }
 
-fn encode_table_node_key(value: &Value) -> Result<String, WasmPythonError> {
+fn encode_table_node_key(
+    value: &Value,
+    identity_key: String,
+) -> Result<String, WasmPythonError> {
     let columns: Vec<String> = value
         .get("columns")
         .and_then(Value::as_array)
@@ -5839,6 +5920,7 @@ fn encode_table_node_key(value: &Value) -> Result<String, WasmPythonError> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let meta = super::wasm_render::TableNodeMeta {
+        identity_key,
         columns,
         rows,
         selected,
@@ -10426,7 +10508,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":1,"key":"0/0","data":{"type":"Text","text":"score=7"}}"#,
         )];
-        let patched = apply_tree_delta(&base, &changed).expect("apply delta");
+        let patched = apply_tree_delta(&base, &changed, None, None).expect("apply delta");
 
         let UiNodeData::Text(text) = &patched.tree.nodes[1].data else {
             panic!("expected text node");
@@ -10446,7 +10528,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r##"{"id":2,"key":"0/1","commands_changed":[[1,{"type":"rect","x":120.0,"y":100.0,"w":20.0,"h":20.0,"fill":"#ff0000","radius":0.0}]]}"##,
         )];
-        let patched = apply_tree_delta(&base, &changed).expect("apply canvas delta");
+        let patched = apply_tree_delta(&base, &changed, None, None).expect("apply canvas delta");
 
         let UiNodeData::Canvas(canvas) = &patched.tree.nodes[2].data else {
             panic!("expected canvas node");
@@ -10467,7 +10549,88 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":99,"key":"x","data":{"type":"Empty"}}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_adds_removes_and_reorders_stable_nodes() {
+        let base = decode_python_ui_tree_value(&encoded_value(r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Column","children":[1,2],"align":"start","grow":false}},
+              {"id":1,"key":"0/@a","data":{"type":"Text","text":"a"}},
+              {"id":2,"key":"0/@b","data":{"type":"Text","text":"b"}}
+            ]
+        }"#)).expect("base");
+        let changed = [encoded_value(r#"{"id":0,"key":"0","data":{"type":"Column","children":[3,1],"align":"start","grow":false}}"#)];
+        let added = vec![encoded_value(r#"{"id":3,"key":"0/@new","data":{"type":"Text","text":"new"}}"#)];
+        let removed = vec![json!(2)];
+        let patched = apply_tree_delta(&base, &changed, Some(&added), Some(&removed))
+            .expect("keyed delta applies");
+        let UiNodeData::Column(root) = &patched.tree.nodes[0].data else {
+            panic!("expected root column");
+        };
+        assert_eq!(root.children, vec![3, 1]);
+        assert!(patched.tree.nodes.iter().any(|node| node.id == 1));
+        assert!(patched.tree.nodes.iter().any(|node| node.id == 3));
+        assert!(!patched.tree.nodes.iter().any(|node| node.id == 2));
+    }
+
+    #[test]
+    fn keyed_delta_duplicate_added_id_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let added = vec![encoded_value(r#"{"id":1,"key":"duplicate","data":{"type":"Text","text":"x"}}"#)];
+        assert!(apply_tree_delta(&base, &[], Some(&added), None).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_with_dangling_child_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Column","children":[1],"align":"start","grow":false}},
+              {"id":1,"key":"0/0","data":{"type":"Text","text":"a"}}
+            ]
+        }"#)).expect("base");
+        let changed = [encoded_value(
+            r#"{"id":0,"key":"0","data":{"type":"Column","children":[1],"align":"start","grow":false}}"#,
+        )];
+        let removed = vec![json!(1)];
+        assert!(apply_tree_delta(&base, &changed, None, Some(&removed)).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_that_removes_root_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let removed = vec![json!(0)];
+        assert!(apply_tree_delta(&base, &[], None, Some(&removed)).is_err());
+    }
+
+    #[test]
+    fn full_tree_with_duplicate_ids_is_a_desync_error() {
+        assert!(decode_python_ui_tree_value(&encoded_value(
+            r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Empty"}},
+              {"id":0,"key":"1","data":{"type":"Empty"}}
+            ]
+        }"#
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn data_table_key_keeps_raw_identity_when_contents_change() {
+        let first = json!({
+            "columns": ["name"], "rows": [["a"]], "selected": 0
+        });
+        let second = json!({
+            "columns": ["name"], "rows": [["b"]], "selected": 0
+        });
+        let first = encode_table_node_key(&first, "0/@table".to_string()).expect("first key");
+        let second = encode_table_node_key(&second, "0/@table".to_string()).expect("second key");
+        let first = super::super::wasm_render::parse_table_node_key(&first).expect("first meta");
+        let second = super::super::wasm_render::parse_table_node_key(&second).expect("second meta");
+        assert_eq!(first.identity_key, second.identity_key);
+        assert_ne!(first.rows, second.rows);
     }
 
     fn continuous_wake(
@@ -10609,7 +10772,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":1,"key":"0/0","commands_changed":[[0,{"type":"rect"}]]}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
     }
 
     #[test]
@@ -10618,7 +10781,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":2,"key":"0/1","commands_changed":[[9,{"type":"rect"}]]}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
     }
 
     #[test]
@@ -10721,6 +10884,47 @@ execution = "cloud"
         assert!(
             rx.try_recv().is_err(),
             "no frame should be emitted for an unapplyable delta"
+        );
+
+        stdout.close();
+        handle.join().expect("decoder thread");
+    }
+
+    #[test]
+    fn decoder_thread_surfaces_invalid_full_tree_without_requesting_resync() {
+        let stdout = DrainableOutput::default();
+        let stdin = AppendableStdin::default();
+        let stdin_probe = stdin.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint: RepaintHook = Arc::new(Mutex::new(None));
+        let reader = stdout.clone();
+        let handle = std::thread::spawn(move || {
+            decode_loop(
+                reader,
+                stdin,
+                "test".to_string(),
+                tx,
+                repaint,
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                Arc::new(Mutex::new(WakeScheduleState::default())),
+            );
+        });
+
+        // A full tree with no tree payload cannot be repaired by asking the
+        // guest for another full tree: surface the guest error to the pane.
+        stdout.push_bytes(b"{\"type\":\"component_tree\",\"frame_id\":1}\n");
+
+        let output = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("full-tree decode error");
+        assert!(matches!(
+            output,
+            DecodedOutput::DecodeError(reason) if reason == "component_tree message missing 'tree'"
+        ));
+        let request = drain_appendable_stdin(&stdin_probe, std::time::Duration::from_millis(100));
+        assert!(
+            request.is_empty(),
+            "invalid full trees must not request a resync, got {request:?}"
         );
 
         stdout.close();

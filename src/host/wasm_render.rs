@@ -498,6 +498,13 @@ fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
         .or_else(|| nodes.iter().find(|node| node.id == id))
 }
 
+/// Stateful egui controls are keyed by the guest's stable key path rather
+/// than its transport arena id. Keyed list reconciliation can therefore move
+/// a node without losing its edit buffer, focus, or scroll state.
+fn stable_node_id(ui: &egui::Ui, kind: &'static str, node: &IndexedNode) -> egui::Id {
+    ui.id().with((kind, node.key.as_str()))
+}
+
 /// If `child_id` is a `Pinned{edge: Bottom}` wrapper around a `FooterKeys` node,
 /// or is itself a bare trailing `FooterKeys` node, return the id to render and
 /// its footer data. Used by `Column` to reserve a flush-bottom footer slot,
@@ -826,7 +833,7 @@ fn render_node(
             // flight. The buffer lives in egui temp memory keyed by the
             // widget id; an app-pushed value change (reset after submit,
             // external SetState) still wins over any local draft.
-            let widget_id = ui.id().with(("l1_text_input", id));
+            let widget_id = stable_node_id(ui, "l1_text_input", node);
             let state_id = widget_id.with("edit_state");
             let stored: Option<TextInputEditState> =
                 ui.ctx().memory_mut(|m| m.data.get_temp(state_id));
@@ -1028,7 +1035,7 @@ fn render_node(
 
         UiNodeData::ListView(l) => {
             egui::ScrollArea::vertical()
-                .id_salt(("l1_list_view", id))
+                .id_salt(stable_node_id(ui, "l1_list_view", node))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     let has_on_select = l.on_select.as_deref().is_some_and(|a| !a.is_empty());
@@ -1382,6 +1389,7 @@ pub(crate) const TABLE_NODE_KEY_PREFIX: &str = "__plexi_table__:";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(crate) struct TableNodeMeta {
+    pub identity_key: String,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub selected: Option<u32>,
@@ -1442,7 +1450,7 @@ fn render_data_table_node(
     }
 
     egui::ScrollArea::vertical()
-        .id_salt(("l1_data_table", id))
+        .id_salt(ui.id().with(("l1_data_table", table.identity_key.as_str())))
         .auto_shrink([false, true])
         .show(ui, |ui| {
             let row_w = ui.available_width().max(1.0);
@@ -1847,6 +1855,30 @@ mod tests {
             key: String::new(),
             data,
         }
+    }
+
+    #[test]
+    fn keyed_text_input_id_survives_list_reorder() {
+        let ctx = egui::Context::default();
+        let mut before = egui::Id::NULL;
+        let mut after = egui::Id::NULL;
+        ctx.begin_pass(egui::RawInput::default());
+        egui::Area::new(egui::Id::new("keyed-id-test")).show(&ctx, |ui| {
+            before = stable_node_id(ui, "l1_text_input", &IndexedNode {
+                id: 2,
+                key: "0/@row-b/0".to_string(),
+                data: UiNodeData::Empty,
+            });
+            // A keyed row can occupy another arena slot after its siblings
+            // move; its path stays the same and so does the egui state id.
+            after = stable_node_id(ui, "l1_text_input", &IndexedNode {
+                id: 19,
+                key: "0/@row-b/0".to_string(),
+                data: UiNodeData::Empty,
+            });
+        });
+        let _ = ctx.end_pass();
+        assert_eq!(before, after);
     }
 
     /// Bounding box of everything painted when `tree` renders into a `pane`-sized

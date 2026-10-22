@@ -159,7 +159,12 @@ class Keyed(Component):
         self.key = key
 
     def to_node(self) -> dict | None:
-        return self.child.to_node()
+        node = self.child.to_node()
+        if node is None:
+            return None
+        # Containers call `to_node()` before the adapter sees their children,
+        # so retain the wrapper's identity as private adapter metadata.
+        return {**node, "_plexi_key": self.key}
 
 
 def _validate_component_list(items: Any, container_name: str) -> None:
