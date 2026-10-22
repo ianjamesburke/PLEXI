@@ -280,27 +280,21 @@ fn main() -> eframe::Result {
     let args = strip_profile_args(&raw_args);
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
-        ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd,
-        DebugCmd, DebugSessionCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd,
-        PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd,
-        PermissionsCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
+        ChangesCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
+        DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
+        NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
+        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
-    use clap::FromArgMatches;
     let args = cli::args::normalize_config_scope_aliases(args);
 
     // Parse through the gated tree so help and completions agree with the
     // execution backstop below; hidden commands still parse.
     let parsed = cli::help::gated_command()
         .try_get_matches_from(&args)
-        .and_then(|mut matches| {
-            let cli = Cli::from_arg_matches_mut(&mut matches)?;
-            Ok((cli, matches))
-        });
+        .and_then(|matches| cli::help::decode_matches(matches, crate::release::feature_enabled));
     match parsed {
-        Ok((cli, matches)) => {
-            if let Some(feature) = cli::help::blocked_feature(&matches, |f| {
-                crate::release::feature_enabled(f)
-            }) {
+        Ok((cli, blocked)) => {
+            if let Some(feature) = blocked {
                 exit_if_feature_disabled(feature);
             }
             if let Some(socket) = cli.socket {
@@ -808,9 +802,9 @@ fn main() -> eframe::Result {
                             friendly_name,
                             global,
                         } => cli::trace::exit(cli::workspace_secret_get(&friendly_name, global)),
-                        SecretCmd::List { global } => {
-                            cli::trace::exit(cli::workspace_secret_list(global, json))
-                        }
+                        SecretCmd::List { global, context } => cli::trace::exit(
+                            cli::workspace_secret_list(global, context.as_ref(), json),
+                        ),
                         SecretCmd::Delete {
                             friendly_name,
                             global,
@@ -1162,6 +1156,9 @@ fn main() -> eframe::Result {
                             ephemeral,
                             background,
                         )),
+                        HostCmd::Restart { yes } => {
+                            cli::trace::exit(cli::host::host_restart_cli(yes, json))
+                        }
                         HostCmd::Stop => cli::trace::exit(cli::host_stop_cli()),
                         HostCmd::Log { message, source } => {
                             cli::trace::exit(cli::host_log_cli(&source, &message))
@@ -2000,6 +1997,16 @@ fn main() -> eframe::Result {
             // No subcommand — fall through to workspace path check, then GUI
         }
         Err(e) => {
+            if !matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                if let Some(feature) =
+                    cli::help::blocked_incomplete_arg(&args, crate::release::feature_enabled)
+                {
+                    exit_if_feature_disabled(feature);
+                }
+            }
             // --help and --version print and exit 0/2 through this path
             if raw_args.windows(2).any(|args| args == ["secret", "set"]) {
                 if let Some(socket) = raw_args.windows(2).find(|args| args[0] == "--socket") {
@@ -2008,7 +2015,13 @@ fn main() -> eframe::Result {
                 cli::trace::begin(&raw_args);
             }
             let code = e.exit_code();
-            if let Err(error) = e.print() { log::warn!("cli: help output failed: {error}"); }
+            if code != 0 && e.to_string().contains("--folder <DIR>") {
+                eprintln!("Usage: plexi secret set [OPTIONS] <FRIENDLY_NAME> --folder <DIR>");
+                eprintln!("Example: --folder . (or --folder <DIR> for another directory)");
+            }
+            if let Err(error) = e.print() {
+                log::warn!("cli: help output failed: {error}");
+            }
             cli::trace::exit(code);
         }
     }

@@ -74,7 +74,7 @@ pub fn gate_command(cmd: clap::Command, enabled: impl Fn(ReleaseFeature) -> bool
         for path in feature.owned_paths() {
             cmd = match *path {
                 GatePath::Sub(path) => hide_subcommand(cmd, path, &text),
-                GatePath::Arg(path, id) => hide_arg(cmd, path, id),
+                GatePath::Arg(path, id) => hide_arg(cmd, path, id, &text),
             };
         }
     }
@@ -103,11 +103,65 @@ fn hide_subcommand(cmd: clap::Command, path: &[&str], text: &str) -> clap::Comma
     })
 }
 
-fn hide_arg(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
+fn hide_arg(cmd: clap::Command, path: &[&str], id: &str, text: &str) -> clap::Command {
     let Some((head, rest)) = path.split_first() else {
-        return cmd.mut_arg(id, |a| a.hide(true));
+        let description = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == id)
+            .and_then(|a| a.get_long_help().or_else(|| a.get_help()))
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let previous = cmd
+            .get_after_help()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        return cmd
+            .after_help(format!(
+                "{previous}\n--{id}: {description}\nExperiment off: {text}"
+            ))
+            .mut_arg(id, |a| a.hide(true));
     };
-    cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id))
+    cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id, text))
+}
+
+/// Capture the gate result before clap's mutable conversion consumes matches.
+pub fn decode_matches(
+    mut matches: clap::ArgMatches,
+    enabled: impl Fn(ReleaseFeature) -> bool,
+) -> Result<(Cli, Option<ReleaseFeature>), clap::Error> {
+    use clap::FromArgMatches;
+    let blocked = blocked_feature(&matches, enabled);
+    let cli = Cli::from_arg_matches_mut(&mut matches)?;
+    Ok((cli, blocked))
+}
+
+/// Retry only failed parses with optional experiment-arg values so a missing
+/// value can still receive the experiment diagnostic. Successful parses always
+/// use the original command and its full validation.
+pub fn blocked_incomplete_arg(
+    args: &[String],
+    enabled: impl Fn(ReleaseFeature) -> bool,
+) -> Option<ReleaseFeature> {
+    fn relax(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
+        match path.split_first() {
+            Some((head, rest)) => cmd.mut_subcommand(*head, |sub| relax(sub, rest, id)),
+            None => cmd.mut_arg(id, |arg| arg.num_args(0..=1).value_parser(clap::builder::StringValueParser::new()).default_missing_value("missing-experiment-value")),
+        }
+    }
+    let mut cmd = Cli::command();
+    for feature in ReleaseFeature::ALL
+        .iter()
+        .copied()
+        .filter(|feature| !enabled(*feature))
+    {
+        for path in feature.owned_paths() {
+            if let GatePath::Arg(path, id) = path {
+                cmd = relax(cmd, path, id);
+            }
+        }
+    }
+    let matches = cmd.try_get_matches_from(args).ok()?;
+    blocked_feature(&matches, enabled)
 }
 
 /// The first experiment that `matches` invokes while `enabled` reports it off.
@@ -518,7 +572,53 @@ mod tests {
         let m = Cli::command()
             .try_get_matches_from(args)
             .unwrap_or_else(|e| panic!("{args:?} must parse: {e}"));
-        blocked_feature(&m, |f| on.contains(&f))
+        decode_matches(m, |f| on.contains(&f)).unwrap().1
+    }
+
+    #[test]
+    fn folder_gate_survives_cli_conversion_exact_reported_argv() {
+        let matches = all_off()
+            .try_get_matches_from([
+                "plexi",
+                "secret",
+                "set",
+                "DEMO_TOKEN",
+                "--folder",
+                ".",
+                "--from-env",
+            ])
+            .unwrap();
+        let (_cli, blocked) = decode_matches(matches, |_| false).unwrap();
+        assert_eq!(blocked, Some(ReleaseFeature::FolderSecrets));
+    }
+
+    #[test]
+    fn folder_help_and_incomplete_gate_are_actionable() {
+        for mut command in [all_off(), all_on()] {
+            let help = command
+                .find_subcommand_mut("secret")
+                .unwrap()
+                .find_subcommand_mut("set")
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            assert!(help.contains("--folder") && help.contains("folder_secrets"));
+            assert!(help.contains("plexi experiments enable folder_secrets"));
+        }
+        let args: Vec<String> = ["plexi", "secret", "set", "DEMO_TOKEN", "--folder"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            blocked_incomplete_arg(&args, |_| false),
+            Some(ReleaseFeature::FolderSecrets)
+        );
+        assert_eq!(blocked_incomplete_arg(&args, |_| true), None);
+        let literal: Vec<String> = ["plexi", "secret", "set", "--", "--folder"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(blocked_incomplete_arg(&literal, |_| false), None);
     }
 
     #[test]

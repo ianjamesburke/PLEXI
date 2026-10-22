@@ -127,7 +127,7 @@ pub(crate) fn set_test_pane_context_root(path: &std::path::Path) -> TestPaneCont
     TestPaneContextGuard(prev)
 }
 
-fn active_pane_context_root() -> Option<std::path::PathBuf> {
+pub(crate) fn active_pane_context_root() -> Option<std::path::PathBuf> {
     #[cfg(test)]
     let raw = TEST_PANE_CONTEXT_ROOT.with(|cell| cell.borrow().clone())?;
     #[cfg(not(test))]
@@ -448,8 +448,15 @@ pub(crate) fn reconcile_secrets_before_read(command: &str) {
 /// `plexi secret list` — list friendly names. Inside a workspace, includes
 /// workspace namespace plus user-scope. Outside a workspace, gracefully falls
 /// back to user-scope. Names only, never values.
-pub fn workspace_secret_list(global: bool, json: bool) -> i32 {
+pub fn workspace_secret_list(
+    global: bool,
+    context: Option<&super::ContextTarget>,
+    json: bool,
+) -> i32 {
     log::info!("secret_list:cli: global={global} json={json}");
+    if let Some(context) = context {
+        return explicit_context_secret_list(context, json);
+    }
     let result = std::env::current_dir()
         .map_err(|error| format!("current directory: {error}"))
         .and_then(|cwd| write_secret_list(&cwd, global, json, &mut std::io::stdout().lock()));
@@ -463,22 +470,57 @@ pub fn workspace_secret_list(global: bool, json: bool) -> i32 {
     }
 }
 
+fn explicit_context_secret_list(context: &super::ContextTarget, json: bool) -> i32 {
+    let reply = match super::request(
+        serde_json::json!({"type": "pane_secret_list", "context": context.as_str()}),
+        "secret-list-context",
+        "context secret inventory",
+    ) {
+        Ok(reply) => reply,
+        Err(code) => return code,
+    };
+    let result = serde_json::from_str::<serde_json::Value>(&reply)
+        .map_err(|e| e.to_string())
+        .and_then(|body| {
+            if let Some(error) = body.get("error").and_then(|v| v.as_str()) {
+                return Err(error.to_string());
+            }
+            let inventory = serde_json::from_value(body).map_err(|e| e.to_string())?;
+            write_secret_inventory(&inventory, json, &mut std::io::stdout().lock())
+        });
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            log::warn!("secret_list: {error}");
+            eprintln!("error: {error}");
+            1
+        }
+    }
+}
+
 fn write_secret_list(
     cwd: &std::path::Path,
     global: bool,
     json: bool,
     output: &mut impl std::io::Write,
 ) -> Result<(), String> {
-    use crate::workspace::secrets::manager::{secret_inventory, SecretTarget};
+    let inventory = crate::workspace::secrets::manager::secret_inventory_report(cwd, global)?;
+    write_secret_inventory(&inventory, json, output)
+}
 
-    // The inventory owns reconciliation and scope/experiment filtering for both formats.
-    let entries = secret_inventory(cwd, global)?;
+fn write_secret_inventory(
+    inventory: &crate::workspace::secrets::manager::SecretInventory,
+    json: bool,
+    output: &mut impl std::io::Write,
+) -> Result<(), String> {
+    use crate::workspace::secrets::manager::{SecretTarget, SkippedSecrets};
+    let entries = &inventory.entries;
     if json {
-        let rendered = serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?;
+        let rendered = serde_json::to_string_pretty(inventory).map_err(|e| e.to_string())?;
         return writeln!(output, "{rendered}").map_err(|e| e.to_string());
     }
     if entries.is_empty() {
-        return writeln!(output, "No secrets stored.").map_err(|e| e.to_string());
+        writeln!(output, "No secrets stored.").map_err(|e| e.to_string())?;
     }
     if let Some(SecretTarget::Workspace { id, root }) = entries.iter().find_map(|entry| {
         matches!(entry.target, SecretTarget::Workspace { .. }).then_some(&entry.target)
@@ -487,7 +529,7 @@ fn write_secret_list(
             .map(|router| router.terminal.env.inject)
             .unwrap_or_default();
         writeln!(output, "Workspace ({id}):").map_err(|e| e.to_string())?;
-        for entry in &entries {
+        for entry in entries {
             if matches!(entry.target, SecretTarget::Workspace { .. }) {
                 let annotation = if injected.contains(&entry.name) {
                     "  (injected into human terminal panes)"
@@ -504,7 +546,7 @@ fn write_secret_list(
         .any(|entry| entry.target == SecretTarget::Global)
     {
         writeln!(output, "User scope:").map_err(|e| e.to_string())?;
-        for entry in &entries {
+        for entry in entries {
             if entry.target == SecretTarget::Global {
                 writeln!(output, "  {}", entry.name).map_err(|e| e.to_string())?;
             }
@@ -525,6 +567,23 @@ fn write_secret_list(
             writeln!(output, "  {name}  {}", folder.display()).map_err(|e| e.to_string())?;
         }
         log::info!("folder_secrets: listed inventory backend={backend}");
+    }
+    for skipped in &inventory.skipped {
+        match skipped {
+            SkippedSecrets::OutsidePaneContext {
+                path,
+                pane_context_root,
+                pane_context_name,
+                ..
+            } => {
+                writeln!(output, "Skipped workspace secrets for {}: this pane's authority is scoped to {} (context {:?}). Use --context <name|id|root>, --global, or cd into that context.", path.display(), pane_context_root.display(), pane_context_name.as_deref().unwrap_or("unknown")).map_err(|e| e.to_string())?;
+            }
+            SkippedSecrets::ExperimentDisabled {
+                count, experiment, ..
+            } => {
+                writeln!(output, "{count} folder secret(s) hidden: {experiment} experiment is off (plexi experiments enable {experiment})").map_err(|e| e.to_string())?;
+            }
+        }
     }
     Ok(())
 }
@@ -867,6 +926,15 @@ fn resolve_secret_folder(
     Err(1)
 }
 
+fn folder_feature_available() -> bool {
+    let feature = crate::release::ReleaseFeature::FolderSecrets;
+    if crate::release::feature_enabled(feature) {
+        return true;
+    }
+    eprintln!("{}", crate::release::feature_unavailable_message(feature));
+    false
+}
+
 /// `plexi secret set NAME --folder <path>`.
 pub fn folder_secret_set(
     name: &str,
@@ -875,6 +943,9 @@ pub fn folder_secret_set(
     alias: Option<&str>,
     folder: &std::path::Path,
 ) -> i32 {
+    if !folder_feature_available() {
+        return 1;
+    }
     if global {
         eprintln!("error: --folder cannot be combined with --global");
         return 1;
@@ -924,6 +995,9 @@ pub fn folder_secret_set(
 
 /// `plexi secret rm NAME --folder <path>`.
 pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
+    if !folder_feature_available() {
+        return 1;
+    }
     if let Err(err) = enforce_pane_context_scope(folder, true, "secret.rm") {
         eprintln!("error: {err}");
         println!("permission_denied");
@@ -977,6 +1051,9 @@ pub fn folder_secret_grant(
     app: Option<&str>,
     folder: Option<&std::path::Path>,
 ) -> i32 {
+    if !folder_feature_available() {
+        return 1;
+    }
     // Referenced, not called. `grant_folder_secret` writes an Always grant.
     // A human click uses `approve_pending(Once)` instead. This command must
     // not invoke the function.
@@ -1012,6 +1089,9 @@ pub fn folder_secret_read(
     app: Option<&str>,
     folder: Option<&std::path::Path>,
 ) -> i32 {
+    if !folder_feature_available() {
+        return 1;
+    }
     let actor = match actor_from_flags(agent, app) {
         Ok(actor) => actor,
         Err(code) => return code,
@@ -1096,6 +1176,9 @@ pub fn folder_secret_read(
 /// Refused when this process is a pane agent. The command is not started, so
 /// a pane in folder A cannot print folder B's secrets with `--cwd`.
 pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
+    if !folder_feature_available() {
+        return 1;
+    }
     if command.is_empty() {
         eprintln!("error: secret exec needs a command");
         return 1;
@@ -1153,6 +1236,7 @@ mod secret_set_tests {
 
     #[test]
     fn cli_secret_grant_does_not_write_an_allow_or_the_value() {
+        let _enabled = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("profile");
         let _guard = crate::config::set_test_profile_dir(profile.clone());
@@ -1381,10 +1465,17 @@ mod secret_list_tests {
             "folder visibility: {output}"
         );
         assert!(!output.contains("never-print-this-secret-canary"));
+        if !global && !folders_enabled {
+            assert!(output.contains(if json {
+                "experiment_disabled"
+            } else {
+                "folder secret(s) hidden"
+            }));
+        }
         if json {
             let rows: serde_json::Value = serde_json::from_str(&output).unwrap();
             if global {
-                assert!(rows
+                assert!(rows["entries"]
                     .as_array()
                     .unwrap()
                     .iter()

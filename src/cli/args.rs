@@ -387,7 +387,7 @@ pub enum Commands {
     /// Secrets use macOS Keychain or, on Linux, Secret Service with a labeled
     /// encrypted-file fallback. Global, workspace, and folder scopes share that
     /// Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for
-    /// backend selection and legacy plaintext migration. With folder secrets enabled,
+    /// backend selection and legacy plaintext migration. With folder secrets (experiment folder_secrets, off by default; enable with `plexi experiments enable folder_secrets`) enabled,
     /// `secret set NAME --folder` binds a value to a directory. A new human
     /// terminal pane whose working directory is inside that folder receives the name
     /// as an environment variable. Agents and app tools read it only with a grant.
@@ -1298,8 +1298,10 @@ pub enum SecretCmd {
         alias: Option<String>,
         /// Bind the secret to this directory. The value is stored in the OS keychain
         /// (or the labeled encrypted-file fallback) and injected into panes whose
-        /// cwd is this directory or a subdirectory.
-        #[arg(long, conflicts_with_all = ["global", "alias"])]
+        /// cwd is this directory or a subdirectory. Requires experiment folder_secrets.
+        /// Enable: plexi experiments enable folder_secrets
+        /// Example: plexi secret set OPENAI_API_KEY --folder ~/code/client-a
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["global", "alias"])]
         folder: Option<std::path::PathBuf>,
     },
     /// Print a stored secret's value to stdout.
@@ -1319,6 +1321,9 @@ pub enum SecretCmd {
     /// Outside a workspace, falls back to user-scope secrets.
     /// Use --global to show only user-scope secrets from any directory.
     List {
+        /// List names in an explicit owned context (id, name or root). Agents need approval.
+        #[arg(long, conflicts_with = "global", value_name = "ID|NAME|ROOT")]
+        context: Option<ContextTarget>,
         /// Show only globally-stored user-scope secrets
         #[arg(long)]
         global: bool,
@@ -1774,6 +1779,12 @@ pub enum AppCmd {
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
 #[derive(Subcommand)]
 pub enum HostCmd {
+    /// Restart this channel, restoring the saved workspace.
+    Restart {
+        /// Confirm restarting the host containing this pane; this pane will close.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Launch this channel's app bundle detached and wait for readiness.
     ///
     /// Errors if a host for this channel is already running. Seeds any
@@ -3691,7 +3702,7 @@ mod tests {
         let Some(Commands::Secret { cmd }) = cli.command else {
             panic!("expected secret command");
         };
-        let SecretCmd::List { global } = cmd else {
+        let SecretCmd::List { global, .. } = cmd else {
             panic!("expected secret list command");
         };
         assert!(global);
@@ -3705,7 +3716,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Secret {
-                cmd: SecretCmd::List { global: false }
+                cmd: SecretCmd::List { global: false, .. }
             })
         ));
     }
@@ -3718,7 +3729,7 @@ mod tests {
             panic!("expected secret command");
         };
         assert!(!cli.json);
-        assert!(matches!(cmd, SecretCmd::List { global: false }));
+        assert!(matches!(cmd, SecretCmd::List { global: false, .. }));
     }
 
     #[test]

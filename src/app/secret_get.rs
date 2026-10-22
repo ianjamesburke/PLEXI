@@ -16,6 +16,79 @@ use crate::workspace::secrets::{ReadResult, SecretActor, SecretScope};
 const VALUE_REPLY_TTL: Duration = Duration::from_secs(15);
 
 impl PlexiApp {
+    pub(crate) fn serve_secret_list(
+        &mut self,
+        context: &str,
+        ancestry: &[u32],
+        response_file: &str,
+    ) {
+        let result = self.context_secret_inventory(context, ancestry);
+        let body = match result {
+            Ok(inventory) => serde_json::to_value(inventory)
+                .unwrap_or_else(|error| serde_json::json!({"error": error.to_string()})),
+            Err(error) => {
+                log::info!("secret_list: refused context={context:?}: {error}");
+                serde_json::json!({"error": error, "error_code": "permission_denied"})
+            }
+        };
+        crate::rpc::write_json_response(response_file, body);
+    }
+
+    fn context_secret_inventory(
+        &self,
+        context: &str,
+        ancestry: &[u32],
+    ) -> Result<crate::workspace::secrets::manager::SecretInventory, String> {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+        let candidates: Vec<_> = self
+            .router
+            .iter()
+            .filter(|ctx| {
+                context.parse::<u64>().ok() == Some(ctx.context_id)
+                    || ctx.name.displayed() == context
+                    || crate::platform::path::canonical_or_self(Path::new(context))
+                        == crate::platform::path::canonical_or_self(&ctx.root)
+            })
+            .collect();
+        let [ctx] = candidates.as_slice() else {
+            return Err(format!("Context '{context}' is missing or ambiguous. Use its id or root from `plexi context list`."));
+        };
+        let root = crate::platform::path::canonical_or_self(&ctx.root);
+        let Some((pane, _, _)) = self.resolve_socket_peer_pane(ancestry) else {
+            return Err("permission_denied: caller identity could not be verified; run --context from a human-owned Plexi pane.".into());
+        };
+        log::info!(
+            "secret_list: explicit context={} pane={pane} human={}",
+            ctx.context_id,
+            self.is_human_owned_pane(pane)
+        );
+        if self.is_human_owned_pane(pane) {
+            return crate::workspace::secrets::manager::inventory_for_context(&root);
+        }
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let actor = format!("pane:{pane}");
+        let call = format!("secret-list-{}", uuid::Uuid::new_v4());
+        let input = serde_json::json!({"path": root}).to_string();
+        match monitor.admit(AdmitRequest {
+            call_id: &call, tool: "secret.list", input_json: &input,
+            actor_type: ActorType::Agent, actor_id: &actor, actor_scope: ActorScope::User,
+            trust_origin: "plexi-cli", workspace_root: &root, context_id: ctx.context_id,
+            package_id: "", instance_id: 0, target_type: TargetType::Secret,
+        }) {
+            Admission::Proceed { grant_id, fingerprint, resource_id, .. } => {
+                let resource = resource_id.unwrap_or_default();
+                monitor.note_use(&actor, &call, &grant_id, &fingerprint, &resource, "")?;
+                let result = crate::workspace::secrets::manager::inventory_for_context(&root);
+                monitor.note_outcome(&actor, &call, &grant_id, &fingerprint, &resource, "", if result.is_ok() { "ok" } else { "failed" }, "", "")?;
+                monitor.consume_once(&grant_id, None);
+                result
+            }
+            Admission::Required { pending_request_id } => Err(format!("permission_denied: missing secret.list grant for {} (actor {actor}). Ask the human to approve request {pending_request_id} in Needs you, then rerun this command.", root.display())),
+            Admission::Denied { .. } => Err(format!("permission_denied: missing secret.list grant for {} (actor {actor}). Ask the human to review the denial in Permissions and approve a new request in Needs you.", root.display())),
+        }
+    }
+
     pub(crate) fn serve_secret_get(
         &mut self,
         name: &str,
@@ -147,5 +220,60 @@ fn write_reply(path: &Path, body: serde_json::Value, holds_value: bool) {
         if let Err(error) = spawned {
             log::warn!("secret_get: value reply expiry thread failed: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use crate::testing::HostHarness;
+    use crate::workspace::secrets;
+
+    fn request(h: &mut HostHarness, context: &str, claimed_pid: u32, peer: &[u32]) -> serde_json::Value {
+        let response_file = crate::rpc::response_file("secret-list-test", "json");
+        let request = crate::protocol::AppRequest::PaneSecretList {
+            context: context.into(), peer_ancestry: vec![claimed_pid], response_file: response_file.clone(),
+        };
+        let line = serde_json::to_string(&request).unwrap();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut Vec::new());
+        h.hidden_frame();
+        let body = std::fs::read_to_string(response_file).unwrap();
+        assert!(!body.contains("not-for-output"));
+        serde_json::from_str(&body).unwrap()
+    }
+
+    #[test]
+    fn context_inventory_human_names_agent_requires_exact_grant() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let pid = h.terminal_backend(pane).child_pid();
+        let other = tempfile::tempdir().unwrap();
+        let root = other.path().to_path_buf();
+        let mut target = h.app.router.active().clone();
+        target.context_id = crate::testing::reserve_test_context_id();
+        target.root = root.clone();
+        target.name = crate::host::context::ContextName::custom("inventory-target");
+        let context = target.context_id.to_string();
+        h.app.router.push(target);
+        let cfg = secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
+        let name = format!("CONTEXT_{}", uuid::Uuid::new_v4().simple());
+        let account = secrets::keychain_workspace_name(&cfg.id, &name);
+        secrets::system_store().set(&account, "not-for-output").unwrap();
+        for target in [&context, "inventory-target", root.to_str().unwrap()] {
+            let human = request(&mut h, target, pid, &[pid]);
+            assert!(human["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
+        }
+        // The listener overwrites forged ancestry before dispatch, including while hidden.
+        assert_eq!(request(&mut h, &context, pid, &[])["error_code"], "permission_denied");
+        h.app.windows[0].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().agent_spawned = true;
+        let denied = request(&mut h, &context, pid, &[pid]);
+        let error = denied["error"].as_str().unwrap();
+        assert!(error.contains("secret.list") && error.contains("Needs you"));
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let pending = monitor.list_entries().into_iter().find(|row| row.tool == "secret.list").unwrap();
+        monitor.approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once).unwrap();
+        let allowed = request(&mut h, &context, pid, &[pid]);
+        assert!(allowed["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
+        assert_eq!(request(&mut h, &context, pid, &[pid])["error_code"], "permission_denied");
+        secrets::system_store().delete(&account).unwrap();
     }
 }
