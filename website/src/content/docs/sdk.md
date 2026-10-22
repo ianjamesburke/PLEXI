@@ -651,6 +651,26 @@ The scopes this app declared in its manifest, ordered; the first
 entry is the default scope.
 
 
+### `ComponentState`
+
+```python
+ComponentState(key: str, scope: Optional[str] = None)
+```
+
+State owned by one explicitly keyed component.
+
+A component key is stable app-defined identity, not a renderer identity.
+The state is stored beneath a reserved key in the normal state snapshot,
+which keeps ordinary restore and ``PersistState`` behaviour intact.
+
+### `component(key: str, scope: Optional[str] = None)`
+
+Declare state for a component with a stable explicit ``key``.
+
+### `use_state(key: str, name: str, default: Any = None, scope: Optional[str] = None)`
+
+Read local state for component ``key`` and return its effect setter.
+
 ### `LogProxy`
 
 #### `debug(msg: str)`
@@ -697,6 +717,14 @@ Base class for all declarative UI components.
 
 Every concrete component implements :meth:`to_node` returning a JSON-serializable
 dictionary consumed by the host UI decoder.
+
+### `Keyed`
+
+```python
+Keyed(child: Component, key: str)
+```
+
+Give a component a stable explicit key for lists and local state.
 
 ### `Column`
 

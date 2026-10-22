@@ -49,6 +49,17 @@ def test_renders_without_overlap(size):
         h.assert_no_overlap()
 
 
+def test_counter_template_has_two_independent_keyed_counters():
+    """The scaffold demonstrates one local state namespace per counter key."""
+    source = APP.read_text()
+    assert 'component("left-counter")' in source
+    assert 'component("right-counter")' in source
+    assert 'selected.set("count", count + 1)' in source
+    ui_source = (APP_DIR / "app" / "ui.py").read_text()
+    assert 'key="left-counter"' in ui_source
+    assert 'key="right-counter"' in ui_source
+
+
 def test_snapshot(tmp_path):
     """Render a PNG snapshot of the first frame.
 

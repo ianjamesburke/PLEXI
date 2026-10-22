@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from .effects import PersistState, SetState
+
+
+# Kept inside the existing app-state payload so the runtime, restore path, and
+# PersistState transport remain deliberately unaware of component state.
+_COMPONENT_STATE_NAMESPACE = "__plexi_component_state__"
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,58 @@ class StateProxy:
         return _require_state().scopes
 
 
+class ComponentState:
+    """State owned by one explicitly keyed component.
+
+    A component key is stable app-defined identity, not a renderer identity.
+    The state is stored beneath a reserved key in the normal state snapshot,
+    which keeps ordinary restore and ``PersistState`` behaviour intact.
+    """
+
+    def __init__(self, key: str, *, scope: Optional[str] = None) -> None:
+        if not isinstance(key, str) or not key:
+            raise ValueError("component key must be a non-empty string")
+        self.key = key
+        self.scope = scope
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return _component_values(self.key, self.scope).get(name, default)
+
+    def set(self, name: str, value: Any, *, persist: bool = False) -> SetState | PersistState:
+        """Return an effect updating this component's named local state."""
+        if _in_view:
+            raise RuntimeError("component state.set() called inside view() - return SetState from update() instead")
+        _require_component_name(name)
+        components = _all_component_values(self.scope)
+        components.setdefault(self.key, {})[name] = value
+        return state.patch({_COMPONENT_STATE_NAMESPACE: components}, scope=self.scope, persist=persist)
+
+    def use_state(self, name: str, default: Any = None) -> tuple[Any, Callable[[Any], SetState | PersistState]]:
+        """Return the current value and a setter suitable for ``update()``."""
+        _require_component_name(name)
+
+        def setter(value: Any, *, persist: bool = False) -> SetState | PersistState:
+            return self.set(name, value, persist=persist)
+
+        return self.get(name, default), setter
+
+
+def component(key: str, *, scope: Optional[str] = None) -> ComponentState:
+    """Declare state for a component with a stable explicit ``key``."""
+    return ComponentState(key, scope=scope)
+
+
+def use_state(
+    key: str,
+    name: str,
+    default: Any = None,
+    *,
+    scope: Optional[str] = None,
+) -> tuple[Any, Callable[[Any], SetState | PersistState]]:
+    """Read local state for component ``key`` and return its effect setter."""
+    return component(key, scope=scope).use_state(name, default)
+
+
 class LogProxy:
     def debug(self, msg: str) -> None:
         _host_log("debug", msg)
@@ -117,6 +174,26 @@ def _scope_values(scope: Optional[str]) -> Mapping[str, Any]:
         return snapshot.values
     _require_declared(scope)
     return snapshot.scoped.get(scope, {})
+
+
+def _require_component_name(name: str) -> None:
+    if not isinstance(name, str) or not name:
+        raise ValueError("component state name must be a non-empty string")
+
+
+def _all_component_values(scope: Optional[str]) -> dict[str, dict[str, Any]]:
+    raw = _scope_values(scope).get(_COMPONENT_STATE_NAMESPACE, {})
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(key): dict(values)
+        for key, values in raw.items()
+        if isinstance(key, str) and isinstance(values, Mapping)
+    }
+
+
+def _component_values(key: str, scope: Optional[str]) -> Mapping[str, Any]:
+    return _all_component_values(scope).get(key, {})
 
 
 _state: Optional[StateSnapshot] = None
