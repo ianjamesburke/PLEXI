@@ -1397,10 +1397,10 @@ pub enum AppCmd {
         /// App id or path to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
         type_id: Option<String>,
-        /// Wrap a stdio MCP server in a Plexi pane.
+        /// Explore a configured stdio MCP server in a Plexi pane.
         ///
-        /// Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp
-        #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with = "cli")]
+        /// Example: plexi app open --mcp filesystem
+        #[arg(long, num_args = 1, value_name = "SERVER_ID", conflicts_with = "cli")]
         mcp: Vec<String>,
         /// Wrap a CLI tool in a Plexi pane with a visual UI.
         ///
@@ -3752,6 +3752,16 @@ mod tests {
             panic!("expected config check command");
         };
         assert_eq!(scope.scope(), ConfigScope::Workspace);
+    }
+
+    #[test]
+    fn app_open_mcp_accepts_only_a_server_id() {
+        let cli = Cli::try_parse_from(["plexi", "app", "open", "--mcp", "filesystem"]).unwrap();
+        let Some(Commands::App { cmd: AppCmd::Open { mcp, .. } }) = cli.command else {
+            panic!("expected MCP app open");
+        };
+        assert_eq!(mcp, ["filesystem"]);
+        assert!(Cli::try_parse_from(["plexi", "app", "open", "--mcp", "npx", "server", "/tmp"]).is_err());
     }
 
     #[test]

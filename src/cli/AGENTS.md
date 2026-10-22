@@ -100,6 +100,9 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 ## Documentation Rule for CLI Changes
 
+MCP visualizer launch and consent follow [`MCP_APP_CONTRACT.md`](../render/MCP_APP_CONTRACT.md).
+Keep the CLI, named MCP prefix, and palette launch paths id-based.
+
 `app call --wait-approved` holds the exact request for a bounded desktop decision,
 then re-admits and executes it once. It observes consent; it cannot grant it.
 Denial, timeout, or caller exit ends the wait without execution. Without the flag,

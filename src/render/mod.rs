@@ -14,3 +14,6 @@ pub mod descriptor_widgets;
 pub mod headless_renderer;
 pub mod minimap;
 pub mod terminal_pane;
+
+pub mod mcp_descriptor;
+pub mod mcp_renderer_app;

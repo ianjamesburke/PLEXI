@@ -357,43 +357,9 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
     }
 }
 
-/// Derive a short display name for an MCP pane from the server command args.
-///
-/// Rules (matching the issue spec):
-/// - Skip leading runner tokens (`npx`, `node`, `uvx`, `python`, `python3`, `bunx`)
-/// - Take the first remaining arg as the package/server name
-/// - Strip a leading `@scope/` prefix
-/// - Strip a leading `server-` prefix from the remainder
-/// - Prefix the result with `"mcp: "`
-///
-/// Examples:
-///   `["npx", "@modelcontextprotocol/server-filesystem", "/tmp"]` → `"mcp: filesystem"`
-///   `["uvx", "mcp-server-fetch"]`                               → `"mcp: fetch"`
-///   `["npx", "@scope/server-git"]`                              → `"mcp: git"`
+/// Display the configured server id without interpreting it as a command.
 pub fn mcp_pane_title(args: &[String]) -> String {
-    const RUNNERS: &[&str] = &[
-        "npx", "node", "uvx", "bunx", "python", "python3", "deno", "bun",
-    ];
-    let name = args
-        .iter()
-        .find(|a| !RUNNERS.contains(&a.as_str()) && !a.starts_with('-'))
-        .map(String::as_str)
-        .unwrap_or("mcp");
-
-    // Strip leading `@scope/` if present
-    let after_scope = if let Some(pos) = name.find('/') {
-        &name[pos + 1..]
-    } else {
-        name
-    };
-
-    // Strip leading `server-` or `mcp-server-` prefix
-    let short = after_scope
-        .strip_prefix("mcp-server-")
-        .or_else(|| after_scope.strip_prefix("server-"))
-        .unwrap_or(after_scope);
-
-    format!("mcp: {short}")
+    format!("mcp: {}", args.first().map(String::as_str).unwrap_or("mcp"))
 }
 
 /// Parsed prefix from a `type_id` string like `app:snake`, `cli:git`, `mcp:filesystem`.
@@ -479,8 +445,7 @@ pub fn open_cli_by_name(
 
 /// Open a named MCP server from the registry.
 ///
-/// Looks up the `command` array from `registry/mcp/<name>.json` and opens it
-/// with `mcp-renderer`.
+/// Passes only the server id; the host resolves user-owned configuration.
 pub fn open_mcp_by_name(
     name: &str,
     layout: Option<&str>,
@@ -489,31 +454,12 @@ pub fn open_mcp_by_name(
 ) -> i32 {
     log::info!("open:prefix: resolving mcp:{name}");
 
-    match crate::cli::registry::lookup_mcp(name) {
-        Some(entry) => {
-            log::info!(
-                "open:prefix: mcp:{} ({}) resolved, command={:?}",
-                entry.name,
-                entry.description,
-                entry.command
-            );
-            let title = mcp_pane_title(&entry.command);
-            pane_new_cli(PaneNewCliArgs {
-                name: Some(&title),
-                layout,
-                from_pane_id,
-                cwd,
-                app: Some("mcp-renderer"),
-                mcp: &entry.command,
-                ..Default::default()
-            })
-        }
-        None => {
-            eprintln!("error: MCP server `{name}` not found in registry");
-            eprintln!("hint: use `plexi app open --mcp <command>...` for unnamed MCP servers");
-            1
-        }
-    }
+    let title = format!("mcp: {name}");
+    pane_new_cli(PaneNewCliArgs {
+        name: Some(&title), layout, from_pane_id, cwd,
+        app: Some("mcp-renderer"), mcp: &[name.to_string()],
+        ..Default::default()
+    })
 }
 
 fn raw_wasm_app_id(path: &Path) -> String {
@@ -1137,36 +1083,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_title_npx_scoped_server() {
-        assert_eq!(
-            mcp_pane_title(&args(&[
-                "npx",
-                "@modelcontextprotocol/server-filesystem",
-                "/tmp"
-            ])),
-            "mcp: filesystem"
-        );
-    }
-
-    #[test]
-    fn mcp_title_uvx_mcp_server_prefix() {
-        assert_eq!(
-            mcp_pane_title(&args(&["uvx", "mcp-server-fetch"])),
-            "mcp: fetch"
-        );
-    }
-
-    #[test]
-    fn mcp_title_scoped_server_git() {
-        assert_eq!(
-            mcp_pane_title(&args(&["npx", "@scope/server-git"])),
-            "mcp: git"
-        );
-    }
-
-    #[test]
-    fn mcp_title_bare_binary() {
-        assert_eq!(mcp_pane_title(&args(&["my-mcp-tool"])), "mcp: my-mcp-tool");
+    fn mcp_title_preserves_configured_id() {
+        for id in ["filesystem", "server-git", "npx", "my-mcp-tool"] {
+            assert_eq!(mcp_pane_title(&args(&[id])), format!("mcp: {id}"));
+        }
     }
 
     #[test]

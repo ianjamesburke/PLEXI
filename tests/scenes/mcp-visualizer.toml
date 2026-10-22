@@ -1,0 +1,18 @@
+# The real builtin route must remain reachable behind the MCP experiment.
+experiments = ["mcp_client"]
+size = [900.0, 760.0]
+
+[[steps]]
+open = { kind = "builtin", id = "mcp-renderer", as = "mcp", args = ["unconfigured-fixture"] }
+
+[[steps]]
+assert = { target = "mcp", exists = true, focused = true }
+
+[[steps]]
+key = { target = "mcp", value = "tab" }
+
+[[steps]]
+key = { target = "mcp", value = "esc" }
+
+[[steps]]
+assert = { target = "mcp", exists = true }
