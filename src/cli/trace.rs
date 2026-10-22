@@ -164,9 +164,37 @@ mod tests {
         let argv = ["plexi-alpha", "pane", "new", "--right"].map(str::to_string);
         assert_eq!(redact_argv(&argv, &[]), argv);
     }
+
+    #[test]
+    fn cli_trace_redacts_pane_and_agent_free_text() {
+        let sentinel = "SENTINEL_SECRET_DO_NOT_PERSIST";
+        let cases = vec![
+            ["plexi", "pane", "send", "42", sentinel, "--submit"].map(str::to_string),
+            ["plexi", "agent", "call", "reviewer", "--task", sentinel].map(str::to_string),
+            ["plexi", "agent", "ask", sentinel].map(str::to_string),
+            [
+                "plexi",
+                "agent",
+                "done",
+                "--summary",
+                sentinel,
+                "--result",
+                sentinel,
+            ]
+            .map(str::to_string),
+        ];
+        for argv in cases {
+            let safe = redact_argv(&argv, &[]);
+            let rendered = safe.join(" ");
+            assert!(!rendered.contains(sentinel), "{rendered}");
+            assert!(rendered.contains("<text len="), "{rendered}");
+            assert_eq!(redact_argv(&safe, &[]), safe, "redaction is idempotent");
+        }
+    }
 }
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -312,14 +340,62 @@ fn secret_assignment(key: &str, known: &[String]) -> bool {
     env_name || secret_name(key, known)
 }
 
+fn text_placeholder(text: &str) -> String {
+    if text.starts_with("<text len=") && text.ends_with('>') {
+        return text.to_string();
+    }
+    let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+    format!("<text len={} sha256={}>", text.chars().count(), &hash[..8])
+}
+
+/// Returns a replacement for an argv element that is known to contain free text.
+/// Keep command names, ids, and flags useful in the flight trace without retaining
+/// the prompt, PTY input, or structured agent result itself.
+fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
+    let arg = argv.get(index)?;
+    let command = argv.get(1).map(String::as_str);
+    let subcommand = argv.get(2).map(String::as_str);
+
+    let positional = match (command, subcommand) {
+        (Some("pane"), Some("send")) => index == 4,
+        (Some("pane"), Some("message")) => argv.get(3).is_some_and(|v| v == "send") && index == 5,
+        (Some("agent"), Some("ask")) => index == 3,
+        (Some("agent"), Some("message")) => index == 4,
+        (Some("command-view"), Some("send")) => index == 4,
+        _ => false,
+    };
+    if positional {
+        return Some(text_placeholder(arg));
+    }
+
+    let content_flags: &[&str] = match command {
+        Some("agent") => &["--task", "--prompt", "--summary", "--result", "--persona"],
+        Some("assistant") => &["--text"],
+        _ => &[],
+    };
+    if let Some((flag, value)) = arg.split_once('=') {
+        if content_flags.contains(&flag) {
+            return Some(format!("{flag}={}", text_placeholder(value)));
+        }
+    }
+    if index > 0 && content_flags.contains(&argv[index - 1].as_str()) {
+        return Some(text_placeholder(arg));
+    }
+    None
+}
+
 /// Redact before transport and again before persistence. Keep option names so
-/// the sequence remains useful; mask uppercase env assignments and secret keys.
+/// the sequence remains useful; mask uppercase env assignments, secret keys,
+/// and command arguments that carry free-form user or agent text.
 pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
     argv.iter()
         .enumerate()
         .map(|(index, arg)| {
+            if let Some(redacted) = redact_content_arg(argv, index) {
+                return redacted;
+            }
             if hide_next {
                 hide_next = false;
                 return "<redacted>".to_string();
