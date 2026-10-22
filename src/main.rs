@@ -112,71 +112,73 @@ fn main() -> eframe::Result {
         eprintln!("profile initialization: {error}");
         cli::trace::exit(1);
     });
-    let is_first_launch = crate::config::ensure_profile_initialized();
+    if let Some(profile_init_lock) = profile_init_lock {
+        let is_first_launch = crate::config::ensure_profile_initialized();
 
-    {
-        let apps_dir = crate::app::registry::apps_dir();
-        let cloner = crate::cli::install_host::GitCloner;
+        {
+            let apps_dir = crate::app::registry::apps_dir();
+            let cloner = crate::cli::install_host::GitCloner;
 
-        // On first launch, also seed the example apps.
-        if is_first_launch {
-            if let Some(outcomes) =
-                crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &apps_dir)
-            {
-                let n_ok = outcomes
-                    .iter()
-                    .filter(|o| {
-                        matches!(
-                            o.status,
-                            crate::cli::install_host::InstallStatus::Installed(_)
-                        )
-                    })
-                    .count();
+            // On first launch, also seed the example apps.
+            if is_first_launch {
+                if let Some(outcomes) =
+                    crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &apps_dir)
+                {
+                    let n_ok = outcomes
+                        .iter()
+                        .filter(|o| {
+                            matches!(
+                                o.status,
+                                crate::cli::install_host::InstallStatus::Installed(_)
+                            )
+                        })
+                        .count();
+                    log::info!(
+                        "examples pack: seeded {n_ok} apps to {}",
+                        apps_dir.display()
+                    );
+                }
+            }
+
+            // Always re-seed any deleted core apps.
+            let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
+            let n_installed = core_outcomes
+                .iter()
+                .filter(|o| {
+                    matches!(
+                        o.status,
+                        crate::cli::install_host::InstallStatus::Installed(_)
+                    )
+                })
+                .count();
+            if n_installed > 0 {
                 log::info!(
-                    "examples pack: seeded {n_ok} apps to {}",
+                    "core pack: re-seeded {n_installed} missing apps to {}",
                     apps_dir.display()
                 );
             }
-        }
-
-        // Always re-seed any deleted core apps.
-        let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
-        let n_installed = core_outcomes
-            .iter()
-            .filter(|o| {
-                matches!(
-                    o.status,
-                    crate::cli::install_host::InstallStatus::Installed(_)
-                )
-            })
-            .count();
-        if n_installed > 0 {
-            log::info!(
-                "core pack: re-seeded {n_installed} missing apps to {}",
-                apps_dir.display()
-            );
-        }
-        for o in &core_outcomes {
-            if let crate::cli::install_host::InstallStatus::Failed(msg) = &o.status {
-                log::warn!("core pack: FAILED {}: {msg}", o.id);
+            for o in &core_outcomes {
+                if let crate::cli::install_host::InstallStatus::Failed(msg) = &o.status {
+                    log::warn!("core pack: FAILED {}: {msg}", o.id);
+                }
+            }
+            if !is_app_prune_command {
+                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
+                if !pruned.is_empty() {
+                    log::info!(
+                    "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
+                        pruned.len(),
+                        apps_dir.display()
+                    );
+                }
             }
         }
-        if !is_app_prune_command {
-            let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
-            if !pruned.is_empty() {
-                log::info!(
-                "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
-                    pruned.len(),
-                    apps_dir.display()
-                );
-            }
+        if let Err(error) = crate::distribution::seed_profile() {
+            eprintln!("package profile initialization: {error}");
+            cli::trace::exit(1);
         }
+        drop(profile_init_lock);
     }
-    if let Err(error) = crate::distribution::seed_profile() {
-        eprintln!("package profile initialization: {error}");
-        cli::trace::exit(1);
-    }
-    drop(profile_init_lock);
 
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.

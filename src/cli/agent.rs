@@ -311,9 +311,9 @@ impl HarnessAdapter {
             }
         }
         parts.push(self.task_flag.to_string());
-        // Plexi workers may operate in ordinary folders. This disables only
-        // Codex's repository check, leaving its sandbox and approvals intact.
-        if self.harness == AgentHarness::Codex { parts.push("--skip-git-repo-check".into()); }
+        // Codex workers can edit their workspace and reach the host socket.
+        // Never grant a profile writable root: it contains permission records.
+        if self.harness == AgentHarness::Codex { parts.extend(["--skip-git-repo-check", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"].map(str::to_string)); }
         parts.push(shell_quote_arg(task));
         parts.join(" ")
     }
@@ -347,7 +347,7 @@ impl HarnessAdapter {
             flags.push("<AGENT.md>".to_string());
         }
         flags.push(self.task_flag.to_string());
-        if self.harness == AgentHarness::Codex { flags.push("--skip-git-repo-check".into()); }
+        if self.harness == AgentHarness::Codex { flags.extend(["--skip-git-repo-check", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"].map(str::to_string)); }
         flags.join(" ")
     }
 
@@ -2597,7 +2597,7 @@ mod agent_tests {
         }
     }
     #[test]
-    fn codex_worker_command_in_non_git_directory_skips_only_repo_check() {
+    fn codex_worker_command_allows_socket_without_profile_write_access() {
         let cwd = tempfile::tempdir().unwrap();
         assert!(!cwd.path().join(".git").exists());
         let adapter = super::harness_adapter("codex").unwrap();
@@ -2606,9 +2606,11 @@ mod agent_tests {
         let probe = format!("codex() {{ printf '%s\\n' \"$@\"; }}; {command}");
         let output = std::process::Command::new("/bin/sh").args(["-c", &probe]).current_dir(cwd.path()).output().unwrap();
         assert!(output.status.success());
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), "exec\n--skip-git-repo-check\nsubmit a ballot\n");
-        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "exec --skip-git-repo-check");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "exec\n--skip-git-repo-check\n--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\nsubmit a ballot\n");
+        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true");
         assert!(!command.contains("--dangerously"));
+        assert!(!command.contains("writable_roots"));
+        assert!(!command.contains("--add-dir"));
     }
     #[test]
     fn multi_cli_harness_adapters_build_spawn_resume_and_capture_session_ids() {
@@ -2630,7 +2632,7 @@ mod agent_tests {
         assert_eq!(codex.resume_command("thread-99"), "codex resume thread-99");
         assert_eq!(
             codex.spawn_command("run tests", None, None),
-            "codex exec --skip-git-repo-check 'run tests'"
+            "codex exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true 'run tests'"
         );
         assert_eq!(
             codex.capture_session_id(&serde_json::json!({"thread_id": "t-99"})),
@@ -2729,7 +2731,7 @@ mod agent_tests {
         let codex_cmd =
             super::build_agent_spawn_command(&codex_def, codex_adapter, "Run suite").unwrap();
         assert!(
-            codex_cmd.starts_with("codex --model gpt-5-codex exec --skip-git-repo-check "),
+            codex_cmd.starts_with("codex --model gpt-5-codex exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true "),
             "unexpected codex command: {codex_cmd}"
         );
         assert!(!codex_cmd.contains("--append-system-prompt"));

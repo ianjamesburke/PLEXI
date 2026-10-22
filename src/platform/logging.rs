@@ -232,10 +232,11 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
     let log_file_path = log_path();
     let config_dir = crate::config::config_dir();
 
+    let mut setup_errors = Vec::new();
     // Ensure the config directory exists.
     if let Some(parent) = log_file_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("[plexi::logging] could not create config dir {parent:?}: {e}");
+            setup_errors.push(format!("could not create config dir {parent:?}: {e}"));
         }
     }
 
@@ -283,8 +284,15 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             }
         }
         Err(e) => {
-            eprintln!("[plexi::logging] could not open log file {log_file_path:?}: {e}; falling back to stderr only");
-            dispatch.chain(std::io::stderr())
+            setup_errors.push(format!("could not open log file {log_file_path:?}: {e}; falling back to stderr only"));
+            if cli_mode {
+                dispatch.chain(fern::Dispatch::new()
+                    .level(log::LevelFilter::Warn)
+                    .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
+                    .chain(std::io::stderr()))
+            } else {
+                dispatch.chain(std::io::stderr())
+            }
         }
     };
 
@@ -296,6 +304,13 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
         log::set_max_level(level.max(log::LevelFilter::Warn));
     }
 
+    for error in setup_errors {
+        if cli_mode {
+            log::debug!(target: "plexi::logging", "{error}");
+        } else {
+            log::warn!(target: "plexi::logging", "{error}");
+        }
+    }
     // Emit rotation/pruning messages now that the logger is running.
     for msg in deferred {
         log::info!(target: "plexi::logging", "{msg}");

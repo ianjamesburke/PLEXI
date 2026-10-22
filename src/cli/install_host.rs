@@ -755,6 +755,16 @@ fn git_current_ref(repo_dir: &Path) -> Option<String> {
     }
 }
 
+/// Read-only check for a stale build or missing core app.
+pub fn core_pack_needs_seeding(target_root: &Path) -> bool {
+    if !std::fs::read_to_string(target_root.join(".core_build"))
+        .is_ok_and(|build| build == env!("PLEXI_BUILD_ID")) {
+        return true;
+    }
+    let installed = installed_versions(target_root);
+    core_pack_ids().iter().any(|id| !installed.contains_key(id))
+}
+
 /// Apply the bundled core pack into `target_root` on every launch. Only installs
 /// apps that are missing — already-installed apps return `SkippedOtherVersion` or
 /// `AlreadyAtVersion` and are left untouched.

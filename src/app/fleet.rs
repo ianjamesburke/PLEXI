@@ -200,7 +200,7 @@ impl PlexiApp {
 
     pub(crate) fn agents_view(&self, filter: FleetFilter) -> AgentsView {
         AgentsView::build(
-            self.agent_inputs(),
+            self.agent_inputs().into_iter().filter(|agent| agent.live).collect(),
             crate::platform::clock::now_secs(),
             self.config
                 .agents
@@ -280,6 +280,30 @@ impl PlexiApp {
 #[cfg(test)]
 mod tests {
     use crate::testing::HostHarness;
+
+    #[test]
+    fn agents_view_excludes_closed_runs_but_retains_history() {
+        let mut h = HostHarness::new();
+        let live = h.add_focused_terminal();
+        h.app.windows[0].panes.get_mut(&live).unwrap().set_agent(Some(
+            crate::protocol::PaneAgentState {
+                pane_id: live, state: crate::protocol::AgentState::Working,
+                agent: "pi".into(), detail: None, session_id: None,
+            },
+        ));
+        for (pane_id, state) in [(900001, "working"), (900002, "blocked"), (900003, "completed")] {
+            let record = serde_json::from_value(serde_json::json!({
+                "run_id": format!("old-{pane_id}"), "pane_id": pane_id,
+                "context_id": 1, "context_name": "previous session", "harness": "codex",
+                "cwd": "/tmp", "last_state": state, "closed_at": 1
+            })).unwrap();
+            h.app.fleet_history.borrow_mut().push(record);
+        }
+        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let ids: Vec<_> = view.tasks.iter().flat_map(|t| &t.rows).map(|r| r.pane_id).collect();
+        assert_eq!(ids, vec![live]);
+        assert_eq!(h.app.fleet_history.borrow().len(), 3);
+    }
 
     #[test]
     fn attention_reload_projects_config_without_restart_on_hidden_frame() {
