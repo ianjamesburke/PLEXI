@@ -493,7 +493,24 @@ class TestReconstruction:
         runtime._keyed_tree_delta = False
         runtime._emit_tree(1, self._keyed_tree(["a"]))
         runtime._emit_tree(2, self._keyed_tree(["new", "a"]))
-        assert json.loads(lines[-1])["type"] == "component_tree"
+        full = json.loads(lines[-1])
+        assert full["type"] == "component_tree"
+        # An old host uses ids as arena slots. Its full frame must retain those
+        # positional ids so its next ordinary delta cannot patch another row.
+        assert [node["id"] for node in full["tree"]["nodes"]] == list(range(3))
+
+    def test_duplicate_key_frame_gets_fresh_unique_ids(self, monkeypatch):
+        from plexi_sdk import _v3_runtime as rt
+        lines: list[str] = []
+        monkeypatch.setattr(rt, "_emit", lambda event: lines.append(json.dumps(event)))
+        monkeypatch.setattr(rt, "_emit_line", lines.append)
+        runtime = self._keyed_runtime()
+        runtime._emit_tree(1, self._keyed_tree(["a", "b", "c"]))
+        runtime._emit_tree(2, self._keyed_tree(["a", "a", "b", "c"]))
+        tree = json.loads(lines[-1])["tree"]
+        ids = [node["id"] for node in tree["nodes"]]
+        assert len(ids) == len(set(ids))
+        assert min(ids) >= 4
 
     def test_apply_delta_replaces_full_node(self):
         prev = {"root": 0, "nodes": [
@@ -521,6 +538,29 @@ class TestReconstruction:
         prev = {"root": 0, "nodes": [{"id": 0, "key": "0", "data": {"type": "Empty"}}]}
         with pytest.raises(DeltaApplyError):
             apply_delta(prev, [{"id": 5, "key": "5", "data": {"type": "Empty"}}])
+
+    @pytest.mark.parametrize("changed,removed", [
+        (
+            [{"id": 0, "key": "0", "data": {"type": "Column", "children": [1]}}],
+            [1],
+        ),
+        ([], [0]),
+    ], ids=["dangling-child", "missing-root"])
+    def test_apply_delta_rejects_invalid_result_tree(self, changed, removed):
+        prev = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Column", "children": [1]}},
+            {"id": 1, "key": "0/0", "data": {"type": "Text", "text": "a"}},
+        ]}
+        with pytest.raises(DeltaApplyError):
+            apply_delta(prev, changed, removed=removed)
+
+    def test_reconstructor_rejects_duplicate_ids_in_full_tree(self):
+        tree = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Empty"}},
+            {"id": 0, "key": "1", "data": {"type": "Empty"}},
+        ]}
+        with pytest.raises(DeltaApplyError):
+            TreeReconstructor().ingest({"type": "component_tree", "tree": tree})
 
     def test_apply_delta_rejects_out_of_range_command(self):
         prev = {"root": 0, "nodes": [

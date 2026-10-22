@@ -64,6 +64,29 @@ def _node_index(nodes: list[dict], node_id: int) -> int:
     raise DeltaApplyError(f"delta patch id {node_id} is not present in the arena")
 
 
+def validate_tree(tree: dict) -> None:
+    """Reject a tree whose ids or child references cannot be rendered."""
+    nodes = tree.get("nodes")
+    if not isinstance(nodes, list):
+        raise DeltaApplyError("tree is missing its nodes array")
+    ids = [node.get("id") for node in nodes]
+    if len(ids) != len(set(ids)):
+        raise DeltaApplyError("tree contains duplicate node ids")
+    known_ids = set(ids)
+    if tree.get("root") not in known_ids:
+        raise DeltaApplyError("tree root is not present in its arena")
+    for node in nodes:
+        data = node.get("data", {})
+        kind = data.get("type", "").lower()
+        refs = (
+            data.get("children", []) if kind in ("column", "row", "datatable") else
+            data.get("items", []) if kind == "listview" else
+            [data.get("child")] if kind in ("scroll", "padding", "pinned") else []
+        )
+        if any(ref not in known_ids for ref in refs):
+            raise DeltaApplyError(f"tree node {node.get('id')} references a missing child")
+
+
 def apply_delta(prev: dict, changed: list, *, added: list | None = None,
                 removed: list | None = None) -> dict:
     """Rebuild the full encoded arena from ``prev`` plus a ``changed`` list.
@@ -110,7 +133,9 @@ def apply_delta(prev: dict, changed: list, *, added: list | None = None,
         if not isinstance(node_id, int) or node_id in {n["id"] for n in nodes}:
             raise DeltaApplyError("keyed delta adds a missing or duplicate id")
         nodes.append(node)
-    return {"root": prev["root"], "nodes": nodes}
+    rebuilt = {"root": prev["root"], "nodes": nodes}
+    validate_tree(rebuilt)
+    return rebuilt
 
 
 class TreeReconstructor:
@@ -128,6 +153,7 @@ class TreeReconstructor:
     def ingest(self, event: dict) -> dict:
         event_type = event.get("type")
         if event_type == "component_tree":
+            validate_tree(event.get("tree") or {})
             self._last_tree = event.get("tree")
             return event
         if event_type == "tree_delta":

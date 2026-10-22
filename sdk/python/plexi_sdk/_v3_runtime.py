@@ -427,7 +427,12 @@ class V3AppRuntime:
         after, and remembered in between (see the interval's docstring for why
         measuring every frame is not affordable).
         """
-        encoded = self._stabilize_tree_ids(encoded)
+        # Stable arena ids are an extension negotiated with the host. Older
+        # hosts still interpret a node id as its positional arena slot, so
+        # changing ids for their full frames would make their next delta patch
+        # the wrong node.
+        if getattr(self, "_keyed_tree_delta", False):
+            encoded = self._stabilize_tree_ids(encoded)
         prev = self._last_tree
         self._last_tree = encoded
         nodes = encoded["nodes"]
@@ -485,19 +490,34 @@ class V3AppRuntime:
         """Give keyed paths durable arena ids while leaving unkeyed frames positional."""
         prev_by_key = {node["key"]: node["id"] for node in (self._last_tree or {}).get("nodes", [])}
         keys = [node["key"] for node in encoded["nodes"]]
-        if len(keys) != len(set(keys)):
-            return encoded
+        next_id = getattr(self, "_next_tree_node_id", 0)
+        if not isinstance(next_id, int):
+            next_id = 0
+        # Never reuse an id that appeared in a prior full tree. In particular,
+        # a duplicate-key frame cannot retain keys, but it must not fall back
+        # to positional ids that collide with ids already handed out.
+        next_id = max([next_id, *(node["id"] + 1 for node in (self._last_tree or {}).get("nodes", []))])
         mapping: dict[int, int] = {}
-        for node in encoded["nodes"]:
-            old_id = node["id"]
-            stable_id = prev_by_key.get(node["key"])
-            if stable_id is None:
-                next_id = getattr(self, "_next_tree_node_id", 0)
-                if not isinstance(next_id, int):
-                    next_id = 0
-                stable_id = next_id
-                self._next_tree_node_id = next_id + 1
-            mapping[old_id] = stable_id
+        if len(keys) != len(set(keys)):
+            # Duplicate keys cannot identify a durable node. Give this whole
+            # frame fresh ids so it remains a valid full tree and forces a
+            # clean resync point for the next keyed frame.
+            for node in encoded["nodes"]:
+                mapping[node["id"]] = next_id
+                next_id += 1
+        else:
+            used_ids = set(prev_by_key.values())
+            for node in encoded["nodes"]:
+                old_id = node["id"]
+                stable_id = prev_by_key.get(node["key"])
+                if stable_id is None:
+                    while next_id in used_ids:
+                        next_id += 1
+                    stable_id = next_id
+                    next_id += 1
+                mapping[old_id] = stable_id
+                used_ids.add(stable_id)
+        self._next_tree_node_id = next_id
         def remap_data(data: dict) -> dict:
             data = dict(data)
             if data.get("type") in ("Column", "Row", "DataTable"):

@@ -957,7 +957,7 @@ fn render_node(
 
         UiNodeData::Column(c) => {
             if let Some(table) = parse_table_node_key(&node.key) {
-                render_data_table_node(ui, &table, id, &node.key, &c.children, colors, out, pending_click);
+                render_data_table_node(ui, &table, id, &c.children, colors, out, pending_click);
                 return;
             }
             let footer = c
@@ -1389,6 +1389,7 @@ pub(crate) const TABLE_NODE_KEY_PREFIX: &str = "__plexi_table__:";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(crate) struct TableNodeMeta {
+    pub identity_key: String,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub selected: Option<u32>,
@@ -1404,7 +1405,6 @@ fn render_data_table_node(
     ui: &mut egui::Ui,
     table: &TableNodeMeta,
     id: u32,
-    key: &str,
     child_ids: &[u32],
     colors: &Colors,
     out: &mut RenderResult,
@@ -1450,7 +1450,7 @@ fn render_data_table_node(
     }
 
     egui::ScrollArea::vertical()
-        .id_salt(ui.id().with(("l1_data_table", key)))
+        .id_salt(ui.id().with(("l1_data_table", table.identity_key.as_str())))
         .auto_shrink([false, true])
         .show(ui, |ui| {
             let row_w = ui.available_width().max(1.0);
