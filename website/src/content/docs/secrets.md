@@ -113,6 +113,14 @@ SDK v3 apps use module-level `init(size, args)`, `update(event)`, and `view()`. 
 
 Secrets are scoped by workspace root path — a secret set inside one project is not visible to another project at a different path. Use `--global` to share a secret across all workspaces on the machine.
 
+### Human Pane Authority and Context Boundary
+
+A human-owned terminal pane (a shell opened by the host for you, with no agent head or agent role attached and not spawned by an agent) carries your user authority by default, **scoped to that pane's context root**:
+
+- **Context isolation (including nested directories):** Subdirectory contexts are isolated units. A pane in context A has no authority over context B's secrets, heads, or grants, including when context B is nested inside A's directory. Attempts to read, list, or grant secrets or heads belonging to another context root are refused (`permission_denied`).
+- **Agents are narrowed by grants:** Agents and heads created from a human-owned pane receive only the grants explicitly passed with `--grant` (checked as a subset of the human pane's context authority). An agent-spawned pane (including a plain shell created by an agent via `plexi pane new`) never inherits human authority and requires explicit grants.
+- **Not an OS file-access boundary:** This boundary governs the Plexi API (`agents_api` and host tools), secrets, and grant scoping. It is **not** an operating-system filesystem sandbox: a process running in the pane still runs as your OS user and can read or write any file on disk that your OS user can access.
+
 ## Linux storage
 
 Global, workspace, and folder secrets use Secret Service through `secret-tool`

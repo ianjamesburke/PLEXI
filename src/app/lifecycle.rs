@@ -458,17 +458,56 @@ impl PlexiApp {
                     return;
                 }
                 let mut payload = payload.clone();
-                if op == "create_head" {
-                    if let Some(pane_id) = payload.get("caller_pane").and_then(|value| value.as_u64()) {
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.remove("caller_human_pane");
+                    obj.remove("caller_context_root");
+                    obj.remove("caller_context_denied");
+                    obj.remove("caller_head");
+                    let peer_ancestry: Vec<u32> = obj
+                        .remove("peer_ancestry")
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or_default();
+                    let peer_pane = (!peer_ancestry.is_empty())
+                        .then(|| {
+                            self.resolve_socket_peer_pane(&peer_ancestry)
+                                .map(|(pid, _, _)| pid)
+                        })
+                        .flatten();
+                    let resolved_pane = peer_pane
+                        .or_else(|| obj.get("caller_pane").and_then(|value| value.as_u64()));
+                    if let Some(pane_id) = resolved_pane {
                         let head = self.bound_head_for_pane(pane_id).unwrap_or_default();
+                        let human_pane = self.is_human_owned_pane(pane_id);
+                        let ctx_root = self.pane_context_authority_root(pane_id);
+                        let target_ws = obj
+                            .get("workspace")
+                            .and_then(|v| v.as_str())
+                            .map(std::path::PathBuf::from);
+                        let target_cwd = obj
+                            .get("caller_cwd")
+                            .and_then(|v| v.as_str())
+                            .map(std::path::PathBuf::from);
+                        let context_denied = target_ws.as_deref().is_some_and(|p| {
+                            let p_canon = crate::platform::path::canonical_or_self(p);
+                            ctx_root.as_ref() != Some(&p_canon)
+                                || !self.pane_may_access_context_root(pane_id, p)
+                        }) || target_cwd
+                            .as_deref()
+                            .is_some_and(|p| !self.pane_may_access_context_root(pane_id, p));
                         log::info!(
-                            "agents_api: create_head caller_pane={pane_id} caller_head={head}"
+                            "agents_api: op={op} caller_pane={pane_id} caller_head={head} human_pane={human_pane} context_root={ctx_root:?} context_denied={context_denied}"
                         );
-                        if let Some(obj) = payload.as_object_mut() {
-                            obj.insert(
-                                "caller_head".to_string(),
-                                serde_json::json!(head),
-                            );
+                        obj.insert("caller_pane".to_string(), serde_json::json!(pane_id));
+                        obj.insert("caller_head".to_string(), serde_json::json!(head));
+                        obj.insert(
+                            "caller_human_pane".to_string(),
+                            serde_json::json!(human_pane),
+                        );
+                        if let Some(root) = ctx_root {
+                            obj.insert("caller_context_root".to_string(), serde_json::json!(root));
+                        }
+                        if context_denied {
+                            obj.insert("caller_context_denied".to_string(), serde_json::json!(true));
                         }
                     }
                 }
@@ -1682,16 +1721,22 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
-                let requester_is_pane = spec
+                let peer_pane = spec
                     .peer_ancestry
                     .as_deref()
                     .filter(|pids| !pids.is_empty())
-                    .is_some_and(|pids| self.resolve_socket_peer_pane(pids).is_some());
+                    .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
+                let requester_is_pane = peer_pane.is_some();
+                let requester_is_agent = peer_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
+                    || spec
+                        .from_pane_id
+                        .is_some_and(|pid| !self.is_human_owned_pane(pid));
+                let is_agent_pane = spec.agent.is_some() || requester_is_agent;
                 let inject_folder_secrets = !requester_is_pane
                     && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
                 if requester_is_pane {
                     log::info!(
-                        "pane_ipc: spawn_pane requester is a pane; withholding folder secrets"
+                        "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={is_agent_pane}); withholding folder secrets"
                     );
                 }
                 let mut response_pane_id = self.host.next_pane_id();
@@ -1790,7 +1835,7 @@ impl PlexiApp {
                                     initial_cmd: initial_cmd.as_deref(),
                                     close_on_exit: spec.ephemeral,
                                     cwd_override,
-                                    agent_pane: spec.agent.is_some(),
+                                    agent_pane: is_agent_pane,
                                     inject_folder_secrets,
                                 },
                             },
@@ -1823,7 +1868,7 @@ impl PlexiApp {
                                 initial_cmd: initial_cmd.as_deref(),
                                 close_on_exit: spec.ephemeral,
                                 cwd_override,
-                                agent_pane: spec.agent.is_some(),
+                                agent_pane: is_agent_pane,
                                 inject_folder_secrets,
                             },
                         );
@@ -1848,7 +1893,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
-                            spec.agent.is_some(),
+                            is_agent_pane,
                             inject_folder_secrets,
                         );
                         if spec.no_focus {
@@ -1907,7 +1952,7 @@ impl PlexiApp {
                                         initial_cmd: initial_cmd.as_deref(),
                                         close_on_exit: spec.ephemeral,
                                         cwd_override,
-                                        agent_pane: spec.agent.is_some(),
+                                        agent_pane: is_agent_pane,
                                         inject_folder_secrets,
                                     },
                                 },
@@ -1928,7 +1973,7 @@ impl PlexiApp {
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
                                 cwd_override,
-                                spec.agent.is_some(),
+                                is_agent_pane,
                                 inject_folder_secrets,
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,

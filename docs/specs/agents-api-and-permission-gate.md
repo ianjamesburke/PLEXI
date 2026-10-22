@@ -191,6 +191,14 @@ P2 may supervise trusted CLI work but must not advertise a native isolation
 boundary it has not qualified. The authority model retains ownership of the
 command-worker sandbox and secret-injection implementation.
 
+### Human-owned pane authority and context scoping
+
+1. **Human-owned pane definition:** a human-owned pane (`TerminalPane::is_human_owned` / `PlexiApp::is_human_owned_pane`) is a terminal pane whose session the host spawned directly for the user, with no agent head, no agent harness/role, no parent pane (`parent_pane_id`), and not spawned by an agent (`agent_spawned == false`). Any pane launched with `--agent`, bound to a head, or spawned from an agent pane (including a plain shell created by an agent via `plexi pane new` or `HostAction::OpenPane`) is marked `agent_spawned = true` (`PLEXI_AGENT_SPAWNED=1`) and never qualifies as human-owned.
+2. **User authority scoped to the pane's context root:** a human-owned pane carries the user's authority by default within that pane's context root (`PlexiApp::pane_context_authority_root` / `user_context_authority_grants`). Creating a head from a human-owned pane in its own context (`plexi agent head create <name> --grant ...`) succeeds immediately without filing a `needs-you` permission request.
+3. **Spawned agents are still narrowed by grants:** the parent-subset check in `create_head` runs against the human pane's context authority, so the created head receives **only** the grants explicitly declared on `create_head`. A head cannot exceed its declared grants at tool-call time or when delegating/creating a sub-head. An agent-spawned head-less pane has no ambient authority and still requires pane-session grants (`pane_session_grants`) via desktop approval.
+4. **Subdirectory contexts are isolated units:** a pane in context A has no authority over context B, including when B is a nested context or nested workspace inside A's directory tree. `agents_api` operations (`create_head`, `list_heads`, `list_grants`, `spawn_run`, `delegate`, `call`) and secret operations (`secret get`, `secret list`, `secret set`, `secret rm`, `secret read`) targeting another context root are refused with `permission_denied`.
+5. **Not an OS file-access boundary:** this authority model governs the Plexi API (`agents_api` / host tools), secrets, and grant scoping. It is **not** an OS file-access boundary: a process running in the pane still executes as the OS user and can read or write any file on disk that the OS user can access.
+
 ## P1 — One permission gate, resource-scoped grants, Chess
 
 ### Goal, scope, non-goals

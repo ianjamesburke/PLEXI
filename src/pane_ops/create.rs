@@ -1339,6 +1339,7 @@ impl PlexiApp {
         cwd: PathBuf,
         commands: &[Option<String>],
         layout: crate::protocol::SubContextLayout,
+        agent_pane: bool,
     ) -> Option<ContextPaneSet> {
         if commands.is_empty() {
             log::error!("create_context_pane_set: refusing to build a window with zero panes");
@@ -1355,7 +1356,7 @@ impl PlexiApp {
                 Some(cwd.clone()),
                 &self.colors,
                 context,
-                false,
+                agent_pane,
             );
             if let Some(cmd) = initial_cmd {
                 super::apply_initial_cmd(&mut settings, cmd, false);

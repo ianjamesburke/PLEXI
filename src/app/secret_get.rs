@@ -38,6 +38,35 @@ impl PlexiApp {
             write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
             return;
         };
+        if !global {
+            if let Some(root) = workspace_root {
+                let root_canon = crate::platform::path::canonical_or_self(root);
+                let pane_root = self.pane_context_authority_root(pane_id);
+                if pane_root.as_ref() != Some(&root_canon)
+                    || !self.pane_may_access_context_root(pane_id, root)
+                {
+                    let actor_id = format!("pane:{pane_id}");
+                    let resource = format!("{name}@{}", root_canon.display());
+                    monitor.note_denial(
+                        &actor_id,
+                        "secret-get",
+                        &resource,
+                        "",
+                        "context_scope_violation",
+                    );
+                    log::info!(
+                        "secret_get: denied pane={pane_id} name={name} target={} outside pane context root {pane_root:?}",
+                        root_canon.display()
+                    );
+                    write_reply(
+                        &reply_path,
+                        serde_json::json!({"status": "denied", "error_code": "permission_denied"}),
+                        false,
+                    );
+                    return;
+                }
+            }
+        }
         let scope = match scope_for(global, workspace_root) {
             Ok(scope) => scope,
             Err(error) => {

@@ -104,6 +104,105 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
 
 // ── plexi secret subcommands (workspace-aware, issue #322) ───────────────────
 
+#[cfg(test)]
+thread_local! {
+    static TEST_PANE_CONTEXT_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestPaneContextGuard(Option<std::path::PathBuf>);
+
+#[cfg(test)]
+impl Drop for TestPaneContextGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        TEST_PANE_CONTEXT_ROOT.with(|cell| *cell.borrow_mut() = prev);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_pane_context_root(path: &std::path::Path) -> TestPaneContextGuard {
+    let prev = TEST_PANE_CONTEXT_ROOT.with(|cell| cell.borrow_mut().replace(path.to_path_buf()));
+    TestPaneContextGuard(prev)
+}
+
+fn active_pane_context_root() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    let raw = TEST_PANE_CONTEXT_ROOT.with(|cell| cell.borrow().clone())?;
+    #[cfg(not(test))]
+    let raw = std::env::var("PLEXI_CONTEXT_ROOT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)?;
+    let raw_canon = crate::platform::path::canonical_or_self(&raw);
+    let ws_root = crate::app::registry::resolve_workspace_root(&raw_canon)
+        .map(|p| crate::platform::path::canonical_or_self(&p));
+    Some(match ws_root {
+        Some(ws) if raw_canon.starts_with(&ws) && raw_canon != ws => raw_canon,
+        Some(ws) => ws,
+        None => raw_canon,
+    })
+}
+
+/// Enforce that `target_dir` falls within the calling pane's context root.
+///
+/// Subdirectory contexts are isolated units: a pane in context A has no
+/// authority over context B, including when B is nested inside A's directory.
+pub(crate) fn enforce_pane_context_scope(
+    target_dir: &std::path::Path,
+    explicit_folder: bool,
+    op: &str,
+) -> Result<(), String> {
+    let Some(ctx_root) = active_pane_context_root() else {
+        return Ok(());
+    };
+    let target_canon = crate::platform::path::canonical_or_self(target_dir);
+    let denied = if explicit_folder {
+        target_canon != ctx_root
+    } else if !target_canon.starts_with(&ctx_root) {
+        true
+    } else if target_canon != ctx_root {
+        let nested_ws = crate::app::registry::resolve_workspace_root(&target_canon)
+            .is_some_and(|ws| crate::platform::path::canonical_or_self(&ws) != ctx_root);
+        let nested_agent_ws =
+            crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
+                .is_some_and(|ws| crate::platform::path::canonical_or_self(&ws) != ctx_root);
+        let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
+            crate::workspace::secrets::folder_store(),
+        )
+        .iter()
+        .any(|meta| {
+            let f = crate::platform::path::canonical_or_self(&meta.folder);
+            f != ctx_root && f.starts_with(&ctx_root) && target_canon.starts_with(&f)
+        });
+        nested_ws || nested_agent_ws || nested_folder_secret
+    } else {
+        false
+    };
+    if denied {
+        let actor = std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+            .map(|id| format!("pane:{id}"))
+            .unwrap_or_else(|| "pane:context".to_string());
+        let call_id = format!("{op}-{}", uuid::Uuid::new_v4());
+        let resource = target_canon.display().to_string();
+        audit_folder_denial(&actor, &resource, &call_id);
+        log::info!(
+            "secrets: {op} refused target={} outside pane context root {}",
+            target_canon.display(),
+            ctx_root.display()
+        );
+        return Err(format!(
+            "permission_denied: pane has no authority over context '{}' (authority is scoped to '{}')",
+            target_canon.display(),
+            ctx_root.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the current workspace and config. Errors out with a helpful
 /// message if the user has not run `plexi workspace init`.
 fn require_workspace() -> Result<
@@ -114,6 +213,7 @@ fn require_workspace() -> Result<
     String,
 > {
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    enforce_pane_context_scope(&cwd, false, "secret.workspace")?;
     let channel_dir = crate::config::workspace_channel_dir();
     let root = match crate::app::registry::resolve_workspace_root(&cwd) {
         Some(r) => r,
@@ -125,6 +225,7 @@ fn require_workspace() -> Result<
             ));
         }
     };
+    enforce_pane_context_scope(&root, true, "secret.workspace")?;
     let cfg = match crate::workspace::secrets::WorkspaceConfig::load(&root)
         .map_err(|e| format!("read {channel_dir}/workspace.toml: {e}"))?
     {
@@ -435,7 +536,15 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
     let workspace_root = if global {
         None
     } else {
-        require_workspace().ok().map(|(root, _)| root)
+        match require_workspace() {
+            Ok((root, _)) => Some(root),
+            Err(err) if err.starts_with("permission_denied") => {
+                eprintln!("error: {err}");
+                println!("permission_denied");
+                return 1;
+            }
+            Err(_) => None,
+        }
     };
     log::info!(
         "secret_get:cli: pane caller, asking the host gate friendly={friendly} global={global} workspace={workspace_root:?}"
@@ -531,32 +640,40 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
         }
 
         // Try workspace-scoped first, then global fallback.
-        if let Ok((root, cfg)) = require_workspace() {
-            if crate::workspace::secrets::workspace_id_is_reserved(&cfg.id)
-                || crate::workspace::secrets::secret_account_is_reserved(&keychain_workspace_name(
-                    &cfg.id, friendly,
-                ))
-            {
-                log::info!(
-                    "secret_get:cli: refused reserved namespace workspace_id={} friendly={friendly}",
-                    cfg.id
-                );
-                eprintln!(
-                    "error: {}",
-                    crate::workspace::secrets::reserved_secret_error(&cfg.id)
-                );
+        match require_workspace() {
+            Ok((root, cfg)) => {
+                if crate::workspace::secrets::workspace_id_is_reserved(&cfg.id)
+                    || crate::workspace::secrets::secret_account_is_reserved(
+                        &keychain_workspace_name(&cfg.id, friendly),
+                    )
+                {
+                    log::info!(
+                        "secret_get:cli: refused reserved namespace workspace_id={} friendly={friendly}",
+                        cfg.id
+                    );
+                    eprintln!(
+                        "error: {}",
+                        crate::workspace::secrets::reserved_secret_error(&cfg.id)
+                    );
+                    return 1;
+                }
+                let account = keychain_workspace_name(&cfg.id, friendly);
+                if let Some(value) = store.get(&account) {
+                    log::info!(
+                        "secret_get:cli: found workspace_id={} account={account} root={}",
+                        cfg.id,
+                        root.display()
+                    );
+                    println!("{}", value.as_str());
+                    return 0;
+                }
+            }
+            Err(err) if err.starts_with("permission_denied") => {
+                eprintln!("error: {err}");
+                println!("permission_denied");
                 return 1;
             }
-            let account = keychain_workspace_name(&cfg.id, friendly);
-            if let Some(value) = store.get(&account) {
-                log::info!(
-                    "secret_get:cli: found workspace_id={} account={account} root={}",
-                    cfg.id,
-                    root.display()
-                );
-                println!("{}", value.as_str());
-                return 0;
-            }
+            Err(_) => {}
         }
 
         // Global fallback.
@@ -766,6 +883,11 @@ pub fn folder_secret_set(
         eprintln!("error: --folder cannot be combined with --alias");
         return 1;
     }
+    if let Err(err) = enforce_pane_context_scope(folder, true, "secret.set") {
+        eprintln!("error: {err}");
+        println!("permission_denied");
+        return 1;
+    }
     let value = match read_secret_value(name, from_env) {
         Ok(value) => value,
         Err(code) => return code,
@@ -802,6 +924,11 @@ pub fn folder_secret_set(
 
 /// `plexi secret rm NAME --folder <path>`.
 pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
+    if let Err(err) = enforce_pane_context_scope(folder, true, "secret.rm") {
+        eprintln!("error: {err}");
+        println!("permission_denied");
+        return 1;
+    }
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         match crate::workspace::secrets::remove_folder_secret(
@@ -893,6 +1020,11 @@ pub fn folder_secret_read(
         Ok(folder) => folder,
         Err(code) => return code,
     };
+    if let Err(err) = enforce_pane_context_scope(&folder, true, "secret.read") {
+        eprintln!("error: {err}");
+        println!("permission_denied");
+        return 1;
+    }
     // A pane must not learn the pending id. Filing one here would let the
     // pane approve its own read. The tester shell is not a pane agent, so
     // its read still reaches the host gate.

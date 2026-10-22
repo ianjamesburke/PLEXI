@@ -1372,3 +1372,441 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
         "approve with neither run nor pane must not claim unblocked: {orphan_receipt:?}"
     );
 }
+
+#[test]
+fn human_pane_creates_head_in_own_context_and_spawned_head_is_narrowed_by_grants() {
+    let mut h = HostHarness::new();
+    let human_pane = h.add_focused_terminal();
+    let human_pid = h.terminal_backend(human_pane).child_pid();
+    assert!(
+        h.app.is_human_owned_pane(human_pane),
+        "host-spawned user terminal must be human-owned"
+    );
+    let workspace = h.workspace_root();
+    let mon = monitor();
+
+    let call_agents_api = |h: &mut HostHarness,
+                           op: &str,
+                           payload: serde_json::Value,
+                           ancestry: Option<&[u32]>|
+     -> serde_json::Value {
+        let reply = h
+            .workspace_root()
+            .join(format!("agents-api-{op}-{}.json", uuid::Uuid::new_v4()));
+        let req = AppRequest::AgentsApi {
+            op: op.to_string(),
+            payload,
+            response_file: reply.to_string_lossy().to_string(),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, ancestry, &mut ack);
+        pump_until(h, |_| {
+            reply.is_file()
+                && std::fs::metadata(&reply)
+                    .map(|meta| meta.len() > 0)
+                    .unwrap_or(false)
+        });
+        serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
+    };
+
+    // 1. Human pane in context A runs `agent head create lead --grant agents.ping=allow`
+    //    -> `ok: true`, no needs-you filed.
+    let created = call_agents_api(
+        &mut h,
+        "create_head",
+        serde_json::json!({
+            "workspace": workspace,
+            "name": "lead",
+            "grants": ["agents.ping=allow"],
+            "caller_pane": human_pane,
+        }),
+        Some(&[human_pid]),
+    );
+    assert_eq!(created["ok"], true, "human pane create_head must succeed: {created}");
+    assert!(
+        mon.list_needs_you().is_empty(),
+        "human pane create_head must not file needs-you: {:?}",
+        mon.list_needs_you()
+    );
+
+    // 2. Spawn a run on `lead` and verify it only has `agents.ping` (narrowed by grants).
+    let run_reply = call_agents_api(
+        &mut h,
+        "spawn_run",
+        serde_json::json!({
+            "workspace": workspace,
+            "head": "lead",
+            "admission": "adm-0888-lead",
+            "journal_only": true,
+        }),
+        Some(&[human_pid]),
+    );
+    assert_eq!(run_reply["ok"], true, "{run_reply}");
+    let run_id = run_reply["run"]["id"].as_str().unwrap().to_string();
+
+    let ping_call = call_agents_api(
+        &mut h,
+        "call",
+        serde_json::json!({
+            "workspace": workspace,
+            "run_id": run_id,
+            "tool": "agents.ping",
+            "input_json": "{}",
+            "caller_pane": human_pane,
+        }),
+        None,
+    );
+    assert_eq!(ping_call["ok"], true, "granted tool must succeed: {ping_call}");
+
+    let admin_call = call_agents_api(
+        &mut h,
+        "call",
+        serde_json::json!({
+            "workspace": workspace,
+            "run_id": run_id,
+            "tool": "agents.admin",
+            "input_json": "{}",
+            "caller_pane": human_pane,
+        }),
+        None,
+    );
+    assert_eq!(admin_call["ok"], false, "ungranted tool must be refused: {admin_call}");
+    assert_eq!(admin_call["error_code"], "permission_denied", "{admin_call}");
+
+    // 3. Delegating a sub-head with a wider grant (`agents.admin=allow`) is refused by subset check.
+    let wider_delegate = call_agents_api(
+        &mut h,
+        "delegate",
+        serde_json::json!({
+            "workspace": workspace,
+            "parent_run": run_id,
+            "name": "sub-wider",
+            "grants": ["agents.admin=allow"],
+            "caller_pane": human_pane,
+        }),
+        None,
+    );
+    assert_eq!(wider_delegate["ok"], false, "{wider_delegate}");
+    assert_eq!(wider_delegate["error_code"], "permission_denied", "{wider_delegate}");
+}
+
+#[test]
+fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants() {
+    use crate::workspace::secrets::{
+        self,
+        manager::{mutate_secret, secret_inventory, Mutation, SecretTarget},
+    };
+
+    let mut h = HostHarness::new();
+    let human_pane = h.add_focused_terminal();
+    let human_pid = h.terminal_backend(human_pane).child_pid();
+    let root_a = crate::platform::path::canonical_or_self(&h.workspace_root());
+    let dir_b = tempfile::tempdir().unwrap();
+    let root_b = crate::platform::path::canonical_or_self(dir_b.path());
+    let nested_b = root_a.join("nested-b");
+    std::fs::create_dir_all(&nested_b).unwrap();
+
+    let channel_dir = crate::config::workspace_channel_dir();
+    let cfg_a = secrets::init_workspace(&root_a, &channel_dir).unwrap();
+    let cfg_b = secrets::init_workspace(&root_b, &channel_dir).unwrap();
+    let cfg_nested = secrets::init_workspace(&nested_b, &channel_dir).unwrap();
+
+    let _exp =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+    let mon = monitor();
+    let sys_store = secrets::system_store();
+    let fld_store = secrets::folder_store();
+
+    sys_store
+        .set(
+            &secrets::keychain_workspace_name(&cfg_a.id, "SECRET_A"),
+            "canary-a-0888",
+        )
+        .unwrap();
+    sys_store
+        .set(
+            &secrets::keychain_workspace_name(&cfg_b.id, "SECRET_B"),
+            "canary-b-0888",
+        )
+        .unwrap();
+    sys_store
+        .set(
+            &secrets::keychain_workspace_name(&cfg_nested.id, "SECRET_NESTED"),
+            "canary-nested-0888",
+        )
+        .unwrap();
+
+    mutate_secret(
+        fld_store,
+        &mon,
+        &SecretTarget::Folder(root_a.clone()),
+        "FOLDER_SECRET_A",
+        Mutation::Set("folder-canary-a"),
+    )
+    .unwrap();
+    mutate_secret(
+        fld_store,
+        &mon,
+        &SecretTarget::Folder(root_b.clone()),
+        "FOLDER_SECRET_B",
+        Mutation::Set("folder-canary-b"),
+    )
+    .unwrap();
+    mutate_secret(
+        fld_store,
+        &mon,
+        &SecretTarget::Folder(nested_b.clone()),
+        "FOLDER_SECRET_NESTED",
+        Mutation::Set("folder-canary-nested"),
+    )
+    .unwrap();
+
+    let call_agents_api = |h: &mut HostHarness, op: &str, payload: serde_json::Value| {
+        let reply = h
+            .workspace_root()
+            .join(format!("ctx-scope-{op}-{}.json", uuid::Uuid::new_v4()));
+        let req = AppRequest::AgentsApi {
+            op: op.to_string(),
+            payload,
+            response_file: reply.to_string_lossy().to_string(),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[human_pid]), &mut ack);
+        pump_until(h, |_| {
+            reply.is_file()
+                && std::fs::metadata(&reply)
+                    .map(|meta| meta.len() > 0)
+                    .unwrap_or(false)
+        });
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&reply).unwrap())
+            .unwrap()
+    };
+
+    // 1. Human pane in context A cannot create heads or list heads/grants in sibling context B
+    //    or nested context `nested_b` inside A's directory.
+    for target_ws in [&root_b, &nested_b] {
+        let create_resp = call_agents_api(
+            &mut h,
+            "create_head",
+            serde_json::json!({
+                "workspace": target_ws,
+                "name": "intruder",
+                "grants": ["agents.ping=allow"],
+                "caller_pane": human_pane,
+            }),
+        );
+        assert_eq!(create_resp["ok"], false, "must refuse target {}: {create_resp}", target_ws.display());
+        assert_eq!(create_resp["error_code"], "permission_denied", "{create_resp}");
+
+        let list_heads_resp = call_agents_api(
+            &mut h,
+            "list_heads",
+            serde_json::json!({
+                "workspace": target_ws,
+                "caller_pane": human_pane,
+            }),
+        );
+        assert_eq!(list_heads_resp["ok"], false, "{list_heads_resp}");
+        assert_eq!(list_heads_resp["error_code"], "permission_denied", "{list_heads_resp}");
+
+        let list_grants_resp = call_agents_api(
+            &mut h,
+            "list_grants",
+            serde_json::json!({
+                "workspace": target_ws,
+                "caller_pane": human_pane,
+            }),
+        );
+        assert_eq!(list_grants_resp["ok"], false, "{list_grants_resp}");
+        assert_eq!(list_grants_resp["error_code"], "permission_denied", "{list_grants_resp}");
+    }
+    assert!(
+        mon.list_needs_you().is_empty(),
+        "cross-context refusal must not file needs-you: {:?}",
+        mon.list_needs_you()
+    );
+
+    // 2. Human pane in context A cannot read context B's or nested context B's secrets via PaneSecretGet.
+    for (target_ws, secret_name, canary) in [
+        (&root_b, "SECRET_B", "canary-b-0888"),
+        (&nested_b, "SECRET_NESTED", "canary-nested-0888"),
+    ] {
+        let reply = std::path::PathBuf::from(crate::rpc::response_file(
+            &format!("secret-get-0888-{}", uuid::Uuid::new_v4()),
+            "json",
+        ));
+        let req = AppRequest::PaneSecretGet {
+            name: secret_name.to_string(),
+            global: false,
+            workspace_root: Some(target_ws.clone()),
+            peer_ancestry: Vec::new(),
+            response_file: reply.to_string_lossy().into_owned(),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[human_pid]), &mut ack);
+        pump_until(&mut h, |_| reply.is_file());
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap();
+        let _ = std::fs::remove_file(&reply);
+        assert_eq!(body["status"], "denied", "must deny cross-context secret_get: {body}");
+        assert_eq!(body["error_code"], "permission_denied", "{body}");
+        assert!(!body.to_string().contains(canary));
+    }
+
+    // 3. CLI context-scope enforcement and inventory scoping from context A:
+    let _ctx_guard = crate::cli::workspace::set_test_pane_context_root(&root_a);
+    let inv_a = secret_inventory(&root_a, false).unwrap();
+    assert!(inv_a.iter().any(|e| e.name == "SECRET_A"));
+    assert!(inv_a.iter().any(|e| e.name == "FOLDER_SECRET_A"));
+    assert!(
+        !inv_a.iter().any(|e| e.name == "SECRET_B"
+            || e.name == "SECRET_NESTED"
+            || e.name == "FOLDER_SECRET_B"
+            || e.name == "FOLDER_SECRET_NESTED"),
+        "context A inventory must not include sibling or nested context secrets"
+    );
+    assert!(
+        secret_inventory(&root_b, false).is_err(),
+        "listing sibling context B from pane in context A must be refused"
+    );
+    assert!(
+        secret_inventory(&nested_b, false).is_err(),
+        "listing nested context B from pane in context A must be refused"
+    );
+    assert_eq!(
+        crate::cli::workspace::folder_secret_read(
+            "FOLDER_SECRET_B",
+            Some("lead"),
+            None,
+            Some(&root_b)
+        ),
+        1
+    );
+    assert_eq!(
+        crate::cli::workspace::folder_secret_read(
+            "FOLDER_SECRET_NESTED",
+            Some("lead"),
+            None,
+            Some(&nested_b)
+        ),
+        1
+    );
+    assert_eq!(
+        crate::cli::workspace::folder_secret_rm("FOLDER_SECRET_NESTED", &nested_b),
+        1
+    );
+}
+
+#[test]
+fn agent_spawned_pane_does_not_get_human_authority() {
+    use crate::broker::gate::{NeedsYouKind, ResolveSurface};
+
+    let mut h = HostHarness::new();
+    let human_pane = h.add_focused_terminal();
+    assert!(h.app.is_human_owned_pane(human_pane));
+
+    // 1. Spawn an agent pane (`agent_pane: true`).
+    let (_, human_tile) = h.app.find_pane_in_any_window(human_pane).unwrap();
+    let agent_pane = h.app.spawn_terminal_pane_at(
+        crate::pane_ops::create::SpawnTerminalAtSpec {
+            win_idx: 0,
+            target_tile: human_tile,
+            vertical: true,
+            new_pane_first: false,
+            keep_focus: true,
+            options: crate::pane_ops::create::TerminalSpawnOptions {
+                initial_cmd: None,
+                close_on_exit: false,
+                cwd_override: None,
+                agent_pane: true,
+                inject_folder_secrets: false,
+            },
+        },
+    );
+    assert!(
+        !h.app.is_human_owned_pane(agent_pane),
+        "agent pane must not be human-owned"
+    );
+
+    // 2. Agent pane spawns a plain terminal pane via `pane new` (no `agent_cmd`,
+    //    only `from_pane_id: Some(agent_pane)` / peer ancestry). It must ALSO not be human-owned.
+    let agent_pid = h.terminal_backend(agent_pane).child_pid();
+    let spawn_child_reply = h
+        .workspace_root()
+        .join(format!("spawn-child-{}.json", uuid::Uuid::new_v4()));
+    let child_line = serde_json::json!({
+        "type": "spawn_pane",
+        "type_id": "terminal",
+        "from_pane_id": agent_pane,
+        "response_file": spawn_child_reply.to_string_lossy().to_string(),
+    })
+    .to_string();
+    let mut ack = Vec::new();
+    crate::app::handle_socket_line(&child_line, &h.ipc_tx, Some(&[agent_pid]), &mut ack);
+    pump_until(&mut h, |_| spawn_child_reply.is_file());
+    let child_spawn_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&spawn_child_reply).unwrap()).unwrap();
+    let child_shell_pane = child_spawn_json["pane_id"]
+        .as_u64()
+        .expect("child shell pane_id");
+    assert!(
+        !h.app.is_human_owned_pane(child_shell_pane),
+        "plain shell spawned by an agent pane via `pane new` must never qualify as human-owned"
+    );
+
+    // 3. `create_head` from `child_shell_pane` is denied and files a `permission_request` needs-you item.
+    let child_pid = h.terminal_backend(child_shell_pane).child_pid();
+    let call_create_head = |h: &mut HostHarness, name: &str, grant: &str| -> serde_json::Value {
+        let reply = h
+            .workspace_root()
+            .join(format!("agent-child-head-{}.json", uuid::Uuid::new_v4()));
+        let req = AppRequest::AgentsApi {
+            op: "create_head".to_string(),
+            payload: serde_json::json!({
+                "workspace": h.workspace_root(),
+                "name": name,
+                "grants": [grant],
+                "caller_pane": child_shell_pane,
+            }),
+            response_file: reply.to_string_lossy().to_string(),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[child_pid]), &mut ack);
+        pump_until(h, |_| {
+            reply.is_file()
+                && std::fs::metadata(&reply)
+                    .map(|meta| meta.len() > 0)
+                    .unwrap_or(false)
+        });
+        serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
+    };
+
+    let denied = call_create_head(&mut h, "worker-lead", "agents.ping=allow");
+    assert_eq!(denied["ok"], false, "{denied}");
+    assert_eq!(denied["error_code"], "permission_denied", "{denied}");
+    let needs_you_id = denied["needs_you_id"]
+        .as_str()
+        .expect("agent-spawned pane must file needs-you")
+        .to_string();
+
+    let mon = monitor();
+    let open = mon.list_needs_you();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].id, needs_you_id);
+    assert_eq!(open[0].kind, NeedsYouKind::PermissionRequest);
+
+    // 4. Desktop approval mints a pane-session grant for `agents.ping` on `child_shell_pane`,
+    //    allowing retry of `agents.ping=allow` while still refusing `agents.admin=allow`.
+    mon.resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
+        .unwrap();
+    let retry = call_create_head(&mut h, "worker-lead", "agents.ping=allow");
+    assert_eq!(retry["ok"], true, "retry after pane-session grant must succeed: {retry}");
+
+    let ungranted = call_create_head(&mut h, "worker-admin", "agents.admin=allow");
+    assert_eq!(ungranted["ok"], false, "{ungranted}");
+    assert_eq!(ungranted["error_code"], "permission_denied", "{ungranted}");
+}

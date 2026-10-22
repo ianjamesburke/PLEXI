@@ -384,8 +384,15 @@ impl PlexiApp {
             root: Some(path.clone()),
             depth: child_depth,
         };
-        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) =
-            self.create_context_pane_set(&child_env, path.clone(), &pane_commands, layout)
+        let caller_is_agent = anchor_pane.is_some_and(|pid| !self.is_human_owned_pane(pid));
+        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) = self
+            .create_context_pane_set(
+                &child_env,
+                path.clone(),
+                &pane_commands,
+                layout,
+                caller_is_agent,
+            )
         else {
             log::error!("new_child_context: failed to create terminals for child context");
             return Err("failed to create terminals for child context".to_string());
