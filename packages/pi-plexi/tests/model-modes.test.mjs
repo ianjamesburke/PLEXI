@@ -81,3 +81,18 @@ test('tampered backup and changed source abort without modifying settings', () =
   assert.deepEqual(readFileSync(join(profile, 'settings.json')), original);
   assert.throws(() => rollbackProfile(profile, backup), /verification failed/);
 });
+
+test('CLI backs up automatically, rolls back, and refuses stale backup reuse', () => {
+  const { profile, backup } = fixture();
+  const original = readFileSync(join(profile, 'settings.json'));
+  function run(command) {
+    return spawnSync(process.execPath, ['src/migrate-model-modes.mjs', command, '--profile', profile, '--backup', backup], { cwd: new URL('..', import.meta.url), env: process.env, encoding: 'utf8' });
+  }
+  const migrated = run('migrate'); assert.equal(migrated.status, 0, migrated.stderr);
+  assert.deepEqual(readFileSync(join(backup, 'settings.json')), original);
+  const rolledBack = run('rollback'); assert.equal(rolledBack.status, 0, rolledBack.stderr);
+  assert.deepEqual(readFileSync(join(profile, 'settings.json')), original);
+  writeFileSync(join(profile, 'agents/worker.md'), '# Updated worker\n');
+  const refused = run('migrate'); assert.equal(refused.status, 1); assert.match(refused.stderr, /Profile changed since backup/);
+  assert.deepEqual(readFileSync(join(profile, 'settings.json')), original);
+});
