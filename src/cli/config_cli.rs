@@ -52,7 +52,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("attention.style", "string", "Attention style: off, subtle, normal (default), loud"),
     ("attention.intensity", "float", "Attention halo and border intensity, 0 to 1 (default 1)"),
     ("attention.dock", "string", "Dock mode: none, badge (default), bounce-once, bounce-until-focused"),
-    ("theme.state_preset", "string", "Agent states: default, okabe-ito, high-contrast, mono"),
+    ("theme.state_preset", "string", "Agent states: default, okabe-ito, high-contrast, mono (default: okabe-ito)"),
     ("theme.state_working", "string", "Agent working color (#rrggbb)"),
     ("theme.state_waiting", "string", "Agent waiting color (#rrggbb)"),
     ("theme.state_blocked", "string", "Agent blocked color (#rrggbb)"),

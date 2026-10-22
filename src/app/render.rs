@@ -148,7 +148,7 @@ impl PlexiApp {
             // what makes it reliable — so close the focus segment here, the
             // same way the window-close path does from `on_exit`.
             self.bank_final_focus_segment();
-            crate::app::quit::exit_host("host stop");
+            crate::app::quit::exit_host(crate::app::quit::ExitReason::HostStop);
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
@@ -167,7 +167,7 @@ impl PlexiApp {
             match result {
                 Ok(()) => {
                     self.bank_final_focus_segment();
-                    crate::app::quit::exit_host("update restart");
+                    crate::app::quit::exit_host(crate::app::quit::ExitReason::UpdateRestart);
                 }
                 Err(error) => {
                     self.update_quit_pending = false;

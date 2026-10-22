@@ -22,6 +22,7 @@
             "idle",
             "interrupted",
             "failed",
+            "exited_unreported",
             "completed"
           ],
           "type": "string"

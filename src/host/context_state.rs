@@ -97,7 +97,7 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -121,7 +121,7 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -139,7 +139,7 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -163,7 +163,7 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }

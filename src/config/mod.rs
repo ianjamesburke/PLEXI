@@ -1082,7 +1082,7 @@ fn state_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>
 pub struct ThemeConfig {
     /// Theme preset name. Applied first; individual color fields override the preset.
     pub preset: Option<String>,
-    /// Agent states: default, okabe-ito, high-contrast, mono. Default: default.
+    /// Agent states: default, okabe-ito, high-contrast, mono. Default: okabe-ito.
     #[serde(default, deserialize_with = "state_preset")]
     pub state_preset: Option<String>,
     pub state_working: Option<String>,

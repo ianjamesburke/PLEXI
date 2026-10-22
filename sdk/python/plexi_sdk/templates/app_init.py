@@ -11,19 +11,22 @@ Do not mutate Plexi state in-place: return effects.
 Components describe UI. Effects describe host work.
 """
 
-from plexi_sdk import log, state, tools
-from plexi_sdk.effects import SetState, SetTitle
-from plexi_sdk.events import KeyEvent
+from plexi_sdk import component, log, tools
+from plexi_sdk.effects import SetTitle
+from plexi_sdk.events import UiAction
 
 from app import tools as app_tools  # noqa: F401  (importing registers @tools.tool functions)
 from app import ui as app_ui
+
+
+LEFT_COUNTER = component("left-counter")
+RIGHT_COUNTER = component("right-counter")
 
 
 def init(size, args):
     log.info("__DISPLAY_NAME__: init")
     return [
         SetTitle("__DISPLAY_NAME__"),
-        SetState({"count": 0}),
         tools.expose(),
     ]
 
@@ -32,15 +35,23 @@ def update(event):
     tool_effects = tools.dispatch(event)
     if tool_effects is not None:
         return tool_effects
-    if isinstance(event, KeyEvent) and event.pressed:
-        if event.key in ("=", "+"):
-            return [SetState({"count": state.get("count", 0) + 1})]
-        if event.key == "-":
-            return [SetState({"count": state.get("count", 0) - 1})]
-        if event.key == "r":
-            return [SetState({"count": 0})]
+    if isinstance(event, UiAction):
+        counters = {"left": LEFT_COUNTER, "right": RIGHT_COUNTER}
+        counter, _, action = event.handler_id.partition(":")
+        selected = counters.get(counter)
+        if selected is not None:
+            count = selected.get("count", 0)
+            if action == "increment":
+                return [selected.set("count", count + 1)]
+            if action == "decrement":
+                return [selected.set("count", count - 1)]
+            if action == "reset":
+                return [selected.set("count", 0)]
     return []
 
 
 def view():
-    return app_ui.build_view(state.get("count", 0))
+    return app_ui.build_view(
+        LEFT_COUNTER.get("count", 0),
+        RIGHT_COUNTER.get("count", 0),
+    )

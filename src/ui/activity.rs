@@ -39,6 +39,7 @@ pub fn escalation_color(
         Some(AgentState::Blocked) => Some(blocked_color(colors)),
         Some(AgentState::Interrupted) => Some(colors.state_interrupted),
         Some(AgentState::Failed) => Some(colors.state_error),
+        Some(AgentState::ExitedUnreported) => Some(colors.warning),
         Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
     }
 }
@@ -53,6 +54,7 @@ pub fn escalation_label(state: Option<&AgentState>, is_error: bool) -> Option<&'
         Some(AgentState::Blocked) => Some("BLOCKED"),
         Some(AgentState::Interrupted) => Some("INTERRUPTED"),
         Some(AgentState::Failed) => Some("FAILED"),
+        Some(AgentState::ExitedUnreported) => Some("EXITED WITHOUT REPORT"),
         Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
     }
 }
@@ -94,6 +96,7 @@ pub fn dot_color_from_time(
         AgentState::Idle | AgentState::Completed => colors.state_waiting,
         AgentState::Interrupted => colors.state_interrupted,
         AgentState::Failed => colors.state_error,
+        AgentState::ExitedUnreported => colors.warning,
         AgentState::Blocked => blocked_color(colors),
         AgentState::NeedsYou => needs_you_color(colors),
     }
@@ -117,6 +120,7 @@ pub fn state_glyph(state: &AgentState) -> StateGlyph {
         AgentState::NeedsYou => StateGlyph::Target,
         AgentState::Interrupted => StateGlyph::Diamond,
         AgentState::Failed => StateGlyph::Cross,
+        AgentState::ExitedUnreported => StateGlyph::Diamond,
     }
 }
 

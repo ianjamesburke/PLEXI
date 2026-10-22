@@ -160,6 +160,8 @@ Socket ancestry authenticates the holder; wire-supplied ancestry is not authorit
 
 The Agents pane and `agent fleet` share the projection in `src/agent/fleet.rs`. The user workflow and configuration are documented in `skills/plexi-cli/intro.md` under Coordinate workers.
 
+A worker harness that exits zero without `agent done` is `exited_unreported`, an amber warning rather than a failure. Its captured final output is retained as an explicitly unvalidated fallback result; team runs treat it as an abstention and publish a degraded quorum report when remaining valid ballots can be aggregated. Non-zero harness exits remain failures.
+
 ## Secret inventory
 
 `secret list` (text and JSON) and the Secrets app share `manager::secret_inventory` in

@@ -1078,6 +1078,45 @@ impl PlexiApp {
         let effects = self.submit(HostAction::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
+        // The conjoined parent is rendered beside, rather than inside, the active
+        // child window. Its tile therefore cannot participate in that window's
+        // ordinary geometric navigation. Treat the visible parent strip as the
+        // left-hand neighbor of the child layout.
+        if let Some(parent) = self
+            .conjoined_parent()
+            .filter(|parent| self.conjoined_parent_focus == Some(*parent))
+        {
+            if dir != Direction::Right {
+                log::info!("navigate({dir:?}): conjoined parent={parent} remains focused");
+                return false;
+            }
+
+            let child = {
+                let window = &self.windows[self.active_window];
+                window
+                    .focused_pane
+                    .filter(|tile| matches!(window.tree.tiles.get(*tile), Some(Tile::Pane(_))))
+                    .or_else(|| self.leftmost_pane_in_window(self.active_window))
+            };
+            let Some(child) = child else {
+                log::warn!("navigate(Right): conjoined parent={parent} has no child pane");
+                return false;
+            };
+            let Some(Tile::Pane(child_pane)) =
+                self.windows[self.active_window].tree.tiles.get(child)
+            else {
+                log::warn!("navigate(Right): conjoined child tile={child:?} is no longer a pane");
+                return false;
+            };
+            let child_pane = *child_pane;
+            self.conjoined_parent_focus = None;
+            self.windows[self.active_window].navigate_to(child);
+            self.mark_agent_seen(child_pane);
+            log::info!("navigate(Right): conjoined parent={parent} -> child pane={child_pane}");
+            self.resume_focused_standby_pane();
+            return true;
+        }
+
         let (dx, dy) = match dir {
             Direction::Left => (-1, 0),
             Direction::Right => (1, 0),
@@ -1095,6 +1134,17 @@ impl PlexiApp {
             // Signal the newly-focused pane so render_text_inputs auto-focuses
             // the first TextInput on the next frame.
             true
+        } else if dir == Direction::Left {
+            if let Some(parent) = self.conjoined_parent() {
+                self.conjoined_parent_focus = Some(parent);
+                log::info!("navigate(Left): child boundary -> conjoined parent={parent}");
+                true
+            } else {
+                log::info!("navigate({:?}): falling through to page navigation", dir);
+                let old_active_window = self.active_window;
+                self.navigate_page(dx, dy);
+                self.active_window != old_active_window
+            }
         } else if dy != 0 {
             // Vertical boundary: jump to the first or last window in the current
             // workspace (the minimap list). Down at bottom → last window;

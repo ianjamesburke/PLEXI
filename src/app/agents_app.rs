@@ -87,6 +87,7 @@ impl AgentsApp {
             }
             DisplayState::Blocked => ("■", crate::ui::activity::blocked_color(colors)),
             DisplayState::Stalled | DisplayState::Failed => ("×", colors.state_error),
+            DisplayState::ExitedUnreported => ("◇", colors.warning),
             DisplayState::DoneUnseen => ("○", colors.state_waiting),
             DisplayState::Working => ("◔", colors.state_working),
             DisplayState::Idle => ("○", colors.state_waiting),

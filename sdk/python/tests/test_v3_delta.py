@@ -21,6 +21,8 @@ from plexi_sdk._v3_delta import (
     apply_delta,
     node_patch,
 )
+from plexi_sdk._adapter import _encode_uitree
+from plexi_sdk.ui import Column, Keyed, Text
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SDK_PATH = str(REPO_ROOT / "sdk" / "python")
@@ -432,6 +434,84 @@ class TestWireFraming:
 
 
 class TestReconstruction:
+    @staticmethod
+    def _keyed_tree(rows: list[str]) -> dict:
+        return _encode_uitree(Column([Keyed(Text(row), key=row) for row in rows]))
+
+    @staticmethod
+    def _keyed_runtime() -> object:
+        from plexi_sdk import _v3_runtime as rt
+        runtime = rt.V3AppRuntime.__new__(rt.V3AppRuntime)
+        runtime._last_tree = None
+        runtime._force_full_tree = True
+        runtime._prefer_full_tree = False
+        runtime._tree_size_check_in = 0
+        runtime._keyed_tree_delta = True
+        runtime._next_tree_node_id = 0
+        return runtime
+
+    @pytest.mark.parametrize("before,after", [
+        (["a", "b", "c"], ["new", "a", "b", "c"]),
+        (["a", "b", "c"], ["a", "c"]),
+        (["a", "b", "c"], ["c", "a", "b"]),
+        (["a", "b", "c"], ["c", "new", "a"]),
+    ], ids=["insert-front", "remove-middle", "reorder", "mixed-edit"])
+    def test_keyed_list_structural_delta_reconstructs(self, monkeypatch, before, after):
+        from plexi_sdk import _v3_runtime as rt
+        lines: list[str] = []
+        monkeypatch.setattr(rt, "_emit", lambda event: lines.append(json.dumps(event)))
+        monkeypatch.setattr(rt, "_emit_line", lines.append)
+        runtime = self._keyed_runtime()
+        runtime._emit_tree(1, self._keyed_tree(before))
+        runtime._tree_size_check_in = 10  # do not choose a tiny full frame by size
+        runtime._emit_tree(2, self._keyed_tree(after))
+        first, second = (json.loads(line) for line in lines)
+        assert first["type"] == "component_tree"
+        assert second["type"] == "tree_delta"
+        rebuilt = apply_delta(first["tree"], second["changed"],
+                              added=second.get("added"), removed=second.get("removed"))
+        root = next(node for node in rebuilt["nodes"] if node["id"] == rebuilt["root"])
+        labels = {node["id"]: node["data"].get("text") for node in rebuilt["nodes"]}
+        assert [labels[node_id] for node_id in root["data"]["children"]] == after
+
+    def test_unkeyed_structural_change_remains_full_tree(self, monkeypatch):
+        from plexi_sdk import _v3_runtime as rt
+        lines: list[str] = []
+        monkeypatch.setattr(rt, "_emit", lambda event: lines.append(json.dumps(event)))
+        monkeypatch.setattr(rt, "_emit_line", lines.append)
+        runtime = self._keyed_runtime()
+        runtime._emit_tree(1, _encode_uitree(Column([Text("a")])))
+        runtime._emit_tree(2, _encode_uitree(Column([Text("new"), Text("a")])))
+        assert json.loads(lines[-1])["type"] == "component_tree"
+
+    def test_keyed_structure_uses_full_tree_without_host_capability(self, monkeypatch):
+        from plexi_sdk import _v3_runtime as rt
+        lines: list[str] = []
+        monkeypatch.setattr(rt, "_emit", lambda event: lines.append(json.dumps(event)))
+        monkeypatch.setattr(rt, "_emit_line", lines.append)
+        runtime = self._keyed_runtime()
+        runtime._keyed_tree_delta = False
+        runtime._emit_tree(1, self._keyed_tree(["a"]))
+        runtime._emit_tree(2, self._keyed_tree(["new", "a"]))
+        full = json.loads(lines[-1])
+        assert full["type"] == "component_tree"
+        # An old host uses ids as arena slots. Its full frame must retain those
+        # positional ids so its next ordinary delta cannot patch another row.
+        assert [node["id"] for node in full["tree"]["nodes"]] == list(range(3))
+
+    def test_duplicate_key_frame_gets_fresh_unique_ids(self, monkeypatch):
+        from plexi_sdk import _v3_runtime as rt
+        lines: list[str] = []
+        monkeypatch.setattr(rt, "_emit", lambda event: lines.append(json.dumps(event)))
+        monkeypatch.setattr(rt, "_emit_line", lines.append)
+        runtime = self._keyed_runtime()
+        runtime._emit_tree(1, self._keyed_tree(["a", "b", "c"]))
+        runtime._emit_tree(2, self._keyed_tree(["a", "a", "b", "c"]))
+        tree = json.loads(lines[-1])["tree"]
+        ids = [node["id"] for node in tree["nodes"]]
+        assert len(ids) == len(set(ids))
+        assert min(ids) >= 4
+
     def test_apply_delta_replaces_full_node(self):
         prev = {"root": 0, "nodes": [
             {"id": 0, "key": "0", "data": {"type": "Text", "text": "a"}},
@@ -458,6 +538,29 @@ class TestReconstruction:
         prev = {"root": 0, "nodes": [{"id": 0, "key": "0", "data": {"type": "Empty"}}]}
         with pytest.raises(DeltaApplyError):
             apply_delta(prev, [{"id": 5, "key": "5", "data": {"type": "Empty"}}])
+
+    @pytest.mark.parametrize("changed,removed", [
+        (
+            [{"id": 0, "key": "0", "data": {"type": "Column", "children": [1]}}],
+            [1],
+        ),
+        ([], [0]),
+    ], ids=["dangling-child", "missing-root"])
+    def test_apply_delta_rejects_invalid_result_tree(self, changed, removed):
+        prev = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Column", "children": [1]}},
+            {"id": 1, "key": "0/0", "data": {"type": "Text", "text": "a"}},
+        ]}
+        with pytest.raises(DeltaApplyError):
+            apply_delta(prev, changed, removed=removed)
+
+    def test_reconstructor_rejects_duplicate_ids_in_full_tree(self):
+        tree = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Empty"}},
+            {"id": 0, "key": "1", "data": {"type": "Empty"}},
+        ]}
+        with pytest.raises(DeltaApplyError):
+            TreeReconstructor().ingest({"type": "component_tree", "tree": tree})
 
     def test_apply_delta_rejects_out_of_range_command(self):
         prev = {"root": 0, "nodes": [

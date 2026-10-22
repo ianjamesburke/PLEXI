@@ -147,6 +147,26 @@ class Component:
         return None
 
 
+class Keyed(Component):
+    """Give a component a stable explicit key for lists and local state."""
+
+    def __init__(self, child: Component, *, key: str) -> None:
+        if not isinstance(child, Component):
+            raise TypeError(f"Keyed child must subclass Component, got {type(child).__name__}")
+        if not isinstance(key, str) or not key:
+            raise ValueError("Keyed key must be a non-empty string")
+        self.child = child
+        self.key = key
+
+    def to_node(self) -> dict | None:
+        node = self.child.to_node()
+        if node is None:
+            return None
+        # Containers call `to_node()` before the adapter sees their children,
+        # so retain the wrapper's identity as private adapter metadata.
+        return {**node, "_plexi_key": self.key}
+
+
 def _validate_component_list(items: Any, container_name: str) -> None:
     if not isinstance(items, list):
         raise TypeError(
@@ -1757,7 +1777,7 @@ __all__ = [
     "TextColor", "TEXT_COLORS",
     "CANVAS_WIRE_DECIMALS",
     # Base & helpers
-    "Component",
+    "Component", "Keyed",
     "ensure_visible",
     "move_cursor",
     # Layout containers
