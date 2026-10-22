@@ -250,7 +250,7 @@ pub(crate) fn load(workspace: Option<&Path>, name: &str) -> Result<Team, String>
             .join(format!("{name}.toml")),
     );
     for path in &paths {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(raw) => {
                 let team: Team =
                     toml::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
