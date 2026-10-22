@@ -192,6 +192,7 @@ struct PaletteFocusTarget {
 enum PaletteCommand {
     Host(crate::host::keys::Action),
     OpenWorkspaceConfig,
+    StatePreset(&'static str),
     /// Open the effective `commands.toml` (workspace if in a workspace, else
     /// global) in a `text-editor` split, creating it from a template if absent.
     EditCommands,
@@ -210,6 +211,30 @@ struct PaletteCommandEntry {
 }
 
 const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
+    PaletteCommandEntry {
+        command: PaletteCommand::StatePreset("default"),
+        name: "Settings: agent states — default",
+        description: "Apply agent state colors; shapes always identify the state",
+        search_text: "settings preferences theme state preset default colorblind contrast",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::StatePreset("okabe-ito"),
+        name: "Settings: agent states — okabe-ito",
+        description: "Apply agent state colors; shapes always identify the state",
+        search_text: "settings preferences theme state preset okabe-ito colorblind contrast",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::StatePreset("high-contrast"),
+        name: "Settings: agent states — high-contrast",
+        description: "Apply agent state colors; shapes always identify the state",
+        search_text: "settings preferences theme state preset high-contrast colorblind contrast",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::StatePreset("mono"),
+        name: "Settings: agent states — mono",
+        description: "Apply agent state colors; shapes always identify the state",
+        search_text: "settings preferences theme state preset mono colorblind contrast",
+    },
     PaletteCommandEntry {
         command: PaletteCommand::UiUpcycle("git"),
         name: "UI upcycle: git",
@@ -868,6 +893,7 @@ fn palette_host_binding(
         | PaletteCommand::EditCommands
         | PaletteCommand::SwitchCommandsScope
         | PaletteCommand::OpenAttention
+        | PaletteCommand::StatePreset(_)
         | PaletteCommand::UiUpcycle(_) => return None,
         PaletteCommand::Host(other) => {
             log_missing_palette_shortcut_once(other);
@@ -1788,6 +1814,15 @@ impl PlexiApp {
             }
             PaletteCommand::Host(action) => self.run_palette_host_binding(action),
             PaletteCommand::OpenAttention => self.open_attention_overlay("palette"),
+            PaletteCommand::StatePreset(preset) => {
+                let result = crate::config::edit::edit_config_file(&crate::config::config_path(), |doc| {
+                    crate::config::edit::set_value(doc, &["theme", "state_preset"], preset.into())
+                });
+                match result {
+                    Ok(()) => { log::info!("settings: state preset={preset}"); self.reload_config(); }
+                    Err(error) => log::error!("settings: state preset failed: {error}"),
+                }
+            }
             PaletteCommand::OpenWorkspaceConfig => {
                 let root = self.router.active().root.clone();
                 log::info!("palette: opening workspace config at {}", root.display());
@@ -2789,7 +2824,8 @@ mod tests {
                 PaletteCommand::OpenWorkspaceConfig
                 | PaletteCommand::EditCommands
                 | PaletteCommand::SwitchCommandsScope
-                | PaletteCommand::UiUpcycle(_) => {
+                | PaletteCommand::StatePreset(_)
+        | PaletteCommand::UiUpcycle(_) => {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),
                         "workspace config / edit commands are palette-only handoffs with no host chord"

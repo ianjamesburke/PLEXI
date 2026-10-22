@@ -300,6 +300,15 @@ impl<'a> ListRow<'a> {
         };
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
+        // Custom-painted titles still need an accessible, unelided label.
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                self.selected,
+                self.body,
+            )
+        });
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -481,16 +490,6 @@ impl<'a> ListRow<'a> {
                 .secondary_center_y
                 .unwrap_or(text_metrics.primary_center_y + COMPACT_METADATA_PIP_OFFSET_Y);
             let t = ui.input(|i| i.time);
-            let has_working = pips
-                .activities
-                .iter()
-                .any(|s| matches!(s, Some(crate::protocol::AgentState::Working)));
-            if has_working {
-                // Pulse animation only needs ~10fps; an unconditional
-                // request_repaint pins the window at display refresh.
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
             draw_pips(ui, pips, colors, lane_left, lane_right, center_y, t);
         }
     }
@@ -754,7 +753,7 @@ fn draw_chip_row(
 }
 
 const PANE_PIP_RADIUS: f32 = 3.0;
-const PANE_PIP_SPACING: f32 = 9.0;
+const PANE_PIP_SPACING: f32 = 14.0;
 const PANE_PIP_MAX: usize = 8;
 const COMPACT_METADATA_CHIP_OFFSET_Y: f32 = 10.0;
 const COMPACT_METADATA_PIP_OFFSET_Y: f32 = 10.0;
@@ -838,12 +837,7 @@ fn draw_pips(
             time,
             dot_i,
         );
-        if hidden {
-            ui.painter()
-                .circle_stroke(center, PANE_PIP_RADIUS, Stroke::new(1.0_f32, color));
-        } else {
-            ui.painter().circle_filled(center, PANE_PIP_RADIUS, color);
-        }
+        crate::ui::activity::paint_pip(ui.painter(), center, PANE_PIP_RADIUS, agent_state, color, hidden);
     }
     if pips.count > capped {
         let overflow_x = start_x + dots_width(capped) + style::SPACE_XS;

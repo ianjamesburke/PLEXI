@@ -1731,6 +1731,7 @@ mod tests {
             &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
         );
         let mk = |kind, focused, activity, x0: f32, x1: f32| MiniPane {
+            pane_id: Some((x0 * 1000.0) as u64),
             norm_rect: egui::Rect::from_min_max(egui::pos2(x0, 0.0), egui::pos2(x1, 1.0)),
             kind,
             focused,
@@ -4719,6 +4720,67 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+
+    #[test]
+    fn screenshot_state_presets_and_attention_styles() {
+        use crate::protocol::AgentState;
+        use crate::config::{AttentionConfig, AttentionStyle};
+        let mut h = PlexiUiHarness::new_sized_ppp(1200.0, 800.0, 1.0);
+        let root = h.workspace_root().to_path_buf();
+        let mut ids = Vec::new();
+        for (name, state) in [("Working: compiling",AgentState::Working), ("Waiting: ready",AgentState::Idle), ("Blocked: dependency",AgentState::Blocked), ("Needs you: review",AgentState::NeedsYou), ("Interrupted",AgentState::Interrupted), ("Error: failed test",AgentState::Failed)] {
+            let id = add_focused_pane(&mut h);
+            ids.push(id);
+            h.with_app_mut(|app| {
+                let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent workspace\\nReviewing changes and running tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                term.name = Some(name.into());
+                term.agent_role = Some(name.into());
+                term.agent = Some(crate::protocol::PaneAgentState { pane_id:id, state, agent:"codex".into(), detail:None, session_id:None });
+                app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                app.sidebar_visible = true;
+            });
+        }
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
+        });
+        for theme in ["plexi-night", "plexi-day", "tokyo-day", "solarized-light"] {
+            for preset in crate::ui::theme::STATE_PRESETS {
+                if matches!(theme, "tokyo-day" | "solarized-light") && *preset != "default" {
+                    continue;
+                }
+                h.with_app_mut(|app| {
+                    let mut cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    cfg.state_preset = Some((*preset).into());
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(&cfg);
+                    app.config.attention = Some(AttentionConfig { style: Some(AttentionStyle::Subtle), ..Default::default() });
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors, theme == "plexi-night");
+                });
+                h.run_steps(3);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}"))).unwrap();
+                let mut simulated = h.render().unwrap();
+                for pixel in simulated.pixels_mut() {
+                    let c = crate::ui::theme::simulate_cvd(egui::Color32::from_rgb(pixel[0],pixel[1],pixel[2]),1);
+                    pixel[0]=c.r(); pixel[1]=c.g(); pixel[2]=c.b();
+                }
+                simulated.save(evidence_png!(&format!("_{theme}_{preset}_deuteranopia"))).unwrap();
+            }
+        }
+        for (name,style,intensity) in [("off",AttentionStyle::Off,1.0),("subtle",AttentionStyle::Subtle,1.0),("normal",AttentionStyle::Normal,1.0),("loud",AttentionStyle::Loud,1.0),("normal_half",AttentionStyle::Normal,0.5)] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors("plexi-night").unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg);
+                app.config.attention = Some(AttentionConfig { style:Some(style),intensity:Some(intensity),..Default::default() });
+                crate::ui::theme::setup_style(&app.ctx,&app.colors,true);
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(&format!("_{name}"))).unwrap();
+        }
+    }
 
     #[test]
     fn screenshot_agent_attention_toast_over_working_fleet() {

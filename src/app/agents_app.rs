@@ -86,10 +86,10 @@ impl AgentsApp {
                 ("!", crate::ui::activity::needs_you_color(colors))
             }
             DisplayState::Blocked => ("■", crate::ui::activity::blocked_color(colors)),
-            DisplayState::Stalled | DisplayState::Failed => ("▲", colors.danger),
-            DisplayState::DoneUnseen => ("◆", colors.success),
-            DisplayState::Working => ("●", colors.pip_working),
-            DisplayState::Idle => ("○", colors.text_dim),
+            DisplayState::Stalled | DisplayState::Failed => ("×", colors.state_error),
+            DisplayState::DoneUnseen => ("○", colors.state_waiting),
+            DisplayState::Working => ("◔", colors.state_working),
+            DisplayState::Idle => ("○", colors.state_waiting),
         }
     }
 }

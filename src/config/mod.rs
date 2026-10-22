@@ -93,6 +93,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "font_size",
     "theme_preset",
     "theme",
+    "attention",
     "effects",
     "log",
     "notifications",
@@ -124,6 +125,15 @@ const KNOWN_PERMISSIONS: &[&str] = &[
     "deny",
 ];
 const KNOWN_THEME: &[&str] = &[
+    "pip_working", "pip_idle", "pip_blocked", "pip_dim",
+    "state_preset",
+    "state_working",
+    "state_waiting",
+    "state_blocked",
+    "state_needs_you",
+    "state_interrupted",
+    "state_error",
+
     "preset",
     "bg_darkest",
     "bg_sidebar",
@@ -313,6 +323,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                 }
             }
 
+            if let Some(toml::Value::Table(t)) = table.get("attention") {
+                check_unknown_keys(t, "attention", &["style", "intensity", "dock"], &path_str, &mut diags);
+            }
             if let Some(toml::Value::Table(t)) = table.get("theme") {
                 check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
             }
@@ -645,6 +658,7 @@ pub struct PlexiConfig {
     pub osc_pane_title: Option<bool>,
     pub theme_preset: Option<String>,
     pub theme: Option<ThemeConfig>,
+    pub attention: Option<AttentionConfig>,
     pub effects: Option<EffectsConfig>,
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
@@ -1021,10 +1035,63 @@ pub struct EffectsConfig {
     pub ghost_opacity: Option<f32>,
 }
 
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AttentionStyle { Off, Subtle, #[default] Normal, Loud }
+
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AttentionDock { None, #[default] Badge, BounceOnce, BounceUntilFocused }
+
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq)]
+pub struct AttentionConfig {
+    /// Attention style: off, subtle, normal (default), or loud.
+    pub style: Option<AttentionStyle>,
+    /// Halo and border opacity multiplier, 0.0 to 1.0. Default: 1.0.
+    #[serde(default, deserialize_with = "attention_intensity")]
+    pub intensity: Option<f32>,
+    /// Dock delivery: none, badge (default), bounce-once, bounce-until-focused.
+    pub dock: Option<AttentionDock>,
+}
+
+fn attention_intensity<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    let value = Option::<f32>::deserialize(d)?;
+    if value.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
+        return Err(serde::de::Error::custom("attention.intensity must be between 0 and 1"));
+    }
+    Ok(value)
+}
+
+impl AttentionConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.style.is_some() { self.style = other.style; }
+        if other.intensity.is_some() { self.intensity = other.intensity; }
+        if other.dock.is_some() { self.dock = other.dock; }
+    }
+}
+
+fn state_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(d)?;
+    if value.as_deref().is_some_and(|v| !crate::ui::theme::STATE_PRESETS.contains(&v)) {
+        return Err(serde::de::Error::custom("theme.state_preset must be default, okabe-ito, high-contrast, or mono"));
+    }
+    Ok(value)
+}
+
 #[derive(Deserialize, Default, Clone)]
 pub struct ThemeConfig {
     /// Theme preset name. Applied first; individual color fields override the preset.
     pub preset: Option<String>,
+    /// Agent states: default, okabe-ito, high-contrast, mono. Default: default.
+    #[serde(default, deserialize_with = "state_preset")]
+    pub state_preset: Option<String>,
+    pub state_working: Option<String>,
+    pub state_waiting: Option<String>,
+    pub state_blocked: Option<String>,
+    pub state_needs_you: Option<String>,
+    pub state_interrupted: Option<String>,
+    pub state_error: Option<String>,
+
     // UI chrome
     pub bg_darkest: Option<String>,
     pub bg_sidebar: Option<String>,
@@ -1841,6 +1908,9 @@ impl PlexiConfig {
     /// `other` replaces the corresponding field in `self`. Nested structs
     /// (theme, effects, log, notifications) are overlaid recursively.
     fn overlay(&mut self, other: Self) {
+        if let Some(attention) = other.attention {
+            self.attention.get_or_insert_with(Default::default).overlay(attention);
+        }
         if other.font_size.is_some() {
             self.font_size = other.font_size;
         }
@@ -2006,6 +2076,14 @@ impl ThemeConfig {
             };
         }
         overlay_field!(preset);
+        overlay_field!(state_preset);
+        overlay_field!(state_working);
+        overlay_field!(state_waiting);
+        overlay_field!(state_blocked);
+        overlay_field!(state_needs_you);
+        overlay_field!(state_interrupted);
+        overlay_field!(state_error);
+
         overlay_field!(bg_darkest);
         overlay_field!(bg_sidebar);
         overlay_field!(bg_toolbar);

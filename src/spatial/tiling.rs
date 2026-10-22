@@ -50,6 +50,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn minimap_attention_entry_time_survives_geometry_changes() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let windows = [MiniWindow { grid_x:0, grid_y:0, panes:vec![MiniPane {
+            pane_id:Some(7), norm_rect:egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),
+            kind:PaneKind::Terminal, focused:false,has_content:false,title:None,active:true,
+            activity:Some(AgentState::NeedsYou),
+        }] }];
+        let key = egui::Id::new(("minimap_attention",Some(7_u64))).with("attention_entered");
+        for n in 0..2 {
+            let _ = ctx.run_ui(egui::RawInput { time:Some(n as f64),..Default::default() }, |ui| {
+                let area = egui::Rect::from_min_size(egui::pos2(20.0*n as f32,0.0),egui::vec2(300.0,160.0));
+                paint_portal_minimap(ui.painter(),area,&windows,&colors,n as f64);
+            });
+            assert_eq!(ctx.data(|d| d.get_temp::<f64>(key)),Some(0.0), "moving a portal must not re-enter NeedsYou");
+        }
+    }
+
+    #[test]
     fn tab_drop_marker_tracks_insert_edge() {
         let bar = egui::Rect::from_min_size(egui::pos2(10.0, 0.0), egui::vec2(300.0, 20.0));
         let tab_width = 100.0;
@@ -210,10 +229,7 @@ pub(crate) fn paint_tab_bar(
             let t = ctx.input(|i| i.time);
             let color = crate::ui::activity::dot_color_from_time(state, colors, t, i);
             let cx = tab_rect.left() + TAB_PIP_LEFT_PAD + TAB_PIP_RADIUS;
-            painter.circle_filled(egui::pos2(cx, tab_rect.center().y), TAB_PIP_RADIUS, color);
-            if matches!(state, AgentState::Working) {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
+            crate::ui::activity::paint_pip(painter, egui::pos2(cx, tab_rect.center().y), TAB_PIP_RADIUS, Some(state), color, false);
         }
 
         let label = tab_labels
@@ -322,6 +338,8 @@ pub enum PaneKind {
 /// A single pane slot within one window's minimap.
 #[derive(Clone)]
 pub struct MiniPane {
+    /// Stable pane identity keeps entry effects independent of minimap geometry.
+    pub pane_id: Option<PaneId>,
     /// Normalized [0,1]×[0,1] rect within its window body.
     pub norm_rect: egui::Rect,
     pub kind: PaneKind,
@@ -638,7 +656,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 } else {
                     None
                 };
-                if let Some(sc) = active_status_col {
+                if let Some(sc) = active_status_col.filter(|_| preview.status != crate::host::context_state::ContextStatus::NeedsYou || crate::ui::activity::attention(ui.ctx()).alpha > 0.0) {
                     let wash_rect = egui::Rect::from_min_size(
                         pane_rect.min,
                         egui::vec2(pane_rect.width(), 44.0_f32.min(pane_rect.height())),
@@ -661,7 +679,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                 egui::vec2(8.0, style::TEXT_BODY),
                                 egui::Sense::hover(),
                             );
-                            ui.painter().circle_filled(dot_rect.center(), 3.5, sc);
+                            let state = match preview.status {
+                                crate::host::context_state::ContextStatus::NeedsYou => AgentState::NeedsYou,
+                                crate::host::context_state::ContextStatus::Blocked => AgentState::Blocked,
+                                crate::host::context_state::ContextStatus::Error => AgentState::Failed,
+                                crate::host::context_state::ContextStatus::Working => AgentState::Working,
+                                _ => AgentState::Idle,
+                            };
+                            crate::ui::activity::paint_pip(ui.painter(), dot_rect.center(), 3.5, Some(&state), sc, false);
                         }
                         let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
                             format!("↳ {} · child of {parent}", preview.context_name)
@@ -731,17 +756,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             egui::Sense::hover(),
                         );
                         let t = ui.input(|i| i.time);
-                        if preview.windows.iter().flat_map(|w| &w.panes).any(|p| {
-                            matches!(p.activity, Some(crate::protocol::AgentState::Working))
-                        }) {
-                            // Pulse only needs ~10fps; an unconditional
-                            // request_repaint pins the window at display refresh.
-                            ui.ctx()
-                                .request_repaint_after(std::time::Duration::from_millis(100));
-                        }
-                        let painter = ui.painter();
                         paint_portal_minimap(
-                            painter,
+                            ui.painter(),
                             map_area,
                             &preview.windows,
                             &colors_for_portal,
@@ -1149,7 +1165,9 @@ pub(crate) fn paint_portal_minimap(
             );
 
             // Focused pane or escalated pane: semantic tint + border
-            if let Some(esc_col) = cell_escalation_col {
+            let needs_you = matches!(pane.activity, Some(AgentState::NeedsYou));
+            crate::ui::activity::paint_attention_chrome(painter, cell, colors.state_needs_you, egui::Id::new(("minimap_attention", pane.pane_id)), needs_you);
+            if let Some(esc_col) = cell_escalation_col.filter(|_| !needs_you) {
                 let tint = egui::Color32::from_rgba_unmultiplied(
                     esc_col.r(),
                     esc_col.g(),
@@ -1231,18 +1249,11 @@ pub(crate) fn paint_portal_minimap(
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
             if let Some(state) = activity_dot {
                 let color = if is_error_cell {
-                    colors.danger
+                    colors.state_error
                 } else {
                     crate::ui::activity::dot_color_from_time(state, colors, time, 0)
                 };
-                painter.circle_filled(
-                    egui::pos2(
-                        cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R,
-                        cell.min.y + 2.0 + title_font_size * 0.5,
-                    ),
-                    ACTIVITY_DOT_R,
-                    color,
-                );
+                crate::ui::activity::paint_pip(painter, egui::pos2(cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R, cell.min.y + 2.0 + title_font_size * 0.5), ACTIVITY_DOT_R, Some(if is_error_cell { &AgentState::Failed } else { state }), color, false);
             }
 
             if !pane.has_content {
@@ -1276,7 +1287,7 @@ pub(crate) fn paint_portal_minimap(
                     // Title clears the dot (pad + diameter + gap), measured
                     // from the cell edge like the dot itself.
                     let title_x_offset = if activity_dot.is_some() {
-                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 4.0 - 2.0
+                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 10.0 - 2.0
                     } else {
                         1.0
                     };

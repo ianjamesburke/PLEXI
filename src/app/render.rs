@@ -479,6 +479,7 @@ impl PlexiApp {
                                             })
                                     };
                                     crate::spatial::tiling::MiniPane {
+                                        pane_id: pane_ref.map(|pane| pane.id()),
                                         norm_rect: *norm_rect,
                                         kind,
                                         focused,
