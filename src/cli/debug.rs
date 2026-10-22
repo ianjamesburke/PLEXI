@@ -409,7 +409,7 @@ fn session_header(id: &str, rows: &[Value], utc: bool) -> String {
     let start = times
         .iter()
         .min()
-        .map(&format)
+        .map(format)
         .unwrap_or_else(|| "unknown".into());
     let end = times
         .iter()

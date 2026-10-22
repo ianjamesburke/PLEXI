@@ -43,7 +43,9 @@ pub(crate) fn response_file(prefix: &str, ext: &str) -> String {
 pub(crate) fn response_file_in(profile_dir: &Path, prefix: &str, ext: &str) -> String {
     let rpc_dir = profile_dir.join("rpc");
     if let Err(e) = std::fs::create_dir_all(&rpc_dir) {
-        log::warn!("rpc: could not create {rpc_dir:?}: {e}");
+        // Sandboxed clients can read host-written replies without profile write access.
+        // The host creates the response directory when it writes the reply.
+        log::debug!("rpc: could not create {rpc_dir:?}: {e}");
     }
     rpc_dir
         .join(format!("{prefix}-{}.{ext}", uuid::Uuid::new_v4()))
