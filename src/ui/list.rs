@@ -300,6 +300,15 @@ impl<'a> ListRow<'a> {
         };
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
+        // Custom-painted titles still need an accessible, unelided label.
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                self.selected,
+                self.body,
+            )
+        });
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }

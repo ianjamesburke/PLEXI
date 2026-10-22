@@ -4746,8 +4746,11 @@ mod tests {
             let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
             win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
         });
-        for theme in ["plexi-night","plexi-day"] {
+        for theme in ["plexi-night", "plexi-day", "tokyo-day", "solarized-light"] {
             for preset in crate::ui::theme::STATE_PRESETS {
+                if matches!(theme, "tokyo-day" | "solarized-light") && *preset != "default" {
+                    continue;
+                }
                 h.with_app_mut(|app| {
                     let mut cfg = crate::ui::theme::preset_colors(theme).unwrap();
                     cfg.state_preset = Some((*preset).into());

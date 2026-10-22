@@ -16,6 +16,9 @@ run_steps = 3
 assert_label = { target = "host", label = "Settings: agent states — mono" }
 
 [[steps]]
+run_steps = 2
+
+[[steps]]
 shot = "agent-state-settings.png"
 
 [[steps]]

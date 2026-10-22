@@ -454,7 +454,7 @@ fn render_name_bar_and_tabs(
                 },
             );
         });
-    } else if has_name || outside_workspace || has_escalation || agent_state.is_some() {
+    } else if has_name || outside_workspace || has_escalation {
         let bar_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),

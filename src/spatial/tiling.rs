@@ -1287,7 +1287,7 @@ pub(crate) fn paint_portal_minimap(
                     // Title clears the dot (pad + diameter + gap), measured
                     // from the cell edge like the dot itself.
                     let title_x_offset = if activity_dot.is_some() {
-                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 4.0 - 2.0
+                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 10.0 - 2.0
                     } else {
                         1.0
                     };
