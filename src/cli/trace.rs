@@ -368,14 +368,14 @@ fn is_text_placeholder(text: &str) -> bool {
 fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
     let arg = argv.get(index)?;
     let (command_index, command) = top_level_command(argv)?;
-    let subcommand_index = command_index + 1;
+    let subcommand_index = next_non_global(argv, command_index + 1)?;
     let subcommand = argv.get(subcommand_index).map(String::as_str);
 
     let positional = match (command.as_str(), subcommand) {
         ("pane", Some("send")) => positional_after(argv, subcommand_index + 1, 2, &[])
             .is_some_and(|content| index == content),
-        ("pane", Some("message")) if argv.get(subcommand_index + 1).is_some_and(|v| v == "send") => {
-            positional_after(argv, subcommand_index + 2, 2, &[]).is_some_and(|content| index == content)
+        ("pane", Some("message")) if next_non_global(argv, subcommand_index + 1).is_some_and(|i| argv[i] == "send") => {
+            positional_after(argv, next_non_global(argv, subcommand_index + 1).unwrap() + 1, 2, &[]).is_some_and(|content| index == content)
         }
         ("agent", Some("ask")) => positional_after(argv, subcommand_index + 1, 1, &["--pane-id"])
             .is_some_and(|content| index == content),
@@ -390,7 +390,7 @@ fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
     }
 
     let content_flags: &[&str] = match command.as_str() {
-        "agent" => &["--task", "--prompt", "--summary", "--result", "--persona"],
+        "agent" => &["--task", "--prompt", "--summary", "--result", "--persona", "--question", "--option"],
         "assistant" => &["--text"],
         _ => &[],
     };
@@ -399,7 +399,7 @@ fn redact_content_arg(argv: &[String], index: usize) -> Option<String> {
             return Some(format!("{flag}={}", text_placeholder(value)));
         }
     }
-    if index > 0 && content_flags.contains(&argv[index - 1].as_str()) {
+    if previous_non_global(argv, index).is_some_and(|previous| content_flags.contains(&argv[previous].as_str())) {
         return Some(text_placeholder(arg));
     }
     None
@@ -409,13 +409,19 @@ fn positional_after(argv: &[String], start: usize, wanted: usize, value_flags: &
     let mut positional = 0;
     let mut index = start;
     while let Some(arg) = argv.get(index) {
+        if arg == "--" {
+            index += 1;
+            continue;
+        }
+        if is_global_option(arg) {
+            index += if global_takes_value(arg) { 2 } else { 1 };
+            continue;
+        }
         if value_flags.contains(&arg.as_str()) {
             index += 2;
             continue;
         }
-        if value_flags.iter().any(|flag| arg.strip_prefix(flag).is_some_and(|suffix| suffix.starts_with('=')))
-            || arg.starts_with('-')
-        {
+        if value_flags.iter().any(|flag| arg.strip_prefix(flag).is_some_and(|suffix| suffix.starts_with('='))) {
             index += 1;
             continue;
         }
@@ -426,6 +432,34 @@ fn positional_after(argv: &[String], start: usize, wanted: usize, value_flags: &
         index += 1;
     }
     None
+}
+
+fn is_global_option(arg: &str) -> bool {
+    matches!(arg, "--profile" | "--socket" | "--json") || arg.starts_with("--profile=") || arg.starts_with("--socket=")
+}
+
+fn global_takes_value(arg: &str) -> bool { matches!(arg, "--profile" | "--socket") }
+
+fn next_non_global(argv: &[String], mut index: usize) -> Option<usize> {
+    while let Some(arg) = argv.get(index) {
+        if is_global_option(arg) { index += if global_takes_value(arg) { 2 } else { 1 }; } else { return Some(index); }
+    }
+    None
+}
+
+fn previous_non_global(argv: &[String], before: usize) -> Option<usize> {
+    let mut previous = None;
+    let mut index = 0;
+    while index < before {
+        let arg = &argv[index];
+        if is_global_option(arg) {
+            index += if global_takes_value(arg) { 2 } else { 1 };
+        } else {
+            previous = Some(index);
+            index += 1;
+        }
+    }
+    previous
 }
 
 fn top_level_command(argv: &[String]) -> Option<(usize, &String)> {

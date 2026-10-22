@@ -282,10 +282,11 @@ mod tests {
         let command =
             build_draft(dir.path(), "sess-draft", DraftOptions::default(), "command").unwrap();
         let parsed: toml::Value = toml::from_str(&command).unwrap();
-        assert!(parsed["commands"]["session_draft"]["steps"][0]
-            .as_str()
+        assert!(parsed["commands"]["session_draft"]["steps"]
+            .as_array()
             .unwrap()
-            .contains("--subcontext review-me"));
+            .is_empty());
+        assert!(command.contains("Review-only call"));
         let path = dir.path().join("draft.md");
         write_draft(&draft, Some(&path), &mut stdout).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), draft);
