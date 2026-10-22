@@ -589,8 +589,8 @@ pub mod help;
 pub mod introspect;
 pub mod registry;
 pub mod setup;
-pub mod skill_draft;
-pub mod skill_install;
+mod pane_caller;
+mod queued_spawn;
 #[cfg(test)]
 mod skill_surface;
 pub mod experiments;
