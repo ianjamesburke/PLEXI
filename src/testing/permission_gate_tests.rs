@@ -649,7 +649,7 @@ fn assert_waiting_app_call(choice: ApprovalChoice) {
     tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"added":true}"#));
     pump_until(&mut h, |_| reply.is_file());
     let body: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
-    assert_eq!(body["ok"], true, "{body}");
+    assert_eq!(body["ok"], true, "{body}; attention={:?}", mon.open_needs_you());
     assert!(rx.try_recv().is_err(), "exactly one execution");
     tool_dispatch::unregister(target);
 }
