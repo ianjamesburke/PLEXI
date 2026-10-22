@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix='plexi-secrets-', dir='/tmp') as scratch
         proc=subprocess.run([binary,*args],cwd=cwd,env=env,capture_output=True,text=True,timeout=40)
         assert env['DEMO_TOKEN'] not in proc.stdout+proc.stderr, 'secret appeared in command output'
         assert (proc.returncode==0)==ok, f'Unexpected exit for {args}: {proc.returncode}'
-        return proc.stdout+proc.stderr
+        return proc.stdout if '--json' in args else proc.stdout+proc.stderr
     rows=json.loads(run('experiments','list','--json'))
     assert not next(row for row in rows if row['name']=='folder_secrets')['enabled']
     help=run('secret','set','--help')
@@ -68,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix='plexi-secrets-', dir='/tmp') as scratch
             new = json.loads(run('host','restart','--json'))
             assert old['ready'] and new['ready']
             assert old['pid'] != new['pid'] and old['pane_count'] == new['pane_count']
+            print(f"PASS: restart changed pid {old['pid']} to {new['pid']}, restored {new['pane_count']} pane(s)")
         finally:
             run('host','stop')
 assert keychain_snapshot() == before, 'keychain selection changed'
