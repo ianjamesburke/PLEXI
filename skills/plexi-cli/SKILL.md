@@ -354,7 +354,7 @@ omit entries for experiments that are off.
 - `plexi context set-root`: Change the root folder for the active context
 - `plexi context current`: Print the id and name of the current pane's context as JSON
 - `plexi context describe`: Set the description for the active context
-- `plexi context zoom`: Zoom into a sub-context by its numeric context_id
+- `plexi context zoom`: Zoom into a sub-context by its context id or name
 - `plexi context zoom-out`: Zoom out of the current sub-context to the parent
 - `plexi context push`: Push a pane into a new sub-context
 - `plexi context list`: List all open contexts as a JSON array

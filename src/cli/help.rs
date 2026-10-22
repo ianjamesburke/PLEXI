@@ -152,6 +152,65 @@ pub fn print_grouped_help() {
     );
 }
 
+/// Optimal String Alignment (restricted Damerau-Levenshtein) edit distance:
+/// insertions, deletions, substitutions, and adjacent transpositions each cost 1.
+fn osa_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
+        row[0] = i;
+    }
+    for (j, cell) in dp[0].iter_mut().enumerate().take(n + 1) {
+        *cell = j;
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                dp[i][j] = dp[i][j].min(dp[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    dp[m][n]
+}
+
+/// Extract the invoked binary basename from `args[0]`, stripping `.exe`/`.EXE`
+/// and falling back to `"plexi"`.
+fn invoked_bin_name(args: &[String]) -> &str {
+    args.first()
+        .and_then(|arg0| arg0.rsplit(['/', '\\']).next())
+        .map(|base| {
+            base.strip_suffix(".exe")
+                .or_else(|| base.strip_suffix(".EXE"))
+                .unwrap_or(base)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or("plexi")
+}
+
+/// Return the single closest visible subcommand or alias using OSA edit distance
+/// with threshold `distance <= max(1, word.len() / 3)`. Ties at the minimum
+/// distance break deterministically by subcommand declaration order.
+fn closest_subcommand_suggestion<'a>(word: &str, cmd: &'a clap::Command) -> Option<&'a str> {
+    let threshold = (word.chars().count() / 3).max(1);
+    let mut best: Option<(usize, &'a str)> = None;
+    for sub in cmd.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+        for candidate in std::iter::once(sub.get_name()).chain(sub.get_all_aliases()) {
+            let dist = osa_distance(word, candidate);
+            if dist <= threshold && best.is_none_or(|(best_dist, _)| dist < best_dist) {
+                best = Some((dist, candidate));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
 /// Diagnose command-shaped words before the workspace-path fallback consumes them.
 /// Existing directories and explicitly spelled paths retain workspace semantics.
 pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<String> {
@@ -174,20 +233,18 @@ pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<Stri
     {
         return None;
     }
-    let parser = clap::Command::new("plexi")
-        .color(clap::ColorChoice::Never)
-        .subcommands(cmd.get_subcommands().cloned());
-    let error = parser
-        .try_get_matches_from(["plexi", word.as_str()])
-        .unwrap_err();
-    let suggestion = match error.get(clap::error::ContextKind::SuggestedSubcommand) {
-        Some(clap::error::ContextValue::Strings(names)) => {
-            format!("Did you mean {}?\n\n", names.join(" or "))
-        }
-        Some(clap::error::ContextValue::String(name)) => format!("Did you mean {name}?\n\n"),
-        _ => String::new(),
+    let bin = invoked_bin_name(args);
+    let suggestion = closest_subcommand_suggestion(word, cmd);
+    log::info!(
+        "cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}"
+    );
+    let headline = match suggestion {
+        Some(matched) => format!("error: unknown command '{word}'. Did you mean `{matched}`?"),
+        None => format!("error: unknown command '{word}'"),
     };
-    Some(format!("{error}\n{suggestion}{}", grouped_help(cmd, true)))
+    Some(format!(
+        "{headline}\n\nUsage: {bin} [OPTIONS] [COMMAND]\n\nFor more information, try '{bin} --help'.\n"
+    ))
 }
 
 pub fn grouped_help(cmd: &clap::Command, no_color: bool) -> String {
@@ -311,10 +368,12 @@ mod tests {
             if name.starts_with("typo") {
                 assert!(error.is_some());
                 assert!(
-                    output.contains("Did you mean") && output.contains("pane"),
+                    output.contains("error: unknown command 'pnae'. Did you mean `pane`?"),
                     "{output}"
                 );
-                assert!(output.ends_with(&grouped_help(&cmd, true)));
+                assert!(!output.contains("update"), "{output}");
+                assert!(!output.contains("tip:"), "{output}");
+                assert!(!output.contains(&grouped_help(&cmd, true)), "{output}");
             }
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("src/cli/snapshots/help-{name}.txt"));
@@ -586,6 +645,63 @@ mod tests {
             assert!(
                 help.contains(needle),
                 "run --help missing `{needle}`:\n{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_command_pnae_suggests_pane_only_without_help_dump() {
+        let cmd = all_off();
+        let args = vec!["plexi".to_string(), "pnae".to_string()];
+        let out = unknown_command_help(&args, &cmd).expect("expected unknown command diagnostic");
+        assert_eq!(
+            out,
+            "error: unknown command 'pnae'. Did you mean `pane`?\n\nUsage: plexi [OPTIONS] [COMMAND]\n\nFor more information, try 'plexi --help'.\n"
+        );
+        assert!(!out.contains("update"));
+        assert!(!out.contains("tip:"));
+    }
+
+    #[test]
+    fn unknown_command_far_typo_omits_did_you_mean() {
+        let cmd = all_off();
+        let args = vec!["plexi-alpha".to_string(), "zzzzqx".to_string()];
+        let out = unknown_command_help(&args, &cmd).expect("expected unknown command diagnostic");
+        assert_eq!(
+            out,
+            "error: unknown command 'zzzzqx'\n\nUsage: plexi-alpha [OPTIONS] [COMMAND]\n\nFor more information, try 'plexi-alpha --help'.\n"
+        );
+        assert!(!out.contains("Did you mean"));
+    }
+
+    #[test]
+    fn unknown_command_uses_invoked_binary_basename() {
+        let cmd = all_off();
+        for (arg0, expected_bin) in [
+            ("plexi-alpha", "plexi-alpha"),
+            ("/path/to/plexi-alpha.exe", "plexi-alpha"),
+            ("C:\\bin\\plexi-alpha.EXE", "plexi-alpha"),
+            ("plexi", "plexi"),
+            ("", "plexi"),
+        ] {
+            let args = vec![arg0.to_string(), "pnae".to_string()];
+            let out = unknown_command_help(&args, &cmd).expect("expected diagnostic");
+            assert!(
+                out.contains(&format!("Usage: {expected_bin} [OPTIONS] [COMMAND]")),
+                "arg0={arg0:?} output={out}"
+            );
+            assert!(
+                out.contains(&format!("For more information, try '{expected_bin} --help'.")),
+                "arg0={arg0:?} output={out}"
+            );
+        }
+
+        // Workspace-path fallback cases stay untouched (return None).
+        for path_arg in [".", "./nonexistent-workspace", "foo/bar", "src"] {
+            let args = vec!["plexi".to_string(), path_arg.to_string()];
+            assert!(
+                unknown_command_help(&args, &cmd).is_none(),
+                "expected workspace-path arg {path_arg:?} to bypass unknown_command_help"
             );
         }
     }

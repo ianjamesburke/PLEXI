@@ -2064,6 +2064,29 @@ impl PlexiApp {
         }
     }
 
+    fn resolve_host_pane_target(&self, target: &crate::cli::PaneTarget) -> Option<u64> {
+        let q = target.as_str().trim();
+        if let Ok(id) = q.parse::<u64>() {
+            return Some(id);
+        }
+        let candidates: Vec<(u64, String)> = self
+            .windows
+            .iter()
+            .flat_map(|w| w.panes.iter())
+            .map(|(&id, pane)| {
+                let title = match pane {
+                    crate::host::pane::Pane::Terminal(t) => {
+                        t.name.clone().unwrap_or_else(|| "terminal".to_string())
+                    }
+                    crate::host::pane::Pane::App(a) => a.name.clone(),
+                    crate::host::pane::Pane::Portal(_) => String::new(),
+                };
+                (id, title)
+            })
+            .collect();
+        crate::cli::resolve_target_from_candidates("pane", q, &candidates).ok()
+    }
+
     fn execute_host_cli_step(
         &mut self,
         argv: &[String],
@@ -2142,6 +2165,13 @@ impl PlexiApp {
                     agent,
                     boot_timeout,
                 } => {
+                    let from_id = match from {
+                        Some(ref t) => match self.resolve_host_pane_target(t) {
+                            Some(id) => Some(id),
+                            None => return 1,
+                        },
+                        None => None,
+                    };
                     let layout = Some(
                         layout_from_dir(down, left, up, right, tab, window, overlay)
                             .unwrap_or_else(|| "split_h".to_string()),
@@ -2187,7 +2217,7 @@ impl PlexiApp {
                         type_id,
                         layout,
                         args,
-                        from_pane_id: from.or(default_pane_id),
+                        from_pane_id: from_id.or(default_pane_id),
                         request_id: None,
                         response_file: Some(resp_str),
                         ephemeral,
@@ -2238,10 +2268,13 @@ impl PlexiApp {
                 }
                 PaneCmd::Name { first, second } => {
                     let (pane_id, name) = match second {
-                        Some(title) => match first.parse::<u64>() {
-                            Ok(id) => (Some(id), title),
-                            Err(_) => return 1,
-                        },
+                        Some(title) => {
+                            let target = crate::cli::PaneTarget::from(first);
+                            match self.resolve_host_pane_target(&target) {
+                                Some(id) => (Some(id), title),
+                                None => return 1,
+                            }
+                        }
                         None => (None, first),
                     };
                     let Some(pid) = pane_id
@@ -2264,9 +2297,12 @@ impl PlexiApp {
                     0
                 }
                 PaneCmd::Focus { pane_id, forward, .. } => {
-                    let Some(pane_id) = pane_id else {
+                    let Some(target) = pane_id else {
                         if forward { self.step_focus_history_forward(); } else { self.step_focus_history_back(); }
                         return 0;
+                    };
+                    let Some(pane_id) = self.resolve_host_pane_target(&target) else {
+                        return 1;
                     };
                     let exists = self
                         .windows
@@ -2281,7 +2317,14 @@ impl PlexiApp {
                     0
                 }
                 PaneCmd::Close { pane_id } => {
-                    let Some(pid) = pane_id
+                    let resolved_id = match pane_id {
+                        Some(ref t) => match self.resolve_host_pane_target(t) {
+                            Some(id) => Some(id),
+                            None => return 1,
+                        },
+                        None => None,
+                    };
+                    let Some(pid) = resolved_id
                         .or(default_pane_id)
                         .or_else(|| self.focused_pane_id())
                     else {
@@ -2308,6 +2351,9 @@ impl PlexiApp {
                     submit,
                     paste,
                 } => {
+                    let Some(pane_id) = self.resolve_host_pane_target(&pane_id) else {
+                        return 1;
+                    };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
                     self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
@@ -2327,6 +2373,9 @@ impl PlexiApp {
                     0
                 }
                 PaneCmd::Key { pane_id, key } => {
+                    let Some(pane_id) = self.resolve_host_pane_target(&pane_id) else {
+                        return 1;
+                    };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
                     self.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
@@ -2362,6 +2411,13 @@ impl PlexiApp {
                         from,
                     },
             }) => {
+                let from_id = match from {
+                    Some(ref t) => match self.resolve_host_pane_target(t) {
+                        Some(id) => Some(id),
+                        None => return 1,
+                    },
+                    None => None,
+                };
                 let layout = match split.as_deref() {
                     Some("down") => Some("split_v".to_string()),
                     Some("right") => Some("split_h".to_string()),
@@ -2387,7 +2443,7 @@ impl PlexiApp {
                     type_id: target_type_id,
                     layout,
                     args: target_args,
-                    from_pane_id: from.or(default_pane_id),
+                    from_pane_id: from_id.or(default_pane_id),
                     request_id: None,
                     response_file: Some(resp_str),
                     ephemeral: false,

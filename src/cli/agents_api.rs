@@ -3,20 +3,19 @@
 use crate::cli::args::{AgentGrantsCmd, AgentHeadCmd, AgentRunCmd};
 use serde_json::{json, Value};
 
-pub fn agent_grants_dispatch(cmd: AgentGrantsCmd) -> i32 {
+pub fn agent_grants_dispatch(cmd: AgentGrantsCmd, json: bool) -> i32 {
     match cmd {
-        AgentGrantsCmd::List { json } => call("list_grants", json!({}), json),
+        AgentGrantsCmd::List => call("list_grants", json!({}), json),
     }
 }
 
-pub fn agent_head_dispatch(cmd: AgentHeadCmd) -> i32 {
+pub fn agent_head_dispatch(cmd: AgentHeadCmd, json: bool) -> i32 {
     match cmd {
         AgentHeadCmd::Create {
             name,
             display_name,
             description,
             grant,
-            json,
         } => {
             let mut payload = json!({"name": name, "grants": grant});
             if let Ok(pane) = std::env::var("PLEXI_PANE_ID") {
@@ -33,11 +32,11 @@ pub fn agent_head_dispatch(cmd: AgentHeadCmd) -> i32 {
             }
             call("create_head", payload, json)
         }
-        AgentHeadCmd::List { all, json } => call("list_heads", json!({"all": all}), json),
+        AgentHeadCmd::List { all } => call("list_heads", json!({"all": all}), json),
     }
 }
 
-pub fn agent_run_dispatch(cmd: AgentRunCmd) -> i32 {
+pub fn agent_run_dispatch(cmd: AgentRunCmd, json: bool) -> i32 {
     match cmd {
         AgentRunCmd::Spawn {
             head,
@@ -47,7 +46,6 @@ pub fn agent_run_dispatch(cmd: AgentRunCmd) -> i32 {
             input_tokens,
             output_tokens,
             text,
-            json,
         } => {
             let mut payload = json!({"head": head});
             if let Some(admission) = admission {
@@ -75,9 +73,9 @@ pub fn agent_run_dispatch(cmd: AgentRunCmd) -> i32 {
                 std::time::Duration::from_secs(120),
             )
         }
-        AgentRunCmd::List { json } => call("list_runs", json!({}), json),
-        AgentRunCmd::Show { id, json } => call("show_run", json!({"id": id}), json),
-        AgentRunCmd::Finish { id, json } => call("finish_run", json!({"id": id}), json),
+        AgentRunCmd::List => call("list_runs", json!({}), json),
+        AgentRunCmd::Show { id } => call("show_run", json!({"id": id}), json),
+        AgentRunCmd::Finish { id } => call("finish_run", json!({"id": id}), json),
     }
 }
 
@@ -503,7 +501,7 @@ pub fn agent_cancel_cli(id: &str, json_out: bool) -> i32 {
     print_queue(&body, json_out)
 }
 
-pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
+pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i32 {
     use crate::cli::args::AgentTeamCmd;
     let cwd = match std::env::current_dir() {
         Ok(path) => path,
@@ -521,7 +519,7 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
         }
     };
     let (payload, json_out, timeout) = match cmd {
-        AgentTeamCmd::Show { name, json } => match crate::agent::team::load(&workspace, &name) {
+        AgentTeamCmd::Show { name } => match crate::agent::team::load(&workspace, &name) {
             Ok(team) => {
                 log::info!(
                     "agent_team: show name={name} workspace={}",
@@ -551,7 +549,6 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd) -> i32 {
             out,
             options,
             timeout,
-            json,
         } => {
             let out = out.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
             (

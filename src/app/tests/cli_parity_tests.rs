@@ -23,14 +23,19 @@ fn cli_parity_hide_reveal_and_zoom_use_keyboard_handlers() {
             serde_json::json!({"type":"pane_visibility", "pane_id":pane, "hidden":hidden}),
         );
         assert_eq!(reply["ok"], true);
+        assert_eq!(reply["pane_id"], pane);
+        assert_eq!(reply["hidden"], hidden);
         assert_eq!(h.app.windows[0].panes[&pane].is_hidden(), hidden);
     }
     h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
     assert!(h.app.windows[0].panes[&pane].is_hidden());
-    request(
+    let reveal_reply = request(
         &mut h,
         serde_json::json!({"type":"pane_visibility", "pane_id":pane, "hidden":false}),
     );
+    assert_eq!(reveal_reply["ok"], true);
+    assert_eq!(reveal_reply["pane_id"], pane);
+    assert_eq!(reveal_reply["hidden"], false);
     assert!(!h.app.windows[0].panes[&pane].is_hidden());
     let reply = request(
         &mut h,

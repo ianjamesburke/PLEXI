@@ -15,6 +15,222 @@ fn plexi_styles() -> Styles {
         .invalid(AnsiColor::Red.on_default())
 }
 
+/// A CLI context target: accepts a numeric context id or a context name
+/// (resolved by exact match, then unique prefix match).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextTarget(pub String);
+
+impl ContextTarget {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn numeric_id(&self) -> Option<u64> {
+        self.0.parse::<u64>().ok()
+    }
+}
+
+impl std::fmt::Display for ContextTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for ContextTarget {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err("context target cannot be empty".to_string());
+        }
+        Ok(Self(trimmed.to_string()))
+    }
+}
+
+impl From<&str> for ContextTarget {
+    fn from(s: &str) -> Self {
+        Self(s.trim().to_string())
+    }
+}
+
+impl From<String> for ContextTarget {
+    fn from(s: String) -> Self {
+        Self(s.trim().to_string())
+    }
+}
+
+impl From<u64> for ContextTarget {
+    fn from(id: u64) -> Self {
+        Self(id.to_string())
+    }
+}
+
+impl PartialEq<u64> for ContextTarget {
+    fn eq(&self, other: &u64) -> bool {
+        self.0.parse::<u64>() == Ok(*other)
+    }
+}
+
+impl PartialEq<&str> for ContextTarget {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+/// A CLI pane target: accepts a numeric pane id or a pane name
+/// (resolved by exact match, then unique prefix match).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneTarget(pub String);
+
+impl PaneTarget {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn numeric_id(&self) -> Option<u64> {
+        self.0.parse::<u64>().ok()
+    }
+}
+
+impl std::fmt::Display for PaneTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for PaneTarget {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err("pane target cannot be empty".to_string());
+        }
+        Ok(Self(trimmed.to_string()))
+    }
+}
+
+impl From<&str> for PaneTarget {
+    fn from(s: &str) -> Self {
+        Self(s.trim().to_string())
+    }
+}
+
+impl From<String> for PaneTarget {
+    fn from(s: String) -> Self {
+        Self(s.trim().to_string())
+    }
+}
+
+impl From<u64> for PaneTarget {
+    fn from(id: u64) -> Self {
+        Self(id.to_string())
+    }
+}
+
+impl PartialEq<u64> for PaneTarget {
+    fn eq(&self, other: &u64) -> bool {
+        self.0.parse::<u64>() == Ok(*other)
+    }
+}
+
+impl PartialEq<&str> for PaneTarget {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+fn format_candidate_list(candidates: &[(u64, String)]) -> String {
+    candidates
+        .iter()
+        .map(|(id, name)| format!("{name} ({id})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+/// Shared target resolver for context and pane targets.
+///
+/// Order: numeric id → exact name match → unique prefix match → on ambiguity,
+/// error listing candidates (`name (id)`); on no match, error listing nearby names.
+pub fn resolve_target_from_candidates(
+    kind: &str,
+    raw: &str,
+    candidates: &[(u64, String)],
+) -> Result<u64, String> {
+    let query = raw.trim();
+    if let Ok(id) = query.parse::<u64>() {
+        return Ok(id);
+    }
+
+    let exact: Vec<(u64, String)> = candidates
+        .iter()
+        .filter(|(_, name)| name == query)
+        .cloned()
+        .collect();
+    if exact.len() == 1 {
+        return Ok(exact[0].0);
+    }
+    if exact.len() > 1 {
+        return Err(format!(
+            "ambiguous {kind} '{query}': matches {}",
+            format_candidate_list(&exact)
+        ));
+    }
+
+    let prefix: Vec<(u64, String)> = candidates
+        .iter()
+        .filter(|(_, name)| name.starts_with(query))
+        .cloned()
+        .collect();
+    if prefix.len() == 1 {
+        return Ok(prefix[0].0);
+    }
+    if prefix.len() > 1 {
+        return Err(format!(
+            "ambiguous {kind} '{query}': matches {}",
+            format_candidate_list(&prefix)
+        ));
+    }
+
+    if candidates.is_empty() {
+        return Err(format!("unknown {kind} '{query}' (no {kind}s open)"));
+    }
+
+    let query_lower = query.to_ascii_lowercase();
+    let mut ranked: Vec<(u64, String)> = candidates.to_vec();
+    ranked.sort_by_key(|(id, name)| {
+        let name_lower = name.to_ascii_lowercase();
+        let is_substr =
+            name_lower.contains(&query_lower) || query_lower.contains(&name_lower);
+        let dist = edit_distance(&query_lower, &name_lower);
+        (!is_substr, dist, *id)
+    });
+    ranked.truncate(5);
+    Err(format!(
+        "unknown {kind} '{query}' (nearby: {})",
+        format_candidate_list(&ranked)
+    ))
+}
+
 #[derive(Parser)]
 #[command(
     name = "plexi",
@@ -31,6 +247,10 @@ pub struct Cli {
     /// Override the host command socket path.
     #[arg(long, global = true, value_hint = ValueHint::FilePath)]
     pub socket: Option<std::path::PathBuf>,
+
+    /// Output as JSON (accepted on every command; no-op where output is already JSON).
+    #[arg(long, global = true)]
+    pub json: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -91,9 +311,6 @@ pub enum Commands {
     CommandView {
         #[command(subcommand)]
         cmd: Option<CommandViewCmd>,
-        /// Print the projection as JSON.
-        #[arg(long, global = true)]
-        json: bool,
         /// Stream `command.view` events from `plexi.host.command` until interrupted.
         #[arg(long)]
         follow: bool,
@@ -144,9 +361,6 @@ pub enum Commands {
     Run {
         /// Command name to run (omit to list available commands)
         command: Option<String>,
-        /// Print available commands as JSON (`[{name, scope, description, run, steps, secrets}]`)
-        #[arg(long)]
-        json: bool,
         /// Extra arguments forwarded to the command as $1, $2, … and $@ positional params
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
@@ -408,11 +622,7 @@ pub enum Commands {
     ///
     /// Checks every installed app's declared capabilities against your current config.toml
     /// and reports what's working and what needs to be configured. Use --json for scripting.
-    Doctor {
-        /// Output results as JSON (for scripting or agent use)
-        #[arg(long)]
-        json: bool,
-    },
+    Doctor,
     /// Interactive keybinding tutorial — learn split and navigate in real time.
     ///
     /// Walk through macOS pane controls inside a live pane.
@@ -518,10 +728,12 @@ pub enum AssistantCmd {
         head: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
+        /// Target pane id or name.
         #[arg(long)]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
+        /// Target context id or name.
         #[arg(long)]
-        context_id: Option<u64>,
+        context_id: Option<ContextTarget>,
         /// Caller-owned conversation. A phone session passes one stable id.
         /// Omit to start a new conversation that is not the desktop transcript.
         #[arg(long, conflicts_with = "desktop")]
@@ -539,8 +751,6 @@ pub enum AssistantCmd {
         /// Ledger run kind: `system` or `output`. Omitted means `output`.
         #[arg(long)]
         kind: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Run one Assistant host tool through the host permission gate.
     ///
@@ -612,11 +822,7 @@ pub enum DebugCmd {
 pub enum DebugSessionCmd {
     /// List recorded host sessions with start/last time, contexts, panes, and
     /// attached external agent session ids.
-    List {
-        /// Print one JSON object on stdout.
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Show one session as a single chronological timeline.
     ///
     /// With `--join-agents`, recorded agent session ids are resolved to their
@@ -636,9 +842,6 @@ pub enum DebugSessionCmd {
         /// Interleave external agent transcripts.
         #[arg(long)]
         join_agents: bool,
-        /// Print one JSON object on stdout.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -652,20 +855,13 @@ pub enum LedgerCmd {
         /// Include rows at or after this YYYY-MM-DD or RFC3339 timestamp.
         #[arg(long)]
         since: Option<String>,
-        /// Print one JSON object on stdout.
-        #[arg(long)]
-        json: bool,
     },
 }
 
 #[derive(Subcommand)]
 pub enum ExperimentsCmd {
     /// Show every experiment: name, on/off, whether a host restart is needed.
-    List {
-        /// Print JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Turn an experiment on in the global config.toml.
     Enable {
         /// Experiment name; see `plexi experiments list`.
@@ -711,11 +907,7 @@ pub enum SkillCmd {
 #[derive(Subcommand)]
 pub enum NeedsYouCmd {
     /// List open items waiting on you as JSON.
-    List {
-        /// Print JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Show one needs-you item and its continuation record as JSON.
     Show {
         /// Needs-you item id or continuation id.
@@ -750,12 +942,12 @@ pub enum NeedsYouCmd {
         /// Expected resource revision when resuming after the human answers.
         #[arg(long)]
         expected_revision: Option<String>,
-        /// Target context id (defaults to caller pane's context).
+        /// Target context id or name (defaults to caller pane's context).
         #[arg(long)]
-        context_id: Option<u64>,
-        /// Caller pane id (defaults to `$PLEXI_PANE_ID`).
+        context_id: Option<ContextTarget>,
+        /// Caller pane id or name (defaults to `$PLEXI_PANE_ID`).
         #[arg(long)]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
     },
     /// Answer an open creative question (`Question` or `BlockedRun`). Never mints a permission grant.
     Answer {
@@ -773,12 +965,12 @@ pub enum NeedsYouCmd {
         /// Filter by agent session id.
         #[arg(long)]
         session_id: Option<String>,
-        /// Filter by pane id.
+        /// Filter by pane id or name.
         #[arg(long)]
-        pane_id: Option<u64>,
-        /// Filter by context id.
+        pane_id: Option<PaneTarget>,
+        /// Filter by context id or name.
         #[arg(long)]
-        context_id: Option<u64>,
+        context_id: Option<ContextTarget>,
         /// Filter by specific item/run/operation/correlation id.
         #[arg(long)]
         id: Option<String>,
@@ -813,11 +1005,7 @@ pub enum NeedsYouCmd {
 #[derive(Subcommand)]
 pub enum PermissionsCmd {
     /// List live permission decisions.
-    List {
-        /// Print JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Clear a stored denial so the next call asks again.
     Reset {
         /// Decision id from `plexi permissions list`.
@@ -1045,11 +1233,7 @@ pub enum EventsCmd {
         changed_resources: Vec<String>,
     },
     /// List event streams currently declared by running apps.
-    List {
-        /// Output as JSON instead of a human-readable table.
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Print the host MCP server config for an MCP-aware agent.
     ///
     /// Emits a `mcpServers` JSON block pointing at this instance's host MCP
@@ -1126,9 +1310,6 @@ pub enum SecretCmd {
         /// Show only globally-stored user-scope secrets
         #[arg(long)]
         global: bool,
-        /// Print names, scopes, last-used timestamps and actor grants as JSON (never values)
-        #[arg(long)]
-        json: bool,
     },
     /// Delete a stored secret.
     ///
@@ -1247,10 +1428,10 @@ pub enum AppCmd {
         /// Split direction or placement (down, left, up, right, tab, window)
         #[arg(long, value_name = "DIR", value_parser = ["down", "left", "up", "right", "tab", "window"], conflicts_with_all = ["down", "left", "up", "right", "tab", "window"])]
         split: Option<String>,
-        /// Open the new pane relative to this pane ID. Defaults to the calling
+        /// Open the new pane relative to this pane id or name. Defaults to the calling
         /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        from: Option<PaneTarget>,
         /// Extra arguments passed through to the app (only valid with an app id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
@@ -1441,10 +1622,10 @@ pub enum AppCmd {
         #[arg(long)]
         #[arg(hide = true)]
         no_open: bool,
-        /// Open the new pane relative to this pane ID. Defaults to the calling
+        /// Open the new pane relative to this pane id or name. Defaults to the calling
         /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        from: Option<PaneTarget>,
     },
     /// Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
     ///
@@ -1522,8 +1703,8 @@ pub enum AppCmd {
     /// Example: plexi app action 42 navigate-to /some/path
     #[command(name = "action")]
     Action {
-        /// Pane id of the target app pane (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name of the target app pane (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Action name to invoke (e.g. "refresh", "navigate-to", "add-item")
         action: String,
         /// Optional arguments forwarded to the action handler
@@ -1550,12 +1731,9 @@ pub enum AppCmd {
         /// Tool input as a JSON object
         #[arg(long, default_value = "{}")]
         input: String,
-        /// Print the host reply, including structured permission errors.
+        /// Pane id or name that owns the tool when more than one instance of the app is open.
         #[arg(long)]
-        json: bool,
-        /// Pane that owns the tool when more than one instance of the app is open.
-        #[arg(long)]
-        pane: Option<u64>,
+        pane: Option<PaneTarget>,
         /// Wait up to two minutes for desktop approval, then execute once.
         #[arg(long)]
         wait_approved: bool,
@@ -1575,12 +1753,9 @@ pub enum AppCmd {
         /// Filter to tools exposed by this app id
         #[arg(long, value_name = "APP_ID")]
         app: Option<String>,
-        /// Inspect a specific context ID instead of the caller's context
+        /// Inspect a specific context id or name instead of the caller's context
         #[arg(long, value_name = "CONTEXT_ID")]
-        context: Option<u64>,
-        /// Output as JSON (`{"ok": true, "context_id": ..., "tools": [...]}`)
-        #[arg(long)]
-        json: bool,
+        context: Option<ContextTarget>,
     },
 }
 
@@ -1639,19 +1814,15 @@ pub enum HostCmd {
     },
     /// Report whether this channel's host is running, its pid, socket path,
     /// and pane count.
-    Status {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Status,
     /// Capture the running host window as a PNG through the real render
     /// pipeline — the pixels the user actually sees, no OS screen capture.
     ///
     /// Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
     Screenshot {
-        /// Crop the capture to this pane's current screen rect
+        /// Crop the capture to this pane id or name's current screen rect
         #[arg(long)]
-        pane: Option<u64>,
+        pane: Option<PaneTarget>,
         /// Where to write the PNG (default: <profile>/screenshots/<timestamp>.png)
         #[arg(long, short = 'o')]
         output: Option<String>,
@@ -1680,21 +1851,34 @@ pub enum AccountCmd {
 #[derive(Subcommand)]
 pub enum PaneCmd {
     /// Hide a pane (defaults to the calling pane).
-    Hide { pane_id: Option<u64> },
+    Hide {
+        /// Target pane id or name (defaults to the calling pane).
+        pane_id: Option<PaneTarget>,
+    },
     /// Reveal a hidden pane (defaults to the calling pane).
-    Reveal { pane_id: Option<u64> },
+    #[command(visible_alias = "unhide")]
+    Reveal {
+        /// Target pane id or name (defaults to the calling pane).
+        pane_id: Option<PaneTarget>,
+    },
     /// Focus a pane and toggle fullscreen zoom, or enter its sub-context.
-    Zoom { pane_id: Option<u64> },
+    Zoom {
+        /// Target pane id or name (defaults to the calling pane).
+        pane_id: Option<PaneTarget>,
+    },
     /// Focus a pane and swap it with a directional neighbor.
     Swap {
         #[arg(value_parser = ["left", "right", "up", "down"])]
         direction: String,
-        #[arg(long)] pane_id: Option<u64>,
+        /// Target pane id or name (defaults to the calling pane).
+        #[arg(long)]
+        pane_id: Option<PaneTarget>,
     },
     /// Wait for current idle, blocked, or exited state; print its lifecycle record.
     /// Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure.
     Wait {
-        pane_id: u64,
+        /// Target pane id or name.
+        pane_id: PaneTarget,
         /// Predicate: idle, blocked, or exited (any exit, including unknown status).
         #[arg(long)]
         until: String,
@@ -1706,9 +1890,9 @@ pub enum PaneCmd {
     Events {
         #[arg(long, required = true)]
         follow: bool,
-        /// Limit deliveries to one pane in the caller's allowed context.
+        /// Limit deliveries to one pane id or name in the caller's allowed context.
         #[arg(long)]
-        pane: Option<u64>,
+        pane: Option<PaneTarget>,
     },
     /// Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent`.
     ///
@@ -1771,10 +1955,10 @@ pub enum PaneCmd {
         /// Overlay pane
         #[arg(long, conflicts_with_all = ["down", "left", "up", "tab", "window"])]
         overlay: bool,
-        /// Pane ID to split relative to. Defaults to the calling pane
+        /// Pane id or name to split relative to. Defaults to the calling pane
         /// (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        from: Option<PaneTarget>,
         /// Close the pane when the command finishes
         #[arg(long, short = 'e', conflicts_with = "agent")]
         ephemeral: bool,
@@ -1805,34 +1989,31 @@ pub enum PaneCmd {
     /// Rename a pane.
     ///
     /// With one argument, renames the current pane: plexi pane name "My Project"
-    /// With two arguments, renames any pane by id: plexi pane name 42 "My Project"
+    /// With two arguments, renames any pane by id or name: plexi pane name 42 "My Project"
     Name {
-        /// Pane id (from `plexi pane list`) or the new name if renaming the current pane
+        /// Pane id or name (from `plexi pane list`) or the new name if renaming the current pane
         first: String,
-        /// New name when a pane id is given as the first argument
+        /// New name when a pane id or name is given as the first argument
         second: Option<String>,
     },
     /// List all open panes as a JSON array.
     ///
     /// Filter by context: `--context` (no value) returns panes in the caller's context
-    /// (reads PLEXI_CONTEXT_ID from env). `--context <id>` filters to a specific context ID.
+    /// (reads PLEXI_CONTEXT_ID from env). `--context <id-or-name>` filters to a specific context.
     List {
-        /// Filter by context. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context).
-        /// With a numeric argument, returns panes in that specific context.
+        /// Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context).
+        /// With an argument, returns panes in that specific context.
         #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
         context: Option<String>,
-        /// Output as a JSON array (accepted for compatibility; JSON is the default format).
-        #[arg(long)]
-        json: bool,
     },
     /// Move the visible focus to a specific pane.
     ///
     /// This moves what the user sees on screen — it does not change which pane an agent is running in.
     /// An agent calling this from pane A remains in pane A; the user just sees pane B highlighted.
     Focus {
-        /// Pane id to focus (from `plexi pane list`).
+        /// Pane id or name to focus (from `plexi pane list`).
         #[arg(required_unless_present_any = ["back", "forward"], conflicts_with_all = ["back", "forward"])]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
         /// Step back through pane focus history.
         #[arg(long, conflicts_with = "forward")]
         back: bool,
@@ -1844,8 +2025,8 @@ pub enum PaneCmd {
     ///
     /// Example: plexi pane heartbeat 42 --every 5m --text "cycle"
     Heartbeat {
-        /// Pane id to prompt (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to prompt (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Interval such as 30s, 5m, or 1h.
         #[arg(long, conflicts_with = "off")]
         every: Option<String>,
@@ -1866,8 +2047,8 @@ pub enum PaneCmd {
     /// unmoved, or retains it and prints the retained worktree path when dirty
     /// or ahead.
     Close {
-        /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
-        pane_id: Option<u64>,
+        /// Pane id or name to close (from `plexi pane list`). Defaults to the current pane if not given.
+        pane_id: Option<PaneTarget>,
     },
     /// Type text into another pane as if it came from the keyboard, or pass `--submit`
     /// for host-confirmed prompt submission.
@@ -1885,8 +2066,8 @@ pub enum PaneCmd {
     ///   plexi pane send 42 "Read the brief and implement the fix" --submit
     ///   plexi pane send 42 "partial text"
     Send {
-        /// Pane id to send text to (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to send text to (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Text to type into the pane (prefer `--submit` to submit with confirmation)
         #[arg(allow_hyphen_values = true)]
         text: String,
@@ -1926,8 +2107,8 @@ pub enum PaneCmd {
     ///
     /// Example: plexi pane capture --lines 50 42
     Capture {
-        /// Pane id to capture output from. Defaults to the current pane.
-        pane_id: Option<u64>,
+        /// Pane id or name to capture output from. Defaults to the current pane.
+        pane_id: Option<PaneTarget>,
         /// How many lines to read from the end of the output
         #[arg(long, default_value = "50")]
         lines: usize,
@@ -1944,8 +2125,8 @@ pub enum PaneCmd {
     },
     /// Report one composite working, idle, blocked, or unknown verdict as JSON.
     Status {
-        /// Pane id to inspect.
-        pane_id: u64,
+        /// Pane id or name to inspect.
+        pane_id: PaneTarget,
     },
     /// Send a key press to a pane.
     ///
@@ -1964,13 +2145,17 @@ pub enum PaneCmd {
     ///
     /// Example: plexi pane key 42 escape
     Key {
-        /// Pane id to send the key to (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to send the key to (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Key to press
         key: String,
     },
     /// Drop a local file or image URL onto a pane.
-    Drop { pane_id: u64, path_or_url: String },
+    Drop {
+        /// Target pane id or name.
+        pane_id: PaneTarget,
+        path_or_url: String,
+    },
     /// Inject a synthetic pointer click into an app pane, for driving canvas
     /// interaction without OS-level automation.
     ///
@@ -1994,8 +2179,8 @@ pub enum PaneCmd {
     ///   plexi pane click 42 120 80
     ///   plexi pane click 42 --node 5
     Click {
-        /// Pane id to click (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to click (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// X offset in pane pixels from the pane's top-left corner
         #[arg(requires = "y", conflicts_with = "node")]
         x: Option<f32>,
@@ -2018,8 +2203,8 @@ pub enum PaneCmd {
     ///
     /// Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
     Drag {
-        /// Pane id to drag in (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to drag in (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Start position "x,y" in pane pixels
         #[arg(long, conflicts_with = "from_node")]
         from: Option<String>,
@@ -2056,8 +2241,8 @@ pub enum PaneCmd {
     /// Example: plexi pane command 42 "git status" --enter
     #[command(name = "command")]
     Command {
-        /// Pane id to send the command to (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to send the command to (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Text to send to the pane
         text: String,
         /// Submit the command through the host-confirmed settle -> Enter ->
@@ -2085,8 +2270,8 @@ pub enum PaneCmd {
     ///
     /// Example: plexi pane state 42 --stale-after 300
     State {
-        /// Pane id to query (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane id or name to query (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Raise `stale_claim` when the claimed state looks fresh but no
         /// output has been observed within this many seconds. Omitted by
         /// default — no stale evaluation runs unless this is set.
@@ -2124,12 +2309,12 @@ pub enum PaneCmd {
     Result {
         #[command(subcommand)]
         cmd: Option<PaneResultCmd>,
-        /// Pane id to read the result from (defaults to PLEXI_PANE_ID).
+        /// Pane id or name to read the result from (defaults to PLEXI_PANE_ID).
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id (flag form; defaults to PLEXI_PANE_ID).
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name (flag form; defaults to PLEXI_PANE_ID).
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
         /// Block host-side until a valid result is committed or `--timeout` expires.
         #[arg(long, conflicts_with_all = ["write", "schema"])]
         wait: bool,
@@ -2161,12 +2346,12 @@ pub enum PaneResultCmd {
     /// yet, or exits 1 (`invalid_result`) when the last write was rejected by
     /// schema validation and not yet corrected.
     Read {
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
         /// Block host-side until a valid result is committed or `--timeout` expires.
         #[arg(long)]
         wait: bool,
@@ -2185,12 +2370,12 @@ pub enum PaneResultCmd {
     /// until done (exit 0). Inspect errors on exit 1. Never use one long wait
     /// or spawn a replacement worker just because a slice expired.
     Wait {
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
         /// Seconds to wait before exiting 2.
         #[arg(long, default_value_t = 300.0)]
         timeout: f64,
@@ -2206,30 +2391,30 @@ pub enum PaneResultCmd {
     /// Accepts `write <json> [--pane-id <id>]`, `write <pane_id> <json>`, or
     /// reads stdin when `<json>` is omitted.
     Write {
-        /// JSON object payload (or pane id when two positional arguments are given).
+        /// JSON object payload (or pane id or name when two positional arguments are given).
         /// Reads stdin when omitted.
         #[arg(allow_hyphen_values = true)]
         first: Option<String>,
-        /// JSON object payload when the first positional argument is a pane id.
+        /// JSON object payload when the first positional argument is a pane id or name.
         #[arg(allow_hyphen_values = true, conflicts_with = "pane_id_flag")]
         second: Option<String>,
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id or name. Defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
     },
     /// Declare a JSON Schema (inline JSON object or path to a `.json` file) for a pane's result.
     ///
     /// Accepts `schema <json-or-path> [--pane-id <id>]` or `schema <pane_id> <json-or-path>`.
     Schema {
-        /// Inline JSON Schema object or path to a schema file (or pane id when two arguments are given).
+        /// Inline JSON Schema object or path to a schema file (or pane id or name when two arguments are given).
         #[arg(allow_hyphen_values = true)]
         first: String,
-        /// Inline JSON Schema object or path to a schema file when the first argument is a pane id.
+        /// Inline JSON Schema object or path to a schema file when the first argument is a pane id or name.
         #[arg(allow_hyphen_values = true, conflicts_with = "pane_id_flag")]
         second: Option<String>,
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id or name. Defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
     },
 }
 
@@ -2266,9 +2451,9 @@ pub enum PaneSlotCmd {
         /// Optional content. If omitted, stdin is read fully.
         #[arg(allow_hyphen_values = true)]
         content: Option<String>,
-        /// Pane id. Defaults to PLEXI_PANE_ID.
+        /// Pane id or name. Defaults to PLEXI_PANE_ID.
         #[arg(long)]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
         /// Append to an existing slot instead of replacing it.
         #[arg(long, conflicts_with = "replace")]
         append: bool,
@@ -2280,12 +2465,12 @@ pub enum PaneSlotCmd {
     Read {
         /// Slot name
         name: String,
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
     },
     /// Block until a slot's value matches a pattern, then print it.
     ///
@@ -2294,12 +2479,12 @@ pub enum PaneSlotCmd {
     Wait {
         /// Slot name
         name: String,
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
         /// Regex the slot value must match.
         #[arg(long)]
         until: String,
@@ -2309,23 +2494,23 @@ pub enum PaneSlotCmd {
     },
     /// List slots for a pane as JSON.
     List {
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
     },
     /// Delete a named pane slot.
     Delete {
         /// Slot name
         name: String,
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
     },
 }
 
@@ -2341,8 +2526,8 @@ pub enum PaneMessageCmd {
     /// Pass `--submit` to wake an idle target agent with a short notice to run
     /// `plexi pane message recv` without interrupting a busy agent.
     Send {
-        /// Target pane id (from `plexi pane list`)
-        pane_id: u64,
+        /// Target pane id or name (from `plexi pane list`)
+        pane_id: PaneTarget,
         /// Message payload to enqueue
         #[arg(allow_hyphen_values = true)]
         payload: String,
@@ -2356,12 +2541,12 @@ pub enum PaneMessageCmd {
     /// polling until at least one message is in the mailbox or `--timeout`
     /// expires (exits 0 with the drained JSON array, 2 on timeout, 1 on error).
     Recv {
-        /// Pane id (positional form). Defaults to PLEXI_PANE_ID.
+        /// Pane id or name (positional form). Defaults to PLEXI_PANE_ID.
         #[arg(conflicts_with = "pane_id_flag")]
-        pane_id: Option<u64>,
-        /// Pane id. Same as the positional form; defaults to PLEXI_PANE_ID.
+        pane_id: Option<PaneTarget>,
+        /// Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID.
         #[arg(long = "pane-id", id = "pane_id_flag")]
-        pane_id_flag: Option<u64>,
+        pane_id_flag: Option<PaneTarget>,
         /// Block host-side until at least one message arrives or `--timeout` expires.
         #[arg(
             long,
@@ -2383,9 +2568,6 @@ pub enum DescriptorCmd {
         no_registry: bool,
         #[arg(long = "no-crawl")]
         no_crawl: bool,
-        /// Output raw descriptor JSON (fresh --help parse, no cache)
-        #[arg(long = "json")]
-        json: bool,
         /// Extra args forwarded to the probed CLI
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
@@ -2404,13 +2586,27 @@ pub enum RegistryCmd {
 #[derive(Subcommand)]
 pub enum ContextCmd {
     /// Rename a context (defaults to the calling pane's context).
-    Rename { name: String, #[arg(long)] context_id: Option<u64> },
+    Rename {
+        name: String,
+        /// Target context id or name (defaults to the calling pane's context).
+        #[arg(long)]
+        context_id: Option<ContextTarget>,
+    },
     /// Close a context, requesting desktop confirmation when configured.
-    Close { context_id: Option<u64> },
+    Close {
+        /// Target context id or name (defaults to the calling pane's context).
+        context_id: Option<ContextTarget>,
+    },
     /// Park a context and move focus to an unparked neighbor.
-    Park { context_id: Option<u64> },
+    Park {
+        /// Target context id or name (defaults to the calling pane's context).
+        context_id: Option<ContextTarget>,
+    },
     /// Unpark a context and focus it.
-    Unpark { context_id: Option<u64> },
+    Unpark {
+        /// Target context id or name (defaults to the calling pane's context).
+        context_id: Option<ContextTarget>,
+    },
     /// Open a new context with an optional name.
     ///
     /// Examples:
@@ -2435,11 +2631,11 @@ pub enum ContextCmd {
         /// Focus (zoom into) the new sub-context after creation. Default: stay in current pane.
         #[arg(long)]
         focus: bool,
-        /// Pane to anchor the portal split at (requires --parent).
+        /// Pane id or name to anchor the portal split at (requires --parent).
         /// Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the
         /// parent context's focused pane.
         #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        from: Option<PaneTarget>,
         /// Split portal below instead of right (requires --parent).
         #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "right"])]
         down: bool,
@@ -2485,10 +2681,10 @@ pub enum ContextCmd {
         /// Zoom into the new sub-context after creation. Default: stay put.
         #[arg(long)]
         focus: bool,
-        /// Pane to anchor the portal split at. Defaults to the calling pane
+        /// Pane id or name to anchor the portal split at. Defaults to the calling pane
         /// (PLEXI_PANE_ID env), falling back to the parent's focused pane.
         #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        from: Option<PaneTarget>,
     },
     /// Switch the current pane to a context at the given path.
     Open { path: Option<String> },
@@ -2501,8 +2697,11 @@ pub enum ContextCmd {
         /// Description text
         text: String,
     },
-    /// Zoom into a sub-context by its numeric context_id.
-    Zoom { context_id: u64 },
+    /// Zoom into a sub-context by its context id or name.
+    Zoom {
+        /// Target context id or name.
+        context_id: ContextTarget,
+    },
     /// Zoom out of the current sub-context to the parent.
     ZoomOut,
     /// Push a pane into a new sub-context.
@@ -2512,10 +2711,10 @@ pub enum ContextCmd {
     Push {
         /// Name for the new sub-context. Defaults to the pane name.
         name: Option<String>,
-        /// Pane to push. Defaults to the calling pane (PLEXI_PANE_ID env),
+        /// Pane id or name to push. Defaults to the calling pane (PLEXI_PANE_ID env),
         /// falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
     },
     /// List all open contexts as a JSON array.
     List,
@@ -2564,9 +2763,6 @@ pub enum ConfigCmd {
     List {
         #[command(flatten)]
         scope: ConfigScopeArgs,
-        /// Output as a JSON array instead of tab-separated lines.
-        #[arg(long)]
-        json: bool,
     },
     /// Set one or more keys in the selected config.toml.
     ///
@@ -2728,16 +2924,9 @@ pub enum AgentCmd {
         cmd: AgentTeamCmd,
     },
     /// Focus the next live agent needing attention (needs-you, blocked, done-unseen).
-    Next {
-        /// Print the focused pane id, or null when none needs attention, as JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    Next,
     /// Show tasks and their workers, ordered by attention, with blocking reasons.
     Fleet {
-        /// Print the shared Agents pane view as JSON.
-        #[arg(long)]
-        json: bool,
         /// Select all, needs-attention, working, or done workers.
         #[arg(long, value_enum, default_value = "all")]
         filter: crate::protocol::FleetFilter,
@@ -2816,9 +3005,6 @@ pub enum AgentCmd {
         /// Directory used to resolve the workspace root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command.
     Show {
@@ -2827,9 +3013,6 @@ pub enum AgentCmd {
         /// Directory used to resolve the workspace root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Call an agent role and return its validated completion or blocking question as JSON.
     Call {
@@ -2845,7 +3028,8 @@ pub enum AgentCmd {
     },
     /// Reply through a child agent's structured mailbox.
     Message {
-        pane_id: u64,
+        /// Target pane id or name.
+        pane_id: PaneTarget,
         text: String,
         /// Wait for the child's next completion or question.
         #[arg(long)]
@@ -2876,15 +3060,12 @@ pub enum AgentCmd {
         /// Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish
         #[arg(long)]
         ephemeral: bool,
-        /// Parent/caller pane ID (defaults to `$PLEXI_PANE_ID`)
+        /// Parent/caller pane id or name (defaults to `$PLEXI_PANE_ID`)
         #[arg(long, value_name = "PANE_ID")]
-        from: Option<u64>,
+        from: Option<PaneTarget>,
         /// Working directory for workspace lookup and the spawned worker pane
         #[arg(long)]
         cwd: Option<String>,
-        /// Print full host JSON response instead of bare pane ID
-        #[arg(long)]
-        json: bool,
     },
     /// Validate a worker's structured result against its schema, write completion slots, and exit cleanly.
     ///
@@ -2900,9 +3081,9 @@ pub enum AgentCmd {
         /// Human- and master-readable completion summary written to the `summary` slot
         #[arg(long)]
         summary: Option<String>,
-        /// Target pane ID (defaults to `$PLEXI_PANE_ID`)
+        /// Target pane id or name (defaults to `$PLEXI_PANE_ID`)
         #[arg(long = "pane-id")]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
     },
     /// Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state).
     ///
@@ -2914,9 +3095,9 @@ pub enum AgentCmd {
     Ask {
         /// Question text for the parent master agent
         question: String,
-        /// Target pane ID (defaults to `$PLEXI_PANE_ID`)
+        /// Target pane id or name (defaults to `$PLEXI_PANE_ID`)
         #[arg(long = "pane-id")]
-        pane_id: Option<u64>,
+        pane_id: Option<PaneTarget>,
     },
     /// Report agent state for this pane to the host.
     ///
@@ -2970,9 +3151,6 @@ pub enum AgentCmd {
         /// Maximum number of recent closed runs to display (0 = all)
         #[arg(long, default_value_t = 50)]
         limit: usize,
-        /// Print JSON array instead of a human-readable table
-        #[arg(long)]
-        json: bool,
     },
     /// Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory.
     ///
@@ -2988,9 +3166,6 @@ pub enum AgentCmd {
         /// Optional sub-context name to reopen the session into
         #[arg(long)]
         subcontext: Option<String>,
-        /// Print full JSON response instead of human-readable output
-        #[arg(long)]
-        json: bool,
     },
     /// Install or uninstall agent hook integrations.
     ///
@@ -3046,9 +3221,6 @@ pub enum AgentCmd {
         /// Task file. JSON with a `text` field, or the prompt itself.
         #[arg(long)]
         input: std::path::PathBuf,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
     /// Stop a queued or running headless task before the next tool call.
     ///
@@ -3057,9 +3229,6 @@ pub enum AgentCmd {
         /// Task id returned by `agent assign`
         #[arg(long)]
         id: String,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
     /// Read one head's conversation.
     ///
@@ -3074,9 +3243,6 @@ pub enum AgentCmd {
         /// Lead id to act as. A different head is refused.
         #[arg(long = "as")]
         as_head: Option<String>,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
     /// Start a child run whose grants are a subset of the parent run.
     ///
@@ -3094,20 +3260,13 @@ pub enum AgentCmd {
         /// Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
         #[arg(long = "grant")]
         grant: Vec<String>,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
 }
 
 #[derive(Subcommand)]
 pub enum AgentGrantsCmd {
     /// List tool grants recorded for agent heads in the current workspace.
-    List {
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
-    },
+    List,
 }
 
 #[derive(Subcommand)]
@@ -3125,18 +3284,12 @@ pub enum AgentHeadCmd {
         /// Grant, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
         #[arg(long = "grant")]
         grant: Vec<String>,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
     /// List heads in the current workspace.
     List {
         /// Include temporary delegated children
         #[arg(long)]
         all: bool,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -3165,31 +3318,18 @@ pub enum AgentRunCmd {
         /// Prompt for the model turn. Defaults to `run` on the host.
         #[arg(long)]
         text: Option<String>,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
     /// List runs in the current workspace.
-    List {
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Show one run.
     Show {
         /// Run id
         id: String,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
     /// Mark a run finished so another admission can claim the head.
     Finish {
         /// Run id
         id: String,
-        /// Print the host JSON reply
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -3224,11 +3364,7 @@ pub enum HookAction {
 #[derive(Subcommand)]
 pub enum AgentTeamCmd {
     /// Show the resolved v0 team, including roles, harnesses, options and grants.
-    Show {
-        name: String,
-        #[arg(long)]
-        json: bool,
-    },
+    Show { name: String },
     /// Run independent team members in one task and wait for RESULT.md.
     Run {
         name: String,
@@ -3243,8 +3379,6 @@ pub enum AgentTeamCmd {
         /// Host-side deadline in seconds; a timed-out run fails and stops its members.
         #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..=86400))]
         timeout: u64,
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -3266,11 +3400,7 @@ pub enum AiCmd {
     /// lists any already-pulled models, and verifies OpenRouter configuration.
     ///
     /// Example: plexi ai doctor
-    Doctor {
-        /// Output results as JSON (for scripting or agent use)
-        #[arg(long)]
-        json: bool,
-    },
+    Doctor,
 
     /// Interactive wizard to configure a local AI model via Ollama.
     ///
@@ -3479,7 +3609,7 @@ mod tests {
         else {
             panic!("expected pane send command");
         };
-        assert_eq!(pane_id, 42);
+        assert_eq!(pane_id, super::PaneTarget::from(42));
         assert_eq!(text, "- ");
         assert!(!submit, "plain `pane send` must stay type-only");
         assert!(!paste, "plain `pane send` must stay text input");
@@ -3508,7 +3638,7 @@ mod tests {
             else {
                 panic!("expected pane send command for {argv:?}");
             };
-            assert_eq!(pane_id, 42);
+            assert_eq!(pane_id, super::PaneTarget::from(42));
             assert_eq!(text, "hello", "text mis-parsed for {argv:?}");
             assert!(submit, "--submit not seen for {argv:?}");
         }
@@ -3532,17 +3662,23 @@ mod tests {
         let Some(Commands::Secret { cmd }) = cli.command else {
             panic!("expected secret command");
         };
-        let SecretCmd::List { global, json } = cmd else {
+        let SecretCmd::List { global } = cmd else {
             panic!("expected secret list command");
         };
         assert!(global);
-        assert!(!json);
+        assert!(!cli.json);
     }
 
     #[test]
     fn secret_list_accepts_json_flag() {
         let cli = Cli::try_parse_from(["plexi", "secret", "list", "--json"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Secret { cmd: SecretCmd::List { global: false, json: true } })));
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Secret {
+                cmd: SecretCmd::List { global: false }
+            })
+        ));
     }
 
     #[test]
@@ -3552,7 +3688,8 @@ mod tests {
         let Some(Commands::Secret { cmd }) = cli.command else {
             panic!("expected secret command");
         };
-        assert!(matches!(cmd, SecretCmd::List { global: false, json: false }));
+        assert!(!cli.json);
+        assert!(matches!(cmd, SecretCmd::List { global: false }));
     }
 
     #[test]
@@ -3658,13 +3795,13 @@ mod tests {
     fn pane_list_accepts_json_flag() {
         let cli = Cli::try_parse_from(["plexi", "pane", "list", "--json"]).unwrap();
         let Some(Commands::Pane {
-            cmd: super::PaneCmd::List { context, json },
+            cmd: super::PaneCmd::List { context },
         }) = cli.command
         else {
             panic!("expected pane list command");
         };
         assert_eq!(context, None);
-        assert!(json);
+        assert!(cli.json);
     }
 
     #[test]
@@ -3755,17 +3892,17 @@ mod tests {
         ])
         .expect("ledger summary parses");
         let Some(Commands::Ledger {
-            cmd: Some(super::LedgerCmd::Summary { by, since, json }),
+            cmd: Some(super::LedgerCmd::Summary { by, since }),
         }) = summary.command
         else {
             panic!("expected ledger summary");
         };
         assert_eq!(by.as_deref(), Some("kind"));
         assert_eq!(since.as_deref(), Some("2026-01-01"));
-        assert!(json);
+        assert!(summary.json);
     }
 
-    fn slot_pane_id(args: &[&str]) -> Option<Option<u64>> {
+    fn slot_pane_id(args: &[&str]) -> Option<Option<super::PaneTarget>> {
         let cli = Cli::try_parse_from(args).ok()?;
         let Some(Commands::Pane {
             cmd: super::PaneCmd::Slot { cmd },
@@ -3815,8 +3952,18 @@ mod tests {
                     .copied()
                     .collect()
             };
-            assert_eq!(slot_pane_id(&build(&["--pane-id", "42"])), Some(Some(42)));
-            assert_eq!(slot_pane_id(&build(&["42"])), Some(Some(42)));
+            assert_eq!(
+                slot_pane_id(&build(&["--pane-id", "42"])),
+                Some(Some(super::PaneTarget::from(42)))
+            );
+            assert_eq!(
+                slot_pane_id(&build(&["42"])),
+                Some(Some(super::PaneTarget::from(42)))
+            );
+            assert_eq!(
+                slot_pane_id(&build(&["worker-1"])),
+                Some(Some(super::PaneTarget::from("worker-1")))
+            );
             assert_eq!(slot_pane_id(&build(&[])), Some(None));
             assert_eq!(
                 slot_pane_id(&build(&["42", "--pane-id", "43"])),
@@ -3898,13 +4045,13 @@ mod tests {
             Some(Commands::Pane {
                 cmd: PaneCmd::Result {
                     cmd: None,
-                    pane_id: Some(42),
+                    pane_id: Some(ref t),
                     wait: false,
                     write: None,
                     schema: None,
                     ..
                 }
-            })
+            }) if t == &super::PaneTarget::from(42)
         ));
 
         // `plexi pane result 42 --wait --timeout 15`
@@ -3915,12 +4062,12 @@ mod tests {
             Some(Commands::Pane {
                 cmd: PaneCmd::Result {
                     cmd: None,
-                    pane_id: Some(42),
+                    pane_id: Some(ref t),
                     wait: true,
-                    timeout: t,
+                    timeout: tm,
                     ..
                 }
-            }) if (t - 15.0).abs() < f64::EPSILON
+            }) if t == &super::PaneTarget::from(42) && (tm - 15.0).abs() < f64::EPSILON
         ));
 
         // `plexi pane result write '{"status":"pass"}'`
@@ -3958,11 +4105,11 @@ mod tests {
                     cmd: Some(PaneResultCmd::Schema {
                         ref first,
                         second: None,
-                        pane_id_flag: Some(42),
+                        pane_id_flag: Some(ref t),
                     }),
                     ..
                 }
-            }) if first == r#"{"required":["status"]}"#
+            }) if first == r#"{"required":["status"]}"# && t == &super::PaneTarget::from(42)
         ));
 
         // `plexi pane new --agent c-large --result-schema schema.json`
@@ -3985,5 +4132,189 @@ mod tests {
                 }
             }) if s == "schema.json"
         ));
+    }
+
+    #[test]
+    fn resolve_target_context_and_pane_exact_prefix_ambiguous_unknown_and_numeric() {
+        use super::{resolve_target_from_candidates, ContextTarget, PaneTarget};
+
+        let contexts = vec![
+            (1, "main".to_string()),
+            (2, "sprint-alpha".to_string()),
+            (3, "sprint-beta".to_string()),
+            (4, "sprint".to_string()),
+        ];
+
+        // Numeric id resolves without consulting candidates.
+        assert_eq!(ContextTarget::from("42").numeric_id(), Some(42));
+        assert_eq!(
+            resolve_target_from_candidates("context", "42", &[]),
+            Ok(42)
+        );
+
+        // Exact name match wins even when it is a prefix of other candidates.
+        assert_eq!(
+            resolve_target_from_candidates("context", "sprint", &contexts),
+            Ok(4)
+        );
+        assert_eq!(
+            resolve_target_from_candidates("context", "main", &contexts),
+            Ok(1)
+        );
+
+        // Unique prefix match resolves.
+        assert_eq!(
+            resolve_target_from_candidates("context", "sprint-a", &contexts),
+            Ok(2)
+        );
+        assert_eq!(
+            resolve_target_from_candidates("context", "ma", &contexts),
+            Ok(1)
+        );
+
+        // Ambiguous prefix errors and lists matching candidates as `name (id)`.
+        let err = resolve_target_from_candidates("context", "sprint-", &contexts)
+            .expect_err("sprint- is ambiguous");
+        assert!(err.contains("ambiguous context 'sprint-'"), "got: {err}");
+        assert!(err.contains("sprint-alpha (2)"), "got: {err}");
+        assert!(err.contains("sprint-beta (3)"), "got: {err}");
+
+        // Unknown name errors and lists nearby candidates as `name (id)`.
+        let err = resolve_target_from_candidates("context", "spriX", &contexts)
+            .expect_err("spriX is unknown");
+        assert!(err.contains("unknown context 'spriX'"), "got: {err}");
+        assert!(err.contains("sprint (4)"), "got: {err}");
+
+        // Pane targets follow the exact same contract.
+        let panes = vec![
+            (10, "worker-0890".to_string()),
+            (11, "worker-0891".to_string()),
+            (12, "tester".to_string()),
+            (13, "worker".to_string()),
+        ];
+        assert_eq!(PaneTarget::from("99").numeric_id(), Some(99));
+        assert_eq!(resolve_target_from_candidates("pane", "99", &[]), Ok(99));
+        assert_eq!(
+            resolve_target_from_candidates("pane", "worker", &panes),
+            Ok(13)
+        );
+        assert_eq!(
+            resolve_target_from_candidates("pane", "tes", &panes),
+            Ok(12)
+        );
+        let err = resolve_target_from_candidates("pane", "worker-0", &panes)
+            .expect_err("worker-0 is ambiguous");
+        assert!(err.contains("ambiguous pane 'worker-0'"), "got: {err}");
+        assert!(err.contains("worker-0890 (10)"), "got: {err}");
+        assert!(err.contains("worker-0891 (11)"), "got: {err}");
+        let err = resolve_target_from_candidates("pane", "unknown-pane", &panes)
+            .expect_err("unknown-pane is unknown");
+        assert!(err.contains("unknown pane 'unknown-pane'"), "got: {err}");
+        assert!(err.contains("tester (12)"), "got: {err}");
+    }
+
+    #[test]
+    fn every_leaf_subcommand_accepts_json_flag() {
+        use clap::{ArgAction, CommandFactory};
+
+        fn collect_leaf_paths(cmd: &clap::Command, prefix: Vec<String>, out: &mut Vec<(Vec<String>, clap::Command)>) {
+            let subs: Vec<_> = cmd
+                .get_subcommands()
+                .filter(|s| s.get_name() != "help")
+                .collect();
+            if subs.is_empty() {
+                out.push((prefix, cmd.clone()));
+                return;
+            }
+            for sub in subs {
+                let mut next = prefix.clone();
+                next.push(sub.get_name().to_string());
+                collect_leaf_paths(sub, next, out);
+            }
+        }
+
+        let mut root = Cli::command();
+        root.build();
+        let mut leaves = Vec::new();
+        collect_leaf_paths(&root, vec!["plexi".to_string()], &mut leaves);
+        assert!(!leaves.is_empty(), "expected leaf subcommands");
+
+        for (path, leaf_cmd) in leaves {
+            let mut argv = path.clone();
+            // Synthesize required arguments for this leaf command so `Cli::try_parse_from`
+            // reaches full argument validation with `--json`.
+            for arg in leaf_cmd.get_arguments() {
+                let id = arg.get_id().as_str();
+                if id == "help" || id == "version" || id == "json" || id == "socket" {
+                    continue;
+                }
+                let needs_value = arg.is_required_set()
+                    || id == "text" && path.ends_with(&["assistant".to_string(), "send".to_string()])
+                    || id == "approve" && path.ends_with(&["needs-you".to_string(), "resolve".to_string()])
+                    || id == "name" && path.ends_with(&["app".to_string(), "init".to_string()])
+                    || id == "pane_id" && path.ends_with(&["pane".to_string(), "focus".to_string()])
+                    || id == "persona" && path.ends_with(&["agent".to_string(), "create".to_string()]);
+                if !needs_value {
+                    continue;
+                }
+                let sample_val = arg
+                    .get_value_parser()
+                    .possible_values()
+                    .and_then(|mut pv| pv.next().map(|v| v.get_name().to_string()))
+                    .unwrap_or_else(|| "1".to_string());
+                if arg.is_positional() {
+                    argv.push(sample_val);
+                } else if let Some(long) = arg.get_long() {
+                    argv.push(format!("--{long}"));
+                    if !matches!(
+                        arg.get_action(),
+                        ArgAction::SetTrue | ArgAction::SetFalse | ArgAction::Count
+                    ) {
+                        argv.push(sample_val);
+                    }
+                }
+            }
+            argv.push("--json".to_string());
+            let parsed = Cli::try_parse_from(&argv).unwrap_or_else(|e| {
+                panic!("leaf command {:?} failed to parse with --json (argv={argv:?}): {e}", path)
+            });
+            assert!(
+                parsed.json,
+                "leaf command {:?} parsed --json but cli.json was false",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn pane_unhide_alias_parses_to_reveal() {
+        use super::PaneCmd;
+        use clap::CommandFactory;
+
+        let cli = Cli::try_parse_from(["plexi", "pane", "unhide"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::Reveal { pane_id: None }
+            })
+        ));
+
+        let cli_with_target = Cli::try_parse_from(["plexi", "pane", "unhide", "42"]).unwrap();
+        assert!(matches!(
+            cli_with_target.command,
+            Some(Commands::Pane {
+                cmd: PaneCmd::Reveal {
+                    pane_id: Some(ref t)
+                }
+            }) if *t == 42
+        ));
+
+        let mut root = Cli::command();
+        let pane_sub = root.find_subcommand_mut("pane").unwrap();
+        let help = pane_sub.render_long_help().to_string();
+        assert!(
+            help.contains("unhide"),
+            "expected `pane --help` to show visible alias `unhide`, got:\n{help}"
+        );
     }
 }
