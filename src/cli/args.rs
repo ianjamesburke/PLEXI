@@ -839,6 +839,9 @@ pub enum DebugSessionCmd {
         /// secret options, and KEY=value assignments are redacted at capture.
         #[arg(long, conflicts_with = "join_agents")]
         cli: bool,
+        /// Render timestamps in UTC instead of local time (text output only).
+        #[arg(long)]
+        utc: bool,
         /// Interleave external agent transcripts.
         #[arg(long)]
         join_agents: bool,
@@ -886,9 +889,18 @@ pub enum SkillCmd {
         /// Recorded host session id, or latest.
         #[arg(long)]
         from_session: String,
-        /// Include only this caller pane's calls.
-        #[arg(long)]
+        /// Target this pane instead of PLEXI_PANE_ID (without either, includes all panes).
+        #[arg(long, conflicts_with = "all_panes")]
         pane: Option<u64>,
+        /// Include calls from every pane instead of the calling pane.
+        #[arg(long)]
+        all_panes: bool,
+        /// Include agent bookkeeping and pane polling calls.
+        #[arg(long)]
+        include_internal: bool,
+        /// Include failed or incomplete calls as review-only notes.
+        #[arg(long)]
+        include_failed: bool,
         /// Output format: SKILL.md or commands.toml snippet.
         #[arg(long = "as", default_value = "skill", value_parser = ["skill", "command"])]
         format: String,
@@ -3424,6 +3436,18 @@ mod tests {
         SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn session_history_and_draft_flags_parse() {
+        let cli = Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest",
+            "--all-panes", "--include-internal", "--include-failed"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Skill { cmd: super::SkillCmd::Draft {
+            all_panes: true, include_internal: true, include_failed: true, .. } })));
+        assert!(Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest", "--pane", "19", "--all-panes"]).is_err());
+        let cli = Cli::try_parse_from(["plexi", "debug", "session", "show", "--utc", "--cli"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Debug { cmd: super::DebugCmd::Session {
+            cmd: super::DebugSessionCmd::Show { utc: true, cli: true, .. } } })));
+    }
 
     #[test]
     fn message_recv_timeout_implies_wait() {

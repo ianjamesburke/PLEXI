@@ -8,7 +8,7 @@
 //! prompts and tool calls with the host's permission and app events by time.
 
 use crate::host::flight_recorder as recorder;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -80,23 +80,34 @@ pub fn debug_session_show_cli(
     join_agents: bool,
     cli: bool,
     json: bool,
+    utc: bool,
 ) -> i32 {
     let profile = crate::config::config_dir();
-    let roots = agent_roots();
-    let (session_id, skipped, timeline) =
-        match build_show(&profile, session, pane, join_agents.then_some(roots.as_slice())) {
-            Ok(built) => built,
-            Err(error) => {
-                eprintln!("error: {error}");
-                return 1;
-            }
-        };
-    let timeline = if cli { recorder::cli_calls(timeline, pane) } else { timeline };
+    let (session_id, skipped, timeline) = match build_show(&profile, session, None, None) {
+        Ok(built) => built,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+    let header = session_header(&session_id, &timeline, utc);
+    let timeline = filter_pane(timeline, pane);
+    let timeline = if join_agents {
+        let agents = agent_entries(&timeline, &agent_roots());
+        merge_timeline(timeline, agents)
+    } else {
+        timeline
+    };
+    let timeline = if cli {
+        recorder::cli_calls(timeline, pane)
+    } else {
+        timeline
+    };
     if skipped > 0 {
         eprintln!("warning: skipped {skipped} unparseable line(s) in {session_id}");
     }
     log::info!(
-        "debug session show: {session_id} pane={pane:?} join_agents={join_agents} entries={}",
+        "debug session show: {session_id} pane={pane:?} join_agents={join_agents} utc={utc} entries={}",
         timeline.len()
     );
     if json {
@@ -106,8 +117,9 @@ pub fn debug_session_show_cli(
         );
         return 0;
     }
+    println!("{header}");
     for entry in &timeline {
-        println!("{}", render_line(entry));
+        println!("{}", render_line(entry, utc));
     }
     0
 }
@@ -123,7 +135,11 @@ fn join_nums(v: &Value) -> String {
 fn join_strs(v: &Value) -> String {
     let items: Vec<String> = v
         .as_array()
-        .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     if items.is_empty() { "-".into() } else { items.join(",") }
 }
@@ -151,14 +167,19 @@ fn agent_roots() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    vec![home.join(".pi/agent/sessions"), home.join(".claude/projects")]
+    vec![
+        home.join(".pi/agent/sessions"),
+        home.join(".claude/projects"),
+    ]
 }
 
 /// Find the transcript file for an agent session id under `roots` (a file whose
 /// name contains the id, one directory level deep).
 fn find_transcript(roots: &[PathBuf], session_id: &str) -> Option<PathBuf> {
     for root in roots {
-        let Ok(dirs) = std::fs::read_dir(root) else { continue };
+        let Ok(dirs) = std::fs::read_dir(root) else {
+            continue;
+        };
         for dir in dirs.flatten() {
             let path = dir.path();
             let candidates: Vec<PathBuf> = if path.is_dir() {
@@ -224,7 +245,9 @@ pub(crate) fn agent_entries(rows: &[Value], roots: &[PathBuf]) -> Vec<Value> {
             }
         };
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let Ok(row) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(row) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
             let message = row.get("message").unwrap_or(&row);
             let role = message["role"]
                 .as_str()
@@ -290,9 +313,14 @@ fn summary_of(row: &Value) -> String {
     let d = &row["data"];
     match row["kind"].as_str().unwrap_or("?") {
         "cli_call" => format!(
-            "exit={} argv={}",
-            d["exit_code"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
-            d["argv"]
+            "exit={}  {}",
+            d["exit_code"]
+                .as_i64()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            serde_json::from_value::<Vec<String>>(d["argv"].clone())
+                .map(|argv| clip(&super::skill_draft::shell_command(&argv)))
+                .unwrap_or_else(|_| "<invalid argv>".into())
         ),
         "timeline_event" => format!(
             "{}/{} {}",
@@ -314,14 +342,19 @@ fn summary_of(row: &Value) -> String {
             d["pending_request_id"].as_str().unwrap_or("-"),
             d["error"].as_str().unwrap_or("")
         ),
-        "permission_ask" | "permission_decision" | "permission_use" | "permission_audit" => format!(
-            "{} actor={} decision={} pending={} grant={}",
-            d["audit_kind"].as_str().unwrap_or("?"),
-            d["actor"].as_str().unwrap_or("?"),
-            d["choice"].as_str().or(d["decision"].as_str()).unwrap_or("?"),
-            d["pending_request_id"].as_str().unwrap_or("-"),
-            d["grant_id"].as_str().unwrap_or("-")
-        ),
+        "permission_ask" | "permission_decision" | "permission_use" | "permission_audit" => {
+            format!(
+                "{} actor={} decision={} pending={} grant={}",
+                d["audit_kind"].as_str().unwrap_or("?"),
+                d["actor"].as_str().unwrap_or("?"),
+                d["choice"]
+                    .as_str()
+                    .or(d["decision"].as_str())
+                    .unwrap_or("?"),
+                d["pending_request_id"].as_str().unwrap_or("-"),
+                d["grant_id"].as_str().unwrap_or("-")
+            )
+        }
         "host_event" | "host_effect" => d["kind"]
             .as_str()
             .or(d["effect"].as_str())
@@ -331,10 +364,62 @@ fn summary_of(row: &Value) -> String {
     }
 }
 
+fn format_row_time(time: DateTime<Utc>, utc: bool, now: DateTime<Utc>) -> String {
+    if utc {
+        let pattern = if time.date_naive() == now.date_naive() {
+            "%H:%M:%S%.3f UTC"
+        } else {
+            "%m-%d %H:%M:%S%.3f UTC"
+        };
+        time.format(pattern).to_string()
+    } else {
+        let local = time.with_timezone(&Local);
+        let pattern = if local.date_naive() == now.with_timezone(&Local).date_naive() {
+            "%H:%M:%S%.3f %Z"
+        } else {
+            "%m-%d %H:%M:%S%.3f %Z"
+        };
+        local.format(pattern).to_string()
+    }
+}
+
+fn session_header(id: &str, rows: &[Value], utc: bool) -> String {
+    let times: Vec<_> = rows
+        .iter()
+        .filter(|r| r["source"] != "agent")
+        .filter_map(|r| parse_ts(&r["ts"]))
+        .collect();
+    let format = |time: &DateTime<Utc>| {
+        if utc {
+            time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+        } else {
+            time.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
+        }
+    };
+    let start = times
+        .iter()
+        .min()
+        .map(&format)
+        .unwrap_or_else(|| "unknown".into());
+    let end = times
+        .iter()
+        .max()
+        .map(format)
+        .unwrap_or_else(|| "unknown".into());
+    let zone = if utc {
+        "UTC".to_string()
+    } else {
+        "local time (zone shown at each timestamp)".to_string()
+    };
+    format!("session {id} · {start} .. {end} · times in {zone}")
+}
+
 /// One timeline line for human output.
-pub(crate) fn render_line(entry: &Value) -> String {
+pub(crate) fn render_line(entry: &Value, utc: bool) -> String {
     let time = parse_ts(&entry["ts"])
-        .map(|t| t.format("%H:%M:%S%.3f").to_string())
+        .map(|t| format_row_time(t, utc, Utc::now()))
         .unwrap_or_else(|| entry["ts"].as_str().unwrap_or("?").to_string());
     if entry["source"] == "agent" {
         return format!(
@@ -369,12 +454,83 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_and_header_name_the_zone_and_resolved_session() {
+        let time = parse_ts(&json!("2026-10-21T22:24:10.123Z")).unwrap();
+        assert_eq!(format_row_time(time, true, time), "22:24:10.123 UTC");
+        assert_eq!(
+            format_row_time(time, false, time),
+            time.with_timezone(&Local)
+                .format("%H:%M:%S%.3f %Z")
+                .to_string()
+        );
+        let later = time + chrono::Duration::days(2);
+        assert_eq!(format_row_time(time, true, later), "10-21 22:24:10.123 UTC");
+        assert_eq!(
+            format_row_time(time, false, later),
+            time.with_timezone(&Local)
+                .format("%m-%d %H:%M:%S%.3f %Z")
+                .to_string()
+        );
+        let rows = vec![
+            json!({"ts":"2026-10-21T22:24:10.123Z"}),
+            json!({"ts":"2026-10-22T02:27:00Z"}),
+        ];
+        let header = session_header("sess-resolved", &rows, true);
+        assert_eq!(header, "session sess-resolved · 2026-10-21 22:24:10 UTC .. 2026-10-22 02:27:00 UTC · times in UTC");
+        let local = session_header("sess-resolved", &rows, false);
+        assert!(local.contains(
+            &time
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn cli_history_uses_basename_quotes_and_clips() {
+        let row = json!({"kind":"cli_call", "ts":"2026-10-21T22:24:10Z",
+            "data":{"exit_code":0, "argv":["/Users/example/generations/abcdef/Plexi Alpha.app/Contents/MacOS/plexi-alpha", "agent", "done", "--result", "x".repeat(300)]}});
+        let line = render_line(&row, false);
+        assert!(
+            line.contains("exit=0  plexi-alpha agent done --result"),
+            "{line}"
+        );
+        assert!(!line.contains("generations"));
+        assert!(line.contains('…'));
+        assert_eq!(row["data"]["argv"][4].as_str().unwrap().len(), 300);
+    }
+
+    #[test]
     fn pane_filter_keeps_the_pane_and_its_calls() {
         let rows = vec![
-            row(1, "2026-01-01T00:00:01Z", "tool_call_requested", Some(5), Some("c1")),
-            row(2, "2026-01-01T00:00:02Z", "permission_ask", None, Some("c1")),
-            row(3, "2026-01-01T00:00:03Z", "tool_call_requested", Some(6), Some("c2")),
-            row(4, "2026-01-01T00:00:04Z", "permission_ask", None, Some("c2")),
+            row(
+                1,
+                "2026-01-01T00:00:01Z",
+                "tool_call_requested",
+                Some(5),
+                Some("c1"),
+            ),
+            row(
+                2,
+                "2026-01-01T00:00:02Z",
+                "permission_ask",
+                None,
+                Some("c1"),
+            ),
+            row(
+                3,
+                "2026-01-01T00:00:03Z",
+                "tool_call_requested",
+                Some(6),
+                Some("c2"),
+            ),
+            row(
+                4,
+                "2026-01-01T00:00:04Z",
+                "permission_ask",
+                None,
+                Some("c2"),
+            ),
         ];
         let kept = filter_pane(rows, Some(5));
         let seqs: Vec<u64> = kept.iter().map(|r| r["seq"].as_u64().unwrap()).collect();
@@ -407,7 +563,13 @@ mod tests {
         let merged = merge_timeline(host, agents);
         let order: Vec<String> = merged
             .iter()
-            .map(|e| format!("{}:{}", e["source"].as_str().unwrap(), e["ts"].as_str().unwrap()))
+            .map(|e| {
+                format!(
+                    "{}:{}",
+                    e["source"].as_str().unwrap(),
+                    e["ts"].as_str().unwrap()
+                )
+            })
             .collect();
         assert_eq!(
             order,
@@ -418,6 +580,6 @@ mod tests {
                 "agent:2026-01-01T00:00:05Z"
             ]
         );
-        assert!(render_line(&merged[3]).contains("[tool Bash"));
+        assert!(render_line(&merged[3], false).contains("[tool Bash"));
     }
 }
