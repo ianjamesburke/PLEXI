@@ -40,6 +40,12 @@ The bootstrap targets live in `src/model-modes.ts`. Each selected alias requires
 its exact target and thinking capability; missing targets produce an error.
 Inactive aliases do not resolve targets or change the selected model.
 
+## Switching FAST/SLOW
+
+Use `/fast` or `/slow` to switch directly, or `/models [fast|slow]` to choose.
+`/model` is built in; it lists FAST and SLOW only when settings `enabledModels` is
+`["plexi/fast", "plexi/slow"]`.
+
 ## Scratch-profile migration and rollback
 
 The migration helper accepts an explicit **agent directory** (`settings.json`

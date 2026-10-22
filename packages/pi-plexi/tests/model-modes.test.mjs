@@ -34,6 +34,80 @@ test('detached registration is lazy; exact targets and supported thinking are en
     assert.throws(() => alias.route({}, ctx), /does not support thinking/);
   }
 });
+
+function commandHarness() {
+  const commands = new Map();
+  const pi = {
+    registerVirtualModel() {}, registerTool() {}, on() {},
+    registerCommand(name, command) { commands.set(name, command); },
+    async setModel(model) { this.models.push(model); return this.setModelResult; },
+    setThinkingLevel(level) { this.thinking.push(level); },
+    models: [], thinking: [], setModelResult: true,
+  };
+  createPiPlexiExtension({ env: {}, homeDir: process.env.HOME })(pi);
+  const notifications = [];
+  const models = new Map(MODEL_MODES.map((mode) => [mode.id, { provider: 'plexi', id: mode.id }]));
+  const ctx = {
+    modelRegistry: { find(provider, id) { return provider === 'plexi' ? models.get(id) : undefined; } },
+    ui: {
+      notify(message, type) { notifications.push([message, type]); },
+      async select(title, options) { this.lastSelect = { title, options }; return this.selection; },
+    },
+  };
+  return { commands, pi, ctx, notifications, models };
+}
+
+test('FAST/SLOW commands register and switch virtual models', async () => {
+  const { commands, pi, ctx, notifications } = commandHarness();
+  assert.deepEqual([...commands.keys()].filter(name => ['fast', 'slow', 'models', 'model'].includes(name)), ['fast', 'slow', 'models']);
+  await commands.get('fast').handler('', ctx);
+  await commands.get('slow').handler('', ctx);
+  assert.deepEqual(pi.models, [{ provider: 'plexi', id: 'fast' }, { provider: 'plexi', id: 'slow' }]);
+  assert.deepEqual(pi.thinking, ['medium', 'high']);
+  assert.deepEqual(notifications, [['Model: FAST (plexi/fast)', undefined], ['Model: SLOW (plexi/slow)', undefined]]);
+});
+
+test('/models handles arguments, picker state, cancel, and completions', async () => {
+  const { commands, pi, ctx, notifications } = commandHarness();
+  const models = commands.get('models');
+  assert.deepEqual(models.getArgumentCompletions(''), [{ value: 'fast', label: 'fast' }, { value: 'slow', label: 'slow' }]);
+  assert.deepEqual(models.getArgumentCompletions('S'), [{ value: 'slow', label: 'slow' }]);
+  await models.handler('FAST', ctx);
+  await models.handler('other', ctx);
+  ctx.model = { provider: 'plexi', id: 'fast' };
+  ctx.ui.selection = 'SLOW — openrouter/openai/gpt-6-astra (thinking high)';
+  await models.handler('', ctx);
+  assert.deepEqual(ctx.ui.lastSelect, {
+    title: 'Model',
+    options: [
+      'FAST — openrouter/xiaomi/mimo-v2.6-pro (thinking medium) (current)',
+      'SLOW — openrouter/openai/gpt-6-astra (thinking high)',
+    ],
+  });
+  const countBeforeCancel = pi.models.length;
+  ctx.ui.selection = undefined;
+  await models.handler('', ctx);
+  assert.deepEqual(pi.models, [{ provider: 'plexi', id: 'fast' }, { provider: 'plexi', id: 'slow' }]);
+  assert.equal(pi.models.length, countBeforeCancel);
+  assert.deepEqual(notifications, [
+    ['Model: FAST (plexi/fast)', undefined],
+    ['Unknown model. Choose: fast, slow.', 'error'],
+    ['Model: SLOW (plexi/slow)', undefined],
+  ]);
+});
+
+test('model selection reports missing or rejected virtual models', async () => {
+  const { commands, pi, ctx, notifications, models } = commandHarness();
+  pi.setModelResult = false;
+  await commands.get('fast').handler('', ctx);
+  models.delete('slow');
+  await commands.get('slow').handler('', ctx);
+  assert.deepEqual(pi.thinking, []);
+  assert.deepEqual(notifications, [
+    ['Unable to switch to plexi/fast.', 'error'],
+    ['Unable to switch to plexi/slow: model not found.', 'error'],
+  ]);
+});
 test('pure settings migration preserves unrelated fields and package filters', () => {
   const output = migrateSettings(settings);
   assert.equal(settings.defaultProvider, 'ian-router');
