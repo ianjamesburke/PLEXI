@@ -591,12 +591,9 @@ pub fn pane_result_schema_cli(
     pane_id_flag: Option<u64>,
 ) -> i32 {
     let (pane_id, spec) = match second {
-        Some(spec_str) => match first.parse::<u64>() {
+        Some(spec_str) => match super::PaneTarget::from(first.to_string()).resolve() {
             Ok(id) => (Some(id), spec_str),
-            Err(_) => {
-                eprintln!("error: invalid pane id: {first}");
-                return 1;
-            }
+            Err(code) => return code,
         },
         None => (pane_id_flag, first),
     };
@@ -640,13 +637,12 @@ pub fn pane_result_write_cli(
     pane_id_flag: Option<u64>,
 ) -> i32 {
     let (pane_id, raw_json) = match (first, second) {
-        (Some(id_str), Some(json_str)) => match id_str.parse::<u64>() {
-            Ok(id) => (Some(id), json_str.to_string()),
-            Err(_) => {
-                eprintln!("error: invalid pane id: {id_str}");
-                return 1;
+        (Some(id_str), Some(json_str)) => {
+            match super::PaneTarget::from(id_str.to_string()).resolve() {
+                Ok(id) => (Some(id), json_str.to_string()),
+                Err(code) => return code,
             }
-        },
+        }
         (Some(json_str), None) => (pane_id_flag, json_str.to_string()),
         (None, None) => {
             use std::io::Read as _;
@@ -2271,6 +2267,99 @@ mod pane_result_tests {
             0
         );
         assert_eq!(pane_result_read_cli(Some(7), false, 300.0), 0);
+
+        handle.join().expect("listener thread");
+    }
+
+    #[test]
+    fn context_and_pane_target_resolve_and_commands_over_socket() {
+        use crate::cli::{
+            host_action_cli, pane_focus_cli, resolve_opt_context_target, ContextTarget, PaneTarget,
+        };
+
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        env.set(&socket_path);
+
+        // Numeric targets resolve without any socket connection.
+        assert_eq!(ContextTarget::from("42").resolve(), Ok(42));
+        assert_eq!(PaneTarget::from("99").resolve(), Ok(99));
+
+        let handle = std::thread::spawn(move || {
+            for step in 0..10 {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).expect("read");
+                let payload: serde_json::Value = serde_json::from_str(&line).expect("json");
+                let ty = payload["type"].as_str().unwrap_or("");
+                match ty {
+                    "list_contexts" => {
+                        let rf = payload["response_file"].as_str().unwrap();
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!([
+                                { "context_id": 1, "name": "main", "parked": false },
+                                { "context_id": 2, "name": "sprint-alpha", "parked": true },
+                                { "context_id": 3, "name": "sprint-beta", "parked": false },
+                            ]),
+                        );
+                    }
+                    "list_panes" => {
+                        let rf = payload["response_file"].as_str().unwrap();
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!([
+                                { "id": 10, "title": "worker-0890" },
+                                { "id": 11, "title": "worker-0891" },
+                                { "id": 12, "title": "tester-lane" },
+                            ]),
+                        );
+                    }
+                    "context_park" => {
+                        assert_eq!(payload["context_id"], 2, "step={step}");
+                        assert_eq!(payload["parked"], false, "step={step}");
+                        let rf = payload["response_file"].as_str().unwrap();
+                        crate::rpc::write_json_response(rf, serde_json::json!({ "ok": true }));
+                    }
+                    "focus_pane" => {
+                        assert_eq!(payload["pane_id"], 12, "step={step}");
+                        if let Some(rf) = payload["response_file"].as_str() {
+                            crate::rpc::write_json_response(rf, serde_json::json!({ "ok": true }));
+                        }
+                    }
+                    other => panic!("unexpected request type at step {step}: {other}"),
+                }
+            }
+        });
+
+        // ContextTarget over socket: exact, unique prefix, ambiguous prefix, unknown name
+        assert_eq!(ContextTarget::from("sprint-alpha").resolve(), Ok(2));
+        assert_eq!(ContextTarget::from("ma").resolve(), Ok(1));
+        assert_eq!(ContextTarget::from("sprint-").resolve(), Err(1));
+        assert_eq!(ContextTarget::from("no-such-ctx").resolve(), Err(1));
+
+        // PaneTarget over socket: exact, unique prefix, ambiguous prefix
+        assert_eq!(PaneTarget::from("worker-0890").resolve(), Ok(10));
+        assert_eq!(PaneTarget::from("worker-").resolve(), Err(1));
+
+        // End-to-end `plexi context unpark <name>` (via unique prefix "sprint-a" -> context 2)
+        let unpark_ctx = resolve_opt_context_target(Some(&ContextTarget::from("sprint-a")))
+            .expect("resolve sprint-a");
+        assert_eq!(unpark_ctx, Some(2));
+        assert_eq!(
+            host_action_cli(
+                serde_json::json!({ "type": "context_park", "parked": false }),
+                Some(("context_id", unpark_ctx, "PLEXI_CONTEXT_ID")),
+            ),
+            0
+        );
+
+        // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
+        let focus_pane = PaneTarget::from("tester").resolve().expect("resolve tester");
+        assert_eq!(focus_pane, 12);
+        assert_eq!(pane_focus_cli(focus_pane), 0);
 
         handle.join().expect("listener thread");
     }

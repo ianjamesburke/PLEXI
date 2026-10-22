@@ -58,14 +58,13 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | `--text` | string | no | Prompt text. Omitted when `--status-for` only reads a pending turn |
 | `--head` | string | no | Lead id. The turn runs in that head's conversation |
 | `--request-id` | string | no |  |
-| `--pane-id` | string | no |  |
-| `--context-id` | string | no |  |
+| `--pane-id` | string | no | Target pane id or name |
+| `--context-id` | string | no | Target context id or name |
 | `--conversation` | string | no | Caller-owned conversation. A phone session passes one stable id. Omit to start a new conversation that is not the desktop transcript |
 | `--desktop` | flag | no | Append this turn to the desktop Assistant conversation |
 | `--status-for` | string | no | Read the outcome of a turn that already returned waiting_for_permission. Does not submit a new prompt |
 | `--client` | string | no | Ledger client tag for this run. Omitted uses `[ai] client` |
 | `--kind` | string | no | Ledger run kind: `system` or `output`. Omitted means `output` |
-| `--json` | flag | no |  |
 
 ### `plexi assistant tool`
 
@@ -261,7 +260,6 @@ Example: plexi run dev Example: plexi run play Example: plexi run --json
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<command>` | string | no | Command name to run (omit to list available commands) |
-| `--json` | flag | no | Print available commands as JSON (`[{name, scope, description, run, steps, secrets}]`) |
 | `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command as $1, $2, … and $@ positional params |
 
 ## `plexi workspace`
@@ -420,7 +418,6 @@ Inside a workspace, shows project secrets plus user-scope secrets. Outside a wor
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` | flag | no | Show only globally-stored user-scope secrets |
-| `--json` | flag | no | Print names, scopes, last-used timestamps and actor grants as JSON (never values) |
 
 ### `plexi secret delete`
 
@@ -664,7 +661,6 @@ Show the resolved v0 team, including roles, harnesses, options and grants
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes |  |
-| `--json` | flag | no |  |
 
 #### `plexi agent team run`
 
@@ -677,15 +673,10 @@ Run independent team members in one task and wait for RESULT.md
 | `--out` | string | no | Output directory (default: a new team-results/<run-id> in the workspace) |
 | `--option` | string (repeatable) | no | Replace the stored options; repeat for each option (at least two) |
 | `--timeout` | string | no | Host-side deadline in seconds; a timed-out run fails and stops its members Default: `600`. |
-| `--json` | flag | no |  |
 
 ### `plexi agent next`
 
 Focus the next live agent needing attention (needs-you, blocked, done-unseen)
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print the focused pane id, or null when none needs attention, as JSON |
 
 ### `plexi agent fleet`
 
@@ -693,7 +684,6 @@ Show tasks and their workers, ordered by attention, with blocking reasons
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--json` | flag | no | Print the shared Agents pane view as JSON |
 | `--filter` | string | no | Select all, needs-attention, working, or done workers Default: `all`. |
 
 ### `plexi agent create`
@@ -743,7 +733,6 @@ Prints each agent's name, tier (`workspace` or `global`), CLI + model (or `assis
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
-| `--json` | flag | no | Output as JSON |
 
 ### `plexi agent show`
 
@@ -753,7 +742,6 @@ Show the resolved definition for `<name>`, its directory path, and its exact `sp
 |---|---|---|---|
 | `<name>` | string | yes | Agent name to inspect |
 | `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
-| `--json` | flag | no | Output as JSON |
 
 ### `plexi agent call`
 
@@ -772,7 +760,7 @@ Reply through a child agent's structured mailbox
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes |  |
+| `<pane_id>` | string | yes | Target pane id or name |
 | `<text>` | string | yes |  |
 | `--wait` | flag | no | Wait for the child's next completion or question |
 
@@ -799,9 +787,8 @@ Example: plexi agent spawn researcher --task "Audit auth module" --subcontext au
 | `--task` | string | yes | Task brief passed to the spawned agent harness |
 | `--subcontext` | string | no | Sub-context name to spawn into |
 | `--ephemeral` | flag | no | Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish |
-| `--from` | string | no | Parent/caller pane ID (defaults to `$PLEXI_PANE_ID`) |
+| `--from` | string | no | Parent/caller pane id or name (defaults to `$PLEXI_PANE_ID`) |
 | `--cwd` | string | no | Working directory for workspace lookup and the spawned worker pane |
-| `--json` | flag | no | Print full host JSON response instead of bare pane ID |
 
 ### `plexi agent done`
 
@@ -815,7 +802,7 @@ Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit com
 |---|---|---|---|
 | `--result` | string | yes | Structured JSON result payload |
 | `--summary` | string | no | Human- and master-readable completion summary written to the `summary` slot |
-| `--pane-id` | string | no | Target pane ID (defaults to `$PLEXI_PANE_ID`) |
+| `--pane-id` | string | no | Target pane id or name (defaults to `$PLEXI_PANE_ID`) |
 
 ### `plexi agent ask`
 
@@ -828,7 +815,7 @@ Example: plexi agent ask "Should we preserve the legacy v1 token endpoint?"
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<question>` | string | yes | Question text for the parent master agent |
-| `--pane-id` | string | no | Target pane ID (defaults to `$PLEXI_PANE_ID`) |
+| `--pane-id` | string | no | Target pane id or name (defaults to `$PLEXI_PANE_ID`) |
 
 ### `plexi agent report`
 
@@ -870,7 +857,6 @@ Example: plexi agent history Example: plexi agent history --limit 20 --json
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--limit` | string | no | Maximum number of recent closed runs to display (0 = all) Default: `50`. |
-| `--json` | flag | no | Print JSON array instead of a human-readable table |
 
 ### `plexi agent reopen`
 
@@ -884,7 +870,6 @@ Example: plexi agent reopen sess-claude-42 Example: plexi agent reopen run-7-172
 |---|---|---|---|
 | `<target>` | string | yes | Run ID (`run-...`) or harness session ID to reopen |
 | `--subcontext` | string | no | Optional sub-context name to reopen the session into |
-| `--json` | flag | no | Print full JSON response instead of human-readable output |
 
 ### `plexi agent hook`
 
@@ -944,7 +929,6 @@ Create a head in the current workspace
 | `--display-name` | string | no | Display name. Defaults to the head id on the host when omitted |
 | `--description` | string | no | Short description stored on the head card |
 | `--grant` | string (repeatable) | no | Grant, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable |
-| `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent head list`
 
@@ -953,7 +937,6 @@ List heads in the current workspace
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--all` | flag | no | Include temporary delegated children |
-| `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent grants`
 
@@ -968,10 +951,6 @@ Example: plexi agent grants list --json
 #### `plexi agent grants list`
 
 List tool grants recorded for agent heads in the current workspace
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent run`
 
@@ -1001,15 +980,10 @@ Claim a run of a head, append a ledger row, and run a model turn
 | `--input-tokens` | string | no | Input tokens recorded on the ledger row |
 | `--output-tokens` | string | no | Output tokens recorded on the ledger row |
 | `--text` | string | no | Prompt for the model turn. Defaults to `run` on the host |
-| `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent run list`
 
 List runs in the current workspace
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent run show`
 
@@ -1018,7 +992,6 @@ Show one run
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | Run id |
-| `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent run finish`
 
@@ -1027,7 +1000,6 @@ Mark a run finished so another admission can claim the head
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | Run id |
-| `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent assign`
 
@@ -1041,7 +1013,6 @@ Example: plexi agent assign --head lead-b --input task.json --json
 |---|---|---|---|
 | `--head` | string | yes | Head that should run the task |
 | `--input` | string | yes | Task file. JSON with a `text` field, or the prompt itself |
-| `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent cancel`
 
@@ -1052,7 +1023,6 @@ Example: plexi agent cancel --id task_example --json
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--id` | string | yes | Task id returned by `agent assign` |
-| `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent conversation`
 
@@ -1066,7 +1036,6 @@ Example: plexi agent conversation --head lead-b --json
 |---|---|---|---|
 | `--head` | string | yes | Head whose conversation to read |
 | `--as` | string | no | Lead id to act as. A different head is refused |
-| `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent delegate`
 
@@ -1081,7 +1050,6 @@ Example: plexi agent delegate --parent-run run_example --name scout --grant agen
 | `--parent-run` | string | yes | Active parent run id |
 | `--name` | string | yes | Child head name |
 | `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable |
-| `--json` | flag | no | Print the host JSON reply |
 
 ## `plexi context`
 
@@ -1099,7 +1067,7 @@ Manage the active context (the folder and project scope tied to the current pane
 | `set-root` | Change the root folder for the active context |
 | `current` | Print the id and name of the current pane's context as JSON |
 | `describe` | Set the description for the active context |
-| `zoom` | Zoom into a sub-context by its numeric context_id |
+| `zoom` | Zoom into a sub-context by its context id or name |
 | `zoom-out` | Zoom out of the current sub-context to the parent |
 | `push` | Push a pane into a new sub-context |
 | `list` | List all open contexts as a JSON array |
@@ -1111,7 +1079,7 @@ Rename a context (defaults to the calling pane's context)
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes |  |
-| `--context-id` | string | no |  |
+| `--context-id` | string | no | Target context id or name (defaults to the calling pane's context) |
 
 ### `plexi context close`
 
@@ -1119,7 +1087,7 @@ Close a context, requesting desktop confirmation when configured
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<context_id>` | string | no |  |
+| `<context_id>` | string | no | Target context id or name (defaults to the calling pane's context) |
 
 ### `plexi context park`
 
@@ -1127,7 +1095,7 @@ Park a context and move focus to an unparked neighbor
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<context_id>` | string | no |  |
+| `<context_id>` | string | no | Target context id or name (defaults to the calling pane's context) |
 
 ### `plexi context unpark`
 
@@ -1135,7 +1103,7 @@ Unpark a context and focus it
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<context_id>` | string | no |  |
+| `<context_id>` | string | no | Target context id or name (defaults to the calling pane's context) |
 
 ### `plexi context new`
 
@@ -1150,7 +1118,7 @@ Examples: plexi context new "sprint"                          # top-level contex
 | `--parent` | string | no | Create as a child of a context (the new context is its sub-context). Bare `--parent` uses the current context (reads PLEXI_CONTEXT_NAME from env); use `--parent=<name>` to target another context by name |
 | `--window` | string (repeatable) | no | Command to run in each pre-populated window. Repeatable |
 | `--focus` | flag | no | Focus (zoom into) the new sub-context after creation. Default: stay in current pane |
-| `--from` | string | no | Pane to anchor the portal split at (requires --parent). Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent context's focused pane |
+| `--from` | string | no | Pane id or name to anchor the portal split at (requires --parent). Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent context's focused pane |
 | `--down` / `-d` | flag | no | Split portal below instead of right (requires --parent) |
 | `--left` / `-l` | flag | no | Split portal left (requires --parent) |
 | `--up` / `-u` | flag | no | Split portal above (requires --parent) |
@@ -1172,7 +1140,7 @@ Examples: plexi context sub agentsquad --agents 3 --command cm plexi context sub
 | `--command` | string (repeatable) | no | Command to launch in each pane. Give it once to apply to every pane, or exactly --agents times to give each pane its own command |
 | `--layout` | string | no | How the panes are arranged inside the sub-context's window. Defaults to `tiled` when the pane count fills a square grid (4, 9, …) and `columns` otherwise so no grid cell is left empty |
 | `--focus` | flag | no | Zoom into the new sub-context after creation. Default: stay put |
-| `--from` | string | no | Pane to anchor the portal split at. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent's focused pane |
+| `--from` | string | no | Pane id or name to anchor the portal split at. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent's focused pane |
 
 ### `plexi context open`
 
@@ -1204,11 +1172,11 @@ Set the description for the active context
 
 ### `plexi context zoom`
 
-Zoom into a sub-context by its numeric context_id
+Zoom into a sub-context by its context id or name
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<context_id>` | string | yes |  |
+| `<context_id>` | string | yes | Target context id or name |
 
 ### `plexi context zoom-out`
 
@@ -1223,7 +1191,7 @@ Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pa
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | no | Name for the new sub-context. Defaults to the pane name |
-| `--pane-id` | string | no | Pane to push. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
+| `--pane-id` | string | no | Pane id or name to push. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi context list`
 
@@ -1279,7 +1247,7 @@ Default placement is a sibling split to the right — the calling pane is never 
 | `--tab` | flag | no | New tab |
 | `--window` | flag | no | New window |
 | `--split` | string | no | Split direction or placement (down, left, up, right, tab, window) |
-| `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
+| `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
 ### `plexi app trust`
@@ -1424,7 +1392,7 @@ Use --open to launch it in a split-right pane after scaffolding. See `sdk/python
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
 | `--open` | flag | no | Open the app in a split-right pane after scaffolding |
 | `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
-| `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
+| `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi app validate`
 
@@ -1515,7 +1483,7 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id of the target app pane (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name of the target app pane (from `plexi pane list`) |
 | `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
 | `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
 
@@ -1532,8 +1500,7 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 | `<app_id>` | string | yes | App id that exposes the tool (from `plexi app info`) |
 | `<tool>` | string | yes | Tool name as the app declares it (e.g. `chess.state`) |
 | `--input` | string | no | Tool input as a JSON object Default: `{}`. |
-| `--json` | flag | no | Print the host reply, including structured permission errors |
-| `--pane` | string | no | Pane that owns the tool when more than one instance of the app is open |
+| `--pane` | string | no | Pane id or name that owns the tool when more than one instance of the app is open |
 | `--wait-approved` | flag | no | Wait up to two minutes for desktop approval, then execute once |
 
 ### `plexi app tools`
@@ -1547,8 +1514,7 @@ Example: plexi app tools Example: plexi app tools --json Example: plexi app tool
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--app` | string | no | Filter to tools exposed by this app id |
-| `--context` | string | no | Inspect a specific context ID instead of the caller's context |
-| `--json` | flag | no | Output as JSON (`{"ok": true, "context_id": ..., "tools": [...]}`) |
+| `--context` | string | no | Inspect a specific context id or name instead of the caller's context |
 
 ## `plexi account`
 
@@ -1647,7 +1613,7 @@ Hide a pane (defaults to the calling pane)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no |  |
+| `<pane_id>` | string | no | Target pane id or name (defaults to the calling pane) |
 
 ### `plexi pane reveal`
 
@@ -1655,7 +1621,7 @@ Reveal a hidden pane (defaults to the calling pane)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no |  |
+| `<pane_id>` | string | no | Target pane id or name (defaults to the calling pane) |
 
 ### `plexi pane zoom`
 
@@ -1663,7 +1629,7 @@ Focus a pane and toggle fullscreen zoom, or enter its sub-context
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no |  |
+| `<pane_id>` | string | no | Target pane id or name (defaults to the calling pane) |
 
 ### `plexi pane swap`
 
@@ -1672,7 +1638,7 @@ Focus a pane and swap it with a directional neighbor
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<direction>` | string | yes |  |
-| `--pane-id` | string | no |  |
+| `--pane-id` | string | no | Target pane id or name (defaults to the calling pane) |
 
 ### `plexi pane wait`
 
@@ -1680,7 +1646,7 @@ Wait for current idle, blocked, or exited state; print its lifecycle record. Exi
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes |  |
+| `<pane_id>` | string | yes | Target pane id or name |
 | `--until` | string | yes | Predicate: idle, blocked, or exited (any exit, including unknown status) |
 | `--timeout` | string | no | Host deadline in seconds; must be finite and positive Default: `300`. |
 
@@ -1691,7 +1657,7 @@ Follow brokered pane lifecycle records as NDJSON until interrupted
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--follow` | flag | yes |  |
-| `--pane` | string | no | Limit deliveries to one pane in the caller's allowed context |
+| `--pane` | string | no | Limit deliveries to one pane id or name in the caller's allowed context |
 
 ### `plexi pane new`
 
@@ -1716,7 +1682,7 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 | `--tab` | flag | no | New tab |
 | `--window` | flag | no | New window |
 | `--overlay` | flag | no | Overlay pane |
-| `--from` | string | no | Pane ID to split relative to. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
+| `--from` | string | no | Pane id or name to split relative to. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `--ephemeral` / `-e` | flag | no | Close the pane when the command finishes |
 | `--no-focus` | flag | no | Keep focus on the current pane |
 | `--cwd` | string | no | Working directory |
@@ -1729,23 +1695,22 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 
 Rename a pane.
 
-With one argument, renames the current pane: plexi pane name "My Project" With two arguments, renames any pane by id: plexi pane name 42 "My Project"
+With one argument, renames the current pane: plexi pane name "My Project" With two arguments, renames any pane by id or name: plexi pane name 42 "My Project"
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<first>` | string | yes | Pane id (from `plexi pane list`) or the new name if renaming the current pane |
-| `<second>` | string | no | New name when a pane id is given as the first argument |
+| `<first>` | string | yes | Pane id or name (from `plexi pane list`) or the new name if renaming the current pane |
+| `<second>` | string | no | New name when a pane id or name is given as the first argument |
 
 ### `plexi pane list`
 
 List all open panes as a JSON array.
 
-Filter by context: `--context` (no value) returns panes in the caller's context (reads PLEXI_CONTEXT_ID from env). `--context <id>` filters to a specific context ID.
+Filter by context: `--context` (no value) returns panes in the caller's context (reads PLEXI_CONTEXT_ID from env). `--context <id-or-name>` filters to a specific context.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--context` | string | no | Filter by context. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With a numeric argument, returns panes in that specific context |
-| `--json` | flag | no | Output as a JSON array (accepted for compatibility; JSON is the default format) |
+| `--context` | string | no | Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With an argument, returns panes in that specific context |
 
 ### `plexi pane focus`
 
@@ -1755,7 +1720,7 @@ This moves what the user sees on screen — it does not change which pane an age
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id to focus (from `plexi pane list`) |
+| `<pane_id>` | string | no | Pane id or name to focus (from `plexi pane list`) |
 | `--back` | flag | no | Step back through pane focus history |
 | `--forward` | flag | no | Step forward through pane focus history |
 
@@ -1767,7 +1732,7 @@ Example: plexi pane heartbeat 42 --every 5m --text "cycle"
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to prompt (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to prompt (from `plexi pane list`) |
 | `--every` | string | no | Interval such as 30s, 5m, or 1h |
 | `--text` | string | no | Prompt text submitted on each beat |
 | `--while-idle-only` | flag | no | Only submit when the shared agent detector reports idle (default) |
@@ -1781,7 +1746,7 @@ If the pane was created with `plexi pane new --worktree <BRANCH>`, the host auto
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id to close (from `plexi pane list`). Defaults to the current pane if not given |
+| `<pane_id>` | string | no | Pane id or name to close (from `plexi pane list`). Defaults to the current pane if not given |
 
 ### `plexi pane send`
 
@@ -1795,7 +1760,7 @@ Examples: plexi pane send 42 "Read the brief and implement the fix" --submit ple
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to send text to (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to send text to (from `plexi pane list`) |
 | `<text>` | string | yes | Text to type into the pane (prefer `--submit` to submit with confirmation) |
 | `--submit` / `-s` | flag | no | Press Enter for you and wait until the host confirms the prompt left the pane's input line.  The host settles the pane, submits, and re-sends Enter once if the text is still parked as a collapsed paste. Exits 0 only when the submission is confirmed; on an unconfirmed submit it exits non-zero and prints the observed input line to stderr. Terminal panes only. |
 | `--paste` | flag | no | Paste literal text, including newlines, as one edit. App panes only; does not read or change the system clipboard |
@@ -1824,7 +1789,7 @@ Example: plexi pane capture --lines 50 42
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id to capture output from. Defaults to the current pane |
+| `<pane_id>` | string | no | Pane id or name to capture output from. Defaults to the current pane |
 | `--lines` | string | no | How many lines to read from the end of the output Default: `50`. |
 | `--full-output` | flag | no | Preserve trailing empty lines (by default they are stripped) |
 | `--from-cursor` | string | no | Read only lines written after this cursor value. Get the cursor from a previous capture response. When set, the response is always JSON object format |
@@ -1836,7 +1801,7 @@ Report one composite working, idle, blocked, or unknown verdict as JSON
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to inspect |
+| `<pane_id>` | string | yes | Pane id or name to inspect |
 
 ### `plexi pane key`
 
@@ -1852,7 +1817,7 @@ Example: plexi pane key 42 escape
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to send the key to (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to send the key to (from `plexi pane list`) |
 | `<key>` | string | yes | Key to press |
 
 ### `plexi pane drop`
@@ -1861,7 +1826,7 @@ Drop a local file or image URL onto a pane
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes |  |
+| `<pane_id>` | string | yes | Target pane id or name |
 | `<path_or_url>` | string | yes |  |
 
 ### `plexi pane click`
@@ -1880,7 +1845,7 @@ Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to click (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to click (from `plexi pane list`) |
 | `<x>` | string | no | X offset in pane pixels from the pane's top-left corner |
 | `<y>` | string | no | Y offset in pane pixels from the pane's top-left corner |
 | `--node` | string | no | Node id to click (from `plexi pane state`), instead of pixel coordinates |
@@ -1896,7 +1861,7 @@ Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to drag in (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to drag in (from `plexi pane list`) |
 | `--from` | string | no | Start position "x,y" in pane pixels |
 | `--from-node` | string | no | Start node id (from `plexi pane state`) |
 | `--to` | string | no | End position "x,y" in pane pixels |
@@ -1916,7 +1881,7 @@ Example: plexi pane command 42 "git status" --enter
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to send the command to (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to send the command to (from `plexi pane list`) |
 | `<text>` | string | yes | Text to send to the pane |
 | `--enter` / `-e` | flag | no | Submit the command through the host-confirmed settle -> Enter -> confirm sequence, instead of just typing it |
 
@@ -1934,7 +1899,7 @@ Example: plexi pane state 42 --stale-after 300
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id to query (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Pane id or name to query (from `plexi pane list`) |
 | `--stale-after` | string | no | Raise `stale_claim` when the claimed state looks fresh but no output has been observed within this many seconds. Omitted by default — no stale evaluation runs unless this is set |
 
 ### `plexi pane slot`
@@ -1957,7 +1922,7 @@ Write bytes to a named pane slot. If content is omitted, stdin is read fully
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
 | `<content>` | string | no | Optional content. If omitted, stdin is read fully |
-| `--pane-id` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Defaults to PLEXI_PANE_ID |
 | `--append` | flag | no | Append to an existing slot instead of replacing it |
 | `--replace` | flag | no | Replace an existing slot |
 
@@ -1968,8 +1933,8 @@ Print raw bytes from a named pane slot
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 
 #### `plexi pane slot wait`
 
@@ -1980,8 +1945,8 @@ Exits 0 on a match, 2 on timeout (nothing on stdout), 1 on error. A slot whose c
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--until` | string | yes | Regex the slot value must match |
 | `--timeout` | string | no | Seconds to wait before giving up Default: `300`. |
 
@@ -1991,8 +1956,8 @@ List slots for a pane as JSON
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 
 #### `plexi pane slot delete`
 
@@ -2001,8 +1966,8 @@ Delete a named pane slot
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 
 ### `plexi pane message`
 
@@ -2023,7 +1988,7 @@ Pass `--submit` to wake an idle target agent with a short notice to run `plexi p
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Target pane id (from `plexi pane list`) |
+| `<pane_id>` | string | yes | Target pane id or name (from `plexi pane list`) |
 | `<payload>` | string | yes | Message payload to enqueue |
 | `--submit` | flag | no | Wake the target agent if idle (never interrupts a busy agent) |
 
@@ -2035,8 +2000,8 @@ Defaults to `PLEXI_PANE_ID`. With `--timeout N` or `--wait`, blocks host-side wi
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--wait` | flag | no | Block host-side until at least one message arrives or `--timeout` expires |
 | `--timeout` | string | no | Block for up to N seconds before exiting 2. --wait alone uses 300 seconds |
 
@@ -2063,8 +2028,8 @@ Exits 0 and prints the validated JSON object when committed, exits 2 (`no_result
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--wait` | flag | no | Block host-side until a valid result is committed or `--timeout` expires |
 | `--timeout` | string | no | Seconds to wait when `--wait` is set before exiting 2 Default: `300`. |
 
@@ -2078,8 +2043,8 @@ Agent spawn returns immediately. Wait in bounded slices with `plexi pane result 
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | no | Pane id (positional form). Defaults to PLEXI_PANE_ID |
-| `--pane-id` | string | no | Pane id. Same as the positional form; defaults to PLEXI_PANE_ID |
+| `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
+| `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--timeout` | string | no | Seconds to wait before exiting 2 Default: `300`. |
 
 #### `plexi pane result write`
@@ -2092,9 +2057,9 @@ Accepts `write <json> [--pane-id <id>]`, `write <pane_id> <json>`, or reads stdi
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<first>` | string | no | JSON object payload (or pane id when two positional arguments are given). Reads stdin when omitted |
-| `<second>` | string | no | JSON object payload when the first positional argument is a pane id |
-| `--pane-id` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `<first>` | string | no | JSON object payload (or pane id or name when two positional arguments are given). Reads stdin when omitted |
+| `<second>` | string | no | JSON object payload when the first positional argument is a pane id or name |
+| `--pane-id` | string | no | Pane id or name. Defaults to PLEXI_PANE_ID |
 
 #### `plexi pane result schema`
 
@@ -2104,9 +2069,9 @@ Accepts `schema <json-or-path> [--pane-id <id>]` or `schema <pane_id> <json-or-p
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<first>` | string | yes | Inline JSON Schema object or path to a schema file (or pane id when two arguments are given) |
-| `<second>` | string | no | Inline JSON Schema object or path to a schema file when the first argument is a pane id |
-| `--pane-id` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `<first>` | string | yes | Inline JSON Schema object or path to a schema file (or pane id or name when two arguments are given) |
+| `<second>` | string | no | Inline JSON Schema object or path to a schema file when the first argument is a pane id or name |
+| `--pane-id` | string | no | Pane id or name. Defaults to PLEXI_PANE_ID |
 
 ## `plexi events`
 
@@ -2181,10 +2146,6 @@ Example: plexi events emit my-agent task.done --summary "Build finished" --resou
 
 List event streams currently declared by running apps
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Output as JSON instead of a human-readable table |
-
 ### `plexi events mcp-config`
 
 Print the host MCP server config for an MCP-aware agent.
@@ -2213,10 +2174,6 @@ One host record covers click approvals, agent questions, and blocked runs. The d
 
 List open items waiting on you as JSON
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print JSON |
-
 ### `plexi needs-you show`
 
 Show one needs-you item and its continuation record as JSON
@@ -2240,8 +2197,8 @@ File a creative or blocking question for the human and return its id + continuat
 | `--operation-id` | string | no | Operation id for idempotent resume |
 | `--session-id` | string | no | Agent session id for reattachment across restarts |
 | `--expected-revision` | string | no | Expected resource revision when resuming after the human answers |
-| `--context-id` | string | no | Target context id (defaults to caller pane's context) |
-| `--pane-id` | string | no | Caller pane id (defaults to `$PLEXI_PANE_ID`) |
+| `--context-id` | string | no | Target context id or name (defaults to caller pane's context) |
+| `--pane-id` | string | no | Caller pane id or name (defaults to `$PLEXI_PANE_ID`) |
 
 ### `plexi needs-you answer`
 
@@ -2260,8 +2217,8 @@ Reconcile open and resolved needs-you items and continuation records for a sessi
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--session-id` | string | no | Filter by agent session id |
-| `--pane-id` | string | no | Filter by pane id |
-| `--context-id` | string | no | Filter by context id |
+| `--pane-id` | string | no | Filter by pane id or name |
+| `--context-id` | string | no | Filter by context id or name |
 | `--id` | string | no | Filter by specific item/run/operation/correlation id |
 
 ### `plexi needs-you complete`
@@ -2301,10 +2258,6 @@ List and change decisions stored by the permission monitor.
 ### `plexi permissions list`
 
 List live permission decisions
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print JSON |
 
 ### `plexi permissions reset`
 
@@ -2372,10 +2325,6 @@ Detects your CPU, RAM/VRAM, and GPU, then recommends which local or cloud AI mod
 
 Example: plexi ai doctor
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Output results as JSON (for scripting or agent use) |
-
 ### `plexi ai setup`
 
 Interactive wizard to configure a local AI model via Ollama.
@@ -2402,7 +2351,6 @@ Totals for tokens, cost, run count, and wall time
 |---|---|---|---|
 | `--by` | string | no | Group rows by `client` or `kind`. Omitted means `client` |
 | `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
-| `--json` | flag | no | Print one JSON object on stdout |
 
 ## `plexi debug`
 
@@ -2429,10 +2377,6 @@ Inspect recorded host sessions
 
 List recorded host sessions with start/last time, contexts, panes, and attached external agent session ids
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print one JSON object on stdout |
-
 #### `plexi debug session show`
 
 Show one session as a single chronological timeline.
@@ -2445,7 +2389,6 @@ With `--join-agents`, recorded agent session ids are resolved to their transcrip
 | `--pane` | string | no | Only records for this pane (and the calls it made) |
 | `--cli` | flag | no | Show only CLI argv calls and their exit codes. Secret values, known secret options, and KEY=value assignments are redacted at capture |
 | `--join-agents` | flag | no | Interleave external agent transcripts |
-| `--json` | flag | no | Print one JSON object on stdout |
 
 ## `plexi experiments`
 
@@ -2464,10 +2407,6 @@ Example: plexi experiments list Example: plexi experiments enable assistant
 ### `plexi experiments list`
 
 Show every experiment: name, on/off, whether a host restart is needed
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Print JSON |
 
 ### `plexi experiments enable`
 
@@ -2602,7 +2541,6 @@ Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output. 
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
 | `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
-| `--json` | flag | no | Output as a JSON array instead of tab-separated lines |
 
 ### `plexi config set`
 
@@ -2661,10 +2599,6 @@ Candidates come from `plexi note list`. Requires fzf and a running host; both ar
 Audit all installed apps for capability and config gaps.
 
 Checks every installed app's declared capabilities against your current config.toml and reports what's working and what needs to be configured. Use --json for scripting.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Output results as JSON (for scripting or agent use) |
 
 ## `plexi demo`
 
@@ -2745,10 +2679,6 @@ Example: plexi host log --source editor_gate "gate finished passed=9 failed=0"
 
 Report whether this channel's host is running, its pid, socket path, and pane count
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--json` | flag | no | Output as JSON |
-
 ### `plexi host screenshot`
 
 Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture.
@@ -2757,5 +2687,5 @@ Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--pane` | string | no | Crop the capture to this pane's current screen rect |
+| `--pane` | string | no | Crop the capture to this pane id or name's current screen rect |
 | `--output` / `-o` | string | no | Where to write the PNG (default: <profile>/screenshots/<timestamp>.png) |

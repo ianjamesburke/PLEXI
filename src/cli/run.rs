@@ -428,11 +428,15 @@ pub fn dispatch_cli_step(
                     layout_from_flags(down, left, up, right, tab, window, overlay).unwrap_or("split_h");
                 let effective_cwd = step_cwd
                     .or_else(|| cwd.map(|p| p.display().to_string()));
+                let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref()) {
+                    Ok(id) => id,
+                    Err(code) => return code,
+                };
                 crate::cli::pane_new_cli(crate::cli::PaneNewCliArgs {
                     cmd: cmd.as_deref(),
                     name: name.as_deref(),
                     layout: Some(layout),
-                    from_pane_id: from,
+                    from_pane_id: from_id,
                     cwd: effective_cwd.as_deref(),
                     ephemeral,
                     no_focus,
@@ -444,45 +448,40 @@ pub fn dispatch_cli_step(
                     ..Default::default()
                 })
             }
-            PaneCmd::List { context, json: _ } => {
+            PaneCmd::List { context } => {
                 let (context_id, current) = match context.as_deref() {
                     None => (None, false),
                     Some("current") => (None, true),
-                    Some(s) => match s.parse::<u64>() {
+                    Some(s) => match crate::cli::ContextTarget::from(s.to_string()).resolve() {
                         Ok(id) => (Some(id), false),
-                        Err(_) => {
-                            eprintln!(
-                                "error: --context value must be a numeric context ID or omitted for current context"
-                            );
-                            return 1;
-                        }
+                        Err(code) => return code,
                     },
                 };
                 crate::cli::pane_list_cli(context_id, current)
             }
             PaneCmd::Name { first, second } => {
                 let (pane_id, name) = match second {
-                    Some(title) => match first.parse::<u64>() {
+                    Some(title) => match crate::cli::PaneTarget::from(first).resolve() {
                         Ok(id) => (Some(id), title),
-                        Err(_) => {
-                            eprintln!(
-                                "error: expected a numeric pane ID as first argument, got {:?}",
-                                first
-                            );
-                            return 1;
-                        }
+                        Err(code) => return code,
                     },
                     None => (None, first),
                 };
                 crate::cli::pane_set_title_cli(pane_id, &name)
             }
             PaneCmd::Focus { pane_id, forward, .. } => match pane_id {
-                Some(id) => crate::cli::pane_focus_cli(id),
+                Some(target) => match target.resolve() {
+                    Ok(id) => crate::cli::pane_focus_cli(id),
+                    Err(code) => code,
+                },
                 None => crate::cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
             },
             PaneCmd::Close { pane_id } => {
                 let id = match pane_id {
-                    Some(id) => id,
+                    Some(target) => match target.resolve() {
+                        Ok(id) => id,
+                        Err(code) => return code,
+                    },
                     None => match std::env::var("PLEXI_PANE_ID")
                         .ok()
                         .and_then(|s| s.parse::<u64>().ok())
@@ -503,20 +502,35 @@ pub fn dispatch_cli_step(
                 text,
                 submit,
                 paste,
-            } => crate::cli::pane_send_cli(pane_id, &text, submit, paste),
+            } => match pane_id.resolve() {
+                Ok(id) => crate::cli::pane_send_cli(id, &text, submit, paste),
+                Err(code) => code,
+            },
             PaneCmd::Command {
                 pane_id,
                 text,
                 enter,
-            } => crate::cli::pane_send_cli(pane_id, &text, enter, false),
-            PaneCmd::Key { pane_id, key } => crate::cli::pane_key_cli(pane_id, &key),
+            } => match pane_id.resolve() {
+                Ok(id) => crate::cli::pane_send_cli(id, &text, enter, false),
+                Err(code) => code,
+            },
+            PaneCmd::Key { pane_id, key } => match pane_id.resolve() {
+                Ok(id) => crate::cli::pane_key_cli(id, &key),
+                Err(code) => code,
+            },
             PaneCmd::Capture {
                 pane_id,
                 lines,
                 full_output,
                 from_cursor,
                 plain,
-            } => crate::cli::pane_capture_cli(pane_id, lines, full_output, from_cursor, plain),
+            } => {
+                let pid = match crate::cli::resolve_opt_pane_target(pane_id.as_ref()) {
+                    Ok(id) => id,
+                    Err(code) => return code,
+                };
+                crate::cli::pane_capture_cli(pid, lines, full_output, from_cursor, plain)
+            }
             _ => spawn_plexi_subcommand(argv, cwd, env_vars),
         },
         Some(Commands::App {
@@ -536,6 +550,10 @@ pub fn dispatch_cli_step(
                     from,
                 },
         }) => {
+            let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref()) {
+                Ok(id) => id,
+                Err(code) => return code,
+            };
             let layout = match split.as_deref() {
                 Some("down") => Some("split_v"),
                 Some("left") => Some("split_left"),
@@ -546,19 +564,19 @@ pub fn dispatch_cli_step(
                 _ => layout_from_flags(down, left, up, right, tab, window, false),
             };
             if let Some(ref tid) = type_id {
-                crate::cli::open_cli(tid, &extra_args, layout, from, None)
+                crate::cli::open_cli(tid, &extra_args, layout, from_id, None)
             } else if !mcp.is_empty() {
                 let title = crate::cli::mcp_pane_title(&mcp);
                 crate::cli::pane_new_cli(crate::cli::PaneNewCliArgs {
                     name: Some(title.as_str()),
                     layout,
-                    from_pane_id: from,
+                    from_pane_id: from_id,
                     app: Some("mcp-renderer"),
                     mcp: &mcp,
                     ..Default::default()
                 })
             } else if let Some(binary) = cli_flag {
-                crate::cli::open_cli_by_name(&binary, layout, from, None)
+                crate::cli::open_cli_by_name(&binary, layout, from_id, None)
             } else {
                 1
             }

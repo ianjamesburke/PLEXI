@@ -444,6 +444,109 @@ pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<Re
 }
 
 pub mod args;
+pub use args::{resolve_target_from_candidates, ContextTarget, PaneTarget};
+
+impl ContextTarget {
+    /// Resolve this target to a numeric context ID:
+    /// 1. Numeric ID -> returns immediately without a socket round-trip.
+    /// 2. Queries the host's context list (`list_contexts`) over the command socket,
+    ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
+    pub fn resolve(&self) -> Result<u64, i32> {
+        let q = self.as_str().trim();
+        if let Some(id) = self.numeric_id() {
+            log::info!("cli:target: context target {q:?} resolved directly as numeric id={id}");
+            return Ok(id);
+        }
+        let content = request(
+            serde_json::json!({ "type": "list_contexts" }),
+            "list-contexts-target-resolve",
+            "context target lookup",
+        )?;
+        check_reply_error(&content)?;
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
+            log::warn!("cli:target: failed to parse list_contexts response: {e}");
+            eprintln!("error: failed to parse context list from host: {e}");
+            1
+        })?;
+        let candidates: Vec<(u64, String)> = entries
+            .iter()
+            .filter_map(|v| {
+                let id = v.get("context_id")?.as_u64()?;
+                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                Some((id, name.to_string()))
+            })
+            .collect();
+        match resolve_target_from_candidates("context", q, &candidates) {
+            Ok(id) => {
+                log::info!("cli:target: context target {q:?} resolved to context_id={id}");
+                Ok(id)
+            }
+            Err(msg) => {
+                log::warn!("cli:target: context target {q:?} failed: {msg}");
+                eprintln!("error: {msg}");
+                Err(1)
+            }
+        }
+    }
+}
+
+impl PaneTarget {
+    /// Resolve this target to a numeric pane ID:
+    /// 1. Numeric ID -> returns immediately without a socket round-trip.
+    /// 2. Queries the host's pane list (`list_panes`) over the command socket,
+    ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
+    pub fn resolve(&self) -> Result<u64, i32> {
+        let q = self.as_str().trim();
+        if let Some(id) = self.numeric_id() {
+            log::info!("cli:target: pane target {q:?} resolved directly as numeric id={id}");
+            return Ok(id);
+        }
+        let content = request(
+            serde_json::json!({ "type": "list_panes" }),
+            "list-panes-target-resolve",
+            "pane target lookup",
+        )?;
+        check_reply_error(&content)?;
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
+            log::warn!("cli:target: failed to parse list_panes response: {e}");
+            eprintln!("error: failed to parse pane list from host: {e}");
+            1
+        })?;
+        let candidates: Vec<(u64, String)> = entries
+            .iter()
+            .filter_map(|v| {
+                let id = v.get("id")?.as_u64()?;
+                let title = v.get("title").and_then(|n| n.as_str()).unwrap_or("");
+                Some((id, title.to_string()))
+            })
+            .collect();
+        match resolve_target_from_candidates("pane", q, &candidates) {
+            Ok(id) => {
+                log::info!("cli:target: pane target {q:?} resolved to pane_id={id}");
+                Ok(id)
+            }
+            Err(msg) => {
+                log::warn!("cli:target: pane target {q:?} failed: {msg}");
+                eprintln!("error: {msg}");
+                Err(1)
+            }
+        }
+    }
+}
+
+pub fn resolve_opt_context_target(target: Option<&ContextTarget>) -> Result<Option<u64>, i32> {
+    match target {
+        Some(t) => t.resolve().map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn resolve_opt_pane_target(target: Option<&PaneTarget>) -> Result<Option<u64>, i32> {
+    match target {
+        Some(t) => t.resolve().map(Some),
+        None => Ok(None),
+    }
+}
 pub mod crawl;
 pub mod help;
 pub mod introspect;
