@@ -1683,7 +1683,7 @@ impl PermissionMonitor {
                 run_outcome: self.stored_outcome(id),
             });
         }
-        let outcome = self.run_outcome_for(id);
+        let mut outcome = self.run_outcome_for(id);
         let final_resolution = if approve {
             NeedsYouResolution::Approved
         } else {
@@ -1734,7 +1734,7 @@ impl PermissionMonitor {
             }
             NeedsYouKind::PermissionRequest => {
                 let resolution = final_resolution;
-                let decision = if approve { "approved" } else { "denied" };
+                let mut decision = if approve { "approved" } else { "denied" };
                 let mut minted_grant_id = String::new();
                 if approve {
                     let det = row.details.clone().unwrap_or_default();
@@ -1778,7 +1778,26 @@ impl PermissionMonitor {
                                     )?;
                                 }
                             }
+                        } else if let Some(pane_id) = det.pane_id {
+                            minted_grant_id =
+                                self.record_pane_session_grant(ws, pane_id, &tool)?;
                         }
+                    } else if target_run.is_empty() {
+                        if let Some(pane_id) = det.pane_id {
+                            let fallback_ws = self
+                                .profile_dir
+                                .clone()
+                                .unwrap_or_else(crate::config::config_dir);
+                            minted_grant_id =
+                                self.record_pane_session_grant(&fallback_ws, pane_id, &tool)?;
+                        }
+                    }
+                    if minted_grant_id.is_empty() {
+                        outcome = RunOutcome::OutcomeUnknown;
+                        decision = "outcome_unknown";
+                        log::warn!(
+                            "needs_you: permission_request {id} approved without target run or pane; request could not be applied"
+                        );
                     }
                 }
                 if !self.close_needs_you(id, resolution, decision, &minted_grant_id) {
@@ -2032,7 +2051,7 @@ impl PermissionMonitor {
             }
             return false;
         }
-        let outcome = if current_origin {
+        let outcome = if current_origin && decision != "outcome_unknown" {
             RunOutcome::Unblocked
         } else {
             RunOutcome::OutcomeUnknown
@@ -2607,6 +2626,75 @@ impl PermissionMonitor {
         Ok(grant_id)
     }
 
+    /// Record and persist a pane-scoped session tool grant (`GrantDuration::Session`)
+    /// for `pane_id` in the current host session, and audit it.
+    pub fn record_pane_session_grant(
+        &self,
+        workspace: &Path,
+        pane_id: u64,
+        tool: &str,
+    ) -> Result<String, String> {
+        let pane_tag = format!("pane:{pane_id}");
+        let binding = ExactBinding {
+            actor_type: ActorType::Agent,
+            actor_id: pane_tag.clone(),
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host".to_string(),
+            workspace_root: crate::platform::path::canonical_or_self(workspace),
+            target_type: TargetType::HostTool,
+            target_id: tool.to_string(),
+            resource_scope: ResourceScope::Pane,
+            resource_id: Some(pane_tag.clone()),
+            args_fingerprint: "scope".to_string(),
+            session_id: Some(self.session_id.clone()),
+            package_id: "agents".to_string(),
+            instance_id: Some(pane_id),
+            context_id: Some(0),
+            call_id: String::new(),
+            operation_id: pane_tag.clone(),
+        };
+        let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+        let mut record = GrantRecord::from_binding(
+            &binding,
+            Decision::Allow,
+            GrantDuration::Session,
+            GrantSource::Session,
+            &grant_id,
+        );
+        record.created_at = self.now_secs();
+        record.session_id = Some(self.session_id.clone());
+        record.args_unbound = true;
+        record.bound_operation_id = Some(pane_tag.clone());
+        {
+            let mut store = self.store();
+            store.record(record);
+            if let Err(error) = store.try_save() {
+                store.records_mut().retain(|row| row.grant_id != grant_id);
+                let message = grant_not_saved(&error);
+                log::error!("permission_monitor: {message}");
+                return Err(message);
+            }
+        }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.audit(&AuditFact {
+            kind: "grant".to_string(),
+            actor: pane_tag.clone(),
+            call_id: pane_tag.clone(),
+            grant_id: grant_id.clone(),
+            resource_id: tool.to_string(),
+            args_fingerprint: "scope".to_string(),
+            operation_id: pane_tag,
+            decision: "allow_session".to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        })?;
+        log::info!(
+            "permission_monitor: granted {grant_id} actor=pane:{pane_id} tool={tool} for pane={pane_id} session={}",
+            self.session_id
+        );
+        Ok(grant_id)
+    }
+
     /// Revoke any in-memory grants bound to `run_id` when that run finishes.
     pub fn revoke_run_grants(&self, run_id: &str) -> usize {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
@@ -2770,6 +2858,11 @@ impl PermissionMonitor {
                 }
             }
             if record.duration == GrantDuration::Once && record.consumed {
+                continue;
+            }
+            if record.duration == GrantDuration::Session
+                && record.session_id.as_deref() != Some(self.session_id.as_str())
+            {
                 continue;
             }
             if record.grant_id.is_empty() {
@@ -3732,6 +3825,13 @@ fn stored_capability_decision(
 }
 
 fn record_is_durable(record: &GrantRecord) -> bool {
+    if record
+        .bound_operation_id
+        .as_deref()
+        .is_some_and(|op| op.starts_with("pane:"))
+    {
+        return true;
+    }
     record.source != GrantSource::Session
         && !matches!(
             record.duration,

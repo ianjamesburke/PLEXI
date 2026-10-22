@@ -1221,3 +1221,154 @@ fn list_app_tools_snapshots_live_registry_for_context() {
         .unwrap_or("")
         .contains("context 999999 not found"));
 }
+
+#[test]
+fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
+    use crate::broker::gate::{NeedsYouDetails, NeedsYouFile, NeedsYouKind, ResolveSurface, RunOutcome};
+    use sha2::{Digest, Sha256};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let other_pane = h.add_test_pane();
+    let workspace = h.workspace_root();
+    let profile_dir = crate::config::config_dir();
+
+    let call_create_head =
+        |h: &mut HostHarness, head_name: &str, caller_pane: u64| -> serde_json::Value {
+            let reply = h
+                .workspace_root()
+                .join(format!("create-head-{}.json", uuid::Uuid::new_v4()));
+            let req = AppRequest::AgentsApi {
+                op: "create_head".to_string(),
+                payload: serde_json::json!({
+                    "workspace": h.workspace_root(),
+                    "name": head_name,
+                    "grants": ["agents.ping=allow"],
+                    "caller_pane": caller_pane,
+                }),
+                response_file: reply.to_string_lossy().to_string(),
+            };
+            let line = serde_json::to_string(&req).unwrap();
+            let mut ack = Vec::new();
+            crate::app::handle_socket_line(&line, &h.ipc_tx, None, &mut ack);
+            pump_until(h, |_| {
+                reply.is_file()
+                    && std::fs::metadata(&reply)
+                        .map(|meta| meta.len() > 0)
+                        .unwrap_or(false)
+            });
+            serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
+        };
+
+    // 1. From a head-less pane, `create_head` with `agents.ping=allow` is denied
+    //    and files exactly one `permission_request` needs-you item.
+    let first = call_create_head(&mut h, "lead", pane);
+    assert_eq!(first["ok"], false, "{first}");
+    assert_eq!(first["error_code"], "permission_denied", "{first}");
+    let needs_you_id = first["needs_you_id"]
+        .as_str()
+        .expect("refusal must return needs_you_id")
+        .to_string();
+
+    let mon = monitor();
+    let open_before = mon.list_needs_you();
+    assert_eq!(open_before.len(), 1, "{open_before:?}");
+    assert_eq!(open_before[0].id, needs_you_id);
+    assert_eq!(open_before[0].kind, NeedsYouKind::PermissionRequest);
+
+    // 2. Approve the permission request from the desktop surface.
+    let receipt = mon
+        .resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
+        .expect("desktop approve must succeed");
+    assert_eq!(receipt.run_outcome, RunOutcome::Unblocked);
+
+    // Grants file is written and `permission-integrity.toml` has matching `grants_sha256` != "absent".
+    let grants_path = profile_dir.join("grants.toml");
+    assert!(grants_path.is_file(), "grants.toml must be written on approve");
+    let grants_bytes = std::fs::read(&grants_path).unwrap();
+    let expected_sha = format!("{:x}", Sha256::digest(&grants_bytes));
+    let stamp_raw =
+        std::fs::read_to_string(profile_dir.join("permission-integrity.toml")).unwrap();
+    let stamp_val: toml::Value = toml::from_str(&stamp_raw).unwrap();
+    let stamped_grants_sha = stamp_val
+        .get("grants_sha256")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_ne!(stamped_grants_sha, "absent", "{stamp_raw}");
+    assert_eq!(stamped_grants_sha, expected_sha, "{stamp_raw}");
+
+    // Audit `grant` fact (and `needs_you` fact) carries a non-empty `grant_id`.
+    let audit_rows = mon.audit_records();
+    let grant_fact = audit_rows
+        .iter()
+        .find(|row| row.kind == "grant" && row.resource_id == "agents.ping")
+        .expect("expected grant audit fact for agents.ping");
+    assert!(
+        !grant_fact.grant_id.is_empty(),
+        "audit grant fact must carry non-empty grant_id: {grant_fact:?}"
+    );
+    let ny_fact = audit_rows
+        .iter()
+        .find(|row| row.kind == "needs_you" && row.operation_id == needs_you_id)
+        .expect("expected needs_you audit fact");
+    assert_eq!(ny_fact.grant_id, grant_fact.grant_id);
+
+    // 3. Retry the same `create_head` from the same pane -> `ok: true`, no second needs-you filed.
+    let needs_you_total_before_retry = mon.all_needs_you().len();
+    let retry = call_create_head(&mut h, "lead", pane);
+    assert_eq!(retry["ok"], true, "retry after approve must succeed: {retry}");
+    assert!(
+        mon.list_needs_you().is_empty(),
+        "no open needs-you after successful retry: {:?}",
+        mon.list_needs_you()
+    );
+    assert_eq!(
+        mon.all_needs_you().len(),
+        needs_you_total_before_retry,
+        "retry must not file a second needs-you item"
+    );
+
+    // 4. The minted grant does not leak to a different pane.
+    let other_pane_try = call_create_head(&mut h, "lead-other-pane", other_pane);
+    assert_eq!(
+        other_pane_try["error_code"], "permission_denied",
+        "different pane must not inherit pane-scoped grant: {other_pane_try}"
+    );
+
+    // 5. The minted grant does not leak across a new host session.
+    let reloaded = PermissionMonitor::reload_for_test(&profile_dir);
+    assert_ne!(reloaded.session_id(), mon.session_id());
+    let next_session_try = call_create_head(&mut h, "lead-next-session", pane);
+    assert_eq!(
+        next_session_try["error_code"], "permission_denied",
+        "new host session must not inherit session-scoped pane grant: {next_session_try}"
+    );
+
+    // 6. Approving a PermissionRequest with neither run nor pane does not claim `unblocked`.
+    let orphan_id = reloaded
+        .file_needs_you_with_details(
+            NeedsYouFile {
+                kind: NeedsYouKind::PermissionRequest,
+                actor: "pane".to_string(),
+                resource: "agents.ping".to_string(),
+                summary: "orphan request without run or pane".to_string(),
+                expires_at: None,
+                run_tag: None,
+            },
+            Some(NeedsYouDetails {
+                workspace: Some(workspace.display().to_string()),
+                tool: Some("agents.ping".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .0;
+    let orphan_receipt = reloaded
+        .resolve_needs_you_from(&orphan_id, true, ResolveSurface::Desktop)
+        .expect("resolve orphan permission_request");
+    assert_eq!(
+        orphan_receipt.run_outcome,
+        RunOutcome::OutcomeUnknown,
+        "approve with neither run nor pane must not claim unblocked: {orphan_receipt:?}"
+    );
+}
