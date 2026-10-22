@@ -418,15 +418,50 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let tmux = dir.path().join("tmux");
-        std::fs::write(&tmux, "#!/bin/sh\nsleep 600\n").unwrap();
+        // `exec` ensures the deadline kill leaves no orphaned sleep fixture.
+        std::fs::write(&tmux, "#!/bin/sh\nexec sleep 600\n").unwrap();
         std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let marker = uuid::Uuid::new_v4().to_string();
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "trap '' HUP TERM; while :; do sleep 600; done"])
+            .env(SESSION_ENV, &marker);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = FixtureChild(command.spawn().unwrap());
+        let registration = PaneProcessGroup::record_for(child.0.id(), &marker);
         let start = Instant::now();
-        let _ = stop_pane_processes_with_tmux(
-            &uuid::Uuid::new_v4().to_string(),
+        let report = stop_pane_processes_with_tmux(
+            &marker,
             Duration::from_millis(30),
             tmux.to_str().unwrap(),
         );
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(
+            start.elapsed() < Duration::from_millis(450),
+            "cleanup exceeded its 280ms cap"
+        );
+        assert!(
+            report.tmux < Duration::from_millis(300),
+            "tmux exceeded remaining budget: {:?}",
+            report.tmux
+        );
+        assert_eq!(report.groups, 1, "marked pane must be signaled before tmux");
+        assert_eq!(
+            report.escalated, 1,
+            "HUP/TERM-ignoring pane must be killed by the shared deadline"
+        );
+        match child.0.wait() {
+            Ok(status) => assert!(!status.success()),
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ECHILD)),
+        }
+        drop(registration);
     }
 
     struct FixtureChild(std::process::Child);

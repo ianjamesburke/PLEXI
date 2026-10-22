@@ -873,7 +873,7 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
                     loop {
                         if shutdown_complete(pid, &socket_path) {
                             log::info!("host_stop: original pid={pid:?} stopped");
-                            println!("Plexi host stopped (clean shutdown).");
+                            host_stop_stdout("Plexi host stopped (clean shutdown).");
                             return 0;
                         }
                         if Instant::now() >= deadline {
@@ -905,14 +905,14 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
         return 1;
     };
     if shutdown_complete(Some(pid), &socket_path) {
-        println!("Plexi host stopped.");
+        host_stop_stdout("Plexi host stopped.");
         return 0;
     }
     clean_panes_after_socket_failure(profile, pid);
     match terminate_host_process(pid) {
         Ok(()) => {
             log::info!("host_stop: termination requested pid={pid}");
-            println!("Termination requested for Plexi host (pid {pid}).");
+            host_stop_stdout(&format!("Termination requested for Plexi host (pid {pid})."));
             0
         }
         Err(e) => {
@@ -923,7 +923,72 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
     }
 }
 
+fn host_stop_stdout(message: &str) {
+    if let Err(error) = writeln!(std::io::stdout(), "{message}") {
+        log::debug!("host_stop: could not write status to stdout: {error}");
+    }
+}
+
+/// Holds ignored HUP and TERM dispositions only while the socket-failure
+/// cleanup can signal the caller's marked pane shell.  The dispositions are
+/// restored before `host stop` returns, including on every early error path.
+#[cfg(unix)]
+struct FallbackSignalGuard {
+    previous: Vec<(libc::c_int, libc::sighandler_t)>,
+}
+
+#[cfg(unix)]
+impl FallbackSignalGuard {
+    fn ignore_hup_and_term() -> Self {
+        let mut previous = Vec::new();
+        for signal in [libc::SIGHUP, libc::SIGTERM] {
+            // SAFETY: changing this CLI process's temporary disposition keeps
+            // a marked parent shell from terminating its foreground job.
+            let old = unsafe { libc::signal(signal, libc::SIG_IGN) };
+            if old == libc::SIG_ERR {
+                log::warn!(
+                    "host_stop: could not ignore signal={signal}: {}",
+                    std::io::Error::last_os_error()
+                );
+            } else {
+                previous.push((signal, old));
+            }
+        }
+        Self { previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FallbackSignalGuard {
+    fn drop(&mut self) {
+        for (signal, previous) in self.previous.drain(..) {
+            // SAFETY: restores the disposition this CLI had immediately
+            // before the bounded socket-failure cleanup.
+            if unsafe { libc::signal(signal, previous) } == libc::SIG_ERR {
+                log::warn!(
+                    "host_stop: could not restore signal={signal}: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct FallbackSignalGuard;
+
+#[cfg(not(unix))]
+impl FallbackSignalGuard {
+    fn ignore_hup_and_term() -> Self {
+        Self
+    }
+}
+
 fn clean_panes_after_socket_failure(profile: &Path, pid: u32) {
+    // A caller in one of this host's panes is itself downstream of the marker
+    // sweep. Its shell can forward HUP/TERM to this foreground CLI, so keep it
+    // alive long enough for the caller to reach `terminate_host_process`.
+    let _fallback_signals = FallbackSignalGuard::ignore_hup_and_term();
     if let Some(marker) = crate::host::process_cleanup::recorded_session_marker(profile, pid) {
         let report = crate::host::process_cleanup::stop_pane_processes_for_marker(
             &marker,
@@ -1222,6 +1287,16 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 mod tests {
     #[cfg(unix)]
     #[test]
+    fn fallback_cleanup_guard_keeps_the_calling_cli_alive() {
+        let _guard = super::FallbackSignalGuard::ignore_hup_and_term();
+        // This is the disposition a marked parent shell can effectively
+        // deliver to its foreground CLI when pane cleanup closes the shell.
+        assert_eq!(unsafe { libc::raise(libc::SIGHUP) }, 0);
+        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn host_stop_socket_failure_cleanup_stops_marked_group() {
         use std::os::unix::process::CommandExt;
         let profile = tempfile::tempdir().unwrap();
@@ -1254,6 +1329,21 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn socket_failure_cleanup_rejects_mismatched_session_record_pid() {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            profile.path().join("pane-session"),
+            format!("{}\nmarker\n", std::process::id().saturating_add(1)),
+        )
+        .unwrap();
+        assert!(crate::host::process_cleanup::recorded_session_marker(
+            profile.path(),
+            std::process::id()
+        )
+        .is_none());
     }
 
     #[test]
