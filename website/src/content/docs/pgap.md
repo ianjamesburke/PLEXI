@@ -927,6 +927,16 @@ Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`, `reconcile`,
 | `peer_ancestry` | `integer[]` | no |
 | `response_file` | `string` | yes |
 
+### `pane_secret_list`
+
+Names-only explicit-context inventory, admitted for the host-stamped peer.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context` | `string` | yes |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string` | yes |
+
 ### `pane_secret_get`
 
 `plexi secret get` from a terminal pane. The host admits `secret.get` for the pane named by `peer_ancestry` and answe...

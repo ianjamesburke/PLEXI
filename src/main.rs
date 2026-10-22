@@ -2016,6 +2016,7 @@ fn main() -> eframe::Result {
             }
             let code = e.exit_code();
             if code != 0 && e.to_string().contains("--folder <DIR>") {
+                eprintln!("Usage: plexi secret set [OPTIONS] <FRIENDLY_NAME> --folder <DIR>");
                 eprintln!("Example: --folder . (or --folder <DIR> for another directory)");
             }
             if let Err(error) = e.print() {
