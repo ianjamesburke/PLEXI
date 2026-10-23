@@ -670,7 +670,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     ui.painter().rect_filled(wash_rect, 0.0, wash_col);
                 }
                 let padding = style::SPACE_MD;
-                let inner = pane_rect.shrink(padding);
+                // A column narrower than twice the padding would shrink to a
+                // negative rect, which egui's placer rejects.
+                let inner = egui::Rect::from_min_size(
+                    pane_rect.min + egui::vec2(padding, padding),
+                    egui::vec2(
+                        (pane_rect.width() - 2.0 * padding).max(0.0),
+                        (pane_rect.height() - 2.0 * padding).max(0.0),
+                    ),
+                );
                 let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.horizontal(|ui| {

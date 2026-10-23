@@ -9711,8 +9711,15 @@ mod terminal_resize_debounce_tests {
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
 
-        // Settle at the start width so the initial sizing is not counted.
+        // Settle at the start width so the initial sizing is not counted. The
+        // shells start asynchronously and their first output can change pane
+        // chrome (and so the row count) a few frames late, so let that land
+        // before taking the baseline instead of attributing it to the drag.
         for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        for _ in 0..12 {
             frame_at_width(&mut h, START_WIDTH);
         }
         let before = commits(&mut h, &terminals);
