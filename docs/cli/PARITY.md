@@ -37,7 +37,7 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `OpenQuickNote` | `plexi note add text` | CLI supplies text directly instead of opening the entry overlay. |
 | `OpenConfig` | `plexi config edit` |  |
 | `OpenSecretsManager` | `plexi app open secrets_manager` |  |
-| `OpenAssistant` | `plexi assistant open --head example` |  |
+| `OpenAssistant` | `plexi app open assistant` |  |
 | `RenameContext` | `plexi context rename name --context-id 42` |  |
 | `ToggleNotificationModal` | ui-only: Opens the desktop notification viewer; agents inspect needs-you and notification records. |  |
 | `ForceReloadApp` | ui-only: Developer recovery gesture for a focused app; normal source edits reload through the file watcher. |  |

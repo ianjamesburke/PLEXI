@@ -33,10 +33,8 @@
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
 pub mod fleet;
-pub mod heads;
+pub mod members;
 pub(crate) mod team;
-pub mod leads;
-pub mod queue;
 
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
@@ -946,10 +944,10 @@ impl AgentHost {
         }
         self.agents.clear();
         if let Some(dir) = &self.grants_dir {
-            // The profile monitor is the live grant store (`heads` records
+            // The profile monitor is the live grant store (`members` records
             // scope allows here). Replacing it from disk drops an allow whose
-            // seal save has not landed, and the next `agents.list` comes back
-            // as `permission_required` with no `heads` field. Keep that
+            // seal save has not landed, and the next `agents.ping` comes back
+            // as `permission_required` without execution. Keep that
             // monitor. The subscription copy is still the file on disk.
             self.grant_store = GrantStore::load_or_default(dir);
             self.monitor = crate::broker::gate::PermissionMonitor::for_profile(dir);
@@ -1558,7 +1556,7 @@ default_tier = "low"
     }
 
     /// A scope allow that has not reached disk must survive a workspace
-    /// reload. The profile monitor is the store `agents.list` admits against.
+    /// reload. The profile monitor is the store `agents.ping` admits against.
     #[test]
     fn reload_workspace_keeps_unsaved_scope_allows() {
         use crate::broker::gate::{AdmitRequest, Admission, PermissionMonitor};
@@ -1583,7 +1581,7 @@ default_tier = "low"
             trust_origin: "host".to_string(),
             workspace_root: ws.path().to_path_buf(),
             target_type: TargetType::HostTool,
-            target_id: "agents.list".to_string(),
+            target_id: "agents.ping".to_string(),
             resource_scope: crate::broker::ResourceScope::Workspace,
             resource_id: None,
             args_fingerprint: "scope".to_string(),
@@ -1608,7 +1606,7 @@ default_tier = "low"
 
         let admission = host.monitor.admit(AdmitRequest {
             call_id: "call_list",
-            tool: "agents.list",
+            tool: "agents.ping",
             input_json: "{}",
             actor_type: ActorType::Agent,
             actor_id: "agent:lead",

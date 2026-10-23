@@ -28,7 +28,7 @@ fn agent_roots(agent: &str) -> Result<Vec<&'static str>, String> {
     }
 }
 
-/// The experiment keys a marker line names, e.g. `<!-- experiment: leads, assistant -->`.
+/// The experiment keys a marker line names, e.g. `<!-- experiment: relay, assistant -->`.
 fn marker_features(line: &str) -> Result<Vec<ReleaseFeature>, String> {
     let keys = line
         .trim()
@@ -327,26 +327,14 @@ mod tests {
         let on = render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Ledger).unwrap();
         assert!(on.contains("plexi ledger"));
         assert!(!on.contains("plexi relay"));
-        let leads_only = render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Leads).unwrap();
-        assert!(leads_only.contains("agent head create"));
-        assert!(!leads_only.contains("assistant open --head"));
-        let both = render_skill(EMBEDDED_SKILL, |f| {
-            matches!(f, ReleaseFeature::Leads | ReleaseFeature::Assistant)
-        })
-        .unwrap();
-        assert!(both.contains("plexi assistant open"));
-        assert!(both.contains("agent head create"));
-
-        // Combined markers remain supported even when the current catalog has
-        // no overlapping command owners.
-        let fixture = "<!-- experiment: leads, assistant -->\ncombined\n<!-- /experiment -->\n";
-        assert!(render_skill(fixture, |f| f == ReleaseFeature::Leads)
+        let fixture = "<!-- experiment: relay, assistant -->\ncombined\n<!-- /experiment -->\n";
+        assert!(render_skill(fixture, |f| f == ReleaseFeature::Relay)
             .unwrap()
             .is_empty());
         assert_eq!(
             render_skill(fixture, |f| matches!(
                 f,
-                ReleaseFeature::Leads | ReleaseFeature::Assistant
+                ReleaseFeature::Relay | ReleaseFeature::Assistant
             ))
             .unwrap(),
             "combined\n"
@@ -359,7 +347,7 @@ mod tests {
         assert!(
             render_skill("<!-- experiment: nope -->\nx\n<!-- /experiment -->\n", none).is_err()
         );
-        assert!(render_skill("<!-- experiment: leads -->\nx\n", none).is_err());
+        assert!(render_skill("<!-- experiment: relay -->\nx\n", none).is_err());
         assert!(render_skill("x\n<!-- /experiment -->\n", none).is_err());
     }
 }

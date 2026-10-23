@@ -16,7 +16,6 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "assistant",
             "ai",
             "changes",
-            "command-view",
             "ledger",
             "needs-you",
             "permissions",
@@ -534,7 +533,6 @@ mod tests {
             "relay",
             "changes",
             "ledger",
-            "command-view",
             "account",
             "routine",
         ] {
@@ -633,11 +631,6 @@ mod tests {
                 ReleaseFeature::Assistant,
             ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
-            (&["plexi", "agent", "run", "list"], ReleaseFeature::Leads),
-            (
-                &["plexi", "command-view", "--json"],
-                ReleaseFeature::CommandView,
-            ),
             (
                 &["plexi", "changes", "refresh", "x"],
                 ReleaseFeature::ChangeSets,

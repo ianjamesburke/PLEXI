@@ -38,7 +38,6 @@ Keep Needs you IPC and the agents API. A ledger row carries alpha `client`, `kin
 
 ### #2715 `efc7e7aa` onto #2706
 
-`SubmitAssistantTurn` carries `client`, `kind`, and `head`. A `head` routes to `agent::leads::submit_turn`. Otherwise the turn uses the headless assistant and `submit_tagged_turn`. The schema lists `client`, `kind`, and `head`. Shell tests use `await_pid_name`. Drop the duplicate `wait_for_pid_name`.
 
 ### #2716 `711350d6`
 
@@ -98,9 +97,7 @@ Phone and relay files follow the previous integration resolution at `03164835`, 
 
 `needs-you resolve --from-phone` calls `needs_you_cli(..., from_phone: true)`. The host refuses an approval and a permission widen (`phone_blocked`: integrity, or approve when `phone_may_approve` is false). A phone turn's JSON has no approval, grant, or permission field. A terminal resolve without `--from-phone` still goes through `assistant_permission_cli` and is refused. Questions and blocked runs can still be answered.
 
-`assistant_send_result` / `assistant_send_cli` take `text`, `head`, `request_id`, `pane_id`, `context_id`, `client`, `kind`, `conversation`, `join_desktop`, `status_for`. `SubmitAssistantTurn` has those fields. `submit_external_turn` takes `conversation_id`, `join_desktop`, and `status_for`. The default `submit_tagged_turn` forwards the three phone fields as none / false / none. The Assistant override joins the desktop transcript and passes `client` and `kind`.
 
-Harness and send-test initializers include `head`, `client`, `kind`, `conversation_id`, `join_desktop`, and `status_for`. `NeedsYouKind::PermissionChange` is stored like a question: it must not carry a pending grant. The widen is applied from `run_tag` on a desktop resolve.
 
 ### #2724 `4d450b6a` onto #2708
 
@@ -122,7 +119,6 @@ Clean. `scripts/v1-acceptance.sh` lands on the integrated tree.
 
 ### Sealed audit text
 
-`permission-audit.jsonl` is a chain of envelopes. The fact is a JSON string, so a line contains `\"decision\":\"use\"` rather than `"decision":"use"`. Tests that read the file (`agent::leads` grant and cancel, `host::changes` ask and commit) match through `seal::audit_count` / `seal::audit_contains`, which accept the raw fact or the escaped envelope. Do not unwrap the seal to make the old substring match.
 
 ### One integrity row for a tampered profile
 

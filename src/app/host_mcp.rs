@@ -195,7 +195,7 @@ fn authenticate(token: &str) -> Option<McpCaller> {
     if let Some(caller) = credentials().lock().unwrap().by_token.get(token).cloned() {
         return Some(caller);
     }
-    let auth = crate::agent::heads::authenticate_run_token(token)?;
+    let auth = crate::agent::members::authenticate_run_token(token)?;
     log::info!(
         "host_mcp: authenticated agent run {} actor={}",
         auth.run_id,
@@ -397,7 +397,7 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
             "outputSchema": tool.output_schema,
         })
     }));
-    tools.extend(crate::agent::heads::mcp_tool_defs());
+    tools.extend(crate::agent::members::mcp_tool_defs());
     serde_json::Value::Array(tools)
 }
 
@@ -454,14 +454,14 @@ fn handle_connection(
                 let result = if tool_name.starts_with("agents.") {
                     match serde_json::to_string(&arguments) {
                         Ok(input_json) => {
-                            let auth = crate::agent::heads::McpAuth {
+                            let auth = crate::agent::members::McpAuth {
                                 workspace: caller.workspace_root.clone(),
                                 run_id: caller.run_id.clone(),
                                 actor_id: caller.actor_id.clone(),
                                 pane_id: caller.pane_id,
                                 context_id: caller.context_id,
                             };
-                            crate::agent::heads::mcp_call(&auth, tool_name, &input_json)
+                            crate::agent::members::mcp_call(&auth, tool_name, &input_json)
                         }
                         Err(error) => Err(format!("serialize tool arguments: {error}")),
                     }

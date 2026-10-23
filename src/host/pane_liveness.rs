@@ -3,7 +3,7 @@
 //!
 //! Stint 0665. A pane's `status` slot is a claim an agent writes about
 //! itself (`state=running`, with a step token embedded in the value by
-//! convention) — it is not liveness. A wedged head sat 3h10m with its own
+//! convention) — it is not liveness. A wedged agent sat 3h10m with its own
 //! status slot still reading `running` because the two facts shared one
 //! field (`docs/agent-run-orchestration.md`, "A status slot that is a
 //! claim, not liveness"). `compute` is the single accessor for both: it

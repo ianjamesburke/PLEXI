@@ -5,15 +5,6 @@ Stint: none yet
 
 ## Purpose and product story
 
-Plexi lets Ian talk with several team leads at once, queue work that runs without
-an open conversation pane, and return to decisions and attributable results.
-YouTube, Narrative, DU, and Plexi each have a lead lane and a canonical thread.
-A shared queue shows what the host actually started; a small “Needs you” inbox
-shows decisions that unblock it. Assignments distinguish **system** work that
-improves the environment from **output** work that ships a project result.
-Chess proves the permission boundary; text and video editing prove that a person
-can inspect, correct, accept, and undo an agent's contribution in the same app.
-
 This document owns the cross-surface Agents API and its proof sequence. It is a
 destination contract, not an implementation tracker. All types, new verbs, test
 names, and scene names below are **proposed**, unless explicitly marked existing.
@@ -31,8 +22,6 @@ implementation by line number. Symbols are included for subsequent navigation.
 | Architecture package: existing inventory (Grok Bot, 2026-10-05; not in repo) | Reuse shipped seams; distinguish declarations, enforcement, and runtime evidence. |
 | Architecture package: alignment (Grok Bot, 2026-10-05; not in repo) | Every numbered drift has a disposition in the drift table. |
 | Architecture package: Munder lessons (Grok Bot, 2026-10-05; not in repo) | Typed identities, receipts, assignments, and one host-owned control plane; MCP is an adapter. |
-| Architecture package: agent-team model (Grok Bot, 2026-10-05; not in repo) | Durable heads, narrowing subagent runs, broad read/narrow write, explicit full trust. |
-| Architecture package: journeys (Grok Bot, 2026-10-05; not in repo) | Directory lead, unconfigured folder, app launch, phone approval, creative editing, and multi-lead shell. |
 | Architecture package: proof apps (Grok Bot, 2026-10-05; not in repo) | Chess before creative editing; this document's P1–P5 order governs these proofs. |
 | Architecture package: Astra recommendation (Grok Bot, 2026-10-05; not in repo) | Mandatory dispatch gate, exact-call binding, host-approved Chess, parameterized harness proof. |
 | Architecture package: cloud specification (Grok Bot, 2026-10-05; not in repo) | §4.2 intake, §4.4 allocation tree, §4.5 events; E2E-B delegation shape. |
@@ -48,26 +37,16 @@ absolute paths at runtime or reproduce their claims as product documentation.
 | [NORTH_STAR.md](../../NORTH_STAR.md) | Portable records, CLI completeness, host enforcement, local first, and correction/undo remain constraints. |
 | [Root AGENTS.md](../../AGENTS.md) | HostModel owns logic; structured coordination uses the event bus; binary media uses typed pipes; PTY injection is human control. |
 | [Authority model](../assistant-authority-model.md) | Retains threat model and reference monitor. Proposed default-profile amendments are isolated below and require Ian's sign-off. |
-| [Agent mesh](../assistant-agent-mesh.md) | Retains heads, typed recall/drain, bounded `ask_question`, §6 migration, and §8 one conversation per head. P2 supersedes root-path identity with opaque IDs; paths become lookup views. |
 | [Run orchestration](../agent-run-orchestration.md) | Retains observed liveness, leases, bounded supervision, and reconcile-on-restart. P2 supersedes names-as-identity and independent authoritative per-run journals for agent work. |
 | [Host Assistant](../assistant-host-app.md) | Retains tools, content blocks, permission UX, settings and backend separation. P1 replaces optional permission hooks; P2 replaces pane-owned intake and channel-specific agent definitions. |
 | [XML video editor](../xml-video-editor.md) | Owns XML dialect, timing, round-trip and playback/export fidelity. P5 adds ChangeSets; it does not replace XML with a private EDL database. |
 | [Testing](../../src/testing/TESTING.md) | Owns implementation build gates, Rust/scene split, isolation, editor gate, and mandatory visual review. |
-
-Host Assistant history actions that fork or switch threads do not create another
-canonical head conversation: mesh §8 supersedes that older UI. Exported history
-and child-run transcripts remain separate artifacts linked to the head.
-Cloud §4.2/§4.4/§4.5 contracts are incorporated here for local execution; its
-HTTPS relay, daemon, hosted runtime, tenancy and multimedia rollout remain with
-that plan. Its older uncertainty about locating Chess is resolved by evidence E8.
 
 ## Glossary
 
 | Noun | Meaning and boundary |
 |---|---|
 | Principal | Authenticated human, device, agent, or application identity. Origin is stamped by the host, never asserted in message text. |
-| Agent / head | Durable opaque agent ID plus definition. A head owns a team-facing canonical conversation; an Assistant pane is a view. A selected prompt/persona is not itself a new head. |
-| Team | Context-root binding, head and member references, declared budgets and policies. Membership conveys relevance, not authority. |
 | Assignment | Goal, owner, resource/action scope, deadline and budget; required `kind: system\|output`, optional `pays_back`. |
 | Delegation | Host record allocating a subset of an assignment to a child; intersection can preserve or reduce rights, never add them. |
 | Run | One supervised execution attempt of an assignment, with observed lifecycle, pinned configuration, reservation and typed result. |
@@ -76,10 +55,6 @@ that plan. Its older uncertainty about locating Chess is resolved by evidence E8
 | Request | Typed unresolved human decision: `needs_input` or `permission`. Discussion, snooze, reading, and approval are different operations. |
 | ChangeSet | Prepared delta against an app-owned resource, with revisions, footprint, preview, selected hunks and attributed commit/revert receipts. |
 | Event / drain | Host-stamped, versioned, addressable record and the lossless append/read service for agent records. Bus delivery and UI projections derive from it. |
-
-A head may own many successive runs. A child run has its own transcript and can
-have a view without becoming a standing roster member. A skill supplies
-instructions and tools; it is neither a principal nor a grant.
 
 ## Verified implementation seams
 
@@ -138,30 +113,7 @@ human/automation views of the same operations, not a new agent RPC protocol.
 
 ## Authority defaults and amendments
 
-| Head/profile | Proposed default policy | Never implied |
 |---|---|---|
-| Global head | Audited broad reads of ordinary home files and permitted cross-context summaries, represented by a visible baseline read grant. | Secret access, terminal scrollback, writes, sends, process execution, app control, or blanket export of home content to a model. |
-| Directory head | Reads default to its selected root; write scope offered for an assignment defaults to that root or a narrower selection. | Root discovery or `team.toml` alone granting writes. |
-| Member / child | Only the parent-authorized intersection, including read scope and budget. | Inheritance of the global head's full visibility simply because it is the parent. |
-| Full trust | Explicit opt-in per head; a named, visible grant profile for broad reversible work, with persistent desktop/phone indicator and revoke action. | Impersonating the human, sharing tokens, bypassing deny rules, or suppressing irreversible-action approval. |
-
-Broad read is an authored product default requiring Ian's policy sign-off, then
-visible user consent when enabling that head profile. Consent creates an
-inspectable baseline grant; it is not a hardcoded bypass. Existing heads do not
-silently gain it. Directory-head onboarding likewise proposes a read root;
-write authority starts only with an approved assignment or explicit grant.
-An unconfigured folder asks what it is for and offers a scoped team definition.
-It never falls back to treating home as a project.
-
-**Amendments requiring Ian's sign-off:** the authority model's *Filesystem
-authority* “context root is proposed, not ambient” rule remains true for writes
-and root discovery. Its default read behavior is amended to allow the named
-baseline read profile. *Context isolation* and *Model context* are amended only
-for intentionally granted global-head reads across contexts; directory heads
-retain context-local discovery. The prohibition on unbound workspace-global
-Assistant grants is amended for this explicit read profile and opt-in full trust,
-not for `workspace_root = None` wildcard matching. Bind a global policy to an
-explicit host/user domain and concrete resolved resources on every call.
 
 The authority model's *Process execution* exact-command rule is extended only
 for an approved assignment/profile that enumerates bounded command families.
@@ -192,12 +144,6 @@ boundary it has not qualified. The authority model retains ownership of the
 command-worker sandbox and secret-injection implementation.
 
 ### Human-owned pane authority and context scoping
-
-1. **Human-owned pane definition:** a human-owned pane (`TerminalPane::is_human_owned` / `PlexiApp::is_human_owned_pane`) is a terminal pane whose session the host spawned directly for the user, with no agent head, no agent harness/role, no parent pane (`parent_pane_id`), and not spawned by an agent (`agent_spawned == false`). Any pane launched with `--agent`, bound to a head, or spawned from an agent pane (including a plain shell created by an agent via `plexi pane new` or `HostAction::OpenPane`) is marked `agent_spawned = true` (`PLEXI_AGENT_SPAWNED=1`) and never qualifies as human-owned.
-2. **User authority scoped to the pane's context root:** a human-owned pane carries the user's authority by default within that pane's context root (`PlexiApp::pane_context_authority_root` / `user_context_authority_grants`). Creating a head from a human-owned pane in its own context (`plexi agent head create <name> --grant ...`) succeeds immediately without filing a `needs-you` permission request.
-3. **Spawned agents are still narrowed by grants:** the parent-subset check in `create_head` runs against the human pane's context authority, so the created head receives **only** the grants explicitly declared on `create_head`. A head cannot exceed its declared grants at tool-call time or when delegating/creating a sub-head. An agent-spawned head-less pane has no ambient authority and still requires pane-session grants (`pane_session_grants`) via desktop approval.
-4. **Subdirectory contexts are isolated units:** a pane in context A has no authority over context B, including when B is a nested context or nested workspace inside A's directory tree. `agents_api` operations (`create_head`, `list_heads`, `list_grants`, `spawn_run`, `delegate`, `call`) and secret operations (`secret get`, `secret list`, `secret set`, `secret rm`, `secret read`) targeting another context root are refused with `permission_denied`.
-5. **Not an OS file-access boundary:** this authority model governs the Plexi API (`agents_api` / host tools), secrets, and grant scoping. It is **not** an OS file-access boundary: a process running in the pane still executes as the OS user and can read or write any file on disk that the OS user can access.
 
 ## P1 — One permission gate, resource-scoped grants, Chess
 
@@ -527,329 +473,6 @@ spellings belong to P2. P1 must expose a sanctioned observation seam for its
 pending IDs; no existing grant CLI is assumed. Desktop approval is required
 for this demo. Review/delete the PNG per Testing; retain the evidence report.
 
-## P2 — Agents API core
-
-### Goal, scope, non-goals
-
-Make heads and their work durable, addressable and bounded independently of
-panes. A temporary child can finish for its parent without acquiring new rights
-or multiplying the parent's budget. Closing a view does not spawn or kill work
-unless the explicit run policy says so.
-
-Scope: opaque identities, portable definitions, teams, assignments, delegation,
-run tokens, receipts, typed requests, lossless agent drain, canonical conversation
-ownership, CLI/MCP adapters and local phone intake migration.
-
-Non-goals: Desk UI, universal workflow DSL, autonomous permanent roster changes,
-cloud/daemon runtime qualification, remote pairing, public tenancy, a new A2A
-transport, or billing based on inferred terminal activity.
-
-### Proposed records and operations
-
-```rust
-struct Agent {
-    id: AgentId, name: String, definition: DefinitionRef,
-    role: AgentRole, team_id: Option<TeamId>,
-    canonical_conversation_id: Option<ConversationId>, // required for heads
-}
-struct Team {
-    id: TeamId, context: ContextBinding, root: RootRef,
-    head: AgentId, members: Vec<AgentId>, policy: PolicyRef,
-}
-struct Assignment {
-    id: AssignmentId, owner: AgentId, requested_by: PrincipalId,
-    parent: Option<AssignmentId>, goal: String, scope: Scope,
-    budget: Budget, deadline: Timestamp, kind: WorkKind,
-    pays_back: Option<PaybackIntent>, review_on: Option<Date>,
-}
-enum WorkKind { System, Output }
-struct Delegation {
-    id: DelegationId, parent_run: RunId, child: AgentId,
-    assignment: AssignmentId, requested_scope: Scope,
-    effective_scope: Scope, reservation: ReservationId,
-    expires_at: Timestamp, template: TemplateVersion,
-}
-struct Run {
-    id: RunId, agent: AgentId, assignment: AssignmentId,
-    delegation: Option<DelegationId>, parent_run: Option<RunId>,
-    config_snapshot: ConfigRef, generation: u64, deadline: Timestamp,
-    observation: LivenessObservation, claimed_state: Option<Claim>,
-    reservation: ReservationId, result: Option<TypedResultRef>,
-}
-struct RunTokenBinding {
-    principal: PrincipalId, agent: AgentId, run: RunId,
-    assignment: AssignmentId, delegation: Option<DelegationId>,
-    host_id: HostId, generation: u64, expires_at: Timestamp,
-}
-```
-
-All IDs are opaque and host-issued. Names, root paths, panes, provider sessions,
-team roles and thread labels are views/foreign keys, never identity aliases that
-silently retarget work. A rename preserves ID, conversation and grants. Moving a
-root requires explicit rebinding and revalidation of resource grants.
-The global head has an explicit storage identity, never rootless-context fallback.
-
-| API operation | Contract | MCP tool adapter / proposed CLI |
-|---|---|---|
-| `agents.list/get`, `teams.list/get` | Authorized identity/card queries; no secrets | `plexi__agents_list`; `plexi agent list/show`, `plexi agent team show` |
-| `assign` | Goal + owner + scope + budget + kind; persist before receipt | `plexi__assign`; `plexi agent assign --input FILE` |
-| `delegate` | Parent allocation + allowed template + child scope | `plexi__delegate`; `plexi agent delegate --input FILE` |
-| `send` | Versioned intake/message + receipt; no authority in prose | `plexi__send`; `plexi agent send --input FILE` |
-| `request_input` | Schema-valid question/options/trade-off/recommendation/time cost | `plexi__request_input`; `plexi agent request create --input FILE` |
-| `resolve` | Address exact typed request; verify resolver authority/version | `plexi__resolve`; `plexi agent request resolve ID --input FILE` |
-| `runs.observe/cancel` | Claim and observation together; revoke and settle on cancel | `plexi__runs_observe`; `plexi agent run show/cancel ID` |
-| `events.subscribe/recall` | Authorized filter + cursor, bounded replay/typed recall | `plexi__events_subscribe`; `plexi agent events --after CURSOR` |
-| `propose_change/commit/revert` | P3 resource adapter operations | `plexi__propose_change`; `plexi agent change …` |
-
-These spellings are proposals, not commands available at E20. The existing
-orchestration proposal `plexi run` is superseded for agent work by
-`plexi agent run`; do not implement aliases or two schedulers. Existing unrelated
-agent hook/report utilities retain their distinct documented purposes.
-
-### Delegation and resource admission
-
-Effective child authority is the intersection of user grants, parent **delegable**
-authority, requested child scope, pinned template restrictions and resource
-policy, as in cloud §4.4. Intersect resources, verbs, secrets, network destinations,
-expiry, model policy, spawn depth, retry/turn limits and budget. Empty intersection
-is refusal. A parent's broad-read baseline is not automatically delegable.
-A child cannot rewrite settings, prompt text or team membership to widen rights.
-
-Reserve budget and a concurrency/resource lease atomically before starting work.
-Children spend from the same parent allocation tree; retrying admission reuses
-its reservation. Race two requests against one remaining slot: at most one wins.
-Record measured usage, estimates, outstanding reservations and settlement
-separately. Unknown provider costs remain reserved/conservative; do not claim a
-hard monetary cap for unbounded native commands or unknown-cost operations.
-
-Runs pin configuration and have deadlines, model/turn/descendant limits, bounded
-output and process cleanup. Successful process exit without the requested typed
-result is not successful work. Host observations carry timestamps and source:
-process alive, last output, heartbeat, phase deadline and terminal evidence.
-A claim of `running` cannot keep a dead worker green.
-
-Run tokens replace pane bearers for agent execution. Authenticate them at MCP
-and the other adapters, then consult live scope and revocation at P1's gate.
-Revoke at run end, cancellation, parent cancellation, expiry or lost ownership;
-rotate on recovery. A pane only displays a run and cannot extend its lifetime.
-External human sessions may have separate device/session tokens, never fabricated
-agent runs or credentials inherited from another pane.
-
-On restart, a single-writer lease and generation fence reconcile process identity,
-provider session and durable receipts before resuming. Never spawn a replacement
-merely because an ACK was lost. If the old worker cannot be fenced/reconciled,
-report `unknown` and block duplicate side effects until recovery. Late child
-results remain attributable but cannot resurrect cancelled authority.
-
-### Intake, messages and typed requests
-
-Use the cloud §4.2 envelope across pane, CLI, phone and test client:
-
-```json
-{
-  "schema_version": 1,
-  "request_id": "req_opaque",
-  "host_id": "host_opaque",
-  "agent_id": "agent_opaque",
-  "conversation_id": "conversation_opaque",
-  "expires_at": "2030-01-01T00:01:00Z",
-  "content": [{"type": "text", "text": "Analyze this game without moving."}],
-  "target": {"resource_id": "game_opaque", "expected_revision": 1}
-}
-```
-
-The timestamp is a controlled-clock fixture. Server authentication supplies the
-sender/authority; payload IDs are requests to resolve, not proof of access.
-`plexi assistant send --input FILE` replaces pane selection and routes through
-this envelope; an optional text convenience must resolve a selected opaque head
-and fill the same fields before submission. No “first matching pane” fallback.
-The parser rejects unsupported versions, oversized input, expired requests and
-agent/conversation mismatch. Dedup key is authenticated owner plus request ID:
-same payload returns the existing receipt; changed payload conflicts.
-
-```rust
-enum ReceiptState {
-    Queued, Delivered, Accepted, Running,
-    Waiting { request: RequestId },
-    Terminal { outcome: Outcome, result: Option<ResultRef> },
-    Unknown { reason: String },
-}
-struct Message {
-    id: MessageId, sender: PrincipalId, recipient: AgentId,
-    conversation: ConversationId, speech_act: SpeechAct,
-    request_id: RequestId, parent: Option<MessageId>, hop_limit: u16,
-}
-enum Request {
-    NeedsInput { id: RequestId, version: u64, question: String,
-        options: Vec<ExplainedOption>, trade_off: String,
-        recommendation: String, time_cost: Duration, deadline: Timestamp },
-    Permission { id: RequestId, version: u64, pending_call: CallId,
-        exact_binding: GrantBinding, deadline: Timestamp },
-}
-```
-
-Queued means durably received; delivered means routed to the recipient inbox;
-accepted means admitted by its owner; running requires host observation.
-Terminal distinguishes succeeded/failed/cancelled/expired; unknown is visibly
-unreconciled, never success. Future edge acceptance/delivery states remain
-transport metadata and cannot masquerade as host acceptance.
-
-One FIFO queue and one active model turn per head join desktop, phone, routines,
-peers and events. Different heads run concurrently within leases and budgets.
-Permission replies and cancellation address active runs directly. Bound queues,
-trigger rates and hop counts; refuse routing cycles. `ask_question` remains the
-mesh's informational query with deadline, refusal, ambiguity and answer records;
-it cannot create a delegation or make a peer act with stronger authority.
-
-`needs_input` resolution supplies information. `permission` resolution invokes
-P1's exact pending-call decision. Discuss/acknowledge/snooze never approve.
-Permission requests retain their exact fingerprint and expiry across restart;
-replayed approvals are idempotent, version-mismatched decisions fail visibly.
-The host owns a single conversation writer; peer receipts project inline from
-stable event/message IDs, not independently appended transcript files.
-
-### Drain and storage
-
-```rust
-struct AgentEvent {
-    schema_version: u32, record_id: RecordId, sequence: u64,
-    timestamp: Timestamp, host_id: HostId, actor: PrincipalId,
-    agent_id: Option<AgentId>, request_id: Option<RequestId>,
-    run_id: Option<RunId>, assignment_id: Option<AssignmentId>,
-    call_id: Option<CallId>, grant_id: Option<GrantId>,
-    operation_id: Option<OperationId>, resource: Option<ResourceVersion>,
-    caused_by: Option<RecordId>, parent_id: Option<RecordId>,
-    event_type: String, payload: VersionedPayload,
-}
-```
-
-Agent records use a backpressured, durable acknowledged append, never the
-`try_send` drop path in E13. Persist before acceptance or side-effect intent;
-flush before clean shutdown. Disk-full/torn-record/corrupt-format conditions are
-visible errors; admission pauses rather than report fictitious persistence.
-Keep the UI thread responsive while the journal worker waits. Unknown event
-variants preserve their payload and cannot drive unsafe state transitions.
-
-Use an append-only versioned JSONL journal with rebuildable indexes and portable
-snapshots, one authoritative writer per host domain. Per-run directories retain
-pinned config and artifacts; their event views are projections/pointers into the
-drain, not another writable source. This supersedes orchestration's independent
-per-run event source for Agents API work. Audit projections keep their retention
-independent of conversation deletion but reference the same records.
-
-Proposed storage root: `~/.plexi/agent-records/<host-id>/`, owned by the host,
-with a channel-independent writer lease and explicit export/import for portable
-teams. Canonical conversations and receipts survive a channel handoff there;
-credentials and process handles do not. This amends Host Assistant's blanket
-channel-aware storage rule for Agents API records only. A second channel must
-attach through the owning host or request a handoff, never open another writer.
-
-App state stays app-owned. Commit state, operation receipt and outbox together;
-forward to the existing bus/drain with idempotent record IDs. Acknowledged drain
-receipt advances the outbox/consumer cursor. At-least-once delivery plus dedup is
-the guarantee, not exactly-once arbitrary external effects. A crash between a
-native send and its receipt can remain `outcome_unknown`.
-
-Subscribers filter by authorized actor/context/resource and resume from a cursor.
-Retention must preserve live receipt/recall references or an explicit archive
-pointer. An expired cursor yields `resync_required` plus an authorized snapshot;
-no silent gap. Non-agent UI telemetry may remain best effort, visibly classified.
-A CLI drain write reaches the host or fails; it cannot silently emit into a
-process-local uninitialized logger.
-
-### Agent definition migration
-
-Workspace definitions move to `<root>/.plexi/agents/<definition>/` with `AGENT.md`
-and `settings.toml`; `<root>/.plexi/team.toml` references opaque agent IDs and the
-head/member roles. User definitions move to `~/.plexi/agents/`; installed package
-binaries, credentials and operational channel profiles remain channel-specific.
-Workspace skills already use `.plexi/skills` (E10); this does not assert that all
-skill tiers or all other workspace data are channel-neutral.
-
-```toml
-# Proposed team.toml; membership requests no implicit permission.
-schema_version = 1
-id = "team_opaque"
-head = "agent_lead_opaque"
-members = ["agent_script_opaque"]
-# Root identity is host-bound from the containing workspace, not trusted text.
-```
-
-Separate definition keys from durable instances. Precedence may select a prompt
-version, but a shadowing file cannot replace an instance's identity or grants.
-`/agent new --here` creates the workspace definition and proposed team member
-through an authorized write; it does not silently create a global agent.
-First creation before P3 uses an exact reviewed file-write operation; P3 routes
-it through ChangeSet preparation. Root discovery for teams recognizes neutral
-`.plexi` independently of channel app discovery and still excludes home as an
-accidental workspace. No unrelated app-loader rewrite is implied.
-
-Migration is explicit, transactional and one-way: enumerate legacy definitions,
-preview collisions, assign stable IDs, select the authoritative definition,
-write the neutral tier and an import receipt, then disable old-tier loading.
-Divergent definitions require a choice; a retry of the migration cannot mint
-new identities. Do not dual-read, mirror or maintain old directory aliases.
-Grants are reissued/rebound only through consent, never copied by display name.
-Channel switching preserves team identity but does not import another channel's
-live credentials or start a duplicate team supervisor; use a workspace ownership
-lease and an explicit handoff. Revoked pane-only tokens stop authenticating.
-
-### Acceptance criteria
-
-1. **AT-P2-01 — Narrow delegation (E2E-B shape):** HostHarness test
-   `parent_child_analysis_cannot_escalate` uses scripted parent/child model loops
-   to analyze one Chess game without moving. Child attempts another game, a
-   write, a secret, spawn and larger budget; each is denied before effect.
-   Close the parent view, deliver the typed analysis, and verify unchanged board,
-   one parent receipt and settled reservations. A bounded live-provider VM run
-   repeats the same task and records its actual model behavior separately.
-2. **AT-P2-02 — Budget and restart:** Rust tests
-   `delegation_reservations_are_atomic` and `restart_reconciles_worker_generation`
-   race admission against one slot, crash before/after ACK, cancel the parent,
-   and deliver a late result. Verify one worker/result, no multiplied budget,
-   token revocation and no unauthorized late mutation. Repeat process restart
-   in the installed VM because an in-memory fold cannot prove OS cleanup.
-3. **AT-P2-03 — Identity and migration:** Rust test
-   `agent_rename_and_channel_migration_preserve_identity` renames a head, switches
-   channel readers, repeats migration, injects conflicting definitions and
-   verifies stable IDs/conversation, explicit collision failure and no dual writer.
-4. **AT-P2-04 — Dropped-event regression:** Rust test
-   `agent_drain_backpressure_never_drops_acknowledged_record` fills the queue with
-   a paused writer, resumes it, restarts and reads every acknowledged record ID.
-   Inject full disk, torn tail and clean shutdown with pending records; failures
-   are surfaced and no successful acceptance disappears. Demonstrate the test
-   fails when the old drop-on-full implementation is substituted.
-5. **AT-P2-05 — Intake and token binding:** HostHarness table test
-   `intake_adapter_contract` sends one envelope through Assistant, CLI/socket,
-   MCP and phone adapter parsers. Duplicate input reuses a receipt; changed
-   payload, expired request, foreign conversation and ended-run token fail.
-   Verify hidden-window and inactive-context servicing through production drains.
-6. **AT-P2-06 — Requests are not consent:** Rust test
-   `request_resolution_is_typed_and_versioned` exercises discuss, snooze,
-   needs-input answer, exact permission approval, expiry and replay. Only the
-   authorized permission decision can resume its exact pending operation.
-   TOML scene `agents-request-receipts.toml` proves distinct labels and inline
-   attributed peer receipts in a canonical conversation.
-7. **AT-P2-07 — Installed drain recovery:** VM step disconnects the phone,
-   restarts the host with a child pending, reconnects from an old cursor and
-   opens the same head in desktop/phone views. Verify one conversation, no
-   duplicate child, visible unknown/recovery state where needed and consistent
-   durable receipt history; an expired cursor explicitly requests resync.
-
-### Exit gate and migration completion
-
-On the isolated PR-installed VM, perform AT-P2-01, AT-P2-02 and AT-P2-07 through
-public adapters. Capture assignment/delegation/run IDs, effective scope,
-reservations, lifecycle observations, receipt/event cursors and revoke results.
-Exercise no-view execution inside the still-running host, a hidden window and an
-inactive context independently. A full no-window daemon is not required here.
-Demonstrate rootless onboarding, `/agent new --here`, rename and restart without
-worker duplication. Phone host mode must now use the durable envelope/receipts;
-its in-memory receipt authority and local-only cancel behavior are removed.
-Cancellation reaches the run and stops future work; committed effects stay in
-receipts. Missing live observation commands must be implemented before this gate
-can pass. No private state-file reading substitutes for public API evidence.
-
 ## P3 — ChangeSets on the text editor
 
 ### Goal, scope, non-goals
@@ -982,134 +605,6 @@ host restart to prove checkpoint/receipt continuity. Preserve source fixtures an
 report; review/delete generated screenshots per Testing. A disk diff alone is
 not evidence of editor transaction integration.
 
-## P4 — Multi-lead command view merged with Desk
-
-### Goal, scope, non-goals
-
-Build **one Desk shell** over the Agents API: the Plexi team plan's All work /
-per-context view, with lead lanes, headless queue and Needs you. It is the primary
-multi-lead command view, not another task database or a competing “Command” app.
-
-Scope: tasks/assignments, activity summary, agent conversations, direct member
-selection, workspace/terminal links, ranked typed inbox, observed liveness,
-System | Output accounting and the same mobile projection.
-
-Non-goals: a god-agent routing bottleneck, autonomous policy changes, a second
-scheduler, subjective productivity scoring, inferring billable hours from a
-terminal existing, or implementing a cloud relay to make the phone work remotely.
-
-### Projection shapes and interaction
-
-```rust
-struct DeskQuery {
-    view: DeskScope,                 // AllWork or Context(context_id)
-    lead_ids: Vec<AgentId>, after: Option<RecordId>,
-}
-struct DeskProjection {
-    lanes: Vec<ConversationProjection>, queue: Vec<AssignmentRunProjection>,
-    needs_you: Vec<RequestProjection>, activity: ActivityDigest,
-    accounting: WorkKindRollup, revision: RecordId,
-}
-struct PaybackUse {
-    system_assignment: AssignmentId, output_run: RunId,
-    artifact: ArtifactRef, observed_event: RecordId,
-}
-```
-
-| Region | Behavior and source |
-|---|---|
-| Lead lanes | Parallel canonical head conversations; type into another while one runs. Show team/scope, run receipt and budget. Narrow screens use tabs preserving independent drafts. |
-| Direct member selection | Open a head's thread or a member's run view without routing through the global head. Viewing never starts another run. |
-| Headless queue | Assignment + observed Run state, deadline, last observation, typed blocker, cost/reservation and result link. Dead/stale is distinct from idle/running. |
-| Needs you | Typed request summary, options, trade-off, recommendation and time cost; discuss, snooze, answer, approve and deny remain distinct. |
-| Activity summary | Default one healthy-fleet line; expand to attributed receipt/event evidence, not a prose-maintained board. |
-| Tasks / links | Assignment projection plus references to authoritative external task stores, workspace and attached terminal. No duplicate stint completion state. |
-| System \| Output | Required assignment kind, measured/estimated spend, execution time and items; optional payback intent and observed reuse links. |
-
-The visible inbox has a hard cap of **three** items and at most **one hard** item,
-following the approved Grok Bot attention pattern. This is a product limit, not
-a count of repository artifacts. The full durable request queue is never dropped:
-show an overflow count and explicit “all requests” view. Hard safety/irreversible
-items rank first, then deadline/blocked descendants, with stable FIFO tie-breaking;
-additional hard items wait behind the first without being relabeled soft.
-Snoozing cannot extend authority expiry or hide that blocked work remains stopped.
-
-A permission card shows the exact target, actor, changes, expiry and action.
-A needs-input card gives context/options; its answer cannot issue a grant.
-Discussion appends to the linked conversation and leaves the decision pending.
-A desktop and phone racing to answer use expected request version; one terminal
-resolution wins, the other sees the existing receipt. No model classifies an
-ordinary chat “sounds good” into approval of a different pending action.
-
-Weekly roll-up uses a configured week boundary/timezone and states it. Display
-execution duration separately from human attention and provider spend; concurrent
-run durations are not elapsed human hours. Unmeasured values say unknown.
-`pays_back` is intent, not proof of value. Link system improvements to output runs
-that actually used their versioned artifacts via `PaybackUse`; report reuse and
-outcomes, never invented dollars saved. Corrections to classification are audited
-and recompute projections rather than edit a second ledger.
-
-Phone and desktop query the same inbox, queue, conversation and roll-up API.
-The phone owns only view preferences and clearly unsent drafts; it has no
-independent receipt, assignment, permission or scheduling state. Reconnect uses
-P2's cursor/snapshot contract. P4 may use the local authenticated phone adapter;
-public remote availability awaits the separate cloud pairing/HTTPS work.
-Do not claim the prototype bearer URL is that security model.
-
-**Design evidence:** Grok Bot's named leads with persistent threads preserve direct
-access to Narrative/DU and loop owners; background completion digests preserve
-attention; its ranked small inbox and one hard item bound interruptions; explicit
-owner/next-action/blocker records make work actionable; exact-text send approval
-keeps irreversible rails. Reusable workflows make system investment visible.
-Desk keeps these interaction patterns from the approved Munder/teammate package.
-It replaces hand-synced markdown boards and shared-account authority with host
-records, projections and per-run scope. No external implementation is copied or
-assumed to supply the API.
-
-### Migration
-
-Merge the team-plan Desk and proposed command-view shell into this one surface.
-Replace hand-maintained queue/inbox/accounting copies with P2 projections.
-Existing Assistant panes remain views of canonical heads; they do not write a
-parallel conversation store. Phone prototype receipt/transcript authority is
-removed in P2 and cannot be reintroduced for mobile UI convenience. Migrate
-links/bookmarks by durable IDs, not by guessed display-name matches.
-
-### Acceptance criteria
-
-1. **AT-P4-01 — Parallel lanes:** TOML scene `desk-multiple-leads.toml` sends to
-   distinct heads, leaves one waiting for permission and verifies another can
-   finish; direct member selection preserves identity and no duplicate worker.
-   Verify per-context and All work filtering with authorized seeded teams.
-2. **AT-P4-02 — Inbox attention contract:** Rust projection test
-   `desk_inbox_caps_ranks_and_preserves_overflow` supplies mixed needs-input and
-   permission requests, deadlines and duplicate events; proves the cap, one hard
-   item, stable order and lossless overflow. Scene `desk-needs-you.toml` verifies
-   labels, keyboard actions and discussion leaving permission pending.
-3. **AT-P4-03 — Honest accounting:** Rust test `desk_rollup_uses_run_evidence`
-   includes parallel runs, missing usage, retries, corrected kinds and reuse links.
-   Verify no double charge, no terminal-time billing, explicit unknowns and
-   payback linked to observed output runs.
-4. **AT-P4-04 — Same phone state:** live VM step opens desktop and phone, resolves
-   one request concurrently, kills a worker and reconnects the phone from an old
-   cursor. Both show the same winning receipt, observed failure and remaining
-   queue without duplicate approval or private mobile state.
-5. **AT-P4-05 — Visual and narrow-screen proof:** scenes for populated lanes,
-   long asks, full-trust indicator, empty/overflow/stale queue and System | Output
-   render realistic data at desktop and narrow sizes. Inspect screenshots; a
-   live VM/phone browser step verifies touch/composer/scroll and keyboard focus.
-   Record physical-phone evidence separately from browser emulation.
-
-### Exit gate
-
-In the isolated installed VM, queue output work with two leads and system work
-with a third; close the conversations and observe their supervised runs. Kill a
-worker to demonstrate observed liveness. Open Needs you on the phone, discuss
-without approving, resolve the actual request on desktop, then verify the same
-queue and weekly roll-up. Reopen a member terminal/view without spawning work.
-Review screenshots of populated desktop/mobile surfaces and the persistent
-full-trust indicator; report script/provider modes and device evidence separately.
-
 ## P5 — Video editor proof
 
 ### Goal, scope, non-goals
@@ -1233,7 +728,6 @@ not progress state. Deferred work has a reason and is not part of a passed gate.
 | 6 — Lossy events and volatile timeline | P1 durable correlated authority audit; P2 lossless agent drain, IDs, versioning, recovery; P3 persistent checkpoint references and rollback. | Ordinary UI telemetry may remain best effort. App state remains app-owned, not duplicated in the drain. |
 | 7 — Pi on ungated MCP | P1 gates Pi because every MCP call reaches the same monitor; P2 upgrades credentials to run bindings. | First-party Pi loop-driver adoption still needs authority-model sign-off and its own backend qualification; transport safety cannot wait for it. |
 | 8 — Stale docs | P1 documentation task set below corrects scope, phone auth and “no Railway” wording against E1/E17/E19. | This spec commit changes only its document and Active PRMs index, as requested. No third file is silently added. |
-| 9 — Home access vs proposed roots | Authority-default section specifies explicit baseline read grants and per-head full trust; P2 installs them only after approval, P4 displays them. | Ian must sign off on amendments before default widening ships; context/root discovery itself grants nothing. |
 | Socket identity caveat (inventory) | P1 host-authenticates peer/session, rejects claimed pane impersonation and removes no-pane `user`. | Local OS-user access to the socket is not proof of human interaction or an agent's assignment. |
 
 P1 documentation work must replace mesh appendix H6's raw-path dispatcher claim
@@ -1244,12 +738,6 @@ configuration exists (E19); a phone relay is separate work. These corrections ar
 deferred to P1 to keep this commit's explicitly requested two-file scope.
 Mesh's older “no Assistant CLI” claim also needs replacement with E12's limited
 pane-addressed intake. Do not copy the appendix as a current-code inventory.
-
-Alignment's unowned gaps are assigned here: the named Agents API, needs-input,
-messages and budgets belong to P2; system/output and multi-lead Desk belong to
-P4; text tools and video proof belong to P3/P5. Purchasable workflow manifests
-remain deferred because neither purchases nor a workflow DSL is needed to prove
-these contracts. Any future manifest declares **requested access**, never grants.
 
 The authority model's remaining command-worker sandbox, environment construction,
 secret injection and general-project parity work retain their owning spec and
@@ -1270,7 +758,6 @@ this document. Retain the narrower existing policy until each amendment is decid
 | Terminal reads lose unprompted access (authority model) | Keep terminal reads secret-adjacent and ask-gated. Alternative: narrowly prove origin-context terminals contain no injected secrets; broad-read default does not settle this. | P1 read classification |
 | Out-of-process Pi loop (authority model) | Permit only after gating parity, run credential and cancellation evidence. In-process remains default; Pi's external MCP calls are gated regardless. | First-party Pi backend adoption |
 | Broad-read default | Approve the visible global ordinary-home read profile and directory-root read profile, with audit, secret exclusions and explicit egress policy; otherwise keep per-root asking. | P2 default profiles |
-| Full-trust profile | Explicit per-head opt-in with declared reversible scope, permanent visible indicator, revoke and irreversible asks; no human impersonation or unbounded shell grant. | P2 profile issuance / P4 presentation |
 | Phone approval of irreversible actions | Initial policy requires desktop confirmation. Alternative: a paired, revocable device principal may approve the exact action after remote auth qualification. LAN shared bearer is insufficient. | Any remote approval rollout |
 | Channel-neutral agents move | Approve neutral workspace/user definitions with stable IDs, explicit collision handling, single supervisor ownership and no copied credentials. | P2 one-way migration |
 

@@ -1,6 +1,6 @@
-//! Minimal Agents API.
+//! Team member grant cards, narrowed delegation, and revocable run tokens.
 //!
-//! One host service, used by the CLI and by the host MCP endpoint. Agent
+//! Shared by team orchestration and the host MCP endpoint. Member
 //! definitions live only under `<workspace>/.plexi/agents/`. `AGENT.md` is
 //! guidance and grants nothing. Authority is a `GrantRecord` in the permission
 //! monitor: an allow is a tool-scoped grant (`args_unbound`), an ask is the
@@ -21,8 +21,7 @@ use crate::broker::gate::{
     Admission, AdmitRequest, NeedsYouDetails, NeedsYouFile, NeedsYouKind, PermissionMonitor,
 };
 use crate::broker::{
-    ActorScope, ActorType, Decision, GrantDuration, GrantKind, GrantRecord, GrantSource,
-    TargetType,
+    ActorScope, ActorType, Decision, GrantDuration, GrantKind, GrantRecord, GrantSource, TargetType,
 };
 use crate::plexi_ai::ledger::{self, LedgerRow};
 
@@ -39,7 +38,7 @@ pub struct ToolGrant {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct HeadCard {
+struct MemberCard {
     id: String,
     display_name: String,
     description: String,
@@ -54,7 +53,7 @@ struct HeadCard {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RunRecord {
     id: String,
-    head_id: String,
+    member_id: String,
     actor_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_run: Option<String>,
@@ -125,8 +124,8 @@ fn remember_token(workspace: &Path, run_id: &str, actor_id: &str) -> String {
     token
 }
 
-fn actor_of(head_id: &str) -> String {
-    format!("agent:{head_id}")
+fn actor_of(member_id: &str) -> String {
+    format!("agent:{member_id}")
 }
 
 fn agents_root(workspace: &Path) -> PathBuf {
@@ -267,17 +266,15 @@ fn record_scope_allow(
     );
 }
 
-/// Sync `head.json` and any active run in `runs.jsonl` when a soft grant expires.
+/// Sync `member.json` and any active run in `runs.jsonl` when a soft grant expires.
 pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &str) {
-    let head_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
-    let head_dir = agents_root(workspace).join(head_id);
-    if head_dir.join("head.json").is_file() {
-        if let Ok(mut card) = read_head(&head_dir) {
+    let member_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
+    let member_dir = agents_root(workspace).join(member_id);
+    if member_dir.join("member.json").is_file() {
+        if let Ok(mut card) = read_member(&member_dir) {
             let mut changed = false;
             for grant in &mut card.grants {
-                if grant.tool == tool
-                    && grant.kind == GrantKind::Soft
-                    && grant.decision == "allow"
+                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
                 {
                     grant.decision = "ask".to_string();
                     grant.expires_at = None;
@@ -287,7 +284,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
             if changed {
                 if let Err(error) = write_definition(workspace, &card) {
                     log::error!(
-                        "agents_api: failed to update expired soft grant on head {}: {error}",
+                        "agents_api: failed to update expired soft grant on member {}: {error}",
                         card.id
                     );
                 }
@@ -297,14 +294,12 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
     let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(runs) = load_runs(workspace) {
         for mut run in runs {
-            if !run.active || (run.actor_id != actor_id && run.head_id != head_id) {
+            if !run.active || (run.actor_id != actor_id && run.member_id != member_id) {
                 continue;
             }
             let mut changed = false;
             for grant in &mut run.grants {
-                if grant.tool == tool
-                    && grant.kind == GrantKind::Soft
-                    && grant.decision == "allow"
+                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
                 {
                     grant.decision = "ask".to_string();
                     grant.expires_at = None;
@@ -318,7 +313,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
     }
 }
 
-/// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `head.json`.
+/// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `member.json`.
 pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<String, String> {
     let workspace = canonical_workspace(workspace)?;
     let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -341,14 +336,14 @@ pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<
     let updated = run.clone();
     append_run_record(&workspace, &updated)?;
     log::info!(
-        "agents_api: granted tool={tool} on run={} actor={} (run-only, head.json unchanged)",
+        "agents_api: granted tool={tool} on run={} actor={} (run-only, member.json unchanged)",
         updated.id,
         updated.actor_id
     );
     Ok(updated.actor_id)
 }
 
-fn write_definition(workspace: &Path, card: &HeadCard) -> Result<(), String> {
+fn write_definition(workspace: &Path, card: &MemberCard) -> Result<(), String> {
     let dir = agents_root(workspace).join(&card.id);
     fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     let prompt = format!(
@@ -384,38 +379,15 @@ fn write_definition(workspace: &Path, card: &HeadCard) -> Result<(), String> {
     fs::write(dir.join("settings.toml"), settings)
         .map_err(|error| format!("write settings.toml: {error}"))?;
     let body = serde_json::to_string_pretty(card).map_err(|error| error.to_string())?;
-    fs::write(dir.join("head.json"), body).map_err(|error| format!("write head.json: {error}"))?;
+    fs::write(dir.join("member.json"), body)
+        .map_err(|error| format!("write member.json: {error}"))?;
     Ok(())
 }
 
-fn read_head(dir: &Path) -> Result<HeadCard, String> {
-    let raw = fs::read_to_string(dir.join("head.json"))
+fn read_member(dir: &Path) -> Result<MemberCard, String> {
+    let raw = fs::read_to_string(dir.join("member.json"))
         .map_err(|error| format!("read {}: {error}", dir.display()))?;
-    serde_json::from_str(&raw).map_err(|error| format!("head.json in {}: {error}", dir.display()))
-}
-
-fn list_head_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<HeadCard>, String> {
-    let root = agents_root(workspace);
-    let entries = match fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("read {}: {error}", root.display())),
-    };
-    let mut cards = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("read agent entry: {error}"))?;
-        let path = entry.path();
-        if !path.is_dir() || !path.join("head.json").is_file() {
-            continue;
-        }
-        let card = read_head(&path)?;
-        if card.temporary && !include_temporary {
-            continue;
-        }
-        cards.push(card);
-    }
-    cards.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(cards)
+    serde_json::from_str(&raw).map_err(|error| format!("member.json in {}: {error}", dir.display()))
 }
 
 fn runs_path(workspace: &Path) -> PathBuf {
@@ -553,7 +525,7 @@ fn subset_denied(
     None
 }
 
-struct CreateHead<'a> {
+struct CreateMember<'a> {
     workspace: &'a Path,
     name: &'a str,
     display_name: &'a str,
@@ -567,9 +539,9 @@ struct CreateHead<'a> {
     caller_pane: Option<u64>,
 }
 
-fn create_head(req: CreateHead<'_>) -> Value {
+fn create_member(req: CreateMember<'_>) -> Value {
     if !valid_name(req.name) {
-        return json!({"ok": false, "error_code": "invalid_name", "error": "head name must be a lowercase slug"});
+        return json!({"ok": false, "error_code": "invalid_name", "error": "member name must be a lowercase slug"});
     }
     let gate = monitor();
     gate.expire_soft_grants();
@@ -586,8 +558,8 @@ fn create_head(req: CreateHead<'_>) -> Value {
         }
     }
     let dir = agents_root(req.workspace).join(req.name);
-    if dir.join("head.json").is_file() {
-        return json!({"ok": false, "error_code": "head_exists", "error": format!("head '{}' already exists", req.name)});
+    if dir.join("member.json").is_file() {
+        return json!({"ok": false, "error_code": "member_exists", "error": format!("member '{}' already exists", req.name)});
     }
     let now = gate.now_secs();
     let soft_days = crate::config::PlexiConfig::load_with_workspace(Some(req.workspace))
@@ -609,7 +581,7 @@ fn create_head(req: CreateHead<'_>) -> Value {
             }
         })
         .collect();
-    let card = HeadCard {
+    let card = MemberCard {
         id: req.name.to_string(),
         display_name: if req.display_name.is_empty() {
             req.name.to_string()
@@ -622,7 +594,7 @@ fn create_head(req: CreateHead<'_>) -> Value {
         grants: resolved_grants,
     };
     if let Err(error) = write_definition(req.workspace, &card) {
-        log::error!("agents_api: create head {} failed: {error}", req.name);
+        log::error!("agents_api: create member {} failed: {error}", req.name);
         return json!({"ok": false, "error_code": "io_error", "error": error});
     }
     let actor = actor_of(req.name);
@@ -638,43 +610,37 @@ fn create_head(req: CreateHead<'_>) -> Value {
         }
     }
     log::info!(
-        "agents_api: created head {} actor={actor} temporary={} grants={} workspace={}",
+        "agents_api: created member {} actor={actor} temporary={} grants={} workspace={}",
         card.id,
         card.temporary,
         card.grants.len(),
         req.workspace.display(),
     );
-    json!({"ok": true, "head": card})
+    json!({"ok": true, "member": card})
 }
 
 struct IssueRun<'a> {
     workspace: &'a Path,
-    head: &'a HeadCard,
+    member: &'a MemberCard,
     parent_run: Option<&'a str>,
     admission_id: &'a str,
     client_ref: &'a str,
     kind: &'a str,
     input_tokens: u32,
     output_tokens: u32,
-    /// When set, the new run also executes this prompt. `None` only journals.
-    prompt: Option<&'a str>,
 }
 
 fn issue_run(req: IssueRun<'_>) -> Value {
     let IssueRun {
         workspace,
-        head,
+        member,
         parent_run,
         admission_id,
         client_ref,
         kind,
         input_tokens,
         output_tokens,
-        prompt,
     } = req;
-    let prompt = prompt.map(str::to_string);
-    let head_id = head.id.clone();
-    let workspace_buf = workspace.to_path_buf();
     if kind != "system" && kind != "output" {
         return json!({"ok": false, "error_code": "invalid_kind", "error": "kind must be system or output"});
     }
@@ -685,14 +651,14 @@ fn issue_run(req: IssueRun<'_>) -> Value {
     };
     if let Some(existing) = runs
         .iter()
-        .find(|run| run.head_id == head.id && run.admission_id == admission_id)
+        .find(|run| run.member_id == member.id && run.admission_id == admission_id)
     {
         let token = remember_token(workspace, &existing.id, &existing.actor_id);
         log::info!(
-            "agents_api: admission {} returned existing run {} for head {}",
+            "agents_api: admission {} returned existing run {} for member {}",
             admission_id,
             existing.id,
-            head.id,
+            member.id,
         );
         return json!({
             "ok": true,
@@ -701,31 +667,34 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "idempotent": true,
         });
     }
-    if let Some(active) = runs.iter().find(|run| run.head_id == head.id && run.active) {
+    if let Some(active) = runs
+        .iter()
+        .find(|run| run.member_id == member.id && run.active)
+    {
         log::info!(
-            "agents_api: assignment_conflict head={} active_run={} admission={admission_id}",
-            head.id,
+            "agents_api: assignment_conflict member={} active_run={} admission={admission_id}",
+            member.id,
             active.id,
         );
         return json!({
             "ok": false,
             "error_code": "assignment_conflict",
-            "error": "head already has an active run",
+            "error": "member already has an active run",
             "active_run": active.id,
             "admission_id": admission_id,
         });
     }
     let version = runs
         .iter()
-        .filter(|run| run.head_id == head.id)
+        .filter(|run| run.member_id == member.id)
         .map(|run| run.version)
         .max()
         .unwrap_or(0)
         + 1;
     let record = RunRecord {
         id: format!("run_{}", uuid::Uuid::new_v4()),
-        head_id: head.id.clone(),
-        actor_id: actor_of(&head.id),
+        member_id: member.id.clone(),
+        actor_id: actor_of(&member.id),
         parent_run: parent_run.map(str::to_string),
         admission_id: admission_id.to_string(),
         version,
@@ -735,7 +704,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         kind: kind.to_string(),
         input_tokens,
         output_tokens,
-        grants: head.grants.clone(),
+        grants: member.grants.clone(),
     };
     if let Err(error) = append_run_record(workspace, &record) {
         log::error!("agents_api: append run failed: {error}");
@@ -758,11 +727,10 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         return json!({"ok": false, "error_code": "ledger_error", "error": error, "run": record});
     }
     let token = remember_token(workspace, &record.id, &record.actor_id);
-    let run_id = record.id.clone();
     log::info!(
-        "agents_api: spawned run {} head={} client_ref={} kind={} tokens={}/{} version={}",
+        "agents_api: spawned run {} member={} client_ref={} kind={} tokens={}/{} version={}",
         record.id,
-        record.head_id,
+        record.member_id,
         record.client_ref,
         record.kind,
         record.input_tokens,
@@ -770,7 +738,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         record.version,
     );
     drop(guard);
-    let mut body = json!({
+    let body = json!({
         "ok": true,
         "run": record,
         "run_token": token,
@@ -785,33 +753,18 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "parent_run_id": row.parent_run_id,
         },
     });
-    if let Some(prompt) = prompt {
-        log::info!("agents_api: spawn model turn head={head_id} run={run_id}");
-        let turn = crate::agent::leads::run_prompt(&workspace_buf, &head_id, &prompt);
-        if let Some(obj) = body.as_object_mut() {
-            if let Some(state) = turn.get("state").cloned() {
-                obj.insert("state".to_string(), state);
-            }
-            if let Some(reply) = turn.get("reply").cloned() {
-                obj.insert("reply".to_string(), reply);
-            }
-            if let Some(error) = turn.get("error").filter(|value| !value.is_null()) {
-                obj.insert("model_error".to_string(), error.clone());
-            }
-        }
-    }
-    crate::host::command_view::publish(&workspace_buf, "run updated");
     body
 }
 
-fn find_head(workspace: &Path, id: &str) -> Result<HeadCard, Value> {
+fn find_member(workspace: &Path, id: &str) -> Result<MemberCard, Value> {
     let dir = agents_root(workspace).join(id);
-    if !dir.join("head.json").is_file() {
+    if !dir.join("member.json").is_file() {
         return Err(
-            json!({"ok": false, "error_code": "head_not_found", "error": format!("no head '{id}'")}),
+            json!({"ok": false, "error_code": "member_not_found", "error": format!("no member '{id}'")}),
         );
     }
-    read_head(&dir).map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))
+    read_member(&dir)
+        .map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))
 }
 
 fn find_run(workspace: &Path, id: &str) -> Result<RunRecord, Value> {
@@ -934,7 +887,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
     }
     log::info!("agents_api: op={op} workspace={}", workspace.display());
     match op {
-        "create_head" => {
+        "create_member" => {
             let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let grants = match payload.get("grants").map(grants_from_value).transpose() {
                 Ok(Some(grants)) => grants,
@@ -943,8 +896,8 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     return json!({"ok": false, "error_code": "invalid_argument", "error": error})
                 }
             };
-            let caller_head = payload
-                .get("caller_head")
+            let caller_member = payload
+                .get("caller_member")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let caller_human_pane = payload
@@ -952,12 +905,12 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let (parent_owned, denial_owned) = if let Some(pane_id) = caller_pane {
-                if caller_head.is_empty() {
+                if caller_member.is_empty() {
                     if caller_human_pane {
                         let ctx_root = caller_context_root.as_deref().unwrap_or(&workspace);
                         let user_grants = user_context_authority_grants(&workspace, ctx_root);
                         log::info!(
-                            "agents_api: create_head pane={caller_pane:?} human_owned=true context_root={} authority_grants={}",
+                            "agents_api: create_member pane={caller_pane:?} human_owned=true context_root={} authority_grants={}",
                             ctx_root.display(),
                             user_grants.len()
                         );
@@ -965,20 +918,22 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     } else {
                         let pane_grants = pane_session_grants(&workspace, pane_id);
                         if pane_grants.is_empty() {
-                            log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
+                            log::info!(
+                                "agents_api: create_member pane={caller_pane:?} holds no grants"
+                            );
                         } else {
                             log::info!(
-                                "agents_api: create_head pane={caller_pane:?} session_grants={}",
+                                "agents_api: create_member pane={caller_pane:?} session_grants={}",
                                 pane_grants.len()
                             );
                         }
                         (Some(pane_grants), "pane".to_string())
                     }
                 } else {
-                    match find_head(&workspace, caller_head) {
+                    match find_member(&workspace, caller_member) {
                         Ok(card) => {
                             log::info!(
-                                "agents_api: create_head pane={caller_pane:?} parent_head={}",
+                                "agents_api: create_member pane={caller_pane:?} parent_member={}",
                                 card.id
                             );
                             let actor = actor_of(&card.id);
@@ -990,7 +945,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             } else {
                 (None, "operator".to_string())
             };
-            let created = create_head(CreateHead {
+            let created = create_member(CreateMember {
                 workspace: &workspace,
                 name,
                 display_name: payload
@@ -1012,29 +967,13 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 parent_run: None,
                 caller_pane,
             });
-            if created.get("ok").and_then(|value| value.as_bool()) == Some(true) {
-                crate::host::command_view::publish(&workspace, "head created");
-            }
             created
-        }
-        "list_heads" => {
-            let include_temporary = payload
-                .get("all")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            match list_head_cards(&workspace, include_temporary) {
-                Ok(heads) => {
-                    log::info!("agents_api: listed {} head(s)", heads.len());
-                    json!({"ok": true, "heads": heads})
-                }
-                Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
-            }
         }
         "list_grants" => list_grants(&workspace),
         "spawn_run" => {
-            let head_id = payload.get("head").and_then(|v| v.as_str()).unwrap_or("");
-            let head = match find_head(&workspace, head_id) {
-                Ok(head) => head,
+            let member_id = payload.get("member").and_then(|v| v.as_str()).unwrap_or("");
+            let member = match find_member(&workspace, member_id) {
+                Ok(member) => member,
                 Err(error) => return error,
             };
             let admission = payload
@@ -1042,25 +981,9 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("adm_{}", uuid::Uuid::new_v4()));
-            let journal_only = payload
-                .get("journal_only")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let prompt_owned = if journal_only {
-                None
-            } else {
-                Some(
-                    payload
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .filter(|text| !text.is_empty())
-                        .unwrap_or("run")
-                        .to_string(),
-                )
-            };
             issue_run(IssueRun {
                 workspace: &workspace,
-                head: &head,
+                member: &member,
                 parent_run: None,
                 admission_id: &admission,
                 client_ref: payload
@@ -1079,7 +1002,6 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     .get("output_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32,
-                prompt: prompt_owned.as_deref(),
             })
         }
         "list_runs" => match load_runs(&workspace) {
@@ -1116,12 +1038,6 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             },
             caller_pane,
         ),
-        "read_conversation" => {
-            let head = payload.get("head").and_then(|v| v.as_str()).unwrap_or("");
-            let actor = payload.get("as_head").and_then(|v| v.as_str());
-            log::info!("agents_api: read_conversation head={head} as={actor:?}");
-            crate::agent::leads::read_conversation_as(&workspace, actor, head)
-        }
         "call" => invoke(
             &workspace,
             payload.get("run_id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -1154,14 +1070,11 @@ fn list_grants(workspace: &Path) -> Value {
                     || rec.workspace_root.is_none())
         })
         .map(|rec| {
-            let head = rec
-                .actor_id
-                .strip_prefix("agent:")
-                .unwrap_or(&rec.actor_id);
+            let member = rec.actor_id.strip_prefix("agent:").unwrap_or(&rec.actor_id);
             json!({
                 "grant_id": rec.grant_id,
                 "actor_id": rec.actor_id,
-                "head": head,
+                "member": member,
                 "tool": rec.target_id,
                 "decision": rec.decision.as_str(),
                 "kind": rec.kind.as_str(),
@@ -1229,31 +1142,31 @@ fn delegate(
     ) {
         return refused;
     }
-    let parent_head = match find_head(workspace, &parent.head_id) {
-        Ok(head) => head,
+    let parent_member = match find_member(workspace, &parent.member_id) {
+        Ok(member) => member,
         Err(error) => return error,
     };
-    let created = create_head(CreateHead {
+    let created = create_member(CreateMember {
         workspace,
         name,
         display_name: name,
         description: "Temporary child. reports_to is not authority.",
         grants: &grants,
         temporary: true,
-        reports_to: Some(&parent_head.id),
+        reports_to: Some(&parent_member.id),
         parent_grants: Some(&parent.grants),
         denial_actor: &parent.actor_id,
         parent_run: Some(parent_run),
         caller_pane,
     });
     if created.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        if created.get("error_code").and_then(|v| v.as_str()) == Some("head_exists") {
-            let existing = match find_head(workspace, name) {
-                Ok(head) => head,
+        if created.get("error_code").and_then(|v| v.as_str()) == Some("member_exists") {
+            let existing = match find_member(workspace, name) {
+                Ok(member) => member,
                 Err(error) => return error,
             };
             if !same_grant_specs(&existing.grants, &grants)
-                || existing.reports_to.as_deref() != Some(parent_head.id.as_str())
+                || existing.reports_to.as_deref() != Some(parent_member.id.as_str())
             {
                 return deny_with_request(RefusalContext {
                     workspace,
@@ -1269,21 +1182,20 @@ fn delegate(
             return created;
         }
     }
-    let child = match find_head(workspace, name) {
-        Ok(head) => head,
+    let child = match find_member(workspace, name) {
+        Ok(member) => member,
         Err(error) => return error,
     };
     let admission = format!("delegate:{parent_run}:{name}");
     let spawned = issue_run(IssueRun {
         workspace,
-        head: &child,
+        member: &child,
         parent_run: Some(parent_run),
         admission_id: &admission,
         client_ref: &parent.client_ref,
         kind: &parent.kind,
         input_tokens: 0,
         output_tokens: 0,
-        prompt: None,
     });
     if spawned.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         log::info!(
@@ -1435,7 +1347,7 @@ fn invoke(
                     caller_pane,
                 });
             }
-            let body = execute_tool(workspace, &run, tool, input_json);
+            let body = execute_tool(&run, tool);
             monitor().consume_once(&grant_id, Some("agents-api"));
             log::info!(
                 "agents_api: executed tool={tool} actor={} run={} call_id={call_id}",
@@ -1447,42 +1359,8 @@ fn invoke(
     }
 }
 
-fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str) -> Value {
-    let input: Value = serde_json::from_str(input_json).unwrap_or_else(|_| json!({}));
+fn execute_tool(run: &RunRecord, tool: &str) -> Value {
     match tool {
-        "agents.list" => match list_head_cards(workspace, false) {
-            Ok(heads) => json!({"ok": true, "heads": heads, "actor_id": run.actor_id}),
-            Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
-        },
-        "agents.create" => {
-            let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let grants = match input.get("grants").map(grants_from_value).transpose() {
-                Ok(Some(grants)) => grants,
-                Ok(None) => Vec::new(),
-                Err(error) => {
-                    return json!({"ok": false, "error_code": "invalid_argument", "error": error})
-                }
-            };
-            create_head(CreateHead {
-                workspace,
-                name,
-                display_name: input
-                    .get("display_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(name),
-                description: input
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(""),
-                grants: &grants,
-                temporary: false,
-                reports_to: None,
-                parent_grants: Some(&run.grants),
-                denial_actor: &run.actor_id,
-                parent_run: Some(&run.id),
-                caller_pane: None,
-            })
-        }
         "agents.ping" | "agents.review" | "agents.admin" => json!({
             "ok": true,
             "tool": tool,
@@ -1595,7 +1473,7 @@ fn admit_pane(auth: &McpAuth, tool: &str, input_json: &str) -> Value {
 }
 
 pub fn mcp_tool_defs() -> Vec<Value> {
-    ["agents.list", "agents.create", "agents.delegate", "agents.ping", "agents.review", "agents.admin"]
+    ["agents.delegate", "agents.ping", "agents.review", "agents.admin"]
         .into_iter()
         .map(|name| {
             json!({
@@ -1644,7 +1522,7 @@ mod tests {
     }
 
     fn create(fix: &Fixture, name: &str, specs: &[&str]) -> Value {
-        create_head(CreateHead {
+        create_member(CreateMember {
             workspace: fix.ws(),
             name,
             display_name: name,
@@ -1660,7 +1538,21 @@ mod tests {
     }
 
     #[test]
-    fn head_lands_under_neutral_agents_dir_and_lists() {
+    fn retired_operations_are_unknown() {
+        let fix = Fixture::new();
+        for op in ["create_head", "list_heads", "read_conversation"] {
+            let reply = handle_request(op, &json!({"workspace": fix.ws(), "name":"example"}));
+            assert_eq!(reply["error_code"], "invalid_argument");
+            assert!(reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agents op"));
+        }
+        assert!(!agents_root(fix.ws()).join("example").exists());
+    }
+
+    #[test]
+    fn member_lands_under_neutral_agents_dir() {
         let fix = Fixture::new();
         let created = create(&fix, "lead", &["agents.ping=allow", "agents.review=ask"]);
         assert_eq!(created["ok"], true, "{created}");
@@ -1668,9 +1560,9 @@ mod tests {
         assert!(dir.join("AGENT.md").is_file());
         assert!(dir.join("settings.toml").is_file());
         assert!(!fix.ws().join(".plexi-alpha").join("agents").exists());
-        let listed = handle_request("list_heads", &json!({"workspace": fix.ws()}));
-        assert_eq!(listed["heads"][0]["id"], "lead");
-        assert_eq!(listed["heads"][0]["grants"][0]["tool"], "agents.ping");
+        let card = read_member(&dir).unwrap();
+        assert_eq!(card.id, "lead");
+        assert_eq!(card.grants[0].tool, "agents.ping");
     }
 
     #[test]
@@ -1679,7 +1571,7 @@ mod tests {
         create(&fix, "lead", &["agents.ping=allow"]);
         let payload = json!({
             "workspace": fix.ws(),
-            "head": "lead",
+            "member": "lead",
             "admission": "adm-1",
             "client_ref": "acme",
             "kind": "output",
@@ -1699,7 +1591,7 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "member": "lead",
                 "admission": "adm-2",
             }),
         );
@@ -1715,19 +1607,10 @@ mod tests {
     #[test]
     fn delegation_refuses_a_grant_the_parent_lacks_and_enforces_the_rest() {
         let fix = Fixture::new();
-        create(
-            &fix,
-            "lead",
-            &[
-                "agents.ping=allow",
-                "agents.review=ask",
-                "agents.list=allow",
-                "agents.create=allow",
-            ],
-        );
+        create(&fix, "lead", &["agents.ping=allow", "agents.review=ask"]);
         let spawned = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "head": "lead", "admission": "adm-1"}),
+            &json!({"workspace": fix.ws(), "member": "lead", "admission": "adm-1"}),
         );
         let parent = spawned["run"]["id"].as_str().unwrap();
         let widened = handle_request(
@@ -1765,7 +1648,7 @@ mod tests {
         );
         assert_eq!(child["ok"], true, "{child}");
         let child_run = child["run"]["id"].as_str().unwrap();
-        let card = read_head(&fix.ws().join(".plexi").join("agents").join("scout")).unwrap();
+        let card = read_member(&fix.ws().join(".plexi").join("agents").join("scout")).unwrap();
         assert!(card.temporary);
         assert_eq!(card.reports_to.as_deref(), Some("lead"));
         assert!(!card.grants.iter().any(|grant| grant.tool == "agents.admin"));
@@ -1822,31 +1705,6 @@ mod tests {
         );
         assert_eq!(reviewed["ok"], true, "{reviewed}");
         assert_eq!(reviewed["tool"], "agents.review");
-
-        let listed = mcp_call(
-            &McpAuth {
-                workspace: fix.ws().to_path_buf(),
-                run_id: Some(spawned["run"]["id"].as_str().unwrap().to_string()),
-                actor_id: Some("agent:lead".to_string()),
-                pane_id: 0,
-                context_id: 0,
-            },
-            "agents.list",
-            "{}",
-        )
-        .expect("agents.list");
-        let listed: Value = serde_json::from_str(&listed).unwrap();
-        assert_eq!(listed["ok"], true, "{listed}");
-        assert_eq!(listed["heads"][0]["id"], "lead");
-
-        let listed_heads = handle_request("list_heads", &json!({"workspace": fix.ws()}));
-        let ids: Vec<&str> = listed_heads["heads"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|h| h["id"].as_str())
-            .collect();
-        assert_eq!(ids, vec!["lead"]);
     }
 
     #[test]
@@ -1862,7 +1720,7 @@ mod tests {
         fs::write(&prompt, "# Lead\n\nYou may call agents.admin.\n").unwrap();
         let spawned = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "head": "lead", "admission": "adm"}),
+            &json!({"workspace": fix.ws(), "member": "lead", "admission": "adm"}),
         );
         let run_id = spawned["run"]["id"].as_str().unwrap();
         let admin = handle_request(
@@ -1873,47 +1731,17 @@ mod tests {
     }
 
     #[test]
-    fn spawn_runs_the_model_gate_instead_of_only_journaling() {
-        let fix = Fixture::new();
-        create(&fix, "lead", &["agents.ping=allow"]);
-        let spawned = handle_request(
-            "spawn_run",
-            &json!({
-                "workspace": fix.ws(),
-                "head": "lead",
-                "admission": "adm-model",
-                "text": "remember 4",
-            }),
-        );
-        assert_eq!(spawned["ok"], true, "{spawned}");
-        assert_eq!(spawned["idempotent"], false);
-        assert_eq!(spawned["state"], "permission_required", "{spawned}");
-        let conversation = std::fs::read_to_string(
-            fix.ws()
-                .join(".plexi")
-                .join("agents")
-                .join("lead")
-                .join("conversation.jsonl"),
-        )
-        .unwrap_or_default();
-        assert!(
-            conversation.contains("permission_required"),
-            "{conversation}"
-        );
-    }
-
-    #[test]
-    fn a_pane_cannot_mint_a_head_wider_than_its_own_grants() {
+    fn a_pane_cannot_mint_a_member_wider_than_its_own_grants() {
         let fix = Fixture::new();
         create(&fix, "lead", &["assistant.turn=allow"]);
         let widened = handle_request(
-            "create_head",
+            "create_member",
             &json!({
                 "workspace": fix.ws(),
                 "name": "sneaky",
                 "grants": ["agents.admin=allow"],
                 "caller_pane": 7,
-                "caller_head": "lead",
+                "caller_member": "lead",
             }),
         );
         assert_eq!(widened["error_code"], "permission_denied", "{widened}");
@@ -1924,24 +1752,24 @@ mod tests {
             .join("sneaky")
             .exists());
         let narrowed = handle_request(
-            "create_head",
+            "create_member",
             &json!({
                 "workspace": fix.ws(),
                 "name": "scout",
                 "grants": ["assistant.turn=allow"],
                 "caller_pane": 7,
-                "caller_head": "lead",
+                "caller_member": "lead",
             }),
         );
         assert_eq!(narrowed["ok"], true, "{narrowed}");
         let empty = handle_request(
-            "create_head",
+            "create_member",
             &json!({
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
                 "caller_pane": 9,
-                "caller_head": "",
+                "caller_member": "",
             }),
         );
         assert_eq!(empty["error_code"], "permission_denied", "{empty}");
@@ -1950,13 +1778,13 @@ mod tests {
             .resolve_needs_you_from(ny_id, true, crate::broker::gate::ResolveSurface::Desktop)
             .expect("desktop approve mints pane grant");
         let retried = handle_request(
-            "create_head",
+            "create_member",
             &json!({
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
                 "caller_pane": 9,
-                "caller_head": "",
+                "caller_member": "",
             }),
         );
         assert_eq!(retried["ok"], true, "{retried}");
@@ -1972,7 +1800,7 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "member": "lead",
                 "admission": "adm-run-1",
                 "journal_only": true,
             }),
@@ -2008,9 +1836,7 @@ mod tests {
         let audit_rows = monitor().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
-                row.kind == "deny"
-                    && row.resource_id == "agents.admin"
-                    && row.actor == "agent:lead"
+                row.kind == "deny" && row.resource_id == "agents.admin" && row.actor == "agent:lead"
             }),
             "expected deny AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
@@ -2036,15 +1862,15 @@ mod tests {
             .is_err());
 
         // 4. Resolving with Allow from Desktop grants `agents.admin` for `parent_run` only,
-        //    leaving `head.json` untouched.
+        //    leaving `member.json` untouched.
         monitor()
             .resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
             .expect("desktop Allow must resolve PermissionRequest");
 
-        let lead_card = read_head(&fix.ws().join(".plexi").join("agents").join("lead")).unwrap();
+        let lead_card = read_member(&fix.ws().join(".plexi").join("agents").join("lead")).unwrap();
         assert!(
             !lead_card.grants.iter().any(|g| g.tool == "agents.admin"),
-            "head.json must NOT be permanently widened: {lead_card:?}"
+            "member.json must NOT be permanently widened: {lead_card:?}"
         );
 
         // Now `parent_run` can call `agents.admin` and delegate `agents.admin=allow` during this run.
@@ -2085,7 +1911,7 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "member": "lead",
                 "admission": "adm-run-2",
                 "journal_only": true,
             }),
@@ -2121,7 +1947,7 @@ mod tests {
         monitor().set_now_for_test(t0);
 
         let created = handle_request(
-            "create_head",
+            "create_member",
             &json!({
                 "workspace": fix.ws(),
                 "name": "lead",
@@ -2152,7 +1978,7 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "member": "lead",
                 "admission": "adm-soft",
                 "journal_only": true,
             }),
@@ -2199,7 +2025,10 @@ mod tests {
                 "input_json": "{}",
             }),
         );
-        assert_eq!(ping_after["ok"], true, "hard grant must not expire: {ping_after}");
+        assert_eq!(
+            ping_after["ok"], true,
+            "hard grant must not expire: {ping_after}"
+        );
 
         // Audit log contains the soft expiry row (`kind: "expire"`, `decision: "ask"`).
         let audit_path = crate::config::config_dir().join("permission-audit.jsonl");
@@ -2211,14 +2040,12 @@ mod tests {
         let audit_rows = monitor().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
-                row.kind == "expire"
-                    && row.resource_id == "agents.review"
-                    && row.decision == "ask"
+                row.kind == "expire" && row.resource_id == "agents.review" && row.decision == "ask"
             }),
             "expected expire AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
 
-        // `list_grants` and `head.json` reflect the reverted `ask` decision.
+        // `list_grants` and `member.json` reflect the reverted `ask` decision.
         let grants_after = handle_request("list_grants", &json!({"workspace": fix.ws()}));
         let soft_after = grants_after["grants"]
             .as_array()

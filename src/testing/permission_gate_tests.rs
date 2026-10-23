@@ -1223,7 +1223,7 @@ fn list_app_tools_snapshots_live_registry_for_context() {
 }
 
 #[test]
-fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
+fn create_member_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     use crate::broker::gate::{NeedsYouDetails, NeedsYouFile, NeedsYouKind, ResolveSurface, RunOutcome};
     use sha2::{Digest, Sha256};
 
@@ -1233,16 +1233,16 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     let workspace = h.workspace_root();
     let profile_dir = crate::config::config_dir();
 
-    let call_create_head =
-        |h: &mut HostHarness, head_name: &str, caller_pane: u64| -> serde_json::Value {
+    let call_create_member =
+        |h: &mut HostHarness, member_name: &str, caller_pane: u64| -> serde_json::Value {
             let reply = h
                 .workspace_root()
-                .join(format!("create-head-{}.json", uuid::Uuid::new_v4()));
+                .join(format!("create-member-{}.json", uuid::Uuid::new_v4()));
             let req = AppRequest::AgentsApi {
-                op: "create_head".to_string(),
+                op: "create_member".to_string(),
                 payload: serde_json::json!({
                     "workspace": h.workspace_root(),
-                    "name": head_name,
+                    "name": member_name,
                     "grants": ["agents.ping=allow"],
                     "caller_pane": caller_pane,
                 }),
@@ -1260,9 +1260,9 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
             serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
         };
 
-    // 1. From a head-less pane, `create_head` with `agents.ping=allow` is denied
+    // 1. From a member-less pane, `create_member` with `agents.ping=allow` is denied
     //    and files exactly one `permission_request` needs-you item.
-    let first = call_create_head(&mut h, "lead", pane);
+    let first = call_create_member(&mut h, "lead", pane);
     assert_eq!(first["ok"], false, "{first}");
     assert_eq!(first["error_code"], "permission_denied", "{first}");
     let needs_you_id = first["needs_you_id"]
@@ -1313,9 +1313,9 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
         .expect("expected needs_you audit fact");
     assert_eq!(ny_fact.grant_id, grant_fact.grant_id);
 
-    // 3. Retry the same `create_head` from the same pane -> `ok: true`, no second needs-you filed.
+    // 3. Retry the same `create_member` from the same pane -> `ok: true`, no second needs-you filed.
     let needs_you_total_before_retry = mon.all_needs_you().len();
-    let retry = call_create_head(&mut h, "lead", pane);
+    let retry = call_create_member(&mut h, "lead", pane);
     assert_eq!(retry["ok"], true, "retry after approve must succeed: {retry}");
     assert!(
         mon.list_needs_you().is_empty(),
@@ -1329,7 +1329,7 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     );
 
     // 4. The minted grant does not leak to a different pane.
-    let other_pane_try = call_create_head(&mut h, "lead-other-pane", other_pane);
+    let other_pane_try = call_create_member(&mut h, "lead-other-pane", other_pane);
     assert_eq!(
         other_pane_try["error_code"], "permission_denied",
         "different pane must not inherit pane-scoped grant: {other_pane_try}"
@@ -1338,7 +1338,7 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     // 5. The minted grant does not leak across a new host session.
     let reloaded = PermissionMonitor::reload_for_test(&profile_dir);
     assert_ne!(reloaded.session_id(), mon.session_id());
-    let next_session_try = call_create_head(&mut h, "lead-next-session", pane);
+    let next_session_try = call_create_member(&mut h, "lead-next-session", pane);
     assert_eq!(
         next_session_try["error_code"], "permission_denied",
         "new host session must not inherit session-scoped pane grant: {next_session_try}"
@@ -1374,7 +1374,7 @@ fn create_head_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
 }
 
 #[test]
-fn human_pane_creates_head_in_own_context_and_spawned_head_is_narrowed_by_grants() {
+fn human_pane_creates_member_in_own_context_and_spawned_member_is_narrowed_by_grants() {
     let mut h = HostHarness::new();
     let human_pane = h.add_focused_terminal();
     let human_pid = h.terminal_backend(human_pane).child_pid();
@@ -1410,11 +1410,11 @@ fn human_pane_creates_head_in_own_context_and_spawned_head_is_narrowed_by_grants
         serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
     };
 
-    // 1. Human pane in context A runs `agent head create lead --grant agents.ping=allow`
+    // 1. Human pane in context A runs `agent member create lead --grant agents.ping=allow`
     //    -> `ok: true`, no needs-you filed.
     let created = call_agents_api(
         &mut h,
-        "create_head",
+        "create_member",
         serde_json::json!({
             "workspace": workspace,
             "name": "lead",
@@ -1423,10 +1423,10 @@ fn human_pane_creates_head_in_own_context_and_spawned_head_is_narrowed_by_grants
         }),
         Some(&[human_pid]),
     );
-    assert_eq!(created["ok"], true, "human pane create_head must succeed: {created}");
+    assert_eq!(created["ok"], true, "human pane create_member must succeed: {created}");
     assert!(
         mon.list_needs_you().is_empty(),
-        "human pane create_head must not file needs-you: {:?}",
+        "human pane create_member must not file needs-you: {:?}",
         mon.list_needs_you()
     );
 
@@ -1436,7 +1436,7 @@ fn human_pane_creates_head_in_own_context_and_spawned_head_is_narrowed_by_grants
         "spawn_run",
         serde_json::json!({
             "workspace": workspace,
-            "head": "lead",
+            "member": "lead",
             "admission": "adm-0888-lead",
             "journal_only": true,
         }),
@@ -1474,7 +1474,7 @@ fn human_pane_creates_head_in_own_context_and_spawned_head_is_narrowed_by_grants
     assert_eq!(admin_call["ok"], false, "ungranted tool must be refused: {admin_call}");
     assert_eq!(admin_call["error_code"], "permission_denied", "{admin_call}");
 
-    // 3. Delegating a sub-head with a wider grant (`agents.admin=allow`) is refused by subset check.
+    // 3. Delegating a sub-member with a wider grant (`agents.admin=allow`) is refused by subset check.
     let wider_delegate = call_agents_api(
         &mut h,
         "delegate",
@@ -1584,12 +1584,12 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             .unwrap()
     };
 
-    // 1. Human pane in context A cannot create heads or list heads/grants in sibling context B
+    // 1. Human pane in context A cannot create members or list members/grants in sibling context B
     //    or nested context `nested_b` inside A's directory.
     for target_ws in [&root_b, &nested_b] {
         let create_resp = call_agents_api(
             &mut h,
-            "create_head",
+            "create_member",
             serde_json::json!({
                 "workspace": target_ws,
                 "name": "intruder",
@@ -1600,16 +1600,16 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         assert_eq!(create_resp["ok"], false, "must refuse target {}: {create_resp}", target_ws.display());
         assert_eq!(create_resp["error_code"], "permission_denied", "{create_resp}");
 
-        let list_heads_resp = call_agents_api(
+        let list_members_resp = call_agents_api(
             &mut h,
-            "list_heads",
+            "list_members",
             serde_json::json!({
                 "workspace": target_ws,
                 "caller_pane": human_pane,
             }),
         );
-        assert_eq!(list_heads_resp["ok"], false, "{list_heads_resp}");
-        assert_eq!(list_heads_resp["error_code"], "permission_denied", "{list_heads_resp}");
+        assert_eq!(list_members_resp["ok"], false, "{list_members_resp}");
+        assert_eq!(list_members_resp["error_code"], "permission_denied", "{list_members_resp}");
 
         let list_grants_resp = call_agents_api(
             &mut h,
@@ -1763,14 +1763,14 @@ fn agent_spawned_pane_does_not_get_human_authority() {
         "plain shell spawned by an agent pane via `pane new` must never qualify as human-owned"
     );
 
-    // 3. `create_head` from `child_shell_pane` is denied and files a `permission_request` needs-you item.
+    // 3. `create_member` from `child_shell_pane` is denied and files a `permission_request` needs-you item.
     let child_pid = h.terminal_backend(child_shell_pane).child_pid();
-    let call_create_head = |h: &mut HostHarness, name: &str, grant: &str| -> serde_json::Value {
+    let call_create_member = |h: &mut HostHarness, name: &str, grant: &str| -> serde_json::Value {
         let reply = h
             .workspace_root()
-            .join(format!("agent-child-head-{}.json", uuid::Uuid::new_v4()));
+            .join(format!("agent-child-member-{}.json", uuid::Uuid::new_v4()));
         let req = AppRequest::AgentsApi {
-            op: "create_head".to_string(),
+            op: "create_member".to_string(),
             payload: serde_json::json!({
                 "workspace": h.workspace_root(),
                 "name": name,
@@ -1791,7 +1791,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
         serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
     };
 
-    let denied = call_create_head(&mut h, "worker-lead", "agents.ping=allow");
+    let denied = call_create_member(&mut h, "worker-lead", "agents.ping=allow");
     assert_eq!(denied["ok"], false, "{denied}");
     assert_eq!(denied["error_code"], "permission_denied", "{denied}");
     let needs_you_id = denied["needs_you_id"]
@@ -1809,10 +1809,10 @@ fn agent_spawned_pane_does_not_get_human_authority() {
     //    allowing retry of `agents.ping=allow` while still refusing `agents.admin=allow`.
     mon.resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
         .unwrap();
-    let retry = call_create_head(&mut h, "worker-lead", "agents.ping=allow");
+    let retry = call_create_member(&mut h, "worker-lead", "agents.ping=allow");
     assert_eq!(retry["ok"], true, "retry after pane-session grant must succeed: {retry}");
 
-    let ungranted = call_create_head(&mut h, "worker-admin", "agents.admin=allow");
+    let ungranted = call_create_member(&mut h, "worker-admin", "agents.admin=allow");
     assert_eq!(ungranted["ok"], false, "{ungranted}");
     assert_eq!(ungranted["error_code"], "permission_denied", "{ungranted}");
 }

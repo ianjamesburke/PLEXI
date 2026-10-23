@@ -135,9 +135,6 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
         "secrets_manager" => Some(Box::new(crate::app::secrets_app::SecretsApp::new(
             cwd.to_path_buf(),
         ))),
-        "command" | "command-view" => Some(Box::new(
-            crate::app::command_view_app::CommandViewApp::new(cwd.to_path_buf()),
-        )),
         _ => None,
     }
 }
@@ -146,7 +143,6 @@ fn release_feature_for_app_id(id: &str) -> Option<crate::release::ReleaseFeature
     match id {
         "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
         "com.plexi.daw-engine-poc" => Some(crate::release::ReleaseFeature::Daw),
-        "command" | "command-view" => Some(crate::release::ReleaseFeature::CommandView),
         "mcp-renderer" => Some(crate::release::ReleaseFeature::McpClient),
         _ => None,
     }
@@ -180,7 +176,7 @@ fn builtin_restore_args(
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
-        "agents" | "file_browser" | "secrets_manager" | "command" | "command-view" => Some(vec![]),
+        "agents" | "file_browser" | "secrets_manager" => Some(vec![]),
         _ => None,
     }
 }
@@ -2540,107 +2536,7 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
-    /// Open an Assistant pane bound to `head` in the active context.
-    /// A second head is a second pane. The same head is focused instead of
-    /// duplicated. The pane is split beside the current one so both leads
-    /// stay visible.
-    pub(crate) fn open_assistant_for_head(
-        &mut self,
-        head: &str,
-        context_id: Option<u64>,
-    ) -> Result<u64, String> {
-        if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
-            crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
-            return Err(crate::release::feature_unavailable_text(
-                    crate::release::ReleaseFeature::Assistant,
-                ));
-        }
-        let win = self.active_window;
-        let caller_context_id = self.windows[win].context_id;
-        if let Some(context_id) = context_id {
-            if context_id != caller_context_id {
-                return Err(format!(
-                    "context {context_id} is not the active window's context {caller_context_id}"
-                ));
-            }
-        }
-        if let Some(pane_id) = self.find_bound_assistant(caller_context_id, head) {
-            log::info!("assistant: focusing head {head} pane {pane_id}");
-            if let Some((win_idx, slot, depth)) = self.locate_pane_slot(pane_id) {
-                self.reveal_and_focus_instance(win_idx, slot, depth);
-            }
-            return Ok(pane_id);
-        }
-        let workspace_root = self
-            .context_root_for(caller_context_id)
-            .or_else(crate::config::active_workspace_root)
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
-        );
-        let mut app = crate::assistant::AssistantApp::new(
-            workspace_root.clone(),
-            broker,
-            &crate::config::config_dir(),
-            caller_context_id,
-        );
-        app.bind_head(head)?;
-        log::info!(
-            "assistant: opening head {head} in context {caller_context_id} workspace {}",
-            workspace_root.display()
-        );
-        let perms = crate::app::permissions::AppPermissions::builtin();
-        let predicted = self.host.next_pane_id();
-        self.open_builtin_app_pane(
-            Box::new(app),
-            perms,
-            workspace_root,
-            None,
-            Some("split_h"),
-            None,
-        );
-        Ok(predicted)
-    }
 
-    fn find_bound_assistant(&self, context_id: u64, head: &str) -> Option<crate::spatial::tiling::PaneId> {
-        for window in &self.windows {
-            if window.context_id != context_id {
-                continue;
-            }
-            for (pane_id, pane) in &window.panes {
-                if let Some(app) = pane.as_app() {
-                    if app.runtime.bound_head() == Some(head) {
-                        return Some(*pane_id);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn locate_pane_slot(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<(usize, crate::spatial::tiling::PaneId, usize)> {
-        self.find_pane_in_any_window(pane_id).map(|(win_idx, _)| (win_idx, pane_id, 0))
-    }
-
-    /// Open the command view pane for `workspace`. One pane per context.
-    pub(crate) fn open_command_view(&mut self, workspace: &std::path::Path) -> Result<u64, String> {
-        if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
-            return Err(crate::release::feature_unavailable_text(
-                    crate::release::ReleaseFeature::Assistant,
-                ));
-        }
-        let context_id = self.windows[self.active_window].context_id;
-        if let Some((win_idx, slot, depth)) = self.locate_app_instance("command-view", Some(context_id)) {
-            self.reveal_and_focus_instance(win_idx, slot, depth);
-            return Ok(slot);
-        }
-        let app = Box::new(crate::app::command_view_app::CommandViewApp::new(workspace.to_path_buf()));
-        let perms = crate::app::permissions::AppPermissions::builtin();
-        let predicted = self.host.next_pane_id();
-        log::info!("command_view: opening pane for {}", workspace.display());
-        self.open_builtin_app_pane(app, perms, workspace.to_path_buf(), None, Some("split_h"), None);
-        Ok(predicted)
-    }
 
     /// Open (or focus) the host Assistant pane (Phase 1 of
     /// `docs/assistant-host-app.md`, reachable via Cmd+Ctrl+A and the

@@ -187,7 +187,7 @@ pub struct LedgerRow {
     /// Agent run that this usage belongs to. Absent on assistant broker rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
-    /// Head that owned the run (`agent:<id>`).
+    /// Agent that owned the run (`agent:<id>`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     /// Client tag, or `internal/unallocated` when the run is not billable work.

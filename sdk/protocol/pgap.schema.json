@@ -680,13 +680,6 @@
                 "null"
               ]
             },
-            "head": {
-              "description": "Lead (head) id. When set, the turn runs in that head's conversation.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "join_desktop": {
               "default": false,
               "description": "Opt in to the desktop Assistant transcript. Default is a separate conversation.",
@@ -738,61 +731,6 @@
         },
         {
           "additionalProperties": false,
-          "description": "Open an Assistant pane bound to one head in the active context.",
-          "properties": {
-            "context_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "head": {
-              "type": "string"
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "type": {
-              "const": "open_assistant_head",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "head",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`.\nSend starts a real lead turn. Cancel stops that run before the next tool.",
-          "properties": {
-            "op": {
-              "type": "string"
-            },
-            "payload": {
-              "default": null
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "type": {
-              "const": "command_view",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "op",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
           "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites `{\"ok\":true,\"output\":...}` or `{\"ok\":false,\"error_code\":...}`.",
           "properties": {
             "input_json": {
@@ -813,31 +751,6 @@
             "type",
             "name",
             "input_json",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Assign, cancel, or list headless queue tasks for a lead.",
-          "properties": {
-            "op": {
-              "type": "string"
-            },
-            "payload": {
-              "default": null
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "type": {
-              "const": "agent_queue",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "op",
             "response_file"
           ],
           "type": "object"
@@ -3228,7 +3141,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Agents API: heads, runs, delegation, and gated tool calls.\n`op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,\n`show_run`, `finish_run`, or `delegate`. `payload` carries the\nworkspace path and the op's fields. The host writes the JSON result\nto `response_file`.",
+          "description": "Team member runs and gated tool calls.\n`op` is `create_member`, `spawn_run`, `list_runs`,\n`show_run`, `finish_run`, or `delegate`. `payload` carries the\nworkspace path and the op's fields. The host writes the JSON result\nto `response_file`.",
           "properties": {
             "op": {
               "type": "string"

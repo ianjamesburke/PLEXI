@@ -166,10 +166,10 @@ Secrets are scoped by workspace root path — a secret set inside one project is
 
 ### Human Pane Authority and Context Boundary
 
-A human-owned terminal pane (a shell opened by the host for you, with no agent head or agent role attached and not spawned by an agent) carries your user authority by default, **scoped to that pane's context root**:
+A human-owned terminal pane (a shell opened by the host for you, with no team membership or agent role attached and not spawned by an agent) carries your user authority by default, **scoped to that pane's context root**:
 
-- **Context isolation (including nested directories):** Subdirectory contexts are isolated units. A pane in context A has no authority over context B's secrets, heads, or grants, including when context B is nested inside A's directory. Implicit workspace-secret reads and agent-head operations outside that boundary are refused (`permission_denied`). The explicit names-only `secret list --context` inspection described above is a separate user-authorized operation; it does not widen value access.
-- **Agents are narrowed by grants:** Agents and heads created from a human-owned pane receive only the grants explicitly passed with `--grant` (checked as a subset of the human pane's context authority). An agent-spawned pane (including a plain shell created by an agent via `plexi pane new`) never inherits human authority and requires explicit grants.
+- **Context isolation (including nested directories):** Subdirectory contexts are isolated units. A pane in context A has no authority over context B's secrets or grants, including when context B is nested inside A's directory. Implicit workspace-secret reads and team operations outside that boundary are refused (`permission_denied`). The explicit names-only `secret list --context` inspection described above is a separate user-authorized operation; it does not widen value access.
+- **Agents are narrowed by grants:** Team members created from a human-owned pane receive only the grants declared by the team definition (checked as a subset of the human pane's context authority). An agent-spawned pane (including a plain shell created by an agent via `plexi pane new`) never inherits human authority and requires explicit grants.
 - **Not an OS file-access boundary:** This boundary governs the Plexi API (`agents_api` and host tools), secrets, and grant scoping. It is **not** an operating-system filesystem sandbox: a process running in the pane still runs as your OS user and can read or write any file on disk that your OS user can access.
 
 ## Linux storage

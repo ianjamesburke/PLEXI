@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- Removed the head-agent / `leads` experiment, its commands, queue, and dashboard. Team member grants and run tokens remain supported.
+
 Newest releases appear first.
 ## [0.4.0] — 2026-10-17
 

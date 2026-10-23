@@ -282,7 +282,7 @@ fn main() -> eframe::Result {
     let args = strip_profile_args(&raw_args);
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
-        ChangesCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
+        ChangesCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
         DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
         NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
         RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
@@ -321,7 +321,7 @@ fn main() -> eframe::Result {
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, head, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind } => {
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
                             let context_id = resolve_opt_ctx(context_id.as_ref());
                             cli::trace::exit(cli::assistant_send_cli(
@@ -335,12 +335,8 @@ fn main() -> eframe::Result {
                                     status_for: status_for.as_deref(),
                                     client: client.as_deref(),
                                     kind: kind.as_deref(),
-                                    head: head.as_deref(),
                                 },
                             ))
-                        }
-                        AssistantCmd::Open { head } => {
-                            cli::trace::exit(cli::assistant_open_head_cli(&head))
                         }
                         AssistantCmd::Tool { name, input } => {
                             cli::trace::exit(cli::assistant_tool_cli(&name, &input))
@@ -530,33 +526,6 @@ fn main() -> eframe::Result {
                         RelayCmd::Disable => cli::trace::exit(cli::relay::relay_disable_cli()),
                         RelayCmd::Status => cli::trace::exit(cli::relay::relay_status_cli()),
                     },
-                    Commands::CommandView { cmd, follow } => {
-                        if follow && cmd.is_some() {
-                            eprintln!("error: --follow prints the live projection and takes no subcommand");
-                            cli::trace::exit(2);
-                        }
-                        if follow {
-                            cli::trace::exit(cli::command_view_follow_cli());
-                        }
-                        match cmd {
-                            Some(CommandViewCmd::Open) => {
-                                cli::trace::exit(cli::command_view_cli("open", json))
-                            }
-                            Some(CommandViewCmd::Send { lead, text }) => {
-                                cli::trace::exit(cli::command_view_send_cli(&lead, &text))
-                            }
-                            Some(CommandViewCmd::Cancel { run }) => {
-                                cli::trace::exit(cli::command_view_cancel_cli(&run))
-                            }
-                            Some(CommandViewCmd::Resolve { id: _ }) => {
-                                cli::trace::exit(cli::command_view_refused("resolve"))
-                            }
-                            Some(CommandViewCmd::Allow { tool: _ }) => {
-                                cli::trace::exit(cli::command_view_refused("allow"))
-                            }
-                            None => cli::trace::exit(cli::command_view_cli("list", json)),
-                        }
-                    }
                     Commands::Run {
                         command,
                         extra_args,
@@ -712,30 +681,6 @@ fn main() -> eframe::Result {
                             json,
                         )),
                         AgentCmd::Team { cmd } => cli::trace::exit(cli::agent_team_dispatch(cmd, json)),
-                        AgentCmd::Head { cmd } => cli::trace::exit(cli::agent_head_dispatch(cmd, json)),
-                        AgentCmd::Grants { cmd } => {
-                            cli::trace::exit(cli::agent_grants_dispatch(cmd, json))
-                        }
-                        AgentCmd::Run { cmd } => cli::trace::exit(cli::agent_run_dispatch(cmd, json)),
-                        AgentCmd::Assign { head, input } => {
-                            cli::trace::exit(cli::agent_assign_cli(&head, &input, json))
-                        }
-                        AgentCmd::Cancel { id } => {
-                            cli::trace::exit(cli::agent_cancel_cli(&id, json))
-                        }
-                        AgentCmd::Conversation { head, as_head } => {
-                            cli::trace::exit(cli::agent_conversation_cli(&head, as_head.as_deref(), json))
-                        }
-                        AgentCmd::Delegate {
-                            parent_run,
-                            name,
-                            grant,
-                        } => cli::trace::exit(cli::agent_delegate_cli(
-                            &parent_run,
-                            &name,
-                            &grant,
-                            json,
-                        )),
                         AgentCmd::Hook { action } => match action {
                             HookAction::Install {
                                 claude_code,

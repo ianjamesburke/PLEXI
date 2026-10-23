@@ -25,7 +25,6 @@ The owner ruled on 2026-08-01 that **the Assistant app and the agent-swarm/mesh 
 
 This supersedes, on the Assistant and orchestration points only:
 - `2026-08-01-v1-cut.md`: *"Do not pull Assistant, orchestration, browser, marketplace, native WASM distribution, or media editing into this sprint."* Browser, marketplace, WASM distribution, and media editing **stay out**.
-- `assistant-agent-mesh.md`: *"Nothing in this document may be pulled forward into the v1 acceptance set."*
 
 Both documents need editing to match. Until they are, agents will keep reading a stale constraint — one auditor correctly refused a peer-relayed override for exactly this reason.
 
@@ -146,44 +145,11 @@ Video-editor sequencing is superseded by [xml-video-editor.md](xml-video-editor.
 
 ---
 
-## 9. The agent mesh — 14 stints that do not exist
-
-Nothing in `.stint/` decomposes the mesh, and it is now V1. This is the largest unscoped V1 workstream.
-
-**Hard prerequisites — file these before any other mesh stint:**
-
-- **P0. Context-root uniqueness ruling + fix** (M). `context-root-uniqueness-and-rollup.md` exists but **no stint references it**. Per-context heads collide if two contexts share a root. Blocks everything addressed by context root.
-- **P0b. Sandboxed webview pane primitive** (L). No webview crate in the dependency set. Section 7 of the mesh doc is fully inert without it, and the doc says it "does not partially land."
-
-**Then, in dependency order:**
-
-| # | Stint | Size | Depends on |
-|---|---|---|---|
-| 1 | Head registry + addressing (keyed by root path, not `context_id`; `plexi assistant` namespace) | M | P0 |
-| 2 | Drain hardening for assistant records (stable ids, lossless writes, version tag) | M | — (can start now) |
-| 3 | Working memory + eviction-to-pointer | S | 2 |
-| 4 | `ask_question` tool + capability-card aggregation, routing, cycle detection | M | 1, 2 |
-| 5 | Behavioral test gate vs local Meridian backend (fixes reasoning-effort silently dropped on `LocalOpenAiBackend`) | S | 1, 4 |
-| 6 | Routines address a head | S | 1 |
-| 7 | Unprompted messages + per-head budget | S | 1, 2, 6 |
-| 8 | Escalation as a typed record | M | 2, 4 — **share schema with `decision-trust-plane.md`** |
-| 9 | Conversation-surface unification (`Turn` gains stable id + author; head owns the store) | L | 1, 4 — split into 9a/9b if a babysitter queue needs smaller units |
-| 10 | Command-palette head picker | S | 1, 9 |
-| 11 | MCP Apps host-side plane (`ui://`, postMessage bridge, visibility gating) | L | P0b, 2, 0696, 0699 |
-| 12 | Long-running work via MCP Tasks extension | M | 6, 0628 |
-
-**Already covered — do not re-file:** 0628 (feeds #12), 0554 + `assistant-authority-model.md` (the authority plane the mesh explicitly does not change), 0696 and 0699 (feed #11), 0382/0578 (distinct MCP layers), 0558 (feeds #4's authority guarantee).
-
-**Explicitly out of scope per the doc:** A2A/ACP wire-protocol compatibility, per-agent private logs, embedded-vector memory.
-
----
-
 ## 10. Recommended order
 
 1. **Land the merge queue.** It is finished work and it is three days cold.
 2. **Force multipliers** — 0637+0657, 0547, 0670, 0690.
 3. **Owner rulings in §8.** Several block filing, not building.
-4. **File the 14 mesh stints.** P0 and P0b first.
 5. **V1 security and correctness** — 0577 (pending ruling), 0707, 0636, 0693, the 0680-0683 cluster.
 6. **Host stability** — 0694/0705 as one, 0548.
 7. **Mesh substrate** — 0664 chain, 0625, 0668, 0709→0628→0667.

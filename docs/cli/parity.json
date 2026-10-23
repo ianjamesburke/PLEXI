@@ -87,7 +87,7 @@
     "cli": "app open secrets_manager"
   },
   "OpenAssistant": {
-    "cli": "assistant open --head example",
+    "cli": "app open assistant",
     "note": ""
   },
   "RenameContext": {

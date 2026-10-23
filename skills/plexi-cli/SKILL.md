@@ -192,9 +192,6 @@ pane count (`--json` is supported).
 - `plexi assistant tool`: Run one Assistant host tool through the host permission gate
 <!-- /experiment -->
 <!-- experiment: assistant -->
-- `plexi assistant open`: Open an Assistant pane bound to a head
-<!-- /experiment -->
-<!-- experiment: assistant -->
 - `plexi assistant permission`: Observe and resolve pending permission requests
 <!-- /experiment -->
 <!-- experiment: assistant -->
@@ -229,24 +226,6 @@ pane count (`--json` is supported).
 <!-- /experiment -->
 <!-- experiment: relay -->
 - `plexi relay status`: Print the desktop's relay status
-<!-- /experiment -->
-<!-- experiment: command_view -->
-- `plexi command-view`: Show every lead, its runs, and its queue
-<!-- /experiment -->
-<!-- experiment: command_view -->
-- `plexi command-view open`: Open the command view pane in the active context
-<!-- /experiment -->
-<!-- experiment: command_view -->
-- `plexi command-view send`: Send text to a lead
-<!-- /experiment -->
-<!-- experiment: command_view -->
-- `plexi command-view cancel`: Stop a live run before its next tool call
-<!-- /experiment -->
-<!-- experiment: command_view -->
-- `plexi command-view resolve`: Resolve a pending approval
-<!-- /experiment -->
-<!-- experiment: command_view -->
-- `plexi command-view allow`: Record an allow
 <!-- /experiment -->
 - `plexi run`: Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
 - `plexi workspace`: Set up a .plexi/ workspace in your project folder
@@ -339,48 +318,6 @@ pane count (`--json` is supported).
 - `plexi agent hook`: Install or uninstall agent hook integrations
 - `plexi agent hook install`: Install PLEXI agent-state hook integrations
 - `plexi agent hook uninstall`: Remove PLEXI agent-state hook integrations
-<!-- experiment: leads -->
-- `plexi agent head`: Create or list an agent head stored under `.plexi/agents`
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent head create`: Create a head in the current workspace
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent head list`: List heads in the current workspace
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent grants`: Inspect hard and soft tool grants recorded for agent heads in the current workspace
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent grants list`: List tool grants recorded for agent heads in the current workspace
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent run`: Spawn, list, or finish a run of an agent head
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent run spawn`: Claim a run of a head, append a ledger row, and run a model turn
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent run list`: List runs in the current workspace
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent run show`: Show one run
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent run finish`: Mark a run finished so another admission can claim the head
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent assign`: Assign work to a head
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent cancel`: Stop a queued or running headless task before the next tool call
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent conversation`: Read one head's conversation
-<!-- /experiment -->
-<!-- experiment: leads -->
-- `plexi agent delegate`: Start a child run whose grants are a subset of the parent run
-<!-- /experiment -->
 - `plexi context`: Manage the active context (the folder and project scope tied to the current pane)
 - `plexi context rename`: Rename a context (defaults to the calling pane's context)
 - `plexi context close`: Close a context, requesting desktop confirmation when configured

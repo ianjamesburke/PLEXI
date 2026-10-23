@@ -218,7 +218,7 @@ pub struct GrantRecord {
     /// context, or session equality.
     #[serde(default)]
     pub tool_scoped: bool,
-    /// Tool scope for an agent head: actor, tool, and resource still have to
+    /// Tool scope for a team member: actor, tool, and resource still have to
     /// match, but argument bytes do not. Exact call grants leave this false.
     /// A scope grant is still one `GrantRecord` in this store, evaluated by
     /// `matches`. The Permissions app does not use this flag; it uses

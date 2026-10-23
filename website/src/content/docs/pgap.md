@@ -154,7 +154,6 @@ Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an
 | `client` | `string?` | no |
 | `context_id` | `integer?` | no |
 | `conversation_id` | `string?` | no |
-| `head` | `string?` | no |
 | `join_desktop` | `boolean` | no |
 | `kind` | `string?` | no |
 | `pane_id` | `integer?` | no |
@@ -162,26 +161,6 @@ Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an
 | `response_file` | `string` | yes |
 | `status_for` | `string?` | no |
 | `text` | `string` | yes |
-
-### `open_assistant_head`
-
-Open an Assistant pane bound to one head in the active context.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `context_id` | `integer?` | no |
-| `head` | `string` | yes |
-| `response_file` | `string` | yes |
-
-### `command_view`
-
-Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`. Send starts a real lead turn. Cancel sto...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `op` | `string` | yes |
-| `payload` | `any` | no |
-| `response_file` | `string` | yes |
 
 ### `assistant_host_tool`
 
@@ -191,16 +170,6 @@ Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) throug
 |-------|------|----------|
 | `input_json` | `string` | yes |
 | `name` | `string` | yes |
-| `response_file` | `string` | yes |
-
-### `agent_queue`
-
-Assign, cancel, or list headless queue tasks for a lead.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `op` | `string` | yes |
-| `payload` | `any` | no |
 | `response_file` | `string` | yes |
 
 ### `capability_request`
@@ -951,7 +920,7 @@ Names-only explicit-context inventory, admitted for the host-stamped peer.
 
 ### `agents_api`
 
-Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_ru...
+Team member runs and gated tool calls. `op` is `create_member`, `spawn_run`, `list_runs`, `show_run`, `finish_run`, o...
 
 | Field | Type | Required |
 |-------|------|----------|

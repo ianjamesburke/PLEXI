@@ -295,26 +295,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RelayCmd,
     },
-    /// Show every lead, its runs, and its queue. Send and cancel steer those leads.
-    ///
-    /// The rows come from the agents API head records, runs, and each head's
-    /// conversation. `open` shows the same projection in a pane. `send` runs a
-    /// real model turn. `cancel` stops that run. `resolve` and `allow` never
-    /// grant, and an agent pane is refused.
-    ///
-    /// Example: plexi command-view --json
-    /// Example: plexi command-view --follow
-    /// Example: plexi command-view open
-    /// Example: plexi command-view send lead-a "status?"
-    /// Example: plexi command-view cancel run_example
-    #[command(name = "command-view")]
-    CommandView {
-        #[command(subcommand)]
-        cmd: Option<CommandViewCmd>,
-        /// Stream `command.view` events from `plexi.host.command` until interrupted.
-        #[arg(long)]
-        follow: bool,
-    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts).
     ///
@@ -683,52 +663,12 @@ pub enum Commands {
 }
 
 #[derive(Subcommand)]
-pub enum CommandViewCmd {
-    /// Open the command view pane in the active context.
-    Open,
-    /// Send text to a lead. The turn runs in that head's conversation.
-    ///
-    /// Example: plexi command-view send lead-a "status?"
-    Send {
-        /// Lead id
-        lead: String,
-        /// Prompt for that lead
-        text: String,
-    },
-    /// Stop a live run before its next tool call.
-    ///
-    /// Example: plexi command-view cancel run_example
-    Cancel {
-        /// Run id from `command-view --json`
-        run: String,
-    },
-    /// Resolve a pending approval. An agent pane is refused, and this command does not grant.
-    ///
-    /// Example: plexi command-view resolve pending_example
-    Resolve {
-        /// Pending request id
-        id: String,
-    },
-    /// Record an allow. An agent pane is refused, and this command does not grant.
-    ///
-    /// Example: plexi command-view allow --tool assistant.turn
-    Allow {
-        /// Tool name. Ignored. The command does not write a grant.
-        #[arg(long)]
-        tool: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum AssistantCmd {
     /// Submit through the same composer, model, and permission path as the desktop Assistant.
     Send {
         /// Prompt text. Omitted when `--status-for` only reads a pending turn.
         #[arg(long, required_unless_present = "status_for")]
         text: Option<String>,
-        /// Lead id. The turn runs in that head's conversation.
-        #[arg(long)]
-        head: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
         /// Target pane id or name.
@@ -764,14 +704,6 @@ pub enum AssistantCmd {
         /// JSON object passed as the tool input.
         #[arg(long)]
         input: String,
-    },
-    /// Open an Assistant pane bound to a head.
-    ///
-    /// Example: plexi assistant open --head lead-b
-    Open {
-        /// Head id created with `agent head create`.
-        #[arg(long)]
-        head: String,
     },
     /// Observe and resolve pending permission requests. This is not `plexi agent request`.
     Permission {
@@ -2950,7 +2882,7 @@ pub enum AgentCmd {
     /// The host always writes RESULT.md with COMPLETE, PARTIAL, or FAILED status,
     /// member outcomes and valid ballots. Below quorum there is no winner.
     /// Failed/timed-out member panes stay open for inspection.
-    /// Grants use existing head/delegation admission; a team is not authority.
+    /// Grants use team member grant admission; a team is not authority.
     /// Format v0 may change. consult-experts uses pi, claude and codex by default.
     #[command(verbatim_doc_comment)]
     Team {
@@ -3216,156 +3148,6 @@ pub enum AgentCmd {
     Hook {
         #[command(subcommand)]
         action: HookAction,
-    },
-    /// Create or list an agent head stored under `.plexi/agents`.
-    ///
-    /// A head is a named definition. `AGENT.md` is guidance and grants nothing.
-    /// `--grant tool=allow[:hard|:soft]|ask|deny` is the authority the permission gate enforces.
-    ///
-    /// Example: plexi agent head create lead --grant agents.ping=allow --json
-    Head {
-        #[command(subcommand)]
-        cmd: AgentHeadCmd,
-    },
-    /// Inspect hard and soft tool grants recorded for agent heads in the current workspace.
-    ///
-    /// Example: plexi agent grants list --json
-    Grants {
-        #[command(subcommand)]
-        cmd: AgentGrantsCmd,
-    },
-    /// Spawn, list, or finish a run of an agent head.
-    ///
-    /// The same `--admission` returns the original run. A different admission
-    /// while that run is active is `assignment_conflict`.
-    ///
-    /// Example: plexi agent run spawn --head lead --admission adm-1 --json
-    Run {
-        #[command(subcommand)]
-        cmd: AgentRunCmd,
-    },
-    /// Assign work to a head. The task is stored even when no pane is open.
-    ///
-    /// The input file is JSON `{"text":"..."}` or a plain prompt. A running
-    /// host starts it. A stopped host leaves it queued until the next start.
-    ///
-    /// Example: plexi agent assign --head lead-b --input task.json --json
-    Assign {
-        /// Head that should run the task
-        #[arg(long)]
-        head: String,
-        /// Task file. JSON with a `text` field, or the prompt itself.
-        #[arg(long)]
-        input: std::path::PathBuf,
-    },
-    /// Stop a queued or running headless task before the next tool call.
-    ///
-    /// Example: plexi agent cancel --id task_example --json
-    Cancel {
-        /// Task id returned by `agent assign`
-        #[arg(long)]
-        id: String,
-    },
-    /// Read one head's conversation.
-    ///
-    /// `--as` names the lead that is asking. A lead cannot read another
-    /// lead's conversation. Omit `--as` to read as the operator.
-    ///
-    /// Example: plexi agent conversation --head lead-b --json
-    Conversation {
-        /// Head whose conversation to read
-        #[arg(long)]
-        head: String,
-        /// Lead id to act as. A different head is refused.
-        #[arg(long = "as")]
-        as_head: Option<String>,
-    },
-    /// Start a child run whose grants are a subset of the parent run.
-    ///
-    /// A grant the parent does not hold is refused, audited, and filed in Needs-you.
-    /// The child is temporary and does not appear in `agent head list` unless `--all`.
-    ///
-    /// Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
-    Delegate {
-        /// Active parent run id
-        #[arg(long)]
-        parent_run: String,
-        /// Child head name
-        #[arg(long)]
-        name: String,
-        /// Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
-        #[arg(long = "grant")]
-        grant: Vec<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum AgentGrantsCmd {
-    /// List tool grants recorded for agent heads in the current workspace.
-    List,
-}
-
-#[derive(Subcommand)]
-pub enum AgentHeadCmd {
-    /// Create a head in the current workspace.
-    Create {
-        /// Head id (lowercase slug)
-        name: String,
-        /// Display name. Defaults to the head id on the host when omitted.
-        #[arg(long)]
-        display_name: Option<String>,
-        /// Short description stored on the head card
-        #[arg(long)]
-        description: Option<String>,
-        /// Grant, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
-        #[arg(long = "grant")]
-        grant: Vec<String>,
-    },
-    /// List heads in the current workspace.
-    List {
-        /// Include temporary delegated children
-        #[arg(long)]
-        all: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum AgentRunCmd {
-    /// Claim a run of a head, append a ledger row, and run a model turn.
-    Spawn {
-        /// Head id to run
-        #[arg(long)]
-        head: String,
-        /// Admission id. The same id returns the existing run.
-        #[arg(long)]
-        admission: Option<String>,
-        /// Client tag stored on the run and the ledger row
-        #[arg(long)]
-        client_ref: Option<String>,
-        /// `system` or `output`
-        #[arg(long)]
-        kind: Option<String>,
-        /// Input tokens recorded on the ledger row
-        #[arg(long)]
-        input_tokens: Option<u32>,
-        /// Output tokens recorded on the ledger row
-        #[arg(long)]
-        output_tokens: Option<u32>,
-        /// Prompt for the model turn. Defaults to `run` on the host.
-        #[arg(long)]
-        text: Option<String>,
-    },
-    /// List runs in the current workspace.
-    List,
-    /// Show one run.
-    Show {
-        /// Run id
-        id: String,
-    },
-    /// Mark a run finished so another admission can claim the head.
-    Finish {
-        /// Run id
-        id: String,
     },
 }
 
@@ -4374,5 +4156,62 @@ mod tests {
             help.contains("unhide"),
             "expected `pane --help` to show visible alias `unhide`, got:\n{help}"
         );
+    }
+}
+
+#[cfg(test)]
+mod removed_agent_surface_tests {
+    use super::Cli;
+    use clap::{error::ErrorKind, CommandFactory, Parser};
+
+    #[test]
+    fn removed_agent_commands_are_unknown_even_without_experiment_gating() {
+        for verb in [
+            "head",
+            "grants",
+            "run",
+            "assign",
+            "cancel",
+            "conversation",
+            "delegate",
+        ] {
+            let error = Cli::try_parse_from(["plexi", "agent", verb])
+                .err()
+                .expect("removed verb");
+            assert_eq!(
+                error.kind(),
+                ErrorKind::InvalidSubcommand,
+                "{verb}: {error}"
+            );
+        }
+        let error = Cli::try_parse_from(["plexi", "agent", "head", "create", "example"])
+            .err()
+            .expect("removed creation command");
+        assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+        assert!(Cli::command().find_subcommand("command-view").is_none());
+        let error = Cli::try_parse_from(["plexi", "assistant", "open"])
+            .err().expect("removed Assistant opener");
+        assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+        let error = Cli::try_parse_from([
+            "plexi",
+            "assistant",
+            "send",
+            "--text",
+            "hi",
+            "--head",
+            "example",
+        ])
+        .err()
+        .expect("removed routing flag");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+        let mut tree = Cli::command();
+        let help = tree
+            .find_subcommand_mut("agent")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("head"));
+        assert!(help.contains("team"));
+        assert!(help.contains("fleet"));
     }
 }

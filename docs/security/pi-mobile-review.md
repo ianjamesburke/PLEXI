@@ -1,6 +1,6 @@
 # `pi-mobile` Security Review (`0.4.0`)
 
-Static source audit of the open-source [`pi-mobile`](https://github.com/jkeskikangas/pi-mobile) Pi extension package and its bundled companion package `pi-speech` before any installation on Ian's Pi head (`~/.pi/agent/`).
+Static source audit of the open-source [`pi-mobile`](https://github.com/jkeskikangas/pi-mobile) Pi extension package and its bundled companion package `pi-speech` before any installation on Ian's Pi coordinator (`~/.pi/agent/`).
 
 ---
 
@@ -134,7 +134,7 @@ Data leaves the Pi process across three distinct boundaries:
 
 ---
 
-### 6. How `/remote` Exposes the Pi Head (and Other Sessions)
+### 6. How `/remote` Exposes the Pi Coordinator (and Other Sessions)
 
 `pi-mobile` has two sharing modes controlled by `shouldShare()` (`src/index.ts:148`):
 
@@ -145,7 +145,7 @@ const shouldShare = () => !g[HIDDEN] && (loadConfig().enabled || (pi.getFlag("re
 1. **What `/remote` and `/remote pair` do (`src/index.ts:278-292, 319-320`):**
    - Both `connect()` (`/remote`) and `pair()` (`/remote pair`) call `enable()` (`src/index.ts:278-282`), which clears `g[HIDDEN]` and writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json` whenever `cfg.enabled` is `false`.
    - Because **every** running Pi process with `pi-mobile` loaded polls `~/.pi/agent/pi-mobile/config.json` every 1,500 ms via `watchFile(configPath(), { interval: 1500, persistent: false }, sync)` (`src/index.ts:167-171`) and checks `shouldShare()` on `session_start` (`src/index.ts:148-158`), flipping `config.enabled = true` **automatically exposes every active and future Pi session on the machine** to the hub and paired phones!
-   - Ephemeral worker panes spawned by `plexi agent spawn` pass `--no-extensions` (stint `0842`), so they do not load `~/.pi/agent/` packages, **but** any interactive Pi pane (including `babysitter-v3` head/worker panes or ad-hoc `pi` terminals) that loads extensions will join the hub automatically whenever `config.enabled === true`.
+   - Ephemeral worker panes spawned by `plexi agent spawn` pass `--no-extensions` (stint `0842`), so they do not load `~/.pi/agent/` packages, **but** any interactive Pi pane (including `babysitter-v3` coordinator/worker panes or ad-hoc `pi` terminals) that loads extensions will join the hub automatically whenever `config.enabled === true`.
 2. **Per-session sharing (`pi --remote` with `config.enabled: false`):**
    - Starting Pi with `pi --remote` sets `pi.getFlag("remote") === true` (`src/index.ts:85, 148`) for **that single Pi process only**, so it links to the hub on startup without needing `config.enabled === true`.
    - However, because `connect()` and `pair()` both call `enable()` (`src/index.ts:278-282, 286, 320`), running `/remote` or `/remote pair` inside a `pi --remote` session still writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json` unless `enable()` is patched not to mutate `config.json` when `pi.getFlag("remote") === true` (or `"enabled": false` is restored in `config.json` immediately after pairing).
@@ -181,13 +181,13 @@ Specifically:
 3. **Neutralize the `pi-speech` `/voice` collision and cloud-speech egress:**
    - Pre-seed `~/.pi/agent/pi-speech/config.json` (`0600`, read by `loadVoiceConfig()` at `pi-speech/src/config.ts:76-83, 103-109`) with `"stt": "apple"`, `"realtime": "off"`, and `"tts": "off"` (`pi-speech/src/config.ts:11, 17, 29`) so `pi-speech` never calls OpenAI Whisper (`pi-speech/src/stt.ts:419-424`), OpenAI/ChatGPT Realtime (`pi-speech/src/host.ts:152`), or OpenAI TTS (`pi-speech/src/tts.ts:24`). Note that `distill: false` is a per-request parameter on `VoiceHost.transcribe(p)` (`pi-speech/src/host.ts:86, 98`), not a config file setting, so phone speech RPCs (`transcribe`, `distill`, `brief`, `details`, `draftFinish` at `src/bridge.ts:435-468`) will still invoke `registryComplete` (`pi-speech/src/model.ts:77-112`) if `b.voice` is attached.
    - Because Ian's `~/.pi/agent/settings.json` already loads `/Users/ianburke/Documents/GitHub/PLEXI/packages/pi-voice` (`0839`), unpack `pi-mobile-0.4.0.tgz` locally and comment out `registerDictation(pi, complete)` and `registerVoiceMode(pi, complete)` (`src/index.ts:92-93`) to prevent `/voice` and `/dictate` slash-command collisions — and also comment out `b.voice = voice` (`src/index.ts:122`) if you want phone speech RPCs completely disabled (`src/bridge.ts:451`).
-4. **Opt in per-session with `pi --remote`** on the specific Pi head session you want on the phone, and note that both `/remote` and `/remote pair` call `enable()` (`src/index.ts:278-286, 319-320`), which sets `"enabled": true` in `~/.pi/agent/pi-mobile/config.json` unless `enable()` is patched in the local unpacked copy or `"enabled": false` is restored after pairing.
+4. **Opt in per-session with `pi --remote`** on the specific Pi coordinator session you want on the phone, and note that both `/remote` and `/remote pair` call `enable()` (`src/index.ts:278-286, 319-320`), which sets `"enabled": true` in `~/.pi/agent/pi-mobile/config.json` unless `enable()` is patched in the local unpacked copy or `"enabled": false` is restored after pairing.
 
 ---
 
 ## Approved Install & Tailscale Runbook
 
-If Ian approves installing `pi-mobile` for his Pi head, run these exact steps in an external terminal:
+If Ian approves installing `pi-mobile` for his Pi coordinator, run these exact steps in an external terminal:
 
 ### Step 1: Pre-seed locked-down configs (`0700` dirs, `0600` files)
 
@@ -259,16 +259,16 @@ EOF
 chmod 600 ~/.pi/agent/pi-mobile/config.json
 ```
 
-### Step 4: Start only the intended Pi head session with `--remote` and pair
+### Step 4: Start only the intended Pi coordinator session with `--remote` and pair
 
 ```bash
-# Launch only the Pi head session with remote sharing enabled:
+# Launch only the Pi coordinator session with remote sharing enabled:
 pi --remote
 ```
 
-Inside that Pi head session:
+Inside that Pi coordinator session:
 1. Run `/remote pair` and scan the one-time QR code with your phone on the same tailnet within 10 minutes.
-2. Because `pair()` calls `enable()` (`src/index.ts:278-282, 319-320`), which writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json`, immediately reset `"enabled": false` in `~/.pi/agent/pi-mobile/config.json` after pairing (or no-op `enable()` in `src/index.ts:278-282` when `pi.getFlag("remote") === true`) so other Pi sessions on the machine do not auto-join while the `pi --remote` head session stays shared via its `--remote` flag (`src/index.ts:148`).
+2. Because `pair()` calls `enable()` (`src/index.ts:278-282, 319-320`), which writes `"enabled": true` to `~/.pi/agent/pi-mobile/config.json`, immediately reset `"enabled": false` in `~/.pi/agent/pi-mobile/config.json` after pairing (or no-op `enable()` in `src/index.ts:278-282` when `pi.getFlag("remote") === true`) so other Pi sessions on the machine do not auto-join while the `pi --remote` coordinator session stays shared via its `--remote` flag (`src/index.ts:148`).
 3. Verify paired devices with `/remote devices`.
 
 ### Step 5: Teardown / Revocation

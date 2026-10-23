@@ -1290,7 +1290,6 @@ mod tests {
             assert_eq!(monitor.approval_resolution(&pending), Some(ApprovalChoice::Deny));
             assert!(monitor.approve_pending(&pending, ApprovalChoice::Once).is_err(), "late approval must not resume cancelled work");
             assert!(monitor.show_pending(&unrelated).is_some());
-            assert!(!monitor.approval_granted(&pending));
         }
     }
 

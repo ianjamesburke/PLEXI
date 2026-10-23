@@ -1,4 +1,4 @@
-//! Team orchestration over existing heads, worker panes, and validated results.
+//! Team orchestration over existing members, worker panes, and validated results.
 #[cfg(test)]
 mod tests {
     use crate::testing::HostHarness;
@@ -28,7 +28,7 @@ mod tests {
         let run_ids = h.app.team_runs[0].run_ids.clone();
         let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
         // Exercise the same broker entry point used by a run-scoped MCP bearer.
-        let denied = crate::agent::heads::handle_request(
+        let denied = crate::agent::members::handle_request(
             "call",
             &json!({"workspace":workspace,"run_id":run_ids[1],"tool":"agents.review","input_json":"{}"}),
         );
@@ -44,7 +44,7 @@ mod tests {
             assert!(h.app.find_pane_in_any_window(pane).is_some());
         }
         for id in run_ids {
-            let run = crate::agent::heads::handle_request(
+            let run = crate::agent::members::handle_request(
                 "show_run",
                 &json!({"workspace":workspace,"id":id}),
             );
@@ -334,7 +334,7 @@ pub(crate) struct TeamRun {
 }
 fn api(workspace: &Path, op: &str, mut payload: Value) -> Result<Value, String> {
     payload["workspace"] = json!(workspace);
-    let result = crate::agent::heads::handle_request(op, &payload);
+    let result = crate::agent::members::handle_request(op, &payload);
     if result["ok"] == true {
         Ok(result)
     } else {
@@ -351,12 +351,12 @@ fn field(value: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing {key}"))
 }
 impl PlexiApp {
-    pub(crate) fn team_head_for_pane(&self, pane: u64) -> Option<String> {
+    pub(crate) fn team_member_for_pane(&self, pane: u64) -> Option<String> {
         self.team_runs
             .iter()
             .flat_map(|run| &run.members)
             .find(|(id, _)| *id == pane)
-            .map(|(_, head)| head.clone())
+            .map(|(_, member)| member.clone())
     }
     pub(crate) fn start_team(
         &mut self,
@@ -432,13 +432,13 @@ impl PlexiApp {
         });
         api(
             &workspace,
-            "create_head",
+            "create_member",
             json!({
                 "name": id,
                 "temporary": true,
                 "grants": parent_grants,
                 "caller_pane": caller,
-                "caller_head": caller.and_then(|p| self.bound_head_for_pane(p)),
+                "caller_member": caller.and_then(|p| self.bound_member_for_pane(p)),
                 "caller_human_pane": caller_human,
                 "caller_context_root": caller_ctx_root,
                 "caller_context_denied": caller_ctx_denied,
@@ -447,7 +447,7 @@ impl PlexiApp {
         let parent = api(
             &workspace,
             "spawn_run",
-            json!({"head":id,"journal_only":true,"admission":id}),
+            json!({"member":id,"journal_only":true,"admission":id}),
         )?;
         let parent_run = field(&parent["run"], "id")?;
         let spawned = self.spawn_agent_worker_pane(
@@ -524,11 +524,11 @@ impl PlexiApp {
             quote(&crate::platform::ipc::endpoint())
         );
         for (i, member) in run.team.members.iter().enumerate() {
-            let head = format!("{}-{i}", run.run_ids[0].replace('_', "-"));
+            let member_id = format!("{}-{i}", run.run_ids[0].replace('_', "-"));
             let child = api(
                 &run.workspace,
                 "delegate",
-                json!({"parent_run":run.run_ids[0],"name":head,"grants":member.grants}),
+                json!({"parent_run":run.run_ids[0],"name":member_id,"grants":member.grants}),
             )?;
             let child_run = field(&child["run"], "id")?;
             run.run_ids.push(child_run.clone());
@@ -561,7 +561,7 @@ impl PlexiApp {
                 false,
                 None,
             )?;
-            run.members.push((pane, head));
+            run.members.push((pane, member_id));
             crate::host::flight_recorder::record(
                 "team_member_spawn",
                 Some(run.context_id),

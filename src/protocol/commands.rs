@@ -179,24 +179,6 @@ pub enum AppRequest {
         /// Ledger run kind: `system` or `output`. Absent means `output`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
-        /// Lead (head) id. When set, the turn runs in that head's conversation.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        head: Option<String>,
-    },
-    /// Open an Assistant pane bound to one head in the active context.
-    OpenAssistantHead {
-        head: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context_id: Option<u64>,
-        response_file: String,
-    },
-    /// Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`.
-    /// Send starts a real lead turn. Cancel stops that run before the next tool.
-    CommandView {
-        op: String,
-        #[serde(default)]
-        payload: serde_json::Value,
-        response_file: String,
     },
     /// Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)
     /// through the same permission gate the desktop Assistant uses. The host
@@ -204,13 +186,6 @@ pub enum AppRequest {
     AssistantHostTool {
         name: String,
         input_json: String,
-        response_file: String,
-    },
-    /// Assign, cancel, or list headless queue tasks for a lead.
-    AgentQueue {
-        op: String,
-        #[serde(default)]
-        payload: serde_json::Value,
         response_file: String,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
@@ -1137,8 +1112,8 @@ pub enum AppRequest {
         peer_ancestry: Vec<u32>,
         response_file: String,
     },
-    /// Agents API: heads, runs, delegation, and gated tool calls.
-    /// `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,
+    /// Team member runs and gated tool calls.
+    /// `op` is `create_member`, `spawn_run`, `list_runs`,
     /// `show_run`, `finish_run`, or `delegate`. `payload` carries the
     /// workspace path and the op's fields. The host writes the JSON result
     /// to `response_file`.

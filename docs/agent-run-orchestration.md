@@ -8,11 +8,11 @@ The babysitter loop lands stint queues by spawning worker and tester panes, rout
 
 ## Call
 
-**The thesis — "the babysitter head is a workflow engine implemented in prose" — is correct in direction and wrong in sequencing.**
+**The thesis — "the babysitter coordinator is a workflow engine implemented in prose" — is correct in direction and wrong in sequencing.**
 
-Correct, because every failure this loop has produced live is a control-plane failure, not a reasoning failure: a head wedged 3h10m while its own status slot claimed `running`; ~17 lanes each running `cargo build --release` into OOM; stint id collisions; a merge runner correctly refusing a conflict with nowhere to route it. Not one of those was a model reasoning badly about code. They were spawn, wait, admission, liveness, and state — control flow. Control flow written in prose has no type system, no exit codes, and no memory that outlives a context window, which is exactly why `RUN_STATE.md`, the relay-to-a-fresh-pane ritual, the failsafe heartbeat, and the hand-built concurrency caps all exist. Every one of those is a workaround for a missing primitive.
+Correct, because every failure this loop has produced live is a control-plane failure, not a reasoning failure: a coordinator wedged 3h10m while its own status slot claimed `running`; ~17 lanes each running `cargo build --release` into OOM; stint id collisions; a merge runner correctly refusing a conflict with nowhere to route it. Not one of those was a model reasoning badly about code. They were spawn, wait, admission, liveness, and state — control flow. Control flow written in prose has no type system, no exit codes, and no memory that outlives a context window, which is exactly why `RUN_STATE.md`, the relay-to-a-fresh-pane ritual, the failsafe heartbeat, and the hand-built concurrency caps all exist. Every one of those is a workaround for a missing primitive.
 
-Wrong in sequencing, because **porting the loop to code today buys almost nothing.** The host still has no push completion channel, so a Rust or TypeScript control loop would poll `plexi pane slot read` on a timer exactly like the prose head does. It would wedge in a nicer language. The primitives come first; the engine is what you build *on* them, and it is the smaller half of the work.
+Wrong in sequencing, because **porting the loop to code today buys almost nothing.** The host still has no push completion channel, so a Rust or TypeScript control loop would poll `plexi pane slot read` on a timer exactly like the prose coordinator does. It would wedge in a nicer language. The primitives come first; the engine is what you build *on* them, and it is the smaller half of the work.
 
 Wrong also in its implied destination. The reference model — subagents with pushed completion, addressable resume, `isolation: "worktree"` from one flag, automatic concurrency caps, a workflow layer where `pipeline()` and `parallel()` are real functions — is the right set of contracts and the wrong place to put them. Copying it as a babysitter-internal engine would build a private orchestrator inside a repo whose north star is that *every* capability is reachable through the Plexi CLI and that agents and terminals share one inheritable place. **These are Plexi product surface.** A host that can supervise, observe, and resource-govern a fleet of agent panes is the thing Plexi is trying to be. The babysitter is its first consumer, not its owner.
 
@@ -29,7 +29,7 @@ This is the whole spec. Three categories, and the boundary between the first two
 No taste is involved. Every one of these has a right answer derivable from state, and every one of them is currently prose:
 
 - **Queue resolution and sprint re-resolution.** `stint sprint show` is already deterministic; re-resolving after every merge to catch newly-unblocked tasks is a fold, not a judgment.
-- **Lane admission.** Concurrency caps, pause-on-cap. Currently a number in `RUN_CONFIG.toml` that a head must remember to honor. Cargo build serialization is no longer part of this bullet — see `scripts/cargo-with-lease.sh`.
+- **Lane admission.** Concurrency caps, pause-on-cap. Currently a number in `RUN_CONFIG.toml` that a coordinator must remember to honor. Cargo build serialization is no longer part of this bullet — see `scripts/cargo-with-lease.sh`.
 - **Spawn and boot confirmation.** Create pane, wait for a booted idle prompt, fail with a typed error on timeout, close the orphan.
 - **Waiting for a terminal state.** The single highest-value conversion: an event, not a loop.
 - **Liveness.** Whether a lane is alive is an observation about a process, never a claim written by that process.
@@ -46,7 +46,7 @@ None of these have a right answer derivable from state. They are the reason a mo
 - **Batching.** Which stints combine into one PR is taste: shared subsystem, cohesion, whether a split PR could even be CI-green on its own. A dependent-chain-lands-as-one-PR call is judgment about meaning, not about file overlap.
 - **Tier selection** per batch, and mid-run escalation when a lane is fumbling.
 - **Brief authoring** — the overlay of run-specific facts, decisions not yet in task bodies, cross-batch gotchas.
-- **Reading a verdict.** Is this bug list real, a near-pass whose gate merely did not complete, or a false FAIL the head itself caused with a badly-worded criterion? Overruling a FAIL on the record is judgment and must stay judgment.
+- **Reading a verdict.** Is this bug list real, a near-pass whose gate merely did not complete, or a false FAIL the coordinator itself caused with a badly-worded criterion? Overruling a FAIL on the record is judgment and must stay judgment.
 - **Regression vs pre-existing**, and whether a proven-pre-existing finding drops from this PR's gate into a follow-up.
 - **Rebase conflict resolution.**
 - **Escalation and parking.** Deciding a question genuinely needs Ian.
@@ -94,7 +94,7 @@ A lane whose claim says `running` and whose last output is 3 hours old is a **ty
 
 ### 3. Structured returns from a pane agent
 
-Today the head scrapes a 20-line screen tail and parses prose for a verdict. An agent pane must be able to return a **schema-validated JSON result**:
+Today the coordinator scrapes a 20-line screen tail and parses prose for a verdict. An agent pane must be able to return a **schema-validated JSON result**:
 
 - The spawner declares a result schema at brief time.
 - The agent writes its result once, through a typed result channel (not a slot, not scrollback).
@@ -109,7 +109,7 @@ A pane must be addressable by durable name across host restart, and re-briefable
 
 ### 5. Worktree isolation as a primitive
 
-`plexi pane new --worktree <branch>` creates the worktree (through `wtp`, per repo policy) and reclaims it on close when nothing changed. Today this is several steps of prose inside `implement-stint` Phase 2, and a step of prose reaping in the head. One flag.
+`plexi pane new --worktree <branch>` creates the worktree (through `wtp`, per repo policy) and reclaims it on close when nothing changed. Today this is several steps of prose inside `implement-stint` Phase 2, and a step of prose reaping in the coordinator. One flag.
 
 ### 6. Resource leases and machine-pressure admission
 
@@ -122,7 +122,7 @@ The OOM was not caused by a wrong number in a config file. It was caused by the 
 
 ## Where the run's state lives
 
-`RUN_STATE.md` exists because a head's context dies. Once the run record is on disk, that motivation is gone and the file changes role.
+`RUN_STATE.md` exists because a coordinator's context dies. Once the run record is on disk, that motivation is gone and the file changes role.
 
 **The durable run record is an append-only event log**, one run per directory, under the channel profile: `~/.plexi-<channel>/runs/<run-id>/`.
 
@@ -133,12 +133,12 @@ The OOM was not caused by a wrong number in a config file. It was caused by the 
 Everything else becomes a rendering:
 
 - **`RUN_STATE.md` becomes a generated human-readable view** of current state, never authoritative and never hand-written. It stops being a baton because there is nothing to hand off.
-- **`LOG.md` becomes a rendering of the event log**, so telemetry stops depending on a head remembering to append.
+- **`LOG.md` becomes a rendering of the event log**, so telemetry stops depending on a coordinator remembering to append.
 - **`HUMAN_CHECKS.md` stays hand-maintained.** It is a human's to-do list, its checkboxes are human input, and it should not be machine-owned.
 
 **Crash survival:** the event log is fsync-appended before each side effect is taken, so a crash loses at most one in-flight action and never loses the record of one that completed. Panes outlive the supervisor — they are host-owned processes — so a supervisor crash orphans nothing.
 
-**Resume means reconcile, not replay-and-trust.** On restart the supervisor folds the event log to a believed state, then **verifies that belief against the world** before continuing: pane liveness by name, PR state via `gh`, task state via `stint show`, installed-build head sha. The current skill says the opposite — "trust the baton, it exists so you start clean" — and that instruction is correct only because the baton is all a fresh head has. With a real record it becomes wrong: the baton says what was intended, the world says what happened, and where they disagree the world wins.
+**Resume means reconcile, not replay-and-trust.** On restart the supervisor folds the event log to a believed state, then **verifies that belief against the world** before continuing: pane liveness by name, PR state via `gh`, task state via `stint show`, installed-build coordinator sha. The current skill says the opposite — "trust the baton, it exists so you start clean" — and that instruction is correct only because the baton is all a fresh coordinator has. With a real record it becomes wrong: the baton says what was intended, the world says what happened, and where they disagree the world wins.
 
 ---
 
@@ -146,17 +146,17 @@ Everything else becomes a rendering:
 
 Each of these was observed live. A design that does not close it by construction is not done.
 
-**A head wedged 3h10m while its slot read `state=running`.** Closed by primitive 2: the claim and the observation are separate fields and a supervisor raises `stale-claim` from the observation. Additionally, no lane may be in a phase without a deadline — a phase with no bounded duration is a design error, not a long task.
+**A coordinator wedged 3h10m while its slot read `state=running`.** Closed by primitive 2: the claim and the observation are separate fields and a supervisor raises `stale-claim` from the observation. Additionally, no lane may be in a phase without a deadline — a phase with no bounded duration is a design error, not a long task.
 
 **A status slot that is a claim, not liveness.** Same primitive, stated as an invariant: *no consumer may make a scheduling decision from `claimed_state` alone.* This is enforceable in code — the API that returns a claim returns it alongside its observation, so reading one without the other is not expressible.
 
 **~17 lanes each running `cargo build --release` into OOM.** The part of this that was "nothing serialized concurrent builds" is closed: `scripts/cargo-with-lease.sh` wraps every cargo invocation in a kernel `flock`, so builds queue instead of racing, and a killed client releases the lock for free. What remains for primitive 6 is machine-wide pressure admission — caps as host-held leases instead of remembered numbers, gating on swap growth and build-process count across *all* consumers, not just cargo. `prewarm_release_build` re-enabling is now a policy call, not blocked on missing serialization.
 
-**A merge runner correctly refusing conflicts, with the conflicts then needing a head.** A conflict is a **typed lane outcome**, not an escalation performed by prose. It transitions the lane to `needs-judgment` — a first-class queue with a reason, the artifacts, and the blocked lane attached. Judgment work being queueable rather than shouted is what lets a supervisor keep running while a conflict waits, and it is the same queue that receives disputed FAILs and parked questions. The `merge_runner_escalates_on` list becomes the set of outcomes that route here.
+**A merge runner correctly refusing conflicts, with the conflicts then needing a coordinator.** A conflict is a **typed lane outcome**, not an escalation performed by prose. It transitions the lane to `needs-judgment` — a first-class queue with a reason, the artifacts, and the blocked lane attached. Judgment work being queueable rather than shouted is what lets a supervisor keep running while a conflict waits, and it is the same queue that receives disputed FAILs and parked questions. The `merge_runner_escalates_on` list becomes the set of outcomes that route here.
 
 **Stint id collisions from untracked task files.** Id allocation is `ls | grep | sort | tail -1` — a read-modify-write with no lock, run concurrently by many lanes. It must become an atomic reservation owned by the `stint` CLI (a reserve-then-write verb under a lockfile), the same way `stint claim` is already lock-protected. **Note the repo tension:** `.stint/` is gitignored by design (`AGENTS.md`, "Tasks and Issues"), so "commit the task files" is not available here as a mitigation — which makes atomic allocation the only fix, not a nicety.
 
-**A tester producing a false FAIL from a badly-worded mechanical criterion.** Closed structurally by primitive 3's verdict schema. Every criterion carries a `source` citing where in the task's Done-When it came from. A criterion with no source is rejected at brief-construction time, by code, before a tester ever sees it — which makes "never write a grep-returns-nothing proxy for a semantic requirement" an invariant instead of a paragraph of prose the head must remember. Overruling a FAIL remains judgment, and the override is recorded in the event log with its reason.
+**A tester producing a false FAIL from a badly-worded mechanical criterion.** Closed structurally by primitive 3's verdict schema. Every criterion carries a `source` citing where in the task's Done-When it came from. A criterion with no source is rejected at brief-construction time, by code, before a tester ever sees it — which makes "never write a grep-returns-nothing proxy for a semantic requirement" an invariant instead of a paragraph of prose the coordinator must remember. Overruling a FAIL remains judgment, and the override is recorded in the event log with its reason.
 
 ---
 
@@ -164,12 +164,12 @@ Each of these was observed live. A design that does not close it by construction
 
 The babysitter is load-bearing and runs nightly. Every step below is independently valuable, ships behind the prose skill continuing to work, and deletes a specific workaround when it lands. No step requires the next one.
 
-1. **Instrument first, change nothing.** The prose head appends the run's events to `events.jsonl` alongside everything it already does. Zero behavior change. This buys real data on phase durations and failure frequency, and it validates the event schema against a live run before any code depends on it.
+1. **Instrument first, change nothing.** The prose coordinator appends the run's events to `events.jsonl` alongside everything it already does. Zero behavior change. This buys real data on phase durations and failure frequency, and it validates the event schema against a live run before any code depends on it.
 2. **Pane lifecycle events + `pane wait`** (primitive 1). The skill's polling loops become single blocking waits immediately. Deletes the hand-built `until` loops and demotes `check_interval_seconds` to what it already claims to be.
-3. **Observed liveness / job supervisor** (primitive 2, stint 0628). Deletes the wedge class and the `RUN_CONFIG` note that head-engine choice is a mechanics exception — a Codex head becomes viable the day liveness is a host invariant rather than an agent capability.
+3. **Observed liveness / job supervisor** (primitive 2, stint 0628). Deletes the wedge class and the `RUN_CONFIG` note that coordinator-engine choice is a mechanics exception — a Codex coordinator becomes viable the day liveness is a host invariant rather than an agent capability.
 4. **Structured returns** (primitive 3). Deletes verdict scraping, the capture-forms cost table, and the sub-agent-for-long-reports escalation.
 5. **Leases and admission** (primitive 6). Deletes `[limits]` as an honor system.
-6. **Run record + `plexi run` CLI** — create, show, resume — with the prose head still driving. State moves off context onto disk. `RUN_STATE.md` becomes generated.
+6. **Run record + `plexi run` CLI** — create, show, resume — with the prose coordinator still driving. State moves off context onto disk. `RUN_STATE.md` becomes generated.
 7. **The control loop moves into code.** A supervisor executes the deterministic column, and calls a model agent for each judgment step with a typed question and a typed answer. This is the last step, not the first, and by the time it arrives it is small.
 
 **Gate between steps 6 and 7:** run both paths against the same queue for one night and require the code path to reproduce the prose path's outcomes. The prose orchestration is retired only after that, and `SKILL.md` is then cut down to the judgment brief library — not deleted, because the judgment column does not go away.

@@ -13,8 +13,6 @@ pub enum GatePath {
 pub enum ReleaseFeature {
     Assistant,
     AiSetup,
-    Leads,
-    CommandView,
     ChangeSets,
     Ledger,
     Relay,
@@ -34,8 +32,6 @@ impl ReleaseFeature {
     pub const ALL: &'static [ReleaseFeature] = &[
         Self::Assistant,
         Self::AiSetup,
-        Self::Leads,
-        Self::CommandView,
         Self::ChangeSets,
         Self::Ledger,
         Self::Relay,
@@ -56,8 +52,6 @@ impl ReleaseFeature {
         match self {
             Self::Assistant => "assistant",
             Self::AiSetup => "ai_setup",
-            Self::Leads => "leads",
-            Self::CommandView => "command_view",
             Self::ChangeSets => "change_sets",
             Self::Ledger => "ledger",
             Self::Relay => "relay",
@@ -82,8 +76,6 @@ impl ReleaseFeature {
         match self {
             Self::Assistant => "Host AI assistant pane and the `assistant` commands",
             Self::AiSetup => "Guided AI backend setup (`ai setup`, `ai onboard`)",
-            Self::Leads => "Named agent leads, runs, delegation and the assignment queue",
-            Self::CommandView => "Leads dashboard pane and `command-view`",
             Self::ChangeSets => "Preview and accept agent edits (`changes`)",
             Self::Ledger => "Token and cost summary (`ledger`)",
             Self::Relay => "Phone pairing and turns through the Plexi relay",
@@ -104,7 +96,7 @@ impl ReleaseFeature {
     /// takes effect after `plexi host restart`. Pure CLI gates re-read the
     /// config on every invocation.
     pub fn requires_restart(self) -> bool {
-        !matches!(self, Self::AiSetup | Self::Leads | Self::Ledger)
+        !matches!(self, Self::AiSetup | Self::Ledger)
     }
 
     /// The clap paths this experiment owns. Empty for runtime-only surfaces
@@ -114,16 +106,6 @@ impl ReleaseFeature {
         match self {
             Self::Assistant => &[Sub(&["assistant"])],
             Self::AiSetup => &[Sub(&["ai", "setup"]), Sub(&["ai", "onboard"])],
-            Self::Leads => &[
-                Sub(&["agent", "head"]),
-                Sub(&["agent", "grants"]),
-                Sub(&["agent", "run"]),
-                Sub(&["agent", "assign"]),
-                Sub(&["agent", "cancel"]),
-                Sub(&["agent", "conversation"]),
-                Sub(&["agent", "delegate"]),
-            ],
-            Self::CommandView => &[Sub(&["command-view"])],
             Self::ChangeSets => &[Sub(&["changes"])],
             Self::Ledger => &[Sub(&["ledger"])],
             Self::Relay => &[Sub(&["relay"])],

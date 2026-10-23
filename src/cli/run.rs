@@ -52,7 +52,6 @@ const PLEXI_SUBCOMMANDS: &[&str] = &[
     "ledger",
     "debug",
     "skill",
-    "command-view",
     "changes",
     "account",
     "relay",

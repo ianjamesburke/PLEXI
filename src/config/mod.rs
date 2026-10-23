@@ -2644,6 +2644,17 @@ mod tests {
     }
 
     #[test]
+    fn removed_experiment_config_is_not_a_known_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for section in ["leads", "command_view"] {
+            fs::write(&path, format!("[{section}]\nenabled = true\n")).unwrap();
+            let diagnostics = validate_from_path(&path);
+            assert!(diagnostics.iter().any(|d| d.to_string().contains(&format!("unknown key `{section}`"))));
+        }
+    }
+
+    #[test]
     fn validate_unknown_key_in_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

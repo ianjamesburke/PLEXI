@@ -187,6 +187,17 @@ mod tests {
     }
 
     #[test]
+    fn removed_experiments_are_unknown_even_when_disabled() {
+        for name in ["leads", "command_view"] {
+            assert_eq!(ReleaseFeature::from_key(name), None);
+            for enabled in [true, false] {
+                let error = parse_experiments(&BTreeMap::from([(name.to_string(), enabled)])).unwrap_err();
+                assert!(error.contains(&format!("unknown experiment `{name}`")), "{error}");
+            }
+        }
+    }
+
+    #[test]
     fn keys_are_unique_and_round_trip() {
         let mut seen = BTreeSet::new();
         for feature in ReleaseFeature::ALL {
@@ -203,8 +214,8 @@ mod tests {
     #[test]
     fn unavailable_text_names_the_enable_command() {
         assert_eq!(
-            feature_unavailable_text(ReleaseFeature::CommandView),
-            "command_view is an experiment. Turn it on with: plexi experiments enable command_view"
+            feature_unavailable_text(ReleaseFeature::Relay),
+            "relay is an experiment. Turn it on with: plexi experiments enable relay"
         );
     }
 

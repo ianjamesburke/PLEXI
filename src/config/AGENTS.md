@@ -22,3 +22,7 @@ Configuration loading, validation, channel-scoped profile dirs, and workspace co
 ## Style
 
 Document stable contracts, not history. If a rule here stops being true after a refactor, update it in the same change; otherwise leave it alone.
+
+## Traps
+
+- **Shared Cargo targets can reuse a config-doc generator from another worktree.** `gen_config_docs` embeds `CARGO_MANIFEST_DIR` and reads that checkout's config sources at runtime. If its output contains keys absent from the current tree, force the generator to recompile (touch `tools/gen_config_docs/src/main.rs` before `cargo run -p gen_config_docs`) and compare again. Do not copy another checkout's generated config into this one.
