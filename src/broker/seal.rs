@@ -373,7 +373,6 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(path: &Path) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    existing_mac_key(&dir)?;
     let tip = match tip_lookup(path) {
         Ok(value) => value,
         Err(error) if super::host_key::is_key_unreadable(&error) => return Err(error),
@@ -384,11 +383,13 @@ pub fn verify_audit(path: &Path) -> Result<(), String> {
     };
     if !path.exists() {
         return if tip.is_some() {
+            existing_mac_key(&dir)?;
             Err("audit log deleted".to_string())
         } else {
             Ok(())
         };
     }
+    existing_mac_key(&dir)?;
     let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
     let lines = content_lines(&raw);
     if lines.is_empty() {
@@ -475,6 +476,9 @@ pub(crate) fn legacy_unsealed_body(path: &Path) -> Option<String> {
 /// A read error is sealed. Legacy adopt must not run when the host store
 /// cannot prove the profile is untouched.
 pub(crate) fn profile_never_sealed(dir: &Path) -> bool {
+    if !has_any_profile_seal_files(dir) {
+        return true;
+    }
     match existing_mac_key(dir) {
         Ok(None) => {}
         Ok(Some(_)) => return false,
@@ -552,7 +556,13 @@ pub fn scrub_pane_env(env: &mut HashMap<String, String>, agent_pane: bool) {
         Ok(Some(bytes)) => Some(Zeroizing::new(hex_encode(bytes.as_slice()))),
         Ok(None) => None,
         Err(error) => {
-            log::error!("permission_seal: pane env scrub could not read the mac key: {error}");
+            if has_any_profile_seal_files(&profile) {
+                log::error!("permission_seal: pane env scrub could not read the mac key: {error}");
+            } else {
+                log::debug!(
+                    "permission_seal: pane env scrub skipped mac key lookup on unsealed profile ({error})"
+                );
+            }
             None
         }
     };
@@ -721,6 +731,20 @@ fn ensure_host_state_dir(dir: &Path) -> Result<PathBuf, String> {
     Ok(host)
 }
 
+/// True when `dir` has any permission, audit, queue, or seal file on disk.
+/// A completely fresh profile with none of these files has nothing to verify
+/// or rotate on startup.
+pub(crate) fn has_any_profile_seal_files(dir: &Path) -> bool {
+    let host = dir.join("host");
+    dir.join("grants.toml").exists()
+        || dir.join("permissions.toml").exists()
+        || dir.join("permission-audit.jsonl").exists()
+        || host.join("seal-state.json").exists()
+        || host.join("needs-you.json").exists()
+        || host.join("seal.key").exists()
+        || host.join("continuations.json").exists()
+}
+
 fn has_sealed_files_on_disk(dir: &Path) -> bool {
     let grants = dir.join("grants.toml");
     if std::fs::read_to_string(&grants).is_ok_and(|text| text.rfind(MAC_PREFIX).is_some()) {
@@ -759,17 +783,16 @@ fn read_seal_state(dir: &Path) -> SealStateStatus {
     }
     match read_sealed_with_dir(&path, dir) {
         SealStatus::Absent => {
+            if !has_sealed_files_on_disk(dir) {
+                return SealStateStatus::Absent;
+            }
             if let Err(error) = existing_mac_key(dir) {
                 if super::host_key::is_key_unreadable(&error) {
                     return SealStateStatus::KeyUnreadable(error);
                 }
                 return SealStateStatus::Untrusted(error);
             }
-            if has_sealed_files_on_disk(dir) {
-                SealStateStatus::Untrusted("seal-state.json is missing".to_string())
-            } else {
-                SealStateStatus::Absent
-            }
+            SealStateStatus::Untrusted("seal-state.json is missing".to_string())
         }
         SealStatus::KeyUnreadable(reason) => SealStateStatus::KeyUnreadable(reason),
         SealStatus::Rejected(reason) => {
@@ -979,8 +1002,13 @@ pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, Strin
 ///
 /// An auth failure rotates the key and resets grants that cannot be verified.
 /// A delete that still needs a prompt returns that error so startup can file
-/// Needs you without blocking on a dialog.
+/// Needs you without blocking on a dialog. A fresh profile with no seal or
+/// permission files on disk yet is ready immediately without probing the
+/// host seal store.
 pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
+    if !has_any_profile_seal_files(dir) {
+        return Ok(MacRecovery::Ready);
+    }
     match existing_mac_key(dir) {
         Ok(_) => Ok(MacRecovery::Ready),
         Err(error) if super::host_key::is_key_unreadable(&error) => {

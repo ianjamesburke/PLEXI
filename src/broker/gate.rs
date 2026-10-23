@@ -6375,6 +6375,60 @@ mod tests {
             Some(r#"{"ok":true,"revision_after":"rev-2"}"#)
         );
     }
+
+    #[test]
+    fn fresh_profile_first_launch_files_no_integrity_items_even_without_secret_service() {
+        let _unavailable = crate::broker::host_key::UnavailableHostKeyStore::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        crate::broker::host_key::reset_backend_get_calls();
+
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert!(
+            monitor.open_needs_you().is_empty(),
+            "first launch on an empty profile must not raise spurious Needs attention items: {:?}",
+            monitor.open_needs_you()
+        );
+        assert_eq!(
+            crate::broker::host_key::backend_get_calls(),
+            0,
+            "an empty unsealed profile has no files to verify on first launch"
+        );
+        assert!(
+            !dir.path().join("host").join("seal-state.json").exists(),
+            "empty startup must not write an untrusted seal-state.json"
+        );
+        assert_no_untrusted(dir.path());
+    }
+
+    #[test]
+    fn tampered_files_on_profile_still_file_integrity_when_secret_service_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-tamper"}"#;
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let _ = admit_of(&monitor, &base, args);
+        crate::broker::integrity::mark_clean_shutdown(dir.path());
+        drop(monitor);
+
+        // Now simulate Secret Service disappearing while sealed files exist on disk.
+        let _unavailable = crate::broker::host_key::UnavailableHostKeyStore::acquire();
+        let reopened = PermissionMonitor::open_profile(dir.path());
+        let open = reopened.open_needs_you();
+        assert!(
+            open.iter()
+                .any(|row| row.kind == NeedsYouKind::Integrity && row.resource == "needs-you"),
+            "existing sealed queue that cannot be verified must raise Queue integrity: {open:?}"
+        );
+        assert!(
+            open.iter().any(|row| {
+                row.kind == NeedsYouKind::Integrity && row.resource == "permission-audit.jsonl"
+            }),
+            "existing sealed audit log that cannot be verified must raise Integrity: {open:?}"
+        );
+    }
 }
 
 impl PermissionMonitor {

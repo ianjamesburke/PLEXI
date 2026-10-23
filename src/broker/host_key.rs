@@ -560,6 +560,8 @@ struct MacFault {
     stable_feasible: bool,
     /// Deleting an unreadable item would raise a keychain prompt.
     delete_unreadable_needs_prompt: bool,
+    /// Secret Service / host seal store is absent (e.g. headless Linux session bus missing).
+    service_unavailable: bool,
     interactive_reads: u32,
     backend_gets: u32,
     block: KeychainBlock,
@@ -575,6 +577,7 @@ fn mac_fault() -> &'static Mutex<MacFault> {
         generation: 0,
         stable_feasible: true,
         delete_unreadable_needs_prompt: false,
+        service_unavailable: false,
         interactive_reads: 0,
         backend_gets: 0,
         block: KeychainBlock::None,
@@ -788,6 +791,34 @@ impl Drop for UnreadableMacKey {
         fault.delete_unreadable_needs_prompt = false;
         fault.interactive_reads = 0;
         drop(fault);
+        clear_session_mac();
+    }
+}
+
+/// Simulates a missing OS secret store (e.g. Linux Secret Service / D-Bus session
+/// bus absent), where every host-key backend operation fails with
+/// `plaintext_seal_refusal`.
+#[cfg(test)]
+pub(crate) struct UnavailableHostKeyStore {
+    _exclusive: ExclusiveHostKey,
+}
+
+#[cfg(test)]
+impl UnavailableHostKeyStore {
+    pub(crate) fn acquire() -> Self {
+        let exclusive = ExclusiveHostKey::acquire();
+        clear_session_mac();
+        lock_fault().service_unavailable = true;
+        Self {
+            _exclusive: exclusive,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for UnavailableHostKeyStore {
+    fn drop(&mut self) {
+        lock_fault().service_unavailable = false;
         clear_session_mac();
     }
 }
@@ -1127,7 +1158,13 @@ impl MemoryBackend {
 impl HostKeyBackend for MemoryBackend {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
         {
-            lock_fault().backend_gets += 1;
+            let mut fault = lock_fault();
+            fault.backend_gets += 1;
+            if fault.service_unavailable {
+                return Err(plaintext_seal_refusal(
+                    "Failed to connect to address `unix:path=/run/user/1000/bus`: No such file or directory (os error 2)",
+                ));
+            }
         }
         wait_out_keychain_block(BlockKind::Call);
         let mut map = self
@@ -1151,6 +1188,11 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), String> {
+        if lock_fault().service_unavailable {
+            return Err(plaintext_seal_refusal(
+                "Failed to connect to address `unix:path=/run/user/1000/bus`: No such file or directory (os error 2)",
+            ));
+        }
         wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
@@ -1164,6 +1206,11 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn set(&self, account: &str, value: &str) -> Result<(), String> {
+        if lock_fault().service_unavailable {
+            return Err(plaintext_seal_refusal(
+                "Failed to connect to address `unix:path=/run/user/1000/bus`: No such file or directory (os error 2)",
+            ));
+        }
         wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
@@ -1180,6 +1227,11 @@ impl HostKeyBackend for MemoryBackend {
     }
 
     fn delete(&self, account: &str) -> Result<(), String> {
+        if lock_fault().service_unavailable {
+            return Err(plaintext_seal_refusal(
+                "Failed to connect to address `unix:path=/run/user/1000/bus`: No such file or directory (os error 2)",
+            ));
+        }
         wait_out_keychain_block(BlockKind::Call);
         let mut map = self
             .values
