@@ -182,9 +182,7 @@ mod tests {
     fn cli_trace_valid_grants_are_not_content() {
         let argv = [
             "plexi",
-            "agent",
-            "head",
-            "create",
+            "run",
             "reviewer",
             "--grant",
             "agents.ping=allow",
