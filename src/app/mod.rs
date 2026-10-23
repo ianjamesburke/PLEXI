@@ -1,4 +1,5 @@
 pub(crate) mod approval_keyboard;
+pub mod attention_queue;
 mod cli_actions;
 pub mod account;
 pub mod command_view_app;
@@ -47,6 +48,7 @@ mod conjoined;
 mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
+pub mod zoom;
 
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
@@ -57,7 +59,7 @@ pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
 pub(crate) use notifications::{
-    load_pending_notifications_from, PendingNotification, NOTIFY_OUTCOME_CANCELLED,
+    load_pending_notifications_from, PendingNotification,
 };
 
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
@@ -325,11 +327,6 @@ pub struct PlexiApp {
     pub(crate) text_overlay_browse_rx: Option<mpsc::Receiver<Option<PathBuf>>>,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
-    /// Whether the centered notification modal is visible. Primary (and only)
-    /// surface; auto-shown when a new notification arrives unless
-    /// `notifications.focus_mode` is on, in which case the modal only opens
-    /// on Cmd+Shift+A.
-    pub(crate) show_notification_modal: bool,
     /// Needs attention review state (`src/overlays/attention.rs`).
     pub(crate) attention: crate::overlays::attention::AttentionState,
     /// ID of the notification the modal is currently showing. `None` means
@@ -343,11 +340,14 @@ pub struct PlexiApp {
     pub(crate) current_notify_id: Option<String>,
     /// Focused option index for `kind = "choice"` notifications (0-based).
     /// Reset to 0 whenever the front of the queue changes.
+    #[allow(dead_code)]
     pub(crate) modal_focused_option: usize,
     /// Buffer for `kind = "input"` notifications.
+    #[allow(dead_code)]
     pub(crate) modal_input_buffer: String,
     /// Input drafts keyed by notification id. Later and queue cycling are
     /// non-terminal, so they must not discard text the user already entered.
+    #[allow(dead_code)]
     pub(crate) notification_input_drafts: HashMap<String, String>,
     /// Text being composed in the quick note modal.
     pub(crate) quick_note_text: String,
@@ -387,6 +387,7 @@ pub struct PlexiApp {
     pub(crate) notes_index_loaded: bool,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
+    #[allow(dead_code)]
     pub(crate) modal_state_notify_id: String,
     /// Lazily-decoded image-render state for notifications that carry an
     /// `image_inline` or `image_pipe_id` attachment (#74). Keyed by
@@ -618,9 +619,8 @@ pub struct PlexiApp {
     /// positions.
     pub(crate) pending_pane_pointer_frames:
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
-    /// Last pending id the banner logged, so a painted sheet is one info
-    /// line rather than one per frame.
-    approval_banner_logged: Option<String>,
+    pub zoom: zoom::ZoomState,
+    pub attention_queue: attention_queue::AttentionQueueState,
     approval_keyboard: approval_keyboard::ApprovalKeyboard,
     // Drop after the host resources that may still refer to these test paths.
     #[cfg(test)]
@@ -1663,7 +1663,6 @@ impl PlexiApp {
                     pending_notifications: load_pending_notifications_from(
                         &profile_dir.join("notifications.json"),
                     ),
-                    show_notification_modal: false,
                     attention: Default::default(),
                     current_notify_id: None,
                     modal_focused_option: 0,
@@ -1749,7 +1748,8 @@ impl PlexiApp {
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
-                    approval_banner_logged: None,
+                    zoom: zoom::ZoomState::default(),
+                    attention_queue: attention_queue::AttentionQueueState::default(),
                     approval_keyboard: Default::default(),
                 };
                 app.apply_context_transition_effects();
@@ -1934,7 +1934,6 @@ impl PlexiApp {
             pending_notifications: load_pending_notifications_from(
                 &crate::config::config_dir().join("notifications.json"),
             ),
-            show_notification_modal: false,
             attention: Default::default(),
             current_notify_id: None,
             modal_focused_option: 0,
@@ -2015,7 +2014,8 @@ impl PlexiApp {
             pending_pane_inputs: HashMap::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
-            approval_banner_logged: None,
+            zoom: zoom::ZoomState::default(),
+            attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
         };
         // Seed the base root terminal so a fresh profile boots straight into a
@@ -2865,7 +2865,6 @@ impl PlexiApp {
                     views
                 },
                 pending_notifications: Vec::new(),
-                show_notification_modal: false,
                 attention: Default::default(),
                 current_notify_id: None,
                 modal_focused_option: 0,
@@ -2944,7 +2943,8 @@ impl PlexiApp {
                 pending_pane_inputs: HashMap::new(),
                 pending_pane_drags: HashMap::new(),
                 pending_pane_pointer_frames: HashMap::new(),
-                approval_banner_logged: None,
+                zoom: zoom::ZoomState::default(),
+                attention_queue: attention_queue::AttentionQueueState::default(),
                 approval_keyboard: Default::default(),
             };
         // Launch paths allocate through HostModel, which otherwise starts at 1
@@ -3749,7 +3749,9 @@ impl eframe::App for PlexiApp {
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
         // A close chord belongs to the top modal, never the pane beneath it.
         // Reuse that modal's Escape/cancel contract, including unsaved-work vetoes.
-        if self.input_captured_by_overlay() {
+        let modal_focus_open =
+            !self.focus_stack.is_empty() || (self.sidebar_visible && self.renaming_window.is_some());
+        if modal_focus_open {
             let binding = self.key_bindings.close_pane;
             let mut claimed = false;
             ctx.input_mut(|input| {
@@ -3769,7 +3771,7 @@ impl eframe::App for PlexiApp {
             }
         }
         let mut early_modal_cmds: Vec<crate::app::app_trait::AppCommand> = Vec::new();
-        let overlay_key_disposition = if self.input_captured_by_overlay() {
+        let mut overlay_key_disposition = if modal_focus_open {
             // Ownership-transfer (stint 0240): take this frame's input-intent
             // events out of `ctx` once, hand them to the top `FocusKind`
             // below, then give back whatever it didn't claim before rendering
@@ -3786,7 +3788,6 @@ impl eframe::App for PlexiApp {
             if qn_pressed && self.is_quick_note_preemptable() {
                 self.dismiss_preemptable_modal();
                 self.open_quick_note_modal();
-                self.sync_notification_modal_focus();
                 self.sync_command_palette_focus();
                 log::info!("quick_note: opened by preempting non-critical modal");
                 router_input.give_back(ctx);
@@ -3808,17 +3809,13 @@ impl eframe::App for PlexiApp {
                 // already done above). `handle_key` may have popped or replaced
                 // the top layer (NotesPicker/QuickNote/ContextDescription
                 // self-close), so re-read the current top rather than reusing
-                // the kind dispatched above. Only the notification modal's
-                // `draw` returns commands; every other owner returns an empty
-                // vec, leaving `early_modal_cmds` empty as before.
+                // the kind dispatched above.
                 if let Some(kind) = self.focus_stack.last().copied() {
                     early_modal_cmds = kind.owner().draw(self, ctx);
                 }
-                // The overlay may have self-closed (notification queue drained,
-                // confirm-close confirmed/cancelled, palette picked an entry,
-                // rename committed). Re-sync so the layer is accurate for the
-                // rest of this frame.
-                self.sync_notification_modal_focus();
+                // The overlay may have self-closed (confirm-close confirmed/cancelled,
+                // palette picked an entry, rename committed). Re-sync so the layer is
+                // accurate for the rest of this frame.
                 self.sync_confirm_close_focus();
                 self.sync_context_close_focus();
                 self.sync_command_palette_focus();
@@ -3888,6 +3885,20 @@ impl eframe::App for PlexiApp {
                 overlay_open,
                 self.show_shortcuts,
             ));
+        }
+        // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
+        // Attention Queue list, Sibling Cards, Tree Atlas) after Global chords
+        // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
+        // `poll_actions` above, swallowing all remaining bare keys and `Cmd+V`
+        // so nothing leaks to any underlying pane (R40).
+        if !modal_focus_open {
+            if self.attention_queue.decision_overlay.is_some() {
+                overlay_key_disposition = self.handle_decision_overlay_input(&mut router_input);
+            } else if self.attention_queue.open {
+                overlay_key_disposition = self.handle_attention_queue_list_input(&mut router_input);
+            } else if self.zoom.level != zoom::ZoomLevel::Columns {
+                overlay_key_disposition = self.handle_zoom_surface_input(&mut router_input);
+            }
         }
         router_input.give_back(ctx);
 
@@ -4041,10 +4052,10 @@ impl eframe::App for PlexiApp {
                     let old_active_window = self.active_window;
                     let old_focus = self.windows[self.active_window].focused_pane;
                     let old_window_id = self.windows[self.active_window].window_id;
-                    let navigated = self.navigate(dir);
+                    let navigated = self.navigate_at_current_zoom_level(dir);
                     let new_window_id = self.windows[self.active_window].window_id;
                     let new_focus = self.windows[self.active_window].focused_pane;
-                    if navigated {
+                    if navigated && self.zoom.level == zoom::ZoomLevel::Columns {
                         self.windows[old_active_window].clear_zoom();
                         self.windows[self.active_window].clear_zoom();
                         log::info!(
@@ -4111,6 +4122,13 @@ impl eframe::App for PlexiApp {
                     }
                     if self.show_shortcuts {
                         self.show_shortcuts = false;
+                        continue;
+                    }
+                    if self.attention_queue.decision_overlay.is_some()
+                        || self.attention_queue.open
+                        || self.zoom.level != zoom::ZoomLevel::Columns
+                    {
+                        self.zoom_out_or_close_surface();
                         continue;
                     }
                     // If the focused app pane has a non-empty nav stack
@@ -4317,8 +4335,12 @@ impl eframe::App for PlexiApp {
                 Action::CloseApp => {
                     self.close_focused_app();
                 }
-                Action::NextBlockedAgent => { self.next_blocked_agent(); },
-                Action::FocusApproval => { self.focus_approval(); },
+                Action::NextBlockedAgent => {
+                    self.summon_decision_overlay();
+                }
+                Action::FocusApproval => {
+                    self.focus_approval();
+                }
                 Action::OpenAgents => self.open_agents_pane(),
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
@@ -4342,18 +4364,11 @@ impl eframe::App for PlexiApp {
                 Action::RenameContext => {
                     self.open_context_rename(self.router.active_idx());
                 }
-                Action::ToggleNotificationModal => {
-                    if self.show_notification_modal {
-                        self.show_notification_modal = false;
-                    } else {
-                        self.show_notification_modal = true;
-                        // Pick the next notification when re-opening the modal and
-                        // nothing is currently pinned. If something IS pinned
-                        // (user closed+reopened), keep showing that one.
-                        if self.current_notify_id.is_none() {
-                            self.current_notify_id = self.select_next_notification();
-                        }
-                    }
+                Action::ToggleAttentionQueue => {
+                    self.toggle_attention_queue_list();
+                }
+                Action::ZoomIn => {
+                    self.zoom_in_level();
                 }
                 Action::ForceReloadApp => {
                     self.force_reload_focused_app();
@@ -4413,11 +4428,7 @@ impl eframe::App for PlexiApp {
                     let _ = self.close_context_action(self.router.active().context_id);
                 }
                 Action::ContextZoomOut => {
-                    log::info!(
-                        "ContextZoomOut: popping depth stack (depth={})",
-                        self.router.current_depth()
-                    );
-                    self.zoom_out_of_context();
+                    self.zoom_out_or_close_surface();
                 }
                 Action::RunUserCommand(ref name) => {
                     log::info!("keys: executing user command binding 'run:{name}'");
@@ -4490,7 +4501,7 @@ impl eframe::App for PlexiApp {
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
-        self.draw_approval_banner(ctx);
+        self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_banner(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long

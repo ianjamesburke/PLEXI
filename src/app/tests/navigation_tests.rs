@@ -498,7 +498,12 @@ fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
         .find_pane(&second)
         .expect("second pane must have a tile");
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    let toggle_zoom_mods = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
     assert_eq!(h.app.windows[0].zoomed_pane, Some(first_tile));
 
     h.press_key(egui::Key::L, egui::Modifiers::COMMAND);
@@ -508,26 +513,28 @@ fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
         "moving within a page must exit zoom"
     );
 
-    let mut other_page = same_workspace_window_below(h.app.windows[0].context_id, 2, 9910);
-    let other_page_tile = other_page.tree.root.expect("other page must have a tile");
-    other_page.zoom_to(other_page_tile);
-    h.app.windows.push(other_page);
+    let third = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("vertical split must create a stacked pane in column");
+    h.run_frames(2).focus_pane(second);
+    let third_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&third)
+        .expect("third pane must have a tile");
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
     assert_eq!(h.app.windows[0].zoomed_pane, Some(second_tile));
     h.press_key(egui::Key::J, egui::Modifiers::COMMAND);
-    assert_eq!(h.app.active_window, 1);
+    assert_eq!(h.app.windows[0].focused_pane, Some(third_tile));
     assert!(h.app.windows[0].zoomed_pane.is_none());
-    assert!(
-        h.app.windows[1].zoomed_pane.is_none(),
-        "the destination page must be shown tiled"
-    );
 
     h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
-    assert_eq!(h.app.active_window, 0);
+    assert_eq!(h.app.windows[0].focused_pane, Some(second_tile));
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
-        "returning to the old page must not restore stale zoom"
+        "returning to the upper pane must not restore stale zoom"
     );
 
     let mut boundary = HostHarness::new();
@@ -555,7 +562,12 @@ fn toggle_zoom_requires_a_sibling_pane_in_the_active_window() {
     let first = h.add_test_pane();
     h.focus_pane(first).run_frames(1);
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    let toggle_zoom_mods = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
         "zoom must be ignored when the active window has only one pane"
@@ -572,7 +584,7 @@ fn toggle_zoom_requires_a_sibling_pane_in_the_active_window() {
         .find_pane(&second)
         .expect("second pane must have a tile");
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
     assert_eq!(
         h.app.windows[0].zoomed_pane,
         Some(second_tile),

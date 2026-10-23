@@ -43,6 +43,14 @@ pub(crate) enum OverlaySurface {
     Layer(FocusKind),
     /// Inline context rename in the visible sidebar.
     SidebarRename,
+    /// Decision overlay (`What would you do here?`).
+    DecisionOverlay,
+    /// Attention queue list (`Cmd+I`).
+    AttentionQueue,
+    /// Sibling context cards level (`ZoomLevel::SiblingCards`).
+    SiblingCards,
+    /// Tree atlas level (`ZoomLevel::TreeAtlas`).
+    TreeAtlas,
 }
 
 impl PlexiApp {
@@ -51,13 +59,23 @@ impl PlexiApp {
     /// derivation behind [`Self::input_captured_by_overlay`] and
     /// [`Self::input_owner`] — never re-derive it elsewhere.
     pub(crate) fn overlay_surface(&self) -> Option<OverlaySurface> {
+        if self.attention_queue.decision_overlay.is_some() {
+            return Some(OverlaySurface::DecisionOverlay);
+        }
+        if self.attention_queue.open {
+            return Some(OverlaySurface::AttentionQueue);
+        }
         if let Some(kind) = self.focus_stack.last() {
             return Some(OverlaySurface::Layer(*kind));
         }
         if self.sidebar_visible && self.renaming_window.is_some() {
             return Some(OverlaySurface::SidebarRename);
         }
-        None
+        match self.zoom.level {
+            crate::app::zoom::ZoomLevel::Columns => None,
+            crate::app::zoom::ZoomLevel::SiblingCards => Some(OverlaySurface::SiblingCards),
+            crate::app::zoom::ZoomLevel::TreeAtlas => Some(OverlaySurface::TreeAtlas),
+        }
     }
 
     /// Derive this frame's input owner from host state. Precedence:
@@ -85,7 +103,13 @@ impl PlexiApp {
             return InputOwner::Overlay(surface);
         }
         if let Some(parent) = self.conjoined_parent() {
-            if self.conjoined_parent_focus == Some(parent) { return InputOwner::Pane(parent); }
+            if self.conjoined_parent_focus == Some(parent) {
+                return if self.pane_qualifies_for_input(parent) {
+                    InputOwner::Pane(parent)
+                } else {
+                    InputOwner::Nobody
+                };
+            }
         }
         let win = &self.windows[self.active_window];
         if let Some(focused_tile) = win.focused_pane {
@@ -100,7 +124,9 @@ impl PlexiApp {
             };
             if let Some(pane_tile) = pane_tile {
                 if let Some(egui_tiles::Tile::Pane(pane_id)) = win.tree.tiles.get(pane_tile) {
-                    return InputOwner::Pane(*pane_id);
+                    if self.pane_qualifies_for_input(*pane_id) {
+                        return InputOwner::Pane(*pane_id);
+                    }
                 }
             }
         }

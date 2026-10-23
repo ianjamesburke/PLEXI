@@ -165,7 +165,7 @@ pub(crate) fn insert_split_tile(
     let new_tile = tree.tiles.insert_pane(new_pane_id);
 
     // Empty tree or no split target → new pane becomes the root.
-    let Some(target) = split_target.or(tree.root) else {
+    let Some(raw_target) = split_target.or(tree.root) else {
         tree.root = Some(new_tile);
         return new_tile;
     };
@@ -176,6 +176,24 @@ pub(crate) fn insert_split_tile(
         LinearDir::Horizontal
     } else {
         LinearDir::Vertical
+    };
+    let target = if vertical {
+        // When splitting horizontally (adding a new column), if `raw_target` is inside
+        // a vertical stack (column), promote `target` to the column container so the
+        // hierarchy inside a context stays Columns (Horizontal) -> Stacked Panes (Vertical).
+        match tree.tiles.parent_of(raw_target) {
+            Some(parent_id)
+                if matches!(
+                    tree.tiles.get(parent_id),
+                    Some(Tile::Container(Container::Linear(lin))) if lin.dir == LinearDir::Vertical
+                ) =>
+            {
+                parent_id
+            }
+            _ => raw_target,
+        }
+    } else {
+        raw_target
     };
     let parent = tree.tiles.parent_of(target);
 
@@ -263,6 +281,22 @@ impl PlexiApp {
 
         if !keep_focus {
             ctx.navigate_to(new_tile);
+            let ctx_id = ctx.context_id;
+            self.zoom.context_last_pane.insert(ctx_id, new_pane_id);
+            let cols = self.columns_for_context(ctx_id);
+            if let Some(col) = cols.iter().find(|c| c.panes.contains(&new_pane_id)) {
+                self.zoom
+                    .column_last_pane
+                    .insert((ctx_id, col.index), new_pane_id);
+                let offset = self.zoom.strip_offset_for(ctx_id);
+                if col.index < offset {
+                    self.zoom.strip_offsets.insert(ctx_id, col.index);
+                } else if col.index >= offset + 2 {
+                    self.zoom
+                        .strip_offsets
+                        .insert(ctx_id, col.index.saturating_sub(1));
+                }
+            }
         }
         Some(new_tile)
     }
@@ -1040,6 +1074,7 @@ impl PlexiApp {
     /// Laid-out windows use their spatially leftmost active pane. Before the
     /// first render there are no rects yet, so retain structural tree order as
     /// a stable fallback rather than leaving a non-empty window focusless.
+    #[allow(dead_code)]
     pub(crate) fn leftmost_pane_in_window(&self, window_idx: usize) -> Option<TileId> {
         let dest = self.windows.get(window_idx)?;
         let active_panes: Vec<TileId> = dest
@@ -1072,6 +1107,7 @@ impl PlexiApp {
     }
 
     /// Move focus or active page in `dir`, returning whether navigation succeeded.
+    #[allow(dead_code)]
     pub(crate) fn navigate(&mut self, dir: Direction) -> bool {
         let effects = self.submit(HostAction::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);

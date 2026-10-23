@@ -2710,10 +2710,11 @@ impl HeadlessBackend {
                             deliver_after: None,
                             origin_in_view: false,
                         });
-                    app.show_notification_modal = true;
                     if app.current_notify_id.is_none() {
                         app.current_notify_id = Some(id.clone());
                     }
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
                     id
                 });
                 self.h.run_steps(2);

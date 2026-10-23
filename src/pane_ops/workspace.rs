@@ -1619,8 +1619,11 @@ impl PlexiApp {
             self.push_focus_history(old_window_id, old_focus);
         }
 
-        // Save current context's active window + minimap state.
+        // Save current context's active window + minimap state + last focused pane.
         let old_ctx_id = self.router.active().context_id;
+        if let Some(old_pane_id) = self.active_focused_pane_id() {
+            self.zoom.context_last_pane.insert(old_ctx_id, old_pane_id);
+        }
         self.context_active_window
             .insert(old_ctx_id, self.windows[self.active_window].window_id);
         self.minimap_visible_per_context
@@ -1629,8 +1632,33 @@ impl PlexiApp {
         self.router.set_active(new_ctx_idx);
         self.pick_active_context_from_workspace();
 
-        // Restore minimap state for the new context.
+        // Restore minimap state and last focused pane for the new context (R36).
         let new_ctx_id = self.router.active().context_id;
+        if let Some(&saved_pane_id) = self.zoom.context_last_pane.get(&new_ctx_id) {
+            if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(saved_pane_id) {
+                if self.windows[win_idx].context_id == new_ctx_id {
+                    self.active_window = win_idx;
+                    self.windows[win_idx].navigate_to(tile_id);
+                }
+            }
+        }
+        if let Some(active_pane_id) = self.active_focused_pane_id() {
+            self.zoom.context_last_pane.insert(new_ctx_id, active_pane_id);
+            let cols = self.columns_for_context(new_ctx_id);
+            if let Some(col) = cols.iter().find(|c| c.panes.contains(&active_pane_id)) {
+                self.zoom
+                    .column_last_pane
+                    .insert((new_ctx_id, col.index), active_pane_id);
+                let offset = self.zoom.strip_offset_for(new_ctx_id);
+                if col.index < offset {
+                    self.zoom.strip_offsets.insert(new_ctx_id, col.index);
+                } else if col.index >= offset + 2 {
+                    self.zoom
+                        .strip_offsets
+                        .insert(new_ctx_id, col.index.saturating_sub(1));
+                }
+            }
+        }
         let page_count = self
             .windows
             .iter()
@@ -1643,6 +1671,7 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
 
         self.apply_context_transition_effects();
+        self.sync_attention_queue();
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {

@@ -1101,10 +1101,8 @@ impl PlexiApp {
             if self.current_notify_id.as_deref() == Some(notify_id.as_str()) {
                 self.current_notify_id = None;
             }
-            if self.pending_notifications.is_empty() {
-                self.show_notification_modal = false;
-            }
             self.save_notifications();
+            self.sync_attention_queue();
         }
     }
 
@@ -1201,24 +1199,6 @@ impl PlexiApp {
             log::info!("attention: no agents need attention");
         }
         target
-    }
-
-    pub(crate) fn draw_agent_attention_toast(&mut self, ctx: &egui::Context) {
-        let Some(until) = self.agent_attention.toast_until else {
-            return;
-        };
-        if std::time::Instant::now() >= until {
-            self.agent_attention.toast_until = None;
-            return;
-        }
-        crate::ui::toast::ToastShell::bottom("agent_attention_empty").show(
-            ctx,
-            &self.colors,
-            |ui| {
-                crate::ui::toast::toast_caption(ui, "No agents need attention.", &self.colors);
-            },
-        );
-        ctx.request_repaint_after(until.saturating_duration_since(std::time::Instant::now()));
     }
 }
 

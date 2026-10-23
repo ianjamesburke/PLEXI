@@ -40,7 +40,8 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `OpenSecretsManager` | `plexi app open secrets_manager` |  |
 | `OpenAssistant` | `plexi app open assistant` |  |
 | `RenameContext` | `plexi context rename name --context-id 42` |  |
-| `ToggleNotificationModal` | ui-only: Opens the desktop notification viewer; agents inspect needs-you and notification records. |  |
+| `ToggleAttentionQueue` | ui-only: Toggles the desktop attention queue list; agents inspect needs-you and notification records. |  |
+| `ZoomIn` | `plexi context zoom 42` | CLI targets an explicit context id; the shortcut steps in one level toward the ghost on the zoom ladder. |
 | `ForceReloadApp` | ui-only: Developer recovery gesture for a focused app; normal source edits reload through the file watcher. |  |
 | `NewPageRight` | `plexi pane new --window` |  |
 | `NewContext` | `plexi context new name` |  |

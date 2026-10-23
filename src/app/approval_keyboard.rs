@@ -30,6 +30,7 @@ impl ApprovalKeyboard {
         self.since = None;
         self.confirm_always = false;
     }
+    #[allow(dead_code)]
     pub fn remaining(&self, now: Instant) -> Duration {
         self.since
             .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))

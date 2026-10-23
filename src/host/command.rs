@@ -51,6 +51,7 @@ pub struct OpenPaneRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum HostAction {
     /// Create a new pane (Terminal or App).
     OpenPane(OpenPaneRequest),

@@ -53,7 +53,6 @@ impl FocusSegmentReason {
 /// `src/app/input_router.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FocusKind {
-    NotificationModal,
     /// Needs attention review (list/detail of unresolved Needs-you items).
     /// Routing rule: `src/overlays/attention.rs`.
     AttentionOverlay,
@@ -94,7 +93,6 @@ impl FocusKind {
     /// Stable name for logging and test assertions.
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::NotificationModal => "NotificationModal",
             Self::AttentionOverlay => "AttentionOverlay",
             Self::ApprovalBanner => "ApprovalBanner",
             Self::ConfirmClose => "ConfirmClose",
@@ -117,7 +115,6 @@ impl FocusKind {
     /// frame's keyboard/render dispatch should call.
     pub(crate) fn owner(self) -> &'static dyn FocusOwner {
         match self {
-            Self::NotificationModal => &NotificationModalOwner,
             Self::AttentionOverlay => &AttentionOverlayOwner,
             Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
@@ -216,27 +213,6 @@ focus_owner_tokens! {
     CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
     EventConsent => EventConsentOwner { key: event_consent_handle_key, draw: draw_event_consent_modal },
     RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
-}
-
-/// Notification modal — the only overlay whose render produces commands
-/// (`DeliverNotifyAction`, routed back to the originating pane).
-pub(crate) struct NotificationModalOwner;
-impl FocusOwner for NotificationModalOwner {
-    fn handle_key(
-        &self,
-        app: &mut PlexiApp,
-        _ctx: &egui::Context,
-        input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        app.notification_modal_handle_key(input)
-    }
-    fn draw(
-        &self,
-        app: &mut PlexiApp,
-        ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand> {
-        app.draw_notification_modal(ctx)
-    }
 }
 
 /// Notes picker — its handler drives selection but never claims the key, so the
@@ -581,28 +557,16 @@ impl PlexiApp {
     /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
     /// dismissed so QuickNote can open on top.
     pub(crate) fn is_quick_note_preemptable(&self) -> bool {
-        matches!(
-            self.focus_stack.last(),
-            Some(FocusKind::NotificationModal) | Some(FocusKind::CommandPalette)
-        )
+        matches!(self.focus_stack.last(), Some(FocusKind::CommandPalette))
     }
 
     /// Dismiss the current non-critical modal so QuickNote can open on top.
     /// Only call after `is_quick_note_preemptable()` returns `true`.
     pub(crate) fn dismiss_preemptable_modal(&mut self) {
-        match self.focus_stack.last().cloned() {
-            Some(FocusKind::NotificationModal) => {
-                log::info!("quick_note: dismissing NotificationModal to open QuickNote");
-                self.show_notification_modal = false;
-                self.focus_stack
-                    .retain(|l| *l != FocusKind::NotificationModal);
-            }
-            Some(FocusKind::CommandPalette) => {
-                log::info!("quick_note: dismissing CommandPalette to open QuickNote");
-                self.show_command_palette = false;
-                self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
-            }
-            _ => {}
+        if let Some(FocusKind::CommandPalette) = self.focus_stack.last().cloned() {
+            log::info!("quick_note: dismissing CommandPalette to open QuickNote");
+            self.show_command_palette = false;
+            self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
         }
     }
 
@@ -1120,10 +1084,6 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn sync_notification_modal_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::NotificationModal, self.show_notification_modal);
-    }
-
     /// Reconcile the command-palette focus layer with `show_command_palette`.
     /// Same pattern as the notification modal: boolean visibility flag is the
     /// source of truth, focus stack follows it deterministically each frame.
@@ -1228,6 +1188,22 @@ impl PlexiApp {
                 "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id} ctx_id={ctx_id} not found in router"
             );
         }
+        self.zoom.context_last_pane.insert(ctx_id, pane_id);
+        let cols = self.columns_for_context(ctx_id);
+        if let Some(col) = cols.iter().find(|c| c.panes.contains(&pane_id)) {
+            self.zoom
+                .column_last_pane
+                .insert((ctx_id, col.index), pane_id);
+            let offset = self.zoom.strip_offset_for(ctx_id);
+            if col.index < offset {
+                self.zoom.strip_offsets.insert(ctx_id, col.index);
+            } else if col.index >= offset + 2 {
+                self.zoom
+                    .strip_offsets
+                    .insert(ctx_id, col.index.saturating_sub(1));
+            }
+        }
+        self.sync_attention_queue();
         true
     }
 

@@ -2853,16 +2853,17 @@ fn palette_close_surrenders_focus_before_pane_close() {
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
     use crate::app::app_trait::KeyDisposition;
-    use crate::app::FocusKind;
     let mut h = HostHarness::new();
-    h.app.push_focus_layer(FocusKind::NotificationModal);
+    let pane_id = h.add_test_pane();
+    h.app.enqueue_ask("ask-1", pane_id, "rm -rf /tmp/foo", 1000, Vec::new());
+    h.app.open_decision_overlay_for_ask("ask-1");
     let ctx = h.app.ctx.clone();
     let mut input = crate::app::input_router::PlexiInput::take_from(&ctx);
-    let disposition = h.app.notification_modal_handle_key(&mut input);
+    let disposition = h.app.handle_decision_overlay_input(&mut input);
     assert_eq!(
         disposition,
         KeyDisposition::Consumed,
-        "notification_modal_handle_key must return Consumed"
+        "handle_decision_overlay_input must return Consumed"
     );
 }
 
@@ -4812,19 +4813,11 @@ fn notification_modal_keys_do_not_reach_focused_app_pane() {
     h.app.open_builtin_app_pane(Box::<KeyBurstProbe>::default(), AppPermissions::builtin(), tmp.path().to_path_buf(), None, Some("split_h"), None);
     let pane_id = h.state().open_panes[0];
     h.focus_pane(pane_id);
-    h.app.pending_notifications.push(crate::app::PendingNotification {
-        notify_id: "input-key-capture".into(),
-        kind: crate::protocol::NotifyKind::Input,
-        input_prompt: Some("Reply".into()),
-        scope: crate::protocol::NotifyScope::Global,
-        ..Default::default()
-    });
-    h.app.show_notification_modal = true;
-    h.app.current_notify_id = Some("input-key-capture".into());
+    h.app.enqueue_ask("input-key-capture", pane_id, "git push --force", 1000, Vec::new());
+    h.app.open_decision_overlay_for_ask("input-key-capture");
     h.run_frames(1);
     frame_with_events(&mut h, vec![
         egui::Event::Text("typed into modal".into()),
-        egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
         egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
     ]);
     let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_app)
@@ -5978,7 +5971,10 @@ fn zoom_focused_pane_through_shortcut(h: &mut HostHarness, pane_id: PaneId) {
         h.focus_pane(pane_id);
         h.run_frames(2);
     }
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     h.run_frames(2);
 
     let tile = h.app.windows[0]
@@ -5989,7 +5985,7 @@ fn zoom_focused_pane_through_shortcut(h: &mut HostHarness, pane_id: PaneId) {
     assert_eq!(
         h.app.windows[0].zoomed_pane,
         Some(tile),
-        "Cmd+Enter must fullscreen the focused pane through ToggleZoom"
+        "Cmd+Shift+Enter must fullscreen the focused pane through ToggleZoom"
     );
 }
 
@@ -6115,7 +6111,10 @@ fn zoom_round_trip_restores_note_editor_scroll_and_focus() {
         "editor must hold egui focus before zoom"
     );
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom on
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    ); // zoom on
     h.run_frames(2);
     assert!(h.app.windows[0].zoomed_pane.is_some(), "zoom must be on");
 
@@ -6137,7 +6136,10 @@ fn zoom_round_trip_restores_note_editor_scroll_and_focus() {
         "zoomed viewport (which fits everything) must still include the pre-zoom top line"
     );
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom off
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    ); // zoom off
     h.run_frames(2);
     assert!(h.app.windows[0].zoomed_pane.is_none(), "zoom must be off");
 
@@ -6228,7 +6230,10 @@ fn zoom_preserves_wrapped_note_top_line_across_rewrap() {
     let rows_before = before.layout.display_row_count();
     let top_line_before = before.visible_lines(line_count).start;
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom on
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    ); // zoom on
     h.run_frames(2);
 
     let zoomed = h.text_editor_mut(pane).test_view().clone();
@@ -6243,7 +6248,10 @@ fn zoom_preserves_wrapped_note_top_line_across_rewrap() {
         "zoom on must keep the same top source line despite the rewrap"
     );
 
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom off
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    ); // zoom off
     h.run_frames(2);
 
     let after = h.text_editor_mut(pane).test_view().clone();
@@ -12554,14 +12562,23 @@ fn pane_close_keys_keep_host_and_restore_zoom() {
     let tiles = win.tree.tiles.iter().filter_map(|(id, tile)| matches!(tile, egui_tiles::Tile::Pane(_)).then_some(*id)).collect();
     win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(tiles));
     h.focus_pane(second).run_frames(2);
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(h.app.windows[0].zoomed_pane.is_some());
-    // Cmd+Enter is the zoom toggle (stint 0898): toggles zoom off without closing.
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    // Cmd+Shift+Enter is the zoom toggle: toggles zoom off without closing.
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(h.app.windows[0].zoomed_pane.is_none());
-    assert!(h.app.windows[0].panes.contains_key(&second), "Cmd+Enter unzooms without closing");
+    assert!(h.app.windows[0].panes.contains_key(&second), "Cmd+Shift+Enter unzooms without closing");
     // Re-zoom and verify Cmd+W closes the zoomed pane and clears zoom.
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(h.app.windows[0].zoomed_pane.is_some());
     h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
     assert!(h.app.windows[0].zoomed_pane.is_none());
@@ -12588,16 +12605,22 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
     assert_eq!(h.pane_count(), 2);
     assert!(h.app.windows[0].zoomed_pane.is_none());
 
-    // 1. Cmd+Enter zooms in on the focused terminal pane, and Cmd+Enter again zooms out.
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    // 1. Cmd+Shift+Enter zooms in on the focused terminal pane, and Cmd+Shift+Enter again zooms out.
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(
         h.app.windows[0].zoomed_pane.is_some(),
-        "Cmd+Enter must zoom in on the focused terminal pane"
+        "Cmd+Shift+Enter must zoom in on the focused terminal pane"
     );
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
-        "Cmd+Enter again must zoom out from the zoomed terminal pane"
+        "Cmd+Shift+Enter again must zoom out from the zoomed terminal pane"
     );
 
     // 2. `pane zoom` CLI (`AppRequest::PaneZoom`) toggles both ways.
@@ -12622,7 +12645,10 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
     );
 
     // 3. With the terminal pane zoomed, bare Esc reaches the PTY and the pane stays zoomed.
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(h.app.windows[0].zoomed_pane.is_some());
     h.terminal_backend(term).enable_input_tap();
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
@@ -12635,7 +12661,10 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         h.app.windows[0].zoomed_pane.is_some(),
         "bare Escape must NOT un-zoom a zoomed terminal pane"
     );
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(h.app.windows[0].zoomed_pane.is_none());
 
     // 4. With an app pane zoomed (`text-editor`), bare Esc reaches the app (`handle_key`,
@@ -12653,11 +12682,14 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         !h.text_editor_mut(editor_id).is_input_released(),
         "editor starts in active edit mode before Escape"
     );
-    // Zoom the editor pane via Cmd+Enter.
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    // Zoom the editor pane via Cmd+Shift+Enter.
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(
         h.app.windows[0].zoomed_pane.is_some(),
-        "Cmd+Enter must zoom the focused app pane"
+        "Cmd+Shift+Enter must zoom the focused app pane"
     );
     // Press bare Escape: reaches `TextEditorApp::handle_key` (which releases edit mode to pane nav)
     // while keeping the pane zoomed and open!
@@ -12674,11 +12706,14 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         h.app.windows[0].panes.contains_key(&editor_id),
         "app pane that consumed Escape must stay open"
     );
-    // Cmd+Enter zooms the app pane back out.
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    // Cmd+Shift+Enter zooms the app pane back out.
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
-        "Cmd+Enter on zoomed app pane must zoom out"
+        "Cmd+Shift+Enter on zoomed app pane must zoom out"
     );
 }
 
@@ -12736,7 +12771,10 @@ fn pane_zoom_escape_still_reaches_terminal_pty() {
         h.run_frames(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
     assert!(h.app.windows[0].zoomed_pane.is_some());
     h.terminal_backend(pane).enable_input_tap();
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);

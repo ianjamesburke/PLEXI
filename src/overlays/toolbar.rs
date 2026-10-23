@@ -85,17 +85,14 @@ impl PlexiApp {
                     };
                     if button::toolbar_button(
                         ui,
-                        RichText::new(format!("\u{1F514} {badge_text}"))
+                        RichText::new(format!("\u{25C6} {badge_text}"))
                             .size(style::TEXT_CAPTION)
-                            .color(self.colors.accent),
-                        "Notifications (\u{2318}\u{21E7}A)",
+                            .color(self.colors.zoom_needs),
+                        "Attention Queue (\u{2318}I)",
                     )
                     .clicked()
                     {
-                        self.show_notification_modal = !self.show_notification_modal;
-                        if self.show_notification_modal && self.current_notify_id.is_none() {
-                            self.current_notify_id = self.select_next_notification();
-                        }
+                        self.toggle_attention_queue_list();
                     }
                 }
             });

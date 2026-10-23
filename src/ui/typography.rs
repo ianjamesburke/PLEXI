@@ -16,6 +16,7 @@ pub(crate) fn modal_title(ui: &mut Ui, text: &str, colors: &Colors) -> Response 
 }
 
 /// Large modal heading with the modal shell's default start alignment.
+#[allow(dead_code)]
 pub(crate) fn modal_title_large(ui: &mut Ui, text: &str, colors: &Colors) -> Response {
     ui.add(wrapped_label(
         RichText::new(text)
@@ -25,6 +26,7 @@ pub(crate) fn modal_title_large(ui: &mut Ui, text: &str, colors: &Colors) -> Res
 }
 
 /// Primary modal copy with the modal shell's default start alignment.
+#[allow(dead_code)]
 pub(crate) fn modal_body(ui: &mut Ui, text: &str, colors: &Colors) -> Response {
     ui.add(wrapped_label(
         RichText::new(text)

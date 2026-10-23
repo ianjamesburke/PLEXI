@@ -328,10 +328,10 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "open secrets credentials keys global workspace folder import env",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal),
+        command: PaletteCommand::Host(crate::host::keys::Action::ToggleAttentionQueue),
         name: "Review notifications",
-        description: "Open the pending notification review queue",
-        search_text: "review notifications notification queue alerts inbox pending",
+        description: "Open the attention queue list",
+        search_text: "review notifications notification attention queue alerts inbox pending",
     },
     PaletteCommandEntry {
         command: PaletteCommand::OpenAttention,
@@ -885,9 +885,10 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
         PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
         PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
-        PaletteCommand::Host(Action::ToggleNotificationModal) => {
-            bindings.toggle_notification_modal
+        PaletteCommand::Host(Action::ToggleAttentionQueue) => {
+            bindings.toggle_attention_queue
         }
+        PaletteCommand::Host(Action::ZoomIn) => bindings.zoom_in,
         PaletteCommand::Host(Action::SplitRight) => bindings.split_right,
         PaletteCommand::Host(Action::SplitDown) => bindings.split_down,
         PaletteCommand::Host(Action::OpenQuickNote) => bindings.open_quick_note,
@@ -1953,22 +1954,16 @@ impl PlexiApp {
             }
             crate::host::keys::Action::ClosePane => self.close_palette_focused_pane(),
             crate::host::keys::Action::CloseContext => self.close_palette_active_context(),
-            // Palette selection is an explicit request to review, unlike the
-            // keyboard binding which toggles the panel. Keep queued messages
-            // discoverable without making a second selection close the panel.
-            crate::host::keys::Action::ToggleNotificationModal => {
-                self.show_notification_modal = true;
-                if self.current_notify_id.is_none() {
-                    self.current_notify_id = self.select_next_notification();
-                }
+            crate::host::keys::Action::ToggleAttentionQueue => {
+                self.sync_attention_queue();
+                self.attention_queue.open = true;
                 log::info!(
-                    "notify:review_opened source=palette visible={} pending_decisions={}",
-                    self.visible_notification_count(),
-                    self.pending_notifications
-                        .iter()
-                        .filter(|n| Self::notification_requires_response(n))
-                        .count()
+                    "attention_queue: opened source=palette bars={}",
+                    self.attention_queue.items.len()
                 );
+            }
+            crate::host::keys::Action::ZoomIn => {
+                self.zoom_in_level();
             }
             other => log::warn!("palette: unsupported host binding {other:?}"),
         }
@@ -2871,7 +2866,7 @@ mod tests {
         );
         assert_eq!(
             palette_command_matches("notification"),
-            vec![PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal)]
+            vec![PaletteCommand::Host(crate::host::keys::Action::ToggleAttentionQueue)]
         );
         assert_eq!(
             palette_command_matches("picker"),
@@ -3173,7 +3168,7 @@ mod tests {
         assert_eq!(
             palette_command_matches("review notifications"),
             vec![PaletteCommand::Host(
-                crate::host::keys::Action::ToggleNotificationModal
+                crate::host::keys::Action::ToggleAttentionQueue
             )]
         );
     }

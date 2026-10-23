@@ -7,7 +7,7 @@ open = { kind = "builtin", id = "agents", as = "agents" }
 key = { target = "host", value = "cmd+alt+b" }
 
 [[steps]]
-assert_label = { target = "host", label = "No agents need attention." }
+assert_label = { target = "host", label = "No open asks in queue" }
 
 [[steps]]
 assert = { target = "agents", focused = true }

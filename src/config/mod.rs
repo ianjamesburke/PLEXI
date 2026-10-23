@@ -236,7 +236,8 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_secrets_manager",
     "open_assistant",
     "force_reload_app",
-    "toggle_notification_modal",
+    "toggle_attention_queue",
+    "zoom_in",
     "open_scratchpad",
     "set_context_root_from_cwd",
     "push_to_subcontext",
@@ -611,7 +612,8 @@ pub struct KeybindingsConfig {
     pub open_secrets_manager: Option<String>,
     pub open_assistant: Option<String>,
     pub force_reload_app: Option<String>,
-    pub toggle_notification_modal: Option<String>,
+    pub toggle_attention_queue: Option<String>,
+    pub zoom_in: Option<String>,
     pub open_scratchpad: Option<String>,
     pub push_to_subcontext: Option<String>,
     pub new_child_context: Option<String>,
@@ -681,7 +683,8 @@ impl KeybindingsConfig {
         overlay_field!(open_secrets_manager);
         overlay_field!(open_assistant);
         overlay_field!(force_reload_app);
-        overlay_field!(toggle_notification_modal);
+        overlay_field!(toggle_attention_queue);
+        overlay_field!(zoom_in);
         overlay_field!(open_scratchpad);
         overlay_field!(push_to_subcontext);
         overlay_field!(new_child_context);
