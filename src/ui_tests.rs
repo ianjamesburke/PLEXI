@@ -581,6 +581,16 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn screenshot_card_gallery_all_states_and_surfaces() {
+        crate::app::card_gallery::FORCE.with(|f| f.set(true));
+        let mut h = PlexiUiHarness::new_sized(1440.0, 1400.0);
+        h.run_steps(4);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
     fn screenshot_agent_conjoined_strip_and_parent_pin() {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();

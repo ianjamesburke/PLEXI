@@ -17,6 +17,7 @@ use crate::app::app_trait::KeyDisposition;
 use crate::app::input_router::PlexiInput;
 use crate::app::PlexiApp;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor, ResolveSurface};
+use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::style;
 use egui::{
     Align2, CornerRadius, FontFamily, FontId, Key, Order, Pos2, Rect, RichText, Sense, Stroke, Vec2,
@@ -42,16 +43,6 @@ pub enum QueueCategory {
 }
 
 impl QueueCategory {
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Ask => "◆",
-            Self::Failed => "✕",
-            Self::Result => "●",
-            Self::Done => "✓",
-            Self::Notice => "!",
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Ask => "Needs you",
@@ -1599,93 +1590,54 @@ impl PlexiApp {
 
                         for (idx, bar) in self.attention_queue.items.iter().enumerate() {
                             let is_selected = idx == self.attention_queue.selected_idx;
-                            let row_fill = if is_selected {
-                                colors.focus_fill
-                            } else if bar.category == QueueCategory::Ask {
-                                colors.needs_fill
-                            } else if bar.category == QueueCategory::Failed {
-                                colors.failed_fill
+                            let state = match bar.category {
+                                QueueCategory::Ask => CardState::NeedsYou,
+                                QueueCategory::Failed => CardState::Failed,
+                                QueueCategory::Result | QueueCategory::Done => CardState::Done,
+                                QueueCategory::Notice => CardState::Idle,
+                            };
+                            let is_ask = bar.category == QueueCategory::Ask;
+                            let subtitle = if bar.locked {
+                                format!("LOCKED · {}", bar.context_path)
                             } else {
-                                colors.tile_bg
+                                bar.context_path.clone()
                             };
-                            let row_stroke = if is_selected {
-                                Stroke::new(1.5_f32, colors.accent)
-                            } else if bar.category == QueueCategory::Ask {
-                                Stroke::new(1.0_f32, colors.zoom_needs)
-                            } else if bar.category == QueueCategory::Failed {
-                                Stroke::new(1.0_f32, colors.zoom_failed)
-                            } else {
-                                Stroke::new(1.0_f32, colors.border)
+                            let spec = CardSpec {
+                                state,
+                                title: &bar.pane_name,
+                                subtitle: &subtitle,
+                                detail: &bar.summary,
+                                badge: Some(if is_ask {
+                                    ("Enter ▸ Decide".to_string(), colors.zoom_needs)
+                                } else {
+                                    ("✕".to_string(), colors.text_dim)
+                                }),
                             };
-                            let glyph_color = match bar.category {
-                                QueueCategory::Ask => colors.zoom_needs,
-                                QueueCategory::Failed => colors.zoom_failed,
-                                QueueCategory::Result | QueueCategory::Done | QueueCategory::Notice => colors.text_dim,
-                            };
-
-                            let resp = egui::Frame::NONE
-                                .fill(row_fill)
-                                .stroke(row_stroke)
-                                .corner_radius(style::RADIUS_BAR)
-                                .inner_margin(egui::Margin::symmetric(10, 8))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(bar.category.glyph())
-                                                .size(style::TEXT_BODY)
-                                                .color(glyph_color),
-                                        );
-                                        if bar.locked {
-                                            ui.label(
-                                                RichText::new("LOCKED")
-                                                    .size(style::TEXT_META)
-                                                    .color(colors.zoom_needs),
-                                            );
-                                        }
-                                        ui.label(
-                                            RichText::new(&bar.pane_name)
-                                                .font(crate::ui::theme::font_medium(
-                                                    style::TEXT_CAPTION,
-                                                ))
-                                                .color(colors.text_primary),
-                                        );
-                                        ui.label(
-                                            RichText::new(format!("({})", bar.context_path))
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
-                                        ui.label(
-                                            RichText::new(&bar.summary)
-                                                .size(style::TEXT_CAPTION)
-                                                .color(colors.text_primary),
-                                        );
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if bar.category == QueueCategory::Ask {
-                                                    ui.label(
-                                                        RichText::new("Enter ▸ Decide")
-                                                            .size(style::TEXT_HINT)
-                                                            .color(colors.zoom_needs),
-                                                    );
-                                                } else if ui
-                                                    .small_button(
-                                                        RichText::new("✕")
-                                                            .size(style::TEXT_HINT)
-                                                            .color(colors.text_dim),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    dismiss_id = Some(bar.id.clone());
-                                                }
-                                            },
-                                        );
-                                    });
-                                })
-                                .response
-                                .interact(Sense::click());
-
+                            let row_w = ui.available_width();
+                            let layout = layout_card(ctx, CardForm::Bar, &spec, row_w);
+                            let (row_rect, resp) = ui.allocate_exact_size(
+                                Vec2::new(row_w, layout.height),
+                                Sense::click(),
+                            );
+                            let badge_rect = paint_card(
+                                &ui.painter_at(row_rect),
+                                row_rect,
+                                &layout,
+                                &spec,
+                                &colors,
+                                colors.tile_bg,
+                                is_selected,
+                            );
+                            if !is_ask {
+                                let hit = ui.interact(
+                                    badge_rect.expand2(Vec2::new(4.0, 6.0)),
+                                    egui::Id::new(("queue_bar_dismiss", &bar.id)),
+                                    Sense::click(),
+                                );
+                                if hit.clicked() {
+                                    dismiss_id = Some(bar.id.clone());
+                                }
+                            }
                             if resp.clicked() {
                                 clicked_idx = Some(idx);
                             }
@@ -1742,6 +1694,10 @@ impl PlexiApp {
                     .inner_margin(egui::Margin::symmetric(20, 18))
                     .show(ui, |ui| {
                         ui.set_width(modal_w);
+                        egui::ScrollArea::vertical()
+                            .max_height((screen.height() - 120.0).max(160.0))
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
 
                         if let QueueSource::BrokerPending { request_id } = &overlay.source {
                             if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
@@ -1773,11 +1729,14 @@ impl PlexiApp {
                         });
                         ui.add_space(style::SPACE_SM);
 
-                        // Question: "What would you do here?"
-                        ui.label(
-                            RichText::new(&overlay.question)
-                                .font(crate::ui::theme::font_medium(style::TEXT_TITLE))
-                                .color(colors.text_primary),
+                        // Question: wrapped in full, the overlay grows to fit.
+                        let question_font = crate::ui::theme::font_medium(style::TEXT_TITLE);
+                        wrapped_label(
+                            ui,
+                            &overlay.question,
+                            question_font,
+                            colors.text_primary,
+                            modal_w - 12.0,
                         );
                         ui.add_space(style::SPACE_SM);
 
@@ -1789,13 +1748,13 @@ impl PlexiApp {
                             .inner_margin(egui::Margin::symmetric(12, 10))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.label(
-                                    RichText::new(&overlay.command_text)
-                                        .font(FontId::new(
-                                            style::TEXT_CAPTION,
-                                            FontFamily::Monospace,
-                                        ))
-                                        .color(colors.text_primary),
+                                let code_w = ui.available_width() - 12.0;
+                                wrapped_label(
+                                    ui,
+                                    &overlay.command_text,
+                                    FontId::new(style::TEXT_CAPTION, FontFamily::Monospace),
+                                    colors.text_primary,
+                                    code_w,
                                 );
                             });
                         ui.add_space(style::SPACE_MD);
@@ -1820,7 +1779,7 @@ impl PlexiApp {
                                 .inner_margin(egui::Margin::symmetric(12, 9))
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
-                                    ui.horizontal(|ui| {
+                                    ui.horizontal_top(|ui| {
                                         ui.label(
                                             RichText::new(format!("{}", idx + 1))
                                                 .font(FontId::new(
@@ -1830,12 +1789,15 @@ impl PlexiApp {
                                                 .color(colors.accent),
                                         );
                                         ui.add_space(style::SPACE_XS);
-                                        ui.label(
-                                            RichText::new(&opt.label)
-                                                .font(crate::ui::theme::font_medium(
-                                                    style::TEXT_BODY,
-                                                ))
-                                                .color(colors.text_primary),
+                                        let label_w = (ui.available_width()
+                                            - if opt.recommended { 120.0 } else { 8.0 })
+                                        .max(40.0);
+                                        wrapped_label(
+                                            ui,
+                                            &opt.label,
+                                            crate::ui::theme::font_medium(style::TEXT_BODY),
+                                            colors.text_primary,
+                                            label_w,
                                         );
                                         if opt.recommended {
                                             ui.with_layout(
@@ -1890,6 +1852,7 @@ impl PlexiApp {
                                 }
                             }
                         });
+                            });
                     });
             });
 
@@ -1897,6 +1860,16 @@ impl PlexiApp {
             self.pick_decision_overlay_option(idx);
         }
     }
+}
+
+/// Label wrapped to `max_w` by [`wrap_text`] with no line cap: every line of
+/// the text is shown and the container grows to fit.
+fn wrapped_label(ui: &mut egui::Ui, text: &str, font: FontId, color: egui::Color32, max_w: f32) {
+    let lines = wrap_text(ui.ctx(), text, font.clone(), max_w, None);
+    ui.add(
+        egui::Label::new(RichText::new(lines.join("\n")).font(font).color(color))
+            .wrap_mode(egui::TextWrapMode::Extend),
+    );
 }
 
 trait ViewportRectFallback {

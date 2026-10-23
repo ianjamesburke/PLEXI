@@ -2,6 +2,7 @@ pub mod activity;
 pub mod app_chrome;
 pub mod badge;
 pub mod button;
+pub mod card_block;
 pub mod code_viewer;
 pub mod dialog;
 pub mod embedded_bar;

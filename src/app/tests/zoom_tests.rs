@@ -4,7 +4,7 @@
 
 use crate::app::attention_queue::{QueueCategory, QueueOption, ESC_BACKOUT_HINT, OVERLAY_QUESTION};
 use crate::app::input_router::PlexiInput;
-use crate::app::zoom::{ColumnWidthPreset, TileContentTier, ZoomLevel};
+use crate::app::zoom::{ColumnWidthPreset, ZoomLevel};
 use crate::host::keys::Direction;
 use crate::testing::HostHarness;
 use crate::ui::style;
@@ -191,16 +191,6 @@ fn column_width_presets_and_tile_content_tiers_r33() {
     assert_eq!(cols[0].preset.ratio(), 0.35);
     assert_eq!(cols[1].preset, ColumnWidthPreset::Child65);
     assert_eq!(cols[1].preset.ratio(), 0.65);
-
-    // Asking or failed tiles never drop below Line1 (150x32 floor).
-    assert_eq!(
-        TileContentTier::from_size(Vec2::new(80.0, 20.0), true, None),
-        TileContentTier::Line1
-    );
-    assert_eq!(
-        TileContentTier::from_size(Vec2::new(80.0, 20.0), false, None),
-        TileContentTier::GlyphOnly
-    );
 }
 
 /// R34 & R36: Sibling Context Cards (`SiblingCards`) traversal with bare `h`/`l`

@@ -6,6 +6,7 @@ pub mod app_trait;
 pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
 pub mod attention_queue;
+pub(crate) mod card_gallery;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
 mod cli_actions;

@@ -333,6 +333,10 @@ impl PlexiApp {
                 ..Default::default()
             })
             .show_inside(ui, |ui| {
+                if crate::app::card_gallery::enabled() {
+                    self.draw_card_gallery(ui);
+                    return;
+                }
                 match self.zoom.level {
                     crate::app::zoom::ZoomLevel::SiblingCards => {
                         self.draw_sibling_cards_canvas(ui);

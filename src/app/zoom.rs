@@ -7,6 +7,7 @@ use crate::app::input_router::PlexiInput;
 use crate::app::PlexiApp;
 use crate::host::keys::Direction;
 use crate::spatial::tiling::PaneId;
+use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::style;
 use egui::{
     Align2, CornerRadius, FontFamily, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, Vec2,
@@ -14,6 +15,9 @@ use egui::{
 use egui_tiles::{Container, LinearDir, Tile, TileId};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+/// Minimum height under a sibling card's header block for the mini column tiles.
+const SIBLING_BODY_MIN_H: f32 = 120.0;
 
 /// The three zoom levels on the ladder (`SPEC.md` § Levels).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -111,43 +115,6 @@ pub struct AtlasEdge {
     pub from_pos: Pos2,
     pub to_pos: Pos2,
     pub kind: AtlasEdgeKind,
-}
-
-/// Live tile content tier determined by rendered tile size with 8px hysteresis (`SPEC.md` Q3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TileContentTier {
-    /// >= 252x88: header + last 5 lines
-    Lines5,
-    /// >= 190x60: header + last 3 lines
-    Lines3,
-    /// >= 150x32: header + 1 urgent/status line + glyph (floor for asking/failed nodes)
-    Line1,
-    /// >= 96x22: glyph + name
-    GlyphAndName,
-    /// < 96x22: glyph only
-    GlyphOnly,
-}
-
-impl TileContentTier {
-    pub fn from_size(size: Vec2, is_asking_or_failed: bool, prev: Option<Self>) -> Self {
-        let h = if prev.is_some() { 4.0 } else { 0.0 };
-        let tier = if size.x >= 252.0 - h && size.y >= 88.0 - h {
-            Self::Lines5
-        } else if size.x >= 190.0 - h && size.y >= 60.0 - h {
-            Self::Lines3
-        } else if size.x >= 150.0 - h && size.y >= 32.0 - h {
-            Self::Line1
-        } else if size.x >= 96.0 - h && size.y >= 22.0 - h {
-            Self::GlyphAndName
-        } else {
-            Self::GlyphOnly
-        };
-        if is_asking_or_failed && matches!(tier, Self::GlyphAndName | Self::GlyphOnly) {
-            Self::Line1
-        } else {
-            tier
-        }
-    }
 }
 
 /// Complete zoom, column strip, sibling cards, and tree atlas state on `PlexiApp`.
@@ -1262,6 +1229,39 @@ impl PlexiApp {
         (nodes_out, edges_out)
     }
 
+    /// What a context's card should look like: its own asks first, then any
+    /// failure, then live agent activity, else a quiet shell.
+    pub(crate) fn context_card_state(&self, context_id: u64) -> CardState {
+        use crate::protocol::AgentState;
+        if self.attention_queue.ask_count_for_context(context_id) > 0 {
+            return CardState::NeedsYou;
+        }
+        let mut state = CardState::Idle;
+        for win in self.windows.iter().filter(|w| w.context_id == context_id) {
+            for pane in win.panes.values() {
+                match pane.agent().map(|a| &a.state) {
+                    Some(&AgentState::Failed) => return CardState::Failed,
+                    Some(&AgentState::Working) => state = CardState::Working,
+                    Some(&AgentState::Completed) if state == CardState::Idle => {
+                        state = CardState::Done
+                    }
+                    _ => {}
+                }
+            }
+        }
+        state
+    }
+
+    /// One-sentence body for a context card: its first ask, else the first
+    /// agent's live activity.
+    pub(crate) fn context_card_detail(&self, context_id: u64) -> String {
+        self.context_preview_lines(context_id, 1)
+            .into_iter()
+            .next()
+            .map(|l| l.trim_start_matches("◆ ").to_string())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn context_preview_lines(&self, context_id: u64, max_lines: usize) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(ask) = self.attention_queue.first_ask_for_context(context_id) {
@@ -1968,12 +1968,6 @@ impl PlexiApp {
             let is_focused = cid == focused_ctx;
             let is_ghost = Some(cid) == ghost_ctx;
             let offset = if is_focused { bump } else { Vec2::ZERO };
-            let card_min = Pos2::new(
-                start_x + (idx as f32) * (style::CARD_W + style::CARD_GAP) + offset.x,
-                center_y - style::CARD_H * 0.5 + offset.y,
-            );
-            let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, style::CARD_H));
-
             let depth = self
                 .router
                 .as_slice()
@@ -1981,28 +1975,7 @@ impl PlexiApp {
                 .find(|c| c.context_id == cid)
                 .map(|c| c.depth as usize)
                 .unwrap_or(0);
-            let fill = colors.depth_tint(depth);
             let asks = self.attention_queue.ask_count_for_context(cid);
-            let stroke = if is_focused {
-                Stroke::new(2.0_f32, colors.accent)
-            } else if asks > 0 {
-                Stroke::new(1.5_f32, colors.zoom_needs)
-            } else {
-                Stroke::new(1.0_f32, colors.border)
-            };
-
-            // Flat offset shadow
-            let shadow_rect = card_rect.translate(Vec2::new(2.0, 2.0));
-            painter.rect_filled(shadow_rect, style::RADIUS_MOTORWAYS, colors.shadow_flat);
-            painter.rect_filled(card_rect, style::RADIUS_MOTORWAYS, fill);
-            painter.rect_stroke(
-                card_rect,
-                style::RADIUS_MOTORWAYS,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-
-            // Header
             let ctx_name = self
                 .router
                 .as_slice()
@@ -2010,27 +1983,39 @@ impl PlexiApp {
                 .find(|c| c.context_id == cid)
                 .map(|c| c.name.displayed().to_string())
                 .unwrap_or_else(|| format!("Context {cid}"));
-            painter.text(
-                Pos2::new(card_rect.min.x + 14.0, card_rect.min.y + 14.0),
-                Align2::LEFT_TOP,
-                &ctx_name,
-                crate::ui::theme::font_medium(style::TEXT_BODY),
-                colors.text_primary,
+            let cols = self.columns_for_context(cid);
+            let pane_total: usize = cols.iter().map(|c| c.panes.len()).sum();
+            let subtitle = format!("{pane_total} pane{}", if pane_total == 1 { "" } else { "s" });
+            let detail = self.context_card_detail(cid);
+            let spec = CardSpec {
+                state: self.context_card_state(cid),
+                title: &ctx_name,
+                subtitle: &subtitle,
+                detail: &detail,
+                badge: (asks > 0).then(|| (format!("◆{asks}"), colors.zoom_needs)),
+            };
+            let layout = layout_card(ui.ctx(), CardForm::Sibling, &spec, style::CARD_W);
+            let header_h = layout.height;
+            let card_h = style::CARD_H.max(header_h + SIBLING_BODY_MIN_H);
+            let card_min = Pos2::new(
+                start_x + (idx as f32) * (style::CARD_W + style::CARD_GAP) + offset.x,
+                center_y - card_h * 0.5 + offset.y,
             );
-
-            if asks > 0 {
-                painter.text(
-                    Pos2::new(card_rect.max.x - 14.0, card_rect.min.y + 14.0),
-                    Align2::RIGHT_TOP,
-                    format!("◆{asks}"),
-                    crate::ui::theme::font_medium(style::TEXT_CAPTION),
-                    colors.zoom_needs,
-                );
-            }
+            let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, card_h));
+            paint_card(
+                &painter,
+                card_rect,
+                &layout,
+                &spec,
+                &colors,
+                colors.depth_tint(depth),
+                is_focused,
+            );
+            let card_painter = painter.with_clip_rect(card_rect.shrink(1.0));
 
             if is_ghost {
-                painter.text(
-                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 16.0),
+                card_painter.text(
+                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 10.0),
                     Align2::LEFT_BOTTOM,
                     "◌ you were here",
                     FontId::new(style::TEXT_HINT, FontFamily::Proportional),
@@ -2038,10 +2023,9 @@ impl PlexiApp {
                 );
             }
 
-            // Mini column tiles inside the card
-            let cols = self.columns_for_context(cid);
-            let inner_top = card_rect.min.y + 42.0;
-            let inner_h = (card_rect.height() - 72.0).max(40.0);
+            // Mini column tiles inside the card, below the header block.
+            let inner_top = card_rect.min.y + header_h + 6.0;
+            let inner_h = (card_rect.max.y - 30.0 - inner_top).max(40.0);
             let inner_w = card_rect.width() - 28.0;
             let col_count = cols.len().max(1);
             let col_w = (inner_w - ((col_count - 1) as f32) * 6.0) / (col_count as f32);
@@ -2069,13 +2053,23 @@ impl PlexiApp {
                         egui::StrokeKind::Inside,
                     );
                     let (_, pname, _) = self.describe_pane_for_queue(pid);
-                    painter.text(
-                        Pos2::new(mini_rect.min.x + 6.0, mini_rect.min.y + 6.0),
-                        Align2::LEFT_TOP,
-                        pname,
-                        FontId::new(style::TEXT_META, FontFamily::Monospace),
-                        colors.text_dim,
+                    let mini_font = FontId::new(style::TEXT_META, FontFamily::Monospace);
+                    let name_lines = wrap_text(
+                        ui.ctx(),
+                        &pname,
+                        mini_font.clone(),
+                        (mini_rect.width() - 12.0).max(1.0),
+                        Some(((ph - 8.0) / (style::TEXT_META * 1.25)).floor().max(1.0) as usize),
                     );
+                    painter
+                        .with_clip_rect(mini_rect.shrink(1.0))
+                        .text(
+                            Pos2::new(mini_rect.min.x + 6.0, mini_rect.min.y + 6.0),
+                            Align2::LEFT_TOP,
+                            name_lines.join("\n"),
+                            mini_font,
+                            colors.text_dim,
+                        );
                 }
             }
 
@@ -2147,91 +2141,44 @@ impl PlexiApp {
                 node.rect
             };
 
-            let fill = colors.depth_tint(node.depth);
-            let stroke = if is_focused {
-                Stroke::new(2.0_f32, colors.accent)
-            } else if node.direct_asks > 0 || node.ask_rollup > 0 {
-                Stroke::new(1.5_f32, colors.zoom_needs)
+            let state = if node.direct_asks > 0 || node.ask_rollup > 0 {
+                CardState::NeedsYou
             } else if node.failed_count > 0 {
-                Stroke::new(1.5_f32, colors.zoom_failed)
+                CardState::Failed
             } else {
-                Stroke::new(1.0_f32, colors.border)
+                self.context_card_state(node.context_id)
             };
-
-            let shadow_rect = nrect.translate(Vec2::new(2.0, 2.0));
-            painter.rect_filled(shadow_rect, style::RADIUS_MOTORWAYS, colors.shadow_flat);
-            painter.rect_filled(nrect, style::RADIUS_MOTORWAYS, fill);
-            painter.rect_stroke(
-                nrect,
-                style::RADIUS_MOTORWAYS,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-
-            // Title + rollup badge
-            painter.text(
-                Pos2::new(nrect.min.x + 12.0, nrect.min.y + 10.0),
-                Align2::LEFT_TOP,
-                &node.name,
-                crate::ui::theme::font_medium(style::TEXT_CAPTION),
-                colors.text_primary,
-            );
-
-            if node.direct_asks > 0 {
-                painter.text(
-                    Pos2::new(nrect.max.x - 12.0, nrect.min.y + 10.0),
-                    Align2::RIGHT_TOP,
-                    format!("◆{}", node.direct_asks),
-                    crate::ui::theme::font_medium(style::TEXT_CAPTION),
-                    colors.zoom_needs,
-                );
+            let badge = if node.direct_asks > 0 {
+                Some((format!("◆{}", node.direct_asks), colors.zoom_needs))
             } else if node.failed_count > 0 {
-                painter.text(
-                    Pos2::new(nrect.max.x - 12.0, nrect.min.y + 10.0),
-                    Align2::RIGHT_TOP,
-                    format!("✕{}", node.failed_count),
-                    crate::ui::theme::font_medium(style::TEXT_CAPTION),
-                    colors.zoom_failed,
-                );
-            }
-
-            // Preview lines based on tile size tier
-            let tier = TileContentTier::from_size(
-                nrect.size(),
-                node.direct_asks > 0 || node.failed_count > 0,
-                None,
+                Some((format!("✕{}", node.failed_count), colors.zoom_failed))
+            } else {
+                None
+            };
+            let subtitle = if node.is_ghost { "◌ you are here" } else { "" };
+            let detail = node.preview_lines.first().cloned().unwrap_or_default();
+            let spec = CardSpec {
+                state,
+                title: &node.name,
+                subtitle,
+                detail: &detail,
+                badge,
+            };
+            let layout = layout_card(ui.ctx(), CardForm::Atlas, &spec, nrect.width());
+            // Grow to fit the wrapped text, keeping the node centered on its edges.
+            let nrect = Rect::from_center_size(
+                nrect.center(),
+                Vec2::new(nrect.width(), nrect.height().max(layout.height)),
             );
-            if matches!(
-                tier,
-                TileContentTier::Lines5 | TileContentTier::Lines3 | TileContentTier::Line1
-            ) {
-                for (l_idx, line) in node.preview_lines.iter().take(2).enumerate() {
-                    painter.text(
-                        Pos2::new(
-                            nrect.min.x + 12.0,
-                            nrect.min.y + 32.0 + (l_idx as f32) * 16.0,
-                        ),
-                        Align2::LEFT_TOP,
-                        line,
-                        FontId::new(style::TEXT_HINT, FontFamily::Monospace),
-                        if line.starts_with('◆') {
-                            colors.zoom_needs
-                        } else {
-                            colors.text_dim
-                        },
-                    );
-                }
-            }
-
-            if node.is_ghost {
-                painter.text(
-                    Pos2::new(nrect.max.x - 12.0, nrect.max.y - 8.0),
-                    Align2::RIGHT_BOTTOM,
-                    "◌ here",
-                    FontId::new(style::TEXT_META, FontFamily::Proportional),
-                    colors.accent,
-                );
-            }
+            paint_card(
+                &painter,
+                nrect,
+                &layout,
+                &spec,
+                &colors,
+                colors.depth_tint(node.depth),
+                is_focused,
+            );
 
             let resp = ui.interact(
                 nrect,
@@ -2264,25 +2211,43 @@ impl PlexiApp {
                     Stroke::new(1.5_f32, colors.accent),
                     egui::StrokeKind::Inside,
                 );
-                painter.text(
+                painter.with_clip_rect(peek_rect.shrink(1.0)).text(
                     Pos2::new(peek_rect.min.x + 14.0, peek_rect.min.y + 12.0),
                     Align2::LEFT_TOP,
-                    format!("PEEK · {} (read-only)", fnode.name),
+                    wrap_text(
+                        ui.ctx(),
+                        &format!("PEEK · {} (read-only)", fnode.name),
+                        crate::ui::theme::font_medium(style::TEXT_CAPTION),
+                        peek_w - 28.0,
+                        Some(1),
+                    )
+                    .join(""),
                     crate::ui::theme::font_medium(style::TEXT_CAPTION),
                     colors.accent,
                 );
-                let lines = self.context_preview_lines(fnode.context_id, 6);
-                for (idx, line) in lines.iter().enumerate() {
-                    painter.text(
-                        Pos2::new(
-                            peek_rect.min.x + 14.0,
-                            peek_rect.min.y + 38.0 + (idx as f32) * 18.0,
-                        ),
-                        Align2::LEFT_TOP,
-                        line,
-                        FontId::new(style::TEXT_HINT, FontFamily::Monospace),
-                        colors.text_primary,
-                    );
+                let peek_painter = painter.with_clip_rect(peek_rect.shrink(1.0));
+                let peek_font = FontId::new(style::TEXT_HINT, FontFamily::Monospace);
+                let mut py = peek_rect.min.y + 38.0;
+                for line in self.context_preview_lines(fnode.context_id, 6) {
+                    for wrapped in wrap_text(
+                        ui.ctx(),
+                        &line,
+                        peek_font.clone(),
+                        peek_w - 28.0,
+                        Some(2),
+                    ) {
+                        if py + 16.0 > peek_rect.max.y {
+                            break;
+                        }
+                        peek_painter.text(
+                            Pos2::new(peek_rect.min.x + 14.0, py),
+                            Align2::LEFT_TOP,
+                            wrapped,
+                            peek_font.clone(),
+                            colors.text_primary,
+                        );
+                        py += 16.0;
+                    }
                 }
             }
         }
