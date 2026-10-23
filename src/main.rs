@@ -697,8 +697,11 @@ fn main() -> eframe::Result {
                             idle,
                         } => cli::trace::exit(cli::agent_status_cli(blocked, working, idle)),
                         AgentCmd::Next => { cli::trace::exit(cli::agent_next_cli(json)); }
-                        AgentCmd::Fleet { filter } => {
-                            cli::trace::exit(cli::agent_fleet_cli(json, filter));
+                        AgentCmd::Fleet { filter, cmd } => match cmd {
+                            Some(cli::args::AgentFleetCmd::Dismiss { id, all_failed }) => {
+                                cli::trace::exit(cli::agent_fleet_dismiss_cli(id, all_failed));
+                            }
+                            None => cli::trace::exit(cli::agent_fleet_cli(json, filter)),
                         }
                         AgentCmd::History { limit } => {
                             cli::trace::exit(cli::agent_history_cli(limit, json))

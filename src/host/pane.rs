@@ -694,6 +694,9 @@ pub struct TerminalPane {
     pub fleet_result: Option<serde_json::Value>,
     pub fleet_seen: bool,
     pub fleet_done_unseen: bool,
+    pub fleet_dismissed: bool,
+    /// This pane was restored from an earlier host process.
+    pub fleet_previous_session: bool,
     pub fleet_since: u64,
     /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
     pub id: PaneId,
@@ -838,6 +841,8 @@ impl TerminalPane {
             fleet_result: None,
             fleet_seen: false,
             fleet_done_unseen: false,
+            fleet_dismissed: false,
+            fleet_previous_session: false,
             fleet_since: crate::platform::clock::now_secs(),
             agent: None,
             agent_reported_at: None,
@@ -1014,6 +1019,7 @@ impl TerminalPane {
             s.fleet_result = self.fleet_result.clone();
             s.fleet_seen = self.fleet_seen;
             s.fleet_done_unseen = self.fleet_done_unseen;
+            s.fleet_dismissed = self.fleet_dismissed;
             s.fleet_since = self.fleet_since;
             s.ephemeral = self.ephemeral;
             if s.tail_preview.is_none() {
@@ -1055,6 +1061,7 @@ impl TerminalPane {
             fleet_result: self.fleet_result.clone(),
             fleet_seen: self.fleet_seen,
             fleet_done_unseen: self.fleet_done_unseen,
+            fleet_dismissed: self.fleet_dismissed,
             fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
@@ -1101,6 +1108,7 @@ impl TerminalPane {
         let run_id = format!("run-{}-{closed_at}", self.id);
         Some(crate::workspace::AgentHistoryRecord {
             fleet_seen: self.fleet_seen,
+            fleet_dismissed: self.fleet_dismissed,
             run_id,
             pane_id: self.id,
             context_id,

@@ -833,6 +833,12 @@ pub enum AppRequest {
         filter: FleetFilter,
         response_file: String,
     },
+    AgentFleetDismiss {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<u64>,
+        all_failed: bool,
+        response_file: String,
+    },
 
     AgentAsk {
         pane_id: u64,

@@ -113,6 +113,10 @@ pub struct AgentInput {
     pub pane_id: u64,
     pub parent_pane_id: Option<u64>,
     pub role: String,
+    pub label: String,
+    pub unknown_reason: Option<String>,
+    /// A host-observed failure reason (exit status, timeout, validation error).
+    pub failure_reason: Option<String>,
     pub harness: String,
     pub context_name: String,
     pub state: AgentState,
@@ -124,6 +128,8 @@ pub struct AgentInput {
     pub tail: Option<String>,
     pub result: Option<serde_json::Value>,
     pub events: Vec<AgentEvent>,
+    pub dismissed: bool,
+    pub previous_session: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRow {
@@ -131,6 +137,11 @@ pub struct AgentRow {
     pub pane_id: u64,
     pub parent_pane_id: Option<u64>,
     pub role: String,
+    pub label: String,
+    pub id_label: String,
+    pub reason: Option<String>,
+    pub next_hint: Option<String>,
+    pub age_secs: u64,
     pub harness: String,
     pub context_name: String,
     pub display_state: DisplayState,
@@ -179,12 +190,15 @@ impl AgentTask {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AgentsView {
     pub tasks: Vec<AgentTask>,
+    #[serde(default)]
+    pub older: Vec<AgentRow>,
 }
 impl AgentsView {
     pub fn build(
         input: Vec<AgentInput>,
         now: u64,
         stalled_after_secs: u64,
+        failed_retention_secs: u64,
         focused: Option<u64>,
         filter: FleetFilter,
     ) -> Self {
@@ -198,6 +212,7 @@ impl AgentsView {
             .collect();
         let has_children: HashSet<_> = input.iter().filter_map(|r| r.parent_pane_id).collect();
         let mut groups: BTreeMap<u64, Vec<AgentRow>> = BTreeMap::new();
+        let mut older = Vec::new();
         for r in input {
             let mut root = r.pane_id;
             let mut visited = HashSet::new();
@@ -237,11 +252,21 @@ impl AgentsView {
             } else {
                 r.blocked_on
             };
+            let reason = failure_reason(r.state.clone(), r.failure_reason.as_deref(), r.unknown_reason.as_deref());
+            let age_secs = now.saturating_sub(r.since);
+            let failed = matches!(display_state, DisplayState::Failed | DisplayState::ExitedUnreported | DisplayState::Stalled);
             let row = AgentRow {
                 live: r.live,
                 pane_id: r.pane_id,
                 parent_pane_id: r.parent_pane_id,
                 role: r.role,
+                label: r.label,
+                id_label: format!("#{}", r.pane_id),
+                // Only advertise an implemented verb. Live panes are inspected through
+                // pane info; closed runs have the stable history/reopen identifier.
+                next_hint: failed.then(|| format!("plexi pane info {}", r.pane_id)),
+                reason,
+                age_secs,
                 harness: r.harness,
                 context_name: r.context_name,
                 display_state,
@@ -258,6 +283,11 @@ impl AgentsView {
                     r.events
                 },
             };
+            if r.dismissed { continue; }
+            if failed && (r.previous_session || age_secs > failed_retention_secs) {
+                if filter.matches(&row) { older.push(row); }
+                continue;
+            }
             if filter.matches(&row) {
                 groups.entry(root).or_default().push(row);
             }
@@ -292,8 +322,20 @@ impl AgentsView {
                 t.root_pane_id,
             )
         });
-        Self { tasks }
+        older.sort_by_key(|r| std::cmp::Reverse(r.since));
+        Self { tasks, older }
     }
+}
+
+pub(crate) fn failure_reason(state: AgentState, detail: Option<&str>, unknown_reason: Option<&str>) -> Option<String> {
+    if !matches!(state, AgentState::Failed | AgentState::ExitedUnreported | AgentState::Interrupted) { return None; }
+    let detail = detail.filter(|value| !value.trim().is_empty());
+    Some(match state {
+        AgentState::ExitedUnreported => detail.map(str::to_owned).unwrap_or_else(|| "harness exited before reporting completion".into()),
+        AgentState::Interrupted => detail.map(str::to_owned).unwrap_or_else(|| "run interrupted".into()),
+        AgentState::Failed => detail.map(str::to_owned).or_else(|| unknown_reason.map(str::to_owned)).unwrap_or_else(|| "run reported failure".into()),
+        _ => unknown_reason.unwrap_or("unknown failure").to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -307,6 +349,9 @@ mod tests {
             pane_id: id,
             parent_pane_id: None,
             role: format!("worker-{id}"),
+            label: format!("worker-{id}"),
+            unknown_reason: None,
+            failure_reason: None,
             harness: "pi".into(),
             context_name: "Task".into(),
             state,
@@ -318,10 +363,12 @@ mod tests {
             tail: None,
             result: None,
             events: vec![],
+            dismissed: false,
+            previous_session: false,
         }
     }
     fn view(rows: Vec<AgentInput>) -> AgentsView {
-        AgentsView::build(rows, 221, 120, None, FleetFilter::All)
+        AgentsView::build(rows, 221, 120, 12 * 60 * 60, None, FleetFilter::All)
     }
     #[test]
     fn e1_tree_rollup_and_counts() {
@@ -383,6 +430,7 @@ mod tests {
                 vec![idle.clone()],
                 now,
                 cfg.stalled_after_secs.unwrap_or(120),
+                12 * 60 * 60,
                 None,
                 FleetFilter::All,
             );
@@ -401,7 +449,7 @@ mod tests {
             DisplayState::DoneUnseen
         );
         let focused =
-            AgentsView::build(vec![completed.clone()], 221, 120, Some(1), FleetFilter::All);
+            AgentsView::build(vec![completed.clone()], 221, 120, 12 * 60 * 60, Some(1), FleetFilter::All);
         assert!(focused.tasks[0].rows[0].seen);
         assert_eq!(focused.tasks[0].display_state, DisplayState::Idle);
         let mut seen = completed;
@@ -464,7 +512,23 @@ mod tests {
             body: "which branch?".into(),
         });
         assert_eq!(view(vec![agent.clone()]).tasks[0].rows[0].events.len(), 1);
-        let v = AgentsView::build(vec![agent], 221, 120, Some(1), FleetFilter::All);
+        let v = AgentsView::build(vec![agent], 221, 120, 12 * 60 * 60, Some(1), FleetFilter::All);
         assert!(v.tasks[0].rows[0].events.is_empty());
+    }
+    #[test]
+    fn human_labels_older_bucketing_and_reasons() {
+        let mut fresh = row(1, AgentState::Failed);
+        fresh.label = "Researcher · Human task".into();
+        fresh.failure_reason = Some("harness exited with code 7".into());
+        let mut old = row(2, AgentState::Failed);
+        old.label = "claude · Human task".into();
+        old.previous_session = true;
+        let mut dismissed = row(3, AgentState::Failed);
+        dismissed.dismissed = true;
+        let view = AgentsView::build(vec![fresh, old, dismissed], 221, 120, 12 * 60 * 60, None, FleetFilter::All);
+        assert_eq!(view.tasks[0].rows[0].label, "Researcher · Human task");
+        assert_eq!(view.tasks[0].rows[0].reason.as_deref(), Some("harness exited with code 7"));
+        assert_eq!(view.older.len(), 1);
+        assert!(!view.tasks.iter().flat_map(|task| &task.rows).chain(view.older.iter()).any(|row| row.pane_id == 3));
     }
 }

@@ -96,6 +96,8 @@ model_high   = "anthropic/claude-fable-5"
 # Silent desktop attention alerts while Plexi is not focused.
 os_notifications = true
 stalled_after_secs = 120
+# Failed, stalled, and unreported agent runs move to the collapsed Older group after this age.
+failed_retention_hours = 12
 palette_agent_results = false
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"

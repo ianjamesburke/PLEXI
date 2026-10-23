@@ -90,6 +90,8 @@ pub struct SavedAgentSession {
     #[serde(default)]
     pub fleet_done_unseen: bool,
     #[serde(default)]
+    pub fleet_dismissed: bool,
+    #[serde(default)]
     pub fleet_since: u64,
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +117,8 @@ pub struct SavedAgentSession {
 pub struct AgentHistoryRecord {
     #[serde(default)]
     pub fleet_seen: bool,
+    #[serde(default)]
+    pub fleet_dismissed: bool,
     pub run_id: String,
     pub pane_id: u64,
     pub context_id: u64,
@@ -826,6 +830,7 @@ mod tests {
                 fleet_result: None,
                 fleet_seen: false,
                 fleet_done_unseen: false,
+                fleet_dismissed: false,
                 fleet_since: 0,
                 harness: "claude".to_string(),
                 config_name: Some("implementer".to_string()),

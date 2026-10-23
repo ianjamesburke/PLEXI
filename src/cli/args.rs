@@ -2964,6 +2964,8 @@ pub enum AgentCmd {
         /// Select all, needs-attention, working, or done workers.
         #[arg(long, value_enum, default_value = "all")]
         filter: crate::protocol::FleetFilter,
+        #[command(subcommand)]
+        cmd: Option<AgentFleetCmd>,
     },
     /// Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
     ///
@@ -3296,6 +3298,18 @@ pub enum AgentCmd {
         /// Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
         #[arg(long = "grant")]
         grant: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentFleetCmd {
+    /// Hide a failed fleet run. The run remains available through `agent history`.
+    Dismiss {
+        /// Live pane ID to dismiss.
+        id: Option<u64>,
+        /// Dismiss every currently failed, stalled, or unreported run.
+        #[arg(long, conflicts_with = "id", required_unless_present = "id")]
+        all_failed: bool,
     },
 }
 

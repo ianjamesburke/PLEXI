@@ -4,6 +4,28 @@ use crate::agent::fleet::{AgentInput, AgentsView, BlockedOn, FleetFilter};
 use crate::protocol::{AgentBlockedReason, AgentState};
 
 impl PlexiApp {
+    pub(crate) fn dismiss_fleet_run(&mut self, pane_id: u64) -> bool {
+        for win in &mut self.windows {
+            if let Some(t) = win.panes.get_mut(&pane_id).and_then(|p| p.as_terminal_mut()) {
+                if t.is_agent_pane() {
+                    t.fleet_dismissed = true;
+                    self.mark_workspace_dirty();
+                    log::info!("agents: dismissed fleet run pane_id={pane_id}");
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn dismiss_failed_fleet_runs(&mut self) -> usize {
+        let ids: Vec<_> = self.agents_view(FleetFilter::All).tasks.into_iter().flat_map(|t| t.rows)
+            .filter(|r| matches!(r.display_state, crate::agent::fleet::DisplayState::Failed | crate::agent::fleet::DisplayState::ExitedUnreported | crate::agent::fleet::DisplayState::Stalled))
+            .map(|r| r.pane_id).collect();
+        let count = ids.into_iter().filter(|id| self.dismiss_fleet_run(*id)).count();
+        if count > 0 { log::info!("agents: dismissed failed fleet runs count={count}"); }
+        count
+    }
     pub(crate) fn fleet_focused_pane(&self) -> Option<u64> {
         if let Some(parent) = self.conjoined_parent() {
             if self.conjoined_parent_focus == Some(parent) { return Some(parent); }
@@ -147,6 +169,9 @@ impl PlexiApp {
                     pane_id,
                     parent_pane_id: t.parent_pane_id,
                     role: t.agent_role.clone().unwrap_or_else(|| "unknown".into()),
+                    label: agent_label(t.agent_role.as_deref(), t.agent_harness.as_deref().or_else(|| report.map(|a| a.agent.as_str())), &context_name),
+                    unknown_reason: (t.agent_role.is_none() && t.agent_harness.is_none() && report.is_none()).then(|| "no definition, harness exited before hello".into()),
+                    failure_reason: terminal_failure_reason(t.exit_status, report.and_then(|a| a.detail.as_deref())),
                     harness: t
                         .agent_harness
                         .clone()
@@ -168,6 +193,8 @@ impl PlexiApp {
                         .and_then(|r| r.committed.clone())
                         .or_else(|| t.fleet_result.clone()),
                     events,
+                    dismissed: t.fleet_dismissed,
+                    previous_session: t.fleet_previous_session,
                 });
             }
         }
@@ -184,6 +211,9 @@ impl PlexiApp {
                     .config_name
                     .clone()
                     .unwrap_or_else(|| "unknown".into()),
+                label: agent_label(record.config_name.as_deref().or(record.pane_name.as_deref()), Some(&record.harness), &record.context_name),
+                unknown_reason: (record.config_name.is_none() && record.pane_name.is_none() && record.harness.is_empty()).then(|| "no definition, harness not recorded".into()),
+                failure_reason: record.last_detail.clone(),
                 harness: record.harness.clone(),
                 context_name: record.context_name.clone(),
                 state: record.last_state.clone(),
@@ -195,6 +225,8 @@ impl PlexiApp {
                 tail: record.tail_preview.clone(),
                 result: record.result.clone(),
                 events: vec![],
+                dismissed: record.fleet_dismissed,
+                previous_session: true,
             });
         }
         input
@@ -209,6 +241,7 @@ impl PlexiApp {
                 .as_ref()
                 .and_then(|a| a.stalled_after_secs)
                 .unwrap_or(120),
+            self.config.agents.as_ref().and_then(|a| a.failed_retention_hours).unwrap_or(12).saturating_mul(60 * 60),
             self.fleet_focused_pane(),
             filter,
         )
@@ -277,6 +310,21 @@ impl PlexiApp {
             log::error!("agents: open failed: {e}");
         }
     }
+}
+
+fn agent_label(definition: Option<&str>, harness: Option<&str>, task: &str) -> String {
+    let name = definition.filter(|v| !v.trim().is_empty()).or_else(|| harness.filter(|v| !v.trim().is_empty()))
+        .unwrap_or("unknown");
+    format!("{name} · {task}")
+}
+
+fn terminal_failure_reason(status: Option<crate::host::pane_lifecycle::ExitStatus>, detail: Option<&str>) -> Option<String> {
+    status.and_then(|status| match status {
+        crate::host::pane_lifecycle::ExitStatus::Code(code) if code != 0 => Some(format!("harness exited with code {code}")),
+        crate::host::pane_lifecycle::ExitStatus::Signal(signal) => Some(format!("harness terminated by signal {signal}")),
+        crate::host::pane_lifecycle::ExitStatus::Unknown => Some("harness exit status unavailable".into()),
+        _ => None,
+    }).or_else(|| detail.filter(|value| !value.trim().is_empty()).map(str::to_owned))
 }
 
 #[cfg(test)]

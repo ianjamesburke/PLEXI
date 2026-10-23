@@ -3106,10 +3106,25 @@ pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 
     for task in view.tasks {
         println!("{} — {}", task.title, task.counts());
         for row in task.rows {
-            println!("  #{} {} ({})  {}{}", row.pane_id, row.role, row.harness, row.display_state.label(), row.blocked_on.map(|b| format!(" — {}", b.label())).unwrap_or_default());
+            println!("  {:<36} {:<20} {:<8} {:<24} {}{}", row.label, row.display_state.label(), format_age(row.age_secs), row.reason.as_deref().unwrap_or("-"), row.id_label, row.next_hint.map(|h| format!(" · next: {h}")).unwrap_or_default());
         }
     }
+    if !view.older.is_empty() {
+        println!("Older (collapsed in Agents pane):");
+        for row in view.older { println!("  {:<36} {:<20} {:<8} {:<24} {}", row.label, row.display_state.label(), format_age(row.age_secs), row.reason.as_deref().unwrap_or("-"), row.id_label); }
+    }
     0
+}
+
+pub fn agent_fleet_dismiss_cli(pane_id: Option<u64>, all_failed: bool) -> i32 {
+    let content = match super::request(serde_json::json!({"type":"agent_fleet_dismiss", "pane_id":pane_id, "all_failed":all_failed}), "plexi-agent-fleet-dismiss", "agent fleet dismiss") {
+        Ok(content) => content, Err(code) => return code,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value["ok"] == true => { println!("Dismissed {} run(s).", value["dismissed"].as_u64().unwrap_or(0)); 0 }
+        Ok(value) => { eprintln!("error: {}", value["error"].as_str().unwrap_or("could not dismiss run")); 1 }
+        Err(error) => { eprintln!("error: invalid dismiss response: {error}"); 1 }
+    }
 }
 
 pub fn agent_next_cli(json: bool) -> i32 {
@@ -3121,13 +3136,17 @@ pub fn agent_next_cli(json: bool) -> i32 {
     else {
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(value) => match value["pane_id"].as_u64() {
-                Some(id) => println!("{id}"),
+                Some(id) => println!("{} ({id})", value["label"].as_str().unwrap_or("unknown")),
                 None => println!("No agents need attention."),
             },
             Err(error) => { eprintln!("error: invalid agent next response: {error}"); return 1; }
         }
     }
     0
+}
+
+fn format_age(secs: u64) -> String {
+    if secs >= 3600 { format!("{}h", secs / 3600) } else if secs >= 60 { format!("{}m", secs / 60) } else { format!("{}s", secs) }
 }
 
 /// Agent tool operations retain the socket until the host answers the lifecycle wait.

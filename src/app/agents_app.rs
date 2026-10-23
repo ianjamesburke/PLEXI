@@ -4,6 +4,7 @@ use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
 
 pub enum FleetAction {
     Seen(u64),
+    Dismiss(u64),
     Reply {
         pane_id: u64,
         from_pane_id: u64,
@@ -71,9 +72,9 @@ impl AgentsApp {
             .into_iter()
             .find(|r| Some(r.pane_id) == self.selected)
         {
-            if row.display_state == DisplayState::DoneUnseen {
+            if matches!(row.display_state, DisplayState::DoneUnseen | DisplayState::Failed | DisplayState::ExitedUnreported | DisplayState::Stalled) {
                 self.commands
-                    .push(AppCommand::Fleet(FleetAction::Seen(row.pane_id)));
+                    .push(AppCommand::Fleet(FleetAction::Dismiss(row.pane_id)));
             }
         }
     }
@@ -219,7 +220,7 @@ impl App for AgentsApp {
                                             let (shape, color) = Self::indicator(row, colors);
                                             let label = format!(
                                                 "{shape} {}  {}{}",
-                                                row.role,
+                                                row.label,
                                                 row.display_state.label(),
                                                 if row.needs_you { " · needs you" } else { "" }
                                             );
@@ -233,6 +234,7 @@ impl App for AgentsApp {
                                                 self.selected = Some(row.pane_id);
                                                 self.replying = false;
                                             }
+                                            ui.colored_label(colors.text_dim, &row.id_label);
                                             if let Some(reason) = &row.blocked_on {
                                                 ui.add(
                                                     egui::Label::new(
@@ -242,8 +244,8 @@ impl App for AgentsApp {
                                                     .truncate(),
                                                 );
                                             }
-                                            if row.display_state == DisplayState::Failed {
-                                                if let Some(reason) = &row.tail {
+                                            if matches!(row.display_state, DisplayState::Failed | DisplayState::ExitedUnreported | DisplayState::Stalled) {
+                                                if let Some(reason) = &row.reason {
                                                     ui.add(egui::Label::new(reason).truncate()).on_hover_text(reason);
                                                 }
                                             }
@@ -255,6 +257,16 @@ impl App for AgentsApp {
                                             }
                                         }
                                         ui.add_space(12.0);
+                                    }
+                                    let older: Vec<_> = self.view.older.iter().filter(|r| self.filter.matches(r)).collect();
+                                    if !older.is_empty() {
+                                        egui::CollapsingHeader::new(format!("Older ({})", older.len())).show(ui, |ui| {
+                                            for row in older {
+                                                let (shape, color) = Self::indicator(row, colors);
+                                                ui.colored_label(color, format!("{shape} {}  {} · {}", row.label, row.display_state.label(), format_age(row.age_secs)));
+                                                if let Some(reason) = &row.reason { ui.colored_label(colors.text_dim, reason); }
+                                            }
+                                        });
                                     }
                                 });
                         },
@@ -285,11 +297,9 @@ impl App for AgentsApp {
                                                 .map(|p| format!("#{p}"))
                                                 .unwrap_or_else(|| "none".into())
                                         ));
-                                        ui.label(format!(
-                                            "State changed {}s ago",
-                                            crate::platform::clock::now_secs()
-                                                .saturating_sub(row.since)
-                                        ));
+                                        ui.label(format!("Age: {}", format_age(row.age_secs)));
+                                        if let Some(reason) = &row.reason { ui.label(format!("Reason: {reason}")); }
+                                        if let Some(next) = &row.next_hint { ui.label(format!("Next: {next}")); }
                                         if let Some(reason) = &row.blocked_on {
                                             ui.label(reason.label());
                                         }
@@ -308,7 +318,7 @@ impl App for AgentsApp {
                                             {
                                                 self.answer();
                                             }
-                                            if row.display_state == DisplayState::DoneUnseen
+                                            if matches!(row.display_state, DisplayState::DoneUnseen | DisplayState::Failed | DisplayState::ExitedUnreported | DisplayState::Stalled)
                                                 && ui.button("Dismiss [x]").clicked()
                                             {
                                                 self.dismiss();
@@ -371,4 +381,8 @@ impl App for AgentsApp {
                 });
             });
     }
+}
+
+fn format_age(secs: u64) -> String {
+    if secs >= 3600 { format!("{}h", secs / 3600) } else if secs >= 60 { format!("{}m", secs / 60) } else { format!("{}s", secs) }
 }

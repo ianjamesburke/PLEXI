@@ -4307,11 +4307,20 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::AgentNext { response_file } => {
                 let pane_id = self.next_blocked_agent();
-                write_json_response(response_file, serde_json::json!({"pane_id": pane_id}));
+                let label = pane_id.and_then(|id| self.agents_view(crate::protocol::FleetFilter::All).tasks.into_iter().flat_map(|t| t.rows).find(|r| r.pane_id == id).map(|r| r.label));
+                write_json_response(response_file, serde_json::json!({"pane_id": pane_id, "label": label}));
             }
             crate::protocol::AppRequest::AgentFleet { filter, response_file } => {
                 log::info!("agents: fleet query filter={filter:?}");
                 write_json_response(response_file, serde_json::json!(self.agents_view(*filter)));
+            }
+            crate::protocol::AppRequest::AgentFleetDismiss { pane_id, all_failed, response_file } => {
+                let dismissed = if *all_failed { self.dismiss_failed_fleet_runs() } else if let Some(id) = pane_id { usize::from(self.dismiss_fleet_run(*id)) } else { 0 };
+                if dismissed == 0 && !*all_failed {
+                    write_json_response(response_file, serde_json::json!({"ok": false, "error": "no live agent run matching that id"}));
+                } else {
+                    write_json_response(response_file, serde_json::json!({"ok": true, "dismissed": dismissed}));
+                }
             }
             crate::protocol::AppRequest::AgentAsk {
                 pane_id,

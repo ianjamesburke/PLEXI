@@ -175,6 +175,7 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 |---|---|---|---|
 | `os_notifications` | bool | — | Raise silent macOS attention notifications while Plexi is unfocused (default true). Uses provisional authorization without a permission dialog; enable banners in macOS notification settings if desired. Disabled in tests; other platforms log only. |
 | `stalled_after_secs` | integer | — | Idle ephemeral worker stall threshold in seconds (default 120). |
+| `failed_retention_hours` | integer | — | Hours before failed runs move into the collapsed older group (default 12). |
 | `palette_agent_results` | bool | — | Show agent jump rows in the command palette (default false). |
 | `low` | string | claude haiku with --dangerously-skip-permissions | Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions. |
 | `medium` | string | claude sonnet with --dangerously-skip-permissions | Standard work. Default: claude sonnet with --dangerously-skip-permissions. |
@@ -396,6 +397,8 @@ model_high   = "anthropic/claude-fable-5"
 # Silent desktop attention alerts while Plexi is not focused.
 os_notifications = true
 stalled_after_secs = 120
+# Failed, stalled, and unreported agent runs move to the collapsed Older group after this age.
+failed_retention_hours = 12
 palette_agent_results = false
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"

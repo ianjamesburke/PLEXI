@@ -760,6 +760,7 @@ impl PlexiApp {
                 AppCommand::Fleet(action) => {
                     match action {
                         crate::app::agents_app::FleetAction::Seen(id) => self.mark_agent_seen(id),
+                        crate::app::agents_app::FleetAction::Dismiss(id) => { self.dismiss_fleet_run(id); },
                         crate::app::agents_app::FleetAction::ReviewAttention { pane_id } => {
                             self.open_attention_overlay("agents");
                             if let Some(index) = crate::overlays::attention::open_items().iter().position(|r| r.resource == format!("pane:{pane_id}") || r.actor == format!("pane:{pane_id}")) {
