@@ -284,10 +284,10 @@ impl PlexiApp {
         let colors = self.colors;
         let filtered = self.notes_picker_filtered();
         let selected = self.notes_picker_selected;
+        let selection_changed = self.notes_picker_last_drawn_selected != Some(selected);
         let total = self.notes_picker_entries.len();
 
         let open_cell = std::cell::Cell::new(None::<usize>);
-        let prev_selected_cell = std::cell::Cell::new(selected);
 
         let mut query = self.notes_picker_query.clone();
 
@@ -299,7 +299,7 @@ impl PlexiApp {
             .escape(true)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("notes_picker_search");
-                let te = TextField::singleline(te_id, "Search notes…")
+                TextField::singleline(te_id, "Search notes…")
                     .surface(crate::ui::focus::SurfaceKey::Overlay(
                         crate::app::input_owner::OverlaySurface::Layer(
                             crate::app::FocusKind::NotesPicker,
@@ -307,9 +307,6 @@ impl PlexiApp {
                     ))
                     .log_name("notes_picker_search")
                     .show(ui, &mut query, &colors);
-                if te.changed() {
-                    prev_selected_cell.set(usize::MAX); // force scroll reset on query change
-                }
                 ui.add_space(style::SPACE_SM);
 
                 if total == 0 {
@@ -377,8 +374,7 @@ impl PlexiApp {
                                 .selected(is_selected)
                                 .show(ui, &colors);
                             if is_selected {
-                                row_response
-                                    .scroll_into_view(ui, selected != prev_selected_cell.get());
+                                row_response.scroll_into_view(ui, selection_changed);
                             }
                             if row_response.row_clicked() {
                                 open_cell.set(Some(row));
@@ -395,6 +391,8 @@ impl PlexiApp {
                 ])
                 .show(ui, &colors);
             });
+
+        self.notes_picker_last_drawn_selected = Some(selected);
 
         if query != self.notes_picker_query {
             self.notes_picker_query = query;
@@ -472,6 +470,83 @@ mod tests {
             .and_then(|v| v.as_str())
             .expect("text editor path")
             .to_string()
+    }
+
+    fn picker_frame_input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(640.0, 480.0),
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn draw_picker_frame(app: &mut PlexiApp, ctx: &egui::Context) {
+        let _ = ctx.run_ui(picker_frame_input(), |ui| app.draw_notes_picker(ui.ctx()));
+    }
+
+    fn press_picker_key(app: &mut PlexiApp, ctx: &egui::Context, key: egui::Key) {
+        let mut input = picker_frame_input();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run_ui(input, |ui| {
+            let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+            app.notes_picker_handle_key(&mut input);
+        });
+    }
+
+    fn picker_scroll_offset(ctx: &egui::Context) -> f32 {
+        // ModalShell's Area and Frame each make a stable child UI before the
+        // picker list salts its ScrollArea id.
+        let id = egui::Id::new("notes_picker")
+            .with("overlay")
+            .with(egui::Id::from("child"))
+            .with(egui::Id::new("notes_picker_list"));
+        egui::scroll_area::State::load(ctx, id)
+            .expect("notes picker scroll state")
+            .offset
+            .y
+    }
+
+    #[test]
+    fn notes_picker_scroll_follows_keyboard_selection_in_both_directions() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        app.notes_picker_entries = (0..30)
+            .map(|i| picker_entry(format!("/tmp/note-{i}.md").into(), &format!("note {i}")))
+            .collect();
+        app.push_focus_layer(FocusKind::NotesPicker);
+
+        draw_picker_frame(&mut app, &ctx);
+        for _ in 0..18 {
+            press_picker_key(&mut app, &ctx, egui::Key::ArrowDown);
+        }
+        draw_picker_frame(&mut app, &ctx);
+        let offset_after_down = picker_scroll_offset(&ctx);
+        assert_eq!(app.notes_picker_selected, 18);
+        assert!(
+            offset_after_down > 0.0,
+            "selection past the visible window must scroll down"
+        );
+
+        for _ in 0..15 {
+            press_picker_key(&mut app, &ctx, egui::Key::ArrowUp);
+        }
+        draw_picker_frame(&mut app, &ctx);
+        let offset_after_up = picker_scroll_offset(&ctx);
+        assert_eq!(app.notes_picker_selected, 3);
+        assert!(
+            offset_after_up < offset_after_down,
+            "selection above the visible window must scroll back up"
+        );
     }
 
     #[test]

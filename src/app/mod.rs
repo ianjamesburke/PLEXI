@@ -366,6 +366,9 @@ pub struct PlexiApp {
     pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
     /// Notes picker: currently highlighted index into the filtered view.
     pub(crate) notes_picker_selected: usize,
+    /// Notes picker: selection rendered in the previous frame, used to keep
+    /// keyboard navigation visible when input is handled before drawing.
+    pub(crate) notes_picker_last_drawn_selected: Option<usize>,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
     /// In-memory notes index. Cmd+O paints this and does not walk.
@@ -1633,6 +1636,7 @@ impl PlexiApp {
                     notes_migration_pending: true,
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
+                    notes_picker_last_drawn_selected: None,
                     notes_picker_query: String::new(),
                     notes_index: crate::notes::NotesIndexCache::default(),
                     notes_index_rx: None,
@@ -1896,6 +1900,7 @@ impl PlexiApp {
             notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
+            notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_index: crate::notes::NotesIndexCache::default(),
             notes_index_rx: None,
@@ -2828,6 +2833,7 @@ impl PlexiApp {
                 notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
+                notes_picker_last_drawn_selected: None,
                 notes_picker_query: String::new(),
                 notes_index: crate::notes::NotesIndexCache::default(),
                 notes_index_rx: None,
