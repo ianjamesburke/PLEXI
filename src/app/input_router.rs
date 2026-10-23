@@ -198,6 +198,31 @@ impl PlexiInput {
         }
     }
 
+    /// Suppress an approval decision key until its physical release. The
+    /// matching text/paste events are suppressed too, because OS key repeat can
+    /// emit them after the approval overlay has returned focus to a pane.
+    pub(crate) fn suppress_held_keys(&mut self, held: &mut std::collections::HashSet<egui::Key>) {
+        if held.is_empty() {
+            return;
+        }
+        let mut suppress_text = true;
+        self.events.retain(|event| {
+            if suppress_text && matches!(event, egui::Event::Text(_) | egui::Event::Paste(_)) {
+                return false;
+            }
+            if let egui::Event::Key { key, pressed, .. } = event {
+                if held.contains(key) {
+                    if !pressed {
+                        held.remove(key);
+                        suppress_text = !held.is_empty();
+                    }
+                    return false;
+                }
+            }
+            true
+        });
+    }
+
     /// Return every event still owned by this buffer to `ctx` so consumers
     /// later in the frame (a focused `TextEdit`, `dispatch_app_key_events`,
     /// the terminal widget's own read of `ctx.input()`) see whatever this

@@ -3,6 +3,7 @@ use super::app_trait::KeyDisposition;
 use super::input_router::PlexiInput;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub(super) const ARM_DELAY: Duration = Duration::from_secs(1);
@@ -12,12 +13,21 @@ pub(super) struct ApprovalKeyboard {
     pub id: Option<String>,
     since: Option<Instant>,
     pub confirm_always: bool,
+    /// Decision keys remain owned after the banner closes until their key-up.
+    /// This stops OS auto-repeat from being delivered to the previously focused pane.
+    held_decision_keys: HashSet<egui::Key>,
 }
 
 impl ApprovalKeyboard {
     fn focus(&mut self, id: String, now: Instant) {
         self.id = Some(id);
         self.since = Some(now);
+        self.confirm_always = false;
+    }
+
+    fn leave_focus(&mut self) {
+        self.id = None;
+        self.since = None;
         self.confirm_always = false;
     }
     pub fn remaining(&self, now: Instant) -> Duration {
@@ -52,9 +62,14 @@ impl PlexiApp {
     }
 
     pub(super) fn leave_approval(&mut self) {
-        self.approval_keyboard = Default::default();
+        self.approval_keyboard.leave_focus();
         self.focus_stack
             .retain(|kind| *kind != FocusKind::ApprovalBanner);
+    }
+
+    /// Called before host bindings and pane dispatch on every input frame.
+    pub(crate) fn suppress_approval_decision_repeats(&mut self, input: &mut PlexiInput) {
+        input.suppress_held_keys(&mut self.approval_keyboard.held_decision_keys);
     }
 
     pub(crate) fn approval_handle_key(&mut self, input: &mut PlexiInput) -> KeyDisposition {
@@ -127,6 +142,14 @@ impl PlexiApp {
             match monitor.approve_pending(&id, choice) {
                 Ok(()) => log::info!("approval: decided id={id} decision={choice:?} via=keyboard"),
                 Err(error) => log::warn!("approval: decision failed id={id} via=keyboard: {error}"),
+            }
+            if matches!(
+                choice,
+                ApprovalChoice::Once | ApprovalChoice::Deny | ApprovalChoice::DenyAlways
+            ) {
+                if let Some((key, _)) = key {
+                    self.approval_keyboard.held_decision_keys.insert(key);
+                }
             }
             self.leave_approval();
         }
@@ -271,5 +294,58 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(monitor.show_pending(&id).is_none());
+    }
+
+    #[test]
+    fn approval_decision_key_stays_owned_until_release() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let id = pending(&monitor, "SECRET", root.path());
+        h.app.focus_approval();
+        let now = Instant::now();
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app
+            .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
+        assert!(monitor.show_pending(&id).is_none());
+
+        let mut held_repeat = PlexiInput::synthetic(
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Text("a".to_string()),
+            ],
+            egui::Modifiers::NONE,
+        );
+        h.app.suppress_approval_decision_repeats(&mut held_repeat);
+        assert!(
+            held_repeat.is_empty(),
+            "held approval key must not reach the pane"
+        );
+
+        let mut release = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        h.app.suppress_approval_decision_repeats(&mut release);
+        assert!(release.is_empty(), "approval key-up remains host-owned");
+
+        let mut next_key = input(egui::Key::A, egui::Modifiers::NONE);
+        h.app.suppress_approval_decision_repeats(&mut next_key);
+        assert!(
+            !next_key.is_empty(),
+            "input resumes after the decision key is released"
+        );
     }
 }

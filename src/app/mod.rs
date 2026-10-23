@@ -3842,6 +3842,7 @@ impl eframe::App for PlexiApp {
                 .collect()
         });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+        self.suppress_approval_decision_repeats(&mut router_input);
         let mut poll_actions_result = keys::poll_actions(
             &mut router_input,
             filtered_bindings.as_deref().unwrap_or(&self.binding_table),
