@@ -978,6 +978,12 @@ impl TerminalPane {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "unknown directory".to_string());
+        if crate::app::is_finished_script_session(s) {
+            return Some(format!(
+                "[Plexi] {label} · {cwd}\nscript · finished ({:?})\n[done]",
+                s.last_state
+            ));
+        }
         let session_line = standby_session_line(s, self.standby_resume_command.as_deref());
         Some(format!(
             "[Plexi Standby] {label} · {cwd}\n{session_line}\n[Enter] resume"
@@ -987,6 +993,13 @@ impl TerminalPane {
     /// Exit `[Plexi Standby]` and dispatch the Harness Adapter resume command
     /// into the terminal's PTY in its restored `cwd`.
     pub fn resume_from_standby(&mut self) -> Option<String> {
+        if self
+            .standby_session
+            .as_ref()
+            .is_some_and(crate::app::is_finished_script_session)
+        {
+            return None;
+        }
         let standby = self.standby_session.take()?;
         self.standby_resume_command = None;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
