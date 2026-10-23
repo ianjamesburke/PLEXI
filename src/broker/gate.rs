@@ -172,6 +172,9 @@ pub struct NeedsYouDetails {
     pub choices: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_free_text: bool,
+    /// The choice the filer recommends; always one of `choices`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommend: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

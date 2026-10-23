@@ -62,6 +62,36 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
 
 /// The identity an app sees for a verified socket caller. No pane is never
 /// the human `user`.
+/// `--recommend` must name one of the offered `--choice` values.
+pub(crate) fn validate_recommend(recommend: Option<&str>, choices: &[String]) -> Result<(), String> {
+    match recommend {
+        None => Ok(()),
+        Some(r) if choices.iter().any(|c| c == r) => Ok(()),
+        Some(r) => Err(format!(
+            "--recommend {r:?} is not one of the choices {choices:?}"
+        )),
+    }
+}
+
+fn ask_recommend_error(payload: &serde_json::Value) -> Option<String> {
+    let recommend = payload
+        .get("recommend")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let choices: Vec<String> = payload
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    validate_recommend(Some(recommend), &choices).err()
+}
+
 pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option<&str>) -> String {
     match (caller_pane_id, session_actor) {
         (_, Some(actor)) if !actor.is_empty() => actor.to_string(),
@@ -290,6 +320,11 @@ impl PlexiApp {
 
         let peer_pane = self.resolve_socket_peer_pane(peer_ancestry);
         let body = match op {
+            "ask" if ask_recommend_error(payload).is_some() => {
+                let error = ask_recommend_error(payload).unwrap_or_default();
+                log::warn!("needs_you: api ask refused: {error}");
+                serde_json::json!({ "ok": false, "error": error })
+            }
             "ask" => {
                 let summary = payload
                     .get("summary")
@@ -335,6 +370,11 @@ impl PlexiApp {
                     .get("allow_free_text")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(choices.is_empty());
+                let recommend = payload
+                    .get("recommend")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
                 let preview_refs: Vec<String> = payload
                     .get("preview_refs")
                     .and_then(|v| v.as_array())
@@ -370,6 +410,7 @@ impl PlexiApp {
                 let details = crate::broker::gate::NeedsYouDetails {
                     choices,
                     allow_free_text,
+                    recommend,
                     preview_refs,
                     correlation_id,
                     session_id,
@@ -1139,5 +1180,23 @@ mod tests {
         assert_eq!(caller_identity(Some(42), None), "pane:42");
         assert_eq!(caller_identity(None, Some("session:abc")), "session:abc");
         assert_ne!(caller_identity(None, None), "user");
+    }
+}
+
+#[cfg(test)]
+mod recommend_tests {
+    use super::*;
+
+    #[test]
+    fn needs_you_ask_recommend_must_be_one_of_the_choices() {
+        let choices = vec!["Ship".to_string(), "Hold".to_string()];
+        assert!(validate_recommend(None, &choices).is_ok());
+        assert!(validate_recommend(Some("Hold"), &choices).is_ok());
+        assert!(validate_recommend(Some("Nope"), &choices).is_err());
+        assert!(validate_recommend(Some("Ship"), &[]).is_err());
+        let bad = serde_json::json!({"choices": ["Ship"], "recommend": "Hold"});
+        assert!(ask_recommend_error(&bad).is_some());
+        let good = serde_json::json!({"choices": ["Ship", "Hold"], "recommend": "Hold"});
+        assert!(ask_recommend_error(&good).is_none());
     }
 }

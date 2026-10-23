@@ -592,13 +592,16 @@ impl PlexiApp {
                 .as_ref()
                 .map(|d| d.choices.clone())
                 .unwrap_or_default();
+            let recommend = item.details.as_ref().and_then(|d| d.recommend.clone());
             let options = if !choices.is_empty() {
                 choices
                     .into_iter()
                     .enumerate()
                     .map(|(idx, c)| {
-                        let recommended =
-                            c.contains("(Recommended)") || c.contains('★') || idx == 0;
+                        let recommended = match recommend.as_deref() {
+                            Some(r) => c == r,
+                            None => c.contains("(Recommended)") || c.contains('★') || idx == 0,
+                        };
                         QueueOption {
                             key: format!("choice_{}", idx + 1),
                             label: c,
