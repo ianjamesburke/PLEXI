@@ -373,6 +373,9 @@ pub struct PortalPreview {
     pub window_count: usize,
     pub status: crate::host::context_state::ContextStatus,
     pub status_summary: Option<String>,
+    /// Compact live summary. Team runs, agent calls, and pane-created spaces
+    /// all render this same face.
+    pub face: crate::host::space_coord::SpaceFace,
 }
 
 impl Default for PortalPreview {
@@ -386,13 +389,82 @@ impl Default for PortalPreview {
             window_count: 0,
             status: crate::host::context_state::ContextStatus::Idle,
             status_summary: None,
+            face: crate::host::space_coord::SpaceFace::from_counts(
+                "(deleted)",
+                crate::host::space_coord::UrgentCounts::default(),
+            ),
         }
     }
 }
 
+/// Hover text for a portal card. The compact face is the visible summary;
+/// this is the description, notifications, and each pane the renderer already
+/// collected for that space.
+fn portal_face_detail(preview: &PortalPreview) -> String {
+    let mut parts = Vec::new();
+    if !preview.context_name.is_empty() {
+        parts.push(preview.context_name.clone());
+    }
+    if !preview.context_description.is_empty() {
+        parts.push(preview.context_description.clone());
+    }
+    parts.push(format!(
+        "{} panes across {} windows",
+        preview.pane_count, preview.window_count
+    ));
+    if preview.notification_count > 0 {
+        parts.push(format!("{} notifications", preview.notification_count));
+    }
+    if let Some(summary) = preview
+        .status_summary
+        .as_deref()
+        .filter(|summary| !summary.is_empty())
+    {
+        parts.push(summary.to_string());
+    }
+    let mut panes = Vec::new();
+    for window in &preview.windows {
+        for pane in &window.panes {
+            let mut label = pane
+                .title
+                .clone()
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| match pane.kind {
+                    PaneKind::Terminal => "terminal".to_string(),
+                    PaneKind::App => "app".to_string(),
+                    PaneKind::TextEditor => "editor".to_string(),
+                    PaneKind::Portal => "portal".to_string(),
+                });
+            if pane.focused {
+                label.push_str(" focused");
+            }
+            if !pane.active {
+                label.push_str(" exited");
+            }
+            if !pane.has_content {
+                label.push_str(" empty");
+            }
+            if let Some(activity) = pane.activity.as_ref() {
+                label.push_str(&format!(" {activity:?}"));
+            }
+            let unplaced = pane.pane_id.is_none()
+                && pane.norm_rect.width() <= 0.0
+                && pane.norm_rect.height() <= 0.0;
+            if unplaced {
+                label.push_str(" unplaced");
+            }
+            panes.push(format!("{},{} {label}", window.grid_x, window.grid_y));
+        }
+    }
+    if !panes.is_empty() {
+        parts.push(panes.join(", "));
+    }
+    parts.join(" · ")
+}
+
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
-    pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
+    pub space_faces: HashMap<PaneId, crate::host::space_coord::SpaceFace>,
     pub pane_lineage: HashMap<PaneId, String>,
     pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
@@ -499,26 +571,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
         }
 
-        if let Some(children) = self.child_agent_strips.get(pane_id) {
-            ui.horizontal(|ui| {
-                ui.set_clip_rect(ui.max_rect());
-                for child in children {
-                    let text = format!("{} · {}", child.role, child.display_state.label());
-                    let color = match child.display_state {
-                        crate::agent::fleet::DisplayState::Blocked | crate::agent::fleet::DisplayState::Stalled => self.colors.danger,
-                        crate::agent::fleet::DisplayState::DoneUnseen => self.colors.accent,
-                        _ => self.colors.pane_header_bg(),
-                    };
-                    let label = crate::ui::text::elide(ui, &text, crate::ui::badge::badge_font(), (ui.available_width() - style::SPACE_SM).max(0.0), crate::ui::text::Side::Trailing);
-                    if label.is_empty() { break; }
-                    let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
-                    let button = ui.interact(response.rect, ui.id().with(("child-agent", child.pane_id)), egui::Sense::click());
-                    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text));
-                    if button.on_hover_text("Open child agents (Cmd+Down)").clicked() {
-                        self.child_agent_dive = Some(*pane_id);
-                    }
-                }
-            });
+        if let Some(face) = self.space_faces.get(pane_id).cloned() {
+            let response = crate::ui::space_bar::paint_space_summary(ui, &face, &self.colors);
+            if response.clicked() {
+                self.child_agent_dive = Some(*pane_id);
+            }
         }
         let pane_rect = ui.available_rect_before_wrap();
 
@@ -669,102 +726,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                     ui.painter().rect_filled(wash_rect, 0.0, wash_col);
                 }
-                let padding = style::SPACE_MD;
+                let padding = style::SPACE_SM;
                 let inner = pane_rect.shrink(padding);
                 let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-                portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(sc) = active_status_col {
-                            let (dot_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(8.0, style::TEXT_BODY),
-                                egui::Sense::hover(),
-                            );
-                            let state = match preview.status {
-                                crate::host::context_state::ContextStatus::NeedsYou => AgentState::NeedsYou,
-                                crate::host::context_state::ContextStatus::Blocked => AgentState::Blocked,
-                                crate::host::context_state::ContextStatus::Error => AgentState::Failed,
-                                crate::host::context_state::ContextStatus::Working => AgentState::Working,
-                                _ => AgentState::Idle,
-                            };
-                            crate::ui::activity::paint_pip(ui.painter(), dot_rect.center(), 3.5, Some(&state), sc, false);
-                        }
-                        let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
-                            format!("↳ {} · child of {parent}", preview.context_name)
-                        } else { preview.context_name.clone() };
-                        ui.label(
-                            egui::RichText::new(title)
-                                .size(style::TEXT_BODY)
-                                .strong()
-                                .color(colors_for_portal.text_primary),
-                        );
-                    });
-                    if let Some(ref summary) = preview.status_summary {
-                        let summary_col =
-                            status_col.unwrap_or(colors_for_portal.text_dim);
-                        ui.label(
-                            egui::RichText::new(summary)
-                                .monospace()
-                                .size(style::TEXT_HINT)
-                                .strong()
-                                .color(summary_col),
-                        );
-                    }
-                    if !preview.context_description.is_empty() {
-                        ui.scope(|ui| {
-                            ui.set_max_width(inner.width());
-                            crate::ui::labels::description_label(
-                                ui,
-                                &preview.context_description,
-                                &colors_for_portal,
-                            );
-                        });
-                    }
-                    {
-                        let count_label =
-                            if preview.window_count > 1 && preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} windows \u{b7} {} notifs",
-                                    preview.pane_count,
-                                    preview.window_count,
-                                    preview.notification_count
-                                )
-                            } else if preview.window_count > 1 {
-                                format!(
-                                    "{} panes \u{b7} {} windows",
-                                    preview.pane_count, preview.window_count
-                                )
-                            } else if preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} notifs",
-                                    preview.pane_count, preview.notification_count
-                                )
-                            } else {
-                                format!("{} panes", preview.pane_count)
-                            };
-                        ui.label(
-                            egui::RichText::new(count_label)
-                                .size(style::TEXT_HINT)
-                                .color(colors_for_portal.text_dim),
-                        );
-                    }
-                    ui.add_space(style::SPACE_SM);
-                    if !preview.windows.is_empty() {
-                        let header_used = ui.cursor().min.y - inner.min.y;
-                        let map_h = (inner.height() - header_used).max(24.0);
-                        let (map_area, _) = ui.allocate_exact_size(
-                            egui::vec2(inner.width(), map_h),
-                            egui::Sense::hover(),
-                        );
-                        let t = ui.input(|i| i.time);
-                        paint_portal_minimap(
-                            ui.painter(),
-                            map_area,
-                            &preview.windows,
-                            &colors_for_portal,
-                            t,
-                        );
-                    }
-                });
+                let summary = crate::ui::space_bar::paint_space_summary(
+                    &mut portal_ui,
+                    &preview.face,
+                    &colors_for_portal,
+                );
+                summary.on_hover_text(portal_face_detail(&preview));
                 if let Some(sc) = active_status_col {
                     let border_col = egui::Color32::from_rgba_unmultiplied(
                         sc.r(),
@@ -1067,9 +1037,13 @@ fn collect_pane_ids_recursive(
 
 /// Render the x-ray minimap for a portal tile.
 ///
+/// The card itself paints the compact space summary. This painter stays for
+/// the direct-paint attention test.
+///
 /// Windows are laid out in a grid matching their grid_x/grid_y positions.
 /// Each window gets a "monitor bezel" frame with a thin chrome bar, then
 /// its pane layout fills the body below.
+#[cfg(test)]
 pub(crate) fn paint_portal_minimap(
     painter: &egui::Painter,
     area: egui::Rect,

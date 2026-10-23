@@ -285,6 +285,8 @@ use std::time::{Duration, Instant};
 
 pub(crate) struct TeamRun {
     team: Team,
+    /// Human name of the team. The context's stored id stays `team-<uuid>`.
+    name: String,
     question: String,
     workspace: PathBuf,
     out: PathBuf,
@@ -307,6 +309,43 @@ fn api(workspace: &Path, op: &str, mut payload: Value) -> Result<Value, String> 
             .to_string())
     }
 }
+impl TeamRun {
+    pub(crate) fn context_id(&self) -> u64 {
+        self.context_id
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.name
+    }
+}
+
+#[cfg(test)]
+impl PlexiApp {
+    /// Register a team title without starting a run. The stored context id
+    /// stays a machine id; the space header uses `name`.
+    pub(crate) fn seed_team_title_for_test(&mut self, context_id: u64, name: &str) {
+        self.team_runs.push(TeamRun {
+            team: Team {
+                version: 0,
+                options: Vec::new(),
+                members: Vec::new(),
+                tie_break: None,
+                quorum: None,
+            },
+            name: name.to_string(),
+            question: String::new(),
+            workspace: PathBuf::new(),
+            out: PathBuf::new(),
+            response_file: String::new(),
+            root_pane: 0,
+            context_id,
+            run_ids: Vec::new(),
+            members: Vec::new(),
+            deadline: Instant::now(),
+        });
+    }
+}
+
 fn field(value: &Value, key: &str) -> Result<String, String> {
     value[key]
         .as_str()
@@ -446,8 +485,13 @@ impl PlexiApp {
                 t.parent_pane_id = None;
             }
         }
+        if let Some(caller) = caller {
+            self.conjoined_contexts.insert(context_id, caller);
+            log::info!("space: team anchor parent={caller} context={context_id} title={name}");
+        }
         let mut run = TeamRun {
             team,
+            name: name.clone(),
             question,
             workspace,
             out,
@@ -466,7 +510,7 @@ impl PlexiApp {
             json!({"team":name,"question":run.question,"run_id":run.run_ids[0]}),
         );
         log::info!(
-            "agent_team: start team={name} root_pane={root_pane} members={}",
+            "agent_team: start team={name} space_title={name} raw_id={id} root_pane={root_pane} members={}",
             run.team.members.len()
         );
         if let Err(error) = self.spawn_team_members(&mut run) {

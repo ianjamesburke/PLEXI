@@ -16,6 +16,7 @@ pub mod search_bar;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod sidebar_row;
+pub mod space_bar;
 pub mod snap;
 pub mod style;
 pub mod surface;

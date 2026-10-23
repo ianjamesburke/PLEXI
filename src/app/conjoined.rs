@@ -92,31 +92,24 @@ impl PlexiApp {
     }
 
     pub(crate) fn dive_into_agent_children(&mut self, parent: u64) -> bool {
-        let Some(ctx_id) = self.conjoined_contexts.iter().find_map(|(&ctx, &id)| {
-            (id == parent
-                && self
-                    .windows
-                    .iter()
-                    .any(|w| w.context_id == ctx && !w.panes.is_empty()))
-            .then_some(ctx)
-        }) else {
+        // One launcher can hold several spaces (a team, an agent call, and an
+        // `app open`). Dive into the most urgent one; equal urgency keeps the
+        // lower context id so the key is stable.
+        let Some(ctx_id) = self.anchored_spaces(parent).into_iter().next() else {
             return false;
         };
-        let Some(index) = self.router.position(|c| c.context_id == ctx_id) else {
-            return false;
-        };
-        if self.router.active().context_id != ctx_id {
-            let win = &self.windows[self.active_window];
-            self.router
-                .push_depth(win.context_id, win.window_id, win.focused_pane);
-            self.switch_workspace(index);
+        // Same full-frame dive as a portal. The parent stays the anchor; the
+        // nested space fills the frame and the coordinate bar shows the path.
+        let dived = self.dive_into_space(ctx_id);
+        if dived {
+            log::info!("space: agent dive parent={parent} context={ctx_id}");
         }
-        self.conjoined_parent_focus = Some(parent);
-        log::info!("agent_conjoined: dive parent={parent} context={ctx_id}");
-        true
+        dived
     }
 
-    pub(crate) fn render_conjoined_parent(
+    /// Launcher on the left, the nested space on the right. Agents, teams, and
+    /// `app open` all use this once their space is the active context.
+    pub(crate) fn render_anchored_launcher(
         &mut self,
         ui: &mut egui::Ui,
         input: &mut Option<crate::render::terminal_pane::TerminalInput>,
@@ -155,7 +148,7 @@ impl PlexiApp {
         let pane = self.windows[window].panes.get_mut(&parent);
         ui.scope_builder(
             egui::UiBuilder::new()
-                .id_salt(("conjoined-parent", parent))
+                .id_salt(("anchored-launcher", parent))
                 .max_rect(left),
             |ui| {
                 ui.set_clip_rect(left);

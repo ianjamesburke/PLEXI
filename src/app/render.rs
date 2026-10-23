@@ -321,6 +321,47 @@ impl PlexiApp {
                 ..Default::default()
             })
             .show_inside(ui, |ui| {
+                let coordinate = self.space_coordinate();
+                let coordinate_text = crate::host::space_coord::join_coordinate(&coordinate);
+                let show_coordinate = coordinate.len() >= 2 && !coordinate_text.is_empty();
+                // The child ui exists only while a nested space is open, so the
+                // root frame keeps the widget ids the rest of the UI already has.
+                let mut frame_ui;
+                let ui = if show_coordinate {
+                    let full = ui.max_rect();
+                    let bar = egui::Rect::from_min_size(
+                        full.min,
+                        egui::vec2(full.width(), crate::ui::space_bar::BAR_H),
+                    );
+                    crate::ui::space_bar::paint_coordinate_bar(
+                        ui,
+                        bar,
+                        &coordinate_text,
+                        &self.colors,
+                    );
+                    let log_id = egui::Id::new("space_coordinate_bar");
+                    let changed = ui.ctx().data(|d| {
+                        d.get_temp::<String>(log_id).as_deref() != Some(coordinate_text.as_str())
+                    });
+                    if changed {
+                        log::info!("space: coordinate {coordinate_text}");
+                        let text = coordinate_text.clone();
+                        ui.ctx().data_mut(|d| d.insert_temp(log_id, text));
+                    }
+                    let frame_rect = egui::Rect::from_min_max(
+                        egui::pos2(full.left(), full.top() + crate::ui::space_bar::BAR_H),
+                        full.max,
+                    );
+                    frame_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(frame_rect)
+                            .id_salt("space-frame"),
+                    );
+                    frame_ui.set_clip_rect(frame_rect);
+                    &mut frame_ui
+                } else {
+                    ui
+                };
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
                     if self.router.len() > 1 {
@@ -409,9 +450,7 @@ impl PlexiApp {
                     let mut map = std::collections::HashMap::new();
                     for &(pane_id, child_ctx_id) in &portal_panes {
                         let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);
-                        let ctx_name = ctx_entry
-                            .map(|c| c.name.to_string())
-                            .unwrap_or_else(|| "(deleted)".to_string());
+                        let ctx_name = self.space_title(child_ctx_id);
                         let ctx_description = ctx_entry
                             .and_then(|c| c.description.clone())
                             .unwrap_or_default();
@@ -524,8 +563,22 @@ impl PlexiApp {
                             pane_count
                         };
                         let window_count = child_windows.len();
+                        let face = crate::host::space_coord::SpaceFace::from_counts(
+                            ctx_name.clone(),
+                            crate::host::space_coord::UrgentCounts {
+                                panes: effective_pane_count,
+                                needs_you: effective_state.needs_you_count() as usize,
+                                blocked: effective_state.blocked_count() as usize,
+                                error: effective_state.error_count() as usize,
+                                working: effective_state.working_count() as usize,
+                                done: usize::from(matches!(
+                                    effective_state.status,
+                                    crate::host::context_state::ContextStatus::Done
+                                )),
+                            },
+                        );
                         map.insert(pane_id, crate::spatial::tiling::PortalPreview {
-                            context_name: ctx_name,
+                            context_name: face.title.clone(),
                             context_description: ctx_description,
                             pane_count: effective_pane_count,
                             notification_count: notif_count,
@@ -533,6 +586,7 @@ impl PlexiApp {
                             window_count,
                             status,
                             status_summary,
+                            face,
                         });
                     }
                     map
@@ -636,6 +690,7 @@ impl PlexiApp {
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
                 let child_agent_strips = self.child_agent_strips();
+                let space_faces = self.space_faces_for(&child_agent_strips);
                 let pane_lineage = self.pane_lineage();
                 let lineage_log_id = egui::Id::new("visible_pane_lineage");
                 if ui.ctx().data(|d| d.get_temp::<HashMap<PaneId, String>>(lineage_log_id)).as_ref() != Some(&pane_lineage) {
@@ -645,14 +700,20 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
+                let right = self.render_anchored_launcher(ui, &mut focused_terminal_input);
                 let owner_pane = self.visual_owner_pane();
-                let mut child_ui;
+                let mut anchored_ui;
                 let ui = if let Some(rect) = right {
-                    child_ui = ui.new_child(egui::UiBuilder::new().id_salt("conjoined-children").max_rect(rect));
-                    child_ui.set_clip_rect(rect);
-                    &mut child_ui
-                } else { ui };
+                    anchored_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt("anchored-space")
+                            .max_rect(rect),
+                    );
+                    anchored_ui.set_clip_rect(rect);
+                    &mut anchored_ui
+                } else {
+                    ui
+                };
                 let ctx = &mut self.windows[self.active_window];
 
                 ctx.reconcile_stale_tiles();
@@ -670,7 +731,7 @@ impl PlexiApp {
                     None
                 };
                 let tab_info = ctx.compute_tab_info();
-                let mut pane_names: HashMap<PaneId, String> = ctx
+                let pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
@@ -690,11 +751,6 @@ impl PlexiApp {
                                     .unwrap_or_else(|| "Portal".to_string()),
                             }
                         };
-                        let label = if let Some(parent) = pane_lineage.get(&id) {
-                            let label = format!("↳ {label} · child of {parent}");
-                            pane_names.insert(id, label.clone());
-                            label
-                        } else { label };
                         (id, label)
                     })
                     .collect();
@@ -807,7 +863,7 @@ impl PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
-                    child_agent_strips,
+                    space_faces,
                     pane_lineage,
                     child_agent_dive: None,
                     theme: self.theme.clone(),
@@ -1241,16 +1297,9 @@ impl PlexiApp {
 
                 if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
 
-                // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
+                // Portal double-click dives the same way Cmd+Enter does.
                 if let Some(child_ctx_id) = portal_zoom {
-                    if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
-                        log::info!("portal double-click: zooming into context_id={child_ctx_id}");
-                        let current_ctx_id = self.router.active().context_id;
-                        let current_win_id = self.windows[self.active_window].window_id;
-                        let focused_tile = self.windows[self.active_window].focused_pane;
-                        self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
-                        self.switch_workspace(ctx_idx);
-                    }
+                    self.dive_into_space(child_ctx_id);
                 }
 
                 // Record canvas click focus change in pane history (ctx borrow released above).

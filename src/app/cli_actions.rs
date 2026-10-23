@@ -9,10 +9,9 @@ impl PlexiApp {
                 return;
             }
         }
-        let (focused_tile, portal_target) = {
+        let portal_target = {
             let win = &self.windows[self.active_window];
-            let tile = win.focused_pane;
-            let target = tile
+            win.focused_pane
                 .and_then(|tile_id| win.tree.tiles.get(tile_id))
                 .and_then(|t| {
                     if let egui_tiles::Tile::Pane(p) = t {
@@ -22,25 +21,12 @@ impl PlexiApp {
                     }
                 })
                 .and_then(|pane_id| win.panes.get(&pane_id))
-                .and_then(|p| p.portal_target());
-            (tile, target)
+                .and_then(|p| p.portal_target())
         };
         if let Some(child_ctx_id) = portal_target {
-            // Focused pane is a Portal tile → zoom into its sub-context.
-            // Verify target context exists BEFORE pushing depth state;
-            // push_depth must not fire if there is nothing to switch to.
-            if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
-                log::info!("ToggleZoom on Portal: zooming into context_id={child_ctx_id}");
-                let current_ctx_id = self.router.active().context_id;
-                let current_win_id = self.windows[self.active_window].window_id;
-                self.router
-                    .push_depth(current_ctx_id, current_win_id, focused_tile);
-                self.switch_workspace(ctx_idx);
-            } else {
-                log::warn!(
-                    "ToggleZoom on Portal: target context_id={child_ctx_id} not found in router"
-                );
-            }
+            // Focused pane contains a space. Dive fills the frame, same path
+            // as an agent call and a pane-created sub-context.
+            self.dive_into_space(child_ctx_id);
         } else {
             // Non-Portal pane → toggle fullscreen zoom.
             let ctx = &mut self.windows[self.active_window];

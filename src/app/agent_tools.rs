@@ -213,6 +213,13 @@ impl PlexiApp {
             self.pane_worktrees.insert(pane_id, wt);
         }
         self.agent_tool_children.insert(pane_id, child_parent);
+        if !def.display_name.trim().is_empty() {
+            self.apply_inline_pane_name(pane_id, &def.display_name);
+            log::info!(
+                "space: agent call title={} role={} pane={pane_id}",
+                def.display_name, def.id
+            );
+        }
         log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", def.id, request.asynchronous, request.handoff);
         if request.handoff {
             if let Some(old) = parent {
