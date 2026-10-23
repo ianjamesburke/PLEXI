@@ -855,13 +855,18 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     fn push_transcript(&mut self, role: &str, text: String) {
-        log::info!("agent[{}] {role}: {text}", self.def.id);
+        log::info!("{}", transcript_info_log_message(&self.def.id, role, &text));
+        log::trace!("agent[{}] {role}: {text}", self.def.id);
         self.transcript.push(TranscriptEntry {
             role: role.to_string(),
             text,
             created_at: crate::host::event_log::now_timestamp(),
         });
     }
+}
+
+fn transcript_info_log_message(agent_id: &str, role: &str, text: &str) -> String {
+    format!("agent[{agent_id}] {role}: len={}", text.chars().count())
 }
 
 // ── AgentHost ────────────────────────────────────────────────────────────────
@@ -1378,6 +1383,14 @@ payload = "full"
 trigger = "conversation"
 default = "ask"
 "#;
+
+    #[test]
+    fn transcript_info_log_omits_turn_text() {
+        let sentinel = "SENTINEL_SECRET_DO_NOT_LOG";
+        let message = transcript_info_log_message("reviewer", "agent", sentinel);
+        assert!(!message.contains(sentinel), "{message}");
+        assert_eq!(message, "agent[reviewer] agent: len=26");
+    }
 
     #[test]
     fn agent_tool_permissions_accept_harness_and_top_level() {

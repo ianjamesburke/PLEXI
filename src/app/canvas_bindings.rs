@@ -164,12 +164,16 @@ impl PlexiApp {
             .and_then(|p| p.as_terminal_mut())
         else {
             log::warn!(
-                "RunInLinkedTerminal: terminal pane {terminal_pane_id} not found; dropping '{command}'"
+                "RunInLinkedTerminal: terminal pane {terminal_pane_id} not found; dropping command len={}",
+                command.chars().count()
             );
             return;
         };
         let payload = format!("{command}\n");
-        log::debug!("RunInLinkedTerminal: pane {terminal_pane_id} ← {payload:?} (echo={echo})");
+        log::debug!(
+            "{}",
+            linked_terminal_payload_log_message(terminal_pane_id, &payload, echo)
+        );
         term.backend
             .process_command(BackendCommand::Write(payload.into_bytes()));
     }
@@ -548,6 +552,17 @@ impl PlexiApp {
     }
 }
 
+fn linked_terminal_payload_log_message(
+    terminal_pane_id: PaneId,
+    payload: &str,
+    echo: bool,
+) -> String {
+    format!(
+        "RunInLinkedTerminal: pane {terminal_pane_id} payload_len={} (echo={echo})",
+        payload.chars().count()
+    )
+}
+
 /// Find the `TileId` of the leaf tile containing `pane_id`, if any.
 fn find_tile_for_pane(
     tree: &egui_tiles::Tree<PaneId>,
@@ -702,7 +717,10 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_within_workspace, normalize_path, quote_for_shell};
+    use super::{
+        canonical_within_workspace, linked_terminal_payload_log_message, normalize_path,
+        quote_for_shell,
+    };
     use std::path::PathBuf;
 
     /// A symlink that lives inside the workspace but points outside it passes the
@@ -759,6 +777,17 @@ mod tests {
         assert_eq!(
             normalize_path(&PathBuf::from("/a/./b/../c/.")),
             PathBuf::from("/a/c")
+        );
+    }
+
+    #[test]
+    fn linked_terminal_payload_log_omits_plaintext() {
+        let sentinel = "SENTINEL_SECRET_DO_NOT_LOG";
+        let message = linked_terminal_payload_log_message(42, sentinel, true);
+        assert!(!message.contains(sentinel), "{message}");
+        assert_eq!(
+            message,
+            "RunInLinkedTerminal: pane 42 payload_len=26 (echo=true)"
         );
     }
 

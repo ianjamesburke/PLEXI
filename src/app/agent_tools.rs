@@ -474,6 +474,8 @@ mod tests {
                     "--exact",
                     "app::agent_tools::tests::agent_tool_message_cli_process",
                     "--nocapture",
+                    // Keep libtest's single-threaded name prefix off the JSON line.
+                    "--quiet",
                 ])
                 .env(
                     "PLEXI_TEST_AGENT_MESSAGE_ARGS",
