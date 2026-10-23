@@ -897,7 +897,12 @@ impl PlexiApp {
 
         // Check if an open Decision Overlay's target pane died or ask resolved externally.
         if let Some(ref overlay) = self.attention_queue.decision_overlay {
-            let pane_alive = self.find_pane_in_any_window(overlay.pane_id).is_some();
+            let is_notice = self
+                .attention_queue
+                .items
+                .iter()
+                .any(|b| b.id == overlay.ask_id && b.category == QueueCategory::Notice);
+            let pane_alive = is_notice || self.find_pane_in_any_window(overlay.pane_id).is_some();
             if !pane_alive {
                 log::info!(
                     "decision_overlay: closing because target pane {} died",
@@ -1035,7 +1040,10 @@ impl PlexiApp {
         if bar.category == QueueCategory::Notice {
             self.attention_queue.seen_notice_ids.insert(bar.id.clone());
         }
-        self.jump_to_pane_at_columns(bar.pane_id);
+        // Host notices are not about any pane: stay where the person is.
+        if bar.category != QueueCategory::Notice {
+            self.jump_to_pane_at_columns(bar.pane_id);
+        }
         self.attention_queue.open = false;
         self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
         self.sync_attention_queue();

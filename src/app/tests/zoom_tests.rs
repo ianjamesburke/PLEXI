@@ -581,3 +581,54 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
     assert_eq!(style::RADIUS_BAR, egui::CornerRadius::same(10));
     assert_eq!(style::RADIUS_PILL, egui::CornerRadius::same(99));
 }
+
+/// Lifecycle/integrity items are one deduped notice per resource, sort below
+/// every ask, are never counted as asks, and clear once seen or acknowledged.
+#[test]
+fn integrity_notice_sorts_below_asks_dedupes_and_acknowledges() {
+    let mut h = HostHarness::new();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    // Two restarts filed the same kind of integrity record.
+    for run_tag in ["a", "b"] {
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Integrity,
+                actor: "host".to_string(),
+                resource: "permission-profile".to_string(),
+                summary: "The host did not shut down cleanly.".to_string(),
+                expires_at: None,
+                run_tag: Some(run_tag.to_string()),
+            })
+            .expect("file integrity");
+    }
+
+    let pane = h.add_test_pane();
+    h.app.enqueue_ask("ask-1", pane, "cargo publish", 1_000, Vec::new());
+    h.app.sync_attention_queue();
+
+    let items = &h.app.attention_queue.items;
+    assert_eq!(items.iter().filter(|b| b.category == QueueCategory::Notice).count(), 1);
+    assert_eq!(items.first().map(|b| b.category), Some(QueueCategory::Ask));
+    assert_eq!(items.last().map(|b| b.category), Some(QueueCategory::Notice));
+    assert_eq!(h.app.attention_queue.ask_count(), 1);
+
+    let notice_id = items.last().unwrap().id.clone();
+    assert!(h.app.open_decision_overlay_for_ask(&notice_id));
+    let overlay = h.app.attention_queue.decision_overlay.clone().unwrap();
+    assert_eq!(overlay.options.len(), 1);
+    assert_eq!(overlay.options[0].label, "Acknowledge");
+    assert!(h.app.pick_decision_overlay_option(0));
+
+    h.app.sync_attention_queue();
+    assert!(h
+        .app
+        .attention_queue
+        .items
+        .iter()
+        .all(|b| b.category != QueueCategory::Notice));
+    // Acknowledging cleared every duplicate record, so a restart finds none.
+    assert!(monitor
+        .open_needs_you()
+        .iter()
+        .all(|r| r.kind != crate::broker::gate::NeedsYouKind::Integrity));
+}
