@@ -60,7 +60,7 @@ impl std::fmt::Display for ConfigDiagnostic {
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
             Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
-            Self::InvalidValue { path, key, error } => write!(f, "{path}: {key}: {error}"),
+            Self::InvalidValue { path, key, error } => write!(f, "{path}: {key} {error}"),
             Self::MisplacedTable {
                 path,
                 table,
@@ -759,8 +759,25 @@ pub struct ResolvedModelMode { pub provider: String, pub model: String, pub thin
 pub struct ResolvedModelModes { pub fast: ResolvedModelMode, pub slow: ResolvedModelMode }
 
 impl ModelModeConfig {
-    fn overlay(&mut self, other: Self) { if other.provider.is_some() { self.provider = other.provider; } if other.model.is_some() { self.model = other.model; } if other.thinking.is_some() { self.thinking = other.thinking; } }
-    fn resolve(&self, default: ResolvedModelMode) -> ResolvedModelMode { ResolvedModelMode { provider: self.provider.clone().unwrap_or(default.provider), model: self.model.clone().unwrap_or(default.model), thinking: self.thinking.clone().unwrap_or(default.thinking) } }
+    fn overlay(&mut self, other: Self) {
+        if other.provider.is_some() {
+            self.provider = other.provider;
+        }
+        if other.model.is_some() {
+            self.model = other.model;
+        }
+        if other.thinking.is_some() {
+            self.thinking = other.thinking;
+        }
+    }
+
+    fn resolve(&self, default: ResolvedModelMode) -> ResolvedModelMode {
+        ResolvedModelMode {
+            provider: self.provider.clone().unwrap_or(default.provider),
+            model: self.model.clone().unwrap_or(default.model),
+            thinking: self.thinking.clone().unwrap_or(default.thinking),
+        }
+    }
 }
 impl ModelModesConfig {
     fn overlay(&mut self, other: Self) { match (self.fast.as_mut(), other.fast) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.fast = Some(b), _ => {} } match (self.slow.as_mut(), other.slow) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.slow = Some(b), _ => {} } }
@@ -2229,7 +2246,7 @@ pub fn active_workspace_root() -> Option<PathBuf> {
     crate::app::registry::resolve_workspace_root(&cwd)
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -2434,8 +2451,12 @@ mod tests {
     #[test]
     fn model_modes_resolve_defaults_and_partial_overrides() {
         let defaults = PlexiConfig::default().resolved_model_modes();
+        assert_eq!(defaults.fast.provider, "openrouter");
         assert_eq!(defaults.fast.model, "deepseek/deepseek-v4.1-flash");
         assert_eq!(defaults.fast.thinking, "low");
+        assert_eq!(defaults.slow.provider, "openrouter");
+        assert_eq!(defaults.slow.model, "openai/gpt-6-astra");
+        assert_eq!(defaults.slow.thinking, "high");
         let cfg: PlexiConfig = toml::from_str("[models.fast]\nmodel = \"custom/flash\"\n").unwrap();
         let modes = cfg.resolved_model_modes();
         assert_eq!(modes.fast.provider, "openrouter");
@@ -2464,7 +2485,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("config.toml");
         fs::write(&path, "[models.fast]\nthinking = \"turbo\"\nprovider = \"bad provider\"\n[models.turbo]\nmodel = \"x\"\n").unwrap();
         let rendered = validate_from_path(&path).into_iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(rendered.contains("models.fast.thinking: \"turbo\" is not one of off|minimal|low|medium|high|xhigh"), "{rendered}");
+        assert!(rendered.contains("models.fast.thinking \"turbo\" is not one of off|minimal|low|medium|high|xhigh"), "{rendered}");
         assert!(rendered.contains("models.fast.provider"), "{rendered}");
         assert!(rendered.contains("unknown key `turbo` in [models]"), "{rendered}");
     }
@@ -2480,128 +2501,6 @@ mod tests {
         .unwrap();
         let diags = validate_from_path(&path);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
-    }
-
-    #[test]
-    fn validate_ai_local_config_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
-            "[ai]\nbackend = \"local\"\n\
-             [ai.local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             api_key_env = \"MERIDIAN_API_KEY\"\n\
-             model_low = \"claude-haiku-4-5\"\n\
-             model_medium = \"claude-opus-5\"\n\
-             model_high = \"claude-fable-5\"\n",
-        )
-        .unwrap();
-        let diags = validate_from_path(&path);
-        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
-    }
-
-    #[test]
-    fn validate_ai_local_unknown_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "[ai.local]\nhost = \"http://127.0.0.1:3456\"\n").unwrap();
-        let diags = validate_from_path(&path);
-        assert_eq!(diags.len(), 1);
-        assert!(diags[0].to_string().contains("host"));
-        assert!(diags[0].to_string().contains("[ai.local]"));
-    }
-
-    #[test]
-    fn ai_local_config_parses_round_trip() {
-        let cfg: PlexiConfig = toml::from_str(
-            "[ai]\nbackend = \"local\"\n\
-             [ai.local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             model_high = \"claude-fable-5\"\n",
-        )
-        .unwrap();
-        let ai = cfg.ai.unwrap();
-        assert_eq!(ai.backend.as_deref(), Some("local"));
-        let local = ai.local.unwrap();
-        assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(local.api_key_env, None);
-        assert_eq!(local.tiers.model_high.as_deref(), Some("claude-fable-5"));
-    }
-
-    /// The tier triple is a flattened `ModelTiers`, so the keys must still sit
-    /// directly in each backend table on disk — no `[ai.<backend>.tiers]`.
-    #[test]
-    fn flattened_model_tiers_parse_from_each_backend_section() {
-        let cfg: PlexiConfig = toml::from_str(
-            "[ai.openrouter]\n\
-             api_key_env = \"OPENROUTER_API_KEY\"\n\
-             model_low = \"or-low\"\n\
-             [ai.ollama]\n\
-             host = \"http://localhost:11434\"\n\
-             model_medium = \"ol-medium\"\n\
-             [ai.local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             model_high = \"lo-high\"\n",
-        )
-        .unwrap();
-        let ai = cfg.ai.unwrap();
-
-        let or = ai.openrouter.unwrap();
-        assert_eq!(or.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
-        assert_eq!(or.tiers.resolve(ModelTier::Low).as_deref(), Some("or-low"));
-        assert_eq!(or.tiers.resolve(ModelTier::High), None);
-
-        let ol = ai.ollama.unwrap();
-        assert_eq!(ol.host.as_deref(), Some("http://localhost:11434"));
-        assert_eq!(
-            ol.tiers.resolve(ModelTier::Medium).as_deref(),
-            Some("ol-medium")
-        );
-
-        let lo = ai.local.unwrap();
-        assert_eq!(lo.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(
-            lo.tiers.resolve(ModelTier::High).as_deref(),
-            Some("lo-high")
-        );
-    }
-
-    #[test]
-    fn ai_local_overlay_merges_fields() {
-        let mut base: AiConfig = toml::from_str(
-            "backend = \"openrouter\"\n\
-             [local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             model_low = \"claude-haiku-4-5\"\n",
-        )
-        .unwrap();
-        let project: AiConfig = toml::from_str(
-            "backend = \"local\"\n\
-             [local]\n\
-             model_low = \"claude-opus-5\"\n\
-             model_high = \"claude-fable-5\"\n",
-        )
-        .unwrap();
-        base.overlay(project);
-        assert_eq!(base.backend.as_deref(), Some("local"));
-        let local = base.local.unwrap();
-        // Project value wins; unset project fields keep the base value.
-        assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(local.tiers.model_low.as_deref(), Some("claude-opus-5"));
-        assert_eq!(local.tiers.model_high.as_deref(), Some("claude-fable-5"));
-    }
-
-    #[test]
-    fn ai_local_overlay_adopts_section_when_base_absent() {
-        let mut base = AiConfig::default();
-        let project: AiConfig =
-            toml::from_str("[local]\nbase_url = \"http://127.0.0.1:3456\"\n").unwrap();
-        base.overlay(project);
-        assert_eq!(
-            base.local.unwrap().base_url.as_deref(),
-            Some("http://127.0.0.1:3456")
-        );
     }
 
     #[test]
@@ -2928,21 +2827,25 @@ mod legacy_ai_rejection_tests {
     use super::*;
 
     #[test]
-    fn removed_ai_keys_fail_validation_and_strict_load() {
+    fn removed_ai_keys_fail_check_and_load_in_global_and_workspace_config() {
         for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url"] {
             let (section, field) = key.split_once('.').map_or(("ai".to_string(), key.to_string()), |(section, field)| (format!("ai.{section}"), field.to_string()));
             let text = format!("[{section}]\n{field} = \"value\"\n");
-            let path = Path::new("legacy-config.toml");
-            let diagnostics = validate_from_str_for_test(&text, path);
-            let expected = format!("ai.{key} is no longer supported; use [models.fast] / [models.slow] instead");
-            assert!(diagnostics.iter().any(|diagnostic| diagnostic.to_string().contains(&expected)));
+            let temp = tempfile::tempdir().unwrap();
+            let global = temp.path().join("config.toml");
+            let workspace = temp.path().join("workspace/.plexi/config.toml");
+            std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+            for path in [&global, &workspace] {
+                std::fs::write(path, &text).unwrap();
+                let diagnostics = validate_from_path(path);
+                let expected = format!("ai.{key} is no longer supported; use [models.fast] / [models.slow] instead");
+                assert!(diagnostics.iter().any(|diagnostic| diagnostic.to_string().contains(&expected)), "check must reject {}: {diagnostics:?}", path.display());
+                match PlexiConfig::load_from_path_for_cli(path) {
+                    Err(error) => assert_eq!(error, expected, "load must reject {}", path.display()),
+                    Ok(_) => panic!("load must reject {}", path.display()),
+                }
+            }
         }
-    }
-
-    fn validate_from_str_for_test(data: &str, path: &Path) -> Vec<ConfigDiagnostic> {
-        let temp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(temp.path(), data).unwrap();
-        validate_from_path(temp.path())
     }
 }
 

@@ -1451,7 +1451,7 @@ impl WasmPane {
                 let response = broker.dispatch(
                     AiBrokerRequest {
                         app_id,
-                        model_mode: match model_tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
+                        model_mode: crate::plexi_ai::broker::ModelMode::from_wasm_tier(model_tier),
                         concrete_model: None,
                         reasoning_effort: None,
                         system: req.system,

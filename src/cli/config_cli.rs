@@ -447,19 +447,9 @@ fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
 
 fn config_get_from_paths_with_json(key: &str, paths: &[PathBuf], json: bool) -> i32 {
     if json && (key == "models" || key == "models.fast" || key == "models.slow") {
-        let mut config = crate::config::PlexiConfig::default();
-        for path in paths {
-            match crate::config::PlexiConfig::load_from_path_for_cli(path) {
-                Ok(Some(next)) => config.overlay_for_cli(next),
-                Ok(None) => {}
-                Err(error) => { eprintln!("error: could not parse {}: {error}", path.display()); return 1; }
-            }
-        }
-        let modes = config.resolved_model_modes();
-        let value = match key { "models.fast" => serde_json::to_value(modes.fast), "models.slow" => serde_json::to_value(modes.slow), _ => serde_json::to_value(modes) };
-        match value {
-            Ok(value) => { println!("{}", serde_json::to_string(&value).expect("JSON serializes")); return 0; }
-            Err(error) => { eprintln!("error: could not serialize resolved {key}: {error}"); return 1; }
+        match resolved_models_json(key, paths) {
+            Ok(value) => { println!("{value}"); return 0; }
+            Err(error) => { eprintln!("error: {error}"); return 1; }
         }
     }
     let mut root = toml::Value::Table(toml::map::Map::new());
@@ -496,6 +486,25 @@ fn config_get_from_paths_with_json(key: &str, paths: &[PathBuf], json: bool) -> 
 
     println!("{}", toml_value_to_string(current));
     0
+}
+
+fn resolved_models_json(key: &str, paths: &[PathBuf]) -> Result<String, String> {
+    let mut config = crate::config::PlexiConfig::default();
+    for path in paths {
+        match crate::config::PlexiConfig::load_from_path_for_cli(path) {
+            Ok(Some(next)) => config.overlay_for_cli(next),
+            Ok(None) => {}
+            Err(error) => return Err(format!("could not parse {}: {error}", path.display())),
+        }
+    }
+    let modes = config.resolved_model_modes();
+    let value = match key {
+        "models.fast" => serde_json::to_value(modes.fast),
+        "models.slow" => serde_json::to_value(modes.slow),
+        _ => serde_json::to_value(modes),
+    }
+    .map_err(|error| format!("could not serialize resolved {key}: {error}"))?;
+    serde_json::to_string(&value).map_err(|error| format!("could not serialize resolved {key}: {error}"))
 }
 
 /// Recursively merge `src` on top of `dst` — table keys in `src` override `dst`;
@@ -877,6 +886,23 @@ mod tests {
             !global_path.exists(),
             "default workspace operations must not touch global config"
         );
+    }
+
+    #[test]
+    fn config_get_json_models_returns_resolved_global_and_workspace_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("config.toml");
+        let workspace = dir.path().join("workspace/.plexi/config.toml");
+        std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+        std::fs::write(&global, "[models.fast]\nprovider = \"global\"\nmodel = \"global/fast\"\n[models.slow]\nthinking = \"minimal\"\n").unwrap();
+        std::fs::write(&workspace, "[models.fast]\nthinking = \"high\"\n[models.slow]\nmodel = \"workspace/slow\"\n").unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(
+            &resolved_models_json("models", &[global, workspace]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["fast"], serde_json::json!({"provider": "global", "model": "global/fast", "thinking": "high"}));
+        assert_eq!(value["slow"], serde_json::json!({"provider": "openrouter", "model": "workspace/slow", "thinking": "minimal"}));
     }
 
     #[test]

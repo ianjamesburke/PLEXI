@@ -41,6 +41,14 @@ fn backend_tier(mode: ModelMode) -> ModelTier {
     match mode { ModelMode::Fast => ModelTier::Low, ModelMode::Slow => ModelTier::High }
 }
 
+impl ModelMode {
+    /// WASM SDK requests still use the legacy low/medium/high wire enum.
+    /// The medium tier was retired: low and medium select FAST; high selects SLOW.
+    pub fn from_wasm_tier(tier: ModelTier) -> Self {
+        match tier { ModelTier::High => Self::Slow, ModelTier::Low | ModelTier::Medium => Self::Fast }
+    }
+}
+
 /// Lightweight context for a single open pane (injected into system prompt).
 #[derive(Debug, Clone)]
 pub struct PaneContext {
@@ -1109,10 +1117,10 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
     None
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AiConfig, OpenRouterBackendConfig};
+    use crate::config::{AiConfig, ResolvedModelMode, ResolvedModelModes};
     use std::sync::{Arc, Mutex};
 
     /// Test broker: records every request and returns a canned response.
@@ -1141,38 +1149,17 @@ mod tests {
         }
     }
 
-    fn test_ai_config() -> AiConfig {
-        AiConfig {
-            backend: Some("openrouter".to_string()),
-            openrouter: Some(OpenRouterBackendConfig {
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_low: Some("qwen/qwen3.6-flash".to_string()),
-                    model_medium: Some("xiaomi/mimo-v2.5".to_string()),
-                    model_high: Some("anthropic/claude-fable-5".to_string()),
-                },
-            }),
-            ollama: None,
-            ..Default::default()
-        }
-    }
-
     #[test]
-    fn config_resolves_tiers_to_openrouter_model_ids() {
-        let config = test_ai_config();
-        let or_config = config.openrouter.as_ref().unwrap();
-        assert_eq!(
-            or_config.tiers.resolve(ModelTier::Low).as_deref(),
-            Some("qwen/qwen3.6-flash")
+    fn broker_resolves_fast_and_slow_from_config() {
+        let broker = LiveAiBroker::with_model_modes(
+            Some(AiConfig::default()),
+            ResolvedModelModes {
+                fast: ResolvedModelMode { provider: "openrouter".into(), model: "test/fast".into(), thinking: "low".into() },
+                slow: ResolvedModelMode { provider: "openrouter".into(), model: "test/slow".into(), thinking: "high".into() },
+            },
         );
-        assert_eq!(
-            or_config.tiers.resolve(ModelTier::Medium).as_deref(),
-            Some("xiaomi/mimo-v2.5")
-        );
-        assert_eq!(
-            or_config.tiers.resolve(ModelTier::High).as_deref(),
-            Some("anthropic/claude-fable-5")
-        );
+        assert_eq!(broker.model_modes.fast.model, "test/fast");
+        assert_eq!(broker.model_modes.slow.model, "test/slow");
     }
 
     #[test]
@@ -1198,7 +1185,7 @@ mod tests {
         let resp = broker.dispatch(
             AiBrokerRequest {
                 app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
+                model_mode: ModelMode::Fast,
                 concrete_model: None,
                 reasoning_effort: None,
                 system: "be helpful".to_string(),
@@ -1222,52 +1209,6 @@ mod tests {
             "messages must round-trip unchanged"
         );
         assert_eq!(seen[0].system, "be helpful");
-    }
-
-    #[test]
-    fn live_broker_errors_when_api_key_missing() {
-        let missing_env = "PLEXI_TEST_OPENROUTER_API_KEY_MISSING";
-        let orig = std::env::var(missing_env).ok();
-        unsafe { std::env::remove_var(missing_env) };
-
-        let mut config = test_ai_config();
-        config.openrouter.as_mut().unwrap().api_key_env = Some(missing_env.to_string());
-        let broker = LiveAiBroker::new(Some(config));
-        let resp = broker.dispatch(
-            AiBrokerRequest {
-                app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
-                concrete_model: None,
-                reasoning_effort: None,
-                system: String::new(),
-                messages: vec![AiMessage {
-                    role: "user".to_string(),
-                    content: "hi".to_string(),
-                }],
-                tools: vec![],
-                workspace_root: None,
-                open_panes: Arc::new(Vec::new()),
-                tool_dispatcher: None,
-                cancel: CancelToken::new(),
-                max_tool_iterations: None,
-                client: None,
-                kind: None,
-            },
-            &mut |_| {},
-        );
-
-        if let Some(v) = orig {
-            unsafe { std::env::set_var(missing_env, v) };
-        }
-
-        assert!(resp.error.is_some());
-        assert!(
-            resp.error
-                .as_deref()
-                .unwrap_or("")
-                .contains("api_key_missing"),
-            "missing-key error must surface the api_key_missing tag"
-        );
     }
 
     #[test]
@@ -1609,7 +1550,7 @@ mod tests {
         let resp = broker.dispatch(
             AiBrokerRequest {
                 app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
+                model_mode: ModelMode::Fast,
                 concrete_model: None,
                 reasoning_effort: None,
                 system: String::new(),
@@ -1636,190 +1577,6 @@ mod tests {
                 .contains("ai_config_missing"),
             "missing config error must surface the ai_config_missing tag"
         );
-    }
-
-    #[test]
-    fn live_broker_errors_when_ollama_selected_but_config_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("ollama".to_string()),
-            openrouter: None,
-            ollama: None,
-            ..Default::default()
-        }));
-        let resp = broker.dispatch(
-            AiBrokerRequest {
-                app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
-                concrete_model: None,
-                reasoning_effort: None,
-                system: String::new(),
-                messages: vec![AiMessage {
-                    role: "user".to_string(),
-                    content: "hi".to_string(),
-                }],
-                tools: vec![],
-                workspace_root: None,
-                open_panes: Arc::new(Vec::new()),
-                tool_dispatcher: None,
-                cancel: CancelToken::new(),
-                max_tool_iterations: None,
-                client: None,
-                kind: None,
-            },
-            &mut |_| {},
-        );
-        assert!(resp.error.is_some());
-        assert!(
-            resp.error.as_deref().unwrap_or("").contains("[ai.ollama]"),
-            "error must mention missing [ai.ollama] section"
-        );
-    }
-
-    /// Minimal dispatch request for local-backend error-path tests.
-    fn local_test_request() -> AiBrokerRequest {
-        AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            concrete_model: None,
-            reasoning_effort: None,
-            system: String::new(),
-            messages: vec![AiMessage {
-                role: "user".to_string(),
-                content: "hi".to_string(),
-            }],
-            tools: vec![],
-            workspace_root: None,
-            open_panes: Arc::new(Vec::new()),
-            tool_dispatcher: None,
-            cancel: CancelToken::new(),
-            max_tool_iterations: None,
-            client: None,
-            kind: None,
-        }
-    }
-
-    #[test]
-    fn live_broker_errors_when_local_selected_but_config_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("local".to_string()),
-            openrouter: None,
-            ollama: None,
-            local: None,
-            ..Default::default()
-        }));
-        let resp = broker.dispatch(local_test_request(), &mut |_| {});
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("ai_config_missing") && err.contains("[ai.local]"),
-            "error must carry the ai_config_missing tag and name [ai.local]: {err}"
-        );
-    }
-
-    #[test]
-    fn live_broker_errors_when_local_base_url_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("local".to_string()),
-            local: Some(crate::config::LocalBackendConfig {
-                base_url: None,
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_low: Some("claude-haiku-4-5".to_string()),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        }));
-        let resp = broker.dispatch(local_test_request(), &mut |_| {});
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("base_url") && err.contains("[ai.local]"),
-            "error must name base_url and [ai.local]: {err}"
-        );
-    }
-
-    #[test]
-    fn live_broker_errors_when_local_model_tier_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("local".to_string()),
-            local: Some(crate::config::LocalBackendConfig {
-                base_url: Some("http://127.0.0.1:3456".to_string()),
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_high: Some("claude-fable-5".to_string()),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        }));
-        // Request is Low tier — only model_high is configured.
-        let resp = broker.dispatch(local_test_request(), &mut |_| {});
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("model_low") && err.contains("[ai.local]"),
-            "error must name model_low in [ai.local]: {err}"
-        );
-    }
-
-    /// `dispatch_local` guards against a concrete route naming a foreign
-    /// provider (same defensive check as the openrouter/ollama paths —
-    /// unreachable through `LiveAiBroker::dispatch`, which routes by
-    /// provider first, but load-bearing for any direct caller).
-    #[test]
-    fn dispatch_local_rejects_foreign_provider_route() {
-        let ai_config = AiConfig {
-            backend: Some("local".to_string()),
-            local: Some(crate::config::LocalBackendConfig {
-                base_url: Some("http://127.0.0.1:3456".to_string()),
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_low: Some("claude-haiku-4-5".to_string()),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        };
-        let mut request = local_test_request();
-        request.concrete_model = Some(ConcreteModelRoute {
-            provider: "openrouter".to_string(),
-            model: "anthropic/claude-fable-5".to_string(),
-        });
-        let resp = dispatch_local(request, &ai_config, &mut |_| {});
-        assert!(
-            resp.error
-                .as_deref()
-                .unwrap_or("")
-                .contains("unsupported_model_provider"),
-            "foreign provider route must be rejected"
-        );
-    }
-
-    /// `api_key_env` unset = unauthenticated proxy; set = env var must be
-    /// non-empty. Lookup is injected — never mutates process env.
-    #[test]
-    fn resolve_local_api_key_contract() {
-        // No api_key_env configured — no auth, no lookup needed.
-        assert_eq!(resolve_local_api_key(None, |_| None), Ok(None));
-
-        // Configured and set non-empty — key flows through.
-        assert_eq!(
-            resolve_local_api_key(Some("MERIDIAN_KEY"), |name| {
-                assert_eq!(name, "MERIDIAN_KEY");
-                Some("sk-abc".to_string())
-            }),
-            Ok(Some("sk-abc".to_string()))
-        );
-
-        // Configured but unset or empty — error names the variable.
-        for lookup in [
-            (|_: &str| None) as fn(&str) -> Option<String>,
-            (|_: &str| Some(String::new())) as fn(&str) -> Option<String>,
-        ] {
-            let err = resolve_local_api_key(Some("MERIDIAN_KEY"), lookup).unwrap_err();
-            assert!(
-                err.contains("api_key_missing") && err.contains("MERIDIAN_KEY"),
-                "error must tag api_key_missing and name the env var: {err}"
-            );
-        }
     }
 
     /// Verify the tool loop: a backend that returns one tool call on the first
@@ -1916,7 +1673,7 @@ mod tests {
         // the next iteration, where the backend returns the final text.
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
-            model_tier: crate::protocol::ModelTier::Low,
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2033,7 +1790,7 @@ mod tests {
         };
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2122,7 +1879,7 @@ mod tests {
         cancel.cancel();
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2207,7 +1964,7 @@ mod tests {
         };
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2347,7 +2104,7 @@ mod tests {
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
-            model_tier: ModelTier::Low,
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: String::new(),
