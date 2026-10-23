@@ -616,8 +616,10 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `call` | Call an agent role and return its validated completion or blocking question as JSON |
 | `message` | Reply through a child agent's structured mailbox |
 | `handoff` | Transfer the current task to a permitted successor role |
+| `start` | Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `spawn` | Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
+| `wait` | Wait for one or more child agent panes to finish via `plexi agent done` and pull their results |
 | `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
@@ -727,9 +729,9 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Agent slug (`a-z`, `0-9`, `-`) |
-| `--cli` | string | yes | CLI harness to launch (`pi`, `claude`, `codex`, or `agy`) |
+| `--cli` | string | yes | CLI harness to launch (`pi`, `claude`, `codex`, `agy`, or `script`) |
 | `--model` | string | no | Model identifier passed verbatim via `--model` |
-| `--fallback` | string | no | Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`) |
+| `--fallback` | string | no | Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`, `script`) |
 | `--description` | string | no | Short human-readable description of the agent's role |
 | `--persona` | string | no | Inline persona text written to `AGENT.md` (mutually exclusive with `--persona-file`) |
 | `--persona-file` | string | no | Path to a markdown file whose contents are written to `AGENT.md` (mutually exclusive with `--persona`) |
@@ -788,6 +790,21 @@ Transfer the current task to a permitted successor role
 | `<role>` | string | yes |  |
 | `--task` | string | yes |  |
 
+### `plexi agent start`
+
+Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
+
+Resolves `<name>` by walking up from `--cwd` (or the current directory) to the project root (stopping at `$HOME`), then `~/.plexi-<channel>/agents/<name>/`, then built-in. Launches the agent's configured `[harness]` (`pi`, `claude`, `codex`, `agy`) interactively in the project directory with `AGENT.md` persona applied, the `# Plexi worker contract`, and `PLEXI_*` env set.
+
+Example: plexi agent start researcher
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/` |
+| `<prompt>` | string | no | Optional initial message to send in the interactive session |
+| `--message` | string | no | Optional initial message to send in the interactive session |
+| `--cwd` | string | no | Working directory for workspace lookup and the interactive agent pane |
+
 ### `plexi agent spawn`
 
 Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
@@ -818,6 +835,19 @@ Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit com
 | `--result` | string | yes | Structured JSON result payload |
 | `--summary` | string | no | Human- and master-readable completion summary written to the `summary` slot |
 | `--pane-id` | string | no | Target pane id or name (defaults to `$PLEXI_PANE_ID`) |
+
+### `plexi agent wait`
+
+Wait for one or more child agent panes to finish via `plexi agent done` and pull their results.
+
+Blocks until every specified child pane has reported completion (or exited/failed) or `--timeout` expires. Results pulled via `agent wait` are consumed so the host does not re-deliver them as a duplicate idle-batch turn to the parent pane.
+
+Example: plexi agent wait 42 43 --timeout 300
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_ids>` | string (repeatable) | yes | Child pane IDs or names to wait for |
+| `--timeout` | string | no | Timeout in seconds Default: `300`. |
 
 ### `plexi agent ask`
 
@@ -1604,6 +1634,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `new` | Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent` |
 | `name` | Rename a pane |
 | `list` | List all open panes as a JSON array |
+| `tree` | Show the parent/child session provenance forest across open panes (`pstree` / `ps --forest` style) |
 | `focus` | Move the visible focus to a specific pane |
 | `heartbeat` | Configure a host-owned recurring prompt for a terminal pane |
 | `close` | Close a pane. Omit the pane id to close the pane you are currently in |
@@ -1726,6 +1757,16 @@ Filter by context: `--context` (no value) returns panes in the caller's context 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--context` | string | no | Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With an argument, returns panes in that specific context |
+
+### `plexi pane tree`
+
+Show the parent/child session provenance forest across open panes (`pstree` / `ps --forest` style).
+
+Displays each root pane and its spawned child panes with `spawned_by`, agent role, state, and title. Pass `--json` to output the nested forest as JSON.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--context` | string | no | Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context) |
 
 ### `plexi pane focus`
 

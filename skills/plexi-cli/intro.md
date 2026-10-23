@@ -33,6 +33,7 @@ spawning. Spawn returns a pane id immediately; collect its result separately.
 ```bash
 plexi agent list
 plexi agent show <slug>
+plexi agent start <slug>
 plexi agent create <slug> --cli pi --persona "<markdown>" --result-schema '<json>' --ephemeral
 plexi agent spawn <slug> --task "<brief>" --subcontext "<name>"
 plexi pane result wait <pane_id> --timeout 300

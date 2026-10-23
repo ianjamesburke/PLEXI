@@ -654,6 +654,11 @@ impl PlexiApp {
                                         self.pane_worktrees
                                             .get(pane_id)
                                             .map(|wt| wt.path.to_string_lossy().into_owned())
+                                    })
+                                    .or_else(|| {
+                                        t.initial_cwd
+                                            .as_ref()
+                                            .map(|p| p.to_string_lossy().into_owned())
                                     });
                                 ("terminal", name, cwd)
                             }
@@ -681,6 +686,12 @@ impl PlexiApp {
                         });
                         if let crate::host::pane::Pane::Terminal(t) = pane {
                             entry["parent_pane_id"] = serde_json::json!(t.parent_pane_id);
+                            entry["spawned_by"] =
+                                serde_json::json!(t.spawned_by.as_deref().unwrap_or("human"));
+                            entry["pending_child_results_count"] =
+                                serde_json::json!(t.pending_child_results.len());
+                            entry["pending_child_results"] =
+                                serde_json::json!(t.pending_child_results);
                             entry["agent_harness"] = serde_json::json!(t.agent_harness);
                             entry["agent_session_id"] = serde_json::json!(t.agent_session_id);
                             entry["agent_role"] = serde_json::json!(t.agent_role);
@@ -694,6 +705,9 @@ impl PlexiApp {
                                 serde_json::json!(t.build_saved_agent_session());
                             entry["exited"] = serde_json::json!(t.exited);
                             entry["exit_status"] = serde_json::json!(t.exit_status);
+                        } else {
+                            entry["parent_pane_id"] = serde_json::Value::Null;
+                            entry["spawned_by"] = serde_json::json!("human");
                         }
                         if let Some(wt) = self.pane_worktrees.get(pane_id) {
                             entry["worktree"] = serde_json::json!({
@@ -770,6 +784,11 @@ impl PlexiApp {
                                         self.pane_worktrees
                                             .get(pane_id)
                                             .map(|wt| wt.path.to_string_lossy().into_owned())
+                                    })
+                                    .or_else(|| {
+                                        t.initial_cwd
+                                            .as_ref()
+                                            .map(|p| p.to_string_lossy().into_owned())
                                     });
                                 let mut obj = serde_json::json!({
                                     "id": pane_id,
@@ -783,6 +802,10 @@ impl PlexiApp {
                                     "cwd": cwd,
                                     "agent": agent,
                                     "parent_pane_id": t.parent_pane_id,
+                                    "spawned_by": t.spawned_by.as_deref().unwrap_or("human"),
+                                    "pending_child_results_count": t.pending_child_results.len(),
+                                    "pending_child_results": t.pending_child_results,
+                                    "delivered_child_batches": self.delivered_child_batches.get(pane_id).cloned().unwrap_or_default(),
                                     "agent_harness": t.agent_harness,
                                     "agent_session_id": t.agent_session_id,
                                     "agent_role": t.agent_role,
@@ -3257,7 +3280,21 @@ impl PlexiApp {
                         if ephemeral { self.close_pane_by_id(*pane_id); }
                         return;
                     }
-                    let tail = self.windows.iter().find_map(|w| w.panes.get(pane_id)).and_then(|p| p.as_terminal()).and_then(|t| t.capture_tail_preview());
+                    let (tail, parent_pane_id, child_agent) = self
+                        .windows
+                        .iter()
+                        .find_map(|w| w.panes.get(pane_id))
+                        .and_then(|p| p.as_terminal())
+                        .map(|t| {
+                            let label = t
+                                .agent_role
+                                .clone()
+                                .or_else(|| t.agent_harness.clone())
+                                .or_else(|| t.agent.as_ref().map(|a| a.agent.clone()))
+                                .unwrap_or_else(|| agent.clone());
+                            (t.capture_tail_preview(), t.parent_pane_id, label)
+                        })
+                        .unwrap_or_else(|| (None, None, agent.clone()));
                     if *state == crate::protocol::AgentState::ExitedUnreported {
                         let final_output = tail.unwrap_or_default();
                         let result_state = self.pane_results.entry(*pane_id).or_default();
@@ -3291,10 +3328,38 @@ impl PlexiApp {
                             "result": fallback,
                         }));
                         self.mark_agent_exited_unreported(*pane_id, detail.as_deref().unwrap_or("harness exited without agent done"));
+                        self.record_child_agent_result(
+                            parent_pane_id,
+                            crate::workspace::QueuedChildResult {
+                                child_pane_id: *pane_id,
+                                child_agent,
+                                status: "exited_unreported".to_string(),
+                                summary: Some(
+                                    detail
+                                        .as_deref()
+                                        .unwrap_or("harness exited without agent done")
+                                        .to_string(),
+                                ),
+                                result_json: serde_json::to_string(&fallback)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                                finished_at_epoch_secs: crate::platform::clock::now_secs(),
+                            },
+                        );
                         return;
                     }
                     let reason = format!("{}{}", detail.as_deref().unwrap_or("harness exited without agent done"), tail.map(|tail| format!("\n{tail}")).unwrap_or_default());
                     self.mark_agent_failed(*pane_id, &reason);
+                    self.record_child_agent_result(
+                        parent_pane_id,
+                        crate::workspace::QueuedChildResult {
+                            child_pane_id: *pane_id,
+                            child_agent,
+                            status: "failed".to_string(),
+                            summary: Some(reason.clone()),
+                            result_json: serde_json::json!({ "error": reason }).to_string(),
+                            finished_at_epoch_secs: crate::platform::clock::now_secs(),
+                        },
+                    );
                     return;
                 }
                 let mut found = false;
@@ -3339,11 +3404,15 @@ impl PlexiApp {
                                 dirty = true;
                             }
                         }
+                        let effective_agent = pane
+                            .as_terminal()
+                            .and_then(|t| t.agent_role.clone())
+                            .unwrap_or_else(|| agent.clone());
                         let (set_ok, state_dirty) =
                             pane.set_agent_with_dirty(Some(crate::protocol::PaneAgentState {
                                 pane_id: *pane_id,
                                 state: state.clone(),
-                                agent: agent.clone(),
+                                agent: effective_agent,
                                 detail: detail.clone(),
                                 session_id: session_id.clone(),
                             }));
@@ -3439,6 +3508,9 @@ impl PlexiApp {
                         self.fail_agent_boots_from_terminal_report(*pane_id);
                     } else {
                         self.complete_agent_boots(*pane_id);
+                        if *state == crate::protocol::AgentState::Idle {
+                            self.flush_pending_child_results_if_idle(*pane_id);
+                        }
                     }
                 } else {
                     log::warn!(
@@ -4127,9 +4199,12 @@ impl PlexiApp {
                 initial_slots,
                 no_focus: _,
                 response_file,
+                peer_ancestry,
             } => {
+                let (effective_parent, spawned_by) =
+                    self.resolve_unspoofable_spawner(*parent_pane_id, peer_ancestry.as_deref());
                 log::info!(
-                    "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={parent_pane_id:?}"
+                    "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
                 );
                 let result = self.spawn_agent_worker_pane(
                     role,
@@ -4138,12 +4213,16 @@ impl PlexiApp {
                     task.as_deref().unwrap_or_default(),
                     subcontext.as_deref(),
                     *ephemeral,
-                    *parent_pane_id,
+                    effective_parent,
                     cwd.as_deref().map(std::path::PathBuf::from),
                     result_schema.clone(),
-                    None, false, None);
+                    None,
+                    false,
+                    None,
+                );
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
+                        self.set_pane_spawned_by(new_pane_id, spawned_by.clone(), effective_parent);
                         if let Some(ref custom_name) = name {
                             if !custom_name.is_empty() {
                                 self.apply_inline_pane_name(new_pane_id, custom_name);
@@ -4176,6 +4255,8 @@ impl PlexiApp {
                             "context_id": target_ctx_id,
                             "context_name": self.context_name_for(target_ctx_id),
                             "portal_pane_id": portal_pane_id,
+                            "parent_pane_id": effective_parent,
+                            "spawned_by": spawned_by,
                             "role": role,
                             "harness": harness,
                             "command": command,
@@ -4184,6 +4265,17 @@ impl PlexiApp {
                     Err(e) => serde_json::json!({ "ok": false, "error": e }),
                 };
                 write_json_response(response_file, payload);
+            }
+            crate::protocol::AppRequest::AgentWait {
+                pane_ids,
+                timeout_secs,
+                response_file,
+                peer_ancestry: _,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=agent_wait pane_ids={pane_ids:?} timeout_secs={timeout_secs}"
+                );
+                self.handle_agent_wait(pane_ids.clone(), *timeout_secs, response_file.clone());
             }
             crate::protocol::AppRequest::AgentDone {
                 pane_id,
@@ -4248,16 +4340,20 @@ impl PlexiApp {
                         );
                         let mut agent_label = "agent".to_string();
                         let mut session_id = None;
+                        let mut parent_pane_id = None;
                         for win in &mut self.windows {
                             if let Some(pane) = win.panes.get_mut(pane_id) {
                                 if let Some(t) = pane.as_terminal_mut() {
+                                    parent_pane_id = t.parent_pane_id;
                                     t.agent_completed = true;
                                     t.fleet_result = Some(committed.clone());
                                     t.fleet_done_unseen = true;
                                     t.fleet_seen = false;
                                     t.fleet_since = crate::platform::clock::now_secs();
                                     t.last_blocked_reason = None;
-                                    if let Some(ref h) = t.agent_harness {
+                                    if let Some(ref r) = t.agent_role {
+                                        agent_label = r.clone();
+                                    } else if let Some(ref h) = t.agent_harness {
                                         agent_label = h.clone();
                                     } else if let Some(ref a) = t.agent {
                                         agent_label = a.agent.clone();
@@ -4281,7 +4377,7 @@ impl PlexiApp {
                         self.mark_workspace_dirty();
                         let provenance = Provenance {
                             source: Source::LegacyReport,
-                            agent_label,
+                            agent_label: agent_label.clone(),
                             session_id,
                             raw_event: Some("AgentDone".to_string()),
                         };
@@ -4295,6 +4391,20 @@ impl PlexiApp {
                             *pane_id,
                             PaneLifecycleEvent::AgentIdle { provenance },
                         );
+                        self.record_child_agent_result(
+                            parent_pane_id,
+                            crate::workspace::QueuedChildResult {
+                                child_pane_id: *pane_id,
+                                child_agent: agent_label,
+                                status: "completed".to_string(),
+                                summary: (!summary_str.is_empty())
+                                    .then(|| summary_str.to_string()),
+                                result_json: serde_json::to_string(&committed)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                                finished_at_epoch_secs: crate::platform::clock::now_secs(),
+                            },
+                        );
+                        self.flush_pending_child_results_if_idle(*pane_id);
                         self.refresh_portal_context_states();
                         let payload = match slot_res {
                             Ok((path, bytes)) => serde_json::json!({
@@ -4395,7 +4505,9 @@ impl PlexiApp {
                             parent_pane_id = t.parent_pane_id;
                             t.last_blocked_reason =
                                 Some(crate::protocol::AgentBlockedReason::Unknown);
-                            if let Some(ref h) = t.agent_harness {
+                            if let Some(ref r) = t.agent_role {
+                                agent_label = r.clone();
+                            } else if let Some(ref h) = t.agent_harness {
                                 agent_label = h.clone();
                             } else if let Some(ref a) = t.agent {
                                 agent_label = a.agent.clone();
@@ -4951,7 +5063,10 @@ impl PlexiApp {
                                 } else {
                                     AgentState::Working
                                 },
-                                agent: agent.to_string(),
+                                agent: t
+                                    .agent_role
+                                    .clone()
+                                    .unwrap_or_else(|| agent.to_string()),
                                 detail: None,
                                 session_id: None,
                             }
@@ -5010,6 +5125,9 @@ impl PlexiApp {
         }
         for (pane_id, agent) in transitions {
             self.emit_observed_agent_transition(pane_id, &agent);
+            if agent.state == AgentState::Idle {
+                self.flush_pending_child_results_if_idle(pane_id);
+            }
         }
     }
 
@@ -5218,6 +5336,9 @@ impl PlexiApp {
             })
         });
 
+        if let Some(pid) = spawned {
+            self.set_pane_spawned_by(pid, "system".to_string(), None);
+        }
         if spawned.is_none() {
             log::warn!("scheduler: routine '{name}' — failed to spawn a pane");
             let key = format!("{}|{name}|spawn-failed", source_root.display());

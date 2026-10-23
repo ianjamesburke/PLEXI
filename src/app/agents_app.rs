@@ -222,12 +222,31 @@ impl App for AgentsApp {
                                         ui.colored_label(colors.text_dim, task.counts());
                                         for row in rows {
                                             let (shape, color) = Self::indicator(row, colors);
+                                            let spawner_suffix = crate::host::pane::format_spawned_by_badge(
+                                                row.spawned_by.as_deref(),
+                                            )
+                                            .map(|b| format!(" · {b}"))
+                                            .unwrap_or_default();
+                                            let waiting_suffix = if row.pending_child_results_count > 0 {
+                                                if row.pending_child_results_count == 1 {
+                                                    " · 1 result waiting".to_string()
+                                                } else {
+                                                    format!(
+                                                        " · {} results waiting",
+                                                        row.pending_child_results_count
+                                                    )
+                                                }
+                                            } else {
+                                                String::new()
+                                            };
                                             let label = format!(
-                                                "{shape} {}  {} · {}{}  #{}",
+                                                "{shape} {}  {} · {}{}{}{}  #{}",
                                                 row.role,
                                                 row.display_state.label(),
                                                 row.age,
                                                 if row.needs_you { " · needs you" } else { "" },
+                                                spawner_suffix,
+                                                waiting_suffix,
                                                 row.pane_id
                                             );
                                             if ui
@@ -336,6 +355,24 @@ impl App for AgentsApp {
                                             row.harness, row.task_title, row.pane_id
                                         ));
                                         ui.label(format!("Context: {}", row.context_name));
+                                        if let Some(badge) = crate::host::pane::format_spawned_by_badge(
+                                            row.spawned_by.as_deref(),
+                                        ) {
+                                            ui.label(format!("Provenance: {badge}"));
+                                        }
+                                        if row.pending_child_results_count > 0 {
+                                            ui.colored_label(
+                                                colors.accent,
+                                                if row.pending_child_results_count == 1 {
+                                                    "1 result waiting".to_string()
+                                                } else {
+                                                    format!(
+                                                        "{} results waiting",
+                                                        row.pending_child_results_count
+                                                    )
+                                                },
+                                            );
+                                        }
                                         ui.label(format!(
                                             "Parent: {}",
                                             row.parent_pane_id

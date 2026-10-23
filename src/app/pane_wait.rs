@@ -162,6 +162,13 @@ pub(crate) struct PendingResultWait {
     pub expires_at: Instant,
 }
 
+/// A parked `plexi agent wait <pane-id...>` request (stint 0961).
+pub(crate) struct PendingAgentWait {
+    pub pane_ids: Vec<u64>,
+    pub response_file: String,
+    pub expires_at: Instant,
+}
+
 /// A `plexi pane new --agent` spawn whose response is held until the agent
 /// boots.
 pub(crate) struct PendingAgentBoot {
@@ -1154,5 +1161,340 @@ impl PlexiApp {
         });
         let delivered = self.complete_message_recvs(pane_id);
         (id, delivered)
+    }
+
+    /// Format queued child results into a single batched turn for an idle parent agent.
+    pub(crate) fn format_batched_child_results(
+        results: &[crate::workspace::QueuedChildResult],
+    ) -> String {
+        let mut lines = Vec::with_capacity(results.len() + 1);
+        if results.len() == 1 {
+            lines.push("[Plexi child result]".to_string());
+        } else {
+            lines.push(format!("[Plexi child results ({})]", results.len()));
+        }
+        for r in results {
+            let mut entry = format!("- {} (#{}) [{}]", r.child_agent, r.child_pane_id, r.status);
+            if let Some(ref s) = r.summary {
+                if !s.trim().is_empty() {
+                    entry.push_str(&format!(": {}", s.trim()));
+                }
+            }
+            if !r.result_json.trim().is_empty() && r.result_json.trim() != "{}" {
+                entry.push_str(&format!(" -> {}", r.result_json.trim()));
+            }
+            lines.push(entry);
+        }
+        lines.join("\n")
+    }
+
+    /// Record a child agent's completion/exit result (`plexi agent done` or exit without report),
+    /// wake any blocking `plexi agent wait` callers, or queue the result on the parent pane for
+    /// orderly batched delivery when the parent next reports `Idle`.
+    pub(crate) fn record_child_agent_result(
+        &mut self,
+        parent_pane_id: Option<u64>,
+        item: crate::workspace::QueuedChildResult,
+    ) {
+        let child_id = item.child_pane_id;
+        crate::host::flight_recorder::record(
+            "agent_done_event",
+            None,
+            Some(child_id),
+            None,
+            serde_json::json!({
+                "pane_id": child_id,
+                "parent_pane_id": parent_pane_id,
+                "agent": item.child_agent,
+                "status": item.status,
+                "summary": item.summary,
+                "result_json": item.result_json,
+                "finished_at_epoch_secs": item.finished_at_epoch_secs,
+            }),
+        );
+        self.child_result_events.insert(child_id, item.clone());
+
+        let has_blocking_waiter = self
+            .pending_agent_waits
+            .iter()
+            .any(|w| w.pane_ids.contains(&child_id));
+        if has_blocking_waiter {
+            self.pulled_child_results.insert(child_id);
+            self.complete_agent_waits();
+            return;
+        }
+        if self.pulled_child_results.contains(&child_id)
+            || self.agent_tool_children.contains_key(&child_id)
+        {
+            return;
+        }
+        if let Some(parent_id) = parent_pane_id {
+            let queued = self
+                .windows
+                .iter_mut()
+                .find_map(|w| w.panes.get_mut(&parent_id))
+                .and_then(|p| p.as_terminal_mut())
+                .map(|term| {
+                    term.pending_child_results
+                        .retain(|r| r.child_pane_id != child_id);
+                    term.pending_child_results.push(item);
+                })
+                .is_some();
+            if queued {
+                self.mark_workspace_dirty();
+                let _ = self.flush_pending_child_results_if_idle(parent_id);
+            }
+        }
+    }
+
+    /// If `parent_pane_id` has queued child results and its agent now reports `Idle` (with no
+    /// submit in flight), drain all queued results and deliver them as ONE batched turn.
+    pub(crate) fn flush_pending_child_results_if_idle(&mut self, parent_pane_id: u64) -> bool {
+        if !self.agent_reports_idle(parent_pane_id) || self.submit_in_flight(parent_pane_id) {
+            return false;
+        }
+        let waited_ids: std::collections::HashSet<u64> = self
+            .pending_agent_waits
+            .iter()
+            .flat_map(|w| w.pane_ids.iter().copied())
+            .chain(self.pulled_child_results.iter().copied())
+            .collect();
+        let drained: Vec<crate::workspace::QueuedChildResult> = {
+            let Some(term) = self
+                .windows
+                .iter_mut()
+                .find_map(|w| w.panes.get_mut(&parent_pane_id))
+                .and_then(|p| p.as_terminal_mut())
+            else {
+                return false;
+            };
+            if term.pending_child_results.is_empty() {
+                return false;
+            }
+            let mut keep = Vec::new();
+            let mut deliver = Vec::new();
+            for item in std::mem::take(&mut term.pending_child_results) {
+                if waited_ids.contains(&item.child_pane_id) {
+                    keep.push(item);
+                } else {
+                    deliver.push(item);
+                }
+            }
+            term.pending_child_results = keep;
+            deliver
+        };
+        if drained.is_empty() {
+            return false;
+        }
+        let batch_text = Self::format_batched_child_results(&drained);
+        if let Some(term) = self
+            .windows
+            .iter_mut()
+            .find_map(|w| w.panes.get_mut(&parent_pane_id))
+            .and_then(|p| p.as_terminal_mut())
+        {
+            term.backend.process_command(egui_term::BackendCommand::Write(
+                batch_text.clone().into_bytes(),
+            ));
+        }
+        self.delivered_child_batches
+            .entry(parent_pane_id)
+            .or_default()
+            .push(batch_text.clone());
+        self.register_pending_submit(parent_pane_id, None, batch_text.chars().count());
+        crate::host::flight_recorder::record(
+            "child_results_delivered",
+            None,
+            Some(parent_pane_id),
+            None,
+            serde_json::json!({
+                "parent_pane_id": parent_pane_id,
+                "count": drained.len(),
+                "children": drained.iter().map(|r| r.child_pane_id).collect::<Vec<_>>(),
+                "batch_text": batch_text,
+            }),
+        );
+        self.mark_workspace_dirty();
+        true
+    }
+
+    fn format_child_result_json(r: &crate::workspace::QueuedChildResult) -> serde_json::Value {
+        let parsed_result = serde_json::from_str::<serde_json::Value>(&r.result_json)
+            .unwrap_or_else(|_| serde_json::Value::String(r.result_json.clone()));
+        serde_json::json!({
+            "pane_id": r.child_pane_id,
+            "agent": r.child_agent,
+            "status": r.status,
+            "summary": r.summary,
+            "result": parsed_result,
+            "finished_at_epoch_secs": r.finished_at_epoch_secs,
+        })
+    }
+
+    /// Handle `AppRequest::AgentWait`: consume any matching queued results from the parent pane
+    /// so they are never re-delivered via idle batching, and either reply immediately if all
+    /// children have finished or park until they finish or `timeout_secs` expires.
+    pub(crate) fn handle_agent_wait(
+        &mut self,
+        pane_ids: Vec<u64>,
+        timeout_secs: f64,
+        response_file: String,
+    ) {
+        if pane_ids.is_empty() {
+            crate::rpc::write_json_response(
+                &response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error": "agent wait requires at least one pane_id",
+                }),
+            );
+            return;
+        }
+        if !timeout_secs.is_finite() || timeout_secs <= 0.0 || timeout_secs > MAX_WAIT_TIMEOUT_SECS
+        {
+            crate::rpc::write_json_response(
+                &response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("timeout must be a finite number in (0, {MAX_WAIT_TIMEOUT_SECS}]"),
+                }),
+            );
+            return;
+        }
+        // Mark all requested child pane_ids as pulled so they are removed from any parent's
+        // pending_child_results queue and never delivered as a duplicate idle-batch turn.
+        for &cid in &pane_ids {
+            self.pulled_child_results.insert(cid);
+        }
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(term) = pane.as_terminal_mut() {
+                    term.pending_child_results
+                        .retain(|r| !pane_ids.contains(&r.child_pane_id));
+                }
+            }
+        }
+        let expires_at = Instant::now() + Duration::from_secs_f64(timeout_secs);
+        self.pending_agent_waits.push(PendingAgentWait {
+            pane_ids,
+            response_file,
+            expires_at,
+        });
+        self.complete_agent_waits();
+    }
+
+    /// Answer any `PendingAgentWait` whose watched child panes have all recorded a completion/exit event.
+    pub(crate) fn complete_agent_waits(&mut self) {
+        if self.pending_agent_waits.is_empty() {
+            return;
+        }
+        let (ready, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_waits)
+            .into_iter()
+            .partition(|w| {
+                w.pane_ids
+                    .iter()
+                    .all(|cid| self.child_result_events.contains_key(cid))
+            });
+        self.pending_agent_waits = pending;
+        for wait in ready {
+            for &cid in &wait.pane_ids {
+                self.pulled_child_results.insert(cid);
+                for win in &mut self.windows {
+                    for pane in win.panes.values_mut() {
+                        if let Some(term) = pane.as_terminal_mut() {
+                            term.pending_child_results
+                                .retain(|r| r.child_pane_id != cid);
+                        }
+                    }
+                }
+            }
+            let results: Vec<serde_json::Value> = wait
+                .pane_ids
+                .iter()
+                .filter_map(|cid| self.child_result_events.get(cid))
+                .map(Self::format_child_result_json)
+                .collect();
+            crate::rpc::write_json_response(
+                &wait.response_file,
+                serde_json::json!({
+                    "ok": true,
+                    "results": results,
+                }),
+            );
+        }
+    }
+
+    /// Service `PendingAgentWait` deadlines and closed panes from `App::logic`.
+    pub(crate) fn service_pending_agent_waits(&mut self, ctx: &egui::Context) {
+        if self.pending_agent_waits.is_empty() {
+            return;
+        }
+        // If any watched child pane closed without recording an event, synthesize an exited_unreported result.
+        let watched: Vec<u64> = self
+            .pending_agent_waits
+            .iter()
+            .flat_map(|w| w.pane_ids.iter().copied())
+            .collect();
+        for cid in watched {
+            if !self.child_result_events.contains_key(&cid) && !self.pane_exists(cid) {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.child_result_events.insert(
+                    cid,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: cid,
+                        child_agent: "agent".to_string(),
+                        status: "exited_unreported".to_string(),
+                        summary: Some("pane closed without agent done".to_string()),
+                        result_json: "{}".to_string(),
+                        finished_at_epoch_secs: now_secs,
+                    },
+                );
+            }
+        }
+        self.complete_agent_waits();
+        if self.pending_agent_waits.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .pending_agent_waits
+            .iter()
+            .any(|wait| now >= wait.expires_at)
+        {
+            let (expired, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_waits)
+                .into_iter()
+                .partition(|wait| now >= wait.expires_at);
+            self.pending_agent_waits = live;
+            for wait in expired {
+                let results: Vec<serde_json::Value> = wait
+                    .pane_ids
+                    .iter()
+                    .filter_map(|cid| self.child_result_events.get(cid))
+                    .map(Self::format_child_result_json)
+                    .collect();
+                crate::rpc::write_json_response(
+                    &wait.response_file,
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": true,
+                        "error": format!("timed out waiting for agent panes {:?}", wait.pane_ids),
+                        "results": results,
+                    }),
+                );
+            }
+        }
+        let Some(next_expiry) = self.pending_agent_waits.iter().map(|w| w.expires_at).min() else {
+            return;
+        };
+        let predicted_frame =
+            std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            next_expiry,
+            Instant::now(),
+            predicted_frame,
+        ));
     }
 }

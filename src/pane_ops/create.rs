@@ -1539,27 +1539,118 @@ impl PlexiApp {
         new_id
     }
 
-    /// Spawn a worker terminal pane for `plexi agent spawn`, creating or reusing
-    /// a sub-context and linking a `PortalPane` in the parent context when
-    /// `subcontext` is specified.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn spawn_agent_worker_pane(
+    /// Derive the unspoofable `spawned_by` provenance string for a parent pane ID.
+    pub(crate) fn derive_spawned_by_for_parent(&self, parent_pane_id: Option<u64>) -> String {
+        let Some(pid) = parent_pane_id else {
+            return "human".to_string();
+        };
+        let Some(pane) = self.windows.iter().find_map(|w| w.panes.get(&pid)) else {
+            return "human".to_string();
+        };
+        if let Some(term) = pane.as_terminal() {
+            if let Some(ref role) = term.agent_role {
+                if !role.trim().is_empty() {
+                    return format!("agent:{}", role.trim());
+                }
+            }
+            if let Some(ref st) = term.agent {
+                if !st.agent.trim().is_empty() && st.agent != "unknown" {
+                    return format!("agent:{}", st.agent.trim());
+                }
+            }
+            if let Some(ref obs) = term.observed_agent {
+                if !obs.agent.trim().is_empty() && obs.agent != "unknown" {
+                    return format!("agent:{}", obs.agent.trim());
+                }
+            }
+            if let Some(ref h) = term.agent_harness {
+                if !h.trim().is_empty() {
+                    return format!("agent:{}", h.trim());
+                }
+            }
+        }
+        "human".to_string()
+    }
+
+    /// Resolve the unspoofable `(parent_pane_id, spawned_by)` from socket `peer_ancestry`,
+    /// falling back to `claimed_parent_pane_id` only when socket peer ancestry is absent
+    /// (e.g. direct in-process test harness injection).
+    pub(crate) fn resolve_unspoofable_spawner(
+        &self,
+        claimed_parent_pane_id: Option<u64>,
+        peer_ancestry: Option<&[u32]>,
+    ) -> (Option<u64>, String) {
+        if let Some(ancestry) = peer_ancestry.filter(|a| !a.is_empty()) {
+            if let Some((verified_pane_id, _, _)) = self.resolve_socket_peer_pane(ancestry) {
+                let spawner = self.derive_spawned_by_for_parent(Some(verified_pane_id));
+                return (Some(verified_pane_id), spawner);
+            }
+            if claimed_parent_pane_id.is_none() {
+                return (None, "human".to_string());
+            }
+        }
+        let spawner = self.derive_spawned_by_for_parent(claimed_parent_pane_id);
+        (claimed_parent_pane_id, spawner)
+    }
+
+    /// Stamp or update `spawned_by` (and optional `parent_pane_id`) on an existing terminal pane
+    /// and record the updated provenance in the session trace.
+    pub(crate) fn set_pane_spawned_by(
         &mut self,
-        role: &str,
-        harness: &str,
-        cmd: &str,
-        task: &str,
+        pane_id: u64,
+        spawned_by: String,
+        parent_pane_id: Option<u64>,
+    ) {
+        let mut ctx_id = None;
+        for win in &mut self.windows {
+            if let Some(Pane::Terminal(term)) = win.panes.get_mut(&pane_id) {
+                ctx_id = Some(win.context_id);
+                term.spawned_by = Some(spawned_by.clone());
+                if let Some(pid) = parent_pane_id {
+                    term.parent_pane_id = Some(pid);
+                }
+                #[cfg(test)]
+                {
+                    term.spawn_env
+                        .insert("PLEXI_SPAWNED_BY".into(), spawned_by.clone());
+                    if let Some(pid) = parent_pane_id {
+                        term.spawn_env
+                            .insert("PLEXI_PARENT_PANE".into(), pid.to_string());
+                    }
+                }
+                break;
+            }
+        }
+        crate::host::flight_recorder::record(
+            "pane_provenance",
+            ctx_id,
+            Some(pane_id),
+            None,
+            serde_json::json!({
+                "pane_id": pane_id,
+                "spawned_by": spawned_by,
+                "parent_pane_id": parent_pane_id,
+            }),
+        );
+    }
+
+    /// Single choke point resolving where a spawned agent pane lands (`(target_win_idx, target_ctx_id, parent_pane_id, effective_cwd)`).
+    /// Keeps sub-context / split placement behind one function so competing sub-context prototypes
+    /// (#2864, #2865, #2862) can plug in without touching callers.
+    pub(crate) fn resolve_agent_spawn_location(
+        &mut self,
         subcontext: Option<&str>,
-        ephemeral: bool,
         from_pane_id: Option<u64>,
         cwd_override: Option<std::path::PathBuf>,
-        result_schema: Option<serde_json::Value>,
-        run_token: Option<&str>,
         conjoined: bool,
         origin_context_id: Option<u64>,
-    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+    ) -> Result<(usize, u64, Option<u64>, std::path::PathBuf), String> {
         let origin_win = match origin_context_id {
-            Some(id) => self.windows.iter().position(|w| w.context_id == id).ok_or_else(|| format!("origin context {id} not found"))?,
+            Some(id) => self
+                .windows
+                .iter()
+                .position(|w| w.context_id == id)
+                .ok_or_else(|| format!("origin context {id} not found"))?,
             None => self.active_window,
         };
         let parent_lookup = from_pane_id.and_then(|pid| {
@@ -1607,35 +1698,35 @@ impl PlexiApp {
                 self.next_window_id += 1;
 
                 if conjoined {
-                    let parent = parent_pane_id.ok_or("conjoined children require a parent pane")?;
+                    let parent =
+                        parent_pane_id.ok_or("conjoined children require a parent pane")?;
                     self.conjoined_contexts.insert(ctx_id, parent);
                 } else {
-                // Insert a PortalPane in the parent window adjacent to the caller pane.
-                let portal_pane_id = self.host.alloc_pane_id();
-                let split_target = parent_pane_id
-                    .and_then(|pid| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
-                    .or(self.windows[parent_win_idx].focused_pane);
-                super::layout::insert_split_tile(
-                    &mut self.windows[parent_win_idx].tree,
-                    split_target,
-                    portal_pane_id,
-                    true,
-                    crate::host::command::ShareRatio {
-                        numerator: 1.0,
-                        denominator: 1.0,
-                    },
-                    false,
-                );
-                self.windows[parent_win_idx].panes.insert(
-                    portal_pane_id,
-                    Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                        pane_id: portal_pane_id,
-                        target_context_id: ctx_id,
-                        context_state: None,
-                        hidden: false,
-                    })),
-                );
-
+                    // Insert a PortalPane in the parent window adjacent to the caller pane.
+                    let portal_pane_id = self.host.alloc_pane_id();
+                    let split_target = parent_pane_id
+                        .and_then(|pid| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
+                        .or(self.windows[parent_win_idx].focused_pane);
+                    super::layout::insert_split_tile(
+                        &mut self.windows[parent_win_idx].tree,
+                        split_target,
+                        portal_pane_id,
+                        true,
+                        crate::host::command::ShareRatio {
+                            numerator: 1.0,
+                            denominator: 1.0,
+                        },
+                        false,
+                    );
+                    self.windows[parent_win_idx].panes.insert(
+                        portal_pane_id,
+                        Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                            pane_id: portal_pane_id,
+                            target_context_id: ctx_id,
+                            context_state: None,
+                            hidden: false,
+                        })),
+                    );
                 }
                 self.router.push(crate::host::context::Context {
                     name: crate::host::context::ContextName::custom(sub_name.to_string()),
@@ -1665,6 +1756,38 @@ impl PlexiApp {
             (parent_win_idx, parent_ctx_id)
         };
 
+        Ok((target_win_idx, target_ctx_id, parent_pane_id, effective_cwd))
+    }
+
+    /// Spawn a worker terminal pane for `plexi agent spawn` / `plexi agent start` / team / GUI,
+    /// creating or reusing a sub-context and linking a `PortalPane` in the parent context when
+    /// `subcontext` is specified.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_agent_worker_pane(
+        &mut self,
+        role: &str,
+        harness: &str,
+        cmd: &str,
+        task: &str,
+        subcontext: Option<&str>,
+        ephemeral: bool,
+        from_pane_id: Option<u64>,
+        cwd_override: Option<std::path::PathBuf>,
+        result_schema: Option<serde_json::Value>,
+        run_token: Option<&str>,
+        conjoined: bool,
+        origin_context_id: Option<u64>,
+    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        let (target_win_idx, target_ctx_id, parent_pane_id, effective_cwd) = self
+            .resolve_agent_spawn_location(
+                subcontext,
+                from_pane_id,
+                cwd_override,
+                conjoined,
+                origin_context_id,
+            )?;
+        let spawned_by = self.derive_spawned_by_for_parent(parent_pane_id);
+
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(target_win_idx);
         let effective_cwd_for_schema = effective_cwd.clone();
@@ -1683,6 +1806,9 @@ impl PlexiApp {
                 .env
                 .insert("PLEXI_PARENT_PANE".into(), pid.to_string());
         }
+        settings
+            .env
+            .insert("PLEXI_SPAWNED_BY".into(), spawned_by.clone());
         if ephemeral {
             settings.env.insert("PLEXI_EPHEMERAL".into(), "1".into());
         }
@@ -1717,6 +1843,7 @@ impl PlexiApp {
         };
         pane.ephemeral = ephemeral;
         pane.parent_pane_id = parent_pane_id;
+        pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
         let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(
@@ -1746,11 +1873,10 @@ impl PlexiApp {
         pane.agent = Some(crate::protocol::PaneAgentState {
             pane_id: new_id,
             state: crate::protocol::AgentState::Working,
-            agent: harness.to_string(),
+            agent: role.to_string(),
             detail: (!task.is_empty()).then(|| task.to_string()),
             session_id: None,
         });
-        pane.agent_reported_at = Some(std::time::Instant::now());
 
         self.windows[target_win_idx]
             .panes
@@ -1794,6 +1920,20 @@ impl PlexiApp {
                     raw_event: Some("AgentSpawn".into()),
                 },
             },
+        );
+        crate::host::flight_recorder::record(
+            "pane_spawned",
+            Some(target_ctx_id),
+            Some(new_id),
+            None,
+            serde_json::json!({
+                "pane_id": new_id,
+                "role": role,
+                "harness": harness,
+                "spawned_by": spawned_by,
+                "parent_pane_id": parent_pane_id,
+                "context_id": target_ctx_id,
+            }),
         );
         self.refresh_portal_context_states();
         self.mark_workspace_dirty();

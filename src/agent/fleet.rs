@@ -328,6 +328,8 @@ pub struct AgentInput {
     pub live: bool,
     pub pane_id: u64,
     pub parent_pane_id: Option<u64>,
+    pub spawned_by: Option<String>,
+    pub pending_child_results_count: usize,
     pub role: String,
     pub harness: String,
     pub pane_name: Option<String>,
@@ -351,6 +353,10 @@ pub struct AgentRow {
     pub live: bool,
     pub pane_id: u64,
     pub parent_pane_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub pending_child_results_count: usize,
     pub role: String,
     pub harness: String,
     pub context_name: String,
@@ -532,6 +538,8 @@ impl AgentsView {
                 live: r.live,
                 pane_id: r.pane_id,
                 parent_pane_id: r.parent_pane_id,
+                spawned_by: r.spawned_by,
+                pending_child_results_count: r.pending_child_results_count,
                 role,
                 harness,
                 context_name: r.context_name,
@@ -599,6 +607,10 @@ impl AgentsView {
     }
 }
 
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +621,8 @@ mod tests {
             live: true,
             pane_id: id,
             parent_pane_id: None,
+            spawned_by: None,
+            pending_child_results_count: 0,
             role: format!("worker-{id}"),
             harness: "pi".into(),
             pane_name: None,

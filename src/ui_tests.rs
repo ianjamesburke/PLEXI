@@ -1829,6 +1829,7 @@ mod tests {
                         initial_slots: vec![],
                         no_focus: true,
                         response_file: reply.to_string_lossy().into_owned(),
+                        peer_ancestry: None,
                     },
                 );
                 let raw = std::fs::read_to_string(&reply).expect("read spawn response");
@@ -1917,6 +1918,7 @@ mod tests {
                     initial_slots: vec![],
                     no_focus: true,
                     response_file: reply.to_string_lossy().into_owned(),
+                    peer_ancestry: None,
                 },
             );
             let raw = std::fs::read_to_string(&reply).expect("read split response");

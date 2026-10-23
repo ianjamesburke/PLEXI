@@ -108,6 +108,15 @@ pub fn render(
     let needs_you = matches!(pane_agent_state, Some(AgentState::NeedsYou));
     let border_escalation_color =
         crate::ui::activity::escalation_color(pane_agent_state.as_ref(), is_error, colors);
+    let spawned_by_badge = terminal.spawned_by_badge();
+    let waiting_results_badge = (!terminal.pending_child_results.is_empty()).then(|| {
+        let count = terminal.pending_child_results.len();
+        if count == 1 {
+            "1 result waiting".to_string()
+        } else {
+            format!("{count} results waiting")
+        }
+    });
 
     if terminal.exited {
         ui.painter().rect_filled(pane_rect, 0.0, colors.terminal_bg);
@@ -126,6 +135,8 @@ pub fn render(
                     colors,
                     outside_workspace: false,
                     name_font_size: pane_title_font_size,
+                    spawned_by_badge: spawned_by_badge.as_deref(),
+                    waiting_results_badge: waiting_results_badge.as_deref(),
                 },
             )
         } else {
@@ -171,6 +182,8 @@ pub fn render(
             colors,
             outside_workspace,
             name_font_size: pane_title_font_size,
+            spawned_by_badge: spawned_by_badge.as_deref(),
+            waiting_results_badge: waiting_results_badge.as_deref(),
         },
     );
 
@@ -339,6 +352,8 @@ struct NameBarParams<'a> {
     colors: &'a Colors,
     outside_workspace: bool,
     name_font_size: f32,
+    spawned_by_badge: Option<&'a str>,
+    waiting_results_badge: Option<&'a str>,
 }
 
 fn render_name_bar_and_tabs(
@@ -357,6 +372,8 @@ fn render_name_bar_and_tabs(
         colors,
         outside_workspace,
         name_font_size,
+        spawned_by_badge,
+        waiting_results_badge,
     } = params;
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
@@ -407,6 +424,30 @@ fn render_name_bar_and_tabs(
             None
         };
         let status_badge_x = if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
+            let size = crate::ui::badge::badge_size(galley.size());
+            let x = right_edge - size.x - crate::ui::style::SPACE_XS;
+            right_edge = x;
+            Some((lbl, col))
+        } else {
+            None
+        };
+        let waiting_badge_x = if let Some(lbl) = waiting_results_badge {
+            let col = colors.accent;
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
+            let size = crate::ui::badge::badge_size(galley.size());
+            let x = right_edge - size.x - crate::ui::style::SPACE_XS;
+            right_edge = x;
+            Some((lbl, col))
+        } else {
+            None
+        };
+        let spawned_badge_x = if let Some(lbl) = spawned_by_badge {
+            let col = colors.text_secondary(colors.bg_toolbar);
             let galley =
                 ui.painter()
                     .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
@@ -493,6 +534,12 @@ fn render_name_bar_and_tabs(
             paint_right = rect.left();
         }
         if let Some((lbl, col)) = status_badge_x {
+            paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
+        }
+        if let Some((lbl, col)) = waiting_badge_x {
+            paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
+        }
+        if let Some((lbl, col)) = spawned_badge_x {
             paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
         }
 
@@ -506,7 +553,12 @@ fn render_name_bar_and_tabs(
                 },
             );
         });
-    } else if has_name || outside_workspace || has_escalation {
+    } else if has_name
+        || outside_workspace
+        || has_escalation
+        || spawned_by_badge.is_some()
+        || waiting_results_badge.is_some()
+    {
         let bar_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
@@ -557,6 +609,18 @@ fn render_name_bar_and_tabs(
         if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
             right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
         }
+        if let Some(lbl) = waiting_results_badge {
+            right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, colors.accent);
+        }
+        if let Some(lbl) = spawned_by_badge {
+            right_edge = paint_status_badge(
+                ui.painter(),
+                bar_rect,
+                right_edge,
+                lbl,
+                colors.text_secondary(colors.bg_toolbar),
+            );
+        }
 
         let title_text = if has_name {
             Some(pane_names[pane_id].as_str())
@@ -566,7 +630,10 @@ fn render_name_bar_and_tabs(
             .filter(|s| *s != "Terminal")
         {
             Some(lbl)
-        } else if has_escalation {
+        } else if has_escalation
+            || spawned_by_badge.is_some()
+            || waiting_results_badge.is_some()
+        {
             Some("Terminal")
         } else {
             None

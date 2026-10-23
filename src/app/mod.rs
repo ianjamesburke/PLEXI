@@ -247,6 +247,10 @@ pub struct PlexiApp {
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
     pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
+    pub(crate) pending_agent_waits: Vec<crate::app::pane_wait::PendingAgentWait>,
+    pub(crate) child_result_events: HashMap<PaneId, crate::workspace::QueuedChildResult>,
+    pub(crate) pulled_child_results: std::collections::HashSet<PaneId>,
+    pub(crate) delivered_child_batches: HashMap<PaneId, Vec<String>>,
     pub(crate) team_runs: Vec<team::TeamRun>,
     /// `plexi pane new --agent` spawns whose response is withheld until the
     /// agent in the new pane self-reports idle (stint 0584).
@@ -753,6 +757,8 @@ pub(crate) fn handle_socket_line_in(
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
                 crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::AgentSpawn { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::AgentWait { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::PaneMessageSend { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::SendToPane { peer_ancestry: p, .. } => {
                     // Same rule as CallAppTool: the wire value is never the
@@ -1588,6 +1594,10 @@ impl PlexiApp {
                     fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
+                    pending_agent_waits: Vec::new(),
+                    child_result_events: HashMap::new(),
+                    pulled_child_results: std::collections::HashSet::new(),
+                    delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
@@ -1858,6 +1868,10 @@ impl PlexiApp {
             fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
             pane_results: HashMap::new(),
             pending_result_waits: Vec::new(),
+            pending_agent_waits: Vec::new(),
+            child_result_events: HashMap::new(),
+            pulled_child_results: std::collections::HashSet::new(),
+            delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
@@ -2797,6 +2811,10 @@ impl PlexiApp {
                 fleet_history: std::cell::RefCell::new(Vec::new()),
                 pane_results: HashMap::new(),
                 pending_result_waits: Vec::new(),
+            pending_agent_waits: Vec::new(),
+            child_result_events: HashMap::new(),
+            pulled_child_results: std::collections::HashSet::new(),
+            delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
                     conjoined_contexts: std::collections::HashMap::new(),
@@ -3557,6 +3575,7 @@ impl eframe::App for PlexiApp {
             self.service_pending_slot_waits(ctx);
             self.service_pending_message_recvs(ctx);
             self.service_pending_result_waits(ctx);
+            self.service_pending_agent_waits(ctx);
             self.service_agent_tool_waits(ctx);
             self.service_team_runs(ctx);
         });

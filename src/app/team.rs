@@ -470,6 +470,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub(crate) struct TeamRun {
+    team_name: String,
     team: Team,
     question: String,
     /// Live folder where every coordinator/member command executes.
@@ -481,8 +482,8 @@ pub(crate) struct TeamRun {
     response_file: String,
     root_pane: u64,
     context_id: u64,
-    run_ids: Vec<String>,
-    members: Vec<(u64, String)>,
+    pub(crate) run_ids: Vec<String>,
+    pub(crate) members: Vec<(u64, String)>,
     deadline: Instant,
 }
 fn api(workspace: &Path, op: &str, mut payload: Value) -> Result<Value, String> {
@@ -672,6 +673,7 @@ impl PlexiApp {
             }
         }
         let mut run = TeamRun {
+            team_name: name.clone(),
             team,
             question,
             execution_cwd,
@@ -727,9 +729,27 @@ impl PlexiApp {
             } else {
                 let harness = crate::cli::AgentHarness::parse(&member.harness)
                     .ok_or_else(|| "invalid member harness".to_string())?;
-                harness
-                    .adapter()
-                    .spawn_command(&task, member.model.as_deref(), None)
+                if let Ok((mut def, _)) = crate::cli::agent::resolve_agent_definition_in(
+                    &member.role,
+                    &crate::config::config_dir(),
+                    Some(&run.execution_cwd),
+                ) {
+                    if let Some(ref mut h_cfg) = def.harness {
+                        if member.model.is_some() {
+                            h_cfg.model = member.model.clone();
+                        }
+                    }
+                    crate::cli::agent::build_agent_start_command(&def, harness.adapter(), Some(&task))
+                        .unwrap_or_else(|_| {
+                            harness
+                                .adapter()
+                                .spawn_command(&task, member.model.as_deref(), None)
+                        })
+                } else {
+                    harness
+                        .adapter()
+                        .spawn_command(&task, member.model.as_deref(), None)
+                }
             };
             let command = format!(
                 "export PLEXI_TEAM_RUN_ID={} PLEXI_TEAM_OPTIONS={}; {body}",
@@ -750,6 +770,11 @@ impl PlexiApp {
                 false,
                 None,
             )?;
+            self.set_pane_spawned_by(
+                pane,
+                format!("team:{}/{}", run.team_name, run.run_ids[0]),
+                Some(run.root_pane),
+            );
             run.members.push((pane, head));
             crate::host::flight_recorder::record(
                 "team_member_spawn",
@@ -930,9 +955,23 @@ impl PlexiApp {
                 ),
             );
         }
+        let ballots_json: Vec<Value> = run
+            .team
+            .members
+            .iter()
+            .zip(&outcomes)
+            .filter_map(|(member, outcome)| match outcome {
+                MemberOutcome::Ballot(b) => Some(json!({
+                    "role": member.role,
+                    "ranking": b.ranking,
+                    "rationale": b.rationale,
+                })),
+                _ => None,
+            })
+            .collect();
         let reply = json!({"ok":ok,"status":if error.is_some() { "FAILED" } else { status },
             "error":error,"task_pane":run.root_pane,"members":run.members.iter().map(|(p,_)| p).collect::<Vec<_>>(),
-            "member_summaries":summaries,"report":report_text,"result_path":run.out.join("RESULT.md")});
+            "member_summaries":summaries,"ballots":ballots_json,"report":report_text,"result_path":run.out.join("RESULT.md")});
         log::info!(
             "agent_team: finished task={} status={} error={:?}",
             run.root_pane,

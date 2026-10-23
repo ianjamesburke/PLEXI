@@ -80,6 +80,19 @@ pub struct SavedPane {
     pub agent_session: Option<SavedAgentSession>,
 }
 
+/// Queued structured result from a child agent pane waiting to be delivered
+/// to an interactive parent pane once the parent transitions to Idle.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct QueuedChildResult {
+    pub child_pane_id: u64,
+    pub child_agent: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub result_json: String,
+    pub finished_at_epoch_secs: u64,
+}
+
 /// Persisted agent session state for an agent terminal pane.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct SavedAgentSession {
@@ -105,6 +118,10 @@ pub struct SavedAgentSession {
     pub last_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_pane_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_child_results: Vec<QueuedChildResult>,
     #[serde(default)]
     pub ephemeral: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,6 +145,8 @@ pub struct AgentHistoryRecord {
     pub context_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_pane_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_name: Option<String>,
     pub harness: String,
@@ -842,6 +861,8 @@ mod tests {
                 last_blocked_reason: Some(AgentBlockedReason::PermissionPrompt),
                 last_detail: Some("Bash: git push".to_string()),
                 parent_pane_id: Some(1),
+                spawned_by: Some("agent:coordinator".to_string()),
+                pending_child_results: Vec::new(),
                 ephemeral: true,
                 tail_preview: Some("Waiting for permission...".to_string()),
                 standby_scrollback_tail: Some(vec!["Waiting for permission...".to_string()]),
@@ -902,6 +923,7 @@ mod tests {
             last_blocked_reason: None,
             last_detail: Some("Done".to_string()),
             parent_pane_id: Some(1),
+            spawned_by: Some("agent:coordinator".to_string()),
             ephemeral: true,
             closed_at: 100,
             summary: Some("Implemented feature".to_string()),
@@ -930,6 +952,7 @@ pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context
         fleet_dismissed: session.fleet_dismissed,
         run_id: format!("run-{}-{}", pane.id, session.fleet_since),
         pane_id: pane.id, context_id, context_name: context_name.into(), parent_pane_id: session.parent_pane_id,
+        spawned_by: session.spawned_by.clone(),
         pane_name: pane.name.clone(), harness: session.harness.clone(), config_name: session.config_name.clone(),
         session_id: session.session_id.clone(), cwd: pane.cwd.clone(), ephemeral: session.ephemeral,
         last_state: crate::protocol::AgentState::Completed, last_blocked_reason: None,

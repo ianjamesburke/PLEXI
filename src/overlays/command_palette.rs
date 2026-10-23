@@ -2580,6 +2580,82 @@ impl PlexiApp {
                 }
                 _ => 1,
             },
+            Some(Commands::Agent {
+                cmd:
+                    crate::cli::args::AgentCmd::Start {
+                        name: agent_name,
+                        message,
+                        prompt,
+                        cwd,
+                    },
+            }) => {
+                let eff_cwd = cwd
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| ws_root.map(std::path::Path::to_path_buf))
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                let task_str = message.or(prompt);
+                let Ok(mut payload) = crate::cli::agent::resolve_agent_start_in_stopping_at(
+                    &agent_name,
+                    &crate::config::config_dir(),
+                    &eff_cwd,
+                    task_str.as_deref(),
+                    default_pane_id.or_else(|| self.focused_pane_id()),
+                    &[],
+                ) else {
+                    return 1;
+                };
+                let resp_path = next_resp_path();
+                payload["response_file"] =
+                    serde_json::Value::String(resp_path.to_string_lossy().into_owned());
+                let Ok(req) = serde_json::from_value::<crate::protocol::AppRequest>(payload) else {
+                    return 1;
+                };
+                self.handle_pane_ipc_request(req);
+                0
+            }
+            Some(Commands::Agent {
+                cmd:
+                    crate::cli::args::AgentCmd::Spawn {
+                        name,
+                        task,
+                        subcontext,
+                        ephemeral,
+                        from,
+                        cwd,
+                    },
+            }) => {
+                let eff_cwd = cwd
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| ws_root.map(std::path::Path::to_path_buf))
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                let from_id = from
+                    .as_ref()
+                    .and_then(|t| self.resolve_host_pane_target(t))
+                    .or(default_pane_id)
+                    .or_else(|| self.focused_pane_id());
+                let Ok(mut payload) = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+                    &name,
+                    &crate::config::config_dir(),
+                    &eff_cwd,
+                    (!task.is_empty()).then_some(task.as_str()),
+                    subcontext.as_deref(),
+                    ephemeral.then_some(true),
+                    from_id,
+                    &[],
+                ) else {
+                    return 1;
+                };
+                let resp_path = next_resp_path();
+                payload["response_file"] =
+                    serde_json::Value::String(resp_path.to_string_lossy().into_owned());
+                let Ok(req) = serde_json::from_value::<crate::protocol::AppRequest>(payload) else {
+                    return 1;
+                };
+                self.handle_pane_ipc_request(req);
+                0
+            }
             Some(Commands::App {
                 cmd:
                     AppCmd::Open {

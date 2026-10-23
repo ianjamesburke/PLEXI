@@ -663,6 +663,16 @@ Spawn a configured agent worker pane, optionally into a created or reused child 
 | `task` | `string?` | no |
 | `worktree` | `string?` | no |
 
+### `agent_wait`
+
+Blocking pull wait for one or more child agent panes to finish via `plexi agent done` (`plexi agent wait <pane-id...>...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_ids` | `integer[]` | yes |
+| `response_file` | `string` | yes |
+| `timeout_secs` | `number` | no |
+
 ### `agent_done`
 
 Complete a worker agent's task, validating `--result` against `result_schema` (stint 0666), writing `completed` and `...

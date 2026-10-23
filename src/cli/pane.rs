@@ -778,6 +778,167 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
     }
 }
 
+/// Format a flat `list_panes` JSON array as a `pstree` / `ps --forest` parent-child session
+/// provenance tree (or nested JSON forest when `json == true`).
+pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
+    let known_ids: std::collections::HashSet<u64> = panes
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_u64()))
+        .collect();
+    let mut children_by_parent: std::collections::BTreeMap<u64, Vec<&serde_json::Value>> =
+        std::collections::BTreeMap::new();
+    let mut roots: Vec<&serde_json::Value> = Vec::new();
+    for p in panes {
+        let parent_id = p
+            .get("parent_pane_id")
+            .and_then(|v| v.as_u64())
+            .filter(|pid| known_ids.contains(pid));
+        if let Some(pid) = parent_id {
+            children_by_parent.entry(pid).or_default().push(p);
+        } else {
+            roots.push(p);
+        }
+    }
+
+    if json {
+        fn build_node(
+            pane: &serde_json::Value,
+            children_by_parent: &std::collections::BTreeMap<u64, Vec<&serde_json::Value>>,
+        ) -> serde_json::Value {
+            let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let kids = children_by_parent
+                .get(&id)
+                .map(|list| {
+                    list.iter()
+                        .map(|c| build_node(c, children_by_parent))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut obj = pane.clone();
+            if let Some(map) = obj.as_object_mut() {
+                map.insert("children".to_string(), serde_json::Value::Array(kids));
+            }
+            obj
+        }
+        let forest: Vec<serde_json::Value> = roots
+            .iter()
+            .map(|r| build_node(r, &children_by_parent))
+            .collect();
+        return serde_json::to_string_pretty(&forest).unwrap_or_else(|_| "[]".to_string());
+    }
+
+    fn format_node_line(pane: &serde_json::Value) -> String {
+        let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let name = pane
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pane");
+        let role = pane
+            .get("agent_role")
+            .and_then(|v| v.as_str())
+            .or_else(|| pane.get("agent").and_then(|v| v.as_str()));
+        let state = pane.get("agent_state").and_then(|v| v.as_str());
+        let spawned_by = pane
+            .get("spawned_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("human");
+        let waiting = pane
+            .get("pending_child_results_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let role_part = match (role, state) {
+            (Some(r), Some(s)) => format!("agent:{r} [{s}] "),
+            (Some(r), None) => format!("agent:{r} "),
+            (None, Some(s)) => format!("[{s}] "),
+            (None, None) => String::new(),
+        };
+        let waiting_part = if waiting == 1 {
+            " · 1 result waiting".to_string()
+        } else if waiting > 1 {
+            format!(" · {waiting} results waiting")
+        } else {
+            String::new()
+        };
+        format!("#{id} {role_part}\"{name}\" (spawned by {spawned_by}){waiting_part}")
+    }
+
+    fn walk(
+        pane: &serde_json::Value,
+        prefix: &str,
+        branch: &str,
+        children_by_parent: &std::collections::BTreeMap<u64, Vec<&serde_json::Value>>,
+        lines: &mut Vec<String>,
+    ) {
+        let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        lines.push(format!("{prefix}{branch}{}", format_node_line(pane)));
+        if let Some(kids) = children_by_parent.get(&id) {
+            let child_prefix = if branch.is_empty() {
+                String::new()
+            } else if branch == "├── " {
+                format!("{prefix}│   ")
+            } else {
+                format!("{prefix}    ")
+            };
+            for (idx, child) in kids.iter().enumerate() {
+                let is_last = idx + 1 == kids.len();
+                let child_branch = if is_last { "└── " } else { "├── " };
+                walk(child, &child_prefix, child_branch, children_by_parent, lines);
+            }
+        }
+    }
+
+    let mut lines = Vec::new();
+    for root in roots {
+        walk(root, "", "", &children_by_parent, &mut lines);
+    }
+    lines.join("\n")
+}
+
+/// `plexi pane tree [--context [ID]] [--json]`
+pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
+    let context_id: Option<u64> = if current {
+        let raw = match std::env::var("PLEXI_CONTEXT_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane"
+                );
+                return 1;
+            }
+        };
+        match raw.parse::<u64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                eprintln!("error: PLEXI_CONTEXT_ID is not a valid number: {raw}");
+                return 1;
+            }
+        }
+    } else {
+        context
+    };
+
+    let mut payload = serde_json::json!({
+        "type": "list_panes",
+    });
+    if let Some(cid) = context_id {
+        payload["context_id"] = serde_json::json!(cid);
+    }
+
+    let content = match super::request(payload, "pane-tree-response", "pane tree") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let panes: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: invalid pane list response: {e}");
+            return 1;
+        }
+    };
+    println!("{}", format_pane_tree(&panes, json));
+    0
+}
+
 /// `plexi pane self`
 ///
 /// Prints the current pane ID (just the number) to stdout. Reads PLEXI_PANE_ID.

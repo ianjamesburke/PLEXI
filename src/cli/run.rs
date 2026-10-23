@@ -469,6 +469,17 @@ pub fn dispatch_cli_step(
                 };
                 crate::cli::pane_list_cli(context_id, current)
             }
+            PaneCmd::Tree { context } => {
+                let (context_id, current) = match context.as_deref() {
+                    None => (None, false),
+                    Some("current") => (None, true),
+                    Some(s) => match crate::cli::ContextTarget::from(s.to_string()).resolve() {
+                        Ok(id) => (Some(id), false),
+                        Err(code) => return code,
+                    },
+                };
+                crate::cli::pane_tree_cli(context_id, current, parsed.json)
+            }
             PaneCmd::Name { first, second } => {
                 let (pane_id, name) = match second {
                     Some(title) => match crate::cli::PaneTarget::from(first).resolve() {
