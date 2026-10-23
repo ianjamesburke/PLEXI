@@ -132,10 +132,6 @@ pub(crate) fn load(profile: &Path) -> LoadedQueue {
     if is_symlink(&journal) || is_symlink(&legacy_path) || is_symlink(&host_private_dir(profile)) {
         return LoadedQueue::Untrusted("host queue path is a symlink".to_string());
     }
-    let host_key = match super::seal::existing_mac_key(profile) {
-        Ok(key) => key,
-        Err(error) => return LoadedQueue::Untrusted(error),
-    };
     let tip = match read_tip(profile) {
         Ok(tip) => tip,
         Err(error) => return LoadedQueue::Untrusted(error),
@@ -149,6 +145,9 @@ pub(crate) fn load(profile: &Path) -> LoadedQueue {
     };
     if !journal_is_file(&journal) {
         if tip_is_set(&tip) {
+            if let Err(error) = super::seal::existing_mac_key(profile) {
+                return LoadedQueue::Untrusted(error);
+            }
             let _ = discard_legacy_key(profile);
             return missing_journal();
         }
@@ -164,6 +163,10 @@ pub(crate) fn load(profile: &Path) -> LoadedQueue {
         }
         return LoadedQueue::Empty;
     }
+    let host_key = match super::seal::existing_mac_key(profile) {
+        Ok(key) => key,
+        Err(error) => return LoadedQueue::Untrusted(error),
+    };
     let raw = match fs::read(&journal) {
         Ok(raw) => raw,
         Err(error) => {
