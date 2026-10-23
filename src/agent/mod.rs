@@ -1168,6 +1168,7 @@ impl AgentHost {
                 workspace_root: self.workspace_root.clone(),
                 context_id: self.context_id,
                 trust_origin: "host".to_string(),
+                posture: Some(agent.def.posture.clone()),
             },
             std::sync::Arc::clone(&self.monitor),
         );

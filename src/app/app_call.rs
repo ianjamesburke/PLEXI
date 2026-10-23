@@ -645,6 +645,7 @@ impl PlexiApp {
         );
         scope.actor_type = verified.actor_type;
         scope.actor_scope = verified.actor_scope;
+        scope.posture = verified.pane_id.and_then(|pid| self.pane_permission_posture(pid));
         let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,
             std::sync::Arc::clone(&monitor),

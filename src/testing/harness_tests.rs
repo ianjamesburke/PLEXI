@@ -1498,6 +1498,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
         text: "/settings".to_string(),
         submit: false,
         response_file: Some(response_file.clone()),
+        peer_ancestry: None,
     });
     assert_eq!(
         h.app.pending_pane_inputs.get(&pane_id).map_or(0, Vec::len),
@@ -5572,6 +5573,7 @@ fn editor_gate_harness_matrix() {
                         text,
                         submit: false,
                         response_file: Some(response.clone()),
+                        peer_ancestry: None,
                     }),
                     GateHostInput::Key(key) => h.inject_ipc(AppRequest::KeyPane {
                         pane_id,
@@ -5683,6 +5685,7 @@ fn editor_gate_host_surfaces() {
         text: "!".to_string(),
         submit: false,
         response_file: Some(response.clone()),
+        peer_ancestry: None,
     });
     h.run_frames(2);
     assert_eq!(read_json_response(&response)["ok"], true);
@@ -5765,6 +5768,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
         text: "unsaveable".to_string(),
         submit: false,
         response_file: Some(response.clone()),
+        peer_ancestry: None,
     });
     h.run_frames(2);
     assert_eq!(read_json_response(&response)["ok"], true);
@@ -6302,6 +6306,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         text: "hello".to_string(),
         submit: false,
         response_file: Some(text_response.clone()),
+        peer_ancestry: None,
     });
     h.hidden_frame();
     h.run_frames(4);
@@ -7544,6 +7549,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
         text: "QQ".to_string(),
         submit: false,
         response_file: None,
+        peer_ancestry: None,
     });
     run_blurred_frames(&mut h, 2);
     let enter_response = temp_response(tmp.path(), "rename-enter");
@@ -7617,6 +7623,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
         text: "for-b-only".to_string(),
         submit: false,
         response_file: Some(response_file.clone()),
+        peer_ancestry: None,
     });
     h.run_frames(4);
 
@@ -8991,6 +8998,7 @@ mod pane_send_submit_tests {
             text: text.to_string(),
             submit: true,
             response_file,
+            peer_ancestry: None,
         });
     }
 
@@ -9001,6 +9009,7 @@ mod pane_send_submit_tests {
             text: text.to_string(),
             submit: false,
             response_file,
+            peer_ancestry: None,
         });
     }
 
@@ -11695,6 +11704,7 @@ mod agent_state_restoration_tests {
             submit: false,
             paste: false,
             response_file: Some(send_resp),
+            peer_ancestry: None,
         });
         h.hidden_frame();
 
@@ -12114,6 +12124,7 @@ mod agent_state_restoration_tests {
                 submit: false,
                 paste: false,
                 response_file: Some(send_resp),
+                peer_ancestry: None,
             });
             h.hidden_frame();
 

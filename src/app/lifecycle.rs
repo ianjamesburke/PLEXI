@@ -2112,6 +2112,7 @@ impl PlexiApp {
                 submit,
                 paste,
                 response_file,
+                peer_ancestry,
             } => {
                 log::info!(
                     "pane_ipc: kind=send_to_pane pane_id={pane_id} len={} submit={submit} windows={} response_file={response_file:?}",
@@ -2137,7 +2138,37 @@ impl PlexiApp {
                         }
                     })
                 });
-                let result = match pane_kind {
+                let admission = peer_ancestry.as_deref().and_then(|ancestry| {
+                    self.resolve_socket_peer_pane(ancestry).map(|(caller, _, _)| caller)
+                }).and_then(|caller| {
+                    self.pane_permission_posture(caller).map(|posture| (caller, posture))
+                }).map(|(caller, posture)| {
+                    let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                        &crate::config::config_dir(),
+                    );
+                    let root = self.pane_context_authority_root(caller)
+                        .unwrap_or_else(crate::config::config_dir);
+                    let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste}).to_string();
+                    let actor = format!("pane:{caller}");
+                    monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
+                        call_id: "pane-send",
+                        tool: "pane.send",
+                        input_json: &input,
+                        actor_type: crate::broker::ActorType::Agent,
+                        actor_id: &actor,
+                        actor_scope: crate::broker::ActorScope::Workspace,
+                        trust_origin: "host",
+                        workspace_root: &root,
+                        package_id: "",
+                        instance_id: 0,
+                        context_id: self.windows.iter().find(|window| window.panes.contains_key(&caller)).map(|window| window.context_id).unwrap_or_default(),
+                        target_type: crate::broker::TargetType::Capability,
+                    }, Some(&posture))
+                });
+                let result = match admission {
+                    Some(crate::broker::gate::Admission::Denied { .. }) => Err("permission_denied: pane send denied by agent posture".to_string()),
+                    Some(crate::broker::gate::Admission::Required { .. }) => Err("permission_denied: pane send requires approval".to_string()),
+                    _ => match pane_kind {
                     None => {
                         log::warn!(
                             "pane_ipc: send_to_pane: pane_id={pane_id} not found in any window"
@@ -2216,6 +2247,7 @@ impl PlexiApp {
                         }
                     }
                     Some(_) => Err(format!("pane {pane_id} does not accept text input")),
+                },
                 };
                 if let Some(rf) = response_file.as_ref().filter(|_| !deferred) {
                     let json = match result {

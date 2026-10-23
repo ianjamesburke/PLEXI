@@ -970,6 +970,7 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         "text": text,
         "submit": submit,
         "paste": paste,
+        "peer_ancestry": [],
     });
     if submit {
         // The host settles, presses Enter and confirms before answering, all
@@ -2364,4 +2365,3 @@ mod pane_result_tests {
         handle.join().expect("listener thread");
     }
 }
-

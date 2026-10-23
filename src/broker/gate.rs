@@ -912,6 +912,16 @@ impl PermissionMonitor {
     }
 
     pub fn admit(&self, req: AdmitRequest<'_>) -> Admission {
+        self.admit_with_posture(req, None)
+    }
+
+    /// Admit a request with the immutable posture captured when its agent pane
+    /// was spawned. The caller supplies no posture for human and app requests.
+    pub fn admit_with_posture(
+        &self,
+        req: AdmitRequest<'_>,
+        posture: Option<&crate::broker::PermissionPosture>,
+    ) -> Admission {
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
             log::info!(
                 "permission_monitor: deny invalid arguments tool={} call_id={}",
@@ -949,7 +959,7 @@ impl PermissionMonitor {
         let request = PermissionRequest::exact(&binding);
         self.expire_soft_grants();
         let now = self.now_secs();
-        let decision = self.store().evaluate_at(&request, None, now);
+        let decision = self.store().evaluate_at(&request, posture, now);
         log::info!(
             "permission_monitor: admit actor={} tool={} resource={:?} call_id={} -> {}",
             binding.actor_id,

@@ -722,6 +722,9 @@ pub struct TerminalPane {
     pub agent_session_id: Option<String>,
     /// Optional agent role config name (`.plexi/agents/<name>.toml`).
     pub agent_role: Option<String>,
+    /// Permission posture copied from the agent definition at spawn. Editing
+    /// settings.toml cannot widen a live worker's authority.
+    pub agent_permission_posture: Option<crate::broker::PermissionPosture>,
     /// Latest blocked reason reported by hook or `plexi agent ask`.
     pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
     /// Cached tail preview preserved across Standby / Interrupted restore.
@@ -824,6 +827,7 @@ impl TerminalPane {
             agent_harness,
             agent_session_id: None,
             agent_role,
+            agent_permission_posture: None,
             last_blocked_reason: None,
             tail_preview: None,
             agent_completed: false,

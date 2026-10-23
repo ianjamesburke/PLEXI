@@ -42,6 +42,8 @@ Keep each wait below your tool harness call limit. Exit 0 prints the result;
 exit 2 means the slice expired, so report progress and repeat the same wait.
 Inspect errors on exit 1. A timeout does not call for a replacement worker.
 
+`settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `app call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
+
 For an interactive agent without a registry role, use the host-confirmed
 launch and submit sequence:
 

@@ -70,12 +70,13 @@ impl PlexiApp {
         let actor = format!("pane:{pane}");
         let call = format!("secret-list-{}", uuid::Uuid::new_v4());
         let input = serde_json::json!({"path": root}).to_string();
-        match monitor.admit(AdmitRequest {
+        let posture = self.pane_permission_posture(pane);
+        match monitor.admit_with_posture(AdmitRequest {
             call_id: &call, tool: "secret.list", input_json: &input,
             actor_type: ActorType::Agent, actor_id: &actor, actor_scope: ActorScope::User,
             trust_origin: "plexi-cli", workspace_root: &root, context_id: ctx.context_id,
             package_id: "", instance_id: 0, target_type: TargetType::Secret,
-        }) {
+        }, posture.as_ref()) {
             Admission::Proceed { grant_id, fingerprint, resource_id, .. } => {
                 let resource = resource_id.unwrap_or_default();
                 monitor.note_use(&actor, &call, &grant_id, &fingerprint, &resource, "")?;
@@ -165,18 +166,20 @@ impl PlexiApp {
         );
         // Keychain authentication can wait for a human. Keep servicing the
         // host while the exact admitted request finishes; no re-admission loop.
+        let posture = self.pane_permission_posture(pane_id);
         let name = name.to_string();
         let profile = crate::config::config_dir();
         let failure_path = reply_path.clone();
         let repaint = self.ctx.clone();
         let read = move || {
-            let result = crate::workspace::secrets::read_pane_secret(
+            let result = crate::workspace::secrets::read_pane_secret_with_posture(
                 &monitor,
                 crate::workspace::secrets::system_store(),
                 &actor,
                 &name,
                 &scope,
                 &profile,
+                posture.as_ref(),
             );
             let (body, holds_value) = match result {
                 Ok(ReadResult::Value(value)) => (
@@ -310,6 +313,280 @@ mod list_tests {
         let allowed = request(&mut h, &context, pid, &[pid]);
         assert!(allowed["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
         assert_eq!(request(&mut h, &context, pid, &[pid])["error_code"], "permission_denied");
+        secrets::system_store().delete(&account).unwrap();
+    }
+
+    fn write_agent_role(workspace: &std::path::Path, role: &str, permissions_toml: &str) {
+        let dir = workspace.join(".plexi/agents").join(role);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENT.md"), format!("You are {role}.")).unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            format!(
+                "[agent]\nid = \"{role}\"\ndisplay_name = \"{role}\"\n\n[harness]\ncli = \"pi\"\n\n{permissions_toml}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn secret_get_request(h: &mut HostHarness, name: &str, peer: &[u32]) -> serde_json::Value {
+        let response_file = crate::config::config_dir()
+            .join("rpc")
+            .join(format!("secret-get-{}.json", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(response_file.parent().unwrap()).unwrap();
+        let request = crate::protocol::AppRequest::PaneSecretGet {
+            name: name.into(),
+            global: false,
+            workspace_root: Some(h.workspace_root()),
+            peer_ancestry: vec![],
+            response_file: response_file.display().to_string(),
+        };
+        let line = serde_json::to_string(&request).unwrap();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut Vec::new());
+        h.hidden_frame();
+        serde_json::from_str(&std::fs::read_to_string(response_file).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn worker_posture_deny_and_ask_apply_to_secret_get_and_pane_send_and_resist_mid_run_edits() {
+        let mut h = HostHarness::new();
+        let target_pane = h.add_focused_terminal();
+        let ws = h.workspace_root();
+        let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
+        let account = secrets::keychain_workspace_name(&cfg.id, "FOO");
+        secrets::system_store().set(&account, "top-secret").unwrap();
+
+        write_agent_role(
+            &ws,
+            "researcher-deny",
+            "[permissions]\ndefault_posture = \"ask\"\ndeny = [\"secret.get\", \"pane.send\"]",
+        );
+        write_agent_role(
+            &ws,
+            "researcher-ask",
+            "[permissions]\ndefault_posture = \"ask\"\nask = [\"secret.get\"]",
+        );
+
+        let (denied_pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "researcher-deny",
+                "pi",
+                "sleep 30",
+                "Check deny",
+                None,
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let denied_pid = h.terminal_backend(denied_pane).child_pid();
+
+        // Editing settings.toml after spawn must not widen the live worker's snapshotted posture.
+        write_agent_role(
+            &ws,
+            "researcher-deny",
+            "[permissions]\ndefault_posture = \"allow\"\nallow = [\"secret.get\", \"pane.send\"]",
+        );
+
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let reply = secret_get_request(&mut h, "FOO", &[denied_pid]);
+        assert_eq!(reply["status"], "denied", "{reply}");
+        assert!(
+            monitor.list_pending().is_empty(),
+            "posture deny must not file an approval banner"
+        );
+        assert!(
+            monitor.audit_records().iter().any(|row| {
+                row.kind == "deny"
+                    && row.actor == format!("pane:{denied_pane}")
+                    && row.decision == "deny"
+            }),
+            "posture deny must record a denial audit row"
+        );
+
+        // `pane send` from a denied worker is refused before reaching the target pane.
+        let send_resp = crate::rpc::response_file("pane-send-denied", "json");
+        let send_req = crate::protocol::AppRequest::SendToPane {
+            pane_id: target_pane,
+            text: "echo hi".into(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp.clone()),
+            peer_ancestry: None,
+        };
+        let send_line = serde_json::to_string(&send_req).unwrap();
+        crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[denied_pid]), &mut Vec::new());
+        h.hidden_frame();
+        let send_reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(send_resp).unwrap()).unwrap();
+        assert!(
+            send_reply["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("permission_denied")),
+            "{send_reply}"
+        );
+
+        // `ask` posture shows one banner.
+        let (ask_pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "researcher-ask",
+                "pi",
+                "sleep 30",
+                "Check ask",
+                None,
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let ask_pid = h.terminal_backend(ask_pane).child_pid();
+        let ask_reply = secret_get_request(&mut h, "FOO", &[ask_pid]);
+        assert_eq!(ask_reply["status"], "permission_required", "{ask_reply}");
+        assert_eq!(monitor.list_pending().len(), 1);
+
+        secrets::system_store().delete(&account).unwrap();
+    }
+
+    #[test]
+    fn child_worker_inherits_parent_posture_restrictions_and_subcontext_reuse_keeps_grants_distinct() {
+        let mut h = HostHarness::new();
+        let ws = h.workspace_root();
+        let pane_pid = |h: &HostHarness, pane_id: u64| {
+            h.app
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(&pane_id))
+                .and_then(|p| p.as_terminal())
+                .expect("terminal pane")
+                .backend
+                .child_pid()
+        };
+        let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
+        let account = secrets::keychain_workspace_name(&cfg.id, "BAR");
+        secrets::system_store().set(&account, "bar-secret").unwrap();
+
+        write_agent_role(
+            &ws,
+            "parent-restricted",
+            "[permissions]\ndefault_posture = \"ask\"\ndeny = [\"secret.get\"]",
+        );
+        write_agent_role(
+            &ws,
+            "child-permissive",
+            "[permissions]\ndefault_posture = \"allow\"\nallow = [\"secret.get\"]",
+        );
+        write_agent_role(
+            &ws,
+            "peer-ask",
+            "[permissions]\ndefault_posture = \"ask\"",
+        );
+
+        let (parent_pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "parent-restricted",
+                "pi",
+                "sleep 30",
+                "Parent",
+                None,
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        // Child's definition allows secret.get, but parent denies it: intersection at spawn must deny.
+        let (child_pane, child_ctx) = h
+            .app
+            .spawn_agent_worker_pane(
+                "child-permissive",
+                "pi",
+                "sleep 30",
+                "Child",
+                Some("shared-squad"),
+                true,
+                Some(parent_pane),
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let child_pid = pane_pid(&h, child_pane);
+        let child_reply = secret_get_request(&mut h, "BAR", &[child_pid]);
+        assert_eq!(child_reply["status"], "denied", "{child_reply}");
+
+        // Two independent workers joining the same named sub-context keep distinct postures and grants.
+        let (peer_a, ctx_a) = h
+            .app
+            .spawn_agent_worker_pane(
+                "peer-ask",
+                "pi",
+                "sleep 30",
+                "Peer A",
+                Some("shared-squad"),
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let (peer_b, ctx_b) = h
+            .app
+            .spawn_agent_worker_pane(
+                "peer-ask",
+                "pi",
+                "sleep 30",
+                "Peer B",
+                Some("shared-squad"),
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ctx_a, child_ctx);
+        assert_eq!(ctx_a, ctx_b);
+
+        let pid_a = pane_pid(&h, peer_a);
+        let pid_b = pane_pid(&h, peer_b);
+        let req_a = secret_get_request(&mut h, "BAR", &[pid_a]);
+        assert_eq!(req_a["status"], "permission_required", "{req_a}");
+        let pending_id = req_a["pending_request_id"].as_str().unwrap();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Always)
+            .unwrap();
+
+        let ok_a = secret_get_request(&mut h, "BAR", &[pid_a]);
+        assert_eq!(ok_a["status"], "value", "{ok_a}");
+
+        // Peer B in the same sub-context must NOT inherit Peer A's grant.
+        let req_b = secret_get_request(&mut h, "BAR", &[pid_b]);
+        assert_eq!(req_b["status"], "permission_required", "{req_b}");
+
         secrets::system_store().delete(&account).unwrap();
     }
 }

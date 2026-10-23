@@ -752,7 +752,8 @@ pub(crate) fn handle_socket_line_in(
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
                 crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::PaneMessageSend { peer_ancestry: p, .. } => {
+                | crate::protocol::AppRequest::PaneMessageSend { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::SendToPane { peer_ancestry: p, .. } => {
                     // Same rule as CallAppTool: the wire value is never the
                     // caller's identity. None when this process has no peer
                     // capture (tests that enqueue the request directly).
@@ -2095,6 +2096,19 @@ impl PlexiApp {
             .and_then(|win| win.panes.get(&pane_id))
             .and_then(|pane| pane.as_terminal())
             .is_some_and(|term| term.is_human_owned())
+    }
+
+    /// The posture belongs to the pane, not the mutable agent registry. It is
+    /// therefore safe to use at admission time after the worker has changed
+    /// directory or its settings.toml has been edited.
+    pub(crate) fn pane_permission_posture(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<crate::broker::PermissionPosture> {
+        self.find_pane_in_any_window(pane_id)
+            .and_then(|(window, _)| self.windows[window].panes.get(&pane_id))
+            .and_then(|pane| pane.as_terminal())
+            .and_then(|pane| pane.agent_permission_posture.clone())
     }
 
     /// Canonical context root that bounds a pane's authority.

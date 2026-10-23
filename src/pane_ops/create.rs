@@ -1719,6 +1719,28 @@ impl PlexiApp {
         pane.parent_pane_id = parent_pane_id;
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
+        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(
+            &effective_cwd_for_schema,
+        );
+        pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(
+            role,
+            &crate::config::config_dir(),
+            lookup_root.as_deref(),
+        )
+        .map(|(definition, _)| {
+            let child = definition.posture;
+            parent_pane_id
+                .and_then(|parent| self.pane_permission_posture(parent))
+                .map(|parent| child.clone().restricted_by(&parent))
+                .unwrap_or(child)
+        })
+        .map_err(|error| {
+            log::info!(
+                "agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}"
+            );
+            error
+        })
+        .ok();
         pane.name = Some(role.to_string());
         pane.name_locked = true;
         pane.agent = Some(crate::protocol::PaneAgentState {

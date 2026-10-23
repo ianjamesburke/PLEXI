@@ -649,6 +649,30 @@ struct PostureTable {
 }
 
 impl PermissionPosture {
+    /// Combine a worker's requested posture with its parent's immutable
+    /// posture. Postures only ever restrict: an inherited deny or ask cannot
+    /// be relaxed by a child definition.
+    pub fn restricted_by(mut self, parent: &Self) -> Self {
+        for (child, inherited) in [(&mut self.deny, &parent.deny), (&mut self.ask, &parent.ask)] {
+            for rule in inherited {
+                if !child.contains(rule) {
+                    child.push(rule.clone());
+                }
+            }
+        }
+        // `allow` < `ask` < `deny`: inheriting a parent must never turn an
+        // approval requirement (or denial) into a less restrictive default.
+        let restrictiveness = |decision| match decision {
+            Decision::Allow => 0,
+            Decision::Ask => 1,
+            Decision::Deny => 2,
+        };
+        if restrictiveness(parent.default_posture) > restrictiveness(self.default_posture) {
+            self.default_posture = parent.default_posture;
+        }
+        self
+    }
+
     /// Load the user-level posture from `<config_dir>/config.toml`.
     /// Returns `None` when the file or its `[permissions]` table is absent
     /// (the posture is optional). A present-but-invalid table is logged
@@ -1377,6 +1401,45 @@ mod tests {
             Decision::Ask,
             "an Allow default is not authorization"
         );
+    }
+
+    #[test]
+    fn child_posture_cannot_relax_parent_restrictions() {
+        let parent = PermissionPosture {
+            default_posture: Decision::Deny,
+            allow: vec![],
+            ask: vec!["pane.send".into()],
+            deny: vec!["secret.get".into()],
+        };
+        let child = PermissionPosture {
+            default_posture: Decision::Allow,
+            allow: vec!["secret.get".into()],
+            ask: vec![],
+            deny: vec![],
+        }
+        .restricted_by(&parent);
+        assert_eq!(child.default_posture, Decision::Deny);
+        assert!(child.deny.contains(&"secret.get".to_string()));
+        assert!(child.ask.contains(&"pane.send".to_string()));
+    }
+
+    #[test]
+    fn child_posture_inherits_a_parents_default_ask() {
+        let parent = PermissionPosture {
+            default_posture: Decision::Ask,
+            allow: vec![],
+            ask: vec![],
+            deny: vec![],
+        };
+        let child = PermissionPosture {
+            default_posture: Decision::Allow,
+            allow: vec![],
+            ask: vec![],
+            deny: vec![],
+        }
+        .restricted_by(&parent);
+
+        assert_eq!(child.default_posture, Decision::Ask);
     }
 
     #[test]

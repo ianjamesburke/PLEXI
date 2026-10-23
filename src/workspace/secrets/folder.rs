@@ -277,23 +277,41 @@ pub(super) fn admitted_read(
     label: &str,
     fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
 ) -> Result<ReadResult, String> {
+    admitted_read_with_posture(monitor, actor, tool, input, workspace_root, label, None, fetch)
+}
+
+/// As [`admitted_read`], using a posture snapshotted at agent spawn.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn admitted_read_with_posture(
+    monitor: &PermissionMonitor,
+    actor: &SecretActor,
+    tool: &str,
+    input: &str,
+    workspace_root: &Path,
+    label: &str,
+    posture: Option<&crate::broker::PermissionPosture>,
+    fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
+) -> Result<ReadResult, String> {
     static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let admission_guard = ADMISSION.lock().unwrap_or_else(|error| error.into_inner());
     let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
-    let admission = monitor.admit(AdmitRequest {
-        call_id: &call_id,
-        tool,
-        input_json: input,
-        actor_type: actor.kind,
-        actor_id: &actor.id,
-        actor_scope: ActorScope::User,
-        trust_origin: TRUST_ORIGIN,
-        workspace_root,
-        context_id: 0,
-        package_id: "",
-        instance_id: 0,
-        target_type: TargetType::Secret,
-    });
+    let admission = monitor.admit_with_posture(
+        AdmitRequest {
+            call_id: &call_id,
+            tool,
+            input_json: input,
+            actor_type: actor.kind,
+            actor_id: &actor.id,
+            actor_scope: ActorScope::User,
+            trust_origin: TRUST_ORIGIN,
+            workspace_root,
+            context_id: 0,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::Secret,
+        },
+        posture,
+    );
     Ok(match admission {
         Admission::Required { pending_request_id } => {
             log::info!(
