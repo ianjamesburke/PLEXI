@@ -297,48 +297,107 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
         }
         if !assume_yes && !keep_data && !delete_data {
             eprint!("Delete this channel's saved data and integrity credentials too? [y/N]: ");
-            io::stderr().flush().map_err(|e| format!("write data choice: {e}"))?;
+            io::stderr()
+                .flush()
+                .map_err(|e| format!("write data choice: {e}"))?;
             let mut answer = String::new();
-            io::stdin().read_line(&mut answer).map_err(|e| format!("read data choice: {e}"))?;
+            io::stdin()
+                .read_line(&mut answer)
+                .map_err(|e| format!("read data choice: {e}"))?;
             delete_data = matches!(answer.trim(), "y" | "Y" | "yes");
         }
-        println!("Remove Plexi channel {} from {}. User data will be {}.", receipt.channel, receipt.root.display(), if delete_data { "permanently deleted" } else { "retained" });
+        println!(
+            "Remove Plexi channel {} from {}. User data will be {}.",
+            receipt.channel,
+            receipt.root.display(),
+            if delete_data {
+                "permanently deleted"
+            } else {
+                "retained"
+            }
+        );
         if !assume_yes {
             eprint!("Continue? [y/N]: ");
-            io::stderr().flush().map_err(|e| format!("write confirmation: {e}"))?;
+            io::stderr()
+                .flush()
+                .map_err(|e| format!("write confirmation: {e}"))?;
             let mut answer = String::new();
-            io::stdin().read_line(&mut answer).map_err(|e| format!("read confirmation: {e}"))?;
-            if !matches!(answer.trim(), "y" | "Y" | "yes") { return Err("Uninstall cancelled.".into()); }
+            io::stdin()
+                .read_line(&mut answer)
+                .map_err(|e| format!("read confirmation: {e}"))?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                return Err("Uninstall cancelled.".into());
+            }
         }
         super::host::stop_for_uninstall()?;
         remove_then_delete_data(&crate::config::config_dir(), delete_data, || {
-        #[cfg(not(windows))]
-        plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
-        #[cfg(windows)]
-        {
-            let helper = std::env::temp_dir().join(format!("plexi-uninstall-{}.exe", uuid::Uuid::new_v4()));
-            std::fs::copy(receipt.active.path.join("plexi-installer.exe"), &helper).map_err(|e| format!("stage removal helper: {e}"))?;
-            let log = std::fs::File::create(receipt.root.join("uninstall.log")).map_err(|e| format!("create uninstall log: {e}"))?;
-            let stderr = log.try_clone().map_err(|e| format!("clone uninstall log: {e}"))?;
-            std::process::Command::new(helper).arg("remove").arg("--receipt").arg(&receipt.root).arg("--wait-pid").arg(std::process::id().to_string())
-                .stdin(std::process::Stdio::null()).stdout(log).stderr(stderr).spawn().map_err(|e| format!("schedule uninstall: {e}"))?;
-            println!("Removal will finish after this command exits; details: {}", receipt.root.join("uninstall.log").display());
-        }
-        Ok(())
+            #[cfg(not(windows))]
+            plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
+            #[cfg(windows)]
+            {
+                let helper = std::env::temp_dir()
+                    .join(format!("plexi-uninstall-{}.exe", uuid::Uuid::new_v4()));
+                std::fs::copy(receipt.active.path.join("plexi-installer.exe"), &helper)
+                    .map_err(|e| format!("stage removal helper: {e}"))?;
+                let log = std::fs::File::create(receipt.root.join("uninstall.log"))
+                    .map_err(|e| format!("create uninstall log: {e}"))?;
+                let stderr = log
+                    .try_clone()
+                    .map_err(|e| format!("clone uninstall log: {e}"))?;
+                std::process::Command::new(helper)
+                    .arg("remove")
+                    .arg("--receipt")
+                    .arg(&receipt.root)
+                    .arg("--wait-pid")
+                    .arg(std::process::id().to_string())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(log)
+                    .stderr(stderr)
+                    .spawn()
+                    .map_err(|e| format!("schedule uninstall: {e}"))?;
+                println!(
+                    "Removal will finish after this command exits; details: {}",
+                    receipt.root.join("uninstall.log").display()
+                );
+            }
+            Ok(())
         })?;
-        log::info!("uninstall: managed removal requested for {}", receipt.channel);
+        log::info!(
+            "uninstall: managed removal requested for {}",
+            receipt.channel
+        );
         Ok(())
     })();
-    match result { Ok(()) => { println!("User data {}.", if delete_data { "deleted" } else { "retained" }); 0 }, Err(error) => { log::error!("uninstall: {error}"); eprintln!("error: {error}"); 1 } }
+    match result {
+        Ok(()) => {
+            println!(
+                "User data {}.",
+                if delete_data { "deleted" } else { "retained" }
+            );
+            0
+        }
+        Err(error) => {
+            log::error!("uninstall: {error}");
+            eprintln!("error: {error}");
+            1
+        }
+    }
 }
 
 /// Runs the uninstall step, then deletes channel data only if it succeeded, so
 /// a failed uninstall never leaves an install with its data already gone.
-fn remove_then_delete_data(profile: &Path, delete_data: bool, uninstall: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+fn remove_then_delete_data(
+    profile: &Path,
+    delete_data: bool,
+    uninstall: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     uninstall()?;
     if delete_data {
         remove_channel_data(profile)?;
-        log::info!("uninstall: channel data removed after uninstall step succeeded: {}", profile.display());
+        log::info!(
+            "uninstall: channel data removed after uninstall step succeeded: {}",
+            profile.display()
+        );
     }
     Ok(())
 }
@@ -349,7 +408,10 @@ fn remove_channel_data(profile: &Path) -> Result<(), String> {
     for path in [profile.to_path_buf(), profile.join("host")] {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                return Err(format!("refusing data removal through non-directory {}", path.display()));
+                return Err(format!(
+                    "refusing data removal through non-directory {}",
+                    path.display()
+                ));
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -540,7 +602,8 @@ fn run_self_update() -> Result<String, String> {
     );
 
     let current_version_raw = crate::distribution::installed()?
-        .map(|receipt| receipt.active.tag).unwrap_or_else(crate::distribution::build_tag);
+        .map(|receipt| receipt.active.tag)
+        .unwrap_or_else(crate::distribution::build_tag);
     println!("Checking for updates...");
     println!("Current: {current_version_raw}");
 
@@ -580,11 +643,23 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
     let current = crate::distribution::installed()?;
     let expected_build = current.as_ref().map(|r| r.active.build_id.clone());
     let temp = tempfile::tempdir().map_err(|e| format!("stage update: {e}"))?;
-    let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(15)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .build();
     let platform = release::platform().map_err(|e| e.to_string())?;
-    release::download_package(&agent, release::DOWNLOAD_URL, tag_name, &platform, channel, temp.path()).map_err(|e| e.to_string())?;
+    release::download_package(
+        &agent,
+        release::DOWNLOAD_URL,
+        tag_name,
+        &platform,
+        channel,
+        temp.path(),
+    )
+    .map_err(|e| e.to_string())?;
     let package = Package::load(&temp.path().join("package")).map_err(|e| e.to_string())?;
-    if package.manifest.tag != tag_name { return Err("downloaded package tag differs from requested update".into()); }
+    if package.manifest.tag != tag_name {
+        return Err("downloaded package tag differs from requested update".into());
+    }
     let options = match current {
         Some(r) => transaction::InstallOptions {
             modify_path: !r.path_edits.is_empty(),
@@ -598,18 +673,28 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
     let receipt = match expected_build {
         Some(expected) => transaction::update(&package, options, &expected),
         None => transaction::install(&package, options),
-    }.map_err(|e| e.to_string())?;
-    log::info!("update: verified installed build={} tag={}", receipt.active.build_id, receipt.active.tag);
+    }
+    .map_err(|e| e.to_string())?;
+    log::info!(
+        "update: verified installed build={} tag={}",
+        receipt.active.build_id,
+        receipt.active.tag
+    );
     Ok(())
 }
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.
 pub fn self_update_cli(rollback: bool) -> i32 {
     let result = if rollback {
-        crate::distribution::installed().and_then(|r| r.ok_or_else(|| "no managed installation".to_string()))
-            .and_then(|r| plexi_distribution::transaction::rollback(&r.root).map_err(|e| e.to_string()))
+        crate::distribution::installed()
+            .and_then(|r| r.ok_or_else(|| "no managed installation".to_string()))
+            .and_then(|r| {
+                plexi_distribution::transaction::rollback(&r.root).map_err(|e| e.to_string())
+            })
             .map(|r| format!("Restored {}. Restart Plexi to apply.", r.active.tag))
-    } else { run_self_update() };
+    } else {
+        run_self_update()
+    };
     match result {
         Ok(msg) => {
             println!("{msg}");
@@ -636,7 +721,10 @@ mod uninstall_data_tests {
         super::remove_channel_data(&profile).unwrap();
         super::remove_channel_data(&profile).unwrap();
         assert!(!profile.exists());
-        assert_eq!(std::fs::read_to_string(other.join("config.toml")).unwrap(), "keep");
+        assert_eq!(
+            std::fs::read_to_string(other.join("config.toml")).unwrap(),
+            "keep"
+        );
     }
 
     #[cfg(unix)]
@@ -661,9 +749,13 @@ mod uninstall_data_tests {
         let profile = root.path().join("alpha");
         std::fs::create_dir_all(&profile).unwrap();
         std::fs::write(profile.join("config.toml"), "fixture").unwrap();
-        let err = super::remove_then_delete_data(&profile, true, || Err("boom".to_string())).unwrap_err();
+        let err =
+            super::remove_then_delete_data(&profile, true, || Err("boom".to_string())).unwrap_err();
         assert_eq!(err, "boom");
-        assert!(profile.join("config.toml").exists(), "data must survive a failed uninstall");
+        assert!(
+            profile.join("config.toml").exists(),
+            "data must survive a failed uninstall"
+        );
     }
 
     #[test]
@@ -694,8 +786,20 @@ mod uninstall_data_tests {
     #[test]
     fn uninstall_data_flags_conflict_and_keep_is_default() {
         use clap::Parser;
-        assert!(crate::cli::args::Cli::try_parse_from(["plexi", "uninstall", "--keep-data", "--delete-data"]).is_err());
+        assert!(crate::cli::args::Cli::try_parse_from([
+            "plexi",
+            "uninstall",
+            "--keep-data",
+            "--delete-data"
+        ])
+        .is_err());
         let args = crate::cli::args::Cli::try_parse_from(["plexi", "uninstall", "--yes"]).unwrap();
-        assert!(matches!(args.command, Some(crate::cli::args::Commands::Uninstall { delete_data: false, .. })));
+        assert!(matches!(
+            args.command,
+            Some(crate::cli::args::Commands::Uninstall {
+                delete_data: false,
+                ..
+            })
+        ));
     }
 }

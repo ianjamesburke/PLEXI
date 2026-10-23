@@ -40,9 +40,9 @@ pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
 pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
-// `theme::font_medium` for weight contrast.
+                                  // `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
-// user reads first.
+                                     // user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
 pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.

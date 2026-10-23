@@ -97,7 +97,9 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
+                                AgentState::Failed
+                                | AgentState::Blocked
+                                | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -121,7 +123,9 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
+                                AgentState::Failed
+                                | AgentState::Blocked
+                                | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -139,7 +143,9 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
+                                AgentState::Failed
+                                | AgentState::Blocked
+                                | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -163,7 +169,9 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
+                                AgentState::Failed
+                                | AgentState::Blocked
+                                | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -427,7 +435,9 @@ mod tests {
             }))
         };
 
-        child_win.panes.insert(10, make_app_pane(10, AgentState::Working));
+        child_win
+            .panes
+            .insert(10, make_app_pane(10, AgentState::Working));
         let windows = vec![make_empty_window(1, 100), child_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Working);

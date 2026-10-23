@@ -4,9 +4,9 @@
 //! `broker::seal`, because a MAC has to be checked before the body is parsed.
 
 #[cfg(test)]
-use serde::Serialize;
-#[cfg(test)]
 use serde::de::DeserializeOwned;
+#[cfg(test)]
+use serde::Serialize;
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;

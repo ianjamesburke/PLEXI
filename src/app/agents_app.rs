@@ -141,9 +141,10 @@ impl App for AgentsApp {
         // can arrive as text. Treat the pair as one shortcut, never two actions.
         let pressed = |key, text: &str| {
             input.key_pressed(key)
-                || input.events().iter().any(|event| {
-                    matches!(event, egui::Event::Text(value) if value == text)
-                })
+                || input
+                    .events()
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Text(value) if value == text))
         };
         if pressed(egui::Key::J, "j") || pressed(egui::Key::K, "k") {
             let rows = self.rows();
@@ -222,23 +223,25 @@ impl App for AgentsApp {
                                         ui.colored_label(colors.text_dim, task.counts());
                                         for row in rows {
                                             let (shape, color) = Self::indicator(row, colors);
-                                            let spawner_suffix = crate::host::pane::format_spawned_by_badge(
-                                                row.spawned_by.as_deref(),
-                                            )
-                                            .map(|b| format!(" · {b}"))
-                                            .unwrap_or_default();
-                                            let waiting_suffix = if row.pending_child_results_count > 0 {
-                                                if row.pending_child_results_count == 1 {
-                                                    " · 1 result waiting".to_string()
+                                            let spawner_suffix =
+                                                crate::host::pane::format_spawned_by_badge(
+                                                    row.spawned_by.as_deref(),
+                                                )
+                                                .map(|b| format!(" · {b}"))
+                                                .unwrap_or_default();
+                                            let waiting_suffix =
+                                                if row.pending_child_results_count > 0 {
+                                                    if row.pending_child_results_count == 1 {
+                                                        " · 1 result waiting".to_string()
+                                                    } else {
+                                                        format!(
+                                                            " · {} results waiting",
+                                                            row.pending_child_results_count
+                                                        )
+                                                    }
                                                 } else {
-                                                    format!(
-                                                        " · {} results waiting",
-                                                        row.pending_child_results_count
-                                                    )
-                                                }
-                                            } else {
-                                                String::new()
-                                            };
+                                                    String::new()
+                                                };
                                             let label = format!(
                                                 "{shape} {}  {} · {}{}{}{}  #{}",
                                                 row.role,
@@ -355,9 +358,11 @@ impl App for AgentsApp {
                                             row.harness, row.task_title, row.pane_id
                                         ));
                                         ui.label(format!("Context: {}", row.context_name));
-                                        if let Some(badge) = crate::host::pane::format_spawned_by_badge(
-                                            row.spawned_by.as_deref(),
-                                        ) {
+                                        if let Some(badge) =
+                                            crate::host::pane::format_spawned_by_badge(
+                                                row.spawned_by.as_deref(),
+                                            )
+                                        {
                                             ui.label(format!("Provenance: {badge}"));
                                         }
                                         if row.pending_child_results_count > 0 {
@@ -420,10 +425,19 @@ impl App for AgentsApp {
                                                 egui::TextEdit::multiline(&mut self.reply)
                                                     .hint_text("Your answer"),
                                             );
-                                            let surface = crate::ui::focus::SurfaceKey::Pane(ctx.pane_id);
-                                            crate::ui::focus::register_text_surface(ui.ctx(), surface, response.id);
+                                            let surface =
+                                                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id);
+                                            crate::ui::focus::register_text_surface(
+                                                ui.ctx(),
+                                                surface,
+                                                response.id,
+                                            );
                                             if self.focus_reply {
-                                                crate::ui::focus::claim_text_surface(ui.ctx(), surface, response.id);
+                                                crate::ui::focus::claim_text_surface(
+                                                    ui.ctx(),
+                                                    surface,
+                                                    response.id,
+                                                );
                                                 self.focus_reply = false;
                                             }
                                             if ui

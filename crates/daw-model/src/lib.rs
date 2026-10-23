@@ -22,7 +22,7 @@ pub mod gate;
 pub use commands::{ApplyOutcome, DawCommand};
 pub use history::{CoalesceKey, SnapshotHistory, MAX_GROUPS};
 pub use model::{
-    Clip, ClipId, DawModel, Mixer, Project, Source, SourceId, Track, TrackId, TrackKind,
-    Transport, ValidationError, PAN_MAX, PAN_MIN, TEMPO_MAX, TEMPO_MIN, TICKS_PER_BEAT,
-    VOLUME_MAX, VOLUME_MIN,
+    Clip, ClipId, DawModel, Mixer, Project, Source, SourceId, Track, TrackId, TrackKind, Transport,
+    ValidationError, PAN_MAX, PAN_MIN, TEMPO_MAX, TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX,
+    VOLUME_MIN,
 };

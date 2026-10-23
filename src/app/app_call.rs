@@ -23,19 +23,31 @@ struct WaitingApproval {
 }
 
 impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
-    fn present(&self, pending_id: &str, _tool: &str, _summary: &str, _actor: &str, _resource: &str)
-        -> Result<crate::broker::gate::ApprovalChoice, String>
-    {
+    fn present(
+        &self,
+        pending_id: &str,
+        _tool: &str,
+        _summary: &str,
+        _actor: &str,
+        _resource: &str,
+    ) -> Result<crate::broker::gate::ApprovalChoice, String> {
         let started = std::time::Instant::now();
         log::info!("app_call: waiting for desktop approval pending={pending_id}");
         loop {
             let expired = started.elapsed() >= self.timeout;
             if expired || !crate::host::pane_liveness::pid_is_alive(self.peer_pid) {
                 // Only cancel this request. A late click cannot restart this worker.
-                if let Err(error) = self.monitor.approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny) {
+                if let Err(error) = self
+                    .monitor
+                    .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny)
+                {
                     log::info!("app_call: cancellation pending={pending_id}: {error}");
                 }
-                let reason = if expired { "approval_timeout" } else { "caller_exited" };
+                let reason = if expired {
+                    "approval_timeout"
+                } else {
+                    "caller_exited"
+                };
                 log::info!("app_call: {reason} pending={pending_id}");
                 return Err(format!("{reason}: request was not executed"));
             }
@@ -293,9 +305,7 @@ impl PlexiApp {
                     .trim()
                     .to_string();
                 let explicit_pane = payload.get("pane_id").and_then(|v| v.as_u64());
-                let resolved_pane = peer_pane
-                    .map(|(pane_id, _, _)| pane_id)
-                    .or(explicit_pane);
+                let resolved_pane = peer_pane.map(|(pane_id, _, _)| pane_id).or(explicit_pane);
                 let resolved_context = peer_pane
                     .map(|(_, _, ctx_id)| ctx_id)
                     .or_else(|| payload.get("context_id").and_then(|v| v.as_u64()))
@@ -495,9 +505,8 @@ impl PlexiApp {
                         details.and_then(|d| d.pane_id) == Some(pid)
                             || item.actor == format!("pane:{pid}")
                     });
-                    let match_ctx = context_id.is_none_or(|cid| {
-                        details.and_then(|d| d.context_id) == Some(cid)
-                    });
+                    let match_ctx = context_id
+                        .is_none_or(|cid| details.and_then(|d| d.context_id) == Some(cid));
                     match_id && match_session && match_pane && match_ctx
                 });
                 log::info!(
@@ -645,19 +654,24 @@ impl PlexiApp {
         );
         scope.actor_type = verified.actor_type;
         scope.actor_scope = verified.actor_scope;
-        scope.posture = verified.pane_id.and_then(|pid| self.pane_permission_posture(pid));
+        scope.posture = verified
+            .pane_id
+            .and_then(|pid| self.pane_permission_posture(pid));
         let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,
             std::sync::Arc::clone(&monitor),
         );
         if wait_approved {
             let Some(peer_pid) = peer_ancestry.first().copied() else {
-                reply(serde_json::json!({"ok":false, "error_code":"permission_denied",
-                    "error":"approval waiting requires a verified live socket peer"}));
+                reply(
+                    serde_json::json!({"ok":false, "error_code":"permission_denied",
+                    "error":"approval waiting requires a verified live socket peer"}),
+                );
                 return;
             };
             dispatcher.set_presenter(std::sync::Arc::new(WaitingApproval {
-                monitor: std::sync::Arc::clone(&monitor), peer_pid,
+                monitor: std::sync::Arc::clone(&monitor),
+                peer_pid,
                 timeout: crate::cli::app::APP_CALL_APPROVAL_TIMEOUT,
             }));
         }
@@ -808,18 +822,19 @@ impl PlexiApp {
                     ui.add_sized(
                         egui::vec2(width, crate::ui::style::TEXT_CAPTION + 4.0),
                         egui::Label::new(
-                            egui::RichText::new(format!("Preview: {}", det.preview_refs.join(", ")))
-                                .size(crate::ui::style::TEXT_CAPTION)
-                                .color(colors.text_dim),
+                            egui::RichText::new(format!(
+                                "Preview: {}",
+                                det.preview_refs.join(", ")
+                            ))
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .color(colors.text_dim),
                         )
                         .truncate(),
                     );
                 });
             }
         }
-        let choices = details
-            .map(|d| d.choices.as_slice())
-            .unwrap_or(&[]);
+        let choices = details.map(|d| d.choices.as_slice()).unwrap_or(&[]);
         if matches!(
             item.kind,
             crate::broker::gate::NeedsYouKind::Question
@@ -923,6 +938,42 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn approval_actor_label(&self, actor_id: &str) -> String {
+        actor_id
+            .strip_prefix("pane:")
+            .map(|id| {
+                let agent_name = id
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|pid| {
+                        self.windows
+                            .iter()
+                            .find_map(|w| w.panes.get(&pid))
+                            .and_then(|p| p.as_terminal())
+                    })
+                    .and_then(|t| {
+                        t.agent_role
+                            .clone()
+                            .or_else(|| t.agent.as_ref().map(|a| a.agent.clone()))
+                            .or_else(|| {
+                                t.agent_harness.as_ref().and_then(|_| {
+                                    t.name.clone().filter(|n| !n.is_empty() && n != "terminal")
+                                })
+                            })
+                    });
+                match agent_name {
+                    Some(name) => format!("Agent {name} (pane {id})"),
+                    None => format!("Terminal pane {id}"),
+                }
+            })
+            .or_else(|| {
+                actor_id
+                    .strip_prefix("agent:")
+                    .map(|id| format!("Agent {id}"))
+            })
+            .unwrap_or_else(|| actor_id.to_string())
+    }
+
     /// Surface the one recovery action for a host seal key that startup could
     /// not read without prompting. This is deliberately separate from a tool
     /// approval: it reloads or rotates the host seal and never grants an app
@@ -1011,9 +1062,14 @@ impl PlexiApp {
         }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        match monitor.resolve_needs_you_from(id, approve, crate::broker::gate::ResolveSurface::Desktop) {
+        match monitor.resolve_needs_you_from(
+            id,
+            approve,
+            crate::broker::gate::ResolveSurface::Desktop,
+        ) {
             Ok(receipt) => {
-                if approve && receipt.run_outcome == crate::broker::gate::RunOutcome::OutcomeUnknown {
+                if approve && receipt.run_outcome == crate::broker::gate::RunOutcome::OutcomeUnknown
+                {
                     log::warn!(
                         "permission_seal: desktop {label} resolved id={} resolution={} run_outcome={} (request could not be applied)",
                         receipt.id,
@@ -1172,31 +1228,57 @@ mod tests {
 
     #[test]
     fn waiting_approval_timeout_and_dead_caller_cancel_only_the_pending_call() {
-        use crate::broker::gate::{AdmitRequest, Admission, ApprovalChoice, PermissionMonitor};
+        use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
         use crate::broker::{ActorScope, ActorType, TargetType};
         use crate::plexi_ai::tool_dispatch::PermissionPresenter;
         for (peer_pid, timeout, reason) in [
-            (std::process::id(), std::time::Duration::ZERO, "approval_timeout"),
+            (
+                std::process::id(),
+                std::time::Duration::ZERO,
+                "approval_timeout",
+            ),
             (0, std::time::Duration::from_secs(1), "caller_exited"),
         ] {
             let monitor = PermissionMonitor::ephemeral();
             let workspace = tempfile::tempdir().unwrap();
             let ask = |call_id, input_json| match monitor.admit(AdmitRequest {
-                call_id, tool: "probe.add", input_json, actor_type: ActorType::Agent,
-                actor_id: "agent:waiter", actor_scope: ActorScope::User, trust_origin: "host",
-                workspace_root: workspace.path(), context_id: 1, package_id: "probe",
-                instance_id: 1, target_type: TargetType::AppConnector,
+                call_id,
+                tool: "probe.add",
+                input_json,
+                actor_type: ActorType::Agent,
+                actor_id: "agent:waiter",
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: workspace.path(),
+                context_id: 1,
+                package_id: "probe",
+                instance_id: 1,
+                target_type: TargetType::AppConnector,
             }) {
                 Admission::Required { pending_request_id } => pending_request_id,
                 _ => panic!("expected pending request"),
             };
             let pending = ask("waited", "{}");
             let unrelated = ask("other", r#"{"other":true}"#);
-            let waiter = super::WaitingApproval { monitor: monitor.clone(), peer_pid, timeout };
-            let error = waiter.present(&pending, "probe.add", "{}", "agent:waiter", "").unwrap_err();
+            let waiter = super::WaitingApproval {
+                monitor: monitor.clone(),
+                peer_pid,
+                timeout,
+            };
+            let error = waiter
+                .present(&pending, "probe.add", "{}", "agent:waiter", "")
+                .unwrap_err();
             assert!(error.contains(reason), "{error}");
-            assert_eq!(monitor.approval_resolution(&pending), Some(ApprovalChoice::Deny));
-            assert!(monitor.approve_pending(&pending, ApprovalChoice::Once).is_err(), "late approval must not resume cancelled work");
+            assert_eq!(
+                monitor.approval_resolution(&pending),
+                Some(ApprovalChoice::Deny)
+            );
+            assert!(
+                monitor
+                    .approve_pending(&pending, ApprovalChoice::Once)
+                    .is_err(),
+                "late approval must not resume cancelled work"
+            );
             assert!(monitor.show_pending(&unrelated).is_some());
             assert!(!monitor.approval_granted(&pending));
         }

@@ -7,8 +7,8 @@
 use std::collections::VecDeque;
 
 use super::commands::{self, ParsedCommand};
-use crate::protocol::ModelTier;
 use crate::plexi_ai::broker::ReasoningEffort;
+use crate::protocol::ModelTier;
 
 /// Who produced a transcript row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -212,8 +212,7 @@ pub struct ToolArgProgress {
 /// Observable lifecycle for `/compact`. This deliberately records feedback,
 /// not compaction mechanics: raw history and checkpoint format remain owned
 /// by the store layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CompactionState {
     #[default]
     Idle,
@@ -223,7 +222,6 @@ pub enum CompactionState {
         checkpoint_id: String,
     },
 }
-
 
 /// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]
@@ -1153,7 +1151,9 @@ impl AssistantModel {
             return Vec::new();
         };
         match choice {
-            PermissionChoice::Deny | PermissionChoice::DenyAlways if pending.source.is_some() => Vec::new(),
+            PermissionChoice::Deny | PermissionChoice::DenyAlways if pending.source.is_some() => {
+                Vec::new()
+            }
             PermissionChoice::Deny | PermissionChoice::DenyAlways => {
                 let lead = if choice == PermissionChoice::DenyAlways {
                     "always denied by user"
@@ -1344,9 +1344,12 @@ mod tests {
             Some("narrative".into()),
             Some("output".into()),
         );
-        assert!(matches!(&effects[1], AssistantEffect::AiQuery { client, kind, .. }
-            if client.as_deref() == Some("narrative") && kind.as_deref() == Some("output")));
-        let queued = m.submit_prompt_tagged("later".into(), Some("du".into()), Some("system".into()));
+        assert!(
+            matches!(&effects[1], AssistantEffect::AiQuery { client, kind, .. }
+            if client.as_deref() == Some("narrative") && kind.as_deref() == Some("output"))
+        );
+        let queued =
+            m.submit_prompt_tagged("later".into(), Some("du".into()), Some("system".into()));
         assert!(matches!(queued[0], AssistantEffect::SessionWrite { .. }));
         assert_eq!(queued.len(), 1);
         let _ = m.submit_prompt_tagged("after".into(), Some("personal".into()), None);

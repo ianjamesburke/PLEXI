@@ -177,11 +177,9 @@ mod tests {
             ] {
                 let galley =
                     elided_galley(ui, text, FontId::proportional(14.0), 160.0, Side::Middle);
-                assert!(
-                    galley
-                        .text()
-                        .starts_with(text.graphemes(true).next().unwrap())
-                );
+                assert!(galley
+                    .text()
+                    .starts_with(text.graphemes(true).next().unwrap()));
                 assert!(galley.text().ends_with(suffix), "{}", galley.text());
                 assert!(galley.text().contains(ELLIPSIS));
                 assert!(!galley.text().contains(['\n', '\r']));

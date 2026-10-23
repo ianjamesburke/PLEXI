@@ -428,10 +428,7 @@ mod avf_impl {
         objc2::rc::Retained<AVAssetReaderTrackOutput>,
     );
 
-    unsafe fn build_reader(
-        path: &str,
-        start_ms: Option<u64>,
-    ) -> Result<ReaderParts, VideoError> {
+    unsafe fn build_reader(path: &str, start_ms: Option<u64>) -> Result<ReaderParts, VideoError> {
         let asset = build_asset(path)?;
         let video_type = AVMediaTypeVideo
             .ok_or_else(|| VideoError::Decoder("AVMediaTypeVideo unbound".to_owned()))?;
@@ -1084,7 +1081,10 @@ mod tests {
         // deadline rather than assuming a loaded CI runner schedules it in 120 ms.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while ring.pop().is_none() {
-            assert!(std::time::Instant::now() < deadline, "after resume frames must flow again");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "after resume frames must flow again"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 

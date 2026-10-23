@@ -184,7 +184,11 @@ fn is_plexi_binary_token(tok: &str) -> bool {
 
 fn is_pane_new_prefix(tokens: &[String]) -> bool {
     matches!(
-        tokens.iter().map(String::as_str).collect::<Vec<_>>().as_slice(),
+        tokens
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
         ["pane", "new", ..]
     ) || (tokens.len() >= 2
         && is_plexi_binary_token(&tokens[0])
@@ -307,11 +311,7 @@ pub fn parse_step(step: &str) -> ParsedStep {
 
 /// Execute `steps` sequentially using `runner`, stopping at the first step
 /// whose exit code is non-zero and reporting the 1-based step index.
-pub fn run_steps_with<F>(
-    steps: &[String],
-    extra_args: &[String],
-    mut runner: F,
-) -> StepRunReport
+pub fn run_steps_with<F>(steps: &[String], extra_args: &[String], mut runner: F) -> StepRunReport
 where
     F: FnMut(usize, &str, &ParsedStep) -> i32,
 {
@@ -434,10 +434,9 @@ pub fn dispatch_cli_step(
                     command,
                     timeout_secs: boot_timeout,
                 });
-                let layout =
-                    layout_from_flags(down, left, up, right, tab, window, overlay).unwrap_or("split_h");
-                let effective_cwd = step_cwd
-                    .or_else(|| cwd.map(|p| p.display().to_string()));
+                let layout = layout_from_flags(down, left, up, right, tab, window, overlay)
+                    .unwrap_or("split_h");
+                let effective_cwd = step_cwd.or_else(|| cwd.map(|p| p.display().to_string()));
                 let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref()) {
                     Ok(id) => id,
                     Err(code) => return code,
@@ -490,12 +489,17 @@ pub fn dispatch_cli_step(
                 };
                 crate::cli::pane_set_title_cli(pane_id, &name)
             }
-            PaneCmd::Focus { pane_id, forward, .. } => match pane_id {
+            PaneCmd::Focus {
+                pane_id, forward, ..
+            } => match pane_id {
                 Some(target) => match target.resolve() {
                     Ok(id) => crate::cli::pane_focus_cli(id),
                     Err(code) => code,
                 },
-                None => crate::cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
+                None => crate::cli::host_action_cli(
+                    serde_json::json!({"type":"focus_history", "forward":forward}),
+                    None,
+                ),
             },
             PaneCmd::Close { pane_id } => {
                 let id = match pane_id {
@@ -670,10 +674,14 @@ pub fn execute_steps(
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
 ) -> StepRunReport {
-    run_steps_with(steps, extra_args, |_step_num, _rendered, parsed| match parsed {
-        ParsedStep::PlexiCli(argv) => dispatch_cli_step(argv, cwd, env_vars),
-        ParsedStep::Shell(snippet) => run_shell_snippet(snippet, extra_args, cwd, env_vars),
-    })
+    run_steps_with(
+        steps,
+        extra_args,
+        |_step_num, _rendered, parsed| match parsed {
+            ParsedStep::PlexiCli(argv) => dispatch_cli_step(argv, cwd, env_vars),
+            ParsedStep::Shell(snippet) => run_shell_snippet(snippet, extra_args, cwd, env_vars),
+        },
+    )
 }
 
 /// Execute per-pane `on_load` steps after a pane is spawned. If `pane_id` is
@@ -699,8 +707,10 @@ pub(crate) fn format_list_commands_for_root(
     }
 
     let commands_file = super::commands_file();
-    let has_ws_toml = workspace_root
-        .is_some_and(|root| root.join(&commands_file) != super::global_commands_path() && root.join(&commands_file).exists());
+    let has_ws_toml = workspace_root.is_some_and(|root| {
+        root.join(&commands_file) != super::global_commands_path()
+            && root.join(&commands_file).exists()
+    });
 
     if cmds.is_empty() {
         let global_path = super::global_commands_path();
@@ -807,9 +817,7 @@ pub(crate) fn resolve_command_target(
 
 /// `plexi run` with no command argument — list available workspace and global commands.
 pub fn run_list_commands(json: bool) -> i32 {
-    log::info!(
-        "cli: run called with no command, listing available commands (json={json})"
-    );
+    log::info!("cli: run called with no command, listing available commands (json={json})");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -1225,8 +1233,12 @@ global_only = { run = "echo global-only", secrets = ["GLOBAL_SECRET"] }
 
         let human = format_list_commands_for_root(Some(ws.path()), false).unwrap();
         assert!(human.contains("Available commands:"));
-        assert!(human.contains("bar") && human.contains("[workspace]") && human.contains("echo ws-bar"));
-        assert!(human.contains("foo") && human.contains("[workspace]") && human.contains("echo ws-foo"));
+        assert!(
+            human.contains("bar") && human.contains("[workspace]") && human.contains("echo ws-bar")
+        );
+        assert!(
+            human.contains("foo") && human.contains("[workspace]") && human.contains("echo ws-foo")
+        );
         assert!(!human.contains("echo global-foo"));
         assert!(
             human.contains("global_only")
@@ -1242,7 +1254,10 @@ global_only = { run = "echo global-only", secrets = ["GLOBAL_SECRET"] }
         assert_eq!(arr[0]["scope"], "workspace");
         assert_eq!(arr[0]["description"], "Workspace bar");
         assert_eq!(arr[0]["run"], "echo ws-bar");
-        assert_eq!(arr[0]["secrets"], serde_json::json!(["SHARED_KEY", "BAR_TOKEN"]));
+        assert_eq!(
+            arr[0]["secrets"],
+            serde_json::json!(["SHARED_KEY", "BAR_TOKEN"])
+        );
 
         assert_eq!(arr[1]["name"], "foo");
         assert_eq!(arr[1]["scope"], "workspace");
@@ -1361,11 +1376,11 @@ steps = []
             report.error_message.as_deref(),
             Some("step 2/3 failed: false (exit 1)")
         );
-        assert!(marker1.exists(), "step 1 should have run before step 2 failed");
         assert!(
-            !marker3.exists(),
-            "step 3 must not run after step 2 fails"
+            marker1.exists(),
+            "step 1 should have run before step 2 failed"
         );
+        assert!(!marker3.exists(), "step 3 must not run after step 2 fails");
     }
 
     #[test]
@@ -1418,7 +1433,9 @@ config_version = 1
         .unwrap();
         let diags = crate::config::validate_from_path(&bad_target_cfg);
         assert!(
-            diags.iter().any(|d| d.is_error() && d.to_string().contains("run:<command>")),
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.to_string().contains("run:<command>")),
             "target without run: prefix must be rejected by config check, got {diags:?}"
         );
     }

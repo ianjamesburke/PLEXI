@@ -6,7 +6,9 @@ use crate::protocol::{AgentBlockedReason, AgentState};
 impl PlexiApp {
     pub(crate) fn fleet_focused_pane(&self) -> Option<u64> {
         if let Some(parent) = self.conjoined_parent() {
-            if self.conjoined_parent_focus == Some(parent) { return Some(parent); }
+            if self.conjoined_parent_focus == Some(parent) {
+                return Some(parent);
+            }
         }
         let win = self.windows.get(self.active_window)?;
         Self::find_pane_in_tile(&win.tree, win.focused_pane?)
@@ -110,7 +112,9 @@ impl PlexiApp {
                 AgentState::Failed | AgentState::Interrupted | AgentState::ExitedUnreported
             );
             let should_dismiss = match (target, all_failed) {
-                (Some(id), _) => record.pane_id == id && (!record.fleet_dismissed || !record.fleet_seen),
+                (Some(id), _) => {
+                    record.pane_id == id && (!record.fleet_dismissed || !record.fleet_seen)
+                }
                 (None, true) => is_failure && !record.fleet_dismissed,
                 (None, false) => false,
             };
@@ -306,8 +310,19 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        report.and_then(|a| a.detail.clone()).map(|reason| format!("{}: {reason}", if state == AgentState::Failed { "failed" } else { "exited without report" }))
-                    } else { t.capture_tail_preview() },
+                        report.and_then(|a| a.detail.clone()).map(|reason| {
+                            format!(
+                                "{}: {reason}",
+                                if state == AgentState::Failed {
+                                    "failed"
+                                } else {
+                                    "exited without report"
+                                }
+                            )
+                        })
+                    } else {
+                        t.capture_tail_preview()
+                    },
                     result: self
                         .pane_results
                         .get(&pane_id)
@@ -467,22 +482,37 @@ mod tests {
     fn agents_view_excludes_closed_runs_but_retains_history() {
         let mut h = HostHarness::new();
         let live = h.add_focused_terminal();
-        h.app.windows[0].panes.get_mut(&live).unwrap().set_agent(Some(
-            crate::protocol::PaneAgentState {
-                pane_id: live, state: crate::protocol::AgentState::Working,
-                agent: "pi".into(), detail: None, session_id: None,
-            },
-        ));
-        for (pane_id, state) in [(900001, "working"), (900002, "blocked"), (900003, "completed")] {
+        h.app.windows[0]
+            .panes
+            .get_mut(&live)
+            .unwrap()
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: live,
+                state: crate::protocol::AgentState::Working,
+                agent: "pi".into(),
+                detail: None,
+                session_id: None,
+            }));
+        for (pane_id, state) in [
+            (900001, "working"),
+            (900002, "blocked"),
+            (900003, "completed"),
+        ] {
             let record = serde_json::from_value(serde_json::json!({
                 "run_id": format!("old-{pane_id}"), "pane_id": pane_id,
                 "context_id": 1, "context_name": "previous session", "harness": "codex",
                 "cwd": "/tmp", "last_state": state, "closed_at": 1
-            })).unwrap();
+            }))
+            .unwrap();
             h.app.fleet_history.borrow_mut().push(record);
         }
         let view = h.app.agents_view(crate::protocol::FleetFilter::All);
-        let ids: Vec<_> = view.tasks.iter().flat_map(|t| &t.rows).map(|r| r.pane_id).collect();
+        let ids: Vec<_> = view
+            .tasks
+            .iter()
+            .flat_map(|t| &t.rows)
+            .map(|r| r.pane_id)
+            .collect();
         assert_eq!(ids, vec![live]);
         assert_eq!(h.app.fleet_history.borrow().len(), 3);
     }
@@ -502,18 +532,19 @@ mod tests {
                 detail: Some("exit code 1".into()),
                 session_id: None,
             }));
-        let record: crate::workspace::AgentHistoryRecord = serde_json::from_value(serde_json::json!({
-            "run_id": "old-215",
-            "pane_id": 215,
-            "context_id": 1,
-            "context_name": "morning",
-            "harness": "twcodex",
-            "cwd": "/tmp",
-            "last_state": "failed",
-            "last_detail": "command not found: twcodex",
-            "closed_at": 100
-        }))
-        .unwrap();
+        let record: crate::workspace::AgentHistoryRecord =
+            serde_json::from_value(serde_json::json!({
+                "run_id": "old-215",
+                "pane_id": 215,
+                "context_id": 1,
+                "context_name": "morning",
+                "harness": "twcodex",
+                "cwd": "/tmp",
+                "last_state": "failed",
+                "last_detail": "command not found: twcodex",
+                "closed_at": 100
+            }))
+            .unwrap();
         crate::workspace::append_agent_history(&record).unwrap();
         h.app.fleet_history.borrow_mut().push(record);
 
@@ -521,7 +552,10 @@ mod tests {
         assert_eq!(before.tasks.len(), 1);
         assert_eq!(before.tasks[0].rows[0].pane_id, failed_live);
         assert_eq!(before.tasks[0].rows[0].role, "claude-code");
-        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exit code 1"));
+        assert_eq!(
+            before.tasks[0].rows[0].reason.as_deref(),
+            Some("exit code 1")
+        );
         assert_eq!(before.older.len(), 1);
         assert_eq!(before.older[0].pane_id, 215);
 
@@ -542,7 +576,11 @@ mod tests {
     fn attention_reload_projects_config_without_restart_on_hidden_frame() {
         let mut h = HostHarness::new();
         let path = crate::config::config_path();
-        std::fs::write(&path, "[attention]\nstyle='loud'\nintensity=0.5\ndock='none'\n[theme]\nstate_preset='mono'\n").unwrap();
+        std::fs::write(
+            &path,
+            "[attention]\nstyle='loud'\nintensity=0.5\ndock='none'\n[theme]\nstate_preset='mono'\n",
+        )
+        .unwrap();
         h.app.reload_config();
         h.hidden_frame();
         let visual = crate::ui::activity::attention(&h.app.ctx);
@@ -689,7 +727,8 @@ mod attention_tests {
         let agent = h.add_focused_terminal();
         let other = h.add_test_pane();
         h.focus_pane(other);
-        let report = AppRequest::SetAgentState { peer_ancestry: None,
+        let report = AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "pi".into(),
@@ -725,7 +764,8 @@ mod attention_tests {
     }
 
     #[test]
-    fn non_attention_state_report_withdraws_agent_attention_and_preserves_broker_permission_request() {
+    fn non_attention_state_report_withdraws_agent_attention_and_preserves_broker_permission_request(
+    ) {
         let mut h = HostHarness::new();
         h.app.notifications_enabled = true;
         let agent = h.add_focused_terminal();
@@ -733,7 +773,8 @@ mod attention_tests {
         h.focus_pane(other);
 
         // 1. Agent reports needs_you -> files NeedsYouKind::Question, appears in open_items and agent next.
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -751,7 +792,8 @@ mod attention_tests {
 
         // 2. Agent reports idle -> withdraws its attention item without recording an approval,
         // clears the attention notification, and removes the agent from `agent next`.
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Idle,
             agent: "test".into(),
@@ -801,7 +843,8 @@ mod attention_tests {
 
         // 3. Also verify working and completed withdraw blocked/needs_you items,
         // while a broker-filed PermissionRequest is NOT withdrawn by an agent state report.
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Blocked,
             agent: "test".into(),
@@ -831,7 +874,8 @@ mod attention_tests {
         h.hidden_frame();
         assert_eq!(crate::overlays::attention::open_items().len(), 2);
 
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Working,
             agent: "test".into(),
@@ -862,7 +906,8 @@ mod attention_tests {
                 crate::broker::gate::ResolveSurface::Desktop,
             )
             .unwrap();
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -874,7 +919,8 @@ mod attention_tests {
         h.hidden_frame();
         assert_eq!(crate::overlays::attention::open_items().len(), 1);
 
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(AppRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Completed,
             agent: "test".into(),
@@ -920,7 +966,10 @@ impl PlexiApp {
             .retain(|(id, _, _)| *id != pane_id);
         if !matches!(
             state,
-            AgentState::NeedsYou | AgentState::Blocked | AgentState::Completed | AgentState::ExitedUnreported
+            AgentState::NeedsYou
+                | AgentState::Blocked
+                | AgentState::Completed
+                | AgentState::ExitedUnreported
         ) {
             self.clear_agent_attention_notification(pane_id);
             return;
@@ -1025,16 +1074,12 @@ impl PlexiApp {
         &mut self,
         record: &crate::broker::gate::NeedsYouRecord,
     ) -> Option<std::path::PathBuf> {
-        let pane_id = record
-            .details
-            .as_ref()
-            .and_then(|d| d.pane_id)
-            .or_else(|| {
-                record
-                    .actor
-                    .strip_prefix("pane:")
-                    .and_then(|s| s.parse::<u64>().ok())
-            });
+        let pane_id = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
+            record
+                .actor
+                .strip_prefix("pane:")
+                .and_then(|s| s.parse::<u64>().ok())
+        });
         let result_path = record
             .details
             .as_ref()
@@ -1074,7 +1119,10 @@ impl PlexiApp {
                 &[path_str],
                 None,
             ) {
-                log::warn!("attention: open result viewer failed for {}: {e}", path.display());
+                log::warn!(
+                    "attention: open result viewer failed for {}: {e}",
+                    path.display()
+                );
             } else {
                 log::info!("attention: opened agent result {}", path.display());
             }
@@ -1111,10 +1159,9 @@ impl PlexiApp {
         pane_id: u64,
         session_id: Option<&str>,
     ) {
-        let withdrawn = crate::broker::gate::PermissionMonitor::for_profile(
-            &crate::config::config_dir(),
-        )
-        .withdraw_agent_needs_you(pane_id, session_id);
+        let withdrawn =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .withdraw_agent_needs_you(pane_id, session_id);
         if !withdrawn.is_empty() {
             log::info!(
                 "attention: withdrew {} agent needs-you item(s) for pane_id={pane_id}: {:?}",
@@ -1140,10 +1187,18 @@ impl PlexiApp {
                 .unwrap_or(true);
         let focused = crate::platform::attention::app_focused(ctx);
         let attention = self.config.attention.unwrap_or_default();
-        crate::ui::activity::set_attention(ctx, attention, crate::platform::attention::reduce_motion());
+        crate::ui::activity::set_attention(
+            ctx,
+            attention,
+            crate::platform::attention::reduce_motion(),
+        );
         self.agent_attention.dock.sync(
-            crate::overlays::attention::open_items().into_iter().map(|item| item.id).collect(),
-            attention.dock.unwrap_or_default(), focused,
+            crate::overlays::attention::open_items()
+                .into_iter()
+                .map(|item| item.id)
+                .collect(),
+            attention.dock.unwrap_or_default(),
+            focused,
         );
         let live: std::collections::HashSet<_> = self
             .windows

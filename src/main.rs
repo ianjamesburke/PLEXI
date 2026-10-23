@@ -140,7 +140,8 @@ fn main() -> eframe::Result {
             }
 
             // Always re-seed any deleted core apps.
-            let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
+            let core_outcomes =
+                crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
             let n_installed = core_outcomes
                 .iter()
                 .filter(|o| {
@@ -162,10 +163,11 @@ fn main() -> eframe::Result {
                 }
             }
             if !is_app_prune_command {
-                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
+                let pruned =
+                    crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
                 if !pruned.is_empty() {
                     log::info!(
-                    "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
+                        "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
                         pruned.len(),
                         apps_dir.display()
                     );
@@ -178,7 +180,6 @@ fn main() -> eframe::Result {
         }
         drop(profile_init_lock);
     }
-
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // If the path has no `.plexi/` ancestor, an adopted context path is set
@@ -320,7 +321,17 @@ fn main() -> eframe::Result {
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind } => {
+                        AssistantCmd::Send {
+                            text,
+                            request_id,
+                            pane_id,
+                            context_id,
+                            conversation,
+                            desktop,
+                            status_for,
+                            client,
+                            kind,
+                        } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
                             let context_id = resolve_opt_ctx(context_id.as_ref());
                             cli::trace::exit(cli::assistant_send_cli(
@@ -344,16 +355,12 @@ fn main() -> eframe::Result {
                             AssistantPermissionCmd::List => {
                                 cli::trace::exit(cli::assistant_permission_cli("list", None, None))
                             }
-                            AssistantPermissionCmd::Show { id } => {
-                                cli::trace::exit(cli::assistant_permission_cli("show", Some(&id), None))
-                            }
-                            AssistantPermissionCmd::Resolve { id, choice } => {
-                                cli::trace::exit(cli::assistant_permission_cli(
-                                    "resolve",
-                                    Some(&id),
-                                    Some(&choice),
-                                ))
-                            }
+                            AssistantPermissionCmd::Show { id } => cli::trace::exit(
+                                cli::assistant_permission_cli("show", Some(&id), None),
+                            ),
+                            AssistantPermissionCmd::Resolve { id, choice } => cli::trace::exit(
+                                cli::assistant_permission_cli("resolve", Some(&id), Some(&choice)),
+                            ),
                         },
                     },
                     Commands::NeedsYou { cmd } => match cmd {
@@ -475,7 +482,13 @@ fn main() -> eframe::Result {
                     },
                     Commands::Skill { cmd } => match cmd {
                         SkillCmd::Draft {
-                            from_session, pane, all_panes, include_internal, include_failed, format, out,
+                            from_session,
+                            pane,
+                            all_panes,
+                            include_internal,
+                            include_failed,
+                            format,
+                            out,
                         } => {
                             let options = cli::skill_draft::DraftOptions {
                                 pane: cli::skill_draft::resolve_pane(
@@ -487,7 +500,10 @@ fn main() -> eframe::Result {
                                 include_failed,
                             };
                             cli::trace::exit(cli::skill_draft::skill_draft_cli(
-                                &from_session, options, &format, out.as_deref(),
+                                &from_session,
+                                options,
+                                &format,
+                                out.as_deref(),
                             ))
                         }
                         SkillCmd::Install { agent } => {
@@ -562,36 +578,32 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::workspace_clean_cli(dry_run))
                         }
                     },
-                    Commands::Routine { cmd } => {
-                        match cmd {
-                            RoutineCmd::List => cli::trace::exit(cli::routine_list()),
-                            RoutineCmd::Run { name, force } => {
-                                cli::trace::exit(cli::routine_run(&name, force))
-                            }
-                            RoutineCmd::Add {
-                                name,
-                                command,
-                                schedule,
-                                context,
-                                ephemeral,
-                            } => cli::trace::exit(cli::routine_add(
-                                &name,
-                                &command,
-                                &schedule,
-                                context.as_deref(),
-                                ephemeral,
-                            )),
-                            RoutineCmd::Remove { name } => {
-                                cli::trace::exit(cli::routine_remove(&name))
-                            }
-                            RoutineCmd::Enable { name } => {
-                                cli::trace::exit(cli::routine_set_enabled(&name, true))
-                            }
-                            RoutineCmd::Disable { name } => {
-                                cli::trace::exit(cli::routine_set_enabled(&name, false))
-                            }
+                    Commands::Routine { cmd } => match cmd {
+                        RoutineCmd::List => cli::trace::exit(cli::routine_list()),
+                        RoutineCmd::Run { name, force } => {
+                            cli::trace::exit(cli::routine_run(&name, force))
                         }
-                    }
+                        RoutineCmd::Add {
+                            name,
+                            command,
+                            schedule,
+                            context,
+                            ephemeral,
+                        } => cli::trace::exit(cli::routine_add(
+                            &name,
+                            &command,
+                            &schedule,
+                            context.as_deref(),
+                            ephemeral,
+                        )),
+                        RoutineCmd::Remove { name } => cli::trace::exit(cli::routine_remove(&name)),
+                        RoutineCmd::Enable { name } => {
+                            cli::trace::exit(cli::routine_set_enabled(&name, true))
+                        }
+                        RoutineCmd::Disable { name } => {
+                            cli::trace::exit(cli::routine_set_enabled(&name, false))
+                        }
+                    },
                     Commands::Lease { cmd } => cli::trace::exit(cli::lease::dispatch(cmd)),
                     Commands::Agent { cmd } => match cmd {
                         AgentCmd::Create {
@@ -627,12 +639,27 @@ fn main() -> eframe::Result {
                         AgentCmd::Show { name, cwd } => {
                             cli::trace::exit(cli::agent_show_cli(&name, cwd.as_deref(), json))
                         }
-                        AgentCmd::Call { role, task, worktree, asynchronous } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}))),
-                        AgentCmd::Message { pane_id, text, wait } => {
+                        AgentCmd::Call {
+                            role,
+                            task,
+                            worktree,
+                            asynchronous,
+                        } => cli::trace::exit(cli::agent_tool_cli(
+                            serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}),
+                        )),
+                        AgentCmd::Message {
+                            pane_id,
+                            text,
+                            wait,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait})))
+                            cli::trace::exit(cli::agent_tool_cli(
+                                serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait}),
+                            ))
                         }
-                        AgentCmd::Handoff { role, task } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}))),
+                        AgentCmd::Handoff { role, task } => cli::trace::exit(cli::agent_tool_cli(
+                            serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}),
+                        )),
                         AgentCmd::Start {
                             name,
                             prompt,
@@ -683,8 +710,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::agent_result_cli(target, json))
                         }
                         AgentCmd::Wait { pane_ids, timeout } => {
-                            let resolved: Vec<u64> =
-                                pane_ids.iter().map(resolve_pane).collect();
+                            let resolved: Vec<u64> = pane_ids.iter().map(resolve_pane).collect();
                             cli::trace::exit(cli::agent_wait_cli(&resolved, timeout, json))
                         }
                         AgentCmd::Ask { question, pane_id } => {
@@ -711,7 +737,9 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => cli::trace::exit(cli::agent_status_cli(blocked, working, idle)),
-                        AgentCmd::Next => { cli::trace::exit(cli::agent_next_cli(json)); }
+                        AgentCmd::Next => {
+                            cli::trace::exit(cli::agent_next_cli(json));
+                        }
                         AgentCmd::Fleet { cmd, filter } => match cmd {
                             Some(cli::args::AgentFleetCmd::Dismiss { target, all_failed }) => {
                                 cli::trace::exit(cli::agent_fleet_dismiss_cli(
@@ -727,15 +755,12 @@ fn main() -> eframe::Result {
                         AgentCmd::History { limit } => {
                             cli::trace::exit(cli::agent_history_cli(limit, json))
                         }
-                        AgentCmd::Reopen {
-                            target,
-                            subcontext,
-                        } => cli::trace::exit(cli::agent_reopen_cli(
-                            &target,
-                            subcontext.as_deref(),
-                            json,
-                        )),
-                        AgentCmd::Team { cmd } => cli::trace::exit(cli::agent_team_dispatch(cmd, json)),
+                        AgentCmd::Reopen { target, subcontext } => cli::trace::exit(
+                            cli::agent_reopen_cli(&target, subcontext.as_deref(), json),
+                        ),
+                        AgentCmd::Team { cmd } => {
+                            cli::trace::exit(cli::agent_team_dispatch(cmd, json))
+                        }
                         AgentCmd::HookEvent { agent } => {
                             cli::trace::exit(cli::agent_hook_event_cli(agent.as_deref()))
                         }
@@ -813,9 +838,7 @@ fn main() -> eframe::Result {
                         SecretCmd::Delete {
                             friendly_name,
                             global,
-                        } => {
-                            cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global))
-                        }
+                        } => cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global)),
                         SecretCmd::Rm { name, folder } => {
                             cli::trace::exit(cli::folder_secret_rm(&name, &folder))
                         }
@@ -1076,9 +1099,9 @@ fn main() -> eframe::Result {
                             }
                             AppCmd::Info { id } => cli::trace::exit(cli::app_info(&id)),
                             AppCmd::State { cmd } => match cmd {
-                                AppStateCmd::Get { app, scope } => cli::trace::exit(
-                                    cli::app_state::get(&app, scope.as_deref()),
-                                ),
+                                AppStateCmd::Get { app, scope } => {
+                                    cli::trace::exit(cli::app_state::get(&app, scope.as_deref()))
+                                }
                                 AppStateCmd::Set { app, file, scope } => cli::trace::exit(
                                     cli::app_state::set(&app, file.as_deref(), scope.as_deref()),
                                 ),
@@ -1130,23 +1153,28 @@ fn main() -> eframe::Result {
                             } => {
                                 let pane = resolve_opt_pane(pane.as_ref());
                                 cli::trace::exit(cli::app_call_cli(
-                                    &app_id, &tool, &input, json, pane, wait_approved,
+                                    &app_id,
+                                    &tool,
+                                    &input,
+                                    json,
+                                    pane,
+                                    wait_approved,
                                 ))
                             }
                             AppCmd::Tools { app, context } => {
                                 let context = resolve_opt_ctx(context.as_ref());
-                                cli::trace::exit(cli::app_tools_cli(
-                                    app.as_deref(),
-                                    context,
-                                    json,
-                                ))
+                                cli::trace::exit(cli::app_tools_cli(app.as_deref(), context, json))
                             }
                         }
                     }
-                    Commands::Uninstall { keep_data, delete_data, yes } => {
-                        cli::trace::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes))
+                    Commands::Uninstall {
+                        keep_data,
+                        delete_data,
+                        yes,
+                    } => cli::trace::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes)),
+                    Commands::Update { rollback } => {
+                        cli::trace::exit(cli::self_update_cli(rollback))
                     }
-                    Commands::Update { rollback } => cli::trace::exit(cli::self_update_cli(rollback)),
                     Commands::Host { cmd } => match cmd {
                         HostCmd::Start {
                             layout,
@@ -1301,7 +1329,9 @@ fn main() -> eframe::Result {
                                 Some("current") => (None, true),
                                 Some(s) => {
                                     let target = cli::ContextTarget::from(s.to_string());
-                                    let id = target.resolve().unwrap_or_else(|code| cli::trace::exit(code));
+                                    let id = target
+                                        .resolve()
+                                        .unwrap_or_else(|code| cli::trace::exit(code));
                                     (Some(id), false)
                                 }
                             };
@@ -1313,31 +1343,49 @@ fn main() -> eframe::Result {
                                 Some("current") => (None, true),
                                 Some(s) => {
                                     let target = cli::ContextTarget::from(s.to_string());
-                                    let id = target.resolve().unwrap_or_else(|code| cli::trace::exit(code));
+                                    let id = target
+                                        .resolve()
+                                        .unwrap_or_else(|code| cli::trace::exit(code));
                                     (Some(id), false)
                                 }
                             };
                             cli::trace::exit(cli::pane_tree_cli(context_id, current, json))
                         }
-                        PaneCmd::Focus { pane_id, back: _, forward } => {
+                        PaneCmd::Focus {
+                            pane_id,
+                            back: _,
+                            forward,
+                        } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
                             cli::trace::exit(match pane_id {
                                 Some(id) => cli::pane_focus_cli(id),
-                                None => cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
+                                None => cli::host_action_cli(
+                                    serde_json::json!({"type":"focus_history", "forward":forward}),
+                                    None,
+                                ),
                             })
                         }
                         PaneCmd::Hide { ref pane_id } | PaneCmd::Reveal { ref pane_id } => {
                             let hidden = matches!(cmd, PaneCmd::Hide { .. });
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"pane_visibility", "hidden":hidden}),
+                                Some(("pane_id", pane_id, "PLEXI_PANE_ID")),
+                            ))
                         }
                         PaneCmd::Zoom { pane_id } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom"}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"pane_zoom"}),
+                                Some(("pane_id", pane_id, "PLEXI_PANE_ID")),
+                            ))
                         }
                         PaneCmd::Swap { pane_id, direction } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"pane_swap", "direction":direction}),
+                                Some(("pane_id", pane_id, "PLEXI_PANE_ID")),
+                            ))
                         }
                         PaneCmd::Close { pane_id } => {
                             let id = match pane_id {
@@ -1410,9 +1458,13 @@ fn main() -> eframe::Result {
                         } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(match node {
-                                Some(node_id) => cli::pane_click_node_cli(pane_id, &node_id, &button),
+                                Some(node_id) => {
+                                    cli::pane_click_node_cli(pane_id, &node_id, &button)
+                                }
                                 None => match (x, y) {
-                                    (Some(x), Some(y)) => cli::pane_click_cli(pane_id, x, y, &button),
+                                    (Some(x), Some(y)) => {
+                                        cli::pane_click_cli(pane_id, x, y, &button)
+                                    }
                                     _ => {
                                         eprintln!(
                                                 "error: pane click requires either <x> <y> or --node <node_id>"
@@ -1463,7 +1515,11 @@ fn main() -> eframe::Result {
                                 plain,
                             ))
                         }
-                        PaneCmd::Wait { pane_id, until, timeout } => {
+                        PaneCmd::Wait {
+                            pane_id,
+                            until,
+                            timeout,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
                         }
@@ -1475,11 +1531,26 @@ fn main() -> eframe::Result {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_status_cli(pane_id))
                         }
-                        PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
+                        PaneCmd::Heartbeat {
+                            pane_id,
+                            every,
+                            text,
+                            while_idle_only,
+                            off,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
+                            cli::trace::exit(cli::pane_heartbeat_cli(
+                                pane_id,
+                                every.as_deref(),
+                                text.as_deref(),
+                                while_idle_only.then_some(true),
+                                off,
+                            ))
                         }
-                        PaneCmd::State { pane_id, stale_after } => {
+                        PaneCmd::State {
+                            pane_id,
+                            stale_after,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_state_cli(pane_id, stale_after))
                         }
@@ -1507,10 +1578,7 @@ fn main() -> eframe::Result {
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_read_cli(
-                                    &name,
-                                    resolved,
-                                ))
+                                cli::trace::exit(cli::pane_slot_read_cli(&name, resolved))
                             }
                             PaneSlotCmd::Wait {
                                 name,
@@ -1522,10 +1590,7 @@ fn main() -> eframe::Result {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
                                 cli::trace::exit(cli::pane_slot_wait_cli(
-                                    &name,
-                                    resolved,
-                                    &until,
-                                    timeout,
+                                    &name, resolved, &until, timeout,
                                 ))
                             }
                             PaneSlotCmd::List {
@@ -1534,9 +1599,7 @@ fn main() -> eframe::Result {
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_list_cli(
-                                    resolved,
-                                ))
+                                cli::trace::exit(cli::pane_slot_list_cli(resolved))
                             }
                             PaneSlotCmd::Delete {
                                 name,
@@ -1545,10 +1608,7 @@ fn main() -> eframe::Result {
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_delete_cli(
-                                    &name,
-                                    resolved,
-                                ))
+                                cli::trace::exit(cli::pane_slot_delete_cli(&name, resolved))
                             }
                         },
                         PaneCmd::Message { cmd } => match cmd {
@@ -1559,9 +1619,7 @@ fn main() -> eframe::Result {
                             } => {
                                 let pane_id = resolve_pane(&pane_id);
                                 cli::trace::exit(cli::pane_message_send_cli(
-                                    pane_id,
-                                    &payload,
-                                    submit,
+                                    pane_id, &payload, submit,
                                 ))
                             }
                             PaneMessageCmd::Recv {
@@ -1594,11 +1652,7 @@ fn main() -> eframe::Result {
                             }) => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_result_read_cli(
-                                    resolved,
-                                    wait,
-                                    timeout,
-                                ))
+                                cli::trace::exit(cli::pane_result_read_cli(resolved, wait, timeout))
                             }
                             Some(PaneResultCmd::Wait {
                                 pane_id,
@@ -1607,19 +1661,13 @@ fn main() -> eframe::Result {
                             }) => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_result_read_cli(
-                                    resolved,
-                                    true,
-                                    timeout,
-                                ))
+                                cli::trace::exit(cli::pane_result_read_cli(resolved, true, timeout))
                             }
                             None => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
                                 cli::trace::exit(cli::pane_result_read_cli(
-                                    resolved,
-                                    wait,
-                                    timeout,
+                                    resolved, wait, timeout,
                                 ));
                             }
                         },
@@ -1792,15 +1840,13 @@ fn main() -> eframe::Result {
                             ));
                         }
                     },
-                    Commands::Account { cmd } => {
-                        match cmd {
-                            AccountCmd::Status => cli::trace::exit(cli::account_status_cli()),
-                            AccountCmd::Login { email } => {
-                                cli::trace::exit(cli::account_login_cli(email.as_deref()))
-                            }
-                            AccountCmd::Logout => cli::trace::exit(cli::account_logout_cli()),
+                    Commands::Account { cmd } => match cmd {
+                        AccountCmd::Status => cli::trace::exit(cli::account_status_cli()),
+                        AccountCmd::Login { email } => {
+                            cli::trace::exit(cli::account_login_cli(email.as_deref()))
                         }
-                    }
+                        AccountCmd::Logout => cli::trace::exit(cli::account_logout_cli()),
+                    },
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {
                             cli::trace::exit(cli::registry::watch_cli(only.as_deref()));
@@ -1880,16 +1926,26 @@ fn main() -> eframe::Result {
                         }
                         ContextCmd::Rename { name, context_id } => {
                             let context_id = resolve_opt_ctx(context_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_rename", "name":name}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"context_rename", "name":name}),
+                                Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                            ))
                         }
                         ContextCmd::Close { context_id } => {
                             let context_id = resolve_opt_ctx(context_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_close"}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"context_close"}),
+                                Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                            ))
                         }
-                        ContextCmd::Park { ref context_id } | ContextCmd::Unpark { ref context_id } => {
+                        ContextCmd::Park { ref context_id }
+                        | ContextCmd::Unpark { ref context_id } => {
                             let parked = matches!(cmd, ContextCmd::Park { .. });
                             let context_id = resolve_opt_ctx(context_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_park", "parked":parked}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"context_park", "parked":parked}),
+                                Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                            ))
                         }
                         ContextCmd::List => cli::trace::exit(cli::context_list_cli()),
                     },
@@ -1921,7 +1977,10 @@ fn main() -> eframe::Result {
                         cli::trace::exit(cli::setup::run_cli_setup(effective_modify, json));
                     }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
-                        ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"reload_config"}), None)),
+                        ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(
+                            serde_json::json!({"type":"reload_config"}),
+                            None,
+                        )),
                         ConfigCmd::Check { scope } => {
                             cli::trace::exit(cli::config_check(scope.scope()));
                         }
@@ -1944,9 +2003,7 @@ fn main() -> eframe::Result {
                     Commands::Note { cmd, text } => {
                         cli::trace::exit(cli::notes::note_cli(cmd, text))
                     }
-                    Commands::Notes { cmd } => {
-                        cli::trace::exit(cli::notes::notes_compat_cli(cmd))
-                    }
+                    Commands::Notes { cmd } => cli::trace::exit(cli::notes::notes_compat_cli(cmd)),
                     Commands::Debug { cmd } => match cmd {
                         DebugCmd::Session { cmd } => match cmd {
                             DebugSessionCmd::List => {
@@ -2054,6 +2111,7 @@ fn main() -> eframe::Result {
     // CLI subcommands already inherit the full shell environment from the
     // calling terminal — running this there corrupts terminal signal state
     // (zsh -i hijacks SIGINT) and spams the user's stdout with log noise.
+    crate::host::shell::scrub_launcher_color_overrides();
     crate::host::shell::install_login_shell_path();
     crate::host::shell::install_login_shell_env();
 
@@ -2079,7 +2137,11 @@ fn main() -> eframe::Result {
     #[cfg(not(target_os = "macos"))]
     let activation_policy = "platform-default";
     #[cfg(target_os = "macos")]
-    let activate_ignoring_other_apps = if background { "false" } else { "bundle-default" };
+    let activate_ignoring_other_apps = if background {
+        "false"
+    } else {
+        "bundle-default"
+    };
     #[cfg(not(target_os = "macos"))]
     let activate_ignoring_other_apps = "not-applicable";
     log::info!(
@@ -2196,7 +2258,9 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
 /// Commands that must keep working when `[experiments]` is invalid: the ones
 /// that fix it, plus help.
 fn experiments_repair_command(args: &[String]) -> bool {
-    args.iter().skip(1).any(|a| matches!(a.as_str(), "--help" | "-h"))
+    args.iter()
+        .skip(1)
+        .any(|a| matches!(a.as_str(), "--help" | "-h"))
         || args
             .iter()
             .skip(1)
@@ -2271,8 +2335,10 @@ fn top_level_help_flag(args: &[String]) -> bool {
         })
         .map(|s| s.as_str())
         .collect();
-    matches!(filtered.first().copied(), Some("--help") | Some("-h") | Some("help"))
-        && filtered.len() == 1
+    matches!(
+        filtered.first().copied(),
+        Some("--help") | Some("-h") | Some("help")
+    ) && filtered.len() == 1
 }
 
 fn parse_profile_flag(args: &[String]) -> Option<String> {
@@ -2403,7 +2469,10 @@ mod cli_tests {
             &["app", "list"],
             &["help"],
         ] {
-            assert!(!is_host_startup(&argv(cli)), "{cli:?} must not start a host");
+            assert!(
+                !is_host_startup(&argv(cli)),
+                "{cli:?} must not start a host"
+            );
         }
     }
 

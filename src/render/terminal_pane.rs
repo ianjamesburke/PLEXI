@@ -9,8 +9,8 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
-use crate::protocol::AgentState;
 use crate::host::pane::TerminalPane;
+use crate::protocol::AgentState;
 use crate::spatial::tiling::{
     paint_tab_bar, PaneId, TabBarAction, TabBarPaintParams, TabGroupInfo, TAB_BAR_HEIGHT,
 };
@@ -154,8 +154,16 @@ pub fn render(
                 ui.colored_label(exit_color, "[process exited]");
             });
         });
-        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+        if !needs_you {
+            paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+        }
+        crate::ui::activity::paint_attention_chrome(
+            ui.painter(),
+            pane_rect,
+            colors.state_needs_you,
+            egui::Id::new(("terminal_attention", pane_id)),
+            needs_you,
+        );
         // Auto-close on any keypress. Keyboard events were taken out of `ctx`
         // before the render pass (stint 0387), so read them from the
         // host-supplied buffer rather than `ui.input()`.
@@ -213,12 +221,19 @@ pub fn render(
             .and_then(|session| session.standby_scrollback_tail.clone())
             .unwrap_or_default()
             .join("\n");
-        let (banner, hint) = banner.rsplit_once('\n').unwrap_or((&banner, "[Enter] resume"));
+        let (banner, hint) = banner
+            .rsplit_once('\n')
+            .unwrap_or((&banner, "[Enter] resume"));
         let content_rect = rect.shrink2(Vec2::new(16.0, 12.0));
         let font = egui::FontId::monospace(terminal.font_size);
         let banner_height = ui.fonts_mut(|fonts| {
             fonts
-                .layout(banner.to_owned(), font.clone(), colors.accent, content_rect.width())
+                .layout(
+                    banner.to_owned(),
+                    font.clone(),
+                    colors.accent,
+                    content_rect.width(),
+                )
                 .size()
                 .y
         });
@@ -230,18 +245,15 @@ pub fn render(
         });
         let (banner_rect, tail_rect, hint_rect) =
             standby_view_rects(content_rect, banner_height, hint_height);
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(banner_rect),
-            |ui| {
-                ui.set_clip_rect(banner_rect);
-                ui.label(
-                    egui::RichText::new(banner)
-                        .monospace()
-                        .size(terminal.font_size)
-                        .color(colors.accent),
-                );
-            },
-        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
+            ui.set_clip_rect(banner_rect);
+            ui.label(
+                egui::RichText::new(banner)
+                    .monospace()
+                    .size(terminal.font_size)
+                    .color(colors.accent),
+            );
+        });
         ui.scope_builder(egui::UiBuilder::new().max_rect(hint_rect), |ui| {
             ui.set_clip_rect(hint_rect);
             ui.label(
@@ -251,24 +263,29 @@ pub fn render(
                     .color(colors.accent),
             );
         });
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(tail_rect),
-            |ui| {
-                ui.set_clip_rect(tail_rect);
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    if !tail.is_empty() {
-                        ui.label(
-                            egui::RichText::new(&tail)
-                                .monospace()
-                                .size((terminal.font_size - 1.0).max(9.0))
-                                .color(colors.text_dim),
-                        );
-                    }
-                });
-            },
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tail_rect), |ui| {
+            ui.set_clip_rect(tail_rect);
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                if !tail.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&tail)
+                            .monospace()
+                            .size((terminal.font_size - 1.0).max(9.0))
+                            .color(colors.text_dim),
+                    );
+                }
+            });
+        });
+        if !needs_you {
+            paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+        }
+        crate::ui::activity::paint_attention_chrome(
+            ui.painter(),
+            pane_rect,
+            colors.state_needs_you,
+            egui::Id::new(("terminal_attention", pane_id)),
+            needs_you,
         );
-        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
         return (false, tab_action);
     }
 
@@ -296,8 +313,16 @@ pub fn render(
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
-    if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+    if !needs_you {
+        paint_escalation_border(ui.painter(), pane_rect, border_escalation_color);
+    }
+    crate::ui::activity::paint_attention_chrome(
+        ui.painter(),
+        pane_rect,
+        colors.state_needs_you,
+        egui::Id::new(("terminal_attention", pane_id)),
+        needs_you,
+    );
 
     (false, tab_action)
 }
@@ -334,7 +359,9 @@ pub(crate) fn last_rendered_tab_bar_layout(
     ctx: &egui::Context,
     pane_id: PaneId,
 ) -> Option<TerminalTabBarLayout> {
-    ctx.data(|d| d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", pane_id))))
+    ctx.data(|d| {
+        d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", pane_id)))
+    })
 }
 
 static LOG_OUTSIDE_WORKSPACE_BADGE_RESERVE: Once = Once::new();
@@ -380,12 +407,21 @@ fn render_name_bar_and_tabs(
     let mut tab_action = None;
     let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id));
     let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
-        .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
+        .filter(|_| {
+            !matches!(agent_state, Some(AgentState::NeedsYou))
+                || crate::ui::activity::attention(ui.ctx()).alpha > 0.0
+        });
     let escalation_lbl = crate::ui::activity::escalation_label(agent_state, is_error);
     let has_escalation = is_error
         || matches!(
             agent_state,
-            Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted | AgentState::Failed | AgentState::ExitedUnreported)
+            Some(
+                AgentState::Blocked
+                    | AgentState::NeedsYou
+                    | AgentState::Interrupted
+                    | AgentState::Failed
+                    | AgentState::ExitedUnreported
+            )
         );
     if matches!(agent_state, Some(AgentState::Working)) && !is_error {
         LOG_WORKING_NO_ESCALATION.call_once(|| {
@@ -464,10 +500,8 @@ fn render_name_bar_and_tabs(
         } else {
             bar_rect.right()
         };
-        let tabs_bar_rect = egui::Rect::from_min_max(
-            bar_rect.min,
-            egui::pos2(tabs_right, bar_rect.bottom()),
-        );
+        let tabs_bar_rect =
+            egui::Rect::from_min_max(bar_rect.min, egui::pos2(tabs_right, bar_rect.bottom()));
 
         let tab_count = group.members.len().max(1);
         let tab_width = tabs_bar_rect.width() / tab_count as f32;
@@ -478,7 +512,10 @@ fn render_name_bar_and_tabs(
 
         for (idx, &member_id) in group.members.iter().enumerate() {
             let tab_rect = egui::Rect::from_min_size(
-                egui::pos2(tabs_bar_rect.left() + idx as f32 * tab_width, tabs_bar_rect.top()),
+                egui::pos2(
+                    tabs_bar_rect.left() + idx as f32 * tab_width,
+                    tabs_bar_rect.top(),
+                ),
                 egui::vec2(tab_width, TAB_BAR_HEIGHT),
             );
             let pip_space = if tab_activities.contains_key(&member_id) {
@@ -586,7 +623,14 @@ fn render_name_bar_and_tabs(
 
         if is_error {
             let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
+            crate::ui::activity::paint_pip(
+                ui.painter(),
+                egui::pos2(cx, bar_rect.center().y),
+                TAB_PIP_RADIUS,
+                Some(&AgentState::Failed),
+                colors.state_error,
+                false,
+            );
         } else if let Some(state) = agent_state {
             paint_activity_dot(ui, bar_rect, state, colors);
         }
@@ -654,7 +698,13 @@ fn render_name_bar_and_tabs(
             if !galley.is_empty() {
                 let title_col = if matches!(
                     agent_state,
-                    Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted | AgentState::Failed | AgentState::ExitedUnreported)
+                    Some(
+                        AgentState::Blocked
+                            | AgentState::NeedsYou
+                            | AgentState::Interrupted
+                            | AgentState::Failed
+                            | AgentState::ExitedUnreported
+                    )
                 ) || is_error
                 {
                     colors.text_primary
@@ -702,7 +752,14 @@ fn paint_activity_dot(
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(state), color, false);
+    crate::ui::activity::paint_pip(
+        ui.painter(),
+        egui::pos2(cx, bar_rect.center().y),
+        TAB_PIP_RADIUS,
+        Some(state),
+        color,
+        false,
+    );
 }
 
 fn paint_status_badge(
@@ -798,9 +855,7 @@ fn is_terminal_outside_workspace(
     if terminal.outside_workspace_root.as_deref() == Some(root)
         && terminal
             .outside_workspace_checked_at
-            .is_some_and(|checked_at| {
-                checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL
-            })
+            .is_some_and(|checked_at| checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL)
     {
         return terminal.outside_workspace_cached;
     }
@@ -836,6 +891,9 @@ mod tests {
         assert_eq!(banner.height(), 56.0);
         assert_eq!(tail.min.y, banner.max.y);
         assert_eq!(tail.max.y, hint.min.y);
-        assert_eq!(hint.max, content.max, "Enter hint has its own reserved line");
+        assert_eq!(
+            hint.max, content.max,
+            "Enter hint has its own reserved line"
+        );
     }
 }

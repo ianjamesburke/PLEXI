@@ -2,9 +2,7 @@
 //! Attention Queue Focus-Lock Rule, Decision Overlay, Context Restore, and Strict Input Ownership
 //! (`SPEC.md` R31–R42).
 
-use crate::app::attention_queue::{
-    ESC_BACKOUT_HINT, OVERLAY_QUESTION, QueueCategory, QueueOption,
-};
+use crate::app::attention_queue::{QueueCategory, QueueOption, ESC_BACKOUT_HINT, OVERLAY_QUESTION};
 use crate::app::input_router::PlexiInput;
 use crate::app::zoom::{ColumnWidthPreset, TileContentTier, ZoomLevel};
 use crate::host::keys::Direction;
@@ -45,7 +43,8 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
     let p3 = h.add_test_pane();
     let ctx_id = h.app.router.active().context_id;
 
-    h.app.set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
+    h.app
+        .set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
     h.app.focus_pane_in_strip(p2);
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
     assert_eq!(h.app.active_focused_pane_id(), Some(p2));
@@ -212,14 +211,16 @@ fn sibling_cards_navigation_and_context_restore_r34_r36() {
     let ctx0_p1 = h.add_test_pane();
     let ctx0_p2 = h.add_test_pane();
     let ctx0_id = h.app.router.active().context_id;
-    h.app.set_context_columns(ctx0_id, vec![vec![ctx0_p1], vec![ctx0_p2]]);
+    h.app
+        .set_context_columns(ctx0_id, vec![vec![ctx0_p1], vec![ctx0_p2]]);
     h.app.focus_pane_in_strip(ctx0_p2);
 
     // Create a sibling context (ctx1) with two panes and focus its second pane.
     let ctx1_id = h.app.create_context_without_pty("ctx-1", None);
     let ctx1_p1 = h.add_test_pane();
     let ctx1_p2 = h.add_test_pane();
-    h.app.set_context_columns(ctx1_id, vec![vec![ctx1_p1], vec![ctx1_p2]]);
+    h.app
+        .set_context_columns(ctx1_id, vec![vec![ctx1_p1], vec![ctx1_p2]]);
     h.app.focus_pane_in_strip(ctx1_p2);
 
     // Switch back to ctx0 -> R36 must restore ctx0_p2!
@@ -255,19 +256,26 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
     let mut h = HostHarness::new();
     let root_pane = h.add_test_pane();
     let root_ctx_id = h.app.router.active().context_id;
-    h.app.set_context_columns(root_ctx_id, vec![vec![root_pane]]);
+    h.app
+        .set_context_columns(root_ctx_id, vec![vec![root_pane]]);
     h.app.focus_pane_in_strip(root_pane);
 
     // Add two child contexts under root_ctx_id.
-    let child_a_id = h.app.create_context_without_pty("child-a", Some(root_ctx_id));
+    let child_a_id = h
+        .app
+        .create_context_without_pty("child-a", Some(root_ctx_id));
     let child_a_pane = h.add_test_pane();
-    h.app.set_context_columns(child_a_id, vec![vec![child_a_pane]]);
+    h.app
+        .set_context_columns(child_a_id, vec![vec![child_a_pane]]);
     h.app.focus_pane_in_strip(child_a_pane);
 
-    let child_b_id = h.app.create_context_without_pty("child-b", Some(root_ctx_id));
+    let child_b_id = h
+        .app
+        .create_context_without_pty("child-b", Some(root_ctx_id));
     let child_b_p1 = h.add_test_pane();
     let child_b_p2 = h.add_test_pane();
-    h.app.set_context_columns(child_b_id, vec![vec![child_b_p1], vec![child_b_p2]]);
+    h.app
+        .set_context_columns(child_b_id, vec![vec![child_b_p1], vec![child_b_p2]]);
     h.app.focus_pane_in_strip(child_b_p2);
 
     // Enqueue an Ask on child_b_p2.
@@ -357,7 +365,8 @@ fn attention_queue_ordering_and_focus_lock_rule_r37_r38() {
     let pane_a = h.add_test_pane();
     let pane_b = h.add_test_pane();
     let ctx_id = h.app.router.active().context_id;
-    h.app.set_context_columns(ctx_id, vec![vec![pane_a], vec![pane_b]]);
+    h.app
+        .set_context_columns(ctx_id, vec![vec![pane_a], vec![pane_b]]);
     h.app.focus_pane_in_strip(pane_a);
 
     // Enqueue Done, Result, Failed, and an Ask on focused pane_a at t=5000.
@@ -386,8 +395,13 @@ fn attention_queue_ordering_and_focus_lock_rule_r37_r38() {
 
     // Now an ask with an OLDER timestamp (t=1000) arrives from unfocused pane_b.
     // Because pane_a is focused and has a locked ask, `ask-pane-a` MUST stay at index 0!
-    h.app
-        .enqueue_ask("ask-pane-b", pane_b, "git push origin main", 1_000, Vec::new());
+    h.app.enqueue_ask(
+        "ask-pane-b",
+        pane_b,
+        "git push origin main",
+        1_000,
+        Vec::new(),
+    );
     let ids: Vec<&str> = h
         .app
         .attention_queue
@@ -413,13 +427,7 @@ fn attention_queue_ordering_and_focus_lock_rule_r37_r38() {
     assert!(h.app.attention_queue.open);
     assert!(!h.app.dismiss_queue_bar("ask-pane-b"));
     assert!(h.app.dismiss_queue_bar("fail-1"));
-    assert!(
-        !h.app
-            .attention_queue
-            .items
-            .iter()
-            .any(|b| b.id == "fail-1")
-    );
+    assert!(!h.app.attention_queue.items.iter().any(|b| b.id == "fail-1"));
 }
 
 /// R39: Decision Overlay interaction:
@@ -453,8 +461,13 @@ fn decision_overlay_verdict_and_esc_handling_r39() {
             recommended: false,
         },
     ];
-    h.app
-        .enqueue_ask("ask-overlay-1", pane_a, "curl https://plexiapp.com", 1_000, options);
+    h.app.enqueue_ask(
+        "ask-overlay-1",
+        pane_a,
+        "curl https://plexiapp.com",
+        1_000,
+        options,
+    );
 
     // Summon via Cmd+Alt+B.
     h.app.summon_decision_overlay();
@@ -516,7 +529,8 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
     let p2 = h.add_test_pane();
     let p3 = h.add_test_pane();
     let ctx_id = h.app.router.active().context_id;
-    h.app.set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
+    h.app
+        .set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
     h.app.focus_pane_in_strip(p1);
 
     // At ZoomLevel::Columns with no overlay open: focused visible pane p1 qualifies for input;

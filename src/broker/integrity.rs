@@ -295,10 +295,7 @@ mod tests {
             crate::broker::gate::NeedsYouResolution::Approved
         );
         assert!(
-            monitor
-                .list_needs_you()
-                .iter()
-                .all(|row| row.id != item_id),
+            monitor.list_needs_you().iter().all(|row| row.id != item_id),
             "the profile-change item stays open"
         );
         assert!(

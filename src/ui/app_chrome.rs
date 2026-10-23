@@ -35,12 +35,7 @@ impl<'a> AppChrome<'a> {
         self.colors.border
     }
 
-    pub(crate) fn text_label(
-        &self,
-        ui: &mut Ui,
-        text: &str,
-        style: TextLabelStyle,
-    ) -> Response {
+    pub(crate) fn text_label(&self, ui: &mut Ui, text: &str, style: TextLabelStyle) -> Response {
         let TextLabelStyle {
             size,
             color,

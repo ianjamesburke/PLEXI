@@ -91,10 +91,8 @@ impl PlexiApp {
                 .cloned()
                 .collect();
             if !bare_enter.is_empty() && app_pane.runtime.submit_on_focused_text_input_enter() {
-                let synthetic = crate::app::input_router::PlexiInput::synthetic(
-                    bare_enter,
-                    input.modifiers(),
-                );
+                let synthetic =
+                    crate::app::input_router::PlexiInput::synthetic(bare_enter, input.modifiers());
                 if app_pane.runtime.handle_key(&synthetic)
                     == crate::app::app_trait::KeyDisposition::Consumed
                 {
@@ -145,8 +143,10 @@ impl PlexiApp {
                 .cloned()
                 .collect();
             if !arrow_presses.is_empty() {
-                let synthetic =
-                    crate::app::input_router::PlexiInput::synthetic(arrow_presses, input.modifiers());
+                let synthetic = crate::app::input_router::PlexiInput::synthetic(
+                    arrow_presses,
+                    input.modifiers(),
+                );
                 let disposition = app_pane.runtime.handle_key(&synthetic);
                 if disposition == crate::app::app_trait::KeyDisposition::Consumed {
                     input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
@@ -233,7 +233,10 @@ impl PlexiApp {
         // The owner pane must be a terminal (including an exited one — its
         // "[process exited]" view auto-closes on the next keypress, which it now
         // reads from this buffer).
-        self.windows.iter().find_map(|w| w.panes.get(&pane_id))?.as_terminal()?;
+        self.windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane_id))?
+            .as_terminal()?;
 
         let router = crate::app::input_router::PlexiInput::take_from(ctx);
         let (keyboard_events, modifiers) = router.into_events_and_modifiers();
@@ -391,35 +394,39 @@ impl PlexiApp {
                         }
                         WasmHostEffect::Notify { title, body, icon } => {
                             if let Some(window_index) = source_window_index {
-                                if let Some(error) = native_wasm_notification_contract_error(icon.as_deref()) {
+                                if let Some(error) =
+                                    native_wasm_notification_contract_error(icon.as_deref())
+                                {
                                     let error = error.to_string();
-                                    log::warn!("wasm effect: notify rejected pane_id={pane_id}: {error}");
+                                    log::warn!(
+                                        "wasm effect: notify rejected pane_id={pane_id}: {error}"
+                                    );
                                     Some(InputEvent::NotifyResult(Err(error)))
                                 } else {
-                                let source_context_id = self.windows[window_index].context_id;
-                                let source_window_id = self.windows[window_index].window_id;
-                                let notify_id = crate::app::notifications::new_notify_id(&format!(
-                                    "wasm:{pane_id}"
-                                ));
-                                log::info!(
+                                    let source_context_id = self.windows[window_index].context_id;
+                                    let source_window_id = self.windows[window_index].window_id;
+                                    let notify_id = crate::app::notifications::new_notify_id(
+                                        &format!("wasm:{pane_id}"),
+                                    );
+                                    log::info!(
                                     "wasm effect: notify pane_id={pane_id} context_id={source_context_id}"
                                 );
-                                // `WasmHostEffect::Notify` carries no scope, so
-                                // a guest gets the shared default and cannot
-                                // request global; that needs a WIT change.
-                                let queued = self.enqueue_notification(
-                                    crate::app::notifications::NotifySource::Wasm,
-                                    PendingNotification {
-                                        notify_id,
-                                        sender_pane_id: pane_id,
-                                        source_context_id,
-                                        source_window_id,
-                                        title,
-                                        body,
-                                        ..Default::default()
-                                    },
-                                );
-                                Some(InputEvent::NotifyResult(queued.then_some(()).ok_or_else(|| {
+                                    // `WasmHostEffect::Notify` carries no scope, so
+                                    // a guest gets the shared default and cannot
+                                    // request global; that needs a WIT change.
+                                    let queued = self.enqueue_notification(
+                                        crate::app::notifications::NotifySource::Wasm,
+                                        PendingNotification {
+                                            notify_id,
+                                            sender_pane_id: pane_id,
+                                            source_context_id,
+                                            source_window_id,
+                                            title,
+                                            body,
+                                            ..Default::default()
+                                        },
+                                    );
+                                    Some(InputEvent::NotifyResult(queued.then_some(()).ok_or_else(|| {
                                     "notification was rejected because delivery is disabled or the queue is full".to_string()
                                 })))
                                 }
@@ -703,20 +710,16 @@ impl PlexiApp {
                                     &subscription_id,
                                 );
                             match result {
-                                Ok(removed) => {
-                                    crate::protocol::PlexiEvent::AppEventsUnsubscribed {
-                                        request_id,
-                                        removed,
-                                        error: None,
-                                    }
-                                }
-                                Err(error) => {
-                                    crate::protocol::PlexiEvent::AppEventsUnsubscribed {
-                                        request_id,
-                                        removed: false,
-                                        error: Some(error),
-                                    }
-                                }
+                                Ok(removed) => crate::protocol::PlexiEvent::AppEventsUnsubscribed {
+                                    request_id,
+                                    removed,
+                                    error: None,
+                                },
+                                Err(error) => crate::protocol::PlexiEvent::AppEventsUnsubscribed {
+                                    request_id,
+                                    removed: false,
+                                    error: Some(error),
+                                },
                             }
                         }
                         other => {
@@ -757,23 +760,31 @@ impl PlexiApp {
                 // (stint 0013/0014). routing.rs already checked panes.read /
                 // panes.control; execute it through the same handler CLI
                 // requests take over PLEXI_SOCKET.
-                AppCommand::Fleet(action) => {
-                    match action {
-                        crate::app::agents_app::FleetAction::Seen(id) => self.mark_agent_seen(id),
-                        crate::app::agents_app::FleetAction::Dismiss(id) => {
-                            self.dismiss_fleet_agent(Some(id), false);
-                        }
-                        crate::app::agents_app::FleetAction::ReviewAttention { pane_id } => {
-                            self.open_attention_overlay("agents");
-                            if let Some(index) = crate::overlays::attention::open_items().iter().position(|r| r.resource == format!("pane:{pane_id}") || r.actor == format!("pane:{pane_id}")) {
-                                self.attention.selected = index;
-                            }
-                        },
-                        crate::app::agents_app::FleetAction::Reply { pane_id, from_pane_id, text } => {
-                            self.reply_to_fleet_agent(pane_id, from_pane_id, text);
+                AppCommand::Fleet(action) => match action {
+                    crate::app::agents_app::FleetAction::Seen(id) => self.mark_agent_seen(id),
+                    crate::app::agents_app::FleetAction::Dismiss(id) => {
+                        self.dismiss_fleet_agent(Some(id), false);
+                    }
+                    crate::app::agents_app::FleetAction::ReviewAttention { pane_id } => {
+                        self.open_attention_overlay("agents");
+                        if let Some(index) = crate::overlays::attention::open_items()
+                            .iter()
+                            .position(|r| {
+                                r.resource == format!("pane:{pane_id}")
+                                    || r.actor == format!("pane:{pane_id}")
+                            })
+                        {
+                            self.attention.selected = index;
                         }
                     }
-                }
+                    crate::app::agents_app::FleetAction::Reply {
+                        pane_id,
+                        from_pane_id,
+                        text,
+                    } => {
+                        self.reply_to_fleet_agent(pane_id, from_pane_id, text);
+                    }
+                },
                 AppCommand::ForwardPaneRequest { request } => {
                     self.handle_pane_ipc_request(request);
                 }
@@ -1184,27 +1195,27 @@ impl PlexiApp {
                             None,
                         );
                     } else {
-                    self.enqueue_notification(
-                        crate::app::notifications::NotifySource::App,
-                        PendingNotification {
-                            notify_id,
-                            sender_pane_id,
-                            source_context_id,
-                            source_window_id: notif_source_win_id,
-                            title,
-                            body,
-                            kind,
-                            options,
-                            input_prompt,
-                            required,
-                            scope,
-                            image_inline,
-                            image_pipe_id,
-                            timeout_secs,
-                            on_dismiss,
-                            ..Default::default()
-                        },
-                    );
+                        self.enqueue_notification(
+                            crate::app::notifications::NotifySource::App,
+                            PendingNotification {
+                                notify_id,
+                                sender_pane_id,
+                                source_context_id,
+                                source_window_id: notif_source_win_id,
+                                title,
+                                body,
+                                kind,
+                                options,
+                                input_prompt,
+                                required,
+                                scope,
+                                image_inline,
+                                image_pipe_id,
+                                timeout_secs,
+                                on_dismiss,
+                                ..Default::default()
+                            },
+                        );
                     }
                 }
                 AppCommand::DeliverNotifyAction {

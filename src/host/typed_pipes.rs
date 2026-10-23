@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::io::Write;
-use std::path::PathBuf;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
 /// Binary frames are `u32 BE length || payload` over a platform-native
@@ -16,6 +15,7 @@ use std::path::PathBuf;
 /// by the PGAP wire.
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -226,7 +226,9 @@ impl TypedPipeRegistry {
                                 thread::sleep(std::time::Duration::from_millis(50));
                             }
                             Err(e) => {
-                                log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
+                                log::error!(
+                                    "typed_pipes: accept failed on {socket_path_drain}: {e}"
+                                );
                                 let _ = std::fs::remove_file(&socket_path_drain);
                                 return;
                             }
@@ -283,8 +285,7 @@ impl TypedPipeRegistry {
             let pipe_name = format!(r"\\.\pipe\plexi-{}", uuid::Uuid::new_v4());
             log::info!("typed_pipes: opening binary pipe {pipe_id} at {pipe_name}");
 
-            let wide_name: Vec<u16> =
-                pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let wide_name: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
 
             // FILE_FLAG_OVERLAPPED is what lets the drain thread poll for a
             // client while still observing `shutdown`. Without it
@@ -333,8 +334,7 @@ impl TypedPipeRegistry {
             let drain_handle = thread::Builder::new()
                 .name(format!("pipe-drain-{pipe_id}"))
                 .spawn(move || {
-                    let pipe_handle =
-                        pipe_handle_raw as windows_sys::Win32::Foundation::HANDLE;
+                    let pipe_handle = pipe_handle_raw as windows_sys::Win32::Foundation::HANDLE;
                     log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
 
                     let connected = win32_await_client(
@@ -360,9 +360,7 @@ impl TypedPipeRegistry {
                     loop {
                         if let Some(frame) = ring_drain.pop() {
                             if let Err(e) = win32_write_frame(pipe_handle, &frame) {
-                                log::warn!(
-                                    "typed_pipes: drain write error on {pipe_id_log}: {e}"
-                                );
+                                log::warn!("typed_pipes: drain write error on {pipe_id_log}: {e}");
                                 failed = true;
                                 break;
                             }

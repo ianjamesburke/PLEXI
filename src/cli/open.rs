@@ -461,8 +461,12 @@ pub fn open_mcp_by_name(
 
     let title = format!("mcp: {name}");
     pane_new_cli(PaneNewCliArgs {
-        name: Some(&title), layout, from_pane_id, cwd,
-        app: Some("mcp-renderer"), mcp: &[name.to_string()],
+        name: Some(&title),
+        layout,
+        from_pane_id,
+        cwd,
+        app: Some("mcp-renderer"),
+        mcp: &[name.to_string()],
         ..Default::default()
     })
 }

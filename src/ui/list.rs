@@ -837,7 +837,14 @@ fn draw_pips(
             time,
             dot_i,
         );
-        crate::ui::activity::paint_pip(ui.painter(), center, PANE_PIP_RADIUS, agent_state, color, hidden);
+        crate::ui::activity::paint_pip(
+            ui.painter(),
+            center,
+            PANE_PIP_RADIUS,
+            agent_state,
+            color,
+            hidden,
+        );
     }
     if pips.count > capped {
         let overflow_x = start_x + dots_width(capped) + style::SPACE_XS;

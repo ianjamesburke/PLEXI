@@ -146,7 +146,11 @@ pub fn blocked_incomplete_arg(
     fn relax(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
         match path.split_first() {
             Some((head, rest)) => cmd.mut_subcommand(*head, |sub| relax(sub, rest, id)),
-            None => cmd.mut_arg(id, |arg| arg.num_args(0..=1).value_parser(clap::builder::StringValueParser::new()).default_missing_value("missing-experiment-value")),
+            None => cmd.mut_arg(id, |arg| {
+                arg.num_args(0..=1)
+                    .value_parser(clap::builder::StringValueParser::new())
+                    .default_missing_value("missing-experiment-value")
+            }),
         }
     }
     let mut cmd = Cli::command();
@@ -290,9 +294,7 @@ pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<Stri
     }
     let bin = invoked_bin_name(args);
     let suggestion = closest_subcommand_suggestion(word, cmd);
-    log::info!(
-        "cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}"
-    );
+    log::info!("cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}");
     let headline = match suggestion {
         Some(matched) => format!("error: unknown command '{word}'. Did you mean `{matched}`?"),
         None => format!("error: unknown command '{word}'"),
@@ -792,7 +794,9 @@ mod tests {
                 "arg0={arg0:?} output={out}"
             );
             assert!(
-                out.contains(&format!("For more information, try '{expected_bin} --help'.")),
+                out.contains(&format!(
+                    "For more information, try '{expected_bin} --help'."
+                )),
                 "arg0={arg0:?} output={out}"
             );
         }

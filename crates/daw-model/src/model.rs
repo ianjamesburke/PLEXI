@@ -32,17 +32,48 @@ pub const PAN_MAX: f32 = 1.0;
 /// — the same rules everywhere, never a second hand-rolled checker.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationError {
-    TempoOutOfRange { tempo_bpm: f64 },
-    VolumeOutOfRange { track: TrackId, volume: f32 },
-    PanOutOfRange { track: TrackId, pan: f32 },
-    MissingClipSource { clip: ClipId, source: SourceId },
-    ClipKindMismatch { clip: ClipId, track: TrackId },
-    ZeroLengthClip { clip: ClipId },
-    ClipWindowExceedsSource { clip: ClipId, source_offset: u64, length: u64, duration: u64 },
-    ClipTimelineOverflow { clip: ClipId },
-    DuplicateId { id: u64 },
-    IdNotBelowNextId { id: u64, next_id: u64 },
-    LoopInverted { start: u64, end: u64 },
+    TempoOutOfRange {
+        tempo_bpm: f64,
+    },
+    VolumeOutOfRange {
+        track: TrackId,
+        volume: f32,
+    },
+    PanOutOfRange {
+        track: TrackId,
+        pan: f32,
+    },
+    MissingClipSource {
+        clip: ClipId,
+        source: SourceId,
+    },
+    ClipKindMismatch {
+        clip: ClipId,
+        track: TrackId,
+    },
+    ZeroLengthClip {
+        clip: ClipId,
+    },
+    ClipWindowExceedsSource {
+        clip: ClipId,
+        source_offset: u64,
+        length: u64,
+        duration: u64,
+    },
+    ClipTimelineOverflow {
+        clip: ClipId,
+    },
+    DuplicateId {
+        id: u64,
+    },
+    IdNotBelowNextId {
+        id: u64,
+        next_id: u64,
+    },
+    LoopInverted {
+        start: u64,
+        end: u64,
+    },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -62,11 +93,9 @@ impl std::fmt::Display for ValidationError {
                 "track {} pan {pan} is not finite or outside {PAN_MIN}..={PAN_MAX}",
                 track.0
             ),
-            Self::MissingClipSource { clip, source } => write!(
-                f,
-                "clip {} references missing source {}",
-                clip.0, source.0
-            ),
+            Self::MissingClipSource { clip, source } => {
+                write!(f, "clip {} references missing source {}", clip.0, source.0)
+            }
             Self::ClipKindMismatch { clip, track } => write!(
                 f,
                 "clip {} source kind does not match track {} kind",
@@ -216,8 +245,7 @@ impl Project {
     }
 
     pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json)
-            .map_err(|e| format!("daw project deserialization failed: {e}"))
+        serde_json::from_str(json).map_err(|e| format!("daw project deserialization failed: {e}"))
     }
 
     #[must_use]
@@ -449,7 +477,11 @@ impl DawModel {
             DawCommand::AddTrack { kind, name } => self.add_track(kind, name),
             DawCommand::RemoveTrack { track } => self.remove_track(track),
             DawCommand::RenameTrack { track, name } => self.rename_track(track, name),
-            DawCommand::AddSource { kind, path, duration } => self.add_source(kind, path, duration),
+            DawCommand::AddSource {
+                kind,
+                path,
+                duration,
+            } => self.add_source(kind, path, duration),
             DawCommand::RemoveSource { source } => self.remove_source(source),
             DawCommand::AddClip {
                 track,
@@ -476,7 +508,11 @@ impl DawModel {
             DawCommand::Play => self.set_playing(true),
             DawCommand::Stop => self.set_playing(false),
             DawCommand::Seek { position } => self.seek(position),
-            DawCommand::SetLoop { enabled, start, end } => self.set_loop(enabled, start, end),
+            DawCommand::SetLoop {
+                enabled,
+                start,
+                end,
+            } => self.set_loop(enabled, start, end),
             DawCommand::Undo => self.undo(),
             DawCommand::Redo => self.redo(),
         }
@@ -578,7 +614,9 @@ impl DawModel {
         source_offset: u64,
     ) -> Result<(), ApplyOutcome> {
         if length == 0 {
-            return Err(ApplyOutcome::Rejected(format!("{what}: length must be > 0")));
+            return Err(ApplyOutcome::Rejected(format!(
+                "{what}: length must be > 0"
+            )));
         }
         match source_offset.checked_add(length) {
             Some(end) if end <= source.duration => {}

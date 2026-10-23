@@ -60,7 +60,6 @@ impl From<egui_term::PtyExitStatus> for ExitStatus {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PaneLifecycleEvent {

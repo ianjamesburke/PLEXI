@@ -564,7 +564,11 @@ fn tool_permissions(
         map.insert("ok".to_string(), serde_json::json!(ok));
     }
     let text = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
-    if ok { Ok(text) } else { Err(text) }
+    if ok {
+        Ok(text)
+    } else {
+        Err(text)
+    }
 }
 
 /// `list_event_streams` — read declared streams from the global timeline,
@@ -821,9 +825,7 @@ mod tests {
     fn start_test_server(grant_target: Option<&str>) -> (u16, String, std::path::PathBuf) {
         static NEXT_PANE_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(900_000_000);
-        use crate::broker::{
-            ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource,
-        };
+        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
         let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let actor_id = format!("mcp:pane:{pane_id}");
         let workspace_root = PathBuf::from(format!("/workspace/host-mcp-test-{pane_id}"));
@@ -968,8 +970,8 @@ mod tests {
 
     #[test]
     fn pane_credential_lists_and_calls_only_context_app_tools() {
-        use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+        use crate::protocol::{AiTool, PlexiEvent};
 
         let (port, _test_token, profile) = start_test_server(None);
         let context_a = 900_000_100u64;
@@ -1121,8 +1123,8 @@ mod tests {
     /// tool returns the event.
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
-        use crate::protocol::{AppEventActor, EventStreamDecl};
         use crate::host::app_timeline::EmittedEvent;
+        use crate::protocol::{AppEventActor, EventStreamDecl};
         let app = "mcp-it-app";
         let stream = "it.tick";
         // `start_test_server` registers its pane credential with `context_id

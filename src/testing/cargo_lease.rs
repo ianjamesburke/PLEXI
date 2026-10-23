@@ -71,7 +71,10 @@ fn cargo_lease_propagates_exit_code() {
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .status()
         .expect("run wrapper with true");
-    assert!(ok.success(), "wrapper must succeed when the command succeeds");
+    assert!(
+        ok.success(),
+        "wrapper must succeed when the command succeeds"
+    );
 
     let fail = wrapper()
         .arg("false")
@@ -117,8 +120,7 @@ fn cargo_lease_serializes_concurrent_invocations() {
     let script_a = script_path();
     let lock_a = lock_path.clone();
     let marker_a = marker_path.clone();
-    let handle_a =
-        std::thread::spawn(move || run_marked(&script_a, &lock_a, &marker_a, "a"));
+    let handle_a = std::thread::spawn(move || run_marked(&script_a, &lock_a, &marker_a, "a"));
 
     // Give the first invocation a head start so ordering is deterministic
     // enough to reason about, though the assertion below holds regardless
@@ -128,8 +130,7 @@ fn cargo_lease_serializes_concurrent_invocations() {
     let script_b = script_path();
     let lock_b = lock_path.clone();
     let marker_b = marker_path.clone();
-    let handle_b =
-        std::thread::spawn(move || run_marked(&script_b, &lock_b, &marker_b, "b"));
+    let handle_b = std::thread::spawn(move || run_marked(&script_b, &lock_b, &marker_b, "b"));
 
     handle_a.join().expect("thread a");
     handle_b.join().expect("thread b");
@@ -157,7 +158,10 @@ fn cargo_lease_serializes_concurrent_invocations() {
             panic!("unexpected marker line: {line:?}");
         }
     }
-    assert!(open_label.is_none(), "an invocation never closed: {contents}");
+    assert!(
+        open_label.is_none(),
+        "an invocation never closed: {contents}"
+    );
 }
 
 // ─── SIGKILL self-release ───────────────────────────────────────────────────
@@ -220,10 +224,7 @@ fn cargo_lease_nested_invocation_skips_the_lock() {
     // Hold the real lock in the background: this outer invocation writes a
     // ready marker once it has (almost certainly) acquired the lock, then
     // sleeps well past the nested call's own duration.
-    let inline = format!(
-        "touch {ready}; sleep 5",
-        ready = ready_marker.display()
-    );
+    let inline = format!("touch {ready}; sleep 5", ready = ready_marker.display());
     let mut outer_holder = wrapper()
         .arg("bash")
         .arg("-c")

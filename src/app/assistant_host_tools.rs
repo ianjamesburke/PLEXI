@@ -236,20 +236,21 @@ impl PlexiApp {
                     .filter(|value| !value.is_empty());
                 let live = crate::plexi_ai::tool_dispatch::live_exposed_tools()
                     .into_iter()
-                    .map(|(app_id, pane_id, name, description)| {
-                        crate::cli::introspect::LiveTool {
+                    .map(
+                        |(app_id, pane_id, name, description)| crate::cli::introspect::LiveTool {
                             app_id,
                             pane_id,
                             name,
                             description,
-                        }
-                    })
+                        },
+                    )
                     .collect::<Vec<_>>();
                 let permissions = crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
                 )
                 .list_entries();
-                let permissions = serde_json::to_value(&permissions).unwrap_or(serde_json::json!([]));
+                let permissions =
+                    serde_json::to_value(&permissions).unwrap_or(serde_json::json!([]));
                 let permissions = permissions.as_array().cloned().unwrap_or_default();
                 let panes = self.introspect_panes();
                 let doc = crate::cli::introspect::assemble(
@@ -343,7 +344,8 @@ impl PlexiApp {
                     })
                     .unwrap_or_default();
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
-                if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id)) {
+                if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id))
+                {
                     log::info!(
                         "assistant_host_tool: panes.open already_open pane={} path={}",
                         already.pane_id,
@@ -416,7 +418,8 @@ impl PlexiApp {
                     })
                     .unwrap_or_default();
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
-                if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id)) {
+                if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id))
+                {
                     log::info!(
                         "assistant_host_tool: apps.open already_open pane={} path={}",
                         already.pane_id,
@@ -645,8 +648,9 @@ impl PlexiApp {
                         .get("agent")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("assistant");
-                    match crate::host::changes::prepare_edit(&resolved, old_string, new_string, agent)
-                    {
+                    match crate::host::changes::prepare_edit(
+                        &resolved, old_string, new_string, agent,
+                    ) {
                         Ok(prepared) => {
                             log::info!(
                                 "assistant_host_tool: files.edit proposed change set {} path={} applied=false",
@@ -1383,9 +1387,9 @@ fn match_open_editor(
 
 fn is_open_editor(resolved: &std::path::Path, editor_paths: &[std::path::PathBuf]) -> bool {
     let want = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
-    editor_paths.iter().any(|path| {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()) == want
-    })
+    editor_paths
+        .iter()
+        .any(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()) == want)
 }
 
 fn read_scoped_file(roots: &[std::path::PathBuf], raw: &str) -> Result<String, String> {
@@ -1766,8 +1770,11 @@ mod tests {
                 .starts_with("net_host_not_allowed"),
             "file:// must be refused under an empty allowlist"
         );
-        assert!(refusal(&mut harness, r#"{"url":"https://example.com","method":"TRACE"}"#)
-            .starts_with("invalid_input"));
+        assert!(refusal(
+            &mut harness,
+            r#"{"url":"https://example.com","method":"TRACE"}"#
+        )
+        .starts_with("invalid_input"));
 
         let missing_pane = {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -1801,7 +1808,10 @@ mod tests {
                 "{url} must be rejected, got: {error}"
             );
         }
-        assert_eq!(super::fetch_destination_rejected("https://example.com/x"), None);
+        assert_eq!(
+            super::fetch_destination_rejected("https://example.com/x"),
+            None
+        );
     }
 
     /// The allowlist gating `host.net.fetch` is the pane's own
@@ -2261,12 +2271,9 @@ mod tests {
         assert!(output.contains("plexi permissions reset"), "{output}");
         assert!(output.contains("plexi permissions list"), "{output}");
         assert!(!output.contains("gear icon"), "{output}");
-        let open = harness.app.handle_assistant_host_tool(
-            "host.introspect",
-            "{}",
-            pane,
-            context,
-        );
+        let open = harness
+            .app
+            .handle_assistant_host_tool("host.introspect", "{}", pane, context);
         let open_output = open.output_json.expect("unfiltered introspect");
         assert!(
             open_output.contains(&format!("\"id\":{pane}")),
@@ -2513,9 +2520,8 @@ mod tests {
 
     #[test]
     fn assistant_proposes_change_set_for_open_editor_outside_workspace() {
-        let _experiments = crate::release::set_test_experiments(&[
-            crate::release::ReleaseFeature::ChangeSets,
-        ]);
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::ChangeSets]);
         let workspace = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let file = outside.path().join("temp.md");
@@ -2527,7 +2533,9 @@ mod tests {
             .set_context_root(workspace.path().to_path_buf(), None);
         let context = harness.app.windows[0].context_id;
         harness.app.open_builtin_app_pane(
-            Box::new(crate::app::text_editor_app::TextEditorApp::new(file.clone())),
+            Box::new(crate::app::text_editor_app::TextEditorApp::new(
+                file.clone(),
+            )),
             crate::app::permissions::AppPermissions::builtin(),
             workspace.path().to_path_buf(),
             None,
@@ -2575,7 +2583,9 @@ mod tests {
             editor_id,
             context,
         );
-        let bare_body = bare.output_json.expect("bare name resolves to the open editor");
+        let bare_body = bare
+            .output_json
+            .expect("bare name resolves to the open editor");
         assert!(
             bare_body.contains(&file.display().to_string()),
             "{bare_body}"

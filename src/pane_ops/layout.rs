@@ -3,7 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::host::command::{HostAction, Placement};
-use crate::host::context::{Window, replace_child};
+use crate::host::context::{replace_child, Window};
 use crate::host::effect::HostEffect;
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
@@ -135,9 +135,7 @@ pub(crate) fn build_squad_tree(
     } else {
         match layout {
             crate::protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
-            crate::protocol::SubContextLayout::Columns => {
-                tiles.insert_horizontal_tile(pane_tiles)
-            }
+            crate::protocol::SubContextLayout::Columns => tiles.insert_horizontal_tile(pane_tiles),
         }
     };
     (egui_tiles::Tree::new("plexi", root, tiles), first_tile)
@@ -438,13 +436,8 @@ impl PlexiApp {
             .map(|w| w.context_id)
             .unwrap_or(0);
         let context_env = self.pane_context_env_for_context(ctx_id);
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            &context_env,
-            false,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -626,13 +619,8 @@ impl PlexiApp {
             "new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={:?}",
             context_env.root
         );
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            &context_env,
-            agent_pane,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, agent_pane);
         if let Some(cmd) = initial_cmd {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -785,7 +773,10 @@ impl PlexiApp {
     }
 
     pub(crate) fn close_focused(&mut self) {
-        if let Some(parent) = self.conjoined_parent().filter(|id| self.conjoined_parent_focus == Some(*id)) {
+        if let Some(parent) = self
+            .conjoined_parent()
+            .filter(|id| self.conjoined_parent_focus == Some(*id))
+        {
             self.zoom_out_of_context();
             self.close_pane_by_id(parent);
             return;
@@ -1818,7 +1809,10 @@ impl PlexiApp {
         // An emptied subcontext collapses entirely — delete it and zoom back
         // out to the parent, as if Cmd+Escape had been pressed.
         self.collapse_subcontext_if_empty(ctx_id);
-        log::info!("pane close: host remains running window={}", self.windows[self.active_window].window_id);
+        log::info!(
+            "pane close: host remains running window={}",
+            self.windows[self.active_window].window_id
+        );
     }
 }
 

@@ -128,18 +128,12 @@ pub fn remove_folder_secret(
     let folder = canonical_folder(folder)?;
     let account = account_name(&folder, name);
     if store.get(&account).is_none() {
-        return Err(format!(
-            "secret '{name}' not found in {}",
-            folder.display()
-        ));
+        return Err(format!("secret '{name}' not found in {}", folder.display()));
     }
     store
         .delete(&account)
         .map_err(|err| format!("folder secret delete failed: {err}"))?;
-    log::info!(
-        "folder_secrets: rm name={name} folder={}",
-        folder.display()
-    );
+    log::info!("folder_secrets: rm name={name} folder={}", folder.display());
     Ok(())
 }
 
@@ -221,10 +215,7 @@ pub fn grant_folder_secret(
     let folder = canonical_folder(folder)?;
     let account = account_name(&folder, name);
     if store.get(&account).is_none() {
-        return Err(format!(
-            "secret '{name}' not found in {}",
-            folder.display()
-        ));
+        return Err(format!("secret '{name}' not found in {}", folder.display()));
     }
     let record = grant_record(actor, name, &folder)?;
     let grant_id = record.grant_id.clone();
@@ -277,7 +268,16 @@ pub(super) fn admitted_read(
     label: &str,
     fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
 ) -> Result<ReadResult, String> {
-    admitted_read_with_posture(monitor, actor, tool, input, workspace_root, label, None, fetch)
+    admitted_read_with_posture(
+        monitor,
+        actor,
+        tool,
+        input,
+        workspace_root,
+        label,
+        None,
+        fetch,
+    )
 }
 
 /// As [`admitted_read`], using a posture snapshotted at agent spawn.
@@ -323,7 +323,10 @@ pub(super) fn admitted_read_with_posture(
             }
         }
         Admission::Denied { code } => {
-            log::info!("secrets: {tool} denied {label} actor={} code={code}", actor.id);
+            log::info!(
+                "secrets: {tool} denied {label} actor={} code={code}",
+                actor.id
+            );
             ReadResult::Denied
         }
         Admission::Proceed {
@@ -407,9 +410,7 @@ pub fn folder_secret_sheet_pending() -> bool {
 /// Hand the next sheet to the Assistant. The click reply stays here so the
 /// pane does not have to know about the waiter.
 pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
-    let mut sheets = human_sheets()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
     if sheets.armed.is_some() {
         return None;
     }
@@ -432,9 +433,7 @@ pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
 /// waiter does not finish.
 pub fn deliver_folder_secret_choice(choice: &str) -> bool {
     let armed = {
-        let mut sheets = human_sheets()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
         sheets.armed.take()
     };
     let Some(armed) = armed else {
@@ -508,9 +507,7 @@ fn human_sheets() -> &'static std::sync::Mutex<HumanSheets> {
 #[cfg(all(unix, not(test)))]
 fn post_human_sheet(pending_id: &str, actor_id: &str, resource: &str, summary: &str) {
     let (inbox, granted_tx) = {
-        let mut sheets = human_sheets()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
         if !sheets.posted.insert(pending_id.to_string()) {
             return;
         }
@@ -558,12 +555,10 @@ fn wait_for_human_choice(
         _ => gate::ApprovalChoice::Deny,
     };
     match monitor.approve_pending(&pending_id, approval) {
-        Ok(()) => log::info!(
-            "folder_secrets: human choice={choice} pending={pending_id}"
-        ),
-        Err(err) => log::info!(
-            "folder_secrets: human choice failed pending={pending_id} err={err}"
-        ),
+        Ok(()) => log::info!("folder_secrets: human choice={choice} pending={pending_id}"),
+        Err(err) => {
+            log::info!("folder_secrets: human choice failed pending={pending_id} err={err}")
+        }
     }
     let _ = granted.send(());
     human_sheets()
@@ -675,7 +670,11 @@ fn unix_socket_path(fd: i32) -> Option<std::path::PathBuf> {
     let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
     let rc = unsafe {
-        libc::getsockname(fd, &mut addr as *mut libc::sockaddr_un as *mut libc::sockaddr, &mut len)
+        libc::getsockname(
+            fd,
+            &mut addr as *mut libc::sockaddr_un as *mut libc::sockaddr,
+            &mut len,
+        )
     };
     if rc != 0 || addr.sun_family as i32 != libc::AF_UNIX {
         return None;
@@ -683,7 +682,10 @@ fn unix_socket_path(fd: i32) -> Option<std::path::PathBuf> {
     let bytes = unsafe {
         std::slice::from_raw_parts(addr.sun_path.as_ptr() as *const u8, addr.sun_path.len())
     };
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     if end == 0 {
         return None;
     }
@@ -749,12 +751,18 @@ fn serve_gate_client(stream: std::os::unix::net::UnixStream) {
 fn handle_gate_line(line: &str) -> Result<String, String> {
     let value: serde_json::Value =
         serde_json::from_str(line).map_err(|err| format!("folder secret gate: {err}"))?;
-    let kind = value.get("kind").and_then(|item| item.as_str()).unwrap_or("");
+    let kind = value
+        .get("kind")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     let actor_id = value
         .get("actor_id")
         .and_then(|item| item.as_str())
         .unwrap_or("");
-    let name = value.get("name").and_then(|item| item.as_str()).unwrap_or("");
+    let name = value
+        .get("name")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     let folder = value
         .get("folder")
         .and_then(|item| item.as_str())
@@ -803,7 +811,11 @@ fn encode_read_result(result: &ReadResult) -> String {
 }
 
 #[cfg(all(unix, not(test)))]
-fn proxy_read(actor: &SecretActor, name: &str, folder: &Path) -> Option<Result<ReadResult, String>> {
+fn proxy_read(
+    actor: &SecretActor,
+    name: &str,
+    folder: &Path,
+) -> Option<Result<ReadResult, String>> {
     use std::io::{BufRead, BufReader, Write};
     let path = crate::config::config_dir().join("folder-secret-gate.sock");
     if !path.exists() {
@@ -1074,8 +1086,8 @@ mod tests {
         set_folder_secret(&store, "FOLDER_E2E_SECRET", &folder, value).unwrap();
         let monitor = PermissionMonitor::ephemeral();
         let actor = SecretActor::agent("reader");
-        let blocked = read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder)
-            .unwrap();
+        let blocked =
+            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
         match blocked {
             ReadResult::PermissionRequired { pending_id } => {
                 assert!(pending_id.starts_with("req_"));
@@ -1090,26 +1102,24 @@ mod tests {
         assert!(!blob.contains(value));
 
         grant_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
-        let allowed = read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder)
-            .unwrap();
+        let allowed =
+            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
         match allowed {
             ReadResult::Value(got) => assert_eq!(got.as_str(), value),
             other => panic!("expected the secret, got {other:?}"),
         }
         let other = SecretActor::agent("someone-else");
-        let still = read_folder_secret(&monitor, &store, &other, "FOLDER_E2E_SECRET", &folder)
-            .unwrap();
+        let still =
+            read_folder_secret(&monitor, &store, &other, "FOLDER_E2E_SECRET", &folder).unwrap();
         assert!(matches!(still, ReadResult::PermissionRequired { .. }));
 
         let app = SecretActor::app("mail");
         let app_blocked =
             read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
-        assert!(matches!(
-            app_blocked,
-            ReadResult::PermissionRequired { .. }
-        ));
+        assert!(matches!(app_blocked, ReadResult::PermissionRequired { .. }));
         grant_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
-        let app_ok = read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
+        let app_ok =
+            read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
         assert!(matches!(app_ok, ReadResult::Value(_)));
 
         let after = serde_json::to_string(&audit_as_json(&monitor.audit_records())).unwrap();
@@ -1187,8 +1197,8 @@ mod tests {
         set_folder_secret(&store, "FOLDER_E2E_SECRET", &folder, value).unwrap();
         let monitor = PermissionMonitor::ephemeral();
         let actor = SecretActor::agent("reader");
-        let first = read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder)
-            .unwrap();
+        let first =
+            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
         let pending_id = match first {
             ReadResult::PermissionRequired { pending_id } => pending_id,
             other => panic!("expected permission_required, got {other:?}"),
@@ -1196,14 +1206,14 @@ mod tests {
         monitor
             .approve_pending(&pending_id, crate::broker::gate::ApprovalChoice::Once)
             .unwrap();
-        let once = read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder)
-            .unwrap();
+        let once =
+            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
         match once {
             ReadResult::Value(got) => assert_eq!(got.as_str(), value),
             other => panic!("expected one read, got {other:?}"),
         }
-        let again = read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder)
-            .unwrap();
+        let again =
+            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
         assert!(
             matches!(again, ReadResult::PermissionRequired { .. }),
             "a second read must ask again"
@@ -1224,27 +1234,59 @@ mod approval_retry_tests {
     fn concurrent_secret_requests_cannot_share_one_approval() {
         let monitor = PermissionMonitor::ephemeral();
         let root = tempfile::tempdir().unwrap();
-        let actor = SecretActor { kind: ActorType::Agent, id: "pane:0957-concurrent".into() };
+        let actor = SecretActor {
+            kind: ActorType::Agent,
+            id: "pane:0957-concurrent".into(),
+        };
         const INPUT: &str = r#"{"name":"FOO","scope":"global"}"#;
-        let first = admitted_read(&monitor, &actor, "secret.get", INPUT, root.path(), "FOO", || panic!("unapproved fetch")).unwrap();
-        let ReadResult::PermissionRequired { pending_id } = first else { panic!("expected approval") };
-        monitor.approve_pending(&pending_id, gate::ApprovalChoice::Once).unwrap();
+        let first = admitted_read(
+            &monitor,
+            &actor,
+            "secret.get",
+            INPUT,
+            root.path(),
+            "FOO",
+            || panic!("unapproved fetch"),
+        )
+        .unwrap();
+        let ReadResult::PermissionRequired { pending_id } = first else {
+            panic!("expected approval")
+        };
+        monitor
+            .approve_pending(&pending_id, gate::ApprovalChoice::Once)
+            .unwrap();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (finish_tx, finish_rx) = std::sync::mpsc::channel();
         let timeout = crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
         std::thread::scope(|threads| {
             let target = (&monitor, &actor, root.path());
-            let worker = threads.spawn(move || admitted_read(
-                target.0, target.1, "secret.get", INPUT, target.2, "FOO", || {
-                    started_tx.send(()).unwrap();
-                    finish_rx.recv_timeout(timeout).unwrap();
-                    Ok(None)
-                },
-            ));
+            let worker = threads.spawn(move || {
+                admitted_read(
+                    target.0,
+                    target.1,
+                    "secret.get",
+                    INPUT,
+                    target.2,
+                    "FOO",
+                    || {
+                        started_tx.send(()).unwrap();
+                        finish_rx.recv_timeout(timeout).unwrap();
+                        Ok(None)
+                    },
+                )
+            });
             started_rx.recv_timeout(timeout).unwrap();
             // While the approved request is waiting in Keychain, a separate
             // request must not fetch with that same one-shot authorization.
-            let second = admitted_read(&monitor, &actor, "secret.get", INPUT, root.path(), "FOO", || Ok(None));
+            let second = admitted_read(
+                &monitor,
+                &actor,
+                "secret.get",
+                INPUT,
+                root.path(),
+                "FOO",
+                || Ok(None),
+            );
             finish_tx.send(()).unwrap();
             assert!(matches!(worker.join().unwrap(), Ok(ReadResult::NotFound)));
             assert!(matches!(second, Ok(ReadResult::PermissionRequired { .. })));

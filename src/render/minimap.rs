@@ -113,10 +113,7 @@ pub struct MinimapRenderParams<'a> {
     pub workspace_name: &'a str,
 }
 
-pub fn render_minimap(
-    ui: &mut egui::Ui,
-    params: MinimapRenderParams<'_>,
-) -> Option<usize> {
+pub fn render_minimap(ui: &mut egui::Ui, params: MinimapRenderParams<'_>) -> Option<usize> {
     let MinimapRenderParams {
         content_rect,
         windows,

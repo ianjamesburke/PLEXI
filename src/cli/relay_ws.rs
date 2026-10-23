@@ -33,9 +33,7 @@ pub fn parse_relay_url(input: &str) -> Result<RelayUrl, String> {
         .ok_or_else(|| "relay url is missing a host".to_string())?
         .to_string();
     if !tls && !is_loopback(&host) {
-        return Err(
-            "relay url must use wss:// (ws:// is only allowed for localhost)".to_string(),
-        );
+        return Err("relay url must use wss:// (ws:// is only allowed for localhost)".to_string());
     }
     let port = parsed.port().unwrap_or(if tls { 443 } else { 80 });
     let mut path = parsed.path().to_string();

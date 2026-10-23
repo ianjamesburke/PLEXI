@@ -174,9 +174,20 @@ impl Engine {
         let mut missing: Vec<SourceId> = Vec::new();
         for source in &project.sources {
             match (source.kind, sources.get(&source.id)) {
-                (TrackKind::Audio, Some(SourceData::AudioPcm { sample_rate, channels, samples })) => {
-                    let buf = resample(*sample_rate, *channels, samples, &config)
-                        .map_err(|e| format!("engine prepare: source {} ({}): {e}", source.id.0, source.path))?;
+                (
+                    TrackKind::Audio,
+                    Some(SourceData::AudioPcm {
+                        sample_rate,
+                        channels,
+                        samples,
+                    }),
+                ) => {
+                    let buf = resample(*sample_rate, *channels, samples, &config).map_err(|e| {
+                        format!(
+                            "engine prepare: source {} ({}): {e}",
+                            source.id.0, source.path
+                        )
+                    })?;
                     audio_index.insert(source.id, audio.len());
                     audio.push(buf);
                 }
@@ -206,24 +217,43 @@ impl Engine {
                 if !audible || end <= start {
                     continue;
                 }
-                let (gain_l, gain_r) = channel_gains(track.mixer.volume, track.mixer.pan, config.channels);
+                let (gain_l, gain_r) =
+                    channel_gains(track.mixer.volume, track.mixer.pan, config.channels);
                 let data = match track.kind {
                     TrackKind::Audio => {
                         let Some(&buf) = audio_index.get(&clip.source) else {
                             continue; // missing source: silence
                         };
-                        ClipData::Audio { buf, skip: to_frame(clip.source_offset) }
+                        ClipData::Audio {
+                            buf,
+                            skip: to_frame(clip.source_offset),
+                        }
                     }
                     TrackKind::Midi => {
                         let Some(&notes) = midi_notes.get(&clip.source) else {
                             continue;
                         };
                         let first = voices.len();
-                        instantiate_voices(notes, clip.source_offset, clip.length, clip.position, fpt, &mut voices);
-                        ClipData::Midi { voices: first..voices.len() }
+                        instantiate_voices(
+                            notes,
+                            clip.source_offset,
+                            clip.length,
+                            clip.position,
+                            fpt,
+                            &mut voices,
+                        );
+                        ClipData::Midi {
+                            voices: first..voices.len(),
+                        }
                     }
                 };
-                clips.push(PreparedClip { start, end, gain_l, gain_r, data });
+                clips.push(PreparedClip {
+                    start,
+                    end,
+                    gain_l,
+                    gain_r,
+                    data,
+                });
             }
         }
 
@@ -324,7 +354,8 @@ impl Engine {
                         for gf in vlo..vhi {
                             let rel = gf - v.start;
                             let phase = (rel as f64 * v.freq / sr).fract() as f32;
-                            let env = envelope(rel as f32, len, self.attack_frames, self.release_frames);
+                            let env =
+                                envelope(rel as f32, len, self.attack_frames, self.release_frames);
                             let s = oscillator(phase) * env * v.amp;
                             let oi = ((gf - start_frame) as usize) * ch;
                             out[oi] += s * clip.gain_l;
@@ -361,9 +392,7 @@ impl Engine {
             }
             let remaining = frames - done;
             let span = match self.loop_region {
-                Some((_, le)) if self.playhead < le => {
-                    remaining.min((le - self.playhead) as usize)
-                }
+                Some((_, le)) if self.playhead < le => remaining.min((le - self.playhead) as usize),
                 _ => remaining,
             };
             self.render_span(self.playhead, &mut out[done * ch..(done + span) * ch]);
@@ -507,7 +536,9 @@ fn resample(
         return Err("source sample rate is zero".to_string());
     }
     if !(1..=2).contains(&src_channels) {
-        return Err(format!("unsupported source channel count {src_channels} (1 or 2)"));
+        return Err(format!(
+            "unsupported source channel count {src_channels} (1 or 2)"
+        ));
     }
     if !samples.len().is_multiple_of(src_channels as usize) {
         return Err(format!(
@@ -558,5 +589,8 @@ fn resample(
             _ => unreachable!("channel counts validated above"),
         }
     }
-    Ok(AudioBuf { frames: dst_frames, samples: out })
+    Ok(AudioBuf {
+        frames: dst_frames,
+        samples: out,
+    })
 }

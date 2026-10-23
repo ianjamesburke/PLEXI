@@ -60,7 +60,11 @@ pub(crate) fn oldest_actionable(items: &[NeedsYouRecord]) -> Option<&NeedsYouRec
     items
         .iter()
         .filter(|item| item.kind != NeedsYouKind::ApprovalClick)
-        .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+        .min_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -343,7 +347,10 @@ impl PlexiApp {
         log::info!(
             "attention: opened source={source} count={} ids={:?}",
             items.len(),
-            items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>()
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
         );
         self.attention.open = true;
         self.attention.selected = 0;
@@ -412,8 +419,15 @@ impl PlexiApp {
                 found = Some(AttentionAction::Resolve(true));
             } else if is_question {
                 for key in [
-                    Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6,
-                    Key::Num7, Key::Num8, Key::Num9,
+                    Key::Num1,
+                    Key::Num2,
+                    Key::Num3,
+                    Key::Num4,
+                    Key::Num5,
+                    Key::Num6,
+                    Key::Num7,
+                    Key::Num8,
+                    Key::Num9,
                 ] {
                     if input.consume_key_no_repeat(none, key) {
                         found = crate::app::approval_keyboard::choice_index_for_key(key)
@@ -437,9 +451,12 @@ impl PlexiApp {
             Some(AttentionAction::Close)
         } else if input.consume_key(none, Key::ArrowDown) || input.consume_key(none, Key::J) {
             let count = open_items().len();
-            (count > 0).then(|| AttentionAction::Select((self.attention.selected + 1).min(count - 1)))
+            (count > 0)
+                .then(|| AttentionAction::Select((self.attention.selected + 1).min(count - 1)))
         } else if input.consume_key(none, Key::ArrowUp) || input.consume_key(none, Key::K) {
-            Some(AttentionAction::Select(self.attention.selected.saturating_sub(1)))
+            Some(AttentionAction::Select(
+                self.attention.selected.saturating_sub(1),
+            ))
         } else if input.consume_key(none, Key::T)
             || (!selected_actionable && input.consume_key(none, Key::D))
         {
@@ -485,8 +502,11 @@ impl PlexiApp {
         if !items.is_empty() {
             self.attention.selected = self.attention.selected.min(items.len() - 1);
         }
-        self.attention
-            .bind_item(items.get(self.attention.selected).map(|item| item.id.as_str()));
+        self.attention.bind_item(
+            items
+                .get(self.attention.selected)
+                .map(|item| item.id.as_str()),
+        );
         self.poll_attention_export(ctx);
         let colors = self.colors;
         let selected = self.attention.selected;
@@ -850,23 +870,26 @@ impl PlexiApp {
                 }
             }
             AttentionAction::CopyLogs => {
-                let selected_ready = record
-                    .is_some_and(|r| self.attention.export_ready_for(&r.id));
+                let selected_ready = record.is_some_and(|r| self.attention.export_ready_for(&r.id));
                 if let (true, ExportState::Ready { excerpt, issue_id }) =
                     (selected_ready, &self.attention.export)
                 {
                     ctx.copy_text(excerpt.clipboard_text.clone());
                     log::info!("attention: copied session logs id={issue_id}");
-                    self.set_attention_feedback("Copied reviewed session logs to the clipboard.", false);
+                    self.set_attention_feedback(
+                        "Copied reviewed session logs to the clipboard.",
+                        false,
+                    );
                 } else {
                     self.set_attention_feedback("Prepare session logs first (L).", true);
                 }
             }
             AttentionAction::SaveLogs => {
-                let selected_ready = record
-                    .is_some_and(|r| self.attention.export_ready_for(&r.id));
+                let selected_ready = record.is_some_and(|r| self.attention.export_ready_for(&r.id));
                 let text = match &self.attention.export {
-                    ExportState::Ready { excerpt, .. } if selected_ready => excerpt.save_text.clone(),
+                    ExportState::Ready { excerpt, .. } if selected_ready => {
+                        excerpt.save_text.clone()
+                    }
                     _ => {
                         self.set_attention_feedback("Prepare session logs first (L).", true);
                         return;
@@ -875,7 +898,10 @@ impl PlexiApp {
                 match log_export::save_export(&crate::config::config_dir(), &text) {
                     Ok(path) => {
                         log::info!("attention: saved session logs to {}", path.display());
-                        self.set_attention_feedback(format!("Saved logs to {}", path.display()), false);
+                        self.set_attention_feedback(
+                            format!("Saved logs to {}", path.display()),
+                            false,
+                        );
                     }
                     Err(error) => {
                         log::error!("attention: saving session logs failed: {error}");
@@ -890,7 +916,10 @@ impl PlexiApp {
                 let Some(record) = record.filter(|r| r.kind == NeedsYouKind::Keychain) else {
                     return;
                 };
-                log::info!("attention: keychain recovery invoked id={} approve={approve}", record.id);
+                log::info!(
+                    "attention: keychain recovery invoked id={} approve={approve}",
+                    record.id
+                );
                 self.finish_attention_resolve(&record.id, approve, "keychain recovery");
             }
             AttentionAction::Acknowledge => {
@@ -1003,7 +1032,10 @@ mod tests {
 
     #[test]
     fn integrity_view_is_plain_language_without_claiming_tampering() {
-        let long = format!("Needs you queue failed its integrity check (seal mismatch). {}", "x".repeat(600));
+        let long = format!(
+            "Needs you queue failed its integrity check (seal mismatch). {}",
+            "x".repeat(600)
+        );
         let view = attention_view(&record(NeedsYouKind::Integrity, "needs-you", &long));
         assert_eq!(view.title, "Saved approvals could not be loaded");
         assert!(view.explanation.contains("withheld"));
@@ -1011,7 +1043,10 @@ mod tests {
             assert!(!view.explanation.to_lowercase().contains(claim), "{claim}");
         }
         assert!(view.technical.contains("seal mismatch"));
-        assert_eq!(view.source, "Plexi host", "host-global issues name no context");
+        assert_eq!(
+            view.source, "Plexi host",
+            "host-global issues name no context"
+        );
     }
 
     #[test]
@@ -1039,7 +1074,10 @@ mod tests {
     fn per_item_state_never_follows_a_different_item() {
         let mut state = AttentionState::default();
         state.bind_item(Some("a"));
-        state.feedback = Some(Feedback { text: "x".into(), is_error: false });
+        state.feedback = Some(Feedback {
+            text: "x".into(),
+            is_error: false,
+        });
         state.show_technical = true;
         state.bind_item(Some("a"));
         assert!(state.feedback.is_some(), "same item keeps its state");

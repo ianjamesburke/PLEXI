@@ -120,7 +120,9 @@ impl RegistryViews {
         if !self.views.contains_key(&key) {
             return;
         }
-        let still_referenced = router.iter().any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
+        let still_referenced = router
+            .iter()
+            .any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
         if !still_referenced {
             log::info!(
                 "registry_views: dropping orphaned root={} (no live context references it)",

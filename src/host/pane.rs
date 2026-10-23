@@ -24,7 +24,10 @@ fn standby_session_line(
 ) -> String {
     match (
         crate::cli::AgentHarness::parse(&session.harness),
-        session.session_id.as_deref().filter(|id| !id.trim().is_empty()),
+        session
+            .session_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty()),
     ) {
         (Some(harness), Some(id))
             if cached_resume_command.is_some_and(|command| command != harness.adapter().binary) =>
@@ -642,7 +645,10 @@ impl Pane {
                     if let Some(ref mut standby) = t.standby_session {
                         standby.last_state = a.state.clone();
                         standby.last_detail = a.detail.clone();
-                        if a.session_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+                        if a.session_id
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                        {
                             standby.session_id = a.session_id.clone();
                         }
                     }
@@ -835,7 +841,10 @@ impl TerminalPane {
         mut settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
-        settings.env.insert(super::process_cleanup::SESSION_ENV.into(), super::process_cleanup::session_marker().into());
+        settings.env.insert(
+            super::process_cleanup::SESSION_ENV.into(),
+            super::process_cleanup::session_marker().into(),
+        );
         let ephemeral = settings
             .env
             .get("PLEXI_EPHEMERAL")
@@ -1024,10 +1033,11 @@ impl TerminalPane {
     /// any previously preserved `tail_preview`.
     pub fn capture_tail_preview(&self) -> Option<String> {
         if self.is_standby() {
-            return self
-                .tail_preview
-                .clone()
-                .or_else(|| self.standby_session.as_ref().and_then(|s| s.tail_preview.clone()));
+            return self.tail_preview.clone().or_else(|| {
+                self.standby_session
+                    .as_ref()
+                    .and_then(|s| s.tail_preview.clone())
+            });
         }
         let lines: Vec<String> = self
             .backend
@@ -1056,11 +1066,19 @@ impl TerminalPane {
         (!tail.is_empty()).then_some(tail)
     }
 
-    fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
+    fn update_fleet_transition(
+        &mut self,
+        previous: Option<&crate::protocol::AgentState>,
+        next: Option<&crate::protocol::AgentState>,
+    ) {
         use crate::protocol::AgentState;
-        if previous == next { return; }
+        if previous == next {
+            return;
+        }
         self.fleet_since = crate::platform::clock::now_secs();
-        if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
+        if next == Some(&AgentState::Completed)
+            || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle))
+        {
             self.fleet_done_unseen = true;
             self.fleet_seen = false;
             self.fleet_dismissed = false;
@@ -1076,9 +1094,21 @@ impl TerminalPane {
 
     pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let before = select_terminal_agent(
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.observed_agent = observed;
-        let after = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let after = select_terminal_agent(
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
@@ -1103,6 +1133,9 @@ impl TerminalPane {
             }
             if let Some(ref role) = self.agent_role {
                 s.config_name = Some(role.clone());
+            }
+            if self.agent_permission_posture.is_some() {
+                s.permission_posture = self.agent_permission_posture.clone();
             }
             if let Some(ref a) = self.agent {
                 s.last_state = a.state.clone();
@@ -1174,6 +1207,7 @@ impl TerminalPane {
             fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
+            permission_posture: self.agent_permission_posture.clone(),
             session_id,
             last_state,
             last_blocked_reason: self.last_blocked_reason,
@@ -1230,6 +1264,7 @@ impl TerminalPane {
             pane_name: self.name.clone(),
             harness: session.harness,
             config_name: session.config_name,
+            permission_posture: session.permission_posture,
             session_id: session.session_id,
             cwd,
             ephemeral: session.ephemeral,
@@ -1305,7 +1340,10 @@ mod agent_source_tests {
     use crate::protocol::{AgentState, PaneAgentState};
     use std::time::{Duration, Instant};
 
-    fn saved_session(harness: &str, session_id: Option<&str>) -> crate::workspace::SavedAgentSession {
+    fn saved_session(
+        harness: &str,
+        session_id: Option<&str>,
+    ) -> crate::workspace::SavedAgentSession {
         crate::workspace::SavedAgentSession {
             fleet_result: None,
             fleet_seen: false,
@@ -1314,6 +1352,7 @@ mod agent_source_tests {
             fleet_since: 0,
             harness: harness.to_string(),
             config_name: None,
+            permission_posture: None,
             session_id: session_id.map(str::to_string),
             last_state: AgentState::Blocked,
             last_blocked_reason: None,

@@ -217,7 +217,10 @@ impl PlexiApp {
         // every unfocused terminal.
         let mut locked_terminal = None;
         if let InputOwner::Pane(pane_id) = owner {
-            if self.windows.iter().find_map(|w| w.panes.get(&pane_id))
+            if self
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(&pane_id))
                 .is_some_and(|pane| pane.as_terminal().is_some())
             {
                 let terminal_id = egui_term::terminal_widget_id(pane_id);
@@ -331,9 +334,7 @@ pub(crate) fn published_frame_owner_is_pane(ctx: &egui::Context, pane_id: PaneId
 
 fn store_previous_owner(ctx: &egui::Context, owner: InputOwner) {
     ctx.memory_mut(|memory| {
-        memory
-            .data
-            .insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
+        memory.data.insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
     });
 }
 

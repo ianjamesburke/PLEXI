@@ -89,10 +89,17 @@ impl PendingNotification {
     }
 
     pub(crate) fn agent_source_pane(&self) -> u64 {
-        if self.sender_pane_id != 0 { self.sender_pane_id } else { self.dismiss_owner_pane_id }
+        if self.sender_pane_id != 0 {
+            self.sender_pane_id
+        } else {
+            self.dismiss_owner_pane_id
+        }
     }
     pub(crate) fn agent_event(&self) -> crate::agent::fleet::AgentEvent {
-        crate::agent::fleet::AgentEvent { title: self.title.clone(), body: self.body.clone() }
+        crate::agent::fleet::AgentEvent {
+            title: self.title.clone(),
+            body: self.body.clone(),
+        }
     }
 }
 
@@ -500,12 +507,21 @@ impl PlexiApp {
         mut notification: PendingNotification,
     ) -> bool {
         let source_pane = notification.agent_source_pane();
-        let source_is_agent = self.windows.iter().find_map(|w| w.panes.get(&source_pane))
+        let source_is_agent = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&source_pane))
             .is_some_and(|p| p.as_terminal().is_some_and(|t| t.is_agent_pane()));
         if source_is_agent && self.fleet_focused_pane() == Some(source_pane) {
             log::info!("agents: suppress focused notification pane_id={source_pane}");
-            self.deliver_notify_action(notification.sender_pane_id, notification.notify_id,
-                "cancelled".into(), Some(NOTIFY_OUTCOME_CANCELLED.into()), notification.response_file, None);
+            self.deliver_notify_action(
+                notification.sender_pane_id,
+                notification.notify_id,
+                "cancelled".into(),
+                Some(NOTIFY_OUTCOME_CANCELLED.into()),
+                notification.response_file,
+                None,
+            );
             return false;
         }
         if !self.notifications_enabled {
@@ -567,7 +583,8 @@ impl PlexiApp {
 
         let is_visible = self.notification_is_visible(&notification);
         let may_interrupt = self.notification_may_interrupt(&notification);
-        let cue_played = !notification.notify_id.starts_with("agent-attention-") && self.play_notification_cue(&notification);
+        let cue_played = !notification.notify_id.starts_with("agent-attention-")
+            && self.play_notification_cue(&notification);
         self.pending_notifications.push(notification);
         self.save_notifications();
 

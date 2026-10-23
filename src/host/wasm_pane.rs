@@ -2650,10 +2650,7 @@ pub(crate) fn canonical_key_name(key: egui::Key) -> String {
 /// Resolve the canonical guest key name for a key event, accounting for
 /// shifted punctuation keys that `egui::Key` has no dedicated enum variant for
 /// (notably `Shift+8` → `"*"`).
-pub(crate) fn canonical_key_name_for_event(
-    key: egui::Key,
-    modifiers: egui::Modifiers,
-) -> String {
+pub(crate) fn canonical_key_name_for_event(key: egui::Key, modifiers: egui::Modifiers) -> String {
     if key == egui::Key::Num8
         && modifiers.shift
         && !modifiers.ctrl

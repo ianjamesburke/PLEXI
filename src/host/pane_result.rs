@@ -270,9 +270,9 @@ fn validate_subschema_definition(schema: &Value, path: &str) -> Result<(), Strin
                     return Err(format!("{path}.type: type array must not be empty"));
                 }
                 for (idx, item) in arr.iter().enumerate() {
-                    let s = item.as_str().ok_or_else(|| {
-                        format!("{path}.type[{idx}]: type name must be a string")
-                    })?;
+                    let s = item
+                        .as_str()
+                        .ok_or_else(|| format!("{path}.type[{idx}]: type name must be a string"))?;
                     validate_type_keyword(s, &format!("{path}.type[{idx}]"))?;
                 }
             }
@@ -287,9 +287,7 @@ fn validate_subschema_definition(schema: &Value, path: &str) -> Result<(), Strin
 
     if let Some(props) = obj.get("properties") {
         let props_obj = props.as_object().ok_or_else(|| {
-            format!(
-                "{path}.properties: expected an object mapping property names to schemas"
-            )
+            format!("{path}.properties: expected an object mapping property names to schemas")
         })?;
         for (k, v) in props_obj {
             validate_subschema_definition(v, &format!("{path}.properties.{k}"))?;
@@ -357,9 +355,9 @@ fn validate_subschema_definition(schema: &Value, path: &str) -> Result<(), Strin
     }
 
     if let Some(prefix_items) = obj.get("prefixItems") {
-        let arr = prefix_items.as_array().ok_or_else(|| {
-            format!("{path}.prefixItems: expected an array of schema objects")
-        })?;
+        let arr = prefix_items
+            .as_array()
+            .ok_or_else(|| format!("{path}.prefixItems: expected an array of schema objects"))?;
         for (idx, subschema) in arr.iter().enumerate() {
             validate_subschema_definition(subschema, &format!("{path}.prefixItems[{idx}]"))?;
         }
@@ -396,12 +394,7 @@ fn validate_subschema_definition(schema: &Value, path: &str) -> Result<(), Strin
         }
     }
 
-    for kw in [
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-    ] {
+    for kw in ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] {
         if let Some(v) = obj.get(kw) {
             if !v.is_number() {
                 return Err(format!("{path}.{kw}: expected a number"));
@@ -417,9 +410,9 @@ fn validate_subschema_definition(schema: &Value, path: &str) -> Result<(), Strin
 
     for comb in ["allOf", "anyOf", "oneOf"] {
         if let Some(v) = obj.get(comb) {
-            let arr = v.as_array().ok_or_else(|| {
-                format!("{path}.{comb}: expected a non-empty array of schemas")
-            })?;
+            let arr = v
+                .as_array()
+                .ok_or_else(|| format!("{path}.{comb}: expected a non-empty array of schemas"))?;
             if arr.is_empty() {
                 return Err(format!("{path}.{comb}: array must not be empty"));
             }
@@ -788,14 +781,7 @@ fn validate_node(
                         }
                         Value::Bool(true) => {}
                         Value::Object(_) => {
-                            validate_node(
-                                root_schema,
-                                addl,
-                                val,
-                                &child_path,
-                                errors,
-                                depth + 1,
-                            );
+                            validate_node(root_schema, addl, val, &child_path, errors, depth + 1);
                         }
                         _ => {}
                     }
@@ -816,7 +802,14 @@ fn validate_node(
         let mut branch_errors = Vec::new();
         for subschema in any_of {
             let mut sub_errs = Vec::new();
-            validate_node(root_schema, subschema, instance, path, &mut sub_errs, depth + 1);
+            validate_node(
+                root_schema,
+                subschema,
+                instance,
+                path,
+                &mut sub_errs,
+                depth + 1,
+            );
             if sub_errs.is_empty() {
                 branch_matched = true;
                 break;
@@ -836,7 +829,14 @@ fn validate_node(
         let mut branch_errors = Vec::new();
         for subschema in one_of {
             let mut sub_errs = Vec::new();
-            validate_node(root_schema, subschema, instance, path, &mut sub_errs, depth + 1);
+            validate_node(
+                root_schema,
+                subschema,
+                instance,
+                path,
+                &mut sub_errs,
+                depth + 1,
+            );
             if sub_errs.is_empty() {
                 match_count += 1;
             } else {
@@ -952,7 +952,8 @@ mod tests {
             .expect_err("should reject invalid payload");
         assert_eq!(err.error_code(), "invalid_result");
         assert!(
-            err.message().contains("missing required property \"summary\""),
+            err.message()
+                .contains("missing required property \"summary\""),
             "unexpected message: {}",
             err.message()
         );
@@ -969,7 +970,8 @@ mod tests {
             .write_payload(r#"{"verdict": "PASS", "summary": "All good", "extra": 1}"#)
             .expect_err("should reject unexpected property");
         assert!(
-            err2.message().contains("additional property \"extra\" is not allowed"),
+            err2.message()
+                .contains("additional property \"extra\" is not allowed"),
             "unexpected message: {}",
             err2.message()
         );

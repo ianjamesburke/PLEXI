@@ -11,13 +11,15 @@ use std::time::{Duration, Instant};
 
 use crate::app::app_trait::App;
 use crate::broker::gate::{
-    fingerprint_args, gate_log_contains, AdmitRequest, Admission, ApprovalChoice, PermissionMonitor,
+    fingerprint_args, gate_log_contains, Admission, AdmitRequest, ApprovalChoice, PermissionMonitor,
 };
 use crate::broker::{
     ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
     ResourceScope, TargetType,
 };
-use crate::plexi_ai::tool_dispatch::{self, AppEventSender, DispatchScope, ToolCallResult, ToolDispatcher};
+use crate::plexi_ai::tool_dispatch::{
+    self, AppEventSender, DispatchScope, ToolCallResult, ToolDispatcher,
+};
 use crate::protocol::{AiTool, AppRequest};
 use crate::testing::HostHarness;
 
@@ -94,9 +96,8 @@ fn post_mcp(port: u16, token: &str, body: &[u8]) -> serde_json::Value {
     let _ = stream.read_to_end(&mut resp);
     let text = String::from_utf8_lossy(&resp);
     let start = text.find("\r\n\r\n").map(|index| index + 4).unwrap_or(0);
-    serde_json::from_str(&text[start..]).unwrap_or_else(|error| {
-        panic!("mcp reply was not JSON ({error}): {text}")
-    })
+    serde_json::from_str(&text[start..])
+        .unwrap_or_else(|error| panic!("mcp reply was not JSON ({error}): {text}"))
 }
 
 fn pump_until(h: &mut HostHarness, mut done: impl FnMut(&mut HostHarness) -> bool) {
@@ -129,7 +130,9 @@ fn socket_call_pane(
     target_pane: Option<u64>,
     input: serde_json::Value,
 ) -> serde_json::Value {
-    let reply = h.workspace_root().join(format!("socket-{}.json", uuid::Uuid::new_v4()));
+    let reply = h
+        .workspace_root()
+        .join(format!("socket-{}.json", uuid::Uuid::new_v4()));
     let request = AppRequest::CallAppTool {
         wait_approved: false,
         app_id: "chess".to_string(),
@@ -144,7 +147,12 @@ fn socket_call_pane(
     let line = serde_json::to_string(&request).unwrap();
     let mut ack = Vec::new();
     crate::app::handle_socket_line(&line, &h.ipc_tx, Some(ancestry), &mut ack);
-    pump_until(h, |_| reply.is_file() && std::fs::metadata(&reply).map(|meta| meta.len() > 0).unwrap_or(false));
+    pump_until(h, |_| {
+        reply.is_file()
+            && std::fs::metadata(&reply)
+                .map(|meta| meta.len() > 0)
+                .unwrap_or(false)
+    });
     serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
 }
 
@@ -187,7 +195,12 @@ fn assistant_pending(h: &mut HostHarness, assistant: u64) -> String {
         .clone()
 }
 
-fn assistant_resolve(h: &mut HostHarness, assistant: u64, reply: &Path, choice: crate::assistant::model::PermissionChoice) -> serde_json::Value {
+fn assistant_resolve(
+    h: &mut HostHarness,
+    assistant: u64,
+    reply: &Path,
+    choice: crate::assistant::model::PermissionChoice,
+) -> serde_json::Value {
     h.assistant_mut(assistant).resolve_permission(choice);
     pump_until(h, |_| reply_is_terminal(reply));
     serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap()
@@ -206,8 +219,12 @@ fn reply_is_terminal(reply: &Path) -> bool {
 }
 
 fn human_e7e5(h: &mut HostHarness, pane: u64) {
-    for key in ["up", "up", "up", "up", "up", "enter", "down", "down", "enter"] {
-        let response = h.workspace_root().join(format!("key-{key}-{}.json", uuid::Uuid::new_v4()));
+    for key in [
+        "up", "up", "up", "up", "up", "enter", "down", "down", "enter",
+    ] {
+        let response = h
+            .workspace_root()
+            .join(format!("key-{key}-{}.json", uuid::Uuid::new_v4()));
         h.inject_ipc(AppRequest::KeyPane {
             pane_id: pane,
             key: key.to_string(),
@@ -282,7 +299,11 @@ fn run_ingress(ingress: Ingress) {
         }
         Ingress::Mcp => {
             let body = mcp_call(&mut h, mcp_port, &mcp_token, &input);
-            assert_eq!(mcp_error_code(&body).as_deref(), Some("permission_required"), "{body}");
+            assert_eq!(
+                mcp_error_code(&body).as_deref(),
+                Some("permission_required"),
+                "{body}"
+            );
             assert_eq!(commits_for(start, &op), 0);
         }
         Ingress::Socket => {
@@ -295,7 +316,17 @@ fn run_ingress(ingress: Ingress) {
 
     // Wrong resource stays a question and does not move.
     let wrong_game = play(0, &format!("{op}-game"), "e2e4", "game-missing");
-    refuse_without_commit(&mut h, ingress, assistant, mcp_port, &mcp_token, pane, &credential, &wrong_game, start);
+    refuse_without_commit(
+        &mut h,
+        ingress,
+        assistant,
+        mcp_port,
+        &mcp_token,
+        pane,
+        &credential,
+        &wrong_game,
+        start,
+    );
 
     // Exact approval commits once, with the ingress actor on the receipt.
     let approved = play(0, &op, "e2e4", "game-1");
@@ -340,9 +371,9 @@ fn run_ingress(ingress: Ingress) {
     assert_eq!(commits_for(start, &op), 1, "wrong actor must not move");
     let facts = mon.audit_records();
     assert!(
-        facts.iter().any(|fact| {
-            fact.kind == "use" && fact.actor == actor && fact.operation_id == op
-        }),
+        facts
+            .iter()
+            .any(|fact| { fact.kind == "use" && fact.actor == actor && fact.operation_id == op }),
         "audit links the actor and operation: {facts:?}"
     );
 
@@ -363,7 +394,17 @@ fn run_ingress(ingress: Ingress) {
 
     // A changed argument is a different call.
     let changed = play(1, &format!("{op}-changed"), "d2d4", "game-1");
-    refuse_without_commit(&mut h, ingress, assistant, mcp_port, &mcp_token, pane, &credential, &changed, start);
+    refuse_without_commit(
+        &mut h,
+        ingress,
+        assistant,
+        mcp_port,
+        &mcp_token,
+        pane,
+        &credential,
+        &changed,
+        start,
+    );
 
     // Revoke the grant that would have authorized a repeat, then refuse.
     let grant_id = mon
@@ -375,7 +416,17 @@ fn run_ingress(ingress: Ingress) {
     if let Some(grant_id) = grant_id {
         assert!(mon.revoke_grant_id(&grant_id), "revoke {grant_id}");
     }
-    refuse_without_commit(&mut h, ingress, assistant, mcp_port, &mcp_token, pane, &credential, &changed, start);
+    refuse_without_commit(
+        &mut h,
+        ingress,
+        assistant,
+        mcp_port,
+        &mcp_token,
+        pane,
+        &credential,
+        &changed,
+        start,
+    );
 
     // A pending move goes stale when a human plays while approval waits.
     let stale_op = format!("{op}-stale");
@@ -397,7 +448,13 @@ fn run_ingress(ingress: Ingress) {
         Ingress::Mcp | Ingress::Socket => {
             let first = match ingress {
                 Ingress::Mcp => mcp_call(&mut h, mcp_port, &mcp_token, &stale_input),
-                Ingress::Socket => socket_call(&mut h, Some(pane), Some(&credential), &[], stale_input.clone()),
+                Ingress::Socket => socket_call(
+                    &mut h,
+                    Some(pane),
+                    Some(&credential),
+                    &[],
+                    stale_input.clone(),
+                ),
                 Ingress::Assistant => unreachable!(),
             };
             human_e7e5(&mut h, pane);
@@ -405,19 +462,28 @@ fn run_ingress(ingress: Ingress) {
                 .expect("approve the pending stale move");
             let second = match ingress {
                 Ingress::Mcp => mcp_call(&mut h, mcp_port, &mcp_token, &stale_input),
-                Ingress::Socket => socket_call(&mut h, Some(pane), Some(&credential), &[], stale_input),
+                Ingress::Socket => {
+                    socket_call(&mut h, Some(pane), Some(&credential), &[], stale_input)
+                }
                 Ingress::Assistant => unreachable!(),
             };
             let text = second.to_string();
             assert!(text.contains("stale_revision"), "{second}");
         }
     }
-    assert_eq!(commits_for(start, &stale_op), 0, "stale move must not commit");
+    assert_eq!(
+        commits_for(start, &stale_op),
+        0,
+        "stale move must not commit"
+    );
     log::info!("permission_gate: ingress case finished");
 }
 
 fn pending_id_of(reply: &serde_json::Value) -> String {
-    if let Some(id) = reply.get("pending_request_id").and_then(|value| value.as_str()) {
+    if let Some(id) = reply
+        .get("pending_request_id")
+        .and_then(|value| value.as_str())
+    {
         return id.to_string();
     }
     let text = reply
@@ -437,9 +503,13 @@ fn committed_output(reply: &serde_json::Value) -> serde_json::Value {
         return output.clone();
     }
     if let Some(reply_text) = reply.get("reply").and_then(|value| value.as_str()) {
-        return serde_json::from_str(reply_text).unwrap_or(serde_json::Value::String(reply_text.to_string()));
+        return serde_json::from_str(reply_text)
+            .unwrap_or(serde_json::Value::String(reply_text.to_string()));
     }
-    if let Some(text) = reply.pointer("/result/content/0/text").and_then(|value| value.as_str()) {
+    if let Some(text) = reply
+        .pointer("/result/content/0/text")
+        .and_then(|value| value.as_str())
+    {
         return serde_json::from_str(text).unwrap_or(serde_json::Value::String(text.to_string()));
     }
     reply.clone()
@@ -461,7 +531,12 @@ fn refuse_without_commit(
         Ingress::Assistant => {
             let reply = assistant_begin(h, assistant, input);
             let _ = assistant_pending(h, assistant);
-            let settled = assistant_resolve(h, assistant, &reply, crate::assistant::model::PermissionChoice::Deny);
+            let settled = assistant_resolve(
+                h,
+                assistant,
+                &reply,
+                crate::assistant::model::PermissionChoice::Deny,
+            );
             let text = settled.to_string();
             assert!(
                 text.contains("permission_denied") || text.contains("denied"),
@@ -485,7 +560,10 @@ fn refuse_without_commit(
             );
         }
     }
-    assert_eq!(commits_for(start, input["operation_id"].as_str().unwrap_or("")), before);
+    assert_eq!(
+        commits_for(start, input["operation_id"].as_str().unwrap_or("")),
+        before
+    );
 }
 
 fn approve_and_commit(
@@ -501,14 +579,32 @@ fn approve_and_commit(
     match ingress {
         Ingress::Assistant => {
             let reply = assistant_begin(h, assistant, input);
-            if h.assistant_mut(assistant).model.pending_permission.is_none() {
+            if h.assistant_mut(assistant)
+                .model
+                .pending_permission
+                .is_none()
+            {
                 pump_until(h, |h| {
-                    h.assistant_mut(assistant).model.pending_permission.is_some()
-                        || std::fs::metadata(&reply).map(|meta| meta.len() > 0).unwrap_or(false)
+                    h.assistant_mut(assistant)
+                        .model
+                        .pending_permission
+                        .is_some()
+                        || std::fs::metadata(&reply)
+                            .map(|meta| meta.len() > 0)
+                            .unwrap_or(false)
                 });
             }
-            if h.assistant_mut(assistant).model.pending_permission.is_some() {
-                assistant_resolve(h, assistant, &reply, crate::assistant::model::PermissionChoice::AllowOnce)
+            if h.assistant_mut(assistant)
+                .model
+                .pending_permission
+                .is_some()
+            {
+                assistant_resolve(
+                    h,
+                    assistant,
+                    &reply,
+                    crate::assistant::model::PermissionChoice::AllowOnce,
+                )
             } else {
                 serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
             }
@@ -539,7 +635,11 @@ fn approve_and_commit(
 }
 
 fn nonempty(id: &str) -> Option<String> {
-    if id.is_empty() { None } else { Some(id.to_string()) }
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 fn start_mcp(h: &HostHarness, context_id: u64, workspace: &Path) -> (u16, String) {
@@ -549,7 +649,8 @@ fn start_mcp(h: &HostHarness, context_id: u64, workspace: &Path) -> (u16, String
         Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
         "permission-gate-mcp",
     );
-    let port = crate::app::host_mcp::start_host_mcp_server(tx, &crate::config::config_dir()).unwrap();
+    let port =
+        crate::app::host_mcp::start_host_mcp_server(tx, &crate::config::config_dir()).unwrap();
     let token = crate::app::host_mcp::register_pane_credential_for_test(
         880_000 + (context_id % 1000),
         context_id,
@@ -608,17 +709,33 @@ fn assert_waiting_app_call(choice: ApprovalChoice) {
     let workspace = h.workspace_root();
     let context_id = h.app.windows[h.app.active_window].context_id;
     let mon = monitor();
-    let credential = mon.issue_credential(Some(caller), context_id, &workspace, &format!("pane:{caller}"));
+    let credential = mon.issue_credential(
+        Some(caller),
+        context_id,
+        &workspace,
+        &format!("pane:{caller}"),
+    );
     let (tx, rx) = std::sync::mpsc::channel();
-    tool_dispatch::register(target, "wait-probe".into(), vec![AiTool {
-        name: "probe.add".into(), description: "add".into(),
-        input_schema: serde_json::json!({"type":"object"}),
-        output_schema: serde_json::json!({"type":"object"}),
-        timeout_ms: Some(1000), read_only: false,
-    }], AppEventSender::Channel(tx), crate::host::scope::ScopeOrigin {
-        context_id, context_root: workspace.clone(), window_id: 1,
-        pane_id: target, app_id: Some("wait-probe".into()),
-    });
+    tool_dispatch::register(
+        target,
+        "wait-probe".into(),
+        vec![AiTool {
+            name: "probe.add".into(),
+            description: "add".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+            output_schema: serde_json::json!({"type":"object"}),
+            timeout_ms: Some(1000),
+            read_only: false,
+        }],
+        AppEventSender::Channel(tx),
+        crate::host::scope::ScopeOrigin {
+            context_id,
+            context_root: workspace.clone(),
+            window_id: 1,
+            pane_id: target,
+            app_id: Some("wait-probe".into()),
+        },
+    );
     let reply = workspace.join("wait-reply.json");
     let input = r#"{"text":"Buy groceries"}"#;
     let request: AppRequest = serde_json::from_value(serde_json::json!({
@@ -626,30 +743,47 @@ fn assert_waiting_app_call(choice: ApprovalChoice) {
         "input_json":input, "caller_pane_id":caller, "call_credential":credential,
         "peer_ancestry":[std::process::id()], "target_pane_id":target,
         "wait_approved":true, "response_file":reply,
-    })).unwrap();
+    }))
+    .unwrap();
     h.inject_ipc(request);
     pump_until(&mut h, |_| !mon.list_pending().is_empty());
     std::thread::sleep(Duration::from_millis(50));
-    assert!(!reply.exists(), "waiting call must not return permission_required");
+    assert!(
+        !reply.exists(),
+        "waiting call must not return permission_required"
+    );
     assert!(rx.try_recv().is_err(), "no execution before human approval");
-    mon.approve_pending(&mon.list_pending()[0].pending_request_id, choice).unwrap();
+    mon.approve_pending(&mon.list_pending()[0].pending_request_id, choice)
+        .unwrap();
     if choice == ApprovalChoice::Deny {
         pump_until(&mut h, |_| reply.is_file());
-        let body: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
         assert_eq!(body["error_code"], "permission_denied", "{body}");
         assert!(rx.try_recv().is_err());
         tool_dispatch::unregister(target);
         return;
     }
-    let event: crate::protocol::PlexiEvent = serde_json::from_str(&rx.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap();
-    let crate::protocol::PlexiEvent::ToolCall { call_id, input_json, .. } = event else {
+    let event: crate::protocol::PlexiEvent =
+        serde_json::from_str(&rx.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap();
+    let crate::protocol::PlexiEvent::ToolCall {
+        call_id,
+        input_json,
+        ..
+    } = event
+    else {
         panic!("expected tool call");
     };
     assert_eq!(input_json, input);
     tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"added":true}"#));
     pump_until(&mut h, |_| reply.is_file());
     let body: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
-    assert_eq!(body["ok"], true, "{body}; attention={:?}", mon.open_needs_you());
+    assert_eq!(
+        body["ok"],
+        true,
+        "{body}; attention={:?}",
+        mon.open_needs_you()
+    );
     assert!(rx.try_recv().is_err(), "exactly one execution");
     tool_dispatch::unregister(target);
 }
@@ -686,7 +820,11 @@ fn all_dispatchers_require_monitor() {
         r#"{"type_id":"chess"}"#.to_string(),
     );
     assert_eq!(blocked.error_code.as_deref(), Some("permission_required"));
-    assert_eq!(hits.load(Ordering::SeqCst), 0, "read_only must not skip the prompt");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "read_only must not skip the prompt"
+    );
 
     let (tx, _rx) = std::sync::mpsc::channel();
     tool_dispatch::register(
@@ -715,7 +853,10 @@ fn all_dispatchers_require_monitor() {
         DispatchScope::new(2, "agent:chess-opponent", workspace.clone(), context_id),
         Arc::clone(&mon),
     );
-    let discovered = agent.all_tools().iter().any(|tool| tool.name.contains("probe"));
+    let discovered = agent
+        .all_tools()
+        .iter()
+        .any(|tool| tool.name.contains("probe"));
     assert!(discovered, "discovery lists the tool");
     let args = r#"{"n":1}"#;
     let binding = ExactBinding {
@@ -758,7 +899,11 @@ fn all_dispatchers_require_monitor() {
         None,
         &["chess.move_committed".to_string()],
     );
-    assert_ne!(decision, Decision::Allow, "a subscription without an exact grant is not allowed");
+    assert_ne!(
+        decision,
+        Decision::Allow,
+        "a subscription without an exact grant is not allowed"
+    );
 
     let credential = monitor().issue_credential(Some(1), context_id, &workspace, "pane:1");
     let reply = h.workspace_root().join("app-call-blocked.json");
@@ -774,7 +919,8 @@ fn all_dispatchers_require_monitor() {
         response_file: Some(reply.to_string_lossy().to_string()),
     });
     pump_until(&mut h, |_| reply.is_file());
-    let body: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap();
     assert_eq!(body["error_code"], "permission_required", "{body}");
 
     let (mcp_port, mcp_token) = start_mcp(&h, context_id, &workspace);
@@ -811,23 +957,37 @@ fn app_call_rejects_forged_or_missing_identity() {
     assert_eq!(forged["error_code"], "permission_denied", "{forged}");
 
     let missing_pane = socket_call(&mut h, Some(9_999_999), None, &[], input.clone());
-    assert_eq!(missing_pane["error_code"], "permission_denied", "{missing_pane}");
+    assert_eq!(
+        missing_pane["error_code"], "permission_denied",
+        "{missing_pane}"
+    );
 
     let absent = socket_call(&mut h, None, None, &[], input.clone());
     assert_eq!(absent["error_code"], "permission_denied", "{absent}");
 
-    let stale = socket_call(&mut h, Some(pane), Some("cred_not_issued"), &[], input.clone());
+    let stale = socket_call(
+        &mut h,
+        Some(pane),
+        Some("cred_not_issued"),
+        &[],
+        input.clone(),
+    );
     assert_eq!(stale["error_code"], "permission_denied", "{stale}");
 
     let term = h.add_focused_terminal();
     let pid = h.terminal_backend(term).child_pid();
     let mismatched = socket_call(&mut h, Some(pane), None, &[pid], input.clone());
-    assert_eq!(mismatched["error_code"], "permission_denied", "{mismatched}");
+    assert_eq!(
+        mismatched["error_code"], "permission_denied",
+        "{mismatched}"
+    );
 
     let session = monitor().issue_credential(None, ctx, &workspace, "session:phone");
     let asked = socket_call(&mut h, None, Some(&session), &[], input.clone());
     assert_eq!(asked["error_code"], "permission_required", "{asked}");
-    let pending = monitor().show_pending(asked["pending_request_id"].as_str().unwrap()).unwrap();
+    let pending = monitor()
+        .show_pending(asked["pending_request_id"].as_str().unwrap())
+        .unwrap();
     assert_eq!(pending.actor_id, "session:phone");
     assert_ne!(pending.actor_id, "user");
     assert_eq!(commits_for(start, "forged-op"), 0);
@@ -848,8 +1008,11 @@ fn chess_receipt_survives_lost_reply() {
     let input = play(0, op, "e2e4", "game-1");
     let first = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
     assert_eq!(first["error_code"], "permission_required", "{first}");
-    mon.approve_pending(first["pending_request_id"].as_str().unwrap(), ApprovalChoice::Once)
-        .unwrap();
+    mon.approve_pending(
+        first["pending_request_id"].as_str().unwrap(),
+        ApprovalChoice::Once,
+    )
+    .unwrap();
     let committed = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
     assert_eq!(committed["output"]["revision_after"], 1, "{committed}");
     // The caller drops that reply. The retry is the same operation.
@@ -864,7 +1027,11 @@ fn chess_receipt_survives_lost_reply() {
         blocked["error_code"], "permission_denied",
         "audit failure before a consumed-once retry blocks execution: {blocked}"
     );
-    assert_eq!(commits_for(start, op), 1, "the blocked retry must not move again");
+    assert_eq!(
+        commits_for(start, op),
+        1,
+        "the blocked retry must not move again"
+    );
 
     let encoded = crate::broker::gate::structured_error("stale_revision", "call-1", None);
     let parsed: serde_json::Value = serde_json::from_str(&encoded).unwrap();
@@ -905,7 +1072,9 @@ fn app_call_and_mcp_are_gated_and_audited() {
     assert!(!called.to_string().contains("\"user\""), "{called}");
     assert_eq!(commits_for(start, "ungated-bc4"), 0);
     assert!(
-        mon.audit_records().iter().any(|fact| fact.kind == "ask" && fact.actor == format!("pane:{pane}")),
+        mon.audit_records()
+            .iter()
+            .any(|fact| fact.kind == "ask" && fact.actor == format!("pane:{pane}")),
         "app call must write an ask audit row: {:?}",
         mon.audit_records()
     );
@@ -916,10 +1085,16 @@ fn app_call_and_mcp_are_gated_and_audited() {
 
     let (port, token) = start_mcp(&h, ctx, &workspace);
     let mcp = mcp_call(&mut h, port, &token, &input);
-    assert_eq!(mcp_error_code(&mcp).as_deref(), Some("permission_required"), "{mcp}");
+    assert_eq!(
+        mcp_error_code(&mcp).as_deref(),
+        Some("permission_required"),
+        "{mcp}"
+    );
     assert!(!mcp.to_string().contains("holds no seat"), "{mcp}");
     assert!(
-        mon.audit_records().iter().any(|fact| fact.kind == "ask" && fact.actor.starts_with("mcp:pane:")),
+        mon.audit_records()
+            .iter()
+            .any(|fact| fact.kind == "ask" && fact.actor.starts_with("mcp:pane:")),
         "MCP must write an ask audit row: {:?}",
         mon.audit_records()
     );
@@ -951,7 +1126,11 @@ fn second_chess_pane_routes_by_instance() {
             >= 2
     });
     let panes = chess_panes(&h);
-    assert_eq!(panes.len(), 2, "a forced second instance stays open: {panes:?}");
+    assert_eq!(
+        panes.len(),
+        2,
+        "a forced second instance stays open: {panes:?}"
+    );
     assert!(panes.contains(&first) && panes.contains(&second));
 
     let ctx = h.app.windows[h.app.active_window].context_id;
@@ -965,7 +1144,10 @@ fn second_chess_pane_routes_by_instance() {
         ambiguous.to_string().contains("ambiguous_instance"),
         "bare chess.play must not guess a pane: {ambiguous}"
     );
-    assert!(!ambiguous.to_string().contains("tool_not_found"), "{ambiguous}");
+    assert!(
+        !ambiguous.to_string().contains("tool_not_found"),
+        "{ambiguous}"
+    );
     assert_eq!(commits_for(start, "route-e4"), 0);
     assert!(gate_log_contains("ambiguous"), "ambiguous route is logged");
 
@@ -979,8 +1161,11 @@ fn second_chess_pane_routes_by_instance() {
     );
     assert_eq!(asked["error_code"], "permission_required", "{asked}");
     assert!(!asked.to_string().contains("holds no seat"), "{asked}");
-    mon.approve_pending(asked["pending_request_id"].as_str().unwrap(), ApprovalChoice::Once)
-        .unwrap();
+    mon.approve_pending(
+        asked["pending_request_id"].as_str().unwrap(),
+        ApprovalChoice::Once,
+    )
+    .unwrap();
     let committed = socket_call_pane(
         &mut h,
         Some(first),
@@ -1025,7 +1210,13 @@ fn gate_denial_reaches_the_host_log() {
     isolate_tool_context(&mut h);
     let pane = h.launch_repo_app("apps/chess", &[]);
     let start = event_len();
-    let denied = socket_call(&mut h, Some(9_999_999), None, &[], play(0, "ghost-log", "e2e4", "game-1"));
+    let denied = socket_call(
+        &mut h,
+        Some(9_999_999),
+        None,
+        &[],
+        play(0, "ghost-log", "e2e4", "game-1"),
+    );
     assert_eq!(denied["error_code"], "permission_denied", "{denied}");
     assert!(!denied.to_string().contains("holds no seat"), "{denied}");
     assert!(
@@ -1033,7 +1224,10 @@ fn gate_denial_reaches_the_host_log() {
         "a gate denial must be an info log line"
     );
     assert!(
-        monitor().audit_records().iter().any(|fact| fact.kind == "deny"),
+        monitor()
+            .audit_records()
+            .iter()
+            .any(|fact| fact.kind == "deny"),
         "a gate denial must be an audit row"
     );
     assert_eq!(commits_for(start, "ghost-log"), 0);
@@ -1090,11 +1284,11 @@ fn socket_and_synthetic_resolve_are_refused() {
     });
     pump_until(&mut h, |_| resolve_path.is_file());
     let resolve_body = std::fs::read_to_string(&resolve_path).unwrap();
+    assert!(resolve_body.contains("permission_denied"), "{resolve_body}");
     assert!(
-        resolve_body.contains("permission_denied"),
-        "{resolve_body}"
+        mon.show_pending(&pending_id).is_some(),
+        "resolve leaves the pending"
     );
-    assert!(mon.show_pending(&pending_id).is_some(), "resolve leaves the pending");
 
     let key_path = workspace.join("key.json");
     h.inject_ipc(AppRequest::KeyPane {
@@ -1140,7 +1334,8 @@ fn socket_and_synthetic_resolve_are_refused() {
     );
     assert!(mon.show_pending(&pending_id).is_some(), "the pending stays");
     assert!(
-        mon.approve_pending(&pending_id, ApprovalChoice::Once).is_ok(),
+        mon.approve_pending(&pending_id, ApprovalChoice::Once)
+            .is_ok(),
         "the desktop path can still approve"
     );
     log::info!("permission_gate: socket and synthetic resolve refused");
@@ -1148,7 +1343,8 @@ fn socket_and_synthetic_resolve_are_refused() {
 
 #[test]
 fn agents_chess_approval_scene() {
-    let scene = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenes/agents-chess-approval.toml");
+    let scene =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenes/agents-chess-approval.toml");
     let out = std::env::temp_dir().join(format!("plexi-chess-approval-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&out);
     let report = crate::scenes::run_scene(&scene, &out, false);
@@ -1170,29 +1366,30 @@ fn list_app_tools_snapshots_live_registry_for_context() {
         crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane)
     });
 
-    let query = |h: &mut HostHarness, app_id: Option<&str>, context_id: Option<u64>| -> serde_json::Value {
-        let reply = h
-            .workspace_root()
-            .join(format!("app-tools-{}.json", uuid::Uuid::new_v4()));
-        let req = AppRequest::ListAppTools {
-            app_id: app_id.map(str::to_string),
-            context_id,
-            caller_pane_id: Some(pane),
-            caller_context_id: Some(ctx),
-            peer_ancestry: Vec::new(),
-            response_file: reply.to_string_lossy().to_string(),
+    let query =
+        |h: &mut HostHarness, app_id: Option<&str>, context_id: Option<u64>| -> serde_json::Value {
+            let reply = h
+                .workspace_root()
+                .join(format!("app-tools-{}.json", uuid::Uuid::new_v4()));
+            let req = AppRequest::ListAppTools {
+                app_id: app_id.map(str::to_string),
+                context_id,
+                caller_pane_id: Some(pane),
+                caller_context_id: Some(ctx),
+                peer_ancestry: Vec::new(),
+                response_file: reply.to_string_lossy().to_string(),
+            };
+            let line = serde_json::to_string(&req).unwrap();
+            let mut ack = Vec::new();
+            crate::app::handle_socket_line(&line, &h.ipc_tx, None, &mut ack);
+            pump_until(h, |_| {
+                reply.is_file()
+                    && std::fs::metadata(&reply)
+                        .map(|meta| meta.len() > 0)
+                        .unwrap_or(false)
+            });
+            serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
         };
-        let line = serde_json::to_string(&req).unwrap();
-        let mut ack = Vec::new();
-        crate::app::handle_socket_line(&line, &h.ipc_tx, None, &mut ack);
-        pump_until(h, |_| {
-            reply.is_file()
-                && std::fs::metadata(&reply)
-                    .map(|meta| meta.len() > 0)
-                    .unwrap_or(false)
-        });
-        serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap()
-    };
 
     let all = query(&mut h, None, None);
     assert_eq!(all["ok"], true, "{all}");
@@ -1224,7 +1421,9 @@ fn list_app_tools_snapshots_live_registry_for_context() {
 
 #[test]
 fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
-    use crate::broker::gate::{NeedsYouDetails, NeedsYouFile, NeedsYouKind, ResolveSurface, RunOutcome};
+    use crate::broker::gate::{
+        NeedsYouDetails, NeedsYouFile, NeedsYouKind, ResolveSurface, RunOutcome,
+    };
     use sha2::{Digest, Sha256};
 
     let mut h = HostHarness::new();
@@ -1284,11 +1483,13 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
 
     // Grants file is written and `permission-integrity.toml` has matching `grants_sha256` != "absent".
     let grants_path = profile_dir.join("grants.toml");
-    assert!(grants_path.is_file(), "grants.toml must be written on approve");
+    assert!(
+        grants_path.is_file(),
+        "grants.toml must be written on approve"
+    );
     let grants_bytes = std::fs::read(&grants_path).unwrap();
     let expected_sha = format!("{:x}", Sha256::digest(&grants_bytes));
-    let stamp_raw =
-        std::fs::read_to_string(profile_dir.join("permission-integrity.toml")).unwrap();
+    let stamp_raw = std::fs::read_to_string(profile_dir.join("permission-integrity.toml")).unwrap();
     let stamp_val: toml::Value = toml::from_str(&stamp_raw).unwrap();
     let stamped_grants_sha = stamp_val
         .get("grants_sha256")
@@ -1316,7 +1517,10 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     // 3. Retry the same `create_agent` from the same pane -> `ok: true`, no second needs-you filed.
     let needs_you_total_before_retry = mon.all_needs_you().len();
     let retry = call_create_agent(&mut h, "worker", pane);
-    assert_eq!(retry["ok"], true, "retry after approve must succeed: {retry}");
+    assert_eq!(
+        retry["ok"], true,
+        "retry after approve must succeed: {retry}"
+    );
     assert!(
         mon.list_needs_you().is_empty(),
         "no open needs-you after successful retry: {:?}",
@@ -1423,7 +1627,10 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
         }),
         Some(&[human_pid]),
     );
-    assert_eq!(created["ok"], true, "human pane create_agent must succeed: {created}");
+    assert_eq!(
+        created["ok"], true,
+        "human pane create_agent must succeed: {created}"
+    );
     assert!(
         mon.list_needs_you().is_empty(),
         "human pane create_agent must not file needs-you: {:?}",
@@ -1457,7 +1664,10 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
         }),
         None,
     );
-    assert_eq!(ping_call["ok"], true, "granted tool must succeed: {ping_call}");
+    assert_eq!(
+        ping_call["ok"], true,
+        "granted tool must succeed: {ping_call}"
+    );
 
     let admin_call = call_agents_api(
         &mut h,
@@ -1471,8 +1681,14 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
         }),
         None,
     );
-    assert_eq!(admin_call["ok"], false, "ungranted tool must be refused: {admin_call}");
-    assert_eq!(admin_call["error_code"], "permission_denied", "{admin_call}");
+    assert_eq!(
+        admin_call["ok"], false,
+        "ungranted tool must be refused: {admin_call}"
+    );
+    assert_eq!(
+        admin_call["error_code"], "permission_denied",
+        "{admin_call}"
+    );
 
     // 3. Delegating a child with a wider grant (`agents.admin=allow`) is refused by subset check.
     let wider_delegate = call_agents_api(
@@ -1488,7 +1704,10 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
         None,
     );
     assert_eq!(wider_delegate["ok"], false, "{wider_delegate}");
-    assert_eq!(wider_delegate["error_code"], "permission_denied", "{wider_delegate}");
+    assert_eq!(
+        wider_delegate["error_code"], "permission_denied",
+        "{wider_delegate}"
+    );
 }
 
 #[test]
@@ -1597,8 +1816,16 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
                 "caller_pane": human_pane,
             }),
         );
-        assert_eq!(create_resp["ok"], false, "must refuse target {}: {create_resp}", target_ws.display());
-        assert_eq!(create_resp["error_code"], "permission_denied", "{create_resp}");
+        assert_eq!(
+            create_resp["ok"],
+            false,
+            "must refuse target {}: {create_resp}",
+            target_ws.display()
+        );
+        assert_eq!(
+            create_resp["error_code"], "permission_denied",
+            "{create_resp}"
+        );
 
         let list_agents_resp = call_agents_api(
             &mut h,
@@ -1609,7 +1836,10 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             }),
         );
         assert_eq!(list_agents_resp["ok"], false, "{list_agents_resp}");
-        assert_eq!(list_agents_resp["error_code"], "permission_denied", "{list_agents_resp}");
+        assert_eq!(
+            list_agents_resp["error_code"], "permission_denied",
+            "{list_agents_resp}"
+        );
 
         let list_grants_resp = call_agents_api(
             &mut h,
@@ -1620,7 +1850,10 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             }),
         );
         assert_eq!(list_grants_resp["ok"], false, "{list_grants_resp}");
-        assert_eq!(list_grants_resp["error_code"], "permission_denied", "{list_grants_resp}");
+        assert_eq!(
+            list_grants_resp["error_code"], "permission_denied",
+            "{list_grants_resp}"
+        );
     }
     assert!(
         mon.list_needs_you().is_empty(),
@@ -1651,7 +1884,10 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         let body: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap();
         let _ = std::fs::remove_file(&reply);
-        assert_eq!(body["status"], "denied", "must deny cross-context secret_get: {body}");
+        assert_eq!(
+            body["status"], "denied",
+            "must deny cross-context secret_get: {body}"
+        );
         assert_eq!(body["error_code"], "permission_denied", "{body}");
         assert!(!body.to_string().contains(canary));
     }
@@ -1716,8 +1952,9 @@ fn agent_spawned_pane_does_not_get_human_authority() {
 
     // 1. Spawn an agent pane (`agent_pane: true`).
     let (_, human_tile) = h.app.find_pane_in_any_window(human_pane).unwrap();
-    let agent_pane = h.app.spawn_terminal_pane_at(
-        crate::pane_ops::create::SpawnTerminalAtSpec {
+    let agent_pane = h
+        .app
+        .spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
             win_idx: 0,
             target_tile: human_tile,
             vertical: true,
@@ -1730,8 +1967,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
                 agent_pane: true,
                 inject_folder_secrets: false,
             },
-        },
-    );
+        });
     assert!(
         !h.app.is_human_owned_pane(agent_pane),
         "agent pane must not be human-owned"
@@ -1810,7 +2046,10 @@ fn agent_spawned_pane_does_not_get_human_authority() {
     mon.resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
         .unwrap();
     let retry = call_create_agent(&mut h, "worker-child", "agents.ping=allow");
-    assert_eq!(retry["ok"], true, "retry after pane-session grant must succeed: {retry}");
+    assert_eq!(
+        retry["ok"], true,
+        "retry after pane-session grant must succeed: {retry}"
+    );
 
     let ungranted = call_create_agent(&mut h, "worker-admin", "agents.admin=allow");
     assert_eq!(ungranted["ok"], false, "{ungranted}");

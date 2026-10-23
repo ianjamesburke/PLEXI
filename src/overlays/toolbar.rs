@@ -40,17 +40,17 @@ impl PlexiApp {
                         "Host UI gallery",
                     )
                     .clicked()
-                    {
-                        self.show_ui_gallery = !self.show_ui_gallery;
-                        log::info!(
-                            "ui_gallery: {} from debug toolbar",
-                            if self.show_ui_gallery {
-                                "opened"
-                            } else {
-                                "closed"
-                            }
-                        );
-                    }
+                {
+                    self.show_ui_gallery = !self.show_ui_gallery;
+                    log::info!(
+                        "ui_gallery: {} from debug toolbar",
+                        if self.show_ui_gallery {
+                            "opened"
+                        } else {
+                            "closed"
+                        }
+                    );
+                }
 
                 if button::icon_button(ui, "?", "Keyboard shortcuts (\u{2318}/)", &self.colors)
                     .clicked()

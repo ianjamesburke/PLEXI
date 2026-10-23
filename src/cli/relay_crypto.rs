@@ -179,7 +179,10 @@ impl PhoneSession {
     }
 }
 
-fn open_handshake(raw: &[u8], pending: &mut Option<PendingDesktopKey>) -> Result<PhoneOpen, SealError> {
+fn open_handshake(
+    raw: &[u8],
+    pending: &mut Option<PendingDesktopKey>,
+) -> Result<PhoneOpen, SealError> {
     if raw.len() < 3 + PUB_LEN + 16 {
         return Err(SealError::Malformed);
     }
@@ -209,7 +212,11 @@ fn open_handshake(raw: &[u8], pending: &mut Option<PendingDesktopKey>) -> Result
     })
 }
 
-fn open_data_phone(raw: &[u8], request_id: &str, session: &mut PhoneSession) -> Result<Opened, SealError> {
+fn open_data_phone(
+    raw: &[u8],
+    request_id: &str,
+    session: &mut PhoneSession,
+) -> Result<Opened, SealError> {
     let (direction, counter, ciphertext) = parse_data(raw)?;
     if direction != DIR_PHONE {
         return Err(SealError::Tamper);
@@ -246,7 +253,12 @@ fn seal_data(
         return Err(SealError::Replay);
     }
     let aad = aad_data(direction, counter, request_id);
-    let mut body = seal_aead(key, nonce(direction, counter)?, &aad, &plain_bytes(text, join_desktop, error))?;
+    let mut body = seal_aead(
+        key,
+        nonce(direction, counter)?,
+        &aad,
+        &plain_bytes(text, join_desktop, error),
+    )?;
     let mut raw = Vec::with_capacity(12 + body.len());
     raw.extend_from_slice(MAGIC);
     raw.push(KIND_DATA);
@@ -329,7 +341,12 @@ fn parse_plain(raw: &[u8]) -> Result<Opened, SealError> {
     Ok(Opened { text, join_desktop })
 }
 
-fn seal_aead(key: &[u8; 32], nonce: Nonce, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, SealError> {
+fn seal_aead(
+    key: &[u8; 32],
+    nonce: Nonce,
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, SealError> {
     let unbound = UnboundKey::new(&CHACHA20_POLY1305, key).map_err(|_| SealError::Tamper)?;
     let aead = LessSafeKey::new(unbound);
     let mut in_out = plaintext.to_vec();
@@ -338,7 +355,12 @@ fn seal_aead(key: &[u8; 32], nonce: Nonce, aad: &[u8], plaintext: &[u8]) -> Resu
     Ok(in_out)
 }
 
-fn open_aead(key: &[u8; 32], nonce: Nonce, aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, SealError> {
+fn open_aead(
+    key: &[u8; 32],
+    nonce: Nonce,
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, SealError> {
     let unbound = UnboundKey::new(&CHACHA20_POLY1305, key).map_err(|_| SealError::Tamper)?;
     let aead = LessSafeKey::new(unbound);
     let mut in_out = ciphertext.to_vec();
@@ -397,8 +419,13 @@ mod tests {
         let request_id = value["request_id"].as_str().unwrap();
         let mut slot = Some(pending);
         let (opened, mut session) = unwrap_new(
-            open_phone_body(value["handshake"].as_str().unwrap(), request_id, &mut slot, None)
-                .unwrap(),
+            open_phone_body(
+                value["handshake"].as_str().unwrap(),
+                request_id,
+                &mut slot,
+                None,
+            )
+            .unwrap(),
         );
         assert_eq!(opened.text, "hello-vector");
         assert!(!opened.join_desktop);
@@ -424,7 +451,10 @@ mod tests {
             open_phone_body(&tampered_b64, request_id, &mut None, Some(&mut session)).unwrap_err(),
             SealError::Tamper
         );
-        assert_eq!(session.recv, 1, "a failed open must not advance the counter");
+        assert_eq!(
+            session.recv, 1,
+            "a failed open must not advance the counter"
+        );
     }
 
     #[test]
@@ -437,18 +467,18 @@ mod tests {
             .output()
             .unwrap();
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        let mut raw = URL_SAFE_NO_PAD.decode(value["handshake"].as_str().unwrap()).unwrap();
+        let mut raw = URL_SAFE_NO_PAD
+            .decode(value["handshake"].as_str().unwrap())
+            .unwrap();
         raw[3] ^= 0x01;
         let mut slot = Some(pending);
-        let error = open_phone_body(
-            &URL_SAFE_NO_PAD.encode(&raw),
-            "req-vector",
-            &mut slot,
-            None,
-        )
-        .unwrap_err();
+        let error = open_phone_body(&URL_SAFE_NO_PAD.encode(&raw), "req-vector", &mut slot, None)
+            .unwrap_err();
         assert_eq!(error, SealError::Tamper);
-        assert!(slot.is_some(), "a rejected handshake must not burn the desktop key");
+        assert!(
+            slot.is_some(),
+            "a rejected handshake must not burn the desktop key"
+        );
     }
 
     /// Base64url values may start with `-`; argparse reads a space-separated
@@ -492,8 +522,13 @@ mod tests {
         let value = python_phone(&pending);
         let mut slot = Some(pending);
         let (_opened, mut session) = unwrap_new(
-            open_phone_body(value["handshake"].as_str().unwrap(), "req-vector", &mut slot, None)
-                .unwrap(),
+            open_phone_body(
+                value["handshake"].as_str().unwrap(),
+                "req-vector",
+                &mut slot,
+                None,
+            )
+            .unwrap(),
         );
         let sealed = seal_reply(&mut session, "mock-reply", None, "req-vector").unwrap();
         let opened = python_open_reply(
@@ -502,7 +537,11 @@ mod tests {
             "req-vector",
             &sealed,
         );
-        assert!(opened.status.success(), "{}", String::from_utf8_lossy(&opened.stderr));
+        assert!(
+            opened.status.success(),
+            "{}",
+            String::from_utf8_lossy(&opened.stderr)
+        );
         let body: Value = serde_json::from_slice(&opened.stdout).unwrap();
         assert_eq!(body["text"], "mock-reply");
         let record = session.to_record();
@@ -518,8 +557,13 @@ mod tests {
         let request_id = value["request_id"].as_str().unwrap();
         let mut slot = Some(pending);
         let (_opened, mut session) = unwrap_new(
-            open_phone_body(value["handshake"].as_str().unwrap(), request_id, &mut slot, None)
-                .unwrap(),
+            open_phone_body(
+                value["handshake"].as_str().unwrap(),
+                request_id,
+                &mut slot,
+                None,
+            )
+            .unwrap(),
         );
         let mut raw = seal_data(&session.key, DIR_PHONE, 1, &request_id, "x", false, None).unwrap();
         raw[4..12].fill(0);

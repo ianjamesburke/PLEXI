@@ -344,7 +344,8 @@ struct SetIndex {
 }
 
 fn set_index() -> &'static std::sync::Mutex<Option<SetIndex>> {
-    static INDEX: std::sync::OnceLock<std::sync::Mutex<Option<SetIndex>>> = std::sync::OnceLock::new();
+    static INDEX: std::sync::OnceLock<std::sync::Mutex<Option<SetIndex>>> =
+        std::sync::OnceLock::new();
     INDEX.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -408,7 +409,9 @@ pub fn sets_for_path(path: &Path) -> Vec<ChangeSet> {
     let want = want.display().to_string();
     let dir = sets_dir();
     let stamp = directory_stamp(&dir);
-    let mut guard = set_index().lock().unwrap_or_else(|error| error.into_inner());
+    let mut guard = set_index()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let fresh = !matches!(
         guard.as_ref(),
         Some(cached) if cached.dir == dir && cached.stamp == stamp
@@ -424,11 +427,7 @@ pub fn sets_for_path(path: &Path) -> Vec<ChangeSet> {
                 elapsed.as_millis()
             );
         }
-        *guard = Some(SetIndex {
-            dir,
-            stamp,
-            sets,
-        });
+        *guard = Some(SetIndex { dir, stamp, sets });
     }
     let Some(index) = guard.as_ref() else {
         return Vec::new();
@@ -591,9 +590,10 @@ pub fn editor_buffer_conflicts(path: &str, base_text: &str) -> bool {
         return false;
     }
     let want = canonical_text(path);
-    parsed.buffers.iter().any(|buffer| {
-        canonical_text(&buffer.path) == want && buffer.text != base_text
-    })
+    parsed
+        .buffers
+        .iter()
+        .any(|buffer| canonical_text(&buffer.path) == want && buffer.text != base_text)
 }
 
 fn append_ledger(set: &ChangeSet, action: &str, before: &str, after: &str) -> Result<(), String> {

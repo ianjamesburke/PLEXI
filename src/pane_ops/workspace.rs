@@ -1643,7 +1643,9 @@ impl PlexiApp {
             }
         }
         if let Some(active_pane_id) = self.active_focused_pane_id() {
-            self.zoom.context_last_pane.insert(new_ctx_id, active_pane_id);
+            self.zoom
+                .context_last_pane
+                .insert(new_ctx_id, active_pane_id);
             let cols = self.columns_for_context(new_ctx_id);
             if let Some(col) = cols.iter().find(|c| c.panes.contains(&active_pane_id)) {
                 self.zoom
@@ -1798,7 +1800,6 @@ impl PlexiApp {
             old_root,
             new_root: root,
         });
-
 
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
@@ -2241,13 +2242,11 @@ impl PlexiApp {
                     // next launch. Conversation state is already per context.
                     if a.hidden
                         && a.manifest_id == "assistant"
-                        && !win.tree.tiles.iter().any(|(_, tile)| {
-                            matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == id)
-                        })
+                        && !win.tree.tiles.iter().any(
+                            |(_, tile)| matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == id),
+                        )
                     {
-                        log::info!(
-                            "assistant: skipping headless pane {id} in workspace save"
-                        );
+                        log::info!("assistant: skipping headless pane {id} in workspace save");
                         continue;
                     }
                     saved_panes.push(crate::workspace::SavedPane {

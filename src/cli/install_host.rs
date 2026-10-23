@@ -758,7 +758,8 @@ fn git_current_ref(repo_dir: &Path) -> Option<String> {
 /// Read-only check for a stale build or missing core app.
 pub fn core_pack_needs_seeding(target_root: &Path) -> bool {
     if !std::fs::read_to_string(target_root.join(".core_build"))
-        .is_ok_and(|build| build == env!("PLEXI_BUILD_ID")) {
+        .is_ok_and(|build| build == env!("PLEXI_BUILD_ID"))
+    {
         return true;
     }
     let installed = installed_versions(target_root);
@@ -787,7 +788,10 @@ pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<In
     let build = env!("PLEXI_BUILD_ID");
     let refresh = std::fs::read_to_string(&stamp).map_or(true, |s| s != build);
     let outcomes = apply_pack(cloner, &pack, target_root, refresh);
-    if outcomes.iter().all(|o| !matches!(o.status, InstallStatus::Failed(_))) {
+    if outcomes
+        .iter()
+        .all(|o| !matches!(o.status, InstallStatus::Failed(_)))
+    {
         if let Err(error) = std::fs::write(&stamp, build) {
             log::warn!("core pack: record build identity: {error}");
         }
@@ -910,10 +914,17 @@ pub fn reconcile_orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<Pat
     let candidates = orphaned_pre_v3_first_party_apps(target_root);
     let quarantine = target_root.join(".plexi-quarantine-pre-v3");
     for path in &candidates {
-        let Some(name) = path.file_name() else { continue };
+        let Some(name) = path.file_name() else {
+            continue;
+        };
         let destination = quarantine.join(name);
-        match std::fs::create_dir_all(&quarantine).and_then(|()| std::fs::rename(path, &destination)) {
-            Ok(()) => log::info!("install: quarantined orphaned pre-v3 app {}", path.display()),
+        match std::fs::create_dir_all(&quarantine)
+            .and_then(|()| std::fs::rename(path, &destination))
+        {
+            Ok(()) => log::info!(
+                "install: quarantined orphaned pre-v3 app {}",
+                path.display()
+            ),
             Err(error) => log::warn!(
                 "install: could not quarantine orphaned pre-v3 app {}: {error}",
                 path.display()
@@ -1558,8 +1569,14 @@ mod core_pack_tests {
         assert_eq!(removed, vec![stale_quick_note.clone(), stale_timer.clone()]);
         assert!(!stale_quick_note.exists());
         assert!(!stale_timer.exists());
-        assert!(target.path().join(".plexi-quarantine-pre-v3/quick-note").exists());
-        assert!(target.path().join(".plexi-quarantine-pre-v3/timer").exists());
+        assert!(target
+            .path()
+            .join(".plexi-quarantine-pre-v3/quick-note")
+            .exists());
+        assert!(target
+            .path()
+            .join(".plexi-quarantine-pre-v3/timer")
+            .exists());
         for preserved in [&live_core, &user_app, &marketplace_app, &current_v3] {
             assert!(preserved.exists(), "must preserve {}", preserved.display());
         }

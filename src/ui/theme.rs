@@ -299,8 +299,15 @@ fn state_palette(cfg: &ThemeConfig) -> [Color32; 6] {
     // Light themes need separated lightness levels, not uniform darkening:
     // otherwise orange, vermillion and yellow converge under red/green CVD.
     if light && preset != "mono" {
-        return [[26,54,70], [104,72,0], [173,103,142], [64,28,0], [0,95,69], [132,125,36]]
-            .map(|[r,g,b]| Color32::from_rgb(r,g,b));
+        return [
+            [26, 54, 70],
+            [104, 72, 0],
+            [173, 103, 142],
+            [64, 28, 0],
+            [0, 95, 69],
+            [132, 125, 36],
+        ]
+        .map(|[r, g, b]| Color32::from_rgb(r, g, b));
     }
     let rgb = match preset {
         "mono" => return [mono; 6],
@@ -1551,7 +1558,10 @@ mod state_palette_tests {
                     }
                 }
                 if *preset != "mono" {
-                    assert!((lab(states[0])[0] - lab(states[1])[0]).abs() >= 8.0, "{theme}/{preset}: working/waiting lightness separation");
+                    assert!(
+                        (lab(states[0])[0] - lab(states[1])[0]).abs() >= 8.0,
+                        "{theme}/{preset}: working/waiting lightness separation"
+                    );
                 }
                 if *preset == "mono" {
                     assert!(states.iter().all(|c| *c == states[0]));

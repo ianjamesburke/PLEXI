@@ -1,15 +1,15 @@
 //! CLI consumers of the existing brokered event connection.
 use super::ui_mailbox::UiMailbox;
 use crate::broker::ActorType;
-use crate::host::app_timeline::{self, AppEventRecord, lifecycle_matches};
+use crate::host::app_timeline::{self, lifecycle_matches, AppEventRecord};
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
 use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
-use crate::protocol::{AppRequest, PayloadMode, TriggerMode};
-use serde_json::{Value, json};
-use std::io::{BufReader, Lines, Write};
 use crate::platform::ipc::IpcStream;
+use crate::protocol::{AppRequest, PayloadMode, TriggerMode};
+use serde_json::{json, Value};
+use std::io::{BufReader, Lines, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 enum Consumer {

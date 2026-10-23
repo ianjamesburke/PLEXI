@@ -219,8 +219,7 @@ pub fn resolve_target_from_candidates(
     let mut ranked: Vec<(u64, String)> = candidates.to_vec();
     ranked.sort_by_key(|(id, name)| {
         let name_lower = name.to_ascii_lowercase();
-        let is_substr =
-            name_lower.contains(&query_lower) || query_lower.contains(&name_lower);
+        let is_substr = name_lower.contains(&query_lower) || query_lower.contains(&name_lower);
         let dist = edit_distance(&query_lower, &name_lower);
         (!is_substr, dist, *id)
     });
@@ -2024,7 +2023,11 @@ pub enum PaneCmd {
         #[arg(long = "on-load", value_name = "STEP")]
         on_load: Vec<String>,
         /// Extra arguments forwarded to the command (for example after `--`)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with = "agent")]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            conflicts_with = "agent"
+        )]
         extra_args: Vec<String>,
     },
     /// Rename a pane.
@@ -3131,7 +3134,12 @@ pub enum AgentCmd {
         #[arg(value_name = "PANE")]
         pane: Option<String>,
         /// Pane ID, agent role name, or run/session ID (alias for positional `<PANE>`)
-        #[arg(long = "pane", visible_alias = "pane-id", value_name = "PANE", conflicts_with = "pane")]
+        #[arg(
+            long = "pane",
+            visible_alias = "pane-id",
+            value_name = "PANE",
+            conflicts_with = "pane"
+        )]
         pane_flag: Option<String>,
     },
     /// Wait for one or more child agent panes to finish via `plexi agent done` and pull their results.
@@ -3358,14 +3366,53 @@ mod tests {
 
     #[test]
     fn session_history_and_draft_flags_parse() {
-        let cli = Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest",
-            "--all-panes", "--include-internal", "--include-failed"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Skill { cmd: super::SkillCmd::Draft {
-            all_panes: true, include_internal: true, include_failed: true, .. } })));
-        assert!(Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest", "--pane", "19", "--all-panes"]).is_err());
-        let cli = Cli::try_parse_from(["plexi", "debug", "session", "show", "--utc", "--cli"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Debug { cmd: super::DebugCmd::Session {
-            cmd: super::DebugSessionCmd::Show { utc: true, cli: true, .. } } })));
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "skill",
+            "draft",
+            "--from-session",
+            "latest",
+            "--all-panes",
+            "--include-internal",
+            "--include-failed",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Skill {
+                cmd: super::SkillCmd::Draft {
+                    all_panes: true,
+                    include_internal: true,
+                    include_failed: true,
+                    ..
+                }
+            })
+        ));
+        assert!(Cli::try_parse_from([
+            "plexi",
+            "skill",
+            "draft",
+            "--from-session",
+            "latest",
+            "--pane",
+            "19",
+            "--all-panes"
+        ])
+        .is_err());
+        let cli =
+            Cli::try_parse_from(["plexi", "debug", "session", "show", "--utc", "--cli"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Debug {
+                cmd: super::DebugCmd::Session {
+                    cmd: super::DebugSessionCmd::Show {
+                        utc: true,
+                        cli: true,
+                        ..
+                    }
+                }
+            })
+        ));
     }
 
     #[test]
@@ -3700,11 +3747,17 @@ mod tests {
     #[test]
     fn app_open_mcp_accepts_only_a_server_id() {
         let cli = Cli::try_parse_from(["plexi", "app", "open", "--mcp", "filesystem"]).unwrap();
-        let Some(Commands::App { cmd: AppCmd::Open { mcp, .. } }) = cli.command else {
+        let Some(Commands::App {
+            cmd: AppCmd::Open { mcp, .. },
+        }) = cli.command
+        else {
             panic!("expected MCP app open");
         };
         assert_eq!(mcp, ["filesystem"]);
-        assert!(Cli::try_parse_from(["plexi", "app", "open", "--mcp", "npx", "server", "/tmp"]).is_err());
+        assert!(
+            Cli::try_parse_from(["plexi", "app", "open", "--mcp", "npx", "server", "/tmp"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -4003,7 +4056,12 @@ mod tests {
         let cli = parse(&["plexi", "pane", "info"]).expect("pane info");
         assert!(matches!(
             cli.command,
-            Some(Commands::Pane { cmd: PaneCmd::Info { pane_id: None, previous: None } })
+            Some(Commands::Pane {
+                cmd: PaneCmd::Info {
+                    pane_id: None,
+                    previous: None
+                }
+            })
         ));
         assert!(parse(&["plexi", "pane", "info", "42", "--previous"]).is_err());
     }
@@ -4045,11 +4103,17 @@ mod tests {
         ));
 
         // The write/schema verbs were folded into `plexi agent done`.
-        assert!(parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#]).is_err()
-            || matches!(
-                parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#]).unwrap().command,
-                Some(Commands::Pane { cmd: PaneCmd::Result { cmd: None, .. } })
-            ));
+        assert!(
+            parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#]).is_err()
+                || matches!(
+                    parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#])
+                        .unwrap()
+                        .command,
+                    Some(Commands::Pane {
+                        cmd: PaneCmd::Result { cmd: None, .. }
+                    })
+                )
+        );
         assert!(parse(&["plexi", "pane", "result", "42", "--write", "{}"]).is_err());
         assert!(parse(&["plexi", "pane", "result", "--schema", "{}"]).is_err());
 
@@ -4088,10 +4152,7 @@ mod tests {
 
         // Numeric id resolves without consulting candidates.
         assert_eq!(ContextTarget::from("42").numeric_id(), Some(42));
-        assert_eq!(
-            resolve_target_from_candidates("context", "42", &[]),
-            Ok(42)
-        );
+        assert_eq!(resolve_target_from_candidates("context", "42", &[]), Ok(42));
 
         // Exact name match wins even when it is a prefix of other candidates.
         assert_eq!(
@@ -4158,7 +4219,11 @@ mod tests {
     fn every_leaf_subcommand_accepts_json_flag() {
         use clap::{ArgAction, CommandFactory};
 
-        fn collect_leaf_paths(cmd: &clap::Command, prefix: Vec<String>, out: &mut Vec<(Vec<String>, clap::Command)>) {
+        fn collect_leaf_paths(
+            cmd: &clap::Command,
+            prefix: Vec<String>,
+            out: &mut Vec<(Vec<String>, clap::Command)>,
+        ) {
             let subs: Vec<_> = cmd
                 .get_subcommands()
                 .filter(|s| s.get_name() != "help")
@@ -4190,11 +4255,15 @@ mod tests {
                     continue;
                 }
                 let needs_value = arg.is_required_set()
-                    || id == "text" && path.ends_with(&["assistant".to_string(), "send".to_string()])
-                    || id == "approve" && path.ends_with(&["needs-you".to_string(), "resolve".to_string()])
+                    || id == "text"
+                        && path.ends_with(&["assistant".to_string(), "send".to_string()])
+                    || id == "approve"
+                        && path.ends_with(&["needs-you".to_string(), "resolve".to_string()])
                     || id == "name" && path.ends_with(&["app".to_string(), "init".to_string()])
-                    || id == "pane_id" && path.ends_with(&["pane".to_string(), "focus".to_string()])
-                    || id == "persona" && path.ends_with(&["agent".to_string(), "create".to_string()])
+                    || id == "pane_id"
+                        && path.ends_with(&["pane".to_string(), "focus".to_string()])
+                    || id == "persona"
+                        && path.ends_with(&["agent".to_string(), "create".to_string()])
                     || id == "target"
                         && (path.ends_with(&[
                             "agent".to_string(),
@@ -4227,7 +4296,10 @@ mod tests {
             }
             argv.push("--json".to_string());
             let parsed = Cli::try_parse_from(&argv).unwrap_or_else(|e| {
-                panic!("leaf command {:?} failed to parse with --json (argv={argv:?}): {e}", path)
+                panic!(
+                    "leaf command {:?} failed to parse with --json (argv={argv:?}): {e}",
+                    path
+                )
             });
             assert!(
                 parsed.json,

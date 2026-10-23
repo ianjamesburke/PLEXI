@@ -472,7 +472,14 @@ fn paint_pips(
                 color = color.gamma_multiply(0.4);
             }
             let center = Pos2::new(cx, cy).round_to_pixel_center(ppp);
-            crate::ui::activity::paint_pip(ui.painter(), center, PANE_DOT_RADIUS, agent_state, color, dots.hidden_set.contains(&dot_i));
+            crate::ui::activity::paint_pip(
+                ui.painter(),
+                center,
+                PANE_DOT_RADIUS,
+                agent_state,
+                color,
+                dots.hidden_set.contains(&dot_i),
+            );
         }
 
         // The pin is intentionally neutral: dot color describes agent activity,
@@ -596,10 +603,18 @@ impl SidebarRow {
             );
         }
 
-        if self.pane_dots.as_ref().is_some_and(|dots| dots.activities.iter().any(|s| matches!(s, Some(crate::protocol::AgentState::NeedsYou)))) {
+        if self.pane_dots.as_ref().is_some_and(|dots| {
+            dots.activities
+                .iter()
+                .any(|s| matches!(s, Some(crate::protocol::AgentState::NeedsYou)))
+        }) {
             let visual = crate::ui::activity::attention(ui.ctx());
             if visual.alpha > 0.0 {
-                ui.painter().rect_filled(selection_inset(card), style::RADIUS_SM, colors.state_needs_you.gamma_multiply(0.16 * visual.alpha));
+                ui.painter().rect_filled(
+                    selection_inset(card),
+                    style::RADIUS_SM,
+                    colors.state_needs_you.gamma_multiply(0.16 * visual.alpha),
+                );
             }
         }
 

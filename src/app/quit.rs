@@ -21,8 +21,13 @@ use std::time::{Duration, Instant};
 
 impl super::PlexiApp {
     pub(crate) fn working_agent_count(&self) -> usize {
-        self.windows.iter().flat_map(|window| window.panes.values())
-            .filter(|pane| pane.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working))
+        self.windows
+            .iter()
+            .flat_map(|window| window.panes.values())
+            .filter(|pane| {
+                pane.agent()
+                    .is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
+            })
             .count()
     }
 
@@ -39,7 +44,8 @@ impl super::PlexiApp {
             log::info!("quit: working-agent confirmation accepted");
         } else {
             self.quitting = false;
-            self.ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             log::info!("quit: working-agent confirmation cancelled or vetoed");
         }
     }
@@ -49,7 +55,8 @@ impl super::PlexiApp {
     pub(crate) fn prepare_user_quit(&mut self) -> bool {
         let veto = self.windows.iter_mut().find_map(|window| {
             window.panes.iter_mut().find_map(|(id, pane)| {
-                pane.as_app_mut().and_then(|app| (!app.runtime.request_close()).then_some(*id))
+                pane.as_app_mut()
+                    .and_then(|app| (!app.runtime.request_close()).then_some(*id))
             })
         });
         if let Some(pane) = veto {

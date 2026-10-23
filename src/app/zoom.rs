@@ -1,10 +1,10 @@
 //! Zoom Ladder, Niri-Style Scrolling Column Strip, Sibling Context Cards, and Tree Atlas
 //! (`SPEC.md` R31–R36, R40, R42).
 
-use crate::app::PlexiApp;
 use crate::app::app_trait::KeyDisposition;
 use crate::app::attention_queue::QueueCategory;
 use crate::app::input_router::PlexiInput;
+use crate::app::PlexiApp;
 use crate::host::keys::Direction;
 use crate::spatial::tiling::PaneId;
 use crate::ui::style;
@@ -371,11 +371,7 @@ impl PlexiApp {
         self.zoom
             .explicit_columns
             .insert(context_id, columns.clone());
-        if let Some(win_idx) = self
-            .windows
-            .iter()
-            .position(|w| w.context_id == context_id)
-        {
+        if let Some(win_idx) = self.windows.iter().position(|w| w.context_id == context_id) {
             let target_pids: Vec<PaneId> = columns.iter().flatten().copied().collect();
             let mut moved_panes = Vec::new();
             for (idx, win) in self.windows.iter_mut().enumerate() {
@@ -423,12 +419,12 @@ impl PlexiApp {
             let mut tree = egui_tiles::Tree::empty("plexi_columns");
             tree.tiles = tiles;
             tree.root = root;
-            let prev_focused_pid = self.windows[win_idx]
-                .focused_pane
-                .and_then(|t| match self.windows[win_idx].tree.tiles.get(t) {
+            let prev_focused_pid = self.windows[win_idx].focused_pane.and_then(|t| {
+                match self.windows[win_idx].tree.tiles.get(t) {
                     Some(Tile::Pane(id)) => Some(*id),
                     _ => None,
-                });
+                }
+            });
             self.windows[win_idx].tree = tree;
             if let Some(pid) = prev_focused_pid {
                 if let Some(t) = self.windows[win_idx].tree.tiles.find_pane(&pid) {
@@ -668,12 +664,8 @@ impl PlexiApp {
         let focused_pid = self.active_focused_pane_id();
         let (cur_col_idx, cur_row_idx) = focused_pid
             .and_then(|pid| {
-                cols.iter().find_map(|c| {
-                    c.panes
-                        .iter()
-                        .position(|&p| p == pid)
-                        .map(|r| (c.index, r))
-                })
+                cols.iter()
+                    .find_map(|c| c.panes.iter().position(|&p| p == pid).map(|r| (c.index, r)))
             })
             .unwrap_or((0, 0));
 
@@ -1223,11 +1215,7 @@ impl PlexiApp {
             .zoom
             .atlas_focused_context
             .filter(|id| nodes.iter().any(|n| n.context_id == *id))
-            .unwrap_or_else(|| {
-                self.router
-                    .active()
-                    .context_id
-            });
+            .unwrap_or_else(|| self.router.active().context_id);
         let Some(cur_node) = nodes.iter().find(|n| n.context_id == cur_ctx) else {
             self.record_edge_bump(dir);
             return false;
@@ -1431,7 +1419,11 @@ impl PlexiApp {
         self.zoom.atlas_peek_open = false;
         self.zoom.ghost = None;
 
-        if let Some(ask) = self.attention_queue.first_ask_for_context(target_ctx).cloned() {
+        if let Some(ask) = self
+            .attention_queue
+            .first_ask_for_context(target_ctx)
+            .cloned()
+        {
             let _ = self.open_decision_overlay_for_ask(&ask.id);
             return true;
         }
@@ -1675,10 +1667,7 @@ impl PlexiApp {
         }
         if has_right {
             let right_strip = Rect::from_min_size(
-                Pos2::new(
-                    canvas_rect.max.x - style::STRIP_PEEK_W,
-                    canvas_rect.min.y,
-                ),
+                Pos2::new(canvas_rect.max.x - style::STRIP_PEEK_W, canvas_rect.min.y),
                 Vec2::new(style::STRIP_PEEK_W, canvas_rect.height()),
             );
             painter.rect_filled(right_strip, style::RADIUS_SM, colors.depth_tint(1));
@@ -1720,7 +1709,11 @@ impl PlexiApp {
         let cols = self.columns_for_context(active_ctx_id);
         let focused_pid = self.active_focused_pane_id();
         let active_col_idx = focused_pid
-            .and_then(|pid| cols.iter().find(|c| c.panes.contains(&pid)).map(|c| c.index))
+            .and_then(|pid| {
+                cols.iter()
+                    .find(|c| c.panes.contains(&pid))
+                    .map(|c| c.index)
+            })
             .unwrap_or(0);
 
         let mut toggle_queue = false;
@@ -1766,8 +1759,8 @@ impl PlexiApp {
                         let offset = self.zoom.strip_offset_for(active_ctx_id);
                         for col in &cols {
                             let is_focused_col = col.index == active_col_idx;
-                            let is_visible = cols.len() <= 2
-                                || (col.index >= offset && col.index < offset + 2);
+                            let is_visible =
+                                cols.len() <= 2 || (col.index >= offset && col.index < offset + 2);
                             let pip_char = if is_focused_col {
                                 "●"
                             } else if is_visible {
@@ -1835,17 +1828,15 @@ impl PlexiApp {
                             .corner_radius(style::RADIUS_PILL)
                             .inner_margin(egui::Margin::symmetric(10, 3))
                             .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(pill_text)
-                                        .size(style::TEXT_HINT)
-                                        .color(if asks > 0 {
-                                            colors.zoom_needs
-                                        } else if failed > 0 {
-                                            colors.zoom_failed
-                                        } else {
-                                            colors.text_dim
-                                        }),
-                                );
+                                ui.label(RichText::new(pill_text).size(style::TEXT_HINT).color(
+                                    if asks > 0 {
+                                        colors.zoom_needs
+                                    } else if failed > 0 {
+                                        colors.zoom_failed
+                                    } else {
+                                        colors.text_dim
+                                    },
+                                ));
                             })
                             .response
                             .interact(Sense::click());
@@ -1891,8 +1882,7 @@ impl PlexiApp {
                 start_x + (idx as f32) * (style::CARD_W + style::CARD_GAP) + offset.x,
                 center_y - style::CARD_H * 0.5 + offset.y,
             );
-            let card_rect =
-                Rect::from_min_size(card_min, Vec2::new(style::CARD_W, style::CARD_H));
+            let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, style::CARD_H));
 
             let depth = self
                 .router

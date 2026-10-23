@@ -32,9 +32,7 @@ use plexi_daw_model::{
     TICKS_PER_BEAT,
 };
 
-use crate::host::wasm_app::{
-    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp,
-};
+use crate::host::wasm_app::{InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp};
 
 // ─── Tier 1: pure-model fuzz, wired under `cargo test --bin plexi` ────────────
 
@@ -181,8 +179,7 @@ fn named_key(k: &str) -> InputEvent {
 /// (they arrive as `Event::Text`), exactly as in `tests/scenes/daw-*.toml`.
 #[test]
 fn daw_gate_pane_drive() -> wasmtime::Result<()> {
-    let mut app =
-        WasmApp::load_ephemeral_run("daw-gate", &daw_fixture(), StateStore::ephemeral())?;
+    let mut app = WasmApp::load_ephemeral_run("daw-gate", &daw_fixture(), StateStore::ephemeral())?;
     app.init(&StateSnapshot { entries: vec![] }, (1280.0, 800.0), &[])?;
 
     // The seeded demo project renders both tracks, transport, and readout.
@@ -304,7 +301,10 @@ fn daw_gate_mixdown_determinism() {
         pcm_hash(&b),
         "independent mixdowns of one fixture must hash identically"
     );
-    assert_eq!(a, b, "PCM samples must be byte-identical, not just hash-equal");
+    assert_eq!(
+        a, b,
+        "PCM samples must be byte-identical, not just hash-equal"
+    );
 }
 
 /// Block-size independence: rendering the whole span at once equals rendering
@@ -350,7 +350,10 @@ fn daw_gate_wav_export_is_byte_identical() {
     let mix = engine.mixdown(0, end).expect("mixdown");
     let a = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples).expect("encode a");
     let b = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples).expect("encode b");
-    assert_eq!(a, b, "WAV export must be byte-identical for identical samples");
+    assert_eq!(
+        a, b,
+        "WAV export must be byte-identical for identical samples"
+    );
     assert_eq!(
         pcm_hash_bytes(&a),
         pcm_hash_bytes(&b),

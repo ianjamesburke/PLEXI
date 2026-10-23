@@ -57,7 +57,10 @@ pub fn decode(bytes: &[u8]) -> Result<WavData, String> {
             .checked_add(chunk_len)
             .filter(|&e| e <= bytes.len())
             .ok_or_else(|| {
-                format!("wav: chunk {:?} length {chunk_len} exceeds stream", String::from_utf8_lossy(id))
+                format!(
+                    "wav: chunk {:?} length {chunk_len} exceeds stream",
+                    String::from_utf8_lossy(id)
+                )
             })?;
         match id {
             b"fmt " => {

@@ -39,8 +39,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::protocol::{AiTool, PlexiEvent};
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
+use crate::protocol::{AiTool, PlexiEvent};
 
 // ── AppEventSender ──────────────────────────────────────────────────────────
 
@@ -418,7 +418,9 @@ pub(crate) fn unregister(pane_id: u64) {
 
 /// Tools currently exposed by live app panes: app id, pane id, tool name, description.
 pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
-    let registry = global_registry().lock().unwrap_or_else(|error| error.into_inner());
+    let registry = global_registry()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let mut tools = Vec::new();
     for (pane_id, entry) in &registry.entries {
         for tool in &entry.tools {
@@ -505,7 +507,9 @@ impl ToolCallResult {
     pub fn coded(code: &str, call_id: &str, pending: Option<&str>) -> Self {
         Self {
             output_json: None,
-            error: Some(crate::broker::gate::structured_error(code, call_id, pending)),
+            error: Some(crate::broker::gate::structured_error(
+                code, call_id, pending,
+            )),
             error_code: Some(code.to_string()),
             pending_request_id: pending.map(str::to_string),
         }
@@ -585,12 +589,12 @@ impl DispatchScope {
         context_id: u64,
     ) -> Self {
         let caller_app_id = caller_app_id.into();
-        let actor_type = if caller_app_id.starts_with("agent:") || caller_app_id.starts_with("pane:")
-        {
-            crate::broker::ActorType::Agent
-        } else {
-            crate::broker::ActorType::App
-        };
+        let actor_type =
+            if caller_app_id.starts_with("agent:") || caller_app_id.starts_with("pane:") {
+                crate::broker::ActorType::Agent
+            } else {
+                crate::broker::ActorType::App
+            };
         Self {
             caller_pane_id,
             caller_app_id,
@@ -659,7 +663,10 @@ impl ToolDispatcher {
     /// Build a dispatcher scoped to `viewer_context_id` — the caller's own
     /// host-established context, never `router.active()` or a client-supplied
     /// path. Only tools reachable from that context are included.
-    pub fn from_registry(scope: DispatchScope, monitor: Arc<crate::broker::gate::PermissionMonitor>) -> Self {
+    pub fn from_registry(
+        scope: DispatchScope,
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+    ) -> Self {
         let registry = global_registry().lock().unwrap();
         let tools = registry.snapshot_for_caller(scope.context_id);
         let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
@@ -711,7 +718,10 @@ impl ToolDispatcher {
         let provider_apps = tools
             .values()
             .filter_map(|(pane, _, _)| {
-                registry.entries.get(pane).map(|entry| (*pane, entry.app_id.clone()))
+                registry
+                    .entries
+                    .get(pane)
+                    .map(|entry| (*pane, entry.app_id.clone()))
             })
             .collect();
         Self {
@@ -805,7 +815,12 @@ impl ToolDispatcher {
         let trace = |kind: &str, call_id: &str, data: serde_json::Value| {
             if let Some(profile) = &profile {
                 crate::host::flight_recorder::record_in(
-                    profile, kind, context, pane, Some(call_id), data,
+                    profile,
+                    kind,
+                    context,
+                    pane,
+                    Some(call_id),
+                    data,
                 );
             }
         };
@@ -840,7 +855,12 @@ impl ToolDispatcher {
         result
     }
 
-    fn dispatch_call_admitted(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
+    fn dispatch_call_admitted(
+        &self,
+        call_id: String,
+        name: &str,
+        input_json: String,
+    ) -> ToolCallResult {
         let known = self.host_tools.contains_key(name) || self.tools.contains_key(name);
         if !known {
             crate::broker::gate::trace_gate(format!(
@@ -855,20 +875,23 @@ impl ToolDispatcher {
         } else {
             crate::broker::TargetType::AppConnector
         };
-        let mut admission = self.monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
-            call_id: &call_id,
-            tool: name,
-            input_json: &input_json,
-            actor_type: self.scope.actor_type,
-            actor_id: &self.scope.caller_app_id,
-            actor_scope: self.scope.actor_scope,
-            trust_origin: &self.scope.trust_origin,
-            workspace_root: &self.scope.workspace_root,
-            context_id: self.scope.context_id,
-            package_id: &package,
-            instance_id: instance,
-            target_type,
-        }, self.scope.posture.as_ref());
+        let mut admission = self.monitor.admit_with_posture(
+            crate::broker::gate::AdmitRequest {
+                call_id: &call_id,
+                tool: name,
+                input_json: &input_json,
+                actor_type: self.scope.actor_type,
+                actor_id: &self.scope.caller_app_id,
+                actor_scope: self.scope.actor_scope,
+                trust_origin: &self.scope.trust_origin,
+                workspace_root: &self.scope.workspace_root,
+                context_id: self.scope.context_id,
+                package_id: &package,
+                instance_id: instance,
+                target_type,
+            },
+            self.scope.posture.as_ref(),
+        );
         if let crate::broker::gate::Admission::Required { pending_request_id } = &admission {
             if let Some(presenter) = &self.presenter {
                 let (_, resource_id) = crate::broker::gate::resource_of(name, &input_json);
@@ -891,11 +914,12 @@ impl ToolDispatcher {
                 // Waiting desktop presenters observe a decision already committed by
                 // the banner. Do not submit it a second time: the monitor rejects
                 // duplicate decisions. Re-admission below still checks revocation.
-                let decided = if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
-                    Ok(())
-                } else {
-                    self.monitor.approve_pending(pending_request_id, choice)
-                };
+                let decided =
+                    if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
+                        Ok(())
+                    } else {
+                        self.monitor.approve_pending(pending_request_id, choice)
+                    };
                 if matches!(
                     choice,
                     crate::broker::gate::ApprovalChoice::Deny
@@ -917,20 +941,23 @@ impl ToolDispatcher {
                     log::error!("tool_dispatch: {error}");
                     return ToolCallResult::err(error);
                 }
-                admission = self.monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
-                    call_id: &call_id,
-                    tool: name,
-                    input_json: &input_json,
-                    actor_type: self.scope.actor_type,
-                    actor_id: &self.scope.caller_app_id,
-                    actor_scope: self.scope.actor_scope,
-                    trust_origin: &self.scope.trust_origin,
-                    workspace_root: &self.scope.workspace_root,
-                    context_id: self.scope.context_id,
-                    package_id: &package,
-                    instance_id: instance,
-                    target_type,
-                }, self.scope.posture.as_ref());
+                admission = self.monitor.admit_with_posture(
+                    crate::broker::gate::AdmitRequest {
+                        call_id: &call_id,
+                        tool: name,
+                        input_json: &input_json,
+                        actor_type: self.scope.actor_type,
+                        actor_id: &self.scope.caller_app_id,
+                        actor_scope: self.scope.actor_scope,
+                        trust_origin: &self.scope.trust_origin,
+                        workspace_root: &self.scope.workspace_root,
+                        context_id: self.scope.context_id,
+                        package_id: &package,
+                        instance_id: instance,
+                        target_type,
+                    },
+                    self.scope.posture.as_ref(),
+                );
             } else {
                 log::info!(
                     "tool_dispatch: permission_required caller={} tool={name} pending={pending_request_id}",
@@ -990,7 +1017,9 @@ impl ToolDispatcher {
         );
         let result = if self.host_tools.contains_key(name) {
             let Some(handler) = &self.host_handler else {
-                return ToolCallResult::err(format!("host_tool_unhandled: no handler for {name:?}"));
+                return ToolCallResult::err(format!(
+                    "host_tool_unhandled: no handler for {name:?}"
+                ));
             };
             log::info!(
                 "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?} grant={grant_id}",
@@ -1008,7 +1037,11 @@ impl ToolDispatcher {
                 self.scope.caller_app_id
             ));
         }
-        let outcome = if result.error.is_none() { "ok" } else { "error" };
+        let outcome = if result.error.is_none() {
+            "ok"
+        } else {
+            "error"
+        };
         let (revision_before, revision_after) =
             crate::broker::gate::revisions_from_output(result.output_json.as_deref());
         if self
@@ -1027,8 +1060,10 @@ impl ToolDispatcher {
             .is_err()
             && result.error.is_none()
         {
-            self.monitor
-                .consume_once(&grant_id, Some(operation_id.as_str()).filter(|s| !s.is_empty()));
+            self.monitor.consume_once(
+                &grant_id,
+                Some(operation_id.as_str()).filter(|s| !s.is_empty()),
+            );
             let mut unknown = result;
             unknown.error_code = Some("outcome_unknown".to_string());
             unknown.error = Some(crate::broker::gate::structured_error(
@@ -1039,8 +1074,10 @@ impl ToolDispatcher {
             return unknown;
         }
         if result.error.is_none() {
-            self.monitor
-                .consume_once(&grant_id, Some(operation_id.as_str()).filter(|s| !s.is_empty()));
+            self.monitor.consume_once(
+                &grant_id,
+                Some(operation_id.as_str()).filter(|s| !s.is_empty()),
+            );
         }
         if let Some(hooks) = &self.hooks {
             hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
@@ -1069,7 +1106,9 @@ impl ToolDispatcher {
                 }
             }
             log::info!("tool_dispatch: pane {pane} does not expose {plain}");
-            return Err(format!("tool_not_found: pane {pane} does not expose {tool}"));
+            return Err(format!(
+                "tool_not_found: pane {pane} does not expose {tool}"
+            ));
         }
         if self.tools.contains_key(&plain) {
             return Ok(plain);
@@ -1100,19 +1139,8 @@ impl ToolDispatcher {
         if let Some((pane, provider_name, _)) = self.tools.get(name) {
             let package = name
                 .split_once("__")
-                .map(|(app, _)| {
-                    app.split(':')
-                        .next()
-                        .unwrap_or(app)
-                        .to_string()
-                })
-                .unwrap_or_else(|| {
-                    provider_name
-                        .split('.')
-                        .next()
-                        .unwrap_or("app")
-                        .to_string()
-                });
+                .map(|(app, _)| app.split(':').next().unwrap_or(app).to_string())
+                .unwrap_or_else(|| provider_name.split('.').next().unwrap_or("app").to_string());
             return (package, *pane);
         }
         ("host".to_string(), self.caller_pane_id)
@@ -1160,17 +1188,17 @@ impl ToolDispatcher {
                 // request. Recheck the snapshot under the same lock as send.
                 if self.provider_apps.get(pane_id) != Some(&entry.app_id)
                     || entry.origin.context_id != self.scope.context_id
-                    || !entry.tools.iter().any(|current| current.name == *provider_tool_name)
+                    || !entry
+                        .tools
+                        .iter()
+                        .any(|current| current.name == *provider_tool_name)
                 {
                     pending_calls().lock().unwrap().remove(&call_id);
                     log::info!("tool_dispatch: target changed before send pane={pane_id} tool={name} call_id={call_id}");
-                    return ToolCallResult::coded(
-                        "tool_target_changed",
-                        &call_id,
-                        None,
-                    );
+                    return ToolCallResult::coded("tool_target_changed", &call_id, None);
                 }
-                entry.sender
+                entry
+                    .sender
                     .send_event(&PlexiEvent::ToolCall {
                         call_id: call_id.clone(),
                         name: provider_tool_name.clone(),
@@ -1461,22 +1489,45 @@ mod tests {
             ("todo", 9792, "todo.other"),
         ] {
             let (original, _original_rx) = std::sync::mpsc::channel();
-            register(pane, "todo".into(), vec![make_tool("todo.list")],
-                AppEventSender::Channel(original), origin(9792, pane));
+            register(
+                pane,
+                "todo".into(),
+                vec![make_tool("todo.list")],
+                AppEventSender::Channel(original),
+                origin(9792, pane),
+            );
             let dispatcher = ToolDispatcher::namespaced_for(
                 DispatchScope::new(9791, "pane:9791", "/ws", 9792),
                 crate::broker::gate::PermissionMonitor::ephemeral(),
             );
             let (replacement, replacement_rx) = std::sync::mpsc::channel();
-            register(pane, app.into(), vec![make_tool(tool)],
-                AppEventSender::Channel(replacement), origin(context, pane));
+            register(
+                pane,
+                app.into(),
+                vec![make_tool(tool)],
+                AppEventSender::Channel(replacement),
+                origin(context, pane),
+            );
             let result = dispatcher.dispatch_inner(
-                format!("stale-{app}-{context}-{tool}"), "todo__todo.list", "{}".into(), None,
+                format!("stale-{app}-{context}-{tool}"),
+                "todo__todo.list",
+                "{}".into(),
+                None,
             );
             unregister(pane);
-            assert!(replacement_rx.try_recv().is_err(), "stale call reached replacement provider");
-            assert!(result.error.as_deref().unwrap_or_default().contains("tool_target_changed"),
-                "unexpected result: {:?}", result.error);
+            assert!(
+                replacement_rx.try_recv().is_err(),
+                "stale call reached replacement provider"
+            );
+            assert!(
+                result
+                    .error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("tool_target_changed"),
+                "unexpected result: {:?}",
+                result.error
+            );
         }
     }
 
@@ -1586,7 +1637,11 @@ mod tests {
 
         let blocked = dispatcher.dispatch_call("c1".to_string(), "gated_tool", "{}".to_string());
         assert_eq!(blocked.error_code.as_deref(), Some("permission_required"));
-        assert_eq!(*hook.seen.lock().unwrap(), 0, "a refused call is not observed as started");
+        assert_eq!(
+            *hook.seen.lock().unwrap(),
+            0,
+            "a refused call is not observed as started"
+        );
 
         let unknown = dispatcher.dispatch_call("c2".to_string(), "nope", "{}".to_string());
         assert!(
@@ -1615,30 +1670,32 @@ mod tests {
         let input = r#"{"value":7}"#;
         let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
         let fp = crate::broker::gate::fingerprint_args(input).unwrap();
-        monitor.store().record(crate::broker::GrantRecord::from_binding(
-            &crate::broker::ExactBinding {
-                actor_type: crate::broker::ActorType::Agent,
-                actor_id: "agent:assistant".to_string(),
-                actor_scope: crate::broker::ActorScope::User,
-                trust_origin: "host".to_string(),
-                workspace_root: PathBuf::from("/ws-wasm"),
-                target_type: crate::broker::TargetType::AppConnector,
-                target_id: "wasm.echo".to_string(),
-                resource_scope: crate::broker::ResourceScope::Workspace,
-                resource_id: None,
-                args_fingerprint: fp,
-                session_id: Some(monitor.session_id().to_string()),
-                package_id: "wasm".to_string(),
-                instance_id: Some(997),
-                context_id: Some(80),
-                call_id: "wasm-call-1".to_string(),
-                operation_id: String::new(),
-            },
-            crate::broker::Decision::Allow,
-            crate::broker::GrantDuration::Always,
-            crate::broker::GrantSource::User,
-            "g-wasm",
-        ));
+        monitor
+            .store()
+            .record(crate::broker::GrantRecord::from_binding(
+                &crate::broker::ExactBinding {
+                    actor_type: crate::broker::ActorType::Agent,
+                    actor_id: "agent:assistant".to_string(),
+                    actor_scope: crate::broker::ActorScope::User,
+                    trust_origin: "host".to_string(),
+                    workspace_root: PathBuf::from("/ws-wasm"),
+                    target_type: crate::broker::TargetType::AppConnector,
+                    target_id: "wasm.echo".to_string(),
+                    resource_scope: crate::broker::ResourceScope::Workspace,
+                    resource_id: None,
+                    args_fingerprint: fp,
+                    session_id: Some(monitor.session_id().to_string()),
+                    package_id: "wasm".to_string(),
+                    instance_id: Some(997),
+                    context_id: Some(80),
+                    call_id: "wasm-call-1".to_string(),
+                    operation_id: String::new(),
+                },
+                crate::broker::Decision::Allow,
+                crate::broker::GrantDuration::Always,
+                crate::broker::GrantSource::User,
+                "g-wasm",
+            ));
         let dispatcher = ToolDispatcher::from_registry(
             DispatchScope::new(2, "agent:assistant", "/ws-wasm", 80),
             monitor,
@@ -1763,9 +1820,14 @@ mod tests {
         unregister(1902);
         unregister(1903);
 
-        assert_eq!(snap.len(), 3, "expected 3 exposed entries in context 501: {snap:?}");
+        assert_eq!(
+            snap.len(),
+            3,
+            "expected 3 exposed entries in context 501: {snap:?}"
+        );
         assert!(
-            snap.iter().all(|e| e.context_id == 501 && e.app_id == "calc"),
+            snap.iter()
+                .all(|e| e.context_id == 501 && e.app_id == "calc"),
             "cross-context tools must never appear in context 501 snapshot: {snap:?}"
         );
         let add_1901 = snap

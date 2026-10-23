@@ -180,7 +180,9 @@ fn closing_focused_pane_in_background_window_keeps_nearest_sibling_focused() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
-    h.app.windows.push(same_workspace_window_right(context_id, 2));
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
 
     let (left_tile, left_pane) = h.app.add_app_pane_in_window(1, "left");
     let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
@@ -198,7 +200,10 @@ fn closing_focused_pane_in_background_window_keeps_nearest_sibling_focused() {
         Some(left_tile),
         "closing B's focused pane must focus its explicit sibling while A stays active"
     );
-    assert_eq!(h.app.active_window, 0, "background close must not steal focus");
+    assert_eq!(
+        h.app.active_window, 0,
+        "background close must not steal focus"
+    );
     assert!(h.app.windows[1].panes.contains_key(&left_pane));
 }
 
@@ -207,7 +212,9 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
-    h.app.windows.push(same_workspace_window_right(context_id, 2));
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
 
     let (left_tile, _left_pane) = h.app.add_app_pane_in_window(1, "left");
     let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
@@ -225,7 +232,10 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
         Some(left_tile),
         "closing a background pane must preserve B's focused sibling"
     );
-    assert_eq!(h.app.active_window, 0, "background close must not steal focus");
+    assert_eq!(
+        h.app.active_window, 0,
+        "background close must not steal focus"
+    );
 }
 
 #[test]
@@ -233,7 +243,9 @@ fn page_arrival_repairs_focusless_destination_before_lateral_navigation() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
-    h.app.windows.push(same_workspace_window_right(context_id, 2));
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
     let (left_tile, left_pane) = h.app.add_app_pane_in_window(1, "left");
     let (right_tile, right_pane) = h.app.add_app_pane_in_window(1, "right");
     let root = h.app.windows[1]
@@ -315,14 +327,15 @@ fn pane_info_and_list_include_agent_state() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState { peer_ancestry: None,
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Working,
         agent: "claude-code".to_string(),
         detail: Some("Bash: cargo test".to_string()),
         session_id: Some("session-33".to_string()),
-            event: None,
-            blocked_reason: None,
+        event: None,
+        blocked_reason: None,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -371,14 +384,15 @@ fn get_agent_states_collects_state_from_panes() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState { peer_ancestry: None,
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
         detail: None,
         session_id: None,
-            event: None,
-            blocked_reason: None,
+        event: None,
+        blocked_reason: None,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -407,8 +421,12 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
     let pane_a = h.add_test_pane();
     // Three windows: grid_y 0 (window 0), 1 (window 1), 2 (window 2).
     let context_id = h.app.windows[0].context_id;
-    h.app.windows.push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
+    h.app
+        .windows
+        .push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app
+        .windows
+        .push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     assert!(
         h.app.pane_navigate(pane_a),
@@ -431,8 +449,12 @@ fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
-    h.app.windows.push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
+    h.app
+        .windows
+        .push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app
+        .windows
+        .push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     // Start from the middle window.
     assert_eq!(h.app.active_window, 0);
@@ -1055,7 +1077,8 @@ fn assistant_pane_count(app: &PlexiApp) -> usize {
 fn assistant_open_focuses_existing_in_same_window() {
     // Alpha-tier channel so the assistant feature gate passes.
     let _channel = crate::config::set_test_channel("pr-0538");
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane(); // window 0, context 1
     let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
@@ -1086,7 +1109,8 @@ fn assistant_open_focuses_existing_in_same_window() {
 #[test]
 fn assistant_open_focuses_existing_across_windows_of_same_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     let context_id = h.app.windows[0].context_id;
@@ -1120,7 +1144,8 @@ fn assistant_open_focuses_existing_across_windows_of_same_context() {
 #[test]
 fn assistant_open_uses_caller_context_root_as_workspace() {
     let _channel = crate::config::set_test_channel("pr-0538");
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let root = tempfile::tempdir().expect("context root");
     let expected = root.path().to_path_buf();
     let mut h = HostHarness::new();
@@ -1148,7 +1173,8 @@ fn assistant_open_uses_caller_context_root_as_workspace() {
 #[test]
 fn assistant_open_spawns_second_instance_in_other_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     // Pin the workspace root to this repo checkout by planting the channel
     // marker dir the workspace resolver walks up to. The channel is unique to
     // this test and the dir is git-ignored (`.plexi-pr-*/`); nothing here may
@@ -1165,7 +1191,10 @@ fn assistant_open_spawns_second_instance_in_other_context() {
     let _cleanup = Cleanup(marker);
     let workspace_root =
         crate::config::active_workspace_root().expect("marker dir must make cwd a workspace root");
-    assert_eq!(workspace_root, cwd, "workspace root must resolve to the repo checkout");
+    assert_eq!(
+        workspace_root, cwd,
+        "workspace root must resolve to the repo checkout"
+    );
 
     let mut h = HostHarness::new();
     let (pane_a_tile, _pane_a) = h.app.add_test_pane();
@@ -1245,7 +1274,11 @@ fn open_config_in_editor_splits_and_dedups() {
     assert_ne!(editor, first);
 
     h.app.open_config_in_editor(path.clone());
-    assert_eq!(h.pane_count(), before + 1, "second open focuses, not stacks");
+    assert_eq!(
+        h.pane_count(),
+        before + 1,
+        "second open focuses, not stacks"
+    );
     assert_eq!(
         std::fs::read_to_string(&path).expect("config readable"),
         on_disk,

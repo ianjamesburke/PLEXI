@@ -397,7 +397,10 @@ impl From<&RestoredItem> for DiskItem {
     }
 }
 
-pub(crate) fn save_continuations(profile: &Path, records: &[ContinuationRecord]) -> Result<(), String> {
+pub(crate) fn save_continuations(
+    profile: &Path,
+    records: &[ContinuationRecord],
+) -> Result<(), String> {
     let host = ensure_host_dir(profile)?;
     let key = super::seal::mac_key_bytes(profile)?;
     let body = serde_json::to_vec(&DiskContinuations {
@@ -434,17 +437,26 @@ pub(crate) fn load_continuations(profile: &Path) -> Vec<ContinuationRecord> {
         return Vec::new();
     };
     let Some((body, mac)) = split_mac(&raw) else {
-        log::warn!("needs_you: continuations file has no seal: {}", path.display());
+        log::warn!(
+            "needs_you: continuations file has no seal: {}",
+            path.display()
+        );
         return Vec::new();
     };
     if !ct_eq(&hmac_sha256(&key, body), &mac) {
-        log::warn!("needs_you: continuations file failed seal: {}", path.display());
+        log::warn!(
+            "needs_you: continuations file failed seal: {}",
+            path.display()
+        );
         return Vec::new();
     }
     match serde_json::from_slice::<DiskContinuationsOwned>(body) {
         Ok(parsed) if parsed.schema == SCHEMA => parsed.records,
         Ok(parsed) => {
-            log::warn!("needs_you: continuations schema {} != {SCHEMA}", parsed.schema);
+            log::warn!(
+                "needs_you: continuations schema {} != {SCHEMA}",
+                parsed.schema
+            );
             Vec::new()
         }
         Err(error) => {

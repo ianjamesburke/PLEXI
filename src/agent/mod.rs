@@ -291,9 +291,15 @@ impl AgentDefinition {
                 deny: Vec::new(),
             }
         };
-        let can_call = settings.harness.as_ref().and_then(|h| h.can_call.clone())
+        let can_call = settings
+            .harness
+            .as_ref()
+            .and_then(|h| h.can_call.clone())
             .unwrap_or(settings.can_call);
-        let can_handoff = settings.harness.as_ref().and_then(|h| h.can_handoff.clone())
+        let can_handoff = settings
+            .harness
+            .as_ref()
+            .and_then(|h| h.can_handoff.clone())
             .unwrap_or(settings.can_handoff);
         for (field, roles) in [("can_call", &can_call), ("can_handoff", &can_handoff)] {
             for role in roles {
@@ -460,10 +466,7 @@ impl AgentRegistry {
         Self::load_with_optional_workspace(profile_dir, Some(workspace_root))
     }
 
-    pub fn load_with_optional_workspace(
-        profile_dir: &Path,
-        workspace_root: Option<&Path>,
-    ) -> Self {
+    pub fn load_with_optional_workspace(profile_dir: &Path, workspace_root: Option<&Path>) -> Self {
         let default = AgentDefinition {
             id: "default".to_string(),
             display_name: "Plexi Assistant".to_string(),
@@ -710,11 +713,9 @@ fn definition_files_match(left: &Path, right: &Path) -> bool {
 }
 
 fn copy_tree_skipping_grants(src: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest).map_err(|error| {
-        format!("create {}: {error}", dest.display())
-    })?;
-    let entries = std::fs::read_dir(src)
-        .map_err(|error| format!("read {}: {error}", src.display()))?;
+    std::fs::create_dir_all(dest).map_err(|error| format!("create {}: {error}", dest.display()))?;
+    let entries =
+        std::fs::read_dir(src).map_err(|error| format!("read {}: {error}", src.display()))?;
     for entry in entries {
         let entry = entry.map_err(|error| format!("read entry in {}: {error}", src.display()))?;
         let name = entry.file_name();
@@ -742,7 +743,10 @@ fn append_migration_receipt(canonical: &Path, name: &str) {
     let path = canonical.join(".migration-receipt");
     let prior = std::fs::read_to_string(&path).unwrap_or_default();
     let line = format!("migrated {name}\n");
-    if prior.lines().any(|existing| existing == format!("migrated {name}")) {
+    if prior
+        .lines()
+        .any(|existing| existing == format!("migrated {name}"))
+    {
         return;
     }
     let mut next = prior;
@@ -1234,7 +1238,10 @@ impl AgentHost {
 
         let request = AiBrokerRequest {
             app_id: format!("agent:{}", agent.def.id),
-            model_mode: match agent.def.default_tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
+            model_mode: match agent.def.default_tier {
+                ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow,
+                ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast,
+            },
             concrete_model: agent
                 .def
                 .model_routes
@@ -1407,7 +1414,10 @@ default = "ask"
             .unwrap_err();
         assert!(err.contains("invalid fallback 'script'"), "{err}");
         let err = AgentDefinition::parse("Run it.", &format!("{base}cli='bash'")).unwrap_err();
-        assert!(err.contains("expected one of: pi, claude, codex, agy, script"), "{err}");
+        assert!(
+            err.contains("expected one of: pi, claude, codex, agy, script"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1598,7 +1608,7 @@ default_tier = "low"
     /// reload. The profile monitor is the store `agents.list` admits against.
     #[test]
     fn reload_workspace_keeps_unsaved_scope_allows() {
-        use crate::broker::gate::{AdmitRequest, Admission, PermissionMonitor};
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
         use crate::broker::{
             ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, TargetType,
         };
@@ -1606,11 +1616,8 @@ default_tier = "low"
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let timeline = Arc::new(Mutex::new(AppTimeline::default()));
-        let mut host = AgentHost::new_for_test(
-            timeline,
-            Arc::new(InertAiBroker),
-            ws.path().to_path_buf(),
-        );
+        let mut host =
+            AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), ws.path().to_path_buf());
         host.grants_dir = Some(profile.path().to_path_buf());
         host.monitor = PermissionMonitor::for_profile(profile.path());
         let binding = crate::broker::ExactBinding {
@@ -1822,7 +1829,9 @@ enabled = ["before-turn"]
         let profile = tempfile::tempdir().unwrap();
         let empty = AgentRegistry::load(profile.path(), ws.path());
         assert!(empty.active("writer").is_none());
-        assert!(legacy_workspace_agents_dir(ws.path()).unwrap().starts_with(ws.path().join(".plexi-alpha")));
+        assert!(legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .starts_with(ws.path().join(".plexi-alpha")));
         assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
 
         let dir = workspace_agents_dir(ws.path()).join("writer");
@@ -1835,14 +1844,21 @@ enabled = ["before-turn"]
         write_definition(&decoy, "decoy", "not a workspace agent");
 
         let registry = AgentRegistry::load(profile.path(), ws.path());
-        let writer = registry.active("writer").expect("canonical definition loads");
+        let writer = registry
+            .active("writer")
+            .expect("canonical definition loads");
         assert_eq!(writer.source, AgentSource::Workspace);
         assert_eq!(writer.prompt, "fresh prompt");
         assert_eq!(writer.path.as_deref(), Some(dir.as_path()));
-        assert!(registry.active("decoy").is_none(), "root agents/ is not a tier");
+        assert!(
+            registry.active("decoy").is_none(),
+            "root agents/ is not a tier"
+        );
         assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
         assert!(!writer.posture.allow.is_empty());
-        assert!(GrantStore::load_or_default(profile.path()).records().is_empty());
+        assert!(GrantStore::load_or_default(profile.path())
+            .records()
+            .is_empty());
     }
 
     #[test]
@@ -1850,12 +1866,16 @@ enabled = ["before-turn"]
         let _channel = crate::config::set_test_channel("alpha");
         let ws = tempfile::tempdir().unwrap();
         let profile = tempfile::tempdir().unwrap();
-        let legacy = legacy_workspace_agents_dir(ws.path()).unwrap().join("writer");
+        let legacy = legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .join("writer");
         write_definition(&legacy, "writer", "legacy prompt");
         std::fs::write(legacy.join("grants.toml"), "decision = \"allow\"\n").unwrap();
 
         let registry = AgentRegistry::load(profile.path(), ws.path());
-        let writer = registry.active("writer").expect("migrated definition loads");
+        let writer = registry
+            .active("writer")
+            .expect("migrated definition loads");
         assert_eq!(writer.prompt, "legacy prompt");
         assert_eq!(writer.source, AgentSource::Workspace);
         let canonical = workspace_agents_dir(ws.path()).join("writer");
@@ -1866,27 +1886,36 @@ enabled = ["before-turn"]
             !canonical.join("grants.toml").exists(),
             "a copied definition must not carry a grant file"
         );
-        assert!(!legacy.exists(), "legacy directory is removed after the copy");
-        let receipt = std::fs::read_to_string(
-            workspace_agents_dir(ws.path()).join(".migration-receipt"),
-        )
-        .unwrap();
+        assert!(
+            !legacy.exists(),
+            "legacy directory is removed after the copy"
+        );
+        let receipt =
+            std::fs::read_to_string(workspace_agents_dir(ws.path()).join(".migration-receipt"))
+                .unwrap();
         assert_eq!(
-            receipt.lines().filter(|line| *line == "migrated writer").count(),
+            receipt
+                .lines()
+                .filter(|line| *line == "migrated writer")
+                .count(),
             1
         );
         assert!(
-            GrantStore::load_or_default(profile.path()).records().is_empty(),
+            GrantStore::load_or_default(profile.path())
+                .records()
+                .is_empty(),
             "settings allow lists and leftover grant files do not authorize"
         );
 
         let again = AgentRegistry::load(profile.path(), ws.path());
         assert_eq!(again.active("writer").unwrap().prompt, "legacy prompt");
-        let receipt_again = std::fs::read_to_string(
-            workspace_agents_dir(ws.path()).join(".migration-receipt"),
-        )
-        .unwrap();
-        assert_eq!(receipt, receipt_again, "a second load must not rewrite the receipt");
+        let receipt_again =
+            std::fs::read_to_string(workspace_agents_dir(ws.path()).join(".migration-receipt"))
+                .unwrap();
+        assert_eq!(
+            receipt, receipt_again,
+            "a second load must not rewrite the receipt"
+        );
     }
 
     #[test]
@@ -1894,7 +1923,9 @@ enabled = ["before-turn"]
         let _channel = crate::config::set_test_channel("alpha");
         let ws = tempfile::tempdir().unwrap();
         let profile = tempfile::tempdir().unwrap();
-        let legacy = legacy_workspace_agents_dir(ws.path()).unwrap().join("writer");
+        let legacy = legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .join("writer");
         write_definition(&legacy, "writer", "legacy prompt");
         let canonical = workspace_agents_dir(ws.path()).join("writer");
         write_definition(&canonical, "writer", "canonical prompt");

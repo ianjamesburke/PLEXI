@@ -547,8 +547,12 @@ pub fn gate_cases() -> Vec<GateCase> {
                 a(vclip(1, 0, 1000, 0)),
                 a(aclip(1, 0, 1000, 0)),
                 a(sel(2)),
-                a(VideoCommand::RemoveSource { source: SourceId(1) }),
-                r(VideoCommand::RemoveSource { source: SourceId(1) }),
+                a(VideoCommand::RemoveSource {
+                    source: SourceId(1),
+                }),
+                r(VideoCommand::RemoveSource {
+                    source: SourceId(1),
+                }),
             ],
             check: |m| {
                 let p = m.project();
@@ -564,7 +568,9 @@ pub fn gate_cases() -> Vec<GateCase> {
                 a(source("a.mp4", 10_000)),
                 a(vclip(1, 0, 1000, 0)),
                 a(aclip(1, 0, 1000, 0)),
-                a(VideoCommand::RemoveSource { source: SourceId(1) }),
+                a(VideoCommand::RemoveSource {
+                    source: SourceId(1),
+                }),
                 a(VideoCommand::Undo),
             ],
             check: |m| {
@@ -619,7 +625,9 @@ pub fn gate_cases() -> Vec<GateCase> {
                 ];
                 let got = m.project().cut_list(TrackKind::Video);
                 if got != expected {
-                    return Err(format!("cut list mismatch:\nexpected {expected:#?}\ngot {got:#?}"));
+                    return Err(format!(
+                        "cut list mismatch:\nexpected {expected:#?}\ngot {got:#?}"
+                    ));
                 }
                 if !m.project().cut_list(TrackKind::Audio).is_empty() {
                     return Err("audio cut list must be empty".to_string());
@@ -1040,8 +1048,7 @@ fn replay(commands: &[VideoCommand]) -> Result<(), (usize, String)> {
         }
         prev_revision = model.revision();
     }
-    check_history_round_trip(&mut model)
-        .map_err(|e| (commands.len().saturating_sub(1), e))
+    check_history_round_trip(&mut model).map_err(|e| (commands.len().saturating_sub(1), e))
 }
 
 /// Greedy sequence minimization: repeatedly drop commands while the failure
@@ -1120,8 +1127,7 @@ fn run_random_seed(seed: u64, command_count: usize) -> Result<(), String> {
         };
         applied.push(command.clone());
         let outcome = model.apply(command);
-        if let (Some(before), ApplyOutcome::Rejected(_) | ApplyOutcome::NoOp) = (before, &outcome)
-        {
+        if let (Some(before), ApplyOutcome::Rejected(_) | ApplyOutcome::NoOp) = (before, &outcome) {
             match frozen_state(&model) {
                 Ok(after) if after != before => {
                     failure = Some(format!("{outcome:?} outcome mutated state"));
@@ -1422,7 +1428,11 @@ fn gate_serialization_round_trip() {
     }
     let json1 = model.project().to_json().expect("serialize");
     let restored = Project::from_json(&json1).expect("deserialize");
-    assert_eq!(&restored, model.project(), "semantic equality after round trip");
+    assert_eq!(
+        &restored,
+        model.project(),
+        "semantic equality after round trip"
+    );
     let json2 = restored.to_json().expect("re-serialize");
     assert_eq!(json1, json2, "round trip must be byte-identical");
 }
@@ -1451,7 +1461,10 @@ fn gate_restore_from_parts() {
     assert_eq!(restored.selection(), Some(ClipId(2)));
     assert_eq!(restored.undo_depth(), 0, "undo never spans sessions");
     check_invariants(&restored, 0).expect("restored model must satisfy invariants");
-    assert_eq!(restored.apply(vclip(1, 0, 1000, 2000)), ApplyOutcome::Applied);
+    assert_eq!(
+        restored.apply(vclip(1, 0, 1000, 2000)),
+        ApplyOutcome::Applied
+    );
     assert!(
         restored.project().find_clip(ClipId(3)).is_some(),
         "id allocation resumes past restored ids"
@@ -1496,7 +1509,11 @@ fn full_undo_preserves_monotonic_next_id() {
     // instead of silently rebinding to post-undo objects.
     let mut model = VideoModel::new();
     let initial_next_id = model.project().next_id;
-    for command in [source("a.mp4", 10_000), vclip(1, 0, 1000, 0), aclip(1, 0, 1000, 0)] {
+    for command in [
+        source("a.mp4", 10_000),
+        vclip(1, 0, 1000, 0),
+        aclip(1, 0, 1000, 0),
+    ] {
         assert_eq!(model.apply(command), ApplyOutcome::Applied);
     }
     while model.can_undo() {

@@ -208,8 +208,7 @@ impl<'a> HintBar<'a> {
             egui::pos2(clip.min.x, rect.min.y),
             egui::vec2(clip.width(), total_h),
         );
-        ui.painter()
-            .rect_filled(full_rect, 0.0, colors.bg_toolbar);
+        ui.painter().rect_filled(full_rect, 0.0, colors.bg_toolbar);
 
         if divider {
             ui.painter().rect_filled(
@@ -273,10 +272,7 @@ impl<'a> HintBar<'a> {
         let total = widths.iter().sum::<f32>()
             + style::SPACE_MD * self.groups.len().saturating_sub(1) as f32;
         let rem = ui.available_width().max(0.0);
-        let row_h = ui
-            .max_rect()
-            .height()
-            .max(shortcuts::chip_row_height(ui));
+        let row_h = ui.max_rect().height().max(shortcuts::chip_row_height(ui));
         let slot_rect = egui::Rect::from_min_size(
             egui::pos2(ui.max_rect().max.x - rem, ui.max_rect().min.y),
             egui::vec2(rem, row_h),

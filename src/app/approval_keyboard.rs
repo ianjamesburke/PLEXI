@@ -13,6 +13,9 @@ pub(super) struct ApprovalKeyboard {
     pub id: Option<String>,
     since: Option<Instant>,
     pub confirm_always: bool,
+    /// Last decision failure `(request_id, reason)` so the banner can display
+    /// an explicit error message while keeping the ask open and actionable.
+    pub last_error: Option<(String, String)>,
     /// Decision keys remain owned after the banner closes until their key-up.
     /// This stops OS auto-repeat from being delivered to the previously focused pane.
     held_decision_keys: HashSet<egui::Key>,
@@ -20,6 +23,13 @@ pub(super) struct ApprovalKeyboard {
 
 impl ApprovalKeyboard {
     fn focus(&mut self, id: String, now: Instant) {
+        if self
+            .last_error
+            .as_ref()
+            .is_some_and(|(err_id, _)| err_id != &id)
+        {
+            self.last_error = None;
+        }
         self.id = Some(id);
         self.since = Some(now);
         self.confirm_always = false;
@@ -61,7 +71,11 @@ pub(crate) fn keyboard_actionable(
     items
         .iter()
         .filter(|item| is_keyboard_actionable(item.kind))
-        .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+        .min_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
         .cloned()
 }
 
@@ -97,9 +111,9 @@ impl PlexiApp {
             self.push_focus_layer(FocusKind::ApprovalBanner);
             log::info!("approval: focused id={}", request.pending_request_id);
             self.ctx.request_repaint_after(ARM_DELAY);
-        } else if let Some(item) = keyboard_actionable(&crate::overlays::attention::open_items())
-        {
-            self.approval_keyboard.focus(item.id.clone(), Instant::now());
+        } else if let Some(item) = keyboard_actionable(&crate::overlays::attention::open_items()) {
+            self.approval_keyboard
+                .focus(item.id.clone(), Instant::now());
             self.focus_stack
                 .retain(|kind| *kind != FocusKind::ApprovalBanner);
             self.push_focus_layer(FocusKind::ApprovalBanner);
@@ -254,10 +268,6 @@ impl PlexiApp {
             _ => None,
         };
         if let Some(choice) = choice {
-            match monitor.approve_pending(&id, choice) {
-                Ok(()) => log::info!("approval: decided id={id} decision={choice:?} via=keyboard"),
-                Err(error) => log::warn!("approval: decision failed id={id} via=keyboard: {error}"),
-            }
             if matches!(
                 choice,
                 ApprovalChoice::Once
@@ -269,7 +279,17 @@ impl PlexiApp {
                     self.approval_keyboard.held_decision_keys.insert(key);
                 }
             }
-            self.leave_approval();
+            match monitor.approve_pending(&id, choice) {
+                Ok(()) => {
+                    log::info!("approval: decided id={id} decision={choice:?} via=keyboard");
+                    self.approval_keyboard.last_error = None;
+                    self.leave_approval();
+                }
+                Err(error) => {
+                    log::warn!("approval: decision failed id={id} via=keyboard: {error}");
+                    self.approval_keyboard.last_error = Some((id, error));
+                }
+            }
         }
         KeyDisposition::Consumed
     }
@@ -305,21 +325,22 @@ impl PlexiApp {
             .as_ref()
             .map(|d| d.choices.as_slice())
             .unwrap_or(&[]);
-        let decided = match key {
+        let outcome = match key {
             egui::Key::Escape => {
                 self.leave_approval();
                 return;
             }
             egui::Key::A if !is_question => {
-                self.resolve_from_desktop(id, true, "approval keyboard").is_ok()
+                self.resolve_from_desktop(id, true, "approval keyboard")
             }
-            egui::Key::D => self.resolve_from_desktop(id, false, "approval keyboard").is_ok(),
+            egui::Key::D => self.resolve_from_desktop(id, false, "approval keyboard"),
             egui::Key::Enter if is_question && choices.is_empty() => {
-                let pane = record
-                    .details
-                    .as_ref()
-                    .and_then(|d| d.pane_id)
-                    .or_else(|| record.actor.strip_prefix("pane:").and_then(|s| s.parse().ok()));
+                let pane = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
+                    record
+                        .actor
+                        .strip_prefix("pane:")
+                        .and_then(|s| s.parse().ok())
+                });
                 if let Some((win, tile)) = pane.and_then(|p| self.find_pane_in_any_window(p)) {
                     self.active_window = win;
                     self.set_window_focused_pane(win, tile);
@@ -329,18 +350,29 @@ impl PlexiApp {
                 self.leave_approval();
                 return;
             }
-            other if is_question => match choice_index_for_key(other).and_then(|i| choices.get(i)) {
-                Some(answer) => self.answer_from_desktop(id, answer, "approval keyboard").is_ok(),
-                None => return,
-            },
+            other if is_question => {
+                match choice_index_for_key(other).and_then(|i| choices.get(i)) {
+                    Some(answer) => self.answer_from_desktop(id, answer, "approval keyboard"),
+                    None => return,
+                }
+            }
             _ => return,
         };
+        let decided = outcome.is_ok();
         log::info!(
             "approval: decided needs_you id={id} kind={} key={key:?} ok={decided} via=keyboard",
             record.kind.as_str()
         );
         self.approval_keyboard.held_decision_keys.insert(key);
-        self.leave_approval();
+        match outcome {
+            Ok(()) => {
+                self.approval_keyboard.last_error = None;
+                self.leave_approval();
+            }
+            Err(error) => {
+                self.approval_keyboard.last_error = Some((id.to_string(), error));
+            }
+        }
     }
 
     // The nonmodal banner is painted once, alongside the other desktop banners.
@@ -559,7 +591,9 @@ mod tests {
             )
             .unwrap();
         if let Some((wi, _)) = h.app.find_pane_in_any_window(pane_id) {
-            if let Some(crate::host::pane::Pane::Terminal(t)) = h.app.windows[wi].panes.get_mut(&pane_id) {
+            if let Some(crate::host::pane::Pane::Terminal(t)) =
+                h.app.windows[wi].panes.get_mut(&pane_id)
+            {
                 t.spawned_by = Some("human".to_string());
                 t.agent_session_id = Some("sess-0962".to_string());
                 t.initial_cwd = Some(root.clone());
@@ -568,7 +602,8 @@ mod tests {
         h.app.agent_attention.pending_os.clear();
 
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            peer_ancestry: None,
             pane_id,
             result: Some("{\"answer\":\"42\"}".into()),
             summary: Some("Audit complete".into()),
@@ -583,11 +618,9 @@ mod tests {
         let json_path = std::path::PathBuf::from(reply["json_path"].as_str().unwrap());
         assert!(md_path.exists(), "RESULT.md must be persisted on disk");
         assert!(json_path.exists(), "result.json must be persisted on disk");
-        assert!(
-            std::fs::read_to_string(&md_path)
-                .unwrap()
-                .contains("Audit complete")
-        );
+        assert!(std::fs::read_to_string(&md_path)
+            .unwrap()
+            .contains("Audit complete"));
 
         // OS notification queued for human-started completed agent.
         h.app.agent_attention.reports.remove(&pane_id);
@@ -597,9 +630,13 @@ mod tests {
             Some("Audit complete"),
         );
         assert!(
-            h.app.agent_attention.pending_os.iter().any(|(id, state, _)| {
-                *id == pane_id && *state == crate::protocol::AgentState::Completed
-            }),
+            h.app
+                .agent_attention
+                .pending_os
+                .iter()
+                .any(|(id, state, _)| {
+                    *id == pane_id && *state == crate::protocol::AgentState::Completed
+                }),
             "human-started agent done must queue an OS notification"
         );
 
@@ -698,7 +735,8 @@ mod tests {
             )
             .unwrap();
         let child_reply = root.join("child_done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            peer_ancestry: None,
             pane_id: child,
             result: Some("{\"sub\":1}".into()),
             summary: Some("Child done".into()),
@@ -758,7 +796,10 @@ mod tests {
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY - Duration::from_millis(1),
         );
-        assert!(is_open(&monitor, &req), "must not decide before the arm guard");
+        assert!(
+            is_open(&monitor, &req),
+            "must not decide before the arm guard"
+        );
         h.app.approval_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY,
@@ -798,7 +839,10 @@ mod tests {
         h.app
             .approval_key_at(&mut input(egui::Key::Num2, egui::Modifiers::NONE), now);
         assert!(!is_open(&monitor, &q));
-        assert_eq!(monitor.get_needs_you(&q).unwrap().answer.as_deref(), Some("Abort"));
+        assert_eq!(
+            monitor.get_needs_you(&q).unwrap().answer.as_deref(),
+            Some("Abort")
+        );
 
         let blocked = file_item(&monitor, K::BlockedRun, "run-blocked", &["Retry"]);
         h.app.focus_approval();
@@ -834,7 +878,12 @@ mod tests {
     fn apply_pending(h: &mut HostHarness) {
         let items = crate::overlays::attention::open_items();
         let record = items.get(h.app.attention.selected).cloned();
-        let action = h.app.attention.pending.take().expect("key queued an action");
+        let action = h
+            .app
+            .attention
+            .pending
+            .take()
+            .expect("key queued an action");
         let ctx = h.app.ctx.clone();
         h.app.apply_attention_action(&ctx, action, record.as_ref());
     }
@@ -850,13 +899,19 @@ mod tests {
         h.app.attention.selected = 0;
         h.app
             .attention_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
-        assert!(h.app.attention.pending.is_none(), "arm guard holds the first second");
+        assert!(
+            h.app.attention.pending.is_none(),
+            "arm guard holds the first second"
+        );
         h.app.synthetic_input_frame = true;
         h.app.attention_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY,
         );
-        assert!(h.app.attention.pending.is_none(), "synthetic frames cannot approve");
+        assert!(
+            h.app.attention.pending.is_none(),
+            "synthetic frames cannot approve"
+        );
         h.app.synthetic_input_frame = false;
         h.app.attention_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
@@ -878,7 +933,10 @@ mod tests {
         );
         apply_pending(&mut h);
         assert!(!is_open(&monitor, &q));
-        assert_eq!(monitor.get_needs_you(&q).unwrap().answer.as_deref(), Some("Proceed"));
+        assert_eq!(
+            monitor.get_needs_you(&q).unwrap().answer.as_deref(),
+            Some("Proceed")
+        );
 
         let change = file_item(&monitor, K::PermissionChange, "run-od", &[]);
         h.app.attention.selected = 0;
@@ -889,5 +947,57 @@ mod tests {
         );
         apply_pending(&mut h);
         assert!(!is_open(&monitor, &change));
+    }
+
+    #[test]
+    fn approval_decision_failure_keeps_request_pending_and_surfaces_error() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let first = pending(&monitor, "FIRST", root.path());
+        let _done = file_item(
+            &monitor,
+            crate::broker::gate::NeedsYouKind::AgentDone,
+            "run-done",
+            &[],
+        );
+
+        let now = Instant::now();
+        h.app.focus_approval();
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        assert_eq!(h.app.approval_keyboard.id.as_deref(), Some(first.as_str()));
+
+        monitor.fail_audit(true);
+        h.app.approval_key_at(
+            &mut input(egui::Key::A, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        assert!(
+            monitor.show_pending(&first).is_some(),
+            "failed approval decision must keep pending request open and not swap to another banner"
+        );
+        assert_eq!(
+            h.app.approval_keyboard.id.as_deref(),
+            Some(first.as_str()),
+            "failed approval decision must keep focus on the actionable ask"
+        );
+        assert_eq!(
+            h.app
+                .approval_keyboard
+                .last_error
+                .as_ref()
+                .map(|(id, msg)| (id.as_str(), msg.as_str())),
+            Some((first.as_str(), "audit write failed"))
+        );
+
+        // Once the underlying error clears, pressing `a` again succeeds and clears last_error.
+        monitor.fail_audit(false);
+        h.app.approval_key_at(
+            &mut input(egui::Key::A, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        assert!(monitor.show_pending(&first).is_none());
+        assert!(h.app.approval_keyboard.last_error.is_none());
+        assert!(h.app.approval_keyboard.id.is_none());
     }
 }

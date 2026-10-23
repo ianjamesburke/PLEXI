@@ -109,7 +109,8 @@ impl PlexiUiHarness {
     /// Create a harness with a fresh, isolated PlexiApp.
     pub fn new() -> Self {
         let profile_dir = tempfile::tempdir().expect("create UI harness profile");
-        let profile_guard = crate::config::test_profile_dir_override().is_none()
+        let profile_guard = crate::config::test_profile_dir_override()
+            .is_none()
             .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
@@ -146,7 +147,8 @@ impl PlexiUiHarness {
     /// the default ppp of 1.0.
     pub fn new_sized_ppp(width: f32, height: f32, ppp: f32) -> Self {
         let profile_dir = tempfile::tempdir().expect("create UI harness profile");
-        let profile_guard = crate::config::test_profile_dir_override().is_none()
+        let profile_guard = crate::config::test_profile_dir_override()
+            .is_none()
             .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
@@ -585,31 +587,71 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let parent = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: review implementation and testing\\n'; sleep 120",
+                    "Coordinate review",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
             let (_, tile) = app.find_pane_in_any_window(parent).unwrap();
             app.windows[app.active_window].focused_pane = Some(tile);
             for role in ["implementer", "tester"] {
-                let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true, None).unwrap();
+                let (child, _) = app
+                    .spawn_agent_worker_pane(
+                        role,
+                        "pi",
+                        "printf 'Worker: checking the requested changes\\n'; sleep 120",
+                        "Verify child call",
+                        Some("agent-tools-preview"),
+                        true,
+                        Some(parent),
+                        None,
+                        None,
+                        None,
+                        true,
+                        None,
+                    )
+                    .unwrap();
                 app.agent_tool_children.insert(child, Some(parent));
             }
             parent
         });
         h.run_steps(4);
         h.save_screenshot(&evidence_png!("_strip")).unwrap();
-        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
         h.run_steps(4);
         h.with_app(|app| {
             assert_eq!(app.conjoined_parent(), Some(parent));
             assert_eq!(app.visual_owner_pane(), Some(parent));
             assert_eq!(app.fleet_focused_pane(), Some(parent));
             let parent_rect = app.visible_pane_rect(parent).unwrap();
-            let child_rect = app.windows[app.active_window].tree.root.and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile)).unwrap();
+            let child_rect = app.windows[app.active_window]
+                .tree
+                .root
+                .and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile))
+                .unwrap();
             let share = parent_rect.width() / (parent_rect.width() + child_rect.width());
             assert!((share - 0.35).abs() < 0.01, "parent share: {share}");
-            assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
+            assert!(!app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.values())
+                .any(|p| matches!(p, Pane::Portal(_))));
         });
         h.save_screenshot(&evidence_png!("_view")).unwrap();
-        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
         h.run_steps(2);
         h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
     }
@@ -618,13 +660,28 @@ mod tests {
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
         loop {
             h.run_steps(2);
-            let ready = h.with_app_mut(|app| panes.iter().all(|id| {
-                let (win, _) = app.find_pane_in_any_window(*id).unwrap();
-                app.windows[win].panes.get_mut(id).unwrap().as_terminal_mut().unwrap()
-                    .backend.capture_lines(30).iter().any(|line| line.contains("Lead:") || line.contains("Researcher:"))
-            }));
-            if ready { break; }
-            assert!(Instant::now() < deadline, "lineage terminal fixture timed out");
+            let ready = h.with_app_mut(|app| {
+                panes.iter().all(|id| {
+                    let (win, _) = app.find_pane_in_any_window(*id).unwrap();
+                    app.windows[win]
+                        .panes
+                        .get_mut(id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .capture_lines(30)
+                        .iter()
+                        .any(|line| line.contains("Lead:") || line.contains("Researcher:"))
+                })
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "lineage terminal fixture timed out"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -635,8 +692,38 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let (parent, child) = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review research\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
-            let (child, _) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: checking source evidence\\n'; sleep 120", "Review evidence", Some("lineage-preview"), true, Some(parent), None, None, None, true, None).unwrap();
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: review research\\n'; sleep 120",
+                    "Coordinate review",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let (child, _) = app
+                .spawn_agent_worker_pane(
+                    "researcher",
+                    "pi",
+                    "printf 'Researcher: checking source evidence\\n'; sleep 120",
+                    "Review evidence",
+                    Some("lineage-preview"),
+                    true,
+                    Some(parent),
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                )
+                .unwrap();
             assert!(app.dive_into_agent_children(parent));
             (parent, child)
         });
@@ -646,18 +733,30 @@ mod tests {
         let (rect, accent, gap) = h.with_app(|app| {
             assert_eq!(app.visual_owner_pane(), Some(child));
             assert_ne!(app.visual_owner_pane(), Some(parent));
-            (app.visible_pane_rect(child).unwrap(), app.colors.accent, app.config.pane_gap.unwrap_or(4.0))
+            (
+                app.visible_pane_rect(child).unwrap(),
+                app.colors.accent,
+                app.config.pane_gap.unwrap_or(4.0),
+            )
         });
-        assert!(h.harness().output().shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
+        assert!(
+            h.harness().output().shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
                 && r.stroke.color == accent && r.stroke.width == gap
                 && r.stroke_kind == egui::StrokeKind::Outside)
-        }), "focused child must have the ordinary outside accent outline");
+            }),
+            "focused child must have the ordinary outside accent outline"
+        );
         let mut texts = Vec::new();
         for shape in &h.harness().output().shapes {
             gallery_text_shapes(&shape.shape, &mut texts);
         }
-        assert!(texts.iter().any(|(_, text)| text.contains("researcher") && text.contains("child of lead")), "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|(_, text)| text.contains("researcher") && text.contains("child of lead")),
+            "{texts:?}"
+        );
         assert!(!texts.iter().any(|(_, text)| text.starts_with("↳ lead")));
         h.save_screenshot(&evidence_png!()).unwrap();
     }
@@ -667,10 +766,44 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let (parent, child, portal) = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: coordinate research\\n'; sleep 120", "Review", None, false, None, None, None, None, false, None).unwrap();
-            let (child, context) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: working\\n'; sleep 120", "Research", Some("research"), true, Some(parent), None, None, None, false, None).unwrap();
-            let portal = app.windows.iter().flat_map(|w| w.panes.iter())
-                .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id)).unwrap();
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: coordinate research\\n'; sleep 120",
+                    "Review",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let (child, context) = app
+                .spawn_agent_worker_pane(
+                    "researcher",
+                    "pi",
+                    "printf 'Researcher: working\\n'; sleep 120",
+                    "Research",
+                    Some("research"),
+                    true,
+                    Some(parent),
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let portal = app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.iter())
+                .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id))
+                .unwrap();
             (parent, child, portal)
         });
         wait_for_lineage_fixture(&mut h, &[parent, child]);
@@ -678,18 +811,31 @@ mod tests {
         h.run_steps(3);
         let (rect, accent, gap) = h.with_app(|app| {
             assert!(!app.pane_lineage().contains_key(&parent));
-            (app.visible_pane_rect(portal).unwrap(), app.colors.accent, app.config.pane_gap.unwrap_or(4.0))
+            (
+                app.visible_pane_rect(portal).unwrap(),
+                app.colors.accent,
+                app.config.pane_gap.unwrap_or(4.0),
+            )
         });
         assert!(h.harness().output().shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
                 && r.stroke.color == accent && r.stroke.width == gap
                 && r.stroke_kind == egui::StrokeKind::Outside)
         }));
-        assert!(h.harness().query_by_label("↳ research · child of lead").is_some());
+        assert!(h
+            .harness()
+            .query_by_label("↳ research · child of lead")
+            .is_some());
         h.save_screenshot(&evidence_png!()).unwrap();
         h.with_app_mut(|app| {
             let (win, _) = app.find_pane_in_any_window(parent).unwrap();
-            app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap().name = None;
+            app.windows[win]
+                .panes
+                .get_mut(&parent)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .name = None;
             assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
         });
     }
@@ -908,11 +1054,10 @@ mod tests {
         });
         h.run_steps(3);
         assert!(h.harness().query_by_label("Host UI Gallery").is_some());
-        assert!(
-            h.harness()
-                .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
-                .is_some()
-        );
+        assert!(h
+            .harness()
+            .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
+            .is_some());
         h.save_screenshot(&evidence_png!())
             .expect("floating shells screenshot");
     }
@@ -1107,28 +1252,40 @@ mod tests {
             profile.path(),
         )
         .expect("read admits");
-        assert!(matches!(read, crate::workspace::secrets::ReadResult::PermissionRequired { .. }));
+        assert!(matches!(
+            read,
+            crate::workspace::secrets::ReadResult::PermissionRequired { .. }
+        ));
 
         let mut h = PlexiUiHarness::new_sized(1100.0, 300.0);
         h.run_steps(2);
-        h.harness().get_by_label("Terminal pane 4 wants to use secret.get");
-        let caption = format!(
-            "Resource: OPENAI_API_KEY@{}",
-            root.path().display()
-        );
+        h.harness()
+            .get_by_label("Terminal pane 4 wants to use secret.get");
+        let caption = format!("Resource: OPENAI_API_KEY@{}", root.path().display());
         h.harness().get_by_label(&caption);
         // Arrival alone never captures keys or grants consent.
-        h.harness().key_down_modifiers(egui::Modifiers::NONE, egui::Key::A);
+        h.harness()
+            .key_down_modifiers(egui::Modifiers::NONE, egui::Key::A);
         h.step();
-        h.harness().key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
+        h.harness()
+            .key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
         h.step();
         assert_eq!(monitor.list_pending().len(), 1);
-        let chord = egui::Modifiers { command: true, alt: true, ..Default::default() };
+        let chord = egui::Modifiers {
+            command: true,
+            alt: true,
+            ..Default::default()
+        };
         h.harness().key_down_modifiers(chord, egui::Key::P);
         h.step();
         h.harness().key_up_modifiers(chord, egui::Key::P);
         h.step();
-        h.with_app_mut(|app| assert_eq!(app.focus_stack.last(), Some(&crate::app::FocusKind::ApprovalBanner)));
+        h.with_app_mut(|app| {
+            assert_eq!(
+                app.focus_stack.last(),
+                Some(&crate::app::FocusKind::ApprovalBanner)
+            )
+        });
         h.save_screenshot(&evidence_png!()).expect("render banner");
     }
 
@@ -1154,7 +1311,8 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1100.0, 360.0);
         h.run_steps(2);
         h.harness().get_by_label("Keychain access needed");
-        h.harness().get_by_label("Saved permissions are unavailable.");
+        h.harness()
+            .get_by_label("Saved permissions are unavailable.");
         h.harness().get_by_label("Continue");
         h.harness().get_by_label("Not now");
         h.save_screenshot(&evidence_png!())
@@ -1178,9 +1336,24 @@ mod tests {
                 .expect("file needs-you item");
         };
         use crate::broker::gate::NeedsYouKind as K;
-        file(K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY);
-        file(K::PermissionChange, "agent:claude", "secret.get OPENAI_API_KEY", "Agent wants to read OPENAI_API_KEY");
-        file(K::Question, "agent:codex", "run-7", "Should I overwrite the existing migration?");
+        file(
+            K::Keychain,
+            "host",
+            "permission-mac",
+            crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY,
+        );
+        file(
+            K::PermissionChange,
+            "agent:claude",
+            "secret.get OPENAI_API_KEY",
+            "Agent wants to read OPENAI_API_KEY",
+        );
+        file(
+            K::Question,
+            "agent:codex",
+            "run-7",
+            "Should I overwrite the existing migration?",
+        );
     }
 
     /// Stint 0801: diagnostic length cannot expand the context-navigation
@@ -1205,7 +1378,9 @@ mod tests {
         h.with_app_mut(|a| a.sidebar_visible = true);
         h.run_steps(2);
         assert!(
-            h.harness().query_by_label_contains("END-OF-DIAGNOSTIC").is_none(),
+            h.harness()
+                .query_by_label_contains("END-OF-DIAGNOSTIC")
+                .is_none(),
             "diagnostic text must not be painted in the sidebar"
         );
         let entry = h.harness().get_by_label_contains("Needs attention");
@@ -1231,7 +1406,9 @@ mod tests {
         let before = h.with_app(|a| a.focus_stack.clone());
         h.with_app_mut(|a| a.open_attention_overlay("test"));
         h.run_steps(3);
-        assert!(h.with_app(|a| a.focus_stack.contains(&crate::app::FocusKind::AttentionOverlay)));
+        assert!(h.with_app(|a| a
+            .focus_stack
+            .contains(&crate::app::FocusKind::AttentionOverlay)));
         h.harness().get_by_label("Needs attention");
         h.harness().key_press(egui::Key::ArrowDown);
         h.run_steps(2);
@@ -1242,8 +1419,16 @@ mod tests {
         h.harness().key_press(egui::Key::Escape);
         h.run_steps(3);
         assert!(!h.with_app(|a| a.attention.open));
-        assert_eq!(h.with_app(|a| a.focus_stack.clone()), before, "focus restored");
-        assert_eq!(monitor.open_needs_you().len(), 4, "closing resolves nothing");
+        assert_eq!(
+            h.with_app(|a| a.focus_stack.clone()),
+            before,
+            "focus restored"
+        );
+        assert_eq!(
+            monitor.open_needs_you().len(),
+            4,
+            "closing resolves nothing"
+        );
     }
 
     /// Stint 0801: an issue arriving while the window is hidden stays
@@ -1277,7 +1462,8 @@ mod tests {
         h.run_steps(3);
         h.harness().key_press(egui::Key::T);
         h.run_steps(2);
-        h.save_screenshot(&evidence_png!(suffix)).expect("render attention");
+        h.save_screenshot(&evidence_png!(suffix))
+            .expect("render attention");
     }
 
     #[test]
@@ -1374,15 +1560,21 @@ mod tests {
                     .map(|button| button.pending_request_id.clone())
             });
             assert_eq!(target.as_deref(), Some(oldest.id.as_str()), "{label}");
-            let refused =
-                h.with_app(|a| a.synthetic_approval_target(0, None, Some(rect.center())));
+            let refused = h.with_app(|a| a.synthetic_approval_target(0, None, Some(rect.center())));
             assert_eq!(refused.as_deref(), Some(oldest.id.as_str()), "{label}");
         }
-        assert_eq!(monitor.open_needs_you().len(), 4, "painting resolves nothing");
+        assert_eq!(
+            monitor.open_needs_you().len(),
+            4,
+            "painting resolves nothing"
+        );
         h.harness().get_by_label("Dismiss").click();
         h.run_steps(2);
         assert!(
-            monitor.open_needs_you().iter().all(|row| row.id != oldest.id),
+            monitor
+                .open_needs_you()
+                .iter()
+                .all(|row| row.id != oldest.id),
             "a real Dismiss click settles the oldest item"
         );
     }
@@ -1398,9 +1590,24 @@ mod tests {
         use crate::broker::gate::NeedsYouKind as K;
         for (kind, actor, resource, summary) in [
             (K::Integrity, "host", "grants.toml", LONG_INTEGRITY),
-            (K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY),
-            (K::Question, "agent:codex", "pane:3", "Should I overwrite the existing migration?"),
-            (K::BlockedRun, "agent:claude", "pane:4", "CI runner stopped waiting for input"),
+            (
+                K::Keychain,
+                "host",
+                "permission-mac",
+                crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY,
+            ),
+            (
+                K::Question,
+                "agent:codex",
+                "pane:3",
+                "Should I overwrite the existing migration?",
+            ),
+            (
+                K::BlockedRun,
+                "agent:claude",
+                "pane:4",
+                "CI runner stopped waiting for input",
+            ),
         ] {
             monitor
                 .file_needs_you(crate::broker::gate::NeedsYouFile {
@@ -1418,12 +1625,11 @@ mod tests {
         h.run_steps(3);
         h.harness().get_by_label("Approve");
         h.harness().get_by_label("Dismiss");
-        h.save_screenshot(&evidence_png!()).expect("render sidebar needs-you");
+        h.save_screenshot(&evidence_png!())
+            .expect("render sidebar needs-you");
     }
 
-    fn seed_structured_clip_question(
-        monitor: &crate::broker::gate::PermissionMonitor,
-    ) -> String {
+    fn seed_structured_clip_question(monitor: &crate::broker::gate::PermissionMonitor) -> String {
         let details = crate::broker::gate::NeedsYouDetails {
             choices: vec!["16:9".to_string(), "9:16".to_string(), "1:1".to_string()],
             allow_free_text: false,
@@ -1525,7 +1731,8 @@ mod tests {
     /// required link-time import grants.
     #[test]
     fn wasm_path_launch_queues_review_before_spawning() {
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
@@ -1580,7 +1787,8 @@ mod tests {
     /// pane rather than attempting a manifest/process launch.
     #[test]
     fn wasm_path_launch_opens_wasm_pane_after_review() {
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
@@ -1809,36 +2017,35 @@ mod tests {
             h.run_steps(2);
         };
 
-        let spawn_in_subctx =
-            |h: &mut PlexiUiHarness, subctx: &str, name: &str| -> (u64, u64) {
-                let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
-                send_req(
-                    h,
-                    crate::protocol::AppRequest::AgentSpawn {
-                        role: name.into(),
-                        harness: "codex".into(),
-                        command: "sleep 30".into(),
-                        task: Some(format!("Task {name}")),
-                        subcontext: Some(subctx.into()),
-                        ephemeral: true,
-                        parent_pane_id: Some(master_pane),
-                        name: Some(name.into()),
-                        cwd: None,
-                        worktree: None,
-                        result_schema: None,
-                        initial_slots: vec![],
-                        no_focus: true,
-                        response_file: reply.to_string_lossy().into_owned(),
-                        peer_ancestry: None,
-                    },
-                );
-                let raw = std::fs::read_to_string(&reply).expect("read spawn response");
-                let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
-                (
-                    json["pane_id"].as_u64().expect("pane_id"),
-                    json["portal_pane_id"].as_u64().expect("portal_pane_id"),
-                )
-            };
+        let spawn_in_subctx = |h: &mut PlexiUiHarness, subctx: &str, name: &str| -> (u64, u64) {
+            let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
+            send_req(
+                h,
+                crate::protocol::AppRequest::AgentSpawn {
+                    role: name.into(),
+                    harness: "codex".into(),
+                    command: "sleep 30".into(),
+                    task: Some(format!("Task {name}")),
+                    subcontext: Some(subctx.into()),
+                    ephemeral: true,
+                    parent_pane_id: Some(master_pane),
+                    name: Some(name.into()),
+                    cwd: None,
+                    worktree: None,
+                    result_schema: None,
+                    initial_slots: vec![],
+                    no_focus: true,
+                    response_file: reply.to_string_lossy().into_owned(),
+                    peer_ancestry: None,
+                },
+            );
+            let raw = std::fs::read_to_string(&reply).expect("read spawn response");
+            let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+            (
+                json["pane_id"].as_u64().expect("pane_id"),
+                json["portal_pane_id"].as_u64().expect("portal_pane_id"),
+            )
+        };
 
         // Subcontext 1 ("squad-alpha"): 2 WORKING · 1 BLOCKED -> amber PortalPane card.
         let (sq1_w1, portal_blocked) = spawn_in_subctx(&mut h, "squad-alpha", "worker-api");
@@ -2043,19 +2250,13 @@ mod tests {
                 p_error.status,
                 crate::host::context_state::ContextStatus::Error
             );
-            assert_eq!(
-                p_error.status_summary_badge().as_deref(),
-                Some("[1 ERROR]")
-            );
+            assert_eq!(p_error.status_summary_badge().as_deref(), Some("[1 ERROR]"));
 
             // Named Working pane keeps its normal header bar without an escalation badge.
             let working_layout =
                 crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_working)
                     .expect("named Working terminal pane still renders its name header bar");
-            assert_eq!(
-                working_layout.elided_label.as_deref(),
-                Some("lane-working")
-            );
+            assert_eq!(working_layout.elided_label.as_deref(), Some("lane-working"));
         });
 
         h.save_screenshot(&evidence_png!()).expect("render failed");
@@ -2116,7 +2317,9 @@ mod tests {
         h.with_app(|app| {
             let layout =
                 crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
-                    .expect("Blocked state on unnamed terminal pane must spawn escalation header bar");
+                    .expect(
+                        "Blocked state on unnamed terminal pane must spawn escalation header bar",
+                    );
             assert_eq!(layout.elided_label.as_deref(), Some("Terminal"));
         });
 
@@ -2191,11 +2394,7 @@ mod tests {
         // `note_header` and never reaches the TextEdit buffer (unit-tested
         // via `split_note` in text_editor_app.rs). The file name and save
         // indicator share that header with a file opened from the browser.
-        let file_name = path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
         h.harness().get_by_label("Groceries");
         h.harness().get_by_label(&file_name);
         h.harness().get_by_label("Saved");
@@ -2292,21 +2491,22 @@ mod tests {
             win.focused_pane = Some(tile_id);
             pane_id
         });
-        let with_editor = |h: &mut PlexiUiHarness,
-                           f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorApp)| {
-            h.with_app_mut(|app| {
-                let win = &mut app.windows[app.active_window];
-                if let Some(Pane::App(a)) = win.panes.get_mut(&pane_id) {
-                    if let AppRuntime::Builtin(b) = &mut a.runtime {
-                        let ed = b
-                            .as_any_mut()
-                            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
-                            .expect("text editor");
-                        f(ed);
+        let with_editor =
+            |h: &mut PlexiUiHarness,
+             f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorApp)| {
+                h.with_app_mut(|app| {
+                    let win = &mut app.windows[app.active_window];
+                    if let Some(Pane::App(a)) = win.panes.get_mut(&pane_id) {
+                        if let AppRuntime::Builtin(b) = &mut a.runtime {
+                            let ed = b
+                                .as_any_mut()
+                                .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+                                .expect("text editor");
+                            f(ed);
+                        }
                     }
-                }
-            });
-        };
+                });
+            };
         h.run_steps(2);
         h.harness().get_by_label("Saved");
 
@@ -2317,17 +2517,22 @@ mod tests {
         h.run_steps(2);
         h.harness().get_by_label("Unsaved");
         h.harness().get_by_label("\u{25CF}");
-        h.save_screenshot(&evidence_png!("_dirty")).expect("render dirty");
+        h.save_screenshot(&evidence_png!("_dirty"))
+            .expect("render dirty");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
 
         // Host close path: vetoed, prompt shown, pane still there.
         h.with_app_mut(|app| {
-            assert!(app.focused_app_vetoes_close(), "dirty plain file vetoes close");
+            assert!(
+                app.focused_app_vetoes_close(),
+                "dirty plain file vetoes close"
+            );
             assert!(app.windows[app.active_window].panes.contains_key(&pane_id));
         });
         h.run_steps(2);
         h.harness().get_by_label("Unsaved changes.");
-        h.save_screenshot(&evidence_png!("_close_prompt")).expect("render close prompt");
+        h.save_screenshot(&evidence_png!("_close_prompt"))
+            .expect("render close prompt");
 
         // Cancel, then an agent writes the file: conflict state.
         with_editor(&mut h, &mut |ed| {
@@ -2340,7 +2545,8 @@ mod tests {
         });
         h.run_steps(2);
         h.harness().get_by_label("Changed on disk");
-        h.save_screenshot(&evidence_png!("_conflict")).expect("render conflict");
+        h.save_screenshot(&evidence_png!("_conflict"))
+            .expect("render conflict");
 
         with_editor(&mut h, &mut |ed| ed.test_discard_unsaved());
         let _ = std::fs::remove_file(&path);
@@ -3782,7 +3988,7 @@ mod tests {
 
     #[test]
     fn ui_gallery_worst_case() {
-        use crate::overlays::ui_gallery::{UiGalleryDataMode, UiGalleryPreview, gallery_rows};
+        use crate::overlays::ui_gallery::{gallery_rows, UiGalleryDataMode, UiGalleryPreview};
         for mode in UiGalleryDataMode::ALL {
             for width in [760.0, 320.0, 280.0] {
                 // Inspect actual painted galleys, not copies of the layout arithmetic.
@@ -3930,7 +4136,13 @@ mod tests {
         h.run_steps(2);
         h.harness().get_by_label("Code and toast surfaces");
         h.harness().get_by_label("Shell completions aren't set up.");
-        assert_eq!(h.harness().get_all_by_label("plexi completions zsh").count(), 2, "both copy surfaces render the demo fixture");
+        assert_eq!(
+            h.harness()
+                .get_all_by_label("plexi completions zsh")
+                .count(),
+            2,
+            "both copy surfaces render the demo fixture"
+        );
         assert!(
             h.harness()
                 .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
@@ -4523,19 +4735,33 @@ mod tests {
     #[test]
     fn screenshot_working_agent_quit_confirmation() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
-        for name in ["release-checks.md", "implementation-plan.md", "test-results.json"] {
-            std::fs::write(h.workspace.path().join(name), "Working agent release validation").unwrap();
+        for name in [
+            "release-checks.md",
+            "implementation-plan.md",
+            "test-results.json",
+        ] {
+            std::fs::write(
+                h.workspace.path().join(name),
+                "Working agent release validation",
+            )
+            .unwrap();
         }
         let pane = add_focused_pane(&mut h);
         h.with_app_mut(|app| {
-            app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
-                pane_id: pane, agent: "codex".into(), state: crate::protocol::AgentState::Working,
-                detail: Some("Validating the release build".into()), session_id: None,
-            }));
+            app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(
+                crate::protocol::PaneAgentState {
+                    pane_id: pane,
+                    agent: "codex".into(),
+                    state: crate::protocol::AgentState::Working,
+                    detail: Some("Validating the release build".into()),
+                    session_id: None,
+                },
+            ));
             assert!(!app.prepare_user_quit());
         });
         h.step();
-        h.save_screenshot(&evidence_png!()).expect("render quit confirmation");
+        h.save_screenshot(&evidence_png!())
+            .expect("render quit confirmation");
         assert!(h.with_app(|app| app.pending_quit && !app.quitting));
         println!("Screenshot saved to {}", evidence_png!());
     }
@@ -4734,15 +4960,21 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
-
     #[test]
     fn screenshot_state_presets_and_attention_styles() {
-        use crate::protocol::AgentState;
         use crate::config::{AttentionConfig, AttentionStyle};
+        use crate::protocol::AgentState;
         let mut h = PlexiUiHarness::new_sized_ppp(1200.0, 800.0, 1.0);
         let root = h.workspace_root().to_path_buf();
         let mut ids = Vec::new();
-        for (name, state) in [("Working: compiling",AgentState::Working), ("Waiting: ready",AgentState::Idle), ("Blocked: dependency",AgentState::Blocked), ("Needs you: review",AgentState::NeedsYou), ("Interrupted",AgentState::Interrupted), ("Error: failed test",AgentState::Failed)] {
+        for (name, state) in [
+            ("Working: compiling", AgentState::Working),
+            ("Waiting: ready", AgentState::Idle),
+            ("Blocked: dependency", AgentState::Blocked),
+            ("Needs you: review", AgentState::NeedsYou),
+            ("Interrupted", AgentState::Interrupted),
+            ("Error: failed test", AgentState::Failed),
+        ] {
             let id = add_focused_pane(&mut h);
             ids.push(id);
             h.with_app_mut(|app| {
@@ -4757,7 +4989,10 @@ mod tests {
         }
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
-            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            let tiles = ids
+                .iter()
+                .map(|id| win.tree.tiles.find_pane(id).unwrap())
+                .collect();
             win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
         });
         for theme in ["plexi-night", "plexi-day", "tokyo-day", "solarized-light"] {
@@ -4770,29 +5005,51 @@ mod tests {
                     cfg.state_preset = Some((*preset).into());
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
                     app.theme = crate::ui::theme::terminal_theme(&cfg);
-                    app.config.attention = Some(AttentionConfig { style: Some(AttentionStyle::Subtle), ..Default::default() });
+                    app.config.attention = Some(AttentionConfig {
+                        style: Some(AttentionStyle::Subtle),
+                        ..Default::default()
+                    });
                     crate::ui::theme::setup_style(&app.ctx, &app.colors, theme == "plexi-night");
                 });
                 h.run_steps(3);
-                h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}"))).unwrap();
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}")))
+                    .unwrap();
                 let mut simulated = h.render().unwrap();
                 for pixel in simulated.pixels_mut() {
-                    let c = crate::ui::theme::simulate_cvd(egui::Color32::from_rgb(pixel[0],pixel[1],pixel[2]),1);
-                    pixel[0]=c.r(); pixel[1]=c.g(); pixel[2]=c.b();
+                    let c = crate::ui::theme::simulate_cvd(
+                        egui::Color32::from_rgb(pixel[0], pixel[1], pixel[2]),
+                        1,
+                    );
+                    pixel[0] = c.r();
+                    pixel[1] = c.g();
+                    pixel[2] = c.b();
                 }
-                simulated.save(evidence_png!(&format!("_{theme}_{preset}_deuteranopia"))).unwrap();
+                simulated
+                    .save(evidence_png!(&format!("_{theme}_{preset}_deuteranopia")))
+                    .unwrap();
             }
         }
-        for (name,style,intensity) in [("off",AttentionStyle::Off,1.0),("subtle",AttentionStyle::Subtle,1.0),("normal",AttentionStyle::Normal,1.0),("loud",AttentionStyle::Loud,1.0),("normal_half",AttentionStyle::Normal,0.5)] {
+        for (name, style, intensity) in [
+            ("off", AttentionStyle::Off, 1.0),
+            ("subtle", AttentionStyle::Subtle, 1.0),
+            ("normal", AttentionStyle::Normal, 1.0),
+            ("loud", AttentionStyle::Loud, 1.0),
+            ("normal_half", AttentionStyle::Normal, 0.5),
+        ] {
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors("plexi-night").unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(&cfg);
-                app.config.attention = Some(AttentionConfig { style:Some(style),intensity:Some(intensity),..Default::default() });
-                crate::ui::theme::setup_style(&app.ctx,&app.colors,true);
+                app.config.attention = Some(AttentionConfig {
+                    style: Some(style),
+                    intensity: Some(intensity),
+                    ..Default::default()
+                });
+                crate::ui::theme::setup_style(&app.ctx, &app.colors, true);
             });
             h.run_steps(3);
-            h.save_screenshot(&evidence_png!(&format!("_{name}"))).unwrap();
+            h.save_screenshot(&evidence_png!(&format!("_{name}")))
+                .unwrap();
         }
     }
 
@@ -4803,19 +5060,31 @@ mod tests {
         let id = add_focused_pane(&mut h);
         h.with_app_mut(|app| {
             let mut term = crate::host::pane::TerminalPane::new(
-                id, app.ctx.clone(), app.pty_event_tx.clone(),
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
                 egui_term::BackendSettings {
-                    shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()],
-                    working_directory: Some(root.clone()), ..Default::default()
-                }, 14.0).unwrap();
+                    shell: "/bin/sh".into(),
+                    args: vec!["-c".into(), "sleep 300".into()],
+                    working_directory: Some(root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .unwrap();
             term.agent_role = Some("Implementer".into());
             term.agent_harness = Some("pi".into());
             term.agent = Some(crate::protocol::PaneAgentState {
-                pane_id: id, state: crate::protocol::AgentState::Working, agent: "pi".into(),
-                detail: Some("Validating notification delivery".into()), session_id: None,
+                pane_id: id,
+                state: crate::protocol::AgentState::Working,
+                agent: "pi".into(),
+                detail: Some("Validating notification delivery".into()),
+                session_id: None,
             });
             term.tail_preview = Some("Running focused tests for attention navigation.".into());
-            app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(term)));
             app.sidebar_visible = false;
         });
         let agents = h.open_builtin_by_id("agents", &root, &[]).unwrap();
@@ -4825,7 +5094,12 @@ mod tests {
         });
         h.run_steps(3);
         h.harness().key_press_modifiers(
-            egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() },
+            egui::Modifiers {
+                command: true,
+                mac_cmd: true,
+                alt: true,
+                ..Default::default()
+            },
             egui::Key::B,
         );
         h.run_steps(2);
@@ -4841,31 +5115,66 @@ mod tests {
         let mut ids = Vec::new();
         for (role, state, detail) in [
             ("Planner", AgentState::Working, None),
-            ("Implementer", AgentState::Blocked, Some("Which branch should receive the fix?")),
-            ("Reviewer", AgentState::NeedsYou, Some("Approve the deployment plan")),
+            (
+                "Implementer",
+                AgentState::Blocked,
+                Some("Which branch should receive the fix?"),
+            ),
+            (
+                "Reviewer",
+                AgentState::NeedsYou,
+                Some("Approve the deployment plan"),
+            ),
             ("Tester", AgentState::Completed, None),
-            ("Researcher", AgentState::Failed, Some("harness exited with code 1 without agent done")),
+            (
+                "Researcher",
+                AgentState::Failed,
+                Some("harness exited with code 1 without agent done"),
+            ),
             ("Writer", AgentState::Idle, None),
             ("Runner", AgentState::Working, None),
         ] {
             let id = add_focused_pane(&mut h);
             ids.push(id);
             h.with_app_mut(|app| {
-                let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
-                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                let mut term = crate::host::pane::TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        args: vec!["-c".into(), "sleep 300".into()],
+                        working_directory: Some(root.clone()),
+                        ..Default::default()
+                    },
+                    14.0,
+                )
+                .unwrap();
                 term.agent_role = Some(role.into());
                 term.agent_harness = Some("pi".into());
                 term.agent_completed = state == AgentState::Completed;
-                term.tail_preview = Some("Inspected the affected files. Ready for the next step.".into());
+                term.tail_preview =
+                    Some("Inspected the affected files. Ready for the next step.".into());
                 term.parent_pane_id = (role == "Implementer").then_some(ids[0]);
-                term.agent = Some(crate::protocol::PaneAgentState { pane_id:id, state, agent:"pi".into(), detail:detail.map(str::to_string), session_id:None });
-                app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                term.agent = Some(crate::protocol::PaneAgentState {
+                    pane_id: id,
+                    state,
+                    agent: "pi".into(),
+                    detail: detail.map(str::to_string),
+                    session_id: None,
+                });
+                app.windows[app.active_window]
+                    .panes
+                    .insert(id, Pane::Terminal(Box::new(term)));
                 app.sidebar_visible = false;
             });
         }
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
-            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            let tiles = ids
+                .iter()
+                .map(|id| win.tree.tiles.find_pane(id).unwrap())
+                .collect();
             win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
         });
         h.with_app_mut(|app| {
@@ -4897,15 +5206,30 @@ mod tests {
         h.harness().key_press(egui::Key::A);
         h.run_steps(2);
         h.harness().get_by_label("Reply to worker");
-        h.harness().input_mut().events.push(egui::Event::Text("Use feature/0846".into()));
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("Use feature/0846".into()));
         h.step();
         h.harness().get_by_label("Send reply").click();
         h.run_steps(2);
         h.with_app(|app| {
             let view = app.agents_view(crate::agent::fleet::FleetFilter::All);
-            let row = view.tasks.iter().flat_map(|t| &t.rows).find(|r| r.pane_id == ids[1]).unwrap();
-            assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Working);
-            assert!(app.pane_mailboxes[&ids[1]].front().unwrap().payload.contains("feature/0846"));
+            let row = view
+                .tasks
+                .iter()
+                .flat_map(|t| &t.rows)
+                .find(|r| r.pane_id == ids[1])
+                .unwrap();
+            assert_eq!(
+                row.display_state,
+                crate::agent::fleet::DisplayState::Working
+            );
+            assert!(app.pane_mailboxes[&ids[1]]
+                .front()
+                .unwrap()
+                .payload
+                .contains("feature/0846"));
         });
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(2);
@@ -4919,7 +5243,12 @@ mod tests {
     #[test]
     fn screenshot_command_palette_agent_fleet() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
-        h.with_app_mut(|app| app.config.agents.get_or_insert_with(Default::default).palette_agent_results = Some(true));
+        h.with_app_mut(|app| {
+            app.config
+                .agents
+                .get_or_insert_with(Default::default)
+                .palette_agent_results = Some(true)
+        });
         add_focused_pane(&mut h);
         let browser_root = h.workspace.path().to_path_buf();
 
@@ -5120,7 +5449,9 @@ mod tests {
             h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
             "the palette should be open over all four agent panes"
         );
-        println!("Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)");
+        println!(
+            "Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)"
+        );
     }
 
     #[test]
@@ -5639,10 +5970,11 @@ mod tests {
             h.save_screenshot(&single_shot)
                 .expect("save single-tab outside_workspace screenshot");
 
-            let layout = h.with_app(|app| {
-                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
-            })
-            .expect("single-tab terminal pane must record tab-bar layout");
+            let layout = h
+                .with_app(|app| {
+                    crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
+                })
+                .expect("single-tab terminal pane must record tab-bar layout");
             let label_rect = layout.label_rect.expect("single-tab label_rect");
             let badge_rect = layout
                 .outside_workspace_badge_rect
@@ -5733,10 +6065,11 @@ mod tests {
             h.save_screenshot(&multi_shot)
                 .expect("save multi-tab outside_workspace screenshot");
 
-            let layout = h.with_app(|app| {
-                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id_b)
-            })
-            .expect("multi-tab active terminal pane must record tab-bar layout");
+            let layout = h
+                .with_app(|app| {
+                    crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id_b)
+                })
+                .expect("multi-tab active terminal pane must record tab-bar layout");
             let label_rect = layout.label_rect.expect("multi-tab label_rect");
             let badge_rect = layout
                 .outside_workspace_badge_rect
@@ -6380,7 +6713,8 @@ mod tests {
 
         #[test]
         fn gate_render_wasm_text_ppp_1_and_2() {
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+            let _experiments =
+                crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
             for ppp in GATE_PPP {
                 let profile = tempfile::tempdir().expect("profile dir");
                 let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
@@ -6714,7 +7048,8 @@ mod tests {
         std::fs::create_dir_all(&leaf_dir).expect("create dirs");
         std::fs::write(leaf_dir.join("README.md"), b"# Project\nOverview").expect("write");
         std::fs::write(
-            leaf_dir.join("very_long_component_filename_that_must_elide_cleanly_in_narrow_columns.rs"),
+            leaf_dir
+                .join("very_long_component_filename_that_must_elide_cleanly_in_narrow_columns.rs"),
             b"fn main() {}",
         )
         .expect("write");
@@ -6794,7 +7129,10 @@ mod tests {
                         .downcast_mut::<crate::file_browser::FileBrowserApp>()
                 })
                 .expect("FileBrowserApp pane");
-            assert_eq!(fb.cwd, parent_dir, "clicking breadcrumb must navigate to ancestor");
+            assert_eq!(
+                fb.cwd, parent_dir,
+                "clicking breadcrumb must navigate to ancestor"
+            );
         });
     }
 
@@ -7047,7 +7385,9 @@ mod tests {
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::render::cli_renderer_app::CliRendererApp::new(desc_str)),
+                Box::new(crate::render::cli_renderer_app::CliRendererApp::new(
+                    desc_str,
+                )),
                 AppPermissions::builtin(),
                 cwd,
                 None,
@@ -7149,7 +7489,9 @@ mod tests {
         tap_key(&mut h, egui::Key::Slash, egui::Modifiers::NONE);
         h.run_steps(2);
         assert!(
-            h.host_has_label("Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run"),
+            h.host_has_label(
+                "Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run"
+            ),
             "bare `/` palette open must show neutral command-mode hint chip"
         );
         h.save_screenshot(&evidence_png!("_slash_open"))

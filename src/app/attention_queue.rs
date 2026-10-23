@@ -13,12 +13,14 @@
 //!    on arrival. Shows `"What would you do here?"`, monospace command text, and
 //!    2–4 options (starred recommendation when present). Sends at most one verdict.
 
-use crate::app::PlexiApp;
 use crate::app::app_trait::KeyDisposition;
 use crate::app::input_router::PlexiInput;
+use crate::app::PlexiApp;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor, ResolveSurface};
 use crate::ui::style;
-use egui::{Align2, CornerRadius, FontFamily, FontId, Key, Order, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{
+    Align2, CornerRadius, FontFamily, FontId, Key, Order, Pos2, Rect, RichText, Sense, Stroke, Vec2,
+};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -26,7 +28,9 @@ pub const OVERLAY_QUESTION: &str = "What would you do here?";
 pub const ESC_BACKOUT_HINT: &str = "Cmd+Esc backs out";
 pub const NO_ASKS_HINT: &str = "No open asks in queue";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum QueueCategory {
     Ask = 0,
     Failed = 1,
@@ -135,10 +139,7 @@ impl DecisionOverlayState {
         } else {
             bar.options.clone()
         };
-        let selected_idx = options
-            .iter()
-            .position(|o| o.recommended)
-            .unwrap_or(0);
+        let selected_idx = options.iter().position(|o| o.recommended).unwrap_or(0);
         Self {
             ask_id: bar.id.clone(),
             pane_id: bar.pane_id,
@@ -467,9 +468,9 @@ impl PlexiApp {
             .collect();
 
         // Prune synthetic items whose context was dissolved.
-        self.attention_queue.synthetic_items.retain(|b| {
-            b.context_id == 0 || live_context_ids.contains(&b.context_id)
-        });
+        self.attention_queue
+            .synthetic_items
+            .retain(|b| b.context_id == 0 || live_context_ids.contains(&b.context_id));
 
         let mut bars: Vec<QueueBar> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
@@ -491,8 +492,7 @@ impl PlexiApp {
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
         for (p_idx, pending) in monitor.list_pending().into_iter().enumerate() {
             let req_id = pending.pending_request_id.clone();
-            if self.attention_queue.answered_ask_ids.contains(&req_id)
-                || seen_ids.contains(&req_id)
+            if self.attention_queue.answered_ask_ids.contains(&req_id) || seen_ids.contains(&req_id)
             {
                 continue;
             }
@@ -505,7 +505,7 @@ impl PlexiApp {
                 .unwrap_or(1);
             let (context_id, pane_name, context_path) = self.describe_pane_for_queue(pane_id);
             let created_ms = 500_000 + p_idx as u64;
-            let cmd_text = if pending.input_summary.is_empty() {
+            let cmd_text = if pending.input_summary.is_empty() || pending.input_summary == "{}" {
                 pending.tool.clone()
             } else {
                 format!("{} — {}", pending.tool, pending.input_summary)
@@ -518,14 +518,16 @@ impl PlexiApp {
                 pane_name,
                 context_id: pending.context_id.unwrap_or(context_id),
                 context_path,
-                summary: cmd_text.clone(),
+                summary: format!(
+                    "{} wants to use {}",
+                    self.approval_actor_label(&pending.actor_id),
+                    pending.tool.replace("__", " / ")
+                ),
                 command_text: cmd_text,
                 options: default_ask_options(),
                 created_at_ms: created_ms,
                 locked: false,
-                source: QueueSource::BrokerPending {
-                    request_id: req_id,
-                },
+                source: QueueSource::BrokerPending { request_id: req_id },
             });
         }
 
@@ -563,7 +565,8 @@ impl PlexiApp {
                     .into_iter()
                     .enumerate()
                     .map(|(idx, c)| {
-                        let recommended = c.contains("(Recommended)") || c.contains('★') || idx == 0;
+                        let recommended =
+                            c.contains("(Recommended)") || c.contains('★') || idx == 0;
                         QueueOption {
                             key: format!("choice_{}", idx + 1),
                             label: c,
@@ -576,13 +579,9 @@ impl PlexiApp {
             } else {
                 Vec::new()
             };
-            let is_question = matches!(
-                item.kind,
-                NeedsYouKind::Question | NeedsYouKind::BlockedRun
-            ) && item
-                .details
-                .as_ref()
-                .is_some_and(|d| !d.choices.is_empty());
+            let is_question =
+                matches!(item.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+                    && item.details.as_ref().is_some_and(|d| !d.choices.is_empty());
             seen_ids.insert(item.id.clone());
             bars.push(QueueBar {
                 id: item.id.clone(),
@@ -730,7 +729,8 @@ impl PlexiApp {
         }
 
         // 5. Live pane agent states not already represented above.
-        let mut agent_entries: Vec<(u64, u64, String, crate::protocol::PaneAgentState)> = Vec::new();
+        let mut agent_entries: Vec<(u64, u64, String, crate::protocol::PaneAgentState)> =
+            Vec::new();
         for win in &self.windows {
             for (&pid, pane) in &win.panes {
                 if let Some(ag) = pane.agent().cloned() {
@@ -841,9 +841,7 @@ impl PlexiApp {
         }
         if let Some((locked_pane, ref locked_id)) = self.attention_queue.locked_ask {
             if let Some(pos) = bars.iter().position(|b| {
-                b.category == QueueCategory::Ask
-                    && b.pane_id == locked_pane
-                    && &b.id == locked_id
+                b.category == QueueCategory::Ask && b.pane_id == locked_pane && &b.id == locked_id
             }) {
                 let mut locked_bar = bars.remove(pos);
                 locked_bar.locked = true;
@@ -929,8 +927,7 @@ impl PlexiApp {
             .cloned()
             .collect();
         if asks.is_empty() {
-            self.attention_queue.transient_hint =
-                Some((NO_ASKS_HINT.to_string(), Instant::now()));
+            self.attention_queue.transient_hint = Some((NO_ASKS_HINT.to_string(), Instant::now()));
             log::info!("decision_overlay: Cmd+Alt+B with no open asks");
             return;
         }
@@ -991,18 +988,29 @@ impl PlexiApp {
                     "deny" => ApprovalChoice::Deny,
                     _ => ApprovalChoice::Once,
                 };
-                let _ = monitor.approve_pending(request_id, choice);
+                match monitor.approve_pending(request_id, choice) {
+                    Ok(()) => self.approval_keyboard.last_error = None,
+                    Err(error) => {
+                        // #2886: a failed decision must be visible and retryable.
+                        // Keep the overlay open and show the error inside it.
+                        log::warn!(
+                            "decision_overlay: decide {request_id} option={} failed: {error}",
+                            option.key
+                        );
+                        self.approval_keyboard.last_error = Some((request_id.clone(), error));
+                        self.attention_queue
+                            .answered_ask_ids
+                            .remove(&overlay.ask_id);
+                        return false;
+                    }
+                }
             }
             QueueSource::NeedsYou {
                 request_id,
                 is_question,
             } => {
                 if *is_question {
-                    let _ = self.answer_from_desktop(
-                        request_id,
-                        &option.label,
-                        "decision overlay",
-                    );
+                    let _ = self.answer_from_desktop(request_id, &option.label, "decision overlay");
                 } else {
                     let approve = option.key != "deny"
                         && !option.label.eq_ignore_ascii_case("deny")
@@ -1067,7 +1075,10 @@ impl PlexiApp {
 
     /// Handle keyboard input when the Decision Overlay is open.
     /// Consumes all bare keys and `Cmd+Esc` / `Cmd+Alt+B`; swallows plain `Esc` with a hint.
-    pub(crate) fn handle_decision_overlay_input(&mut self, input: &mut PlexiInput) -> KeyDisposition {
+    pub(crate) fn handle_decision_overlay_input(
+        &mut self,
+        input: &mut PlexiInput,
+    ) -> KeyDisposition {
         if self.attention_queue.decision_overlay.is_none() {
             return KeyDisposition::Passthrough;
         }
@@ -1341,11 +1352,7 @@ impl PlexiApp {
             }
             QueueSource::NeedsYou { request_id, .. } => {
                 let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-                let _ = monitor.resolve_needs_you_from(
-                    request_id,
-                    false,
-                    ResolveSurface::Desktop,
-                );
+                let _ = monitor.resolve_needs_you_from(request_id, false, ResolveSurface::Desktop);
             }
             QueueSource::ChildResult { pane_id } => {
                 self.child_result_events.retain(|&pid, _| pid != *pane_id);
@@ -1425,9 +1432,11 @@ impl PlexiApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new("j/k move · Enter jump · x dismiss · Cmd+I close")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
+                                        RichText::new(
+                                            "j/k move · Enter jump · x dismiss · Cmd+I close",
+                                        )
+                                        .size(style::TEXT_HINT)
+                                        .color(colors.text_dim),
                                     );
                                 },
                             );
@@ -1491,7 +1500,9 @@ impl PlexiApp {
                                         }
                                         ui.label(
                                             RichText::new(&bar.pane_name)
-                                                .font(crate::ui::theme::font_medium(style::TEXT_CAPTION))
+                                                .font(crate::ui::theme::font_medium(
+                                                    style::TEXT_CAPTION,
+                                                ))
                                                 .color(colors.text_primary),
                                         );
                                         ui.label(
@@ -1569,7 +1580,9 @@ impl PlexiApp {
                 painter.rect_filled(screen, CornerRadius::ZERO, colors.scrim_decision);
             });
 
-        let modal_w = style::DECISION_MODAL_W.min(screen.width() - 32.0).max(300.0);
+        let modal_w = style::DECISION_MODAL_W
+            .min(screen.width() - 32.0)
+            .max(300.0);
         let mut picked_option: Option<usize> = None;
 
         egui::Area::new(egui::Id::new("decision_overlay_card"))
@@ -1584,6 +1597,18 @@ impl PlexiApp {
                     .inner_margin(egui::Margin::symmetric(20, 18))
                     .show(ui, |ui| {
                         ui.set_width(modal_w);
+
+                        if let QueueSource::BrokerPending { request_id } = &overlay.source {
+                            if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
+                                if err_id == request_id {
+                                    ui.label(
+                                        RichText::new(format!("Decision failed: {err_msg}"))
+                                            .color(colors.danger)
+                                            .size(style::TEXT_HINT),
+                                    );
+                                }
+                            }
+                        }
 
                         // Header: ◆ Needs you · pane_name · context_path
                         ui.horizontal(|ui| {

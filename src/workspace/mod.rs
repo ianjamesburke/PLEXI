@@ -110,6 +110,8 @@ pub struct SavedAgentSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_posture: Option<crate::broker::PermissionPosture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub last_state: crate::protocol::AgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +154,8 @@ pub struct AgentHistoryRecord {
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_posture: Option<crate::broker::PermissionPosture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub cwd: PathBuf,
@@ -267,15 +271,21 @@ pub fn load_agent_history_from(profile_dir: &Path) -> Vec<AgentHistoryRecord> {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
-    let records = data.lines()
+    let records = data
+        .lines()
         .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| match serde_json::from_str::<AgentHistoryRecord>(line) {
-            Ok(rec) => Some(rec),
-            Err(e) => {
-                log::warn!("agent_history: skipping malformed line in {}: {e}", path.display());
-                None
-            }
-        })
+        .filter_map(
+            |line| match serde_json::from_str::<AgentHistoryRecord>(line) {
+                Ok(rec) => Some(rec),
+                Err(e) => {
+                    log::warn!(
+                        "agent_history: skipping malformed line in {}: {e}",
+                        path.display()
+                    );
+                    None
+                }
+            },
+        )
         .map(|r| (r.run_id.clone(), r))
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut records: Vec<_> = records.into_values().collect();
@@ -651,15 +661,13 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("read JSON"))
                 .expect("prior workspace remains loadable");
         assert_eq!(loaded.version, 2);
-        assert!(
-            std::fs::read_dir(directory.path())
-                .expect("read workspace directory")
-                .all(|entry| !entry
-                    .expect("directory entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".tmp-"))
-        );
+        assert!(std::fs::read_dir(directory.path())
+            .expect("read workspace directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")));
     }
 
     /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split
@@ -856,6 +864,7 @@ mod tests {
                 fleet_since: 0,
                 harness: "claude".to_string(),
                 config_name: Some("implementer".to_string()),
+                permission_posture: None,
                 session_id: Some("sess-42".to_string()),
                 last_state: AgentState::Blocked,
                 last_blocked_reason: Some(AgentBlockedReason::PermissionPrompt),
@@ -891,7 +900,8 @@ mod tests {
             Some(vec!["Waiting for permission...".to_string()])
         );
 
-        let mut legacy_json: serde_json::Value = serde_json::from_str(&json).expect("saved pane JSON");
+        let mut legacy_json: serde_json::Value =
+            serde_json::from_str(&json).expect("saved pane JSON");
         legacy_json["agent_session"]
             .as_object_mut()
             .expect("agent session object")
@@ -918,6 +928,7 @@ mod tests {
             cwd: PathBuf::from("/tmp/work"),
             harness: "claude".to_string(),
             config_name: Some("implementer".to_string()),
+            permission_posture: None,
             session_id: Some("sess-42".to_string()),
             last_state: AgentState::Completed,
             last_blocked_reason: None,
@@ -938,28 +949,66 @@ mod tests {
 }
 
 /// Preserve an unseen completion before restore discards its finished ephemeral PTY.
-pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context_id: u64, context_name: &str) {
-    let Some(session) = &pane.agent_session else { return };
-    if load_agent_history_from(profile).iter().any(|r| r.pane_id == pane.id && r.session_id == session.session_id) { return; }
-    let result = session.fleet_result.clone().or_else(|| pane.slots.get("result").and_then(|path| {
-        match std::fs::read_to_string(path).and_then(|data| serde_json::from_str(&data).map_err(io::Error::other)) {
-            Ok(value) => Some(value),
-            Err(error) => { log::warn!("agents: restore completion result {}: {error}", path.display()); None }
-        }
-    }));
+pub(crate) fn archive_saved_completion(
+    profile: &Path,
+    pane: &SavedPane,
+    context_id: u64,
+    context_name: &str,
+) {
+    let Some(session) = &pane.agent_session else {
+        return;
+    };
+    if load_agent_history_from(profile)
+        .iter()
+        .any(|r| r.pane_id == pane.id && r.session_id == session.session_id)
+    {
+        return;
+    }
+    let result = session.fleet_result.clone().or_else(|| {
+        pane.slots.get("result").and_then(|path| {
+            match std::fs::read_to_string(path)
+                .and_then(|data| serde_json::from_str(&data).map_err(io::Error::other))
+            {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    log::warn!(
+                        "agents: restore completion result {}: {error}",
+                        path.display()
+                    );
+                    None
+                }
+            }
+        })
+    });
     let record = AgentHistoryRecord {
         fleet_seen: session.fleet_seen,
         fleet_dismissed: session.fleet_dismissed,
         run_id: format!("run-{}-{}", pane.id, session.fleet_since),
-        pane_id: pane.id, context_id, context_name: context_name.into(), parent_pane_id: session.parent_pane_id,
+        pane_id: pane.id,
+        context_id,
+        context_name: context_name.into(),
+        parent_pane_id: session.parent_pane_id,
         spawned_by: session.spawned_by.clone(),
-        pane_name: pane.name.clone(), harness: session.harness.clone(), config_name: session.config_name.clone(),
-        session_id: session.session_id.clone(), cwd: pane.cwd.clone(), ephemeral: session.ephemeral,
-        last_state: crate::protocol::AgentState::Completed, last_blocked_reason: None,
-        last_detail: session.last_detail.clone(), summary: session.last_detail.clone(), result,
-        tail_preview: session.tail_preview.clone(), slots: pane.slots.clone(), closed_at: session.fleet_since,
+        pane_name: pane.name.clone(),
+        harness: session.harness.clone(),
+        config_name: session.config_name.clone(),
+        permission_posture: session.permission_posture.clone(),
+        session_id: session.session_id.clone(),
+        cwd: pane.cwd.clone(),
+        ephemeral: session.ephemeral,
+        last_state: crate::protocol::AgentState::Completed,
+        last_blocked_reason: None,
+        last_detail: session.last_detail.clone(),
+        summary: session.last_detail.clone(),
+        result,
+        tail_preview: session.tail_preview.clone(),
+        slots: pane.slots.clone(),
+        closed_at: session.fleet_since,
     };
     if let Err(error) = append_agent_history_to(profile, &record) {
-        log::error!("agents: archive restored completion pane={}: {error}", pane.id);
+        log::error!(
+            "agents: archive restored completion pane={}: {error}",
+            pane.id
+        );
     }
 }

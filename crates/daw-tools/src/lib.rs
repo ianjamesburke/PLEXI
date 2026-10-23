@@ -14,8 +14,8 @@
 //! rebound.
 
 use plexi_daw_model::{
-    ApplyOutcome, DawCommand, DawModel, Project, SourceId, Track, TrackId, TrackKind,
-    TEMPO_MAX, TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX, VOLUME_MIN,
+    ApplyOutcome, DawCommand, DawModel, Project, SourceId, Track, TrackId, TrackKind, TEMPO_MAX,
+    TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX, VOLUME_MIN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -111,7 +111,14 @@ pub fn tools() -> Vec<ToolSpec> {
                         "duration": { "type": "integer" }
                     }), &["id", "kind", "path", "duration"]) }
                 }),
-                &["tempo_bpm", "revision", "playing", "track_count", "source_count", "sources"],
+                &[
+                    "tempo_bpm",
+                    "revision",
+                    "playing",
+                    "track_count",
+                    "source_count",
+                    "sources",
+                ],
             ),
             read_only: true,
         },
@@ -146,7 +153,17 @@ pub fn tools() -> Vec<ToolSpec> {
                     }), &["id", "source", "position", "length", "source_offset"]) });
                     props
                 },
-                &["id", "name", "kind", "volume", "pan", "mute", "solo", "clip_count", "clips"],
+                &[
+                    "id",
+                    "name",
+                    "kind",
+                    "volume",
+                    "pan",
+                    "mute",
+                    "solo",
+                    "clip_count",
+                    "clips",
+                ],
             ),
             read_only: true,
         },
@@ -164,7 +181,13 @@ pub fn tools() -> Vec<ToolSpec> {
                     "loop_start": { "type": "integer" },
                     "loop_end": { "type": "integer" }
                 }),
-                &["playing", "position", "loop_enabled", "loop_start", "loop_end"],
+                &[
+                    "playing",
+                    "position",
+                    "loop_enabled",
+                    "loop_start",
+                    "loop_end",
+                ],
             ),
             read_only: true,
         },
@@ -401,7 +424,11 @@ struct AddClipInput {
 }
 
 fn parse<'a, T: Deserialize<'a>>(tool: &str, input_json: &'a str) -> Result<T, String> {
-    let body = if input_json.trim().is_empty() { "{}" } else { input_json };
+    let body = if input_json.trim().is_empty() {
+        "{}"
+    } else {
+        input_json
+    };
     serde_json::from_str(body).map_err(|e| format!("{tool} input: {e}"))
 }
 
@@ -412,7 +439,11 @@ fn describe(t: &Track) -> String {
 }
 
 fn listing(tracks: &[&Track]) -> String {
-    tracks.iter().map(|t| describe(t)).collect::<Vec<_>>().join(", ")
+    tracks
+        .iter()
+        .map(|t| describe(t))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Resolves an id-or-name reference against the project's tracks.
@@ -436,8 +467,7 @@ fn resolve_track(project: &Project, r: &TrackRef) -> Result<TrackId, String> {
             }
         }
         TrackRef::Name(name) => {
-            let exact: Vec<&Track> =
-                project.tracks.iter().filter(|t| t.name == *name).collect();
+            let exact: Vec<&Track> = project.tracks.iter().filter(|t| t.name == *name).collect();
             if let [only] = exact[..] {
                 return Ok(only.id);
             }
@@ -478,7 +508,9 @@ fn resolve_track(project: &Project, r: &TrackRef) -> Result<TrackId, String> {
                 ));
             }
             if project.tracks.is_empty() {
-                Err(format!("no track named \"{name}\"; the project has no tracks"))
+                Err(format!(
+                    "no track named \"{name}\"; the project has no tracks"
+                ))
             } else {
                 let all: Vec<&Track> = project.tracks.iter().collect();
                 Err(format!(
@@ -718,10 +750,24 @@ mod tests {
     fn seeded() -> DawModel {
         let mut model = DawModel::new();
         for cmd in [
-            DawCommand::AddTrack { kind: TrackKind::Audio, name: "Pluck".into() },
-            DawCommand::AddSource { kind: TrackKind::Audio, path: "demo:pluck".into(), duration: 4 * TICKS_PER_BEAT },
-            DawCommand::AddTrack { kind: TrackKind::Midi, name: "Bass".into() },
-            DawCommand::AddSource { kind: TrackKind::Midi, path: "demo:arp".into(), duration: 4 * TICKS_PER_BEAT },
+            DawCommand::AddTrack {
+                kind: TrackKind::Audio,
+                name: "Pluck".into(),
+            },
+            DawCommand::AddSource {
+                kind: TrackKind::Audio,
+                path: "demo:pluck".into(),
+                duration: 4 * TICKS_PER_BEAT,
+            },
+            DawCommand::AddTrack {
+                kind: TrackKind::Midi,
+                name: "Bass".into(),
+            },
+            DawCommand::AddSource {
+                kind: TrackKind::Midi,
+                path: "demo:arp".into(),
+                duration: 4 * TICKS_PER_BEAT,
+            },
         ] {
             assert_eq!(model.apply(cmd), ApplyOutcome::Applied);
         }
@@ -734,7 +780,11 @@ mod tests {
 
     #[test]
     fn every_read_tool_is_read_only_and_every_mutation_is_not() {
-        let read_only: Vec<&str> = tools().iter().filter(|t| t.read_only).map(|t| t.name).collect();
+        let read_only: Vec<&str> = tools()
+            .iter()
+            .filter(|t| t.read_only)
+            .map(|t| t.name)
+            .collect();
         assert_eq!(
             read_only,
             vec![PROJECT_INFO, LIST_TRACKS, GET_TRACK, TRANSPORT_STATE],
@@ -755,8 +805,15 @@ mod tests {
     #[test]
     fn schemas_are_tight_objects() {
         for tool in tools() {
-            assert!(tool.name.starts_with("daw."), "{} not namespaced", tool.name);
-            for (label, schema) in [("input", &tool.input_schema), ("output", &tool.output_schema)] {
+            assert!(
+                tool.name.starts_with("daw."),
+                "{} not namespaced",
+                tool.name
+            );
+            for (label, schema) in [
+                ("input", &tool.input_schema),
+                ("output", &tool.output_schema),
+            ] {
                 assert_eq!(
                     schema["type"], "object",
                     "{} {label} schema must be an object",
@@ -791,14 +848,20 @@ mod tests {
         let listed = call(&mut model, LIST_TRACKS, "{}").unwrap();
         let tracks = listed["tracks"].as_array().unwrap();
         assert_eq!(tracks.len(), 3);
-        assert!(tracks.iter().any(|t| t["name"] == "Lead" && t["id"] == id && t["kind"] == "midi"));
+        assert!(tracks
+            .iter()
+            .any(|t| t["name"] == "Lead" && t["id"] == id && t["kind"] == "midi"));
     }
 
     #[test]
     fn set_volume_by_name_resolves_case_insensitively() {
         let mut model = seeded();
-        let out =
-            call(&mut model, SET_TRACK_VOLUME, r#"{"track":"bass","volume":0.25}"#).unwrap();
+        let out = call(
+            &mut model,
+            SET_TRACK_VOLUME,
+            r#"{"track":"bass","volume":0.25}"#,
+        )
+        .unwrap();
         assert_eq!(out["outcome"], "applied");
         assert_eq!(out["track_id"], 3);
         assert!((out["volume"].as_f64().unwrap() - 0.25).abs() < 1e-6);
@@ -868,7 +931,10 @@ mod tests {
             &format!(r#"{{"track":1,"source":4,"position":0,"length":{TICKS_PER_BEAT}}}"#),
         )
         .unwrap_err();
-        assert_eq!(err, reason, "tool error must carry the model's reason verbatim");
+        assert_eq!(
+            err, reason,
+            "tool error must carry the model's reason verbatim"
+        );
     }
 
     #[test]
@@ -931,7 +997,11 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("color"), "{err}");
-        assert_eq!(model.project().tracks.len(), 2, "rejected input must not mutate");
+        assert_eq!(
+            model.project().tracks.len(),
+            2,
+            "rejected input must not mutate"
+        );
     }
 
     #[test]

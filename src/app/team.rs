@@ -633,11 +633,7 @@ impl PlexiApp {
                 "caller_context_denied": caller_ctx_denied,
             }),
         )?;
-        let parent = api(
-            &state_dir,
-            "spawn_run",
-            json!({"agent":id,"admission":id}),
-        )?;
+        let parent = api(&state_dir, "spawn_run", json!({"agent":id,"admission":id}))?;
         let parent_run = field(&parent["run"], "id")?;
         let spawned = self.spawn_agent_worker_pane(
             &name,
@@ -729,22 +725,27 @@ impl PlexiApp {
             } else {
                 let harness = crate::cli::AgentHarness::parse(&member.harness)
                     .ok_or_else(|| "invalid member harness".to_string())?;
-                let member_cmd = if let Ok((mut def, _)) = crate::cli::agent::resolve_agent_definition_in(
-                    &member.role,
-                    &crate::config::config_dir(),
-                    Some(&run.execution_cwd),
-                ) {
+                let member_cmd = if let Ok((mut def, _)) =
+                    crate::cli::agent::resolve_agent_definition_in(
+                        &member.role,
+                        &crate::config::config_dir(),
+                        Some(&run.execution_cwd),
+                    ) {
                     if let Some(ref mut h_cfg) = def.harness {
                         if member.model.is_some() {
                             h_cfg.model = member.model.clone();
                         }
                     }
-                    crate::cli::agent::build_agent_start_command(&def, harness.adapter(), Some(&task))
-                        .unwrap_or_else(|_| {
-                            harness
-                                .adapter()
-                                .spawn_command(&task, member.model.as_deref(), None)
-                        })
+                    crate::cli::agent::build_agent_start_command(
+                        &def,
+                        harness.adapter(),
+                        Some(&task),
+                    )
+                    .unwrap_or_else(|_| {
+                        harness
+                            .adapter()
+                            .spawn_command(&task, member.model.as_deref(), None)
+                    })
                 } else {
                     harness
                         .adapter()

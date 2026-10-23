@@ -173,12 +173,7 @@ pub fn resolve_failure_reason(
         }
     }
     if let Some(t) = tail.map(strip_state_prefix).filter(|s| !s.is_empty()) {
-        if let Some(last_line) = t
-            .lines()
-            .rev()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-        {
+        if let Some(last_line) = t.lines().rev().map(str::trim).find(|line| !line.is_empty()) {
             let truncated: String = last_line.chars().take(96).collect();
             return Some(classify(&truncated));
         }
@@ -186,9 +181,7 @@ pub fn resolve_failure_reason(
     Some(match display_state {
         DisplayState::Failed => "failed (no exit code or error detail recorded)".to_string(),
         DisplayState::Stalled => "timeout (idle past stall threshold without report)".to_string(),
-        DisplayState::ExitedUnreported => {
-            "exited (0) without calling plexi agent done".to_string()
-        }
+        DisplayState::ExitedUnreported => "exited (0) without calling plexi agent done".to_string(),
         _ => "failed".to_string(),
     })
 }
@@ -456,11 +449,8 @@ impl AgentsView {
         let root_labels: BTreeMap<_, _> = input
             .iter()
             .map(|r| {
-                let resolved_role = resolve_agent_label(
-                    Some(&r.role),
-                    Some(&r.harness),
-                    r.pane_name.as_deref(),
-                );
+                let resolved_role =
+                    resolve_agent_label(Some(&r.role), Some(&r.harness), r.pane_name.as_deref());
                 (r.pane_id, (resolved_role, r.context_name.clone()))
             })
             .collect();
@@ -509,11 +499,7 @@ impl AgentsView {
             } else {
                 r.blocked_on
             };
-            let role = resolve_agent_label(
-                Some(&r.role),
-                Some(&r.harness),
-                r.pane_name.as_deref(),
-            );
+            let role = resolve_agent_label(Some(&r.role), Some(&r.harness), r.pane_name.as_deref());
             let harness = resolve_harness_label(Some(&r.harness), Some(&r.role));
             let root_label = root_labels.get(&root).map(|(lbl, _)| lbl.as_str());
             let task_title = resolve_task_title(

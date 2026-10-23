@@ -206,7 +206,15 @@ fn render_root_with_chrome_bands(
             ui.set_clip_rect(body_inner);
             ui.set_min_height(body_inner.height());
             ui.set_max_height(body_inner.height());
-            render_column_children(ui, env, &c.children[leading..body_end], c.gap, c.align, out, 0);
+            render_column_children(
+                ui,
+                env,
+                &c.children[leading..body_end],
+                c.gap,
+                c.align,
+                out,
+                0,
+            );
         });
     }
 
@@ -548,10 +556,12 @@ fn is_button_row(nodes: &[IndexedNode], row_id: u32) -> Option<(usize, f32)> {
     if r.children.is_empty() {
         return None;
     }
-    let all_buttons = r
-        .children
-        .iter()
-        .all(|cid| matches!(find_node(nodes, *cid).map(|n| &n.data), Some(UiNodeData::Button(_))));
+    let all_buttons = r.children.iter().all(|cid| {
+        matches!(
+            find_node(nodes, *cid).map(|n| &n.data),
+            Some(UiNodeData::Button(_))
+        )
+    });
     all_buttons.then_some((r.children.len(), r.gap))
 }
 
@@ -606,9 +616,18 @@ fn subtree_contains(nodes: &[IndexedNode], root_id: u32, target_id: u32) -> bool
         return false;
     };
     match &node.data {
-        UiNodeData::Row(r) => r.children.iter().any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::Column(c) => c.children.iter().any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::ListView(l) => l.items.iter().any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::Row(r) => r
+            .children
+            .iter()
+            .any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::Column(c) => c
+            .children
+            .iter()
+            .any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::ListView(l) => l
+            .items
+            .iter()
+            .any(|&c| subtree_contains(nodes, c, target_id)),
         UiNodeData::Scroll(s) => subtree_contains(nodes, s.child, target_id),
         UiNodeData::Padding(p) => subtree_contains(nodes, p.child, target_id),
         UiNodeData::Pinned(p) => subtree_contains(nodes, p.child, target_id),
@@ -1108,9 +1127,7 @@ fn render_node(
         UiNodeData::Padding(p) => {
             let is_card = node.key.starts_with(CARD_NODE_KEY_PREFIX);
             let nested_card = is_card && is_nested_card(nodes, id);
-            let keypad_w = is_card
-                .then(|| card_keypad_width(nodes, p.child))
-                .flatten();
+            let keypad_w = is_card.then(|| card_keypad_width(nodes, p.child)).flatten();
             let mut frame = egui::Frame::new().inner_margin(egui::Margin {
                 left: p.left as i8,
                 right: p.right as i8,
@@ -1166,14 +1183,13 @@ fn render_node(
                 .copied()
                 .unwrap_or_default();
             let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
-            let to_canvas = |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| {
-                CanvasClick {
+            let to_canvas =
+                |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| CanvasClick {
                     x: (pos.x - origin.x) / sx,
                     y: (pos.y - origin.y) / sy,
                     button,
                     pressed,
-                }
-            };
+                };
             // A real click is detected by egui's own `Sense` resolution
             // (resolved once per pass, inside `Context::begin_pass`, from that
             // pass's actual `RawInput` — it cannot be faked by mutating
@@ -1217,14 +1233,12 @@ fn render_node(
                         .find(|(b, _)| resp.clicked_by(*b))
                         .map_or("left", |(_, name)| *name);
                     out.canvas_clicks.push(to_canvas(pos, Some(button), true));
-                } else if let Some((_, button)) = real_button
-                    .iter()
-                    .find(|(b, _)| resp.drag_started_by(*b))
+                } else if let Some((_, button)) =
+                    real_button.iter().find(|(b, _)| resp.drag_started_by(*b))
                 {
                     out.canvas_clicks.push(to_canvas(pos, Some(button), true));
-                } else if let Some((_, button)) = real_button
-                    .iter()
-                    .find(|(b, _)| resp.drag_stopped_by(*b))
+                } else if let Some((_, button)) =
+                    real_button.iter().find(|(b, _)| resp.drag_stopped_by(*b))
                 {
                     out.canvas_clicks.push(to_canvas(pos, Some(button), false));
                 } else if resp.dragged() {
@@ -1522,25 +1536,39 @@ mod tests {
         );
         let tree = UiTree {
             root: 0,
-            nodes: vec![node(0, UiNodeData::Text(TextNode {
-                text: "Calculator".into(),
-                size: None,
-                bold: false,
-                color: None,
-                truncate: false,
-                align: Alignment::Start,
-            }))],
+            nodes: vec![node(
+                0,
+                UiNodeData::Text(TextNode {
+                    text: "Calculator".into(),
+                    size: None,
+                    bold: false,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Start,
+                }),
+            )],
         };
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
         });
-        let text = output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
-            _ => None,
-        }).expect("painted Calculator text");
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
+                _ => None,
+            })
+            .expect("painted Calculator text");
         let color = text.galley.job.sections[0].format.color;
-        let color = if color == Color32::PLACEHOLDER { text.fallback_color } else { color };
-        assert_eq!(color, colors.text_primary, "app text must follow the host palette");
+        let color = if color == Color32::PLACEHOLDER {
+            text.fallback_color
+        } else {
+            color
+        };
+        assert_eq!(
+            color, colors.text_primary,
+            "app text must follow the host palette"
+        );
 
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(420.0, 160.0))
@@ -1553,8 +1581,11 @@ mod tests {
                     });
             });
         harness.run();
-        harness.render().expect("theme regression render")
-            .save("/tmp/plexi-distribution-text-theme.png").expect("theme screenshot");
+        harness
+            .render()
+            .expect("theme regression render")
+            .save("/tmp/plexi-distribution-text-theme.png")
+            .expect("theme screenshot");
     }
 
     /// Stint 0456: the declarative TextInput renders through the styled
@@ -1651,8 +1682,7 @@ mod tests {
                 node(
                     2,
                     UiNodeData::Text(TextNode {
-                        text: "The quick brown fox jumps over the lazy dog 0123456789"
-                            .to_string(),
+                        text: "The quick brown fox jumps over the lazy dog 0123456789".to_string(),
                         size: None,
                         bold: false,
                         color: None,
@@ -1864,18 +1894,26 @@ mod tests {
         let mut after = egui::Id::NULL;
         ctx.begin_pass(egui::RawInput::default());
         egui::Area::new(egui::Id::new("keyed-id-test")).show(&ctx, |ui| {
-            before = stable_node_id(ui, "l1_text_input", &IndexedNode {
-                id: 2,
-                key: "0/@row-b/0".to_string(),
-                data: UiNodeData::Empty,
-            });
+            before = stable_node_id(
+                ui,
+                "l1_text_input",
+                &IndexedNode {
+                    id: 2,
+                    key: "0/@row-b/0".to_string(),
+                    data: UiNodeData::Empty,
+                },
+            );
             // A keyed row can occupy another arena slot after its siblings
             // move; its path stays the same and so does the egui state id.
-            after = stable_node_id(ui, "l1_text_input", &IndexedNode {
-                id: 19,
-                key: "0/@row-b/0".to_string(),
-                data: UiNodeData::Empty,
-            });
+            after = stable_node_id(
+                ui,
+                "l1_text_input",
+                &IndexedNode {
+                    id: 19,
+                    key: "0/@row-b/0".to_string(),
+                    data: UiNodeData::Empty,
+                },
+            );
         });
         let _ = ctx.end_pass();
         assert_eq!(before, after);
@@ -2190,7 +2228,13 @@ mod tests {
                         align: Alignment::Start,
                     }),
                 ),
-                node(3, UiNodeData::Space(SpaceNode { size: 0.0, grow: true })),
+                node(
+                    3,
+                    UiNodeData::Space(SpaceNode {
+                        size: 0.0,
+                        grow: true,
+                    }),
+                ),
                 // The tail is a Row of buttons — an `Actions` bar, the shape the
                 // overflow bug actually took (a bare child never reproduced it).
                 node(
@@ -2247,9 +2291,7 @@ mod tests {
         let band = shapes
             .iter()
             .filter(|r| !fills_pane(r))
-            .find(|r| {
-                r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5
-            })
+            .find(|r| r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5)
             .copied();
         assert!(
             band.is_some(),
@@ -2357,8 +2399,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| {
-                        let _ =
-                            render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
+                        let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
                     });
             });
             let registry = crate::ui::focus::drain_text_surfaces(&ctx);
@@ -2752,7 +2793,10 @@ mod tests {
             }
             _ => false,
         });
-        assert!(has_card_surface, "Card node must paint bg_active surface with border stroke");
+        assert!(
+            has_card_surface,
+            "Card node must paint bg_active surface with border stroke"
+        );
 
         let mut list_click = RenderResult::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -2875,7 +2919,9 @@ mod tests {
 
         let selected_fill = colors.accent.gamma_multiply(0.18);
         assert!(
-            rects.iter().any(|r| r.fill == selected_fill && r.rect.width() > 20.0),
+            rects
+                .iter()
+                .any(|r| r.fill == selected_fill && r.rect.width() > 20.0),
             "selected ListView row must paint accent-tinted background fill"
         );
         assert!(
@@ -3089,7 +3135,11 @@ mod tests {
             .iter()
             .filter(|r| r.fill == colors.accent && (r.rect.height() - KEYPAD_BUTTON_H).abs() < 1.0)
             .collect();
-        assert_eq!(primary_btns.len(), 2, "expected '+' and '=' primary buttons");
+        assert_eq!(
+            primary_btns.len(),
+            2,
+            "expected '+' and '=' primary buttons"
+        );
         assert!(
             (primary_btns[0].rect.left() - primary_btns[1].rect.left()).abs() < 1.0,
             "'=' button in 3-button bottom row must align with '+' in column 4"

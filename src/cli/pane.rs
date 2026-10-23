@@ -406,9 +406,7 @@ pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> 
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_message_recv",
@@ -459,14 +457,8 @@ fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
 #[derive(Debug, PartialEq)]
 pub enum PaneResultReadOutcome {
     Validated(Vec<u8>),
-    NoResultYet {
-        error_code: String,
-        message: String,
-    },
-    InvalidResult {
-        error_code: String,
-        message: String,
-    },
+    NoResultYet { error_code: String, message: String },
+    InvalidResult { error_code: String, message: String },
     Failed(String),
 }
 
@@ -550,9 +542,7 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_result_read",
@@ -682,6 +672,12 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
         let name = pane
             .get("name")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                pane.get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or("pane");
         let role = pane
             .get("agent_role")
@@ -732,7 +728,13 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             for (idx, child) in kids.iter().enumerate() {
                 let is_last = idx + 1 == kids.len();
                 let child_branch = if is_last { "└── " } else { "├── " };
-                walk(child, &child_prefix, child_branch, children_by_parent, lines);
+                walk(
+                    child,
+                    &child_prefix,
+                    child_branch,
+                    children_by_parent,
+                    lines,
+                );
             }
         }
     }
@@ -1005,7 +1007,12 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         outcome.report();
         return outcome.exit_code();
     }
-    let content = match super::request(payload, "send-to-pane-response", "pane send") {
+    let content = match super::request_with(
+        payload,
+        "send-to-pane-response",
+        "pane send",
+        SUBMIT_REPLY_WINDOW,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1791,11 +1798,9 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(
-            validate_status_reply("{}")
-                .expect_err("missing fields")
-                .contains("missing verdict")
-        );
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 
@@ -2299,7 +2304,9 @@ mod pane_result_tests {
         );
 
         // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
-        let focus_pane = PaneTarget::from("tester").resolve().expect("resolve tester");
+        let focus_pane = PaneTarget::from("tester")
+            .resolve()
+            .expect("resolve tester");
         assert_eq!(focus_pane, 12);
         assert_eq!(pane_focus_cli(focus_pane), 0);
 

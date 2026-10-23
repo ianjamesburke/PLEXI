@@ -449,8 +449,14 @@ fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
 fn config_get_from_paths_with_json(key: &str, paths: &[PathBuf], json: bool) -> i32 {
     if json && (key == "models" || key == "models.fast" || key == "models.slow") {
         match resolved_models_json(key, paths) {
-            Ok(value) => { println!("{value}"); return 0; }
-            Err(error) => { eprintln!("error: {error}"); return 1; }
+            Ok(value) => {
+                println!("{value}");
+                return 0;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return 1;
+            }
         }
     }
     let mut root = toml::Value::Table(toml::map::Map::new());
@@ -505,7 +511,8 @@ fn resolved_models_json(key: &str, paths: &[PathBuf]) -> Result<String, String> 
         _ => serde_json::to_value(modes),
     }
     .map_err(|error| format!("could not serialize resolved {key}: {error}"))?;
-    serde_json::to_string(&value).map_err(|error| format!("could not serialize resolved {key}: {error}"))
+    serde_json::to_string(&value)
+        .map_err(|error| format!("could not serialize resolved {key}: {error}"))
 }
 
 /// Recursively merge `src` on top of `dst` — table keys in `src` override `dst`;
@@ -576,7 +583,10 @@ fn config_paths_for_scope(
         // Machine-readable reads match the host's field-level global + workspace
         // merge, so `config get --json models` is safe for pi-plexi in a workspace.
         ConfigScope::Effective => Ok(match workspace {
-            Some(root) => vec![crate::config::config_path(), crate::config::workspace_config_path(&root)],
+            Some(root) => vec![
+                crate::config::config_path(),
+                crate::config::workspace_config_path(&root),
+            ],
             None => vec![crate::config::config_path()],
         }),
     }
@@ -896,14 +906,23 @@ mod tests {
         let workspace = dir.path().join("workspace/.plexi/config.toml");
         std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
         std::fs::write(&global, "[models.fast]\nprovider = \"global\"\nmodel = \"global/fast\"\n[models.slow]\nthinking = \"minimal\"\n").unwrap();
-        std::fs::write(&workspace, "[models.fast]\nthinking = \"high\"\n[models.slow]\nmodel = \"workspace/slow\"\n").unwrap();
-
-        let value: serde_json::Value = serde_json::from_str(
-            &resolved_models_json("models", &[global, workspace]).unwrap(),
+        std::fs::write(
+            &workspace,
+            "[models.fast]\nthinking = \"high\"\n[models.slow]\nmodel = \"workspace/slow\"\n",
         )
         .unwrap();
-        assert_eq!(value["fast"], serde_json::json!({"provider": "global", "model": "global/fast", "thinking": "high"}));
-        assert_eq!(value["slow"], serde_json::json!({"provider": "openrouter", "model": "workspace/slow", "thinking": "minimal"}));
+
+        let value: serde_json::Value =
+            serde_json::from_str(&resolved_models_json("models", &[global, workspace]).unwrap())
+                .unwrap();
+        assert_eq!(
+            value["fast"],
+            serde_json::json!({"provider": "global", "model": "global/fast", "thinking": "high"})
+        );
+        assert_eq!(
+            value["slow"],
+            serde_json::json!({"provider": "openrouter", "model": "workspace/slow", "thinking": "minimal"})
+        );
     }
 
     #[test]
@@ -939,7 +958,11 @@ mod tests {
         );
 
         // Misplaced `[commands]` in config.toml must warn naming commands.toml (exit 0 for warnings).
-        std::fs::write(&ws_cfg, "config_version = 1\n\n[commands]\ngs = \"git status\"\n").unwrap();
+        std::fs::write(
+            &ws_cfg,
+            "config_version = 1\n\n[commands]\ngs = \"git status\"\n",
+        )
+        .unwrap();
         let (bad_cfg_report, bad_cfg_code) =
             config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
         assert_eq!(bad_cfg_code, 0, "warnings exit 0:\n{bad_cfg_report}");
@@ -980,7 +1003,8 @@ mod tests {
         let (global_report, global_code) =
             config_check_report(ConfigScope::Global, Some(workspace.path())).unwrap();
         assert_eq!(global_code, 0);
-        let expected_global_cfg = format!("~/{}/config.toml", crate::config::workspace_channel_dir());
+        let expected_global_cfg =
+            format!("~/{}/config.toml", crate::config::workspace_channel_dir());
         assert!(
             global_report.contains(&format!(
                 "[keys] is ignored in commands.toml; put it in {expected_global_cfg}"

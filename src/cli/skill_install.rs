@@ -341,11 +341,9 @@ mod tests {
         // no overlapping command owners.
         let fixture =
             "<!-- experiment: command_view, assistant -->\ncombined\n<!-- /experiment -->\n";
-        assert!(
-            render_skill(fixture, |f| f == ReleaseFeature::CommandView)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(render_skill(fixture, |f| f == ReleaseFeature::CommandView)
+            .unwrap()
+            .is_empty());
         assert_eq!(
             render_skill(fixture, |f| matches!(
                 f,
