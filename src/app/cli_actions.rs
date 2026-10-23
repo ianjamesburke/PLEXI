@@ -26,19 +26,22 @@ impl PlexiApp {
             (tile, target)
         };
         if let Some(child_ctx_id) = portal_target {
-            // Focused pane is a Portal tile → zoom into its sub-context.
-            // Verify target context exists BEFORE pushing depth state;
-            // push_depth must not fire if there is nothing to switch to.
-            if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
-                log::info!("ToggleZoom on Portal: zooming into context_id={child_ctx_id}");
-                let current_ctx_id = self.router.active().context_id;
-                let current_win_id = self.windows[self.active_window].window_id;
-                self.router
-                    .push_depth(current_ctx_id, current_win_id, focused_tile);
-                self.switch_workspace(ctx_idx);
+            let source = focused_tile.and_then(|tile_id| {
+                self.windows[self.active_window]
+                    .tree
+                    .tiles
+                    .get(tile_id)
+                    .and_then(|tile| match tile {
+                        egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                        _ => None,
+                    })
+            });
+            if let Some(front) = self.front_pane_of(child_ctx_id) {
+                log::info!("ToggleZoom on Portal: unfolding context_id={child_ctx_id}");
+                self.unfold_flap(child_ctx_id, source, front, true);
             } else {
                 log::warn!(
-                    "ToggleZoom on Portal: target context_id={child_ctx_id} not found in router"
+                    "ToggleZoom on Portal: context_id={child_ctx_id} has no pane to unfold"
                 );
             }
         } else {

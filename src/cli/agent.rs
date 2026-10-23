@@ -1053,6 +1053,11 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
     }
 }
 
+/// A spawn without `--subcontext` joins a sub-context named for the agent role.
+pub(crate) fn spawn_subcontext_name<'a>(flag: Option<&'a str>, role: &'a str) -> &'a str {
+    flag.and_then(non_empty_string).unwrap_or(role)
+}
+
 /// `plexi agent spawn <name> --task "<brief>" [--subcontext <name>] [--ephemeral]`
 #[allow(clippy::too_many_arguments)]
 pub fn agent_spawn_cli(
@@ -1121,9 +1126,8 @@ pub fn agent_spawn_cli(
         "task": task,
         "ephemeral": effective_ephemeral,
     });
-    if let Some(sub) = subcontext.and_then(non_empty_string) {
-        payload["subcontext"] = serde_json::Value::String(sub.to_string());
-    }
+    payload["subcontext"] =
+        serde_json::Value::String(spawn_subcontext_name(subcontext, &def.id).to_string());
     if let Some(pid) = parent_pane_id {
         payload["parent_pane_id"] = serde_json::json!(pid);
     }

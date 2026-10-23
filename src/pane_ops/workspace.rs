@@ -494,15 +494,13 @@ impl PlexiApp {
         })
     }
 
-    /// Create a new empty child context under the current context and auto-zoom
-    /// into it. Bound to Cmd+Shift+Option+N. Uses the current context's path as
-    /// the child's working directory and names the child "Sub-context N".
+    /// Create a new empty child context under the current context and unfold
+    /// it as a flap. Bound to Cmd+Shift+Option+N. Uses the current context's
+    /// path as the child's working directory and names the child "Sub-context N".
     pub(crate) fn new_child_context_from_keyboard(&mut self) {
         let parent_ctx_id = self.router.active().context_id;
         let parent_name = self.router.active().name.to_string();
         let parent_path = self.router.active().root.clone();
-        let current_win_id = self.windows[self.active_window].window_id;
-        let current_focused = self.windows[self.active_window].focused_pane;
 
         log::info!(
             "new_child_context_from_keyboard: parent_ctx_id={parent_ctx_id} parent_name={parent_name} path={}",
@@ -517,14 +515,16 @@ impl PlexiApp {
             false,
             None,
         )) {
-            Ok(_) => {
-                let new_ctx_idx = self.router.len() - 1;
-                self.router
-                    .push_depth(parent_ctx_id, current_win_id, current_focused);
-                self.switch_workspace(new_ctx_idx);
+            Ok(child) => {
+                let source = self.windows.iter().flat_map(|window| window.panes.iter()).find_map(
+                    |(&id, pane)| (pane.portal_target() == Some(child.context_id)).then_some(id),
+                );
+                if let Some(front) = child.pane_ids.first().copied() {
+                    self.unfold_flap(child.context_id, source, front, true);
+                }
                 log::info!(
-                    "new_child_context_from_keyboard: zoomed into child ctx_id={}",
-                    self.router.active().context_id
+                    "new_child_context_from_keyboard: unfolded child ctx_id={} parent={parent_ctx_id}",
+                    child.context_id
                 );
             }
             Err(e) => {
@@ -676,15 +676,7 @@ impl PlexiApp {
         });
         self.context_active_window.insert(ctx_id, win_id);
 
-        let current_win_id = self.windows[parent_win_idx].window_id;
-        self.router
-            .push_depth(parent_ctx_id, current_win_id, Some(target_tile));
-        let new_ctx_idx = self
-            .router
-            .position(|c| c.context_id == ctx_id)
-            .expect("just-inserted subcontext must be in router");
-        self.switch_workspace(new_ctx_idx);
-
+        self.unfold_flap(ctx_id, Some(portal_pane_id), pane_id, true);
         self.mark_workspace_dirty();
     }
 

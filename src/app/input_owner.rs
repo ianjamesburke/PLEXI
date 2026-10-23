@@ -84,6 +84,9 @@ impl PlexiApp {
         if let Some(surface) = self.overlay_surface() {
             return InputOwner::Overlay(surface);
         }
+        if let Some(pane) = self.flap_keyboard_pane() {
+            return InputOwner::Pane(pane);
+        }
         if let Some(parent) = self.conjoined_parent() {
             if self.conjoined_parent_focus == Some(parent) { return InputOwner::Pane(parent); }
         }

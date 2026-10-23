@@ -1729,6 +1729,11 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
+                let panes_before: Vec<u64> = self
+                    .windows
+                    .iter()
+                    .flat_map(|window| window.panes.keys().copied())
+                    .collect();
                 let peer_pane = spec
                     .peer_ancestry
                     .as_deref()
@@ -2093,14 +2098,31 @@ impl PlexiApp {
                         );
                     }
                 }
-                if matches!(
-                    spec.target,
-                    crate::app::launch_spec::PaneLaunchTarget::Terminal
-                ) && launch_result.is_ok()
-                {
+                if launch_result.is_ok() {
                     if let Some(ref pane_name) = spec.name {
                         if !pane_name.is_empty() {
                             self.apply_inline_pane_name(response_pane_id, pane_name);
+                        }
+                    }
+                    if let Some(source) = spec.from_pane_id {
+                        if matches!(
+                            spec.target,
+                            crate::app::launch_spec::PaneLaunchTarget::AppId(_)
+                                | crate::app::launch_spec::PaneLaunchTarget::Path(_)
+                        ) {
+                            let added: Vec<u64> = self
+                                .windows
+                                .iter()
+                                .flat_map(|window| window.panes.keys().copied())
+                                .filter(|id| !panes_before.contains(id) && *id != source)
+                                .collect();
+                            for pane_id in added {
+                                self.adopt_opened_pane_into_flap(
+                                    source,
+                                    pane_id,
+                                    spec.name.as_deref(),
+                                );
+                            }
                         }
                     }
                 }
@@ -4004,6 +4026,9 @@ impl PlexiApp {
                     self.router
                         .push_depth(current_ctx_id, current_win_id, current_focused);
                     self.switch_workspace(ctx_idx);
+                    if let Some(front) = self.front_pane_of(*context_id) {
+                        self.unfold_flap(*context_id, None, front, true);
+                    }
                     if let Some(rf) = response_file {
                         write_json_response(rf, serde_json::json!({ "context_id": context_id }));
                     }
@@ -5410,6 +5435,10 @@ impl PlexiApp {
                 if let Some(t) = pane.as_terminal_mut() {
                     t.name_locked = true;
                     t.name = Some(pane_name.to_string());
+                    return;
+                }
+                if let Some(app) = pane.as_app_mut() {
+                    app.name = pane_name.to_string();
                     return;
                 }
             }

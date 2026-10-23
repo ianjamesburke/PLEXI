@@ -150,6 +150,13 @@ pub const KEYCHIP_DESC_GAP: f32 = 10.0; // gap between last chip and description
 pub const DURATION_PRESS_MS: u64 = 140;
 pub const DURATION_MICRO_MS: u64 = 160;
 pub const DURATION_TOAST_MS: u64 = 180;
+/// Sub-context flap fill. The layout behind stays faintly visible.
+pub const FLAP_OPACITY: f32 = 0.98;
+/// With no source pane, the flap still covers the larger share of the frame.
+pub const FLAP_DEFAULT_SPAN: f32 = 0.62;
+/// The agent's own pane — the flap's front face — takes this share of the body
+/// when helpers sit beside it.
+pub const FLAP_FRONT_FRACTION: f32 = 0.62;
 pub const PRESS_SCALE: f32 = 0.97;
 const _: () =
     assert!(DURATION_PRESS_MS <= 300 && DURATION_MICRO_MS <= 300 && DURATION_TOAST_MS <= 300);
