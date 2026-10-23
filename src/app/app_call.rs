@@ -1175,9 +1175,9 @@ impl PlexiApp {
                 actions.push((format!("{} {choice}", i + 1), true, Some(choice.clone())));
             }
         } else {
-            actions.push(("Allow".to_string(), true, None));
+            actions.push(("Allow (a)".to_string(), true, None));
         }
-        actions.push(("Dismiss".to_string(), false, None));
+        actions.push(("Dismiss (d)".to_string(), false, None));
         let mut chosen: Option<(bool, Option<String>)> = None;
         crate::ui::overlay::ModalShell::centered("approval_banner")
             .title(view.kind_label)
