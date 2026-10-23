@@ -244,6 +244,15 @@ impl AttentionQueueState {
         self.items.len()
     }
 
+    /// Unresolved asks filed in exactly `ctx_id`. The one count every surface
+    /// (cards, atlas nodes, queue list) shows for a context.
+    pub fn ask_count_for_context(&self, ctx_id: u64) -> usize {
+        self.items
+            .iter()
+            .filter(|b| b.category == QueueCategory::Ask && b.context_id == ctx_id)
+            .count()
+    }
+
     pub fn ask_count_for_context_subtree(
         &self,
         root_ctx_id: u64,

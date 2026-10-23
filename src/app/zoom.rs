@@ -82,6 +82,8 @@ pub struct AtlasNode {
     pub parent_id: Option<u64>,
     pub name: String,
     pub depth: usize,
+    /// Layout order (preorder), stable for navigation.
+    pub order: usize,
     pub rect: Rect,
     pub ask_rollup: usize,
     pub direct_asks: usize,
@@ -97,6 +99,8 @@ pub enum AtlasEdgeKind {
     NeedsRollup,
     Failed,
     PipeLink,
+    /// An agent pane in the target context was spawned by a pane in the source context.
+    Spawn,
 }
 
 #[derive(Debug, Clone)]
@@ -248,9 +252,9 @@ pub(crate) fn collect_leaf_panes_in_tile(
                 if !p.is_hidden() && !matches!(p, crate::host::pane::Pane::Portal(_)) {
                     out.push(*pid);
                 }
-            } else {
-                out.push(*pid);
             }
+            // A tile whose pane is absent from the live window is stale saved
+            // layout state, not a pane: never enumerate it.
         }
         Tile::Container(Container::Tabs(tabs)) => {
             if let Some(active) = tabs.active {
@@ -1007,55 +1011,95 @@ impl PlexiApp {
             .map(|c| c.context_id)
             .collect();
 
-        let mut nodes_out: Vec<AtlasNode> = Vec::new();
-        let mut leaf_slot: usize = 0;
-
-        #[allow(clippy::too_many_arguments)]
-        fn layout_subtree(
-            app: &PlexiApp,
-            ctx_id: u64,
-            depth: usize,
-            contexts: &[&crate::host::context::Context],
-            viewport: Rect,
-            leaf_slot: &mut usize,
-            nodes_out: &mut Vec<AtlasNode>,
-        ) -> f32 {
-            let children: Vec<u64> = contexts
+        // Radial tree: the root sits at the viewport center and descendants
+        // fan out on concentric rings, each node owning an angular wedge sized
+        // by its leaf count. Several roots hang off a virtual hub at the center.
+        let center = viewport.center();
+        let hub = roots.len() > 1;
+        let children_of = |ctx_id: u64| -> Vec<u64> {
+            contexts
                 .iter()
                 .filter(|c| c.parent_id == Some(ctx_id))
                 .map(|c| c.context_id)
-                .collect();
-
-            let y_center = if children.is_empty() {
-                let slot = *leaf_slot;
-                *leaf_slot += 1;
-                viewport.min.y
-                    + 28.0
-                    + (slot as f32) * (style::ATLAS_NODE_H + style::ATLAS_ROW_GAP)
-                    + style::ATLAS_NODE_H * 0.5
+                .collect()
+        };
+        fn leaves(ctx_id: u64, children_of: &dyn Fn(u64) -> Vec<u64>) -> usize {
+            let kids = children_of(ctx_id);
+            if kids.is_empty() {
+                1
             } else {
-                let mut child_ys = Vec::with_capacity(children.len());
-                for &ch in &children {
-                    child_ys.push(layout_subtree(
-                        app,
-                        ch,
-                        depth + 1,
-                        contexts,
-                        viewport,
-                        leaf_slot,
-                        nodes_out,
-                    ));
-                }
-                let first_y = child_ys.first().copied().unwrap_or(0.0);
-                let last_y = child_ys.last().copied().unwrap_or(first_y);
-                (first_y + last_y) * 0.5
-            };
+                kids.iter().map(|&k| leaves(k, children_of)).sum()
+            }
+        }
+        fn max_depth(ctx_id: u64, children_of: &dyn Fn(u64) -> Vec<u64>) -> usize {
+            children_of(ctx_id)
+                .iter()
+                .map(|&k| 1 + max_depth(k, children_of))
+                .max()
+                .unwrap_or(0)
+        }
+        let deepest = roots
+            .iter()
+            .map(|&r| max_depth(r, &children_of))
+            .max()
+            .unwrap_or(0);
+        let max_ring = deepest + usize::from(hub);
+        let (rx_step, ry_step) = if max_ring == 0 {
+            (0.0, 0.0)
+        } else {
+            let fit_x = ((viewport.width() - style::ATLAS_NODE_W) * 0.5 - 16.0) / max_ring as f32;
+            let fit_y = ((viewport.height() - style::ATLAS_NODE_H) * 0.5 - 16.0) / max_ring as f32;
+            (
+                fit_x.max(style::ATLAS_NODE_W * 0.75),
+                fit_y.max(style::ATLAS_NODE_H * 1.1),
+            )
+        };
 
-            let x = viewport.min.x
-                + 28.0
-                + (depth as f32) * (style::ATLAS_NODE_W + style::ATLAS_COL_GAP);
-            let rect = Rect::from_min_size(
-                Pos2::new(x, y_center - style::ATLAS_NODE_H * 0.5),
+        let mut nodes_out: Vec<AtlasNode> = Vec::new();
+        // (context_id, depth, ring, wedge_start, wedge_end)
+        struct Placement {
+            ctx_id: u64,
+            depth: usize,
+            ring: usize,
+            a0: f32,
+            a1: f32,
+        }
+        let tau = std::f32::consts::TAU;
+        let down = std::f32::consts::FRAC_PI_2;
+        let mut stack: Vec<Placement> = Vec::new();
+        {
+            // Root wedges: the whole circle (starting so a lone child lands below).
+            let total: usize = roots.iter().map(|&r| leaves(r, &children_of)).sum::<usize>().max(1);
+            let mut a = down - tau * 0.5;
+            let mut placements = Vec::new();
+            for &r in &roots {
+                let span = tau * leaves(r, &children_of) as f32 / total as f32;
+                placements.push(Placement {
+                    ctx_id: r,
+                    depth: 0,
+                    ring: usize::from(hub),
+                    a0: a,
+                    a1: a + span,
+                });
+                a += span;
+            }
+            placements.reverse();
+            stack.extend(placements);
+        }
+        while let Some(pl) = stack.pop() {
+            let ctx_id = pl.ctx_id;
+            let mid = (pl.a0 + pl.a1) * 0.5;
+            let ring = pl.ring as f32;
+            let node_center = if pl.ring == 0 {
+                center
+            } else {
+                Pos2::new(
+                    center.x + mid.cos() * rx_step * ring,
+                    center.y + mid.sin() * ry_step * ring,
+                )
+            };
+            let rect = Rect::from_center_size(
+                node_center,
                 Vec2::new(style::ATLAS_NODE_W, style::ATLAS_NODE_H),
             );
             let name = contexts
@@ -1066,41 +1110,39 @@ impl PlexiApp {
             let parent_id = contexts
                 .iter()
                 .find(|c| c.context_id == ctx_id)
-                .and_then(|c| c.parent_id);
+                .and_then(|c| c.parent_id)
+                .filter(|pid| live_ids.contains(pid));
 
-            let ask_rollup = app
+            // Same source as every other surface: the queue's per-context count.
+            let direct_asks = self.attention_queue.ask_count_for_context(ctx_id);
+            let ask_rollup = self
                 .attention_queue
-                .ask_count_for_context_subtree(ctx_id, &app.router);
-            let direct_asks = app
-                .attention_queue
-                .items
-                .iter()
-                .filter(|b| b.category == QueueCategory::Ask && b.context_id == ctx_id)
-                .count();
-            let failed_count = app
+                .ask_count_for_context_subtree(ctx_id, &self.router);
+            let failed_count = self
                 .attention_queue
                 .items
                 .iter()
                 .filter(|b| b.category == QueueCategory::Failed && b.context_id == ctx_id)
                 .count();
-            let pane_count: usize = app
+            let pane_count: usize = self
                 .windows
                 .iter()
                 .filter(|w| w.context_id == ctx_id)
                 .map(|w| w.panes.len())
                 .sum();
-            let is_ghost = app
+            let is_ghost = self
                 .zoom
                 .ghost
                 .as_ref()
                 .is_some_and(|g| g.context_id == ctx_id);
-            let preview_lines = app.context_preview_lines(ctx_id, 3);
-
+            let preview_lines = self.context_preview_lines(ctx_id, 3);
+            let order = nodes_out.len();
             nodes_out.push(AtlasNode {
                 context_id: ctx_id,
                 parent_id,
                 name,
-                depth,
+                depth: pl.depth,
+                order,
                 rect,
                 ask_rollup,
                 direct_asks,
@@ -1110,23 +1152,27 @@ impl PlexiApp {
                 preview_lines,
             });
 
-            y_center
+            let kids = children_of(ctx_id);
+            let total: usize = kids.iter().map(|&k| leaves(k, &children_of)).sum::<usize>().max(1);
+            let mut a = pl.a0;
+            let mut kid_placements = Vec::new();
+            for &k in &kids {
+                let span = (pl.a1 - pl.a0) * leaves(k, &children_of) as f32 / total as f32;
+                kid_placements.push(Placement {
+                    ctx_id: k,
+                    depth: pl.depth + 1,
+                    ring: pl.ring + 1,
+                    a0: a,
+                    a1: a + span,
+                });
+                a += span;
+            }
+            kid_placements.reverse();
+            stack.extend(kid_placements);
         }
 
-        for root_id in roots {
-            layout_subtree(
-                self,
-                root_id,
-                0,
-                &contexts,
-                viewport,
-                &mut leaf_slot,
-                &mut nodes_out,
-            );
-        }
-
-        // Sort nodes in tree order (by depth/y or preorder) while keeping fast lookup.
         let mut edges_out: Vec<AtlasEdge> = Vec::new();
+        // Parent/child context relationships.
         for node in &nodes_out {
             if let Some(pid) = node.parent_id {
                 if let Some(parent_node) = nodes_out.iter().find(|n| n.context_id == pid) {
@@ -1140,11 +1186,54 @@ impl PlexiApp {
                     edges_out.push(AtlasEdge {
                         from_context_id: pid,
                         to_context_id: node.context_id,
-                        from_pos: Pos2::new(parent_node.rect.max.x, parent_node.rect.center().y),
-                        to_pos: Pos2::new(node.rect.min.x, node.rect.center().y),
+                        from_pos: parent_node.rect.center(),
+                        to_pos: node.rect.center(),
                         kind,
                     });
                 }
+            }
+        }
+        // Virtual hub: with several roots, each hangs off the center point.
+        if hub {
+            for node in nodes_out.iter().filter(|n| n.parent_id.is_none()) {
+                edges_out.push(AtlasEdge {
+                    from_context_id: 0,
+                    to_context_id: node.context_id,
+                    from_pos: center,
+                    to_pos: node.rect.center(),
+                    kind: AtlasEdgeKind::TreeRoad,
+                });
+            }
+        }
+        // Spawn lineage: an agent pane in one context spawned by a pane in another.
+        let mut spawn_pairs: Vec<(u64, u64)> = Vec::new();
+        for win in &self.windows {
+            for pane in win.panes.values() {
+                let Some(parent_pane) = pane.as_terminal().and_then(|t| t.parent_pane_id) else {
+                    continue;
+                };
+                let Some((pwi, _)) = self.find_pane_in_any_window(parent_pane) else {
+                    continue;
+                };
+                let from_ctx = self.windows[pwi].context_id;
+                let to_ctx = win.context_id;
+                if from_ctx != to_ctx && !spawn_pairs.contains(&(from_ctx, to_ctx)) {
+                    spawn_pairs.push((from_ctx, to_ctx));
+                }
+            }
+        }
+        for (from_ctx, to_ctx) in spawn_pairs {
+            if let (Some(a), Some(b)) = (
+                nodes_out.iter().find(|n| n.context_id == from_ctx),
+                nodes_out.iter().find(|n| n.context_id == to_ctx),
+            ) {
+                edges_out.push(AtlasEdge {
+                    from_context_id: from_ctx,
+                    to_context_id: to_ctx,
+                    from_pos: a.rect.center(),
+                    to_pos: b.rect.center(),
+                    kind: AtlasEdgeKind::Spawn,
+                });
             }
         }
 
@@ -1238,7 +1327,7 @@ impl PlexiApp {
                     .iter()
                     .filter(|n| n.parent_id == Some(cur_ctx))
                     .collect();
-                children.sort_by(|a, b| a.rect.min.y.total_cmp(&b.rect.min.y));
+                children.sort_by(|a, b| a.order.cmp(&b.order));
                 if children.is_empty() {
                     self.record_edge_bump(Direction::Right);
                     return false;
@@ -1258,7 +1347,7 @@ impl PlexiApp {
                 // `j` / `k`: Next / prev node at the SAME depth in tree (vertical y) order.
                 let mut same_depth: Vec<&AtlasNode> =
                     nodes.iter().filter(|n| n.depth == cur_node.depth).collect();
-                same_depth.sort_by(|a, b| a.rect.min.y.total_cmp(&b.rect.min.y));
+                same_depth.sort_by(|a, b| a.order.cmp(&b.order));
                 let pos = same_depth
                     .iter()
                     .position(|n| n.context_id == cur_ctx)
@@ -1305,7 +1394,7 @@ impl PlexiApp {
             .iter()
             .filter(|n| n.parent_id == cur_node.parent_id)
             .collect();
-        siblings.sort_by(|a, b| a.rect.min.y.total_cmp(&b.rect.min.y));
+        siblings.sort_by(|a, b| a.order.cmp(&b.order));
         if siblings.len() <= 1 {
             self.record_edge_bump(if forward {
                 Direction::Down
@@ -1339,7 +1428,7 @@ impl PlexiApp {
         nodes.sort_by(|a, b| {
             a.depth
                 .cmp(&b.depth)
-                .then_with(|| a.rect.min.y.total_cmp(&b.rect.min.y))
+                .then_with(|| a.order.cmp(&b.order))
         });
         let asking: Vec<u64> = nodes
             .iter()
@@ -1854,6 +1943,7 @@ impl PlexiApp {
 
     /// Render the `ZoomLevel::SiblingCards` view inside the central canvas.
     pub(crate) fn draw_sibling_cards_canvas(&mut self, ui: &mut egui::Ui) {
+        self.sync_attention_queue();
         let colors = self.colors;
         let rect = ui.available_rect_before_wrap();
         let painter = ui.painter_at(rect);
@@ -1892,9 +1982,7 @@ impl PlexiApp {
                 .map(|c| c.depth as usize)
                 .unwrap_or(0);
             let fill = colors.depth_tint(depth);
-            let asks = self
-                .attention_queue
-                .ask_count_for_context_subtree(cid, &self.router);
+            let asks = self.attention_queue.ask_count_for_context(cid);
             let stroke = if is_focused {
                 Stroke::new(2.0_f32, colors.accent)
             } else if asks > 0 {
@@ -2018,6 +2106,7 @@ impl PlexiApp {
 
     /// Render the `ZoomLevel::TreeAtlas` view inside the central canvas (Mini Motorways style).
     pub(crate) fn draw_tree_atlas_canvas(&mut self, ui: &mut egui::Ui) {
+        self.sync_attention_queue();
         let colors = self.colors;
         let rect = ui.available_rect_before_wrap();
         let painter = ui.painter_at(rect);
@@ -2036,20 +2125,12 @@ impl PlexiApp {
                 AtlasEdgeKind::NeedsRollup => Stroke::new(style::EDGE_NEEDS_W, colors.zoom_needs),
                 AtlasEdgeKind::Failed => Stroke::new(style::EDGE_ROAD_W, colors.zoom_failed),
                 AtlasEdgeKind::PipeLink => Stroke::new(1.5_f32, colors.accent),
+                AtlasEdgeKind::Spawn => Stroke::new(1.5_f32, colors.text_dim),
                 AtlasEdgeKind::TreeRoad => Stroke::new(style::EDGE_ROAD_W, colors.border),
             };
-            let mid_x = (edge.from_pos.x + edge.to_pos.x) * 0.5;
-            let p1 = Pos2::new(mid_x, edge.from_pos.y);
-            let p2 = Pos2::new(mid_x, edge.to_pos.y);
-            // Road casing
             let casing = Stroke::new(stroke.width + 3.0_f32, colors.shadow_flat);
-            painter.line_segment([edge.from_pos, p1], casing);
-            painter.line_segment([p1, p2], casing);
-            painter.line_segment([p2, edge.to_pos], casing);
-            // Road fill
-            painter.line_segment([edge.from_pos, p1], stroke);
-            painter.line_segment([p1, p2], stroke);
-            painter.line_segment([p2, edge.to_pos], stroke);
+            painter.line_segment([edge.from_pos, edge.to_pos], casing);
+            painter.line_segment([edge.from_pos, edge.to_pos], stroke);
         }
 
         let mut clicked_node: Option<u64> = None;
@@ -2096,11 +2177,11 @@ impl PlexiApp {
                 colors.text_primary,
             );
 
-            if node.ask_rollup > 0 {
+            if node.direct_asks > 0 {
                 painter.text(
                     Pos2::new(nrect.max.x - 12.0, nrect.min.y + 10.0),
                     Align2::RIGHT_TOP,
-                    format!("◆{}", node.ask_rollup),
+                    format!("◆{}", node.direct_asks),
                     crate::ui::theme::font_medium(style::TEXT_CAPTION),
                     colors.zoom_needs,
                 );

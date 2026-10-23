@@ -303,8 +303,14 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
     let root_node = nodes.iter().find(|n| n.context_id == root_ctx_id).unwrap();
     let child_a_node = nodes.iter().find(|n| n.context_id == child_a_id).unwrap();
     let child_b_node = nodes.iter().find(|n| n.context_id == child_b_id).unwrap();
-    assert!(root_node.rect.min.x < child_a_node.rect.min.x);
-    assert!(root_node.rect.min.x < child_b_node.rect.min.x);
+    // Radial layout: the root sits at the viewport center, children around it.
+    assert_eq!(root_node.rect.center(), Pos2::new(720.0, 450.0));
+    assert!(!root_node.rect.intersects(child_a_node.rect));
+    assert!(!root_node.rect.intersects(child_b_node.rect));
+    assert!(!child_a_node.rect.intersects(child_b_node.rect));
+    assert!(edges
+        .iter()
+        .any(|e| e.from_context_id == root_ctx_id && e.to_context_id == child_a_id));
     assert_eq!(root_node.ask_rollup, 1);
     assert_eq!(child_b_node.direct_asks, 1);
     assert!(!edges.is_empty());
