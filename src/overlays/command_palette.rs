@@ -2168,6 +2168,7 @@ impl PlexiApp {
                     submit: true,
                     paste: false,
                     response_file: None,
+                    peer_ancestry: None,
                 });
                 return;
             }
@@ -2538,6 +2539,7 @@ impl PlexiApp {
                         submit,
                         paste,
                         response_file: Some(resp_str),
+                        peer_ancestry: None,
                     });
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {

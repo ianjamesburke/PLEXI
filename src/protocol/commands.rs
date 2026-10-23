@@ -883,6 +883,9 @@ pub enum AppRequest {
         paste: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Host-stamped ancestry of the process that requested the write.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_ancestry: Option<Vec<u32>>,
     },
 
     /// Configure or disable a host-owned recurring terminal prompt.

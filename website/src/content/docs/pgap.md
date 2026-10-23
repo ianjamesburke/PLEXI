@@ -732,6 +732,7 @@ Write text to a terminal PTY or an app's input path (`plexi pane send`). `\n` in
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
 | `paste` | `boolean` | no |
+| `peer_ancestry` | `array?` | no |
 | `response_file` | `string?` | no |
 | `submit` | `boolean` | no |
 | `text` | `string` | yes |

@@ -2509,6 +2509,18 @@
               "description": "Deliver literal text as one paste event to an app pane.",
               "type": "boolean"
             },
+            "peer_ancestry": {
+              "description": "Host-stamped ancestry of the process that requested the write.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "response_file": {
               "type": [
                 "string",

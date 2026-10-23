@@ -68,7 +68,9 @@ pub use folder::{
     SECRET_READ_TOOL,
 };
 pub use folder_store::backend_label;
-pub use pane_read::{read_pane_secret, SecretScope};
+pub use pane_read::{read_pane_secret_with_posture, SecretScope};
+#[cfg(test)]
+pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
 pub use resolver::{

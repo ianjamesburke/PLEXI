@@ -574,6 +574,7 @@ pub struct DispatchScope {
     pub workspace_root: std::path::PathBuf,
     pub context_id: u64,
     pub trust_origin: String,
+    pub posture: Option<crate::broker::PermissionPosture>,
 }
 
 impl DispatchScope {
@@ -598,6 +599,7 @@ impl DispatchScope {
             workspace_root: workspace_root.into(),
             context_id,
             trust_origin: "host".to_string(),
+            posture: None,
         }
     }
 }
@@ -853,7 +855,7 @@ impl ToolDispatcher {
         } else {
             crate::broker::TargetType::AppConnector
         };
-        let mut admission = self.monitor.admit(crate::broker::gate::AdmitRequest {
+        let mut admission = self.monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
             call_id: &call_id,
             tool: name,
             input_json: &input_json,
@@ -866,7 +868,7 @@ impl ToolDispatcher {
             package_id: &package,
             instance_id: instance,
             target_type,
-        });
+        }, self.scope.posture.as_ref());
         if let crate::broker::gate::Admission::Required { pending_request_id } = &admission {
             if let Some(presenter) = &self.presenter {
                 let (_, resource_id) = crate::broker::gate::resource_of(name, &input_json);
@@ -907,7 +909,7 @@ impl ToolDispatcher {
                     log::error!("tool_dispatch: {error}");
                     return ToolCallResult::err(error);
                 }
-                admission = self.monitor.admit(crate::broker::gate::AdmitRequest {
+                admission = self.monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
                     call_id: &call_id,
                     tool: name,
                     input_json: &input_json,
@@ -920,7 +922,7 @@ impl ToolDispatcher {
                     package_id: &package,
                     instance_id: instance,
                     target_type,
-                });
+                }, self.scope.posture.as_ref());
             } else {
                 log::info!(
                     "tool_dispatch: permission_required caller={} tool={name} pending={pending_request_id}",

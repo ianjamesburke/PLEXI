@@ -9,9 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::folder::{admitted_read, ReadResult, SecretActor};
+use super::folder::{ReadResult, SecretActor};
 use super::store::NonDestructiveStore;
-use crate::broker::gate::PermissionMonitor;
+use crate::broker::{gate::PermissionMonitor, PermissionPosture};
 
 /// Tool name the permission monitor admits for a pane's workspace or global read.
 pub const SECRET_GET_TOOL: &str = "secret.get";
@@ -35,6 +35,7 @@ impl SecretScope {
 
 /// Admit `secret.get` for `actor`, then read `name` the way `plexi secret get`
 /// does: the workspace account first, then `plexi:user:<name>`.
+#[cfg(test)]
 pub fn read_pane_secret(
     monitor: &PermissionMonitor,
     store: &dyn NonDestructiveStore,
@@ -42,6 +43,20 @@ pub fn read_pane_secret(
     name: &str,
     scope: &SecretScope,
     global_root: &Path,
+) -> Result<ReadResult, String> {
+    read_pane_secret_with_posture(monitor, store, actor, name, scope, global_root, None)
+}
+
+/// As [`read_pane_secret`], evaluating the immutable posture carried by the
+/// requesting worker pane.
+pub fn read_pane_secret_with_posture(
+    monitor: &PermissionMonitor,
+    store: &dyn NonDestructiveStore,
+    actor: &SecretActor,
+    name: &str,
+    scope: &SecretScope,
+    global_root: &Path,
+    posture: Option<&PermissionPosture>,
 ) -> Result<ReadResult, String> {
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
@@ -59,13 +74,14 @@ pub fn read_pane_secret(
         SecretScope::Workspace { root, .. } => root.as_path(),
         SecretScope::Global => global_root,
     };
-    admitted_read(
+    super::folder::admitted_read_with_posture(
         monitor,
         actor,
         SECRET_GET_TOOL,
         &input,
         workspace_root,
         &format!("name={name} scope={label}"),
+        posture,
         || {
             for account in &accounts {
                 if let Some(value) = store.get_interactive(account)? {
