@@ -850,7 +850,12 @@ fn restart_confirmation_only_for_the_callers_host() {
 
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
-    let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let profile = host_config_dir(channel.as_deref());
+    host_stop_cli_in(&profile, channel)
+}
+
+fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
+    let socket_path = ipc::endpoint_in(profile);
     let pid = running_build_info()
         .as_ref()
         .and_then(reported_pid)
@@ -868,7 +873,7 @@ pub fn host_stop_cli() -> i32 {
                     loop {
                         if shutdown_complete(pid, &socket_path) {
                             log::info!("host_stop: original pid={pid:?} stopped");
-                            println!("Plexi host stopped (clean shutdown).");
+                            host_stop_stdout("Plexi host stopped (clean shutdown).");
                             return 0;
                         }
                         if Instant::now() >= deadline {
@@ -900,13 +905,14 @@ pub fn host_stop_cli() -> i32 {
         return 1;
     };
     if shutdown_complete(Some(pid), &socket_path) {
-        println!("Plexi host stopped.");
+        host_stop_stdout("Plexi host stopped.");
         return 0;
     }
+    clean_panes_after_socket_failure(profile, pid);
     match terminate_host_process(pid) {
         Ok(()) => {
             log::info!("host_stop: termination requested pid={pid}");
-            println!("Termination requested for Plexi host (pid {pid}).");
+            host_stop_stdout(&format!("Termination requested for Plexi host (pid {pid})."));
             0
         }
         Err(e) => {
@@ -917,13 +923,134 @@ pub fn host_stop_cli() -> i32 {
     }
 }
 
+fn host_stop_stdout(message: &str) {
+    if let Err(error) = writeln!(std::io::stdout(), "{message}") {
+        log::debug!("host_stop: could not write status to stdout: {error}");
+    }
+}
+
+/// Holds ignored HUP and TERM dispositions only while the socket-failure
+/// cleanup can signal the caller's marked pane shell.  The dispositions are
+/// restored before `host stop` returns, including on every early error path.
+#[cfg(unix)]
+struct FallbackSignalGuard {
+    previous: Vec<(libc::c_int, libc::sighandler_t)>,
+}
+
+#[cfg(unix)]
+impl FallbackSignalGuard {
+    fn ignore_hup_and_term() -> Self {
+        let mut previous = Vec::new();
+        for signal in [libc::SIGHUP, libc::SIGTERM] {
+            // SAFETY: changing this CLI process's temporary disposition keeps
+            // a marked parent shell from terminating its foreground job.
+            let old = unsafe { libc::signal(signal, libc::SIG_IGN) };
+            if old == libc::SIG_ERR {
+                log::warn!(
+                    "host_stop: could not ignore signal={signal}: {}",
+                    std::io::Error::last_os_error()
+                );
+            } else {
+                previous.push((signal, old));
+            }
+        }
+        Self { previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FallbackSignalGuard {
+    fn drop(&mut self) {
+        for (signal, previous) in self.previous.drain(..) {
+            // SAFETY: restores the disposition this CLI had immediately
+            // before the bounded socket-failure cleanup.
+            if unsafe { libc::signal(signal, previous) } == libc::SIG_ERR {
+                log::warn!(
+                    "host_stop: could not restore signal={signal}: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct FallbackSignalGuard;
+
+#[cfg(not(unix))]
+impl FallbackSignalGuard {
+    fn ignore_hup_and_term() -> Self {
+        Self
+    }
+}
+
+fn clean_panes_after_socket_failure(profile: &Path, pid: u32) {
+    // A caller in one of this host's panes is itself downstream of the marker
+    // sweep. Its shell can forward HUP/TERM to this foreground CLI, so keep it
+    // alive long enough for the caller to reach `terminate_host_process`.
+    let _fallback_signals = FallbackSignalGuard::ignore_hup_and_term();
+    if let Some(marker) = crate::host::process_cleanup::recorded_session_marker(profile, pid) {
+        let report = crate::host::process_cleanup::stop_pane_processes_for_marker(
+            &marker,
+            Duration::from_secs(2),
+        );
+        log::info!(
+            "host_stop: socket fallback cleaned groups={} escalated={} tmux_ms={} total_ms={}",
+            report.groups,
+            report.escalated,
+            report.tmux.as_millis(),
+            (report.scan + report.signal + report.grace_waited + report.kill + report.tmux).as_millis()
+        );
+    } else {
+        log::warn!("host_stop: no matching pane session marker for pid={pid}; skipping pane cleanup");
+    }
+}
+
 #[cfg(unix)]
 fn terminate_host_process(pid: u32) -> std::io::Result<()> {
-    // SAFETY: pid came from this channel's host and SIGTERM requests clean exit.
-    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
+    signal_host_process(pid, libc::SIGTERM)?;
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < deadline {
+        if !host_pid_alive(pid) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if host_pid_alive(pid) {
+        signal_host_process(pid, libc::SIGKILL)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn host_pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 observes only the exact, previously identified host pid.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) | Some(libc::EPERM) => {
+            log::debug!("host_stop: probe pid={pid} unavailable: {error}");
+        }
+        _ => log::warn!("host_stop: probe pid={pid} failed: {error}"),
+    }
+    false
+}
+
+#[cfg(unix)]
+fn signal_host_process(pid: u32, signal: i32) -> std::io::Result<()> {
+    // SAFETY: pid came from this channel's socket owner and is never a group.
+    if unsafe { libc::kill(pid as libc::pid_t, signal) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) | Some(libc::EPERM) => {
+            log::debug!("host_stop: signal={signal} pid={pid} unavailable: {error}");
+            Ok(())
+        }
+        _ => Err(error),
     }
 }
 
@@ -1158,6 +1285,67 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn fallback_cleanup_guard_keeps_the_calling_cli_alive() {
+        let _guard = super::FallbackSignalGuard::ignore_hup_and_term();
+        // This is the disposition a marked parent shell can effectively
+        // deliver to its foreground CLI when pane cleanup closes the shell.
+        assert_eq!(unsafe { libc::raise(libc::SIGHUP) }, 0);
+        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_stop_socket_failure_cleanup_stops_marked_group() {
+        use std::os::unix::process::CommandExt;
+        let profile = tempfile::tempdir().unwrap();
+        let marker = uuid::Uuid::new_v4().to_string();
+        std::fs::write(
+            profile.path().join("pane-session"),
+            format!("{}\n{marker}\n", std::process::id()),
+        )
+        .unwrap();
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "trap '' HUP TERM; while :; do sleep 600; done"])
+            .env(crate::host::process_cleanup::SESSION_ENV, &marker);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        super::clean_panes_after_socket_failure(profile.path(), std::process::id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                let _ = child.wait();
+                panic!("marked group survived host stop socket fallback");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn socket_failure_cleanup_rejects_mismatched_session_record_pid() {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            profile.path().join("pane-session"),
+            format!("{}\nmarker\n", std::process::id().saturating_add(1)),
+        )
+        .unwrap();
+        assert!(crate::host::process_cleanup::recorded_session_marker(
+            profile.path(),
+            std::process::id()
+        )
+        .is_none());
+    }
+
     #[test]
     fn identity_lines_prompt_restart_when_running_build_is_older() {
         let running = serde_json::json!({"tag": "v0.1.16", "build_id": "old"});
