@@ -685,6 +685,7 @@ mod tests {
             });
         }
         let mut parent = parent.spawn().expect("spawn marked parent fixture");
+        let parent_pid = parent.id() as i32;
         let _registration = PaneProcessGroup::record_for(parent.id(), &old_marker);
         let deadline = Instant::now() + Duration::from_secs(5);
         let coordinator = loop {
@@ -698,7 +699,29 @@ mod tests {
         };
         let report = stop_marked_processes(&old_marker, Duration::from_millis(20));
         assert!(report.groups >= 1, "marked parent was not selected: {report:?}");
-        assert!(!parent.wait().expect("reap marked parent").success());
+        match parent.wait() {
+            Ok(status) => assert!(!status.success()),
+            // The parallel test binary can reap a fixture that its marker
+            // sweep selected. Either way, the exact PID must disappear.
+            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
+            Err(error) => panic!("reap marked parent: {error}"),
+        }
+        let parent_deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(parent_pid, 0) } == 0 && Instant::now() < parent_deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let parent_result = unsafe { libc::kill(parent_pid, 0) };
+        let parent_error = std::io::Error::last_os_error();
+        assert_eq!(
+            parent_result,
+            -1,
+            "marked parent pid {parent_pid} remained after marker sweep"
+        );
+        assert_eq!(
+            parent_error.raw_os_error(),
+            Some(libc::ESRCH),
+            "marked parent pid {parent_pid} was not gone"
+        );
         let mut system = sysinfo::System::new();
         system.refresh_processes_specifics(
             sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(coordinator)]),
