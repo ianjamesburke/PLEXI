@@ -22,6 +22,8 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 2. **Ergonomics are a priority, not an afterthought.** Friction is a bug with the same severity as a crash. Layout, focus, chrome, and defaults are designed deliberately — polish is not something that happens after the feature ships.
 
+    **Plexi should feel like a video game.** This sits just behind ergonomics: ergonomics wins first, and once the most ergonomic choice is settled, make it playful. Flat, clean shapes, small satisfying details, and motion that shows where things came from and where they went. Delight never costs a keystroke.
+
 3. **Keyboard-first. The mouse is optional.** Every interaction has a keyboard path, and the fast path is the default path.
 
 4. **Every Plexi feature is reachable through the Plexi CLI.** 99% of commands are run by agents. The CLI is the product — the primary interface for humans and agents alike, never a developer escape hatch. If a feature isn't in the CLI, it doesn't exist for the agent.
