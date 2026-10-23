@@ -689,6 +689,14 @@ Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question a
 | `filter` | `FleetFilter` | no |
 | `response_file` | `string` | yes |
 
+### `agent_fleet_dismiss`
+
+| Field | Type | Required |
+|-------|------|----------|
+| `all_failed` | `boolean` | no |
+| `response_file` | `string` | yes |
+| `target` | `integer?` | no |
+
 ### `agent_ask`
 
 | Field | Type | Required |

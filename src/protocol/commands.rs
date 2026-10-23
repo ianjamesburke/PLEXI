@@ -833,6 +833,13 @@ pub enum AppRequest {
         filter: FleetFilter,
         response_file: String,
     },
+    AgentFleetDismiss {
+        #[serde(default)]
+        target: Option<u64>,
+        #[serde(default)]
+        all_failed: bool,
+        response_file: String,
+    },
 
     AgentAsk {
         pane_id: u64,

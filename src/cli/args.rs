@@ -2961,6 +2961,8 @@ pub enum AgentCmd {
     Next,
     /// Show tasks and their workers, ordered by attention, with blocking reasons.
     Fleet {
+        #[command(subcommand)]
+        cmd: Option<AgentFleetCmd>,
         /// Select all, needs-attention, working, or done workers.
         #[arg(long, value_enum, default_value = "all")]
         filter: crate::protocol::FleetFilter,
@@ -3296,6 +3298,19 @@ pub enum AgentCmd {
         /// Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable.
         #[arg(long = "grant")]
         grant: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentFleetCmd {
+    /// Dismiss a failed, stalled, or completed agent run from the fleet view while keeping it in `agent history`.
+    Dismiss {
+        /// Pane ID (`#215` or `215`) to dismiss (omit when `--all-failed` is set)
+        #[arg(required_unless_present = "all_failed", conflicts_with = "all_failed")]
+        target: Option<String>,
+        /// Dismiss all failed, stalled, and exited-without-report runs
+        #[arg(long = "all-failed")]
+        all_failed: bool,
     },
 }
 
@@ -4311,7 +4326,17 @@ mod tests {
                     || id == "approve" && path.ends_with(&["needs-you".to_string(), "resolve".to_string()])
                     || id == "name" && path.ends_with(&["app".to_string(), "init".to_string()])
                     || id == "pane_id" && path.ends_with(&["pane".to_string(), "focus".to_string()])
-                    || id == "persona" && path.ends_with(&["agent".to_string(), "create".to_string()]);
+                    || id == "persona" && path.ends_with(&["agent".to_string(), "create".to_string()])
+                    || id == "target"
+                        && (path.ends_with(&[
+                            "agent".to_string(),
+                            "fleet".to_string(),
+                            "dismiss".to_string(),
+                        ]) || path.ends_with(&[
+                            "agent".to_string(),
+                            "fleet".to_string(),
+                            "interrupt".to_string(),
+                        ]));
                 if !needs_value {
                     continue;
                 }

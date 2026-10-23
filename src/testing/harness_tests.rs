@@ -11493,6 +11493,7 @@ mod agent_state_restoration_tests {
                             agent_session: Some(SavedAgentSession {
                                 fleet_result: None,
                                 fleet_seen: false,
+                                fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
                                 harness: "claude".to_string(),
@@ -11562,6 +11563,7 @@ mod agent_state_restoration_tests {
                         agent_session: Some(SavedAgentSession {
                             fleet_result: None,
                             fleet_seen: false,
+                            fleet_dismissed: false,
                             fleet_done_unseen: false,
                             fleet_since: 0,
                             harness: "codex".to_string(),
@@ -11600,6 +11602,7 @@ mod agent_state_restoration_tests {
                         agent_session: Some(SavedAgentSession {
                             fleet_result: None,
                             fleet_seen: false,
+                            fleet_dismissed: false,
                             fleet_done_unseen: false,
                             fleet_since: 0,
                             harness: "pi".to_string(),
@@ -11897,6 +11900,7 @@ mod agent_state_restoration_tests {
                             agent_session: Some(SavedAgentSession {
                                 fleet_result: None,
                                 fleet_seen: false,
+                                fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
@@ -11926,6 +11930,7 @@ mod agent_state_restoration_tests {
                             agent_session: Some(SavedAgentSession {
                                 fleet_result: None,
                                 fleet_seen: false,
+                                fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
@@ -11955,6 +11960,7 @@ mod agent_state_restoration_tests {
                             agent_session: Some(SavedAgentSession {
                                 fleet_result: None,
                                 fleet_seen: false,
+                                fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
@@ -11996,6 +12002,7 @@ mod agent_state_restoration_tests {
                             agent_session: Some(SavedAgentSession {
                                 fleet_result: None,
                                 fleet_seen: false,
+                                fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
@@ -12025,6 +12032,7 @@ mod agent_state_restoration_tests {
                             agent_session: Some(SavedAgentSession {
                                 fleet_result: None,
                                 fleet_seen: false,
+                                fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
                                 harness: "pi".to_string(),

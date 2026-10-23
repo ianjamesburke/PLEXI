@@ -88,6 +88,8 @@ pub struct SavedAgentSession {
     #[serde(default)]
     pub fleet_seen: bool,
     #[serde(default)]
+    pub fleet_dismissed: bool,
+    #[serde(default)]
     pub fleet_done_unseen: bool,
     #[serde(default)]
     pub fleet_since: u64,
@@ -115,6 +117,8 @@ pub struct SavedAgentSession {
 pub struct AgentHistoryRecord {
     #[serde(default)]
     pub fleet_seen: bool,
+    #[serde(default)]
+    pub fleet_dismissed: bool,
     pub run_id: String,
     pub pane_id: u64,
     pub context_id: u64,
@@ -825,6 +829,7 @@ mod tests {
             agent_session: Some(SavedAgentSession {
                 fleet_result: None,
                 fleet_seen: false,
+                fleet_dismissed: false,
                 fleet_done_unseen: false,
                 fleet_since: 0,
                 harness: "claude".to_string(),
@@ -860,6 +865,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let rec = AgentHistoryRecord {
             fleet_seen: false,
+            fleet_dismissed: false,
             run_id: "run-42-100".to_string(),
             pane_id: 42,
             pane_name: Some("worker-1".to_string()),
@@ -898,6 +904,7 @@ pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context
     }));
     let record = AgentHistoryRecord {
         fleet_seen: session.fleet_seen,
+        fleet_dismissed: session.fleet_dismissed,
         run_id: format!("run-{}-{}", pane.id, session.fleet_since),
         pane_id: pane.id, context_id, context_name: context_name.into(), parent_pane_id: session.parent_pane_id,
         pane_name: pane.name.clone(), harness: session.harness.clone(), config_name: session.config_name.clone(),
