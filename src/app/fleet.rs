@@ -47,6 +47,96 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn dismiss_fleet_agent(
+        &mut self,
+        target: Option<u64>,
+        all_failed: bool,
+    ) -> Vec<u64> {
+        let now = crate::platform::clock::now_secs();
+        let stalled_after = self
+            .config
+            .agents
+            .as_ref()
+            .and_then(|a| a.stalled_after_secs)
+            .unwrap_or(120);
+        let mut dismissed_ids = Vec::new();
+        for win in &mut self.windows {
+            for (&pane_id, pane) in &mut win.panes {
+                let Some(t) = pane.as_terminal_mut() else {
+                    continue;
+                };
+                if !t.is_agent_pane() {
+                    continue;
+                }
+                let state = if t.agent_completed {
+                    AgentState::Completed
+                } else {
+                    t.agent
+                        .as_ref()
+                        .or(t.observed_agent.as_ref())
+                        .map(|a| a.state.clone())
+                        .or_else(|| t.standby_session.as_ref().map(|s| s.last_state.clone()))
+                        .unwrap_or(AgentState::Idle)
+                };
+                let is_stalled_idle = state == AgentState::Idle
+                    && t.ephemeral
+                    && !t.fleet_done_unseen
+                    && now.saturating_sub(t.fleet_since) > stalled_after;
+                let is_failure = matches!(
+                    state,
+                    AgentState::Failed | AgentState::Interrupted | AgentState::ExitedUnreported
+                ) || is_stalled_idle;
+                let should_dismiss = match (target, all_failed) {
+                    (Some(id), _) => pane_id == id,
+                    (None, true) => is_failure && !t.fleet_dismissed,
+                    (None, false) => false,
+                };
+                if should_dismiss {
+                    t.fleet_dismissed = true;
+                    t.fleet_seen = true;
+                    if let Some(ref mut s) = t.standby_session {
+                        s.fleet_dismissed = true;
+                        s.fleet_seen = true;
+                    }
+                    if !dismissed_ids.contains(&pane_id) {
+                        dismissed_ids.push(pane_id);
+                    }
+                }
+            }
+        }
+        for record in self.fleet_history.borrow_mut().iter_mut() {
+            let is_failure = matches!(
+                record.last_state,
+                AgentState::Failed | AgentState::Interrupted | AgentState::ExitedUnreported
+            );
+            let should_dismiss = match (target, all_failed) {
+                (Some(id), _) => record.pane_id == id && (!record.fleet_dismissed || !record.fleet_seen),
+                (None, true) => is_failure && !record.fleet_dismissed,
+                (None, false) => false,
+            };
+            if should_dismiss {
+                record.fleet_dismissed = true;
+                record.fleet_seen = true;
+                if let Err(e) = crate::workspace::append_agent_history(record) {
+                    log::error!(
+                        "agents: persist archived dismiss run_id={}: {e}",
+                        record.run_id
+                    );
+                }
+                if !dismissed_ids.contains(&record.pane_id) {
+                    dismissed_ids.push(record.pane_id);
+                }
+            }
+        }
+        if !dismissed_ids.is_empty() {
+            log::info!(
+                "agents: dismissed fleet run(s) target={target:?} all_failed={all_failed} ids={dismissed_ids:?}"
+            );
+            self.mark_workspace_dirty();
+        }
+        dismissed_ids
+    }
+
     fn agent_inputs(&self) -> Vec<AgentInput> {
         let mut input = Vec::new();
         let needs_you =
@@ -142,23 +232,76 @@ impl PlexiApp {
                     .filter(|n| n.agent_source_pane() == pane_id)
                     .map(|n| n.agent_event())
                     .collect();
+                let parent_title = t.parent_pane_id.and_then(|parent_id| {
+                    self.windows
+                        .iter()
+                        .find_map(|w| w.panes.get(&parent_id))
+                        .and_then(|p| p.as_terminal())
+                        .and_then(|pt| {
+                            crate::agent::fleet::clean_human_title(
+                                pt.agent_role
+                                    .as_deref()
+                                    .or(pt.name.as_deref())
+                                    .or(pt.agent_harness.as_deref())
+                                    .unwrap_or(""),
+                            )
+                        })
+                });
+                let failure_detail = report
+                    .and_then(|a| a.detail.clone())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        t.standby_session
+                            .as_ref()
+                            .and_then(|s| s.last_detail.clone())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .or_else(|| match t.exit_status {
+                        Some(crate::host::pane_lifecycle::ExitStatus::Code(c)) if c != 0 => {
+                            Some(format!("exited ({c})"))
+                        }
+                        Some(crate::host::pane_lifecycle::ExitStatus::Signal(sig)) => {
+                            Some(format!("killed by signal {sig}"))
+                        }
+                        Some(crate::host::pane_lifecycle::ExitStatus::Code(0))
+                            if state == AgentState::ExitedUnreported =>
+                        {
+                            Some("exited (0) without calling plexi agent done".into())
+                        }
+                        _ => None,
+                    });
+                let raw_harness = t
+                    .agent_harness
+                    .clone()
+                    .or_else(|| report.map(|a| a.agent.clone()))
+                    .unwrap_or_else(|| "unknown".into());
+                let role = crate::agent::fleet::resolve_agent_label(
+                    t.agent_role.as_deref(),
+                    Some(&raw_harness),
+                    t.name.as_deref(),
+                );
+                let harness = crate::agent::fleet::resolve_harness_label(
+                    Some(&raw_harness),
+                    t.agent_role.as_deref(),
+                );
                 input.push(AgentInput {
                     live: true,
                     pane_id,
                     parent_pane_id: t.parent_pane_id,
-                    role: t.agent_role.clone().unwrap_or_else(|| "unknown".into()),
-                    harness: t
-                        .agent_harness
-                        .clone()
-                        .or_else(|| report.map(|a| a.agent.clone()))
-                        .unwrap_or_else(|| "unknown".into()),
+                    role,
+                    harness,
+                    pane_name: t.name.clone(),
+                    parent_title,
                     context_name: context_name.clone(),
                     state: state.clone(),
                     since: t.fleet_since,
                     ephemeral: t.ephemeral,
                     seen: t.fleet_seen,
+                    dismissed: t.fleet_dismissed,
+                    previous_session: t.standby_session.is_some(),
                     done_unseen: t.fleet_done_unseen,
                     blocked_on,
+                    failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
                         report.and_then(|a| a.detail.clone()).map(|reason| format!("{}: {reason}", if state == AgentState::Failed { "failed" } else { "exited without report" }))
                     } else { t.capture_tail_preview() },
@@ -176,22 +319,36 @@ impl PlexiApp {
             if live_ids.contains(&record.pane_id) {
                 continue;
             }
+            let role = crate::agent::fleet::resolve_agent_label(
+                record.config_name.as_deref(),
+                Some(&record.harness),
+                record.pane_name.as_deref(),
+            );
+            let harness = crate::agent::fleet::resolve_harness_label(
+                Some(&record.harness),
+                record.config_name.as_deref(),
+            );
             input.push(AgentInput {
                 live: false,
                 pane_id: record.pane_id,
                 parent_pane_id: record.parent_pane_id,
-                role: record
-                    .config_name
-                    .clone()
-                    .unwrap_or_else(|| "unknown".into()),
-                harness: record.harness.clone(),
+                role,
+                harness,
+                pane_name: record.pane_name.clone(),
+                parent_title: None,
                 context_name: record.context_name.clone(),
                 state: record.last_state.clone(),
                 since: record.closed_at,
                 ephemeral: false,
                 seen: record.fleet_seen,
+                dismissed: record.fleet_dismissed,
+                previous_session: true,
                 done_unseen: record.last_state == AgentState::Completed,
                 blocked_on: None,
+                failure_detail: record
+                    .last_detail
+                    .clone()
+                    .or_else(|| record.summary.clone()),
                 tail: record.tail_preview.clone(),
                 result: record.result.clone(),
                 events: vec![],
@@ -201,14 +358,32 @@ impl PlexiApp {
     }
 
     pub(crate) fn agents_view(&self, filter: FleetFilter) -> AgentsView {
-        AgentsView::build(
-            self.agent_inputs().into_iter().filter(|agent| agent.live).collect(),
+        let stale_failure_hours = self
+            .config
+            .agents
+            .as_ref()
+            .and_then(|a| a.stale_failure_hours)
+            .unwrap_or(crate::agent::fleet::DEFAULT_STALE_FAILURE_HOURS);
+        AgentsView::build_with_stale_hours(
+            self.agent_inputs()
+                .into_iter()
+                .filter(|agent| {
+                    agent.live
+                        || matches!(
+                            agent.state,
+                            AgentState::Failed
+                                | AgentState::Interrupted
+                                | AgentState::ExitedUnreported
+                        )
+                })
+                .collect(),
             crate::platform::clock::now_secs(),
             self.config
                 .agents
                 .as_ref()
                 .and_then(|a| a.stalled_after_secs)
                 .unwrap_or(120),
+            stale_failure_hours,
             self.fleet_focused_pane(),
             filter,
         )
@@ -305,6 +480,57 @@ mod tests {
         let ids: Vec<_> = view.tasks.iter().flat_map(|t| &t.rows).map(|r| r.pane_id).collect();
         assert_eq!(ids, vec![live]);
         assert_eq!(h.app.fleet_history.borrow().len(), 3);
+    }
+
+    #[test]
+    fn dismiss_fleet_agent_removes_from_fleet_and_retains_history() {
+        let mut h = HostHarness::new();
+        let failed_live = h.add_focused_terminal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&failed_live)
+            .unwrap()
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: failed_live,
+                state: crate::protocol::AgentState::Failed,
+                agent: "claude-code".into(),
+                detail: Some("exit code 1".into()),
+                session_id: None,
+            }));
+        let record: crate::workspace::AgentHistoryRecord = serde_json::from_value(serde_json::json!({
+            "run_id": "old-215",
+            "pane_id": 215,
+            "context_id": 1,
+            "context_name": "morning",
+            "harness": "twcodex",
+            "cwd": "/tmp",
+            "last_state": "failed",
+            "last_detail": "command not found: twcodex",
+            "closed_at": 100
+        }))
+        .unwrap();
+        crate::workspace::append_agent_history(&record).unwrap();
+        h.app.fleet_history.borrow_mut().push(record);
+
+        let before = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(before.tasks.len(), 1);
+        assert_eq!(before.tasks[0].rows[0].pane_id, failed_live);
+        assert_eq!(before.tasks[0].rows[0].role, "claude-code");
+        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exit code 1"));
+        assert_eq!(before.older.len(), 1);
+        assert_eq!(before.older[0].pane_id, 215);
+
+        let dismissed = h.app.dismiss_fleet_agent(None, true);
+        assert!(dismissed.contains(&failed_live));
+        assert!(dismissed.contains(&215));
+
+        let after = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(after.tasks.is_empty());
+        assert!(after.older.is_empty());
+        let history = crate::workspace::load_agent_history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].pane_id, 215);
+        assert!(history[0].fleet_dismissed);
     }
 
     #[test]
@@ -698,9 +924,19 @@ impl PlexiApp {
             .windows
             .iter()
             .find_map(|w| w.panes.get(&pane_id))
-            .and_then(|p| p.as_terminal())
-            .and_then(|t| t.agent_role.as_deref())
-            .unwrap_or("Agent");
+            .and_then(|p| {
+                let t = p.as_terminal()?;
+                let h = t
+                    .agent_harness
+                    .as_deref()
+                    .or_else(|| p.agent().map(|a| a.agent.as_str()));
+                Some(crate::agent::fleet::resolve_agent_label(
+                    t.agent_role.as_deref(),
+                    h,
+                    t.name.as_deref(),
+                ))
+            })
+            .unwrap_or_else(|| "Agent".to_string());
         let event = crate::agent::fleet::AgentEvent {
             title: format!("{role} · pane #{pane_id}"),
             body: detail

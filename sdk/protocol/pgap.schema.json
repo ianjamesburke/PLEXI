@@ -2395,6 +2395,36 @@
         {
           "additionalProperties": false,
           "properties": {
+            "all_failed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "target": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "agent_fleet_dismiss",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "pane_id": {
               "format": "uint64",
               "minimum": 0,

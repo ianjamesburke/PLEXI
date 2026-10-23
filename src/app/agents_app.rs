@@ -4,6 +4,7 @@ use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
 
 pub enum FleetAction {
     Seen(u64),
+    Dismiss(u64),
     Reply {
         pane_id: u64,
         from_pane_id: u64,
@@ -30,6 +31,7 @@ impl AgentsApp {
             .tasks
             .iter()
             .flat_map(|t| &t.rows)
+            .chain(self.view.older.iter())
             .filter(|r| self.filter.matches(r))
             .collect()
     }
@@ -74,6 +76,9 @@ impl AgentsApp {
             if row.display_state == DisplayState::DoneUnseen {
                 self.commands
                     .push(AppCommand::Fleet(FleetAction::Seen(row.pane_id)));
+            } else if row.display_state.is_failure_like() {
+                self.commands
+                    .push(AppCommand::Fleet(FleetAction::Dismiss(row.pane_id)));
             }
         }
     }
@@ -218,10 +223,12 @@ impl App for AgentsApp {
                                         for row in rows {
                                             let (shape, color) = Self::indicator(row, colors);
                                             let label = format!(
-                                                "{shape} {}  {}{}",
+                                                "{shape} {}  {} · {}{}  #{}",
                                                 row.role,
                                                 row.display_state.label(),
-                                                if row.needs_you { " · needs you" } else { "" }
+                                                row.age,
+                                                if row.needs_you { " · needs you" } else { "" },
+                                                row.pane_id
                                             );
                                             if ui
                                                 .selectable_label(
@@ -242,10 +249,15 @@ impl App for AgentsApp {
                                                     .truncate(),
                                                 );
                                             }
-                                            if row.display_state == DisplayState::Failed {
-                                                if let Some(reason) = &row.tail {
-                                                    ui.add(egui::Label::new(reason).truncate()).on_hover_text(reason);
-                                                }
+                                            if let Some(reason) = &row.reason {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(reason)
+                                                            .color(colors.text_dim),
+                                                    )
+                                                    .truncate(),
+                                                )
+                                                .on_hover_text(reason);
                                             }
                                             if !row.events.is_empty() {
                                                 ui.small(format!(
@@ -255,6 +267,51 @@ impl App for AgentsApp {
                                             }
                                         }
                                         ui.add_space(12.0);
+                                    }
+                                    let older_rows: Vec<_> = self
+                                        .view
+                                        .older
+                                        .iter()
+                                        .filter(|r| self.filter.matches(r))
+                                        .collect();
+                                    if !older_rows.is_empty() {
+                                        ui.collapsing(
+                                            format!("Older ({})", older_rows.len()),
+                                            |ui| {
+                                                for row in older_rows {
+                                                    let (shape, color) =
+                                                        Self::indicator(row, colors);
+                                                    let label = format!(
+                                                        "{shape} {} · {}  {} · {}  #{}",
+                                                        row.role,
+                                                        row.task_title,
+                                                        row.display_state.label(),
+                                                        row.age,
+                                                        row.pane_id
+                                                    );
+                                                    if ui
+                                                        .selectable_label(
+                                                            self.selected == Some(row.pane_id),
+                                                            egui::RichText::new(label).color(color),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.selected = Some(row.pane_id);
+                                                        self.replying = false;
+                                                    }
+                                                    if let Some(reason) = &row.reason {
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                egui::RichText::new(reason)
+                                                                    .color(colors.text_dim),
+                                                            )
+                                                            .truncate(),
+                                                        )
+                                                        .on_hover_text(reason);
+                                                    }
+                                                }
+                                            },
+                                        );
                                     }
                                 });
                         },
@@ -275,8 +332,8 @@ impl App for AgentsApp {
                                     |ui| {
                                         ui.heading(&row.role);
                                         ui.label(format!(
-                                            "{} · pane #{}",
-                                            row.harness, row.pane_id
+                                            "{} · {} · #{}",
+                                            row.harness, row.task_title, row.pane_id
                                         ));
                                         ui.label(format!("Context: {}", row.context_name));
                                         ui.label(format!(
@@ -285,13 +342,18 @@ impl App for AgentsApp {
                                                 .map(|p| format!("#{p}"))
                                                 .unwrap_or_else(|| "none".into())
                                         ));
-                                        ui.label(format!(
-                                            "State changed {}s ago",
-                                            crate::platform::clock::now_secs()
-                                                .saturating_sub(row.since)
-                                        ));
+                                        ui.label(format!("Age: {}", row.age));
                                         if let Some(reason) = &row.blocked_on {
                                             ui.label(reason.label());
+                                        }
+                                        if let Some(reason) = &row.reason {
+                                            ui.label(format!("Reason: {reason}"));
+                                        }
+                                        if let Some(hint) = &row.next_hint {
+                                            ui.colored_label(
+                                                colors.text_dim,
+                                                format!("Next: {hint}"),
+                                            );
                                         }
                                         ui.horizontal(|ui| {
                                             if ui
@@ -308,7 +370,8 @@ impl App for AgentsApp {
                                             {
                                                 self.answer();
                                             }
-                                            if row.display_state == DisplayState::DoneUnseen
+                                            if (row.display_state == DisplayState::DoneUnseen
+                                                || row.display_state.is_failure_like())
                                                 && ui.button("Dismiss [x]").clicked()
                                             {
                                                 self.dismiss();

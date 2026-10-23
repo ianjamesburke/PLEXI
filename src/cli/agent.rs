@@ -3107,36 +3107,187 @@ mod agent_tests {
 
 /// Read the same host projection painted by the Agents pane.
 pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 {
-    let content = match super::request(serde_json::json!({"type":"agent_fleet", "filter":filter}), "plexi-agent-fleet", "agent fleet") {
-        Ok(content) => content, Err(code) => return code,
+    let content = match super::request(
+        serde_json::json!({"type":"agent_fleet", "filter":filter}),
+        "plexi-agent-fleet",
+        "agent fleet",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
     };
     let view: crate::agent::fleet::AgentsView = match serde_json::from_str(&content) {
-        Ok(view) => view, Err(e) => { eprintln!("error: could not read agent fleet: {e}"); return 1; }
+        Ok(view) => view,
+        Err(e) => {
+            eprintln!("error: could not read agent fleet: {e}");
+            return 1;
+        }
     };
-    if json { println!("{content}"); return 0; }
-    if view.tasks.is_empty() { println!("No matching agents."); }
+    if json {
+        println!("{content}");
+        return 0;
+    }
+    if view.tasks.is_empty() && view.older.is_empty() {
+        println!("No matching agents.");
+        return 0;
+    }
     for task in view.tasks {
         println!("{} — {}", task.title, task.counts());
         for row in task.rows {
-            println!("  #{} {} ({})  {}{}", row.pane_id, row.role, row.harness, row.display_state.label(), row.blocked_on.map(|b| format!(" — {}", b.label())).unwrap_or_default());
+            let detail = row
+                .blocked_on
+                .as_ref()
+                .map(|b| format!(" · {}", b.label()))
+                .or_else(|| row.reason.as_ref().map(|r| format!(" · {r}")))
+                .unwrap_or_default();
+            let next = row
+                .next_hint
+                .as_ref()
+                .map(|h| format!(" · next: {h}"))
+                .unwrap_or_default();
+            println!(
+                "  {} ({})  {}  {}{}{}  #{}",
+                row.role,
+                row.harness,
+                row.display_state.label(),
+                row.age,
+                detail,
+                next,
+                row.pane_id
+            );
+        }
+    }
+    if !view.older.is_empty() {
+        println!(
+            "older ({} stale or previous-session failure{}) — dismiss with `plexi agent fleet dismiss --all-failed`",
+            view.older.len(),
+            if view.older.len() == 1 { "" } else { "s" }
+        );
+        for row in view.older {
+            let reason = row
+                .reason
+                .as_ref()
+                .map(|r| format!(" · {r}"))
+                .unwrap_or_default();
+            let next = row
+                .next_hint
+                .as_ref()
+                .map(|h| format!(" · next: {h}"))
+                .unwrap_or_default();
+            println!(
+                "  {} · {} ({})  {}  {}{}{}  #{}",
+                row.role,
+                row.task_title,
+                row.harness,
+                row.display_state.label(),
+                row.age,
+                reason,
+                next,
+                row.pane_id
+            );
         }
     }
     0
 }
 
-pub fn agent_next_cli(json: bool) -> i32 {
-    let content = match super::request(serde_json::json!({"type":"agent_next"}), "plexi-agent-next", "agent next") {
+pub fn agent_fleet_dismiss_cli(
+    target: Option<&str>,
+    all_failed: bool,
+    json: bool,
+) -> i32 {
+    let parsed_target = match target {
+        Some(raw) => {
+            let trimmed = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+            match trimmed.parse::<u64>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    eprintln!("error: invalid pane id '{raw}' (expected a numeric id like 215 or #215)");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+    let content = match super::request(
+        serde_json::json!({
+            "type": "agent_fleet_dismiss",
+            "target": parsed_target,
+            "all_failed": all_failed,
+        }),
+        "plexi-agent-fleet-dismiss",
+        "agent fleet dismiss",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if json { println!("{content}"); }
-    else {
+    if json {
+        println!("{content}");
+        return 0;
+    }
+    let val: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: invalid response: {e}");
+            return 1;
+        }
+    };
+    let dismissed: Vec<u64> = val["dismissed"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default();
+    if dismissed.is_empty() {
+        if all_failed {
+            println!("No failed agent runs to dismiss.");
+            0
+        } else {
+            eprintln!(
+                "error: no agent run found for #{}",
+                parsed_target.unwrap_or(0)
+            );
+            1
+        }
+    } else {
+        let list = dismissed
+            .iter()
+            .map(|id| format!("#{id}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Dismissed {list} (retained in `plexi agent history`).");
+        0
+    }
+}
+
+pub fn agent_next_cli(json: bool) -> i32 {
+    let content = match super::request(
+        serde_json::json!({"type":"agent_next"}),
+        "plexi-agent-next",
+        "agent next",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if json {
+        println!("{content}");
+    } else {
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(value) => match value["pane_id"].as_u64() {
-                Some(id) => println!("{id}"),
+                Some(id) => {
+                    let role = value["role"].as_str().unwrap_or("");
+                    let harness = value["harness"].as_str().unwrap_or("");
+                    let task_title = value["task_title"].as_str().unwrap_or("");
+                    if !role.is_empty() && !task_title.is_empty() {
+                        println!("{role} ({harness}) · {task_title}  #{id}");
+                    } else if !role.is_empty() {
+                        println!("{role} ({harness})  #{id}");
+                    } else {
+                        println!("{id}");
+                    }
+                }
                 None => println!("No agents need attention."),
             },
-            Err(error) => { eprintln!("error: invalid agent next response: {error}"); return 1; }
+            Err(error) => {
+                eprintln!("error: invalid agent next response: {error}");
+                return 1;
+            }
         }
     }
     0

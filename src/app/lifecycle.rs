@@ -4340,11 +4340,41 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::AgentNext { response_file } => {
                 let pane_id = self.next_blocked_agent();
-                write_json_response(response_file, serde_json::json!({"pane_id": pane_id}));
+                let view = self.agents_view(crate::protocol::FleetFilter::All);
+                let row = pane_id.and_then(|id| {
+                    view.tasks
+                        .iter()
+                        .flat_map(|t| &t.rows)
+                        .find(|r| r.pane_id == id)
+                });
+                write_json_response(
+                    response_file,
+                    serde_json::json!({
+                        "pane_id": pane_id,
+                        "role": row.map(|r| r.role.as_str()),
+                        "harness": row.map(|r| r.harness.as_str()),
+                        "task_title": row.map(|r| r.task_title.as_str()),
+                        "state": row.map(|r| r.display_state.label()),
+                    }),
+                );
             }
             crate::protocol::AppRequest::AgentFleet { filter, response_file } => {
                 log::info!("agents: fleet query filter={filter:?}");
                 write_json_response(response_file, serde_json::json!(self.agents_view(*filter)));
+            }
+            crate::protocol::AppRequest::AgentFleetDismiss {
+                target,
+                all_failed,
+                response_file,
+            } => {
+                let dismissed = self.dismiss_fleet_agent(*target, *all_failed);
+                write_json_response(
+                    response_file,
+                    serde_json::json!({
+                        "ok": !dismissed.is_empty() || *all_failed,
+                        "dismissed": dismissed,
+                    }),
+                );
             }
             crate::protocol::AppRequest::AgentAsk {
                 pane_id,

@@ -118,7 +118,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "palette_agent_results", "os_notifications"];
+const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "stale_failure_hours", "palette_agent_results", "os_notifications"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_PERMISSIONS: &[&str] = &[
     "soft_grant_days",
@@ -937,6 +937,8 @@ pub struct AgentsConfig {
     pub os_notifications: Option<bool>,
     /// Idle ephemeral worker stall threshold in seconds (default 120).
     pub stalled_after_secs: Option<u64>,
+    /// Age threshold in hours after which failed runs collapse into the older fleet group (default 12).
+    pub stale_failure_hours: Option<u64>,
     /// Show agent jump rows in the command palette (default false).
     pub palette_agent_results: Option<bool>,
     /// Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions.
@@ -953,6 +955,7 @@ impl AgentsConfig {
     fn overlay(&mut self, other: Self) {
         if other.os_notifications.is_some() { self.os_notifications = other.os_notifications; }
         if other.stalled_after_secs.is_some() { self.stalled_after_secs = other.stalled_after_secs; }
+        if other.stale_failure_hours.is_some() { self.stale_failure_hours = other.stale_failure_hours; }
         if other.palette_agent_results.is_some() { self.palette_agent_results = other.palette_agent_results; }
         if other.low.is_some() {
             self.low = other.low;

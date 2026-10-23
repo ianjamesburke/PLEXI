@@ -693,6 +693,7 @@ pub struct TerminalPane {
     _process_group: super::process_cleanup::PaneProcessGroup,
     pub fleet_result: Option<serde_json::Value>,
     pub fleet_seen: bool,
+    pub fleet_dismissed: bool,
     pub fleet_done_unseen: bool,
     pub fleet_since: u64,
     /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
@@ -841,6 +842,7 @@ impl TerminalPane {
             hidden: false,
             fleet_result: None,
             fleet_seen: false,
+            fleet_dismissed: false,
             fleet_done_unseen: false,
             fleet_since: crate::platform::clock::now_secs(),
             agent: None,
@@ -971,10 +973,14 @@ impl TerminalPane {
         if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
             self.fleet_done_unseen = true;
             self.fleet_seen = false;
+            self.fleet_dismissed = false;
         } else if next == Some(&AgentState::Working) {
             self.fleet_done_unseen = false;
             self.fleet_seen = false;
+            self.fleet_dismissed = false;
             self.agent_completed = false;
+        } else {
+            self.fleet_dismissed = false;
         }
     }
 
@@ -1017,6 +1023,7 @@ impl TerminalPane {
             }
             s.fleet_result = self.fleet_result.clone();
             s.fleet_seen = self.fleet_seen;
+            s.fleet_dismissed = self.fleet_dismissed;
             s.fleet_done_unseen = self.fleet_done_unseen;
             s.fleet_since = self.fleet_since;
             s.ephemeral = self.ephemeral;
@@ -1058,6 +1065,7 @@ impl TerminalPane {
         Some(crate::workspace::SavedAgentSession {
             fleet_result: self.fleet_result.clone(),
             fleet_seen: self.fleet_seen,
+            fleet_dismissed: self.fleet_dismissed,
             fleet_done_unseen: self.fleet_done_unseen,
             fleet_since: self.fleet_since,
             harness,
@@ -1105,6 +1113,7 @@ impl TerminalPane {
         let run_id = format!("run-{}-{closed_at}", self.id);
         Some(crate::workspace::AgentHistoryRecord {
             fleet_seen: self.fleet_seen,
+            fleet_dismissed: self.fleet_dismissed,
             run_id,
             pane_id: self.id,
             context_id,

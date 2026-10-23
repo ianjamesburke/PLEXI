@@ -345,6 +345,7 @@ pane count (`--json` is supported).
 - `plexi agent team run`: Run independent team members in one task and wait for RESULT.md
 - `plexi agent next`: Focus the next live agent needing attention (needs-you, blocked, done-unseen)
 - `plexi agent fleet`: Show tasks and their workers, ordered by attention, with blocking reasons
+- `plexi agent fleet dismiss`: Dismiss a failed, stalled, or completed agent run from the fleet view while keeping it in `agent history`
 - `plexi agent create`: Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
 - `plexi agent list`: List active agents from both workspace and global tiers
 - `plexi agent show`: Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command

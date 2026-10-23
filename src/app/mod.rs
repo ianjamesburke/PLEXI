@@ -5498,6 +5498,7 @@ pub(crate) fn restore_workspace(
                         if let Some(session) = effective_session {
                             pane.fleet_result = session.fleet_result.clone();
                             pane.fleet_seen = session.fleet_seen;
+                            pane.fleet_dismissed = session.fleet_dismissed;
                             pane.fleet_done_unseen = session.fleet_done_unseen;
                             pane.fleet_since = session.fleet_since;
                             pane.ephemeral = session.ephemeral;

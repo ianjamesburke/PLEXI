@@ -688,9 +688,18 @@ Focus the next live agent needing attention (needs-you, blocked, done-unseen)
 
 Show tasks and their workers, ordered by attention, with blocking reasons
 
+| Subcommand | Description |
+|---|---|
+| `dismiss` | Dismiss a failed, stalled, or completed agent run from the fleet view while keeping it in `agent history` |
+
+#### `plexi agent fleet dismiss`
+
+Dismiss a failed, stalled, or completed agent run from the fleet view while keeping it in `agent history`
+
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--filter` | string | no | Select all, needs-attention, working, or done workers Default: `all`. |
+| `<target>` | string | no | Pane ID (`#215` or `215`) to dismiss (omit when `--all-failed` is set) |
+| `--all-failed` | flag | no | Dismiss all failed, stalled, and exited-without-report runs |
 
 ### `plexi agent create`
 
