@@ -581,37 +581,127 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
-    fn screenshot_agent_conjoined_strip_and_parent_pin() {
+    fn screenshot_unified_agent_portal_enter_and_leave() {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
-        let parent = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
+        let (parent, portal) = h.with_app_mut(|app| {
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, None).unwrap();
             let (_, tile) = app.find_pane_in_any_window(parent).unwrap();
             app.windows[app.active_window].focused_pane = Some(tile);
+            let mut portal = None;
             for role in ["implementer", "tester"] {
-                let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true, None).unwrap();
+                let (child, ctx) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, None).unwrap();
                 app.agent_tool_children.insert(child, Some(parent));
+                portal = portal.or_else(|| {
+                    app.windows.iter().flat_map(|w| w.panes.iter()).find_map(|(&id, pane)| {
+                        (pane.portal_target() == Some(ctx)).then_some(id)
+                    })
+                });
             }
-            parent
+            (parent, portal.expect("agent call opens a portal"))
         });
+        h.focus_pane(portal).unwrap();
         h.run_steps(4);
-        h.save_screenshot(&evidence_png!("_strip")).unwrap();
-        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
-        h.run_steps(4);
+        assert!(h.harness().query_by_label("agent-tools-preview").is_some());
+        assert!(h.harness().query_by_label("owner lead").is_some());
+        assert!(h.harness().query_by_label("2 working").is_some());
+        h.save_screenshot(&evidence_png!("_portal")).unwrap();
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(3);
         h.with_app(|app| {
-            assert_eq!(app.conjoined_parent(), Some(parent));
-            assert_eq!(app.visual_owner_pane(), Some(parent));
-            assert_eq!(app.fleet_focused_pane(), Some(parent));
-            let parent_rect = app.visible_pane_rect(parent).unwrap();
-            let child_rect = app.windows[app.active_window].tree.root.and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile)).unwrap();
-            let share = parent_rect.width() / (parent_rect.width() + child_rect.width());
-            assert!((share - 0.35).abs() < 0.01, "parent share: {share}");
-            assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
+            assert!(app.router.current_depth() > 0, "Cmd+Enter enters the sub-context");
+            assert!(!app.windows[app.active_window].panes.contains_key(&parent));
+            assert!(app.windows[app.active_window].panes.values().any(|pane| {
+                pane.as_terminal().and_then(|t| t.agent_role.as_deref()) == Some("implementer")
+            }));
         });
-        h.save_screenshot(&evidence_png!("_view")).unwrap();
+        assert!(h.harness().query_by_label("agent-tools-preview").is_some());
+        assert!(h.harness().query_by_label("2 working").is_some());
+        h.save_screenshot(&evidence_png!("_inside")).unwrap();
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
         h.run_steps(2);
-        h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
+        h.with_app(|app| {
+            assert_eq!(app.router.current_depth(), 0);
+            assert!(app.windows[app.active_window].panes.contains_key(&parent));
+            assert!(app.windows[app.active_window].panes.contains_key(&portal));
+        });
+    }
+
+    #[test]
+    fn screenshot_app_open_anchors_beside_the_launcher() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let descriptor = std::env::temp_dir().join(format!(
+            "plexi-git-ui-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &descriptor,
+            r#"{"plexi_version":"0.1.0","name":"git","version":"1.0.0","commands":[{"name":"status"}]}"#,
+        )
+        .unwrap();
+        let descriptor_arg = descriptor.display().to_string();
+        let portal = h.with_app_mut(|app| {
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'commands\\n'; sleep 120",
+                    "Coordinate",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            app.handle_pane_ipc_request(crate::protocol::AppRequest::SpawnPane {
+                type_id: "cli-renderer".into(),
+                layout: None,
+                args: vec![descriptor_arg],
+                from_pane_id: Some(parent),
+                request_id: None,
+                response_file: None,
+                ephemeral: false,
+                cwd: None,
+                no_focus: false,
+                path: None,
+                workspace_root: None,
+                target_context: None,
+                context_name: None,
+                name: Some("git".into()),
+                agent_cmd: None,
+                boot_timeout_secs: None,
+                worktree: None,
+                result_schema: None,
+                peer_ancestry: None,
+            });
+            app.windows
+                .iter()
+                .flat_map(|window| window.panes.iter())
+                .find_map(|(&id, pane)| pane.portal_target().map(|_| id))
+                .expect("app open anchors a portal")
+        });
+        let _ = std::fs::remove_file(&descriptor);
+        h.focus_pane(portal).unwrap();
+        h.run_steps(4);
+        assert!(h.harness().query_by_label("git").is_some());
+        assert!(h.harness().query_by_label("owner lead").is_some());
+        h.save_screenshot(&evidence_png!("_portal")).unwrap();
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!(app.router.current_depth() > 0);
+            assert!(app.windows[app.active_window].panes.values().any(|pane| {
+                pane.as_app()
+                    .is_some_and(|app_pane| app_pane.runtime.type_id() == "cli-renderer")
+            }));
+        });
+        assert!(h.harness().query_by_label("git").is_some());
+        h.save_screenshot(&evidence_png!("_inside")).unwrap();
     }
 
     fn wait_for_lineage_fixture(h: &mut PlexiUiHarness, panes: &[u64]) {
@@ -635,9 +725,8 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let (parent, child) = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review research\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
-            let (child, _) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: checking source evidence\\n'; sleep 120", "Review evidence", Some("lineage-preview"), true, Some(parent), None, None, None, true, None).unwrap();
-            assert!(app.dive_into_agent_children(parent));
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review research\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, None).unwrap();
+            let (child, _) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: checking source evidence\\n'; sleep 120", "Review evidence", Some("lineage-preview"), true, Some(parent), None, None, None, None).unwrap();
             (parent, child)
         });
         wait_for_lineage_fixture(&mut h, &[parent, child]);
@@ -667,8 +756,8 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let (parent, child, portal) = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: coordinate research\\n'; sleep 120", "Review", None, false, None, None, None, None, false, None).unwrap();
-            let (child, context) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: working\\n'; sleep 120", "Research", Some("research"), true, Some(parent), None, None, None, false, None).unwrap();
+            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: coordinate research\\n'; sleep 120", "Review", None, false, None, None, None, None, None).unwrap();
+            let (child, context) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: working\\n'; sleep 120", "Research", Some("research"), true, Some(parent), None, None, None, None).unwrap();
             let portal = app.windows.iter().flat_map(|w| w.panes.iter())
                 .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id)).unwrap();
             (parent, child, portal)
@@ -685,11 +774,14 @@ mod tests {
                 && r.stroke.color == accent && r.stroke.width == gap
                 && r.stroke_kind == egui::StrokeKind::Outside)
         }));
-        assert!(h.harness().query_by_label("↳ research · child of lead").is_some());
+        assert!(h.harness().query_by_label("research").is_some());
+        assert!(h.harness().query_by_label("owner lead").is_some());
         h.save_screenshot(&evidence_png!()).unwrap();
         h.with_app_mut(|app| {
             let (win, _) = app.find_pane_in_any_window(parent).unwrap();
-            app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap().name = None;
+            let terminal = app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap();
+            terminal.name = None;
+            terminal.agent_role = None;
             assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
         });
     }
@@ -2001,7 +2093,7 @@ mod tests {
             );
             assert_eq!(
                 p_blocked.status_summary_badge().as_deref(),
-                Some("[2 WORKING \u{b7} 1 BLOCKED]")
+                Some("2 working \u{b7} 1 needs you")
             );
 
             let p_needs_you = win.panes[&portal_needs_you]
@@ -2016,7 +2108,7 @@ mod tests {
             );
             assert_eq!(
                 p_needs_you.status_summary_badge().as_deref(),
-                Some("[1 NEEDS YOU]")
+                Some("1 needs you")
             );
 
             let p_error = win.panes[&portal_error]
@@ -2031,7 +2123,7 @@ mod tests {
             );
             assert_eq!(
                 p_error.status_summary_badge().as_deref(),
-                Some("[1 ERROR]")
+                Some("1 failed")
             );
 
             // Named Working pane keeps its normal header bar without an escalation badge.

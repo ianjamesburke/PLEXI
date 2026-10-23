@@ -43,17 +43,21 @@ pub fn escalation_color(
     }
 }
 
-/// Compact uppercase status badge label for a pane's escalation state.
+/// Pane badge word. The same four words as a sub-context header.
+/// Working stays off the pane chrome; the header counts it.
+/// Interrupted has no word in this vocabulary.
 pub fn escalation_label(state: Option<&AgentState>, is_error: bool) -> Option<&'static str> {
     if is_error {
-        return Some("ERROR");
+        return Some("failed");
     }
     match state {
-        Some(AgentState::NeedsYou) => Some("NEEDS YOU"),
-        Some(AgentState::Blocked) => Some("BLOCKED"),
-        Some(AgentState::Interrupted) => Some("INTERRUPTED"),
-        Some(AgentState::Failed) => Some("FAILED"),
-        Some(AgentState::Working | AgentState::Idle | AgentState::Completed) | None => None,
+        Some(AgentState::NeedsYou | AgentState::Blocked) => Some("needs you"),
+        Some(AgentState::Failed) => Some("failed"),
+        Some(AgentState::Completed) => Some("done"),
+        Some(
+            AgentState::Working | AgentState::Idle | AgentState::Interrupted,
+        )
+        | None => None,
     }
 }
 
@@ -322,7 +326,7 @@ pub fn paint_attention_chrome(
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "NEEDS YOU",
+            "needs you",
             crate::ui::theme::font_medium((crate::ui::style::TEXT_TITLE_XL * 1.5).min(rect.width() / 6.5).min(rect.height() / 3.0)),
             color.gamma_multiply(0.35 * visual.alpha),
         );
@@ -492,7 +496,7 @@ mod tests {
         );
         assert_eq!(
             escalation_label(Some(&AgentState::Blocked), false),
-            Some("BLOCKED")
+            Some("needs you")
         );
         assert_eq!(
             escalation_color(Some(&AgentState::NeedsYou), false, &colors),
@@ -500,7 +504,7 @@ mod tests {
         );
         assert_eq!(
             escalation_label(Some(&AgentState::NeedsYou), false),
-            Some("NEEDS YOU")
+            Some("needs you")
         );
         assert_eq!(
             escalation_color(Some(&AgentState::Interrupted), false, &colors),
@@ -508,7 +512,15 @@ mod tests {
         );
         assert_eq!(
             escalation_label(Some(&AgentState::Interrupted), false),
-            Some("INTERRUPTED")
+            None
+        );
+        assert_eq!(
+            escalation_label(Some(&AgentState::Completed), false),
+            Some("done")
+        );
+        assert_eq!(
+            escalation_label(Some(&AgentState::Failed), false),
+            Some("failed")
         );
         assert_eq!(
             escalation_color(Some(&AgentState::Working), true, &colors),
@@ -516,7 +528,7 @@ mod tests {
         );
         assert_eq!(
             escalation_label(Some(&AgentState::Working), true),
-            Some("ERROR")
+            Some("failed")
         );
     }
 }

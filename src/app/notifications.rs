@@ -968,35 +968,6 @@ impl PlexiApp {
             .count()
     }
 
-    /// Recursively sum notification count for a context and all its descendants.
-    /// Used for the notification badge on Portal tiles.
-    pub(crate) fn context_notification_count_recursive(&self, ctx_id: u64) -> usize {
-        self.context_notification_count_recursive_limited(ctx_id, 0)
-    }
-
-    fn context_notification_count_recursive_limited(&self, ctx_id: u64, depth: u32) -> usize {
-        // Depth > 3 is impossible in valid data (creation is capped), but guard
-        // against cycles in manually-edited workspace files to prevent stack overflow.
-        if depth > 3 {
-            return 0;
-        }
-        let direct = self
-            .pending_notifications
-            .iter()
-            .filter(|n| {
-                !self.notification_is_snoozed(n)
-                    && notification_counts_toward_context(n.scope, n.source_context_id, ctx_id)
-            })
-            .count();
-        direct
-            + self
-                .router
-                .iter()
-                .filter(|c| c.parent_id == Some(ctx_id))
-                .map(|c| self.context_notification_count_recursive_limited(c.context_id, depth + 1))
-                .sum::<usize>()
-    }
-
     /// Count of visible notifications for the active context (context-scoped
     /// from active + all globals). Used for the toolbar badge.
     pub(crate) fn visible_notification_count(&self) -> usize {

@@ -179,7 +179,15 @@ impl PlexiApp {
         } else {
             parent
         };
-        let subcontext = child_parent.map(|id| format!("agent-tools-{id}"));
+        let title = {
+            let trimmed = def.display_name.trim();
+            if trimmed.is_empty() {
+                def.id.clone()
+            } else {
+                trimmed.to_string()
+            }
+        };
+        let subcontext = child_parent.as_ref().map(|_| title.clone());
         let origin_context = parent
             .and_then(|id| self.find_pane_in_any_window(id))
             .map(|(win, _)| self.windows[win].context_id);
@@ -194,8 +202,12 @@ impl PlexiApp {
             Some(cwd),
             harness.result_schema.clone(),
             None,
-            true,
             origin_context,
+        );
+        log::info!(
+            "agent_call: subcontext name={} parent={child_parent:?} role={}",
+            subcontext.as_deref().unwrap_or("(same context)"),
+            def.id
         );
         let (pane_id, _) = match spawned {
             Ok(pair) => pair,
@@ -312,53 +324,6 @@ impl PlexiApp {
     }
 
     pub(crate) fn service_agent_tool_waits(&mut self, ctx: &egui::Context) {
-        // Rebuild attachment from persisted worker ancestry after session restore.
-        // Portal-backed sub-contexts keep their original navigation model.
-        for win in &self.windows {
-            if self.conjoined_contexts.contains_key(&win.context_id) {
-                continue;
-            }
-            if !self
-                .router
-                .iter()
-                .any(|c| c.context_id == win.context_id && c.parent_id.is_some())
-            {
-                continue;
-            }
-            if self
-                .windows
-                .iter()
-                .flat_map(|w| w.panes.values())
-                .any(|p| p.portal_target() == Some(win.context_id))
-            {
-                continue;
-            }
-            if let Some(parent) = win
-                .panes
-                .values()
-                .filter_map(|p| p.as_terminal().and_then(|t| t.parent_pane_id))
-                .find(|id| {
-                    self.find_pane_in_any_window(*id)
-                        .is_some_and(|(index, _)| self.windows[index].context_id != win.context_id)
-                })
-            {
-                self.conjoined_contexts.insert(win.context_id, parent);
-                for (&id, pane) in &win.panes {
-                    if pane
-                        .as_terminal()
-                        .is_some_and(|t| t.parent_pane_id == Some(parent))
-                    {
-                        self.agent_tool_children.insert(id, Some(parent));
-                    }
-                }
-                log::info!(
-                    "agent_conjoined: restored parent={parent} context={}",
-                    win.context_id
-                );
-            }
-        }
-        self.conjoined_contexts
-            .retain(|context, _| self.router.iter().any(|c| c.context_id == *context));
         self.agent_tool_children
             .retain(|id, _| self.windows.iter().any(|w| w.panes.contains_key(id)));
         let now = Instant::now();
@@ -442,7 +407,6 @@ mod tests {
                 None,
                 None,
                 None,
-                false,
                 None,
             )
             .unwrap();
@@ -586,7 +550,6 @@ mod tests {
                 Some(root.clone()),
                 None,
                 None,
-                false,
                 None,
             )
             .unwrap();
@@ -703,7 +666,6 @@ mod tests {
                 None,
                 None,
                 None,
-                false,
                 None,
             )
             .unwrap();
@@ -769,18 +731,15 @@ mod tests {
         let parent = h.add_test_pane();
         let (child, _) = h.app.spawn_agent_worker_pane("tester", "pi", "sleep 30", "Verify",
             Some("agent-tools-test"), true, Some(parent), None,
-            Some(json!({"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}})), None, true, None).unwrap();
-        assert_eq!(
-            h.app.windows[0].panes.len(),
-            1,
-            "call must not split the parent's window"
+            Some(json!({"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}})), None, None).unwrap();
+        assert!(
+            h.app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.values())
+                .any(|p| matches!(p, crate::host::pane::Pane::Portal(_))),
+            "agent call opens the same portal sub-context as a team"
         );
-        assert!(!h
-            .app
-            .windows
-            .iter()
-            .flat_map(|w| w.panes.values())
-            .any(|p| matches!(p, crate::host::pane::Pane::Portal(_))));
         h.app.agent_tool_children.insert(child, Some(parent));
         let root = h.workspace_root();
         let call_reply = root.join("call.json");
@@ -864,5 +823,48 @@ mod tests {
             .app
             .check_agent_tool_permission(Some(u64::MAX), "tester", false)
             .is_err());
+    }
+
+    #[test]
+    fn attention_jump_lands_on_the_child_pane_and_escape_returns() {
+        let mut h = HostHarness::new();
+        let parent = h.add_test_pane();
+        let (child, child_ctx) = h
+            .app
+            .spawn_agent_worker_pane(
+                "researcher",
+                "pi",
+                "sleep 30",
+                "Audit auth",
+                Some("Audit auth"),
+                true,
+                Some(parent),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let parent_ctx = h.app.windows[h.app.active_window].context_id;
+        for win in &mut h.app.windows {
+            if let Some(agent) = win
+                .panes
+                .get_mut(&child)
+                .and_then(|pane| pane.as_terminal_mut())
+                .and_then(|terminal| terminal.agent.as_mut())
+            {
+                agent.state = AgentState::Blocked;
+            }
+        }
+        assert_eq!(h.app.next_blocked_agent(), Some(child));
+        assert_eq!(h.app.windows[h.app.active_window].context_id, child_ctx);
+        assert_eq!(h.app.fleet_focused_pane(), Some(child));
+        assert_eq!(
+            h.app.router.depth_stack.last().map(|entry| entry.0),
+            Some(parent_ctx)
+        );
+        assert!(h.app.zoom_out_of_context());
+        assert_eq!(h.app.windows[h.app.active_window].context_id, parent_ctx);
+        assert_eq!(h.app.router.current_depth(), 0);
     }
 }

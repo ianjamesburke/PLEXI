@@ -15,6 +15,9 @@ pub struct ContextState {
     pub status: ContextStatus,
     pub pane_summaries: Vec<PaneSummary>,
     pub children: Vec<ContextState>,
+    /// Panes in this context (not its children) whose agent state is `Completed`.
+    #[serde(default)]
+    pub done_agents: u32,
 }
 
 /// Overall status of a context, derived from its pane summaries and child contexts.
@@ -76,6 +79,7 @@ impl ContextState {
         let mut has_error = false;
         let mut has_blocked = false;
         let mut has_needs_you = false;
+        let mut done_agents: u32 = 0;
 
         for win in windows.iter().filter(|w| w.context_id == context_id) {
             let mut entries: Vec<_> = win.panes.iter().collect();
@@ -97,7 +101,11 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed => {
+                                    has_error = true;
+                                    PaneSummaryStatus::Error
+                                }
+                                AgentState::Blocked => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -109,9 +117,11 @@ impl ContextState {
                                         PaneSummaryStatus::Active
                                     }
                                 }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
+                                AgentState::Completed => {
+                                    done_agents += 1;
+                                    PaneSummaryStatus::Idle
+                                }
+                                AgentState::Idle | AgentState::Interrupted => PaneSummaryStatus::Idle,
                             }
                         } else if t.exited {
                             PaneSummaryStatus::Idle
@@ -121,7 +131,11 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed => {
+                                    has_error = true;
+                                    PaneSummaryStatus::Error
+                                }
+                                AgentState::Blocked => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -129,9 +143,11 @@ impl ContextState {
                                     active_agents += 1;
                                     PaneSummaryStatus::Active
                                 }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
+                                AgentState::Completed => {
+                                    done_agents += 1;
+                                    PaneSummaryStatus::Idle
+                                }
+                                AgentState::Idle | AgentState::Interrupted => PaneSummaryStatus::Idle,
                             }
                         } else if let Some(ref sb) = t.standby_session {
                             match sb.last_state {
@@ -139,7 +155,11 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed => {
+                                    has_error = true;
+                                    PaneSummaryStatus::Error
+                                }
+                                AgentState::Blocked => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -147,9 +167,11 @@ impl ContextState {
                                     active_agents += 1;
                                     PaneSummaryStatus::Active
                                 }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
+                                AgentState::Completed => {
+                                    done_agents += 1;
+                                    PaneSummaryStatus::Idle
+                                }
+                                AgentState::Idle | AgentState::Interrupted => PaneSummaryStatus::Idle,
                             }
                         } else {
                             PaneSummaryStatus::Idle
@@ -163,7 +185,11 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked => {
+                                AgentState::Failed => {
+                                    has_error = true;
+                                    PaneSummaryStatus::Error
+                                }
+                                AgentState::Blocked => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -171,9 +197,11 @@ impl ContextState {
                                     active_agents += 1;
                                     PaneSummaryStatus::Active
                                 }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
+                                AgentState::Completed => {
+                                    done_agents += 1;
+                                    PaneSummaryStatus::Idle
+                                }
+                                AgentState::Idle | AgentState::Interrupted => PaneSummaryStatus::Idle,
                             }
                         } else {
                             PaneSummaryStatus::Idle
@@ -234,6 +262,7 @@ impl ContextState {
             status,
             pane_summaries,
             children,
+            done_agents,
         }
     }
 
@@ -281,39 +310,298 @@ impl ContextState {
         own + children
     }
 
-    /// Format the rolled-up bracketed escalation badge for `PortalPane` cards
-    /// (e.g. `"[2 WORKING · 1 BLOCKED]"`, `"[1 NEEDS YOU]"`, `"[1 ERROR]"`).
+    /// Panes whose agent finished, including nested contexts.
+    pub fn done_count(&self) -> u32 {
+        let children: u32 = self.children.iter().map(Self::done_count).sum();
+        self.done_agents + children
+    }
+
+    /// One badge line for every sub-context header.
+    /// Words are `working`, `needs you`, `done`, and `failed`.
     pub fn status_summary_badge(&self) -> Option<String> {
-        let working = self.working_count();
-        let blocked = self.blocked_count();
-        let needs_you = self.needs_you_count();
-        let errors = self.error_count();
-
-        let mut parts = Vec::new();
-        if working > 0 {
-            parts.push(format!("{working} WORKING"));
-        }
-        if blocked > 0 {
-            parts.push(format!("{blocked} BLOCKED"));
-        }
-        if needs_you > 0 {
-            parts.push(format!("{needs_you} NEEDS YOU"));
-        }
-        if errors > 0 {
-            parts.push(format!("{errors} ERROR"));
-        }
-        if !parts.is_empty() {
-            return Some(format!("[{}]", parts.join(" \u{b7} ")));
-        }
-
-        match self.status {
-            ContextStatus::NeedsYou => Some("[1 NEEDS YOU]".to_string()),
-            ContextStatus::Blocked => Some("[1 BLOCKED]".to_string()),
-            ContextStatus::Error => Some("[1 ERROR]".to_string()),
-            ContextStatus::Working => Some(format!("[{} WORKING]", self.active_agents.max(1))),
-            ContextStatus::Done => Some("[DONE]".to_string()),
+        format_state_counts(
+            self.working_count(),
+            self.needs_you_count() + self.blocked_count(),
+            self.done_count(),
+            self.error_count(),
+        )
+        .or_else(|| match self.status {
+            ContextStatus::NeedsYou | ContextStatus::Blocked => Some("1 needs you".to_string()),
+            ContextStatus::Error => Some("1 failed".to_string()),
+            ContextStatus::Working => Some(format!("{} working", self.active_agents.max(1))),
+            ContextStatus::Done => Some("done".to_string()),
             ContextStatus::Idle => None,
+        })
+    }
+}
+
+/// Shared words for sub-context headers and pane badges.
+pub fn format_state_counts(working: u32, needs_you: u32, done: u32, failed: u32) -> Option<String> {
+    let mut parts = Vec::new();
+    if working > 0 {
+        parts.push(format!("{working} working"));
+    }
+    if needs_you > 0 {
+        parts.push(format!("{needs_you} needs you"));
+    }
+    if done > 0 {
+        parts.push(format!("{done} done"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} failed"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" \u{b7} "))
+    }
+}
+
+/// Chrome shared by a portal card and the bar shown after entering that space.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubcontextHeader {
+    pub context_id: u64,
+    pub name: String,
+    pub owner: Option<String>,
+    pub working: u32,
+    pub needs_you: u32,
+    pub done: u32,
+    pub failed: u32,
+    pub elapsed_secs: Option<u64>,
+}
+
+impl Default for SubcontextHeader {
+    fn default() -> Self {
+        Self {
+            context_id: 0,
+            name: "(deleted)".to_string(),
+            owner: None,
+            working: 0,
+            needs_you: 0,
+            done: 0,
+            failed: 0,
+            elapsed_secs: None,
         }
+    }
+}
+
+impl SubcontextHeader {
+    pub fn counts_label(&self) -> Option<String> {
+        format_state_counts(self.working, self.needs_you, self.done, self.failed)
+    }
+}
+
+/// One pane's contribution to a sub-context header.
+pub struct HeaderPane<'a> {
+    pub name: Option<&'a str>,
+    pub task: Option<&'a str>,
+    pub has_parent: bool,
+    pub outside_owner: Option<&'a str>,
+    pub reported_at: Option<std::time::Instant>,
+}
+
+/// Human sub-context name for an app opened from a pane.
+///
+/// `--cli git` and `--mcp filesystem` already pass a display name. A plain
+/// app id is used as-is. The renderer shell ids are not names; a path falls
+/// back to its file stem.
+pub fn app_anchor_name(
+    explicit: Option<&str>,
+    type_id: Option<&str>,
+    path: Option<&std::path::Path>,
+) -> String {
+    if let Some(name) = explicit
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !is_raw_subcontext_id(name))
+    {
+        return name.to_string();
+    }
+    if let Some(id) = type_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if id != "cli-renderer" && id != "mcp-renderer" && !is_raw_subcontext_id(id) {
+            return id.to_string();
+        }
+    }
+    if let Some(stem) = path
+        .and_then(|path| path.file_stem())
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|stem| !stem.is_empty() && !is_raw_subcontext_id(stem))
+    {
+        return stem.to_string();
+    }
+    "App".to_string()
+}
+
+/// `team-<hex>` and `agent-tools-<digits>` are internal ids, not names.
+pub fn is_raw_subcontext_id(name: &str) -> bool {
+    if let Some(rest) = name.strip_prefix("team-") {
+        return rest.len() >= 8 && rest.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    if let Some(rest) = name.strip_prefix("agent-tools-") {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+    }
+    false
+}
+
+pub fn resolve_header_identity(
+    stored: &str,
+    panes: &[HeaderPane<'_>],
+    now: std::time::Instant,
+) -> (String, Option<String>, Option<u64>) {
+    let owner = panes.iter().find_map(|pane| {
+        pane.outside_owner
+            .filter(|name| !name.is_empty() && !is_raw_subcontext_id(name))
+            .map(str::to_string)
+    });
+    let elapsed_secs = panes
+        .iter()
+        .filter_map(|pane| pane.reported_at)
+        .min()
+        .map(|started| now.saturating_duration_since(started).as_secs());
+    let name = if !stored.is_empty() && !is_raw_subcontext_id(stored) {
+        stored.to_string()
+    } else if let Some(root) = panes.iter().find_map(|pane| {
+        (!pane.has_parent)
+            .then_some(pane.name)
+            .flatten()
+            .filter(|name| !name.is_empty() && !is_raw_subcontext_id(name))
+    }) {
+        root.to_string()
+    } else {
+        let mut names: Vec<&str> = panes
+            .iter()
+            .filter_map(|pane| pane.name)
+            .filter(|name| !name.is_empty() && !is_raw_subcontext_id(name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        if names.len() == 1 {
+            names[0].to_string()
+        } else if let Some(task) = panes.iter().find_map(|pane| {
+            pane.task
+                .map(str::trim)
+                .filter(|task| !task.is_empty())
+                .and_then(|task| task.lines().next())
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+        }) {
+            task.to_string()
+        } else if let Some(owner) = owner.clone() {
+            owner
+        } else {
+            "Agents".to_string()
+        }
+    };
+    let owner = owner.filter(|owner| owner != &name);
+    (name, owner, elapsed_secs)
+}
+
+fn owner_outside_context(
+    windows: &[crate::host::context::Window],
+    parent: u64,
+    context_id: u64,
+) -> Option<String> {
+    let parent_pane = windows.iter().find_map(|window| window.panes.get(&parent))?;
+    let parent_ctx = windows
+        .iter()
+        .find(|window| window.panes.contains_key(&parent))
+        .map(|window| window.context_id)?;
+    if parent_ctx == context_id {
+        return None;
+    }
+    let name = match parent_pane {
+        crate::host::pane::Pane::Terminal(terminal) => terminal
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .or_else(|| terminal.agent_role.clone().filter(|name| !name.is_empty()))
+            .unwrap_or_else(|| "terminal".to_string()),
+        crate::host::pane::Pane::App(app) => {
+            let trimmed = app.name.trim();
+            if trimmed.is_empty() {
+                "app".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        crate::host::pane::Pane::Portal(_) => return None,
+    };
+    (!is_raw_subcontext_id(&name)).then_some(name)
+}
+
+pub fn subcontext_header(
+    context_id: u64,
+    contexts: &[crate::host::context::Context],
+    windows: &[crate::host::context::Window],
+    now: std::time::Instant,
+) -> SubcontextHeader {
+    let stored = contexts
+        .iter()
+        .find(|context| context.context_id == context_id)
+        .map(|context| context.name.displayed().to_string())
+        .unwrap_or_else(|| "Agents".to_string());
+    let state = ContextState::compute(context_id, contexts, windows);
+    struct OwnedHeaderPane {
+        name: Option<String>,
+        task: Option<String>,
+        has_parent: bool,
+        outside_owner: Option<String>,
+        reported_at: Option<std::time::Instant>,
+    }
+    let mut collected = Vec::new();
+    for win in windows.iter().filter(|win| win.context_id == context_id) {
+        for pane in win.panes.values() {
+            match pane {
+                crate::host::pane::Pane::Terminal(terminal) => {
+                    collected.push(OwnedHeaderPane {
+                        name: terminal.name.clone().or_else(|| terminal.agent_role.clone()),
+                        task: terminal.agent.as_ref().and_then(|agent| agent.detail.clone()),
+                        has_parent: terminal.parent_pane_id.is_some(),
+                        outside_owner: terminal
+                            .parent_pane_id
+                            .and_then(|parent| owner_outside_context(windows, parent, context_id)),
+                        reported_at: terminal.agent_reported_at,
+                    });
+                }
+                crate::host::pane::Pane::App(app) => {
+                    let name = {
+                        let trimmed = app.name.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                    };
+                    collected.push(OwnedHeaderPane {
+                        name,
+                        task: app.agent.as_ref().and_then(|agent| agent.detail.clone()),
+                        has_parent: app.linked_pane_id.is_some(),
+                        outside_owner: app
+                            .linked_pane_id
+                            .and_then(|parent| owner_outside_context(windows, parent, context_id)),
+                        reported_at: None,
+                    });
+                }
+                crate::host::pane::Pane::Portal(_) => {}
+            }
+        }
+    }
+    let header_panes: Vec<HeaderPane<'_>> = collected
+        .iter()
+        .map(|pane| HeaderPane {
+            name: pane.name.as_deref(),
+            task: pane.task.as_deref(),
+            has_parent: pane.has_parent,
+            outside_owner: pane.outside_owner.as_deref(),
+            reported_at: pane.reported_at,
+        })
+        .collect();
+    let (name, owner, elapsed_secs) = resolve_header_identity(&stored, &header_panes, now);
+    SubcontextHeader {
+        context_id,
+        name,
+        owner,
+        working: state.working_count(),
+        needs_you: state.needs_you_count() + state.blocked_count(),
+        done: state.done_count(),
+        failed: state.error_count(),
+        elapsed_secs,
     }
 }
 
@@ -434,7 +722,7 @@ mod tests {
         assert_eq!(state.status, ContextStatus::Working);
         assert_eq!(
             state.children[0].status_summary_badge().as_deref(),
-            Some("[1 WORKING]")
+            Some("1 working")
         );
 
         let mut windows = windows;
@@ -449,7 +737,7 @@ mod tests {
         assert_eq!(state.status, ContextStatus::Blocked);
         assert_eq!(
             state.children[0].status_summary_badge().as_deref(),
-            Some("[2 WORKING \u{b7} 1 BLOCKED]")
+            Some("2 working \u{b7} 1 needs you")
         );
 
         let mut needs_you_win = make_empty_window(2, 101);
@@ -462,7 +750,152 @@ mod tests {
         assert_eq!(state.status, ContextStatus::NeedsYou);
         assert_eq!(
             state.children[0].status_summary_badge().as_deref(),
-            Some("[1 NEEDS YOU]")
+            Some("1 needs you")
         );
+    }
+
+    #[test]
+    fn raw_ids_resolve_to_a_human_name_owner_and_elapsed() {
+        let now = std::time::Instant::now();
+        let started = now - std::time::Duration::from_secs(125);
+        let (name, owner, elapsed) = resolve_header_identity(
+            "team-017f341796ab4976bee42030d6f5a6c0",
+            &[HeaderPane {
+                name: Some("Review"),
+                task: Some("Pick a direction"),
+                has_parent: false,
+                outside_owner: None,
+                reported_at: Some(started),
+            }],
+            now,
+        );
+        assert_eq!(name, "Review");
+        assert_eq!(owner, None);
+        assert_eq!(elapsed, Some(125));
+
+        let (name, owner, _) = resolve_header_identity(
+            "agent-tools-12",
+            &[
+                HeaderPane {
+                    name: Some("researcher"),
+                    task: Some("Audit the auth module"),
+                    has_parent: true,
+                    outside_owner: Some("lead"),
+                    reported_at: None,
+                },
+                HeaderPane {
+                    name: Some("tester"),
+                    task: Some("Check the tests"),
+                    has_parent: true,
+                    outside_owner: Some("lead"),
+                    reported_at: None,
+                },
+            ],
+            now,
+        );
+        assert_eq!(name, "Audit the auth module");
+        assert_eq!(owner.as_deref(), Some("lead"));
+
+        let (name, owner, _) = resolve_header_identity(
+            "auth-audit",
+            &[HeaderPane {
+                name: Some("researcher"),
+                task: None,
+                has_parent: true,
+                outside_owner: Some("lead"),
+                reported_at: None,
+            }],
+            now,
+        );
+        assert_eq!(name, "auth-audit");
+        assert_eq!(owner.as_deref(), Some("lead"));
+        assert!(!is_raw_subcontext_id("agent-tools-preview"));
+    }
+
+    #[test]
+    fn app_anchor_name_prefers_a_human_label() {
+        assert_eq!(
+            app_anchor_name(Some("git"), Some("cli-renderer"), None),
+            "git"
+        );
+        assert_eq!(
+            app_anchor_name(Some("mcp: filesystem"), Some("mcp-renderer"), None),
+            "mcp: filesystem"
+        );
+        assert_eq!(
+            app_anchor_name(None, Some("file_browser"), None),
+            "file_browser"
+        );
+        assert_eq!(app_anchor_name(None, Some("cli-renderer"), None), "App");
+        assert_eq!(
+            app_anchor_name(None, None, Some(std::path::Path::new("/tmp/notes-app"))),
+            "notes-app"
+        );
+        assert_eq!(
+            app_anchor_name(
+                Some("team-017f341796ab4976bee42030d6f5a6c0"),
+                Some("notes"),
+                None
+            ),
+            "notes"
+        );
+    }
+
+    #[test]
+    fn app_pane_header_names_the_context_and_the_launching_pane() {
+        let contexts = vec![
+            make_context(1, "Root", None),
+            make_context(2, "git", Some(1)),
+        ];
+        let mut parent = make_empty_window(1, 100);
+        parent.panes.insert(
+            7,
+            crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+                id: 7,
+                name: "commands".into(),
+                manifest_id: "test".into(),
+                runtime: crate::host::pane::AppRuntime::Builtin(Box::new(DummyApp)),
+                workspace_root: PathBuf::from("/tmp"),
+                permissions: crate::app::permissions::AppPermissions::default(),
+                pane_group: None,
+                linked_pane_id: None,
+                agent: None,
+                pip_status: None,
+                slots: std::collections::HashMap::new(),
+                hidden: false,
+                overlay_replaced: None,
+                semantic_state: crate::host::pane::SemanticPaneState::default(),
+            })),
+        );
+        let mut child = make_empty_window(2, 101);
+        child.panes.insert(
+            8,
+            crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+                id: 8,
+                name: "git".into(),
+                manifest_id: "cli-renderer".into(),
+                runtime: crate::host::pane::AppRuntime::Builtin(Box::new(DummyApp)),
+                workspace_root: PathBuf::from("/tmp"),
+                permissions: crate::app::permissions::AppPermissions::default(),
+                pane_group: None,
+                linked_pane_id: Some(7),
+                agent: Some(crate::protocol::PaneAgentState {
+                    pane_id: 8,
+                    state: AgentState::Blocked,
+                    agent: "git".into(),
+                    detail: None,
+                    session_id: None,
+                }),
+                pip_status: None,
+                slots: std::collections::HashMap::new(),
+                hidden: false,
+                overlay_replaced: None,
+                semantic_state: crate::host::pane::SemanticPaneState::default(),
+            })),
+        );
+        let header = subcontext_header(2, &contexts, &[parent, child], std::time::Instant::now());
+        assert_eq!(header.name, "git");
+        assert_eq!(header.owner.as_deref(), Some("commands"));
+        assert_eq!(header.needs_you, 1);
     }
 }

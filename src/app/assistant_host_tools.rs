@@ -2337,7 +2337,26 @@ mod tests {
         );
         assert!(generic.error.is_none(), "{:?}", generic.error);
         assert!(harness.pane_count() > initial);
-        let after_generic = harness.pane_count();
+        let editors = |harness: &HostHarness| {
+            harness
+                .app
+                .windows
+                .iter()
+                .flat_map(|window| window.panes.values())
+                .filter(|pane| {
+                    pane.as_app()
+                        .is_some_and(|app| app.runtime.type_id() == "text-editor")
+                })
+                .count()
+        };
+        assert_eq!(editors(&harness), 1);
+        assert!(
+            harness.app.windows[0]
+                .panes
+                .values()
+                .any(|pane| pane.portal_target().is_some()),
+            "the editor is a portal beside the launcher"
+        );
 
         let app = harness.app.handle_assistant_host_tool(
             "host.apps.open",
@@ -2346,7 +2365,11 @@ mod tests {
             context,
         );
         assert!(app.error.is_none(), "{:?}", app.error);
-        assert!(harness.pane_count() > after_generic);
+        assert_eq!(
+            editors(&harness),
+            2,
+            "a second open of the same app joins that sub-context"
+        );
         let after_app = harness.pane_count();
 
         let terminal = harness.app.handle_assistant_host_tool(

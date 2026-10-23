@@ -32,6 +32,15 @@ pub(crate) struct PaneContextEnv {
     pub depth: u32,
 }
 
+/// Child context created beside a launching pane. The portal sits to the
+/// launcher's right; the child window holds the execution pane.
+pub(crate) struct AnchoredSubcontext {
+    pub win_idx: usize,
+    pub ctx_id: u64,
+    /// True when this call inserted the context and its portal.
+    pub created: bool,
+}
+
 /// Shell and environment options for spawning a terminal pane.
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalSpawnOptions<'a> {
@@ -1539,6 +1548,105 @@ impl PlexiApp {
         new_id
     }
 
+    /// Create or reuse the child context named `sub_name` under `parent_ctx_id`,
+    /// with a portal to the right of `parent_pane_id` (launcher left, execution
+    /// right). Agent spawn, team spawn, and `app open` all enter through here.
+    pub(crate) fn ensure_anchored_subcontext(
+        &mut self,
+        sub_name: &str,
+        parent_pane_id: Option<u64>,
+        parent_win_idx: usize,
+        parent_ctx_id: u64,
+        cwd: &std::path::Path,
+    ) -> Result<AnchoredSubcontext, String> {
+        if let Some(existing_ctx_idx) = self.router.position(|c| {
+            c.parent_id == Some(parent_ctx_id)
+                && c.name.displayed().eq_ignore_ascii_case(sub_name)
+        }) {
+            let existing_ctx_id = self.router.get(existing_ctx_idx).context_id;
+            let win_idx = self
+                .windows
+                .iter()
+                .position(|w| w.context_id == existing_ctx_id)
+                .ok_or_else(|| {
+                    format!("sub-context '{sub_name}' (id={existing_ctx_id}) has no window")
+                })?;
+            log::info!(
+                "subcontext: reusing name={sub_name} ctx={existing_ctx_id} parent_pane={parent_pane_id:?}"
+            );
+            return Ok(AnchoredSubcontext {
+                win_idx,
+                ctx_id: existing_ctx_id,
+                created: false,
+            });
+        }
+
+        let parent_depth = self
+            .router
+            .position(|c| c.context_id == parent_ctx_id)
+            .map(|idx| self.router.get(idx).depth)
+            .unwrap_or(0);
+        let ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        let portal_pane_id = self.host.alloc_pane_id();
+        let split_target = parent_pane_id
+            .and_then(|pid| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
+            .or(self.windows[parent_win_idx].focused_pane);
+        super::layout::insert_split_tile(
+            &mut self.windows[parent_win_idx].tree,
+            split_target,
+            portal_pane_id,
+            true,
+            crate::host::command::ShareRatio {
+                numerator: 1.0,
+                denominator: 1.0,
+            },
+            false,
+        );
+        self.windows[parent_win_idx].panes.insert(
+            portal_pane_id,
+            Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: ctx_id,
+                context_state: None,
+                hidden: false,
+            })),
+        );
+        self.router.push(crate::host::context::Context {
+            name: crate::host::context::ContextName::custom(sub_name.to_string()),
+            root: cwd.to_path_buf(),
+            description: None,
+            context_id: ctx_id,
+            parent_id: Some(parent_ctx_id),
+            depth: parent_depth + 1,
+            parked: false,
+        });
+        self.windows.push(crate::host::context::Window {
+            name: String::new(),
+            path: cwd.to_path_buf(),
+            tree: egui_tiles::Tree::empty("plexi"),
+            panes: std::collections::HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        self.context_active_window.insert(ctx_id, win_id);
+        log::info!(
+            "subcontext: anchored name={sub_name} parent_pane={parent_pane_id:?} parent_ctx={parent_ctx_id} child_ctx={ctx_id} portal={portal_pane_id}"
+        );
+        Ok(AnchoredSubcontext {
+            win_idx: self.windows.len() - 1,
+            ctx_id,
+            created: true,
+        })
+    }
+
     /// Spawn a worker terminal pane for `plexi agent spawn`, creating or reusing
     /// a sub-context and linking a `PortalPane` in the parent context when
     /// `subcontext` is specified.
@@ -1555,7 +1663,6 @@ impl PlexiApp {
         cwd_override: Option<std::path::PathBuf>,
         result_schema: Option<serde_json::Value>,
         run_token: Option<&str>,
-        conjoined: bool,
         origin_context_id: Option<u64>,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
         let origin_win = match origin_context_id {
@@ -1579,88 +1686,17 @@ impl PlexiApp {
             .position(|c| c.context_id == parent_ctx_id)
             .map(|idx| self.router.get(idx).root.clone())
             .unwrap_or_else(|| self.windows[parent_win_idx].path.clone());
-        let parent_depth = self
-            .router
-            .position(|c| c.context_id == parent_ctx_id)
-            .map(|idx| self.router.get(idx).depth)
-            .unwrap_or(0);
         let effective_cwd = cwd_override.unwrap_or_else(|| parent_root.clone());
 
         let (target_win_idx, target_ctx_id) = if let Some(sub_name) = subcontext {
-            if let Some(existing_ctx_idx) = self.router.position(|c| {
-                c.parent_id == Some(parent_ctx_id)
-                    && c.name.displayed().eq_ignore_ascii_case(sub_name)
-            }) {
-                let existing_ctx_id = self.router.get(existing_ctx_idx).context_id;
-                let win_idx = self
-                    .windows
-                    .iter()
-                    .position(|w| w.context_id == existing_ctx_id)
-                    .ok_or_else(|| {
-                        format!("sub-context '{sub_name}' (id={existing_ctx_id}) has no window")
-                    })?;
-                (win_idx, existing_ctx_id)
-            } else {
-                let ctx_id = self.next_window_id;
-                self.next_window_id += 1;
-                let win_id = self.next_window_id;
-                self.next_window_id += 1;
-
-                if conjoined {
-                    let parent = parent_pane_id.ok_or("conjoined children require a parent pane")?;
-                    self.conjoined_contexts.insert(ctx_id, parent);
-                } else {
-                // Insert a PortalPane in the parent window adjacent to the caller pane.
-                let portal_pane_id = self.host.alloc_pane_id();
-                let split_target = parent_pane_id
-                    .and_then(|pid| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
-                    .or(self.windows[parent_win_idx].focused_pane);
-                super::layout::insert_split_tile(
-                    &mut self.windows[parent_win_idx].tree,
-                    split_target,
-                    portal_pane_id,
-                    true,
-                    crate::host::command::ShareRatio {
-                        numerator: 1.0,
-                        denominator: 1.0,
-                    },
-                    false,
-                );
-                self.windows[parent_win_idx].panes.insert(
-                    portal_pane_id,
-                    Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                        pane_id: portal_pane_id,
-                        target_context_id: ctx_id,
-                        context_state: None,
-                        hidden: false,
-                    })),
-                );
-
-                }
-                self.router.push(crate::host::context::Context {
-                    name: crate::host::context::ContextName::custom(sub_name.to_string()),
-                    root: effective_cwd.clone(),
-                    description: None,
-                    context_id: ctx_id,
-                    parent_id: Some(parent_ctx_id),
-                    depth: parent_depth + 1,
-                    parked: false,
-                });
-                self.windows.push(crate::host::context::Window {
-                    name: String::new(),
-                    path: effective_cwd.clone(),
-                    tree: egui_tiles::Tree::empty("plexi"),
-                    panes: std::collections::HashMap::new(),
-                    focused_pane: None,
-                    zoomed_pane: None,
-                    grid_x: 0,
-                    grid_y: 0,
-                    window_id: win_id,
-                    context_id: ctx_id,
-                });
-                self.context_active_window.insert(ctx_id, win_id);
-                (self.windows.len() - 1, ctx_id)
-            }
+            let anchored = self.ensure_anchored_subcontext(
+                sub_name,
+                parent_pane_id,
+                parent_win_idx,
+                parent_ctx_id,
+                &effective_cwd,
+            )?;
+            (anchored.win_idx, anchored.ctx_id)
         } else {
             (parent_win_idx, parent_ctx_id)
         };

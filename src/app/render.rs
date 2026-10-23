@@ -374,6 +374,21 @@ impl PlexiApp {
                     return;
                 }
 
+                let active_ctx = self.windows[self.active_window].context_id;
+                if self
+                    .router
+                    .iter()
+                    .any(|context| context.context_id == active_ctx && context.parent_id.is_some())
+                {
+                    let header = crate::host::context_state::subcontext_header(
+                        active_ctx,
+                        self.router.as_slice(),
+                        &self.windows,
+                        std::time::Instant::now(),
+                    );
+                    crate::ui::subcontext_header::paint(ui, &header, &self.colors);
+                }
+
                 // Build per-pane notification counts before `ctx` mutably borrows
                 // `self.windows`. Use the same full visibility predicate as queue
                 // selection and the toolbar, including snooze and orphaned-scope
@@ -409,18 +424,9 @@ impl PlexiApp {
                     let mut map = std::collections::HashMap::new();
                     for &(pane_id, child_ctx_id) in &portal_panes {
                         let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);
-                        let ctx_name = ctx_entry
-                            .map(|c| c.name.to_string())
-                            .unwrap_or_else(|| "(deleted)".to_string());
                         let ctx_description = ctx_entry
                             .and_then(|c| c.description.clone())
                             .unwrap_or_default();
-                        let pane_count = self.windows.iter()
-                            .filter(|w| w.context_id == child_ctx_id)
-                            .flat_map(|w| w.panes.values())
-                            .filter(|p| !matches!(p, crate::host::pane::Pane::Portal(_)))
-                            .count();
-                        let notif_count = self.context_notification_count_recursive(child_ctx_id);
                         let active_win_for_child = self.context_active_window.get(&child_ctx_id).copied();
                         let first_win_id_for_child = self.windows.iter()
                             .find(|ww| ww.context_id == child_ctx_id)
@@ -516,23 +522,19 @@ impl PlexiApp {
                         } else {
                             computed_state
                         };
-                        let status_summary = effective_state.status_summary_badge();
                         let status = effective_state.status.clone();
-                        let effective_pane_count = if pane_count == 0 {
-                            effective_state.pane_count as usize
-                        } else {
-                            pane_count
-                        };
-                        let window_count = child_windows.len();
+                        let header = crate::host::context_state::subcontext_header(
+                            child_ctx_id,
+                            self.router.as_slice(),
+                            &self.windows,
+                            std::time::Instant::now(),
+                        );
                         map.insert(pane_id, crate::spatial::tiling::PortalPreview {
-                            context_name: ctx_name,
+                            context_name: header.name.clone(),
                             context_description: ctx_description,
-                            pane_count: effective_pane_count,
-                            notification_count: notif_count,
                             windows: child_windows,
-                            window_count,
                             status,
-                            status_summary,
+                            header,
                         });
                     }
                     map
@@ -635,7 +637,6 @@ impl PlexiApp {
                 // this frame's pending click for whichever pane they render.
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
-                let child_agent_strips = self.child_agent_strips();
                 let pane_lineage = self.pane_lineage();
                 let lineage_log_id = egui::Id::new("visible_pane_lineage");
                 if ui.ctx().data(|d| d.get_temp::<HashMap<PaneId, String>>(lineage_log_id)).as_ref() != Some(&pane_lineage) {
@@ -645,14 +646,7 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
                 let owner_pane = self.visual_owner_pane();
-                let mut child_ui;
-                let ui = if let Some(rect) = right {
-                    child_ui = ui.new_child(egui::UiBuilder::new().id_salt("conjoined-children").max_rect(rect));
-                    child_ui.set_clip_rect(rect);
-                    &mut child_ui
-                } else { ui };
                 let ctx = &mut self.windows[self.active_window];
 
                 ctx.reconcile_stale_tiles();
@@ -807,9 +801,7 @@ impl PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
-                    child_agent_strips,
                     pane_lineage,
-                    child_agent_dive: None,
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
@@ -894,11 +886,9 @@ impl PlexiApp {
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let new_focused = behavior.new_focused;
-                if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
                 let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
-                let child_agent_dive = behavior.child_agent_dive.take();
 
                 // Draw zoom overlay if a pane is zoomed
                 let mut zoomed_tab_action: Option<(
@@ -1239,9 +1229,7 @@ impl PlexiApp {
                     self.collapse_subcontext_if_empty(ctx_id);
                 }
 
-                if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
-
-                // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
+                // Portal double-click zoom — same path as Cmd+Enter on a portal.
                 if let Some(child_ctx_id) = portal_zoom {
                     if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                         log::info!("portal double-click: zooming into context_id={child_ctx_id}");

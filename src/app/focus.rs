@@ -1204,11 +1204,17 @@ impl PlexiApp {
             log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
             return false;
         };
-        // An explicit pane selection transfers input out of the pinned parent.
-        // Otherwise host_input_owner keeps returning that parent even though
-        // the destination window has selected its child tile.
-        if let Some(parent) = self.conjoined_parent_focus.take() {
-            log::info!("pane focus: leaving pinned parent={parent} for pane={pane_id}");
+        let current_ctx = self.windows[self.active_window].context_id;
+        let reveal_subcontext = ctx_id != current_ctx
+            && self
+                .router
+                .iter()
+                .any(|context| context.context_id == ctx_id && context.parent_id.is_some());
+        if reveal_subcontext {
+            let win = &self.windows[self.active_window];
+            self.router
+                .push_depth(current_ctx, win.window_id, win.focused_pane);
+            log::info!("attention: reveal subcontext ctx={ctx_id} pane={pane_id}");
         }
         self.mark_agent_seen(pane_id);
         let old_focus = self.windows[self.active_window].focused_pane;

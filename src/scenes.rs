@@ -344,7 +344,7 @@ pub enum Step {
     /// Chess approval through the production assistant turn, plus a human
     /// move through `KeyPane` when `phase` is `human`.
     ChessApproval { chess_approval: ChessApprovalSpec },
-    /// Seed or complete a deterministic conjoined agent family.
+    /// Seed or complete a portal sub-context with two agent workers.
     AgentChildren { agent_children: String },
 }
 
@@ -2812,12 +2812,21 @@ impl HeadlessBackend {
         match phase {
             "seed" => {
                 let result = self.h.with_app_mut(|app| -> Result<Vec<(&str, u64)>, String> {
-                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "sleep 120", "Coordinate", None, false, None, None, None, None, false, None)?;
+                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "sleep 120", "Coordinate", None, false, None, None, None, None, None)?;
                     let (_, tile) = app.find_pane_in_any_window(parent).ok_or("missing parent")?;
                     app.windows[app.active_window].focused_pane = Some(tile);
                     let mut members = vec![("lead", parent)];
                     for role in ["implementer", "tester"] {
-                        let (child, _) = app.spawn_agent_worker_pane(role, "pi", "sleep 120", "Verify", Some("agent-tools-scene"), true, Some(parent), None, None, None, true, None)?;
+                        let (child, ctx) = app.spawn_agent_worker_pane(role, "pi", "sleep 120", "Verify", Some("agent-tools-scene"), true, Some(parent), None, None, None, None)?;
+                        if members.len() == 1 {
+                            if let Some(portal) = app.windows.iter().flat_map(|w| w.panes.iter()).find_map(|(&id, pane)| (pane.portal_target() == Some(ctx)).then_some(id)) {
+                                if let Some((win, tile)) = app.find_pane_in_any_window(portal) {
+                                    app.active_window = win;
+                                    app.windows[win].focused_pane = Some(tile);
+                                }
+                                members.push(("portal", portal));
+                            }
+                        }
                         app.agent_tool_children.insert(child, Some(parent));
                         members.push((role, child));
                     }

@@ -5,9 +5,6 @@ use crate::protocol::{AgentBlockedReason, AgentState};
 
 impl PlexiApp {
     pub(crate) fn fleet_focused_pane(&self) -> Option<u64> {
-        if let Some(parent) = self.conjoined_parent() {
-            if self.conjoined_parent_focus == Some(parent) { return Some(parent); }
-        }
         let win = self.windows.get(self.active_window)?;
         Self::find_pane_in_tile(&win.tree, win.focused_pane?)
     }
@@ -823,6 +820,25 @@ impl PlexiApp {
                 _ => continue,
             };
             candidates.push((rank, std::cmp::Reverse(agent.since), agent.pane_id));
+        }
+        // App panes share the attention jump. They are not fleet terminals, so
+        // they are not in `agent_inputs`; a NeedsYou or Blocked app still lands
+        // on the exact pane, revealing its sub-context.
+        for win in &self.windows {
+            for (&pane_id, pane) in &win.panes {
+                let Some(agent) = pane.as_app().and_then(|app| app.agent.as_ref()) else {
+                    continue;
+                };
+                let rank = match agent.state {
+                    AgentState::NeedsYou => 0,
+                    AgentState::Blocked => 1,
+                    _ => continue,
+                };
+                if candidates.iter().any(|(_, _, id)| *id == pane_id) {
+                    continue;
+                }
+                candidates.push((rank, std::cmp::Reverse(0u64), pane_id));
+            }
         }
         candidates.sort_unstable();
         let ids: Vec<_> = candidates.into_iter().map(|(_, _, id)| id).collect();

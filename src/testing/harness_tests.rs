@@ -10299,7 +10299,7 @@ mod pane_lifecycle_events {
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
-            Some("[2 WORKING \u{b7} 1 BLOCKED]")
+            Some("2 working \u{b7} 1 needs you")
         );
         assert_eq!(
             h.app.sidebar_context_indicator_color(parent_ctx_id),
@@ -10343,7 +10343,7 @@ mod pane_lifecycle_events {
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
-            Some("[1 NEEDS YOU]")
+            Some("1 needs you \u{b7} 2 done")
         );
         assert_eq!(
             h.app.sidebar_context_indicator_color(parent_ctx_id),
@@ -10389,7 +10389,7 @@ mod pane_lifecycle_events {
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
-            Some("[1 ERROR]")
+            Some("2 done \u{b7} 1 failed")
         );
         assert_eq!(
             h.app.sidebar_context_indicator_color(parent_ctx_id),
@@ -12679,4 +12679,183 @@ fn queued_spawn_wake_bypasses_idle_throttle_while_hidden() {
         "wake must consume the queue in this logic pass"
     );
     assert!(read_json_response(&response)["pane_id"].as_u64().is_some());
+}
+
+fn spawn_app_request(
+    type_id: &str,
+    from_pane_id: Option<u64>,
+    name: Option<&str>,
+    args: Vec<String>,
+) -> AppRequest {
+    AppRequest::SpawnPane {
+        type_id: type_id.to_string(),
+        layout: None,
+        args,
+        from_pane_id,
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: None,
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        context_name: None,
+        name: name.map(str::to_string),
+        agent_cmd: None,
+        boot_timeout_secs: None,
+        worktree: None,
+        result_schema: None,
+        peer_ancestry: None,
+    }
+}
+
+/// `app open` from a pane uses the same portal sub-context as agent and team spawn.
+#[test]
+fn app_open_from_a_pane_anchors_beside_the_launcher() {
+    let mut h = HostHarness::new();
+    let (tile, launcher) = h.app.add_test_pane();
+    h.app.windows[0].focused_pane = Some(tile);
+    h.app.windows[0]
+        .panes
+        .get_mut(&launcher)
+        .and_then(|pane| pane.as_app_mut())
+        .unwrap()
+        .name = "commands".into();
+    let parent_ctx = h.app.windows[0].context_id;
+
+    let descriptor = std::env::temp_dir().join(format!(
+        "plexi-git-descriptor-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &descriptor,
+        r#"{"plexi_version":"0.1.0","name":"git","version":"1.0.0","commands":[{"name":"status"}]}"#,
+    )
+    .unwrap();
+
+    h.app.handle_pane_ipc_request(spawn_app_request(
+        "cli-renderer",
+        Some(launcher),
+        Some("git"),
+        vec![descriptor.display().to_string()],
+    ));
+    let _ = std::fs::remove_file(&descriptor);
+
+    assert_eq!(h.app.active_window, 0, "the launcher's window stays in front");
+    let (portal_id, child_ctx) = h.app.windows[0]
+        .panes
+        .iter()
+        .find_map(|(id, pane)| pane.portal_target().map(|ctx| (*id, ctx)))
+        .expect("launcher window has a portal");
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|context| context.context_id == child_ctx)
+        .expect("child context");
+    assert_eq!(child.name.displayed(), "git");
+    assert_eq!(child.parent_id, Some(parent_ctx));
+
+    let win = &h.app.windows[0];
+    let root = win.tree.root.expect("parent tree");
+    let egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear)) =
+        win.tree.tiles.get(root).expect("split")
+    else {
+        panic!("launcher and portal must sit in a linear split");
+    };
+    assert_eq!(linear.dir, egui_tiles::LinearDir::Horizontal);
+    let order: Vec<u64> = linear
+        .children
+        .iter()
+        .map(|tile| match win.tree.tiles.get(*tile) {
+            Some(egui_tiles::Tile::Pane(id)) => *id,
+            other => panic!("expected pane tile, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(order, vec![launcher, portal_id]);
+
+    let child_win = h
+        .app
+        .windows
+        .iter()
+        .find(|window| window.context_id == child_ctx)
+        .expect("child window");
+    let app = child_win
+        .panes
+        .values()
+        .find_map(|pane| pane.as_app())
+        .expect("execution pane");
+    assert_eq!(app.runtime.type_id(), "cli-renderer");
+    assert_eq!(app.name, "git");
+    assert_eq!(app.linked_pane_id, Some(launcher));
+    let app_id = app.id;
+
+    let header = crate::host::context_state::subcontext_header(
+        child_ctx,
+        h.app.router.as_slice(),
+        &h.app.windows,
+        std::time::Instant::now(),
+    );
+    assert_eq!(header.name, "git");
+    assert_eq!(header.owner.as_deref(), Some("commands"));
+
+    let portal_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&portal_id)
+        .expect("portal tile");
+    h.app.windows[0].focused_pane = Some(portal_tile);
+    h.app.toggle_pane_zoom();
+    assert!(h.app.router.current_depth() > 0);
+    assert_eq!(h.app.windows[h.app.active_window].context_id, child_ctx);
+    assert!(h.app.zoom_out_of_context());
+    assert_eq!(h.app.windows[h.app.active_window].context_id, parent_ctx);
+    assert_eq!(h.app.router.current_depth(), 0);
+
+    for window in &mut h.app.windows {
+        if let Some(agent) = window
+            .panes
+            .get_mut(&app_id)
+            .and_then(|pane| pane.as_app_mut())
+            .and_then(|app| app.agent.as_mut())
+        {
+            agent.state = crate::protocol::AgentState::NeedsYou;
+        } else if let Some(app) = window.panes.get_mut(&app_id).and_then(|pane| pane.as_app_mut())
+        {
+            app.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: app_id,
+                state: crate::protocol::AgentState::NeedsYou,
+                agent: "git".into(),
+                detail: None,
+                session_id: None,
+            });
+        }
+    }
+    assert_eq!(h.app.next_blocked_agent(), Some(app_id));
+    assert_eq!(h.app.windows[h.app.active_window].context_id, child_ctx);
+    assert_eq!(h.app.fleet_focused_pane(), Some(app_id));
+    assert_eq!(
+        h.app.router.depth_stack.last().map(|entry| entry.0),
+        Some(parent_ctx)
+    );
+    assert!(h.app.zoom_out_of_context());
+    assert_eq!(h.app.router.current_depth(), 0);
+}
+
+#[test]
+fn app_open_without_a_launching_pane_stays_in_the_active_context() {
+    let mut h = HostHarness::new();
+    let contexts_before = h.app.router.len();
+    h.app
+        .handle_pane_ipc_request(spawn_app_request("file_browser", None, None, vec![]));
+    assert_eq!(h.app.router.len(), contexts_before);
+    assert!(h.app.windows[0].panes.values().any(|pane| {
+        pane.as_app()
+            .is_some_and(|app| app.runtime.type_id() == "file_browser")
+    }));
+    assert!(h.app.windows[0]
+        .panes
+        .values()
+        .all(|pane| pane.portal_target().is_none()));
 }

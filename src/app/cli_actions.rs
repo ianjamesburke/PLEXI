@@ -4,11 +4,6 @@ use crate::host::keys::Direction;
 
 impl PlexiApp {
     pub(crate) fn toggle_pane_zoom(&mut self) {
-        if let Some(parent) = self.fleet_focused_pane() {
-            if self.dive_into_agent_children(parent) {
-                return;
-            }
-        }
         let (focused_tile, portal_target) = {
             let win = &self.windows[self.active_window];
             let tile = win.focused_pane;

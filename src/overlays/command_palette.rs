@@ -4098,15 +4098,39 @@ config_version = 1
         )
         .unwrap();
         h.app.reload_config();
-        let before_key = h.pane_count();
+        let count_kind = |h: &HostHarness, kind: &str| {
+            h.app
+                .windows
+                .iter()
+                .flat_map(|window| window.panes.values())
+                .filter(|pane| match kind {
+                    "mixer" => {
+                        pane.as_terminal()
+                            .and_then(|terminal| terminal.name.as_deref())
+                            == Some("mixer")
+                    }
+                    "editor" => pane
+                        .as_app()
+                        .is_some_and(|app| app.runtime.type_id() == "text-editor"),
+                    _ => false,
+                })
+                .count()
+        };
+        let mixers_before = count_kind(&h, "mixer");
+        let editors_before = count_kind(&h, "editor");
         h.press_key(
             egui::Key::P,
             egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
         );
         assert_eq!(
-            h.pane_count(),
-            before_key + 2,
-            "pressing bound key cmd+shift+p (run:play) must trigger the two-step command"
+            count_kind(&h, "mixer"),
+            mixers_before + 1,
+            "pressing bound key cmd+shift+p (run:play) must open the mixer terminal"
+        );
+        assert_eq!(
+            count_kind(&h, "editor"),
+            editors_before + 1,
+            "pressing bound key cmd+shift+p (run:play) must open another text editor in the anchored sub-context"
         );
     }
 

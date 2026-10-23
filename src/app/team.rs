@@ -418,13 +418,12 @@ impl PlexiApp {
             "team",
             ":",
             &question,
-            Some(&id),
+            Some(name.as_str()),
             false,
             caller,
             Some(workspace.clone()),
             None,
             None,
-            false,
             None,
         );
         let (root_pane, context_id) = match spawned {
@@ -521,7 +520,6 @@ impl PlexiApp {
                 Some(run.workspace.clone()),
                 Some(run.team.schema()),
                 Some(&field(&child, "run_token")?),
-                false,
                 None,
             )?;
             run.members.push((pane, head));

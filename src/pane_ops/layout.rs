@@ -753,11 +753,6 @@ impl PlexiApp {
     }
 
     pub(crate) fn close_focused(&mut self) {
-        if let Some(parent) = self.conjoined_parent().filter(|id| self.conjoined_parent_focus == Some(*id)) {
-            self.zoom_out_of_context();
-            self.close_pane_by_id(parent);
-            return;
-        }
         let focused = match self.windows[self.active_window].focused_pane {
             Some(f) => f,
             None => return,

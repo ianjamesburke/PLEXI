@@ -42,7 +42,7 @@ pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
 mod fleet;
 mod agent_tools;
-mod conjoined;
+mod lineage;
 mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
@@ -240,9 +240,6 @@ pub struct PlexiApp {
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
     /// `plexi pane result --wait` requests parked until a valid result is committed
     /// or their caller-supplied deadline passes (stint 0666).
-    pub(crate) conjoined_parent_rect: Option<(u64, egui::Rect)>,
-    pub(crate) conjoined_parent_focus: Option<u64>,
-    pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
     pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
@@ -1584,9 +1581,6 @@ impl PlexiApp {
                     pending_result_waits: Vec::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
-                    conjoined_contexts: std::collections::HashMap::new(),
-                    conjoined_parent_focus: None,
-                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1847,9 +1841,6 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
-                    conjoined_contexts: std::collections::HashMap::new(),
-                    conjoined_parent_focus: None,
-                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2781,9 +2772,6 @@ impl PlexiApp {
                 pending_result_waits: Vec::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
-                    conjoined_contexts: std::collections::HashMap::new(),
-                    conjoined_parent_focus: None,
-                    conjoined_parent_rect: None,
                     team_runs: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,
@@ -3825,33 +3813,6 @@ impl eframe::App for PlexiApp {
             overlay_open,
             self.show_shortcuts,
         );
-        // Cmd+Down belongs to editors unless the focused pane has tool children.
-        // Use the normal binding poller so both edges and overlay capture retain
-        // the same ownership rules as other host chords.
-        if self.visual_owner_pane().is_some_and(|parent| {
-            self.conjoined_contexts.iter().any(|(context, id)| {
-                *id == parent && self.windows.iter().any(|window| {
-                    window.context_id == *context && !window.panes.is_empty()
-                })
-            })
-        }) {
-            poll_actions_result.extend(keys::poll_actions(
-                &mut router_input,
-                &[keys::BindingEntry {
-                    modifiers: egui::Modifiers::COMMAND,
-                    key: egui::Key::ArrowDown,
-                    exact: true,
-                    no_repeat: true,
-                    context: keys::BindingContext::Normal,
-                    action: Action::ToggleZoom,
-                }],
-                &mut self.claimed_host_key_releases,
-                false,
-                keyboard_capture_active,
-                overlay_open,
-                self.show_shortcuts,
-            ));
-        }
         router_input.give_back(ctx);
 
         // Apps only receive key input when no overlay holds focus. Double-check

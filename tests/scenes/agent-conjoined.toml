@@ -4,19 +4,28 @@ size = [1280.0, 800.0]
 agent_children = "seed"
 
 [[steps]]
-assert_label = { target = "host", label = "implementer · working" }
+assert_label = { target = "host", label = "agent-tools-scene" }
 
 [[steps]]
-key = { target = "host", value = "cmd+down" }
+assert_label = { target = "host", label = "owner lead" }
 
 [[steps]]
-shot = "agent-conjoined.png"
+assert_label = { target = "host", label = "2 working" }
 
 [[steps]]
-assert = { pane_count = 2, context_count = 2, portal_count = 0 }
+assert = { pane_count = 2, context_count = 2, portal_count = 1 }
+
+[[steps]]
+key = { target = "host", value = "cmd+enter" }
+
+[[steps]]
+shot = "agent-portal.png"
+
+[[steps]]
+assert_label = { target = "host", label = "2 working" }
 
 [[steps]]
 agent_children = "complete"
 
 [[steps]]
-assert = { pane_count = 1, context_count = 1 }
+assert = { pane_count = 1, context_count = 1, portal_count = 0 }

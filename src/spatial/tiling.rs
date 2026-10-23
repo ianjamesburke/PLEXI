@@ -367,12 +367,9 @@ pub struct MiniWindow {
 pub struct PortalPreview {
     pub context_name: String,
     pub context_description: String,
-    pub pane_count: usize,
-    pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
-    pub window_count: usize,
     pub status: crate::host::context_state::ContextStatus,
-    pub status_summary: Option<String>,
+    pub header: crate::host::context_state::SubcontextHeader,
 }
 
 impl Default for PortalPreview {
@@ -380,21 +377,16 @@ impl Default for PortalPreview {
         PortalPreview {
             context_name: "(deleted)".to_string(),
             context_description: String::new(),
-            pane_count: 0,
-            notification_count: 0,
             windows: Vec::new(),
-            window_count: 0,
             status: crate::host::context_state::ContextStatus::Idle,
-            status_summary: None,
+            header: crate::host::context_state::SubcontextHeader::default(),
         }
     }
 }
 
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
-    pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
     pub pane_lineage: HashMap<PaneId, String>,
-    pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
@@ -499,27 +491,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
         }
 
-        if let Some(children) = self.child_agent_strips.get(pane_id) {
-            ui.horizontal(|ui| {
-                ui.set_clip_rect(ui.max_rect());
-                for child in children {
-                    let text = format!("{} · {}", child.role, child.display_state.label());
-                    let color = match child.display_state {
-                        crate::agent::fleet::DisplayState::Blocked | crate::agent::fleet::DisplayState::Stalled => self.colors.danger,
-                        crate::agent::fleet::DisplayState::DoneUnseen => self.colors.accent,
-                        _ => self.colors.pane_header_bg(),
-                    };
-                    let label = crate::ui::text::elide(ui, &text, crate::ui::badge::badge_font(), (ui.available_width() - style::SPACE_SM).max(0.0), crate::ui::text::Side::Trailing);
-                    if label.is_empty() { break; }
-                    let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
-                    let button = ui.interact(response.rect, ui.id().with(("child-agent", child.pane_id)), egui::Sense::click());
-                    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text));
-                    if button.on_hover_text("Open child agents (Cmd+Down)").clicked() {
-                        self.child_agent_dive = Some(*pane_id);
-                    }
-                }
-            });
-        }
         let pane_rect = ui.available_rect_before_wrap();
 
         let tab_activities: HashMap<PaneId, AgentState> = self
@@ -673,42 +644,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 let inner = pane_rect.shrink(padding);
                 let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(sc) = active_status_col {
-                            let (dot_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(8.0, style::TEXT_BODY),
-                                egui::Sense::hover(),
-                            );
-                            let state = match preview.status {
-                                crate::host::context_state::ContextStatus::NeedsYou => AgentState::NeedsYou,
-                                crate::host::context_state::ContextStatus::Blocked => AgentState::Blocked,
-                                crate::host::context_state::ContextStatus::Error => AgentState::Failed,
-                                crate::host::context_state::ContextStatus::Working => AgentState::Working,
-                                _ => AgentState::Idle,
-                            };
-                            crate::ui::activity::paint_pip(ui.painter(), dot_rect.center(), 3.5, Some(&state), sc, false);
+                    let mut header = preview.header.clone();
+                    if let Some(parent) = self.pane_lineage.get(pane_id) {
+                        if header.owner.is_none() {
+                            header.owner = Some(parent.clone());
                         }
-                        let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
-                            format!("↳ {} · child of {parent}", preview.context_name)
-                        } else { preview.context_name.clone() };
-                        ui.label(
-                            egui::RichText::new(title)
-                                .size(style::TEXT_BODY)
-                                .strong()
-                                .color(colors_for_portal.text_primary),
-                        );
-                    });
-                    if let Some(ref summary) = preview.status_summary {
-                        let summary_col =
-                            status_col.unwrap_or(colors_for_portal.text_dim);
-                        ui.label(
-                            egui::RichText::new(summary)
-                                .monospace()
-                                .size(style::TEXT_HINT)
-                                .strong()
-                                .color(summary_col),
-                        );
                     }
+                    crate::ui::subcontext_header::paint(ui, &header, &colors_for_portal);
                     if !preview.context_description.is_empty() {
                         ui.scope(|ui| {
                             ui.set_max_width(inner.width());
@@ -718,34 +660,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                 &colors_for_portal,
                             );
                         });
-                    }
-                    {
-                        let count_label =
-                            if preview.window_count > 1 && preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} windows \u{b7} {} notifs",
-                                    preview.pane_count,
-                                    preview.window_count,
-                                    preview.notification_count
-                                )
-                            } else if preview.window_count > 1 {
-                                format!(
-                                    "{} panes \u{b7} {} windows",
-                                    preview.pane_count, preview.window_count
-                                )
-                            } else if preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} notifs",
-                                    preview.pane_count, preview.notification_count
-                                )
-                            } else {
-                                format!("{} panes", preview.pane_count)
-                            };
-                        ui.label(
-                            egui::RichText::new(count_label)
-                                .size(style::TEXT_HINT)
-                                .color(colors_for_portal.text_dim),
-                        );
                     }
                     ui.add_space(style::SPACE_SM);
                     if !preview.windows.is_empty() {

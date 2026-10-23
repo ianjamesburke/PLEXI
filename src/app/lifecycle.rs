@@ -16,6 +16,15 @@ const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
 /// 60s default boot window.
 const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
+struct AppSpawnAnchor {
+    child_win_idx: usize,
+    child_ctx_id: u64,
+    parent_win_idx: usize,
+    parent_pane_id: u64,
+    created: bool,
+    name: String,
+}
+
 use crate::rpc::{write_json_response, write_response};
 
 fn slot_error(response_file: &str, message: impl Into<String>) {
@@ -256,6 +265,158 @@ impl PlexiApp {
                 );
                 (fallback_win, self.windows[fallback_win].focused_pane)
             }
+        }
+    }
+
+    /// `app open` from a pane joins the same anchored sub-context as agent and
+    /// team spawn. `new_window` / `tab` and an explicit `target_context` stay
+    /// on the previous placement. No launching pane means the active context.
+    fn begin_app_spawn_anchor(
+        &mut self,
+        spec: &crate::app::launch_spec::PaneLaunchSpec,
+        response_pane_id: &mut u64,
+    ) -> Option<AppSpawnAnchor> {
+        let layout = spec.layout.as_deref().unwrap_or("");
+        if matches!(layout, "new_window" | "tab") || spec.target_context.is_some() {
+            log::info!(
+                "app_open: skipping anchored subcontext layout={layout} target_context={:?}",
+                spec.target_context
+            );
+            return None;
+        }
+        let from_id = spec.from_pane_id?;
+        let (parent_win_idx, _) = self.find_pane_in_any_window(from_id)?;
+        let parent_ctx_id = self.windows[parent_win_idx].context_id;
+        let parent_root = self
+            .router
+            .iter()
+            .find(|context| context.context_id == parent_ctx_id)
+            .map(|context| context.root.clone())
+            .unwrap_or_else(|| self.windows[parent_win_idx].path.clone());
+        let cwd = spec.cwd.clone().unwrap_or(parent_root);
+        let (type_id, path) = match &spec.target {
+            crate::app::launch_spec::PaneLaunchTarget::AppId(id) => (Some(id.as_str()), None),
+            crate::app::launch_spec::PaneLaunchTarget::Path(path) => (None, Some(path.as_path())),
+            crate::app::launch_spec::PaneLaunchTarget::Terminal => return None,
+        };
+        let name = crate::host::context_state::app_anchor_name(spec.name.as_deref(), type_id, path);
+        let anchored = match self.ensure_anchored_subcontext(
+            &name,
+            Some(from_id),
+            parent_win_idx,
+            parent_ctx_id,
+            &cwd,
+        ) {
+            Ok(anchored) => anchored,
+            Err(err) => {
+                log::warn!("app_open: anchored subcontext failed: {err}");
+                return None;
+            }
+        };
+        self.active_window = anchored.win_idx;
+        *response_pane_id = self.host.next_pane_id();
+        log::info!(
+            "app_open: anchored name={name} parent_pane={from_id} child_ctx={} created={}",
+            anchored.ctx_id,
+            anchored.created
+        );
+        Some(AppSpawnAnchor {
+            child_win_idx: anchored.win_idx,
+            child_ctx_id: anchored.ctx_id,
+            parent_win_idx,
+            parent_pane_id: from_id,
+            created: anchored.created,
+            name,
+        })
+    }
+
+    fn finish_app_spawn_anchor(
+        &mut self,
+        anchor: &AppSpawnAnchor,
+        spec: &crate::app::launch_spec::PaneLaunchSpec,
+        launch_result: &Result<(), String>,
+        response_pane_id: u64,
+        saved_active: usize,
+    ) {
+        let landed = launch_result.is_ok()
+            && self
+                .windows
+                .get(anchor.child_win_idx)
+                .is_some_and(|window| window.panes.contains_key(&response_pane_id));
+        if landed {
+            let explicit = spec
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            self.stamp_anchored_app_pane(response_pane_id, anchor.parent_pane_id, explicit);
+            if explicit.is_none() {
+                self.promote_generic_app_context_name(
+                    anchor.child_ctx_id,
+                    response_pane_id,
+                    &anchor.name,
+                );
+            }
+            self.active_window = anchor.parent_win_idx;
+            log::info!(
+                "app_open: pane={response_pane_id} in subcontext {} beside pane {}",
+                anchor.child_ctx_id,
+                anchor.parent_pane_id
+            );
+        } else if anchor.created {
+            self.collapse_subcontext_if_empty(anchor.child_ctx_id);
+            self.active_window = saved_active;
+        } else if launch_result.is_err() {
+            self.active_window = saved_active;
+        }
+    }
+
+    fn stamp_anchored_app_pane(
+        &mut self,
+        pane_id: u64,
+        parent_pane_id: u64,
+        explicit_name: Option<&str>,
+    ) {
+        for win in &mut self.windows {
+            let Some(app) = win.panes.get_mut(&pane_id).and_then(|pane| pane.as_app_mut()) else {
+                continue;
+            };
+            app.linked_pane_id = Some(parent_pane_id);
+            if let Some(name) = explicit_name {
+                app.name = name.to_string();
+            }
+            log::info!(
+                "app_open: pane={pane_id} linked_pane={parent_pane_id} name={}",
+                app.name
+            );
+            return;
+        }
+    }
+
+    fn promote_generic_app_context_name(&mut self, ctx_id: u64, pane_id: u64, fallback: &str) {
+        if !matches!(fallback, "App" | "cli-renderer" | "mcp-renderer") {
+            return;
+        }
+        let Some(display) = self.windows.iter().find_map(|window| {
+            window
+                .panes
+                .get(&pane_id)
+                .and_then(|pane| pane.as_app())
+                .map(|app| app.name.clone())
+        }) else {
+            return;
+        };
+        let display = display.trim();
+        if display.is_empty()
+            || crate::host::context_state::is_raw_subcontext_id(display)
+            || matches!(display, "CLI Renderer" | "MCP Renderer")
+        {
+            return;
+        }
+        if let Some(idx) = self.router.position(|context| context.context_id == ctx_id) {
+            self.router.get_mut(idx).name =
+                crate::host::context::ContextName::custom(display.to_string());
+            log::info!("app_open: subcontext {ctx_id} named {display}");
         }
     }
 
@@ -1994,8 +2155,12 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) =
-                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
+                    let anchor = self.begin_app_spawn_anchor(&spec, &mut response_pane_id);
+                    let (target_win, orig_focused_in_target) = if anchor.is_some() {
+                        (active, self.windows[active].focused_pane)
+                    } else {
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active)
+                    };
                     launch_result = self
                         .launch_app_by_path_with_layout_no_review_modal(
                             &app_path.to_string_lossy(),
@@ -2008,31 +2173,48 @@ impl PlexiApp {
                                 response_pane_id = pane_id;
                             }
                         });
-                    if spec.from_pane_id.is_some() {
-                        self.active_window = active;
-                        // Undo the temporary focus redirect when launch failed.
-                        if launch_result.is_err() {
+                    if let Some(anchor) = anchor {
+                        self.finish_app_spawn_anchor(
+                            &anchor,
+                            &spec,
+                            &launch_result,
+                            response_pane_id,
+                            active,
+                        );
+                        if spec.no_focus {
+                            self.active_window = active;
+                        }
+                    } else {
+                        if spec.from_pane_id.is_some() {
+                            self.active_window = active;
+                            // Undo the temporary focus redirect when launch failed.
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
+                        }
+                        if spec.no_focus {
+                            self.active_window = active;
                             self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
-                    }
-                    if spec.no_focus {
-                        self.active_window = active;
-                        self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
                 } else if let crate::app::launch_spec::PaneLaunchTarget::AppId(type_id) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) =
-                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active);
+                    let anchor = self.begin_app_spawn_anchor(&spec, &mut response_pane_id);
+                    let (target_win, orig_focused_in_target) = if anchor.is_some() {
+                        (active, self.windows[active].focused_pane)
+                    } else {
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active)
+                    };
                     // CLI/spawn-request app opens default to a sibling split, never
                     // an overlay takeover of the caller's pane. Manifest `[launch]
                     // placement` still overrides the default (stint 0330).
                     //
-                    // `self.active_window` has already been redirected to the
-                    // target window above (when `from_pane_id` named one), so
-                    // its context_id is the launch's actual target context —
-                    // matching what `launch_app_by_id_with_layout` itself
-                    // resolves against (stint 0724 Phase B).
+                    // When the open is anchored, `active_window` is the empty
+                    // child and the app becomes that context's root. Otherwise
+                    // it was redirected to the caller's window, which is the
+                    // context `launch_app_by_id_with_layout` resolves against
+                    // (stint 0724 Phase B).
                     let target_context_id = self.windows[self.active_window].context_id;
                     let placement = crate::pane_ops::cli_open_placement(
                         spec.layout.clone(),
@@ -2054,16 +2236,29 @@ impl PlexiApp {
                                 response_pane_id = existing_id;
                             }
                         });
-                    if spec.from_pane_id.is_some() {
-                        self.active_window = active;
-                        // Undo the temporary focus redirect when launch failed.
-                        if launch_result.is_err() {
+                    if let Some(anchor) = anchor {
+                        self.finish_app_spawn_anchor(
+                            &anchor,
+                            &spec,
+                            &launch_result,
+                            response_pane_id,
+                            active,
+                        );
+                        if spec.no_focus {
+                            self.active_window = active;
+                        }
+                    } else {
+                        if spec.from_pane_id.is_some() {
+                            self.active_window = active;
+                            // Undo the temporary focus redirect when launch failed.
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
+                        }
+                        if spec.no_focus {
+                            self.active_window = active;
                             self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
-                    }
-                    if spec.no_focus {
-                        self.active_window = active;
-                        self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
                 }
                 if let Some(wt) = created_worktree {
@@ -4073,7 +4268,9 @@ impl PlexiApp {
                     *parent_pane_id,
                     cwd.as_deref().map(std::path::PathBuf::from),
                     result_schema.clone(),
-                    None, false, None);
+                    None,
+                    None,
+                );
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         if let Some(ref custom_name) = name {
@@ -4428,7 +4625,9 @@ impl PlexiApp {
                     record.parent_pane_id,
                     Some(record.cwd.clone()),
                     None,
-                    None, false, None);
+                    None,
+                    None,
+                );
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         for win in &mut self.windows {
