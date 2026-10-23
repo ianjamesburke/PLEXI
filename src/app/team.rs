@@ -729,7 +729,7 @@ impl PlexiApp {
             } else {
                 let harness = crate::cli::AgentHarness::parse(&member.harness)
                     .ok_or_else(|| "invalid member harness".to_string())?;
-                if let Ok((mut def, _)) = crate::cli::agent::resolve_agent_definition_in(
+                let member_cmd = if let Ok((mut def, _)) = crate::cli::agent::resolve_agent_definition_in(
                     &member.role,
                     &crate::config::config_dir(),
                     Some(&run.execution_cwd),
@@ -749,7 +749,8 @@ impl PlexiApp {
                     harness
                         .adapter()
                         .spawn_command(&task, member.model.as_deref(), None)
-                }
+                };
+                crate::cli::agent::with_auto_state_hooks(harness.adapter(), member_cmd)
             };
             let command = format!(
                 "export PLEXI_TEAM_RUN_ID={} PLEXI_TEAM_OPTIONS={}; {body}",

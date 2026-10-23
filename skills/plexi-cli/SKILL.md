@@ -358,7 +358,8 @@ pane count (`--json` is supported).
 - `plexi agent history`: Show closed agent runs and sessions from `~/.plexi-<channel>/agent_history.jsonl`
 - `plexi agent reopen`: Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory
 - `plexi agent hook`: Install or uninstall agent hook integrations
-- `plexi agent hook install`: Install PLEXI agent-state hook integrations
+- `plexi agent hook install`: Install PLEXI agent-state hook integrations (optional: agents Plexi spawns report state automatically; install only for harnesses you launch by hand)
+- `plexi agent hook-event [--agent <name>]`: Read one harness hook payload from stdin and report state (used by the registered hooks; no jq)
 - `plexi agent hook uninstall`: Remove PLEXI agent-state hook integrations
 - `plexi context`: Manage the active context (the folder and project scope tied to the current pane)
 - `plexi context rename`: Rename a context (defaults to the calling pane's context)
