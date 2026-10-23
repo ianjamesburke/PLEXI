@@ -138,8 +138,20 @@ const STRIP_VARS: &[&str] = &[
     "PLEXI_PANE_ID",
     crate::host::process_cleanup::SESSION_ENV,
     "PLEXI_CONTEXT_ID",
+    "PLEXI_CONTEXT_NAME",
+    "PLEXI_CONTEXT_DESCRIPTION",
     "PLEXI_CONTEXT_ROOT",
+    "PLEXI_CONTEXT_DEPTH",
     "PLEXI_RUNNING",
+    "PLEXI_CALL_CREDENTIAL",
+    "PLEXI_AGENT_SPAWNED",
+    "PLEXI_AGENT_HARNESS",
+    "PLEXI_AGENT_ROLE",
+    "PLEXI_PARENT_PANE",
+    "PLEXI_EPHEMERAL",
+    "PLEXI_RESUME_COMMAND",
+    "PLEXI_HOST_MCP_PORT",
+    "PLEXI_HOST_MCP_TOKEN",
     "PLEXI_CHANNEL",
     // Never inherited: a pane inside an ephemeral host must not silently
     // launch further ephemeral hosts. Re-added only for an explicit
@@ -660,6 +672,97 @@ fn detach_from_terminal(cmd: &mut std::process::Command) {
     }
 }
 
+/// Detach a restart coordinator twice and report the grandchild PID before it
+/// execs. The first child creates a new session, then exits after forking the
+/// process that will actually exec the coordinator.
+#[cfg(unix)]
+fn detach_restart_coordinator(cmd: &mut std::process::Command, report_fd: libc::c_int) {
+    use std::os::unix::process::CommandExt as _;
+    // SAFETY: this runs after fork and before exec. `setsid`, `fork`, `write`,
+    // `close`, and `_exit` are async-signal-safe POSIX calls and work on macOS
+    // as well as Linux. The grandchild retains the exec path supplied by Command.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            match libc::fork() {
+                -1 => Err(std::io::Error::last_os_error()),
+                0 => {
+                    let pid = (libc::getpid() as u32).to_ne_bytes();
+                    if libc::write(report_fd, pid.as_ptr().cast(), pid.len())
+                        != pid.len() as libc::ssize_t
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    libc::close(report_fd);
+                    Ok(())
+                }
+                _ => {
+                    libc::close(report_fd);
+                    libc::_exit(0)
+                }
+            }
+        });
+    }
+}
+
+/// Spawn the coordinator through the same setsid-plus-double-fork path used
+/// by caller-host restarts. The pipe reports the grandchild PID and lets this
+/// process reap the short-lived intermediate child.
+#[cfg(unix)]
+pub(crate) fn spawn_restart_coordinator(
+    command: &mut std::process::Command,
+) -> std::io::Result<u32> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` is valid writable storage for the two pipe descriptors.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let read_fd = fds[0];
+    let write_fd = fds[1];
+    detach_restart_coordinator(command, write_fd);
+    let mut intermediate = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            // SAFETY: these descriptors were created by this function.
+            unsafe {
+                libc::close(read_fd);
+                libc::close(write_fd);
+            }
+            return Err(error);
+        }
+    };
+    // The child has its own descriptor after fork; close this copy before
+    // waiting so a failure cannot make the read appear permanently open.
+    // SAFETY: this descriptor belongs to this process.
+    unsafe {
+        libc::close(write_fd);
+    }
+    let mut pid = [0_u8; std::mem::size_of::<u32>()];
+    // SAFETY: `pid` is writable for exactly the requested byte count.
+    let read = unsafe { libc::read(read_fd, pid.as_mut_ptr().cast(), pid.len()) };
+    // SAFETY: this descriptor belongs to this process.
+    unsafe {
+        libc::close(read_fd);
+    }
+    intermediate.wait()?;
+    if read != pid.len() as libc::ssize_t {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "restart coordinator did not report its grandchild pid",
+        ));
+    }
+    Ok(u32::from_ne_bytes(pid))
+}
+
+#[cfg(windows)]
+pub(crate) fn spawn_restart_coordinator(
+    command: &mut std::process::Command,
+) -> std::io::Result<u32> {
+    command.spawn().map(|child| child.id())
+}
+
 #[cfg(unix)]
 fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io::Result<u32> {
     let mut cmd = std::process::Command::new(binary);
@@ -735,6 +838,32 @@ fn restart_closes_caller(
     pane.is_some_and(|id| !id.is_empty()) && source_socket == Some(target_socket)
 }
 
+/// Build the independently reparented restart coordinator with precisely the
+/// environment a normal `host start` would inherit. In particular, it cannot
+/// carry the old host's cleanup marker or a pane identity into the quit sweep.
+pub(crate) fn restart_coordinator_env(
+    parent_env: Vec<(String, String)>,
+    channel: Option<&str>,
+) -> Vec<(String, String)> {
+    filter_child_env(parent_env, channel)
+}
+
+fn restart_coordinator_command(
+    exe: &Path,
+    parent_env: Vec<(String, String)>,
+    channel: Option<&str>,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["host", "restart"])
+        .env_clear()
+        .envs(restart_coordinator_env(parent_env, channel))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command
+}
+
 pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     let channel = crate::config::build_channel();
     let socket = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
@@ -753,26 +882,21 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         }
     };
     if own_host {
-        let mut child = std::process::Command::new(&exe);
-        child
-            .args(["host", "restart"])
-            .env_remove("PLEXI_PANE_ID")
-            .env_remove("PLEXI_CONTEXT_ROOT")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        detach_from_terminal(&mut child);
-        match child.spawn() {
-            Ok(child) => {
+        let mut child = restart_coordinator_command(
+            &exe,
+            std::env::vars().collect(),
+            channel.as_deref(),
+        );
+        match spawn_restart_coordinator(&mut child) {
+            Ok(coordinator_pid) => {
                 log::info!(
                     "host_restart: detached coordinator pid={} caller pane will close",
-                    child.id()
+                    coordinator_pid
                 );
                 if json {
                     println!(
                         "{}",
-                        serde_json::json!({"restarting": true, "coordinator_pid": child.id()})
+                        serde_json::json!({"restarting": true, "coordinator_pid": coordinator_pid})
                     );
                 } else {
                     println!("Restarting; this pane will close. The saved workspace will restore.");
@@ -786,22 +910,33 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
             }
         }
     }
-    log::info!("host_restart: channel={channel:?}");
+    let coordinator_started = Instant::now();
+    log::info!(
+        "host_restart: coordinator start pid={} channel={channel:?}",
+        std::process::id()
+    );
     let pid = running_build_info()
         .as_ref()
         .and_then(reported_pid)
         .or_else(|| detect_pid(&socket));
     if !shutdown_complete(pid, &socket) {
+        log::info!("host_restart: waiting old_pid={pid:?}");
         let stopped = std::process::Command::new(&exe)
             .args(["host", "stop"])
             .output();
         match stopped {
             Ok(output) if output.status.success() => {}
             Ok(output) => {
+                log::error!(
+                    "host_restart: old host stop failed status={} stderr={}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
                 eprintln!("{}", String::from_utf8_lossy(&output.stderr));
                 return 1;
             }
             Err(error) => {
+                log::error!("host_restart: old host stop invocation failed: {error}");
                 eprintln!("error: host stop: {error}");
                 return 1;
             }
@@ -809,21 +944,36 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         let deadline = Instant::now() + Duration::from_secs(35);
         while !shutdown_complete(pid, &socket) {
             if Instant::now() >= deadline {
+                log::error!("host_restart: old host did not exit before deadline old_pid={pid:?}");
                 eprintln!("error: previous host has not exited; restart aborted");
                 return 1;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        log::info!(
+            "host_restart: old host exited after {}ms old_pid={pid:?}",
+            coordinator_started.elapsed().as_millis()
+        );
     } else if !json {
         println!("not running; starting");
     }
     // Reuse the public start handler without seed panes; capture its human output for JSON callers.
+    log::info!("host_restart: starting");
     match std::process::Command::new(&exe)
         .args(["host", "start"])
         .output()
     {
-        Ok(output) if output.status.success() => host_status_cli(json),
+        Ok(output) if output.status.success() => {
+            let new_pid = running_build_info().as_ref().and_then(reported_pid);
+            log::info!("host_restart: started new_pid={new_pid:?}");
+            host_status_cli(json)
+        }
         Ok(output) => {
+            log::error!(
+                "host_restart: start failed status={} stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
             eprintln!("{}", String::from_utf8_lossy(&output.stderr));
             1
         }
@@ -1633,8 +1783,20 @@ mod tests {
             ("PLEXI_PANE_ID".to_string(), "7".to_string()),
             (crate::host::process_cleanup::SESSION_ENV.to_string(), "parent-host".to_string()),
             ("PLEXI_CONTEXT_ID".to_string(), "3".to_string()),
+            ("PLEXI_CONTEXT_NAME".to_string(), "work".to_string()),
+            ("PLEXI_CONTEXT_DESCRIPTION".to_string(), "work context".to_string()),
             ("PLEXI_CONTEXT_ROOT".to_string(), "/tmp".to_string()),
+            ("PLEXI_CONTEXT_DEPTH".to_string(), "1".to_string()),
             ("PLEXI_RUNNING".to_string(), "1".to_string()),
+            ("PLEXI_CALL_CREDENTIAL".to_string(), "secret".to_string()),
+            ("PLEXI_AGENT_SPAWNED".to_string(), "1".to_string()),
+            ("PLEXI_AGENT_HARNESS".to_string(), "codex".to_string()),
+            ("PLEXI_AGENT_ROLE".to_string(), "worker".to_string()),
+            ("PLEXI_PARENT_PANE".to_string(), "6".to_string()),
+            ("PLEXI_EPHEMERAL".to_string(), "1".to_string()),
+            ("PLEXI_RESUME_COMMAND".to_string(), "resume".to_string()),
+            ("PLEXI_HOST_MCP_PORT".to_string(), "9999".to_string()),
+            ("PLEXI_HOST_MCP_TOKEN".to_string(), "secret".to_string()),
             ("PLEXI_CHANNEL".to_string(), "beta".to_string()), // must be overridden, not inherited
             (
                 crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
@@ -1654,8 +1816,20 @@ mod tests {
         assert_eq!(map.get("PLEXI_PANE_ID"), None);
         assert_eq!(map.get(crate::host::process_cleanup::SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ID"), None);
+        assert_eq!(map.get("PLEXI_CONTEXT_NAME"), None);
+        assert_eq!(map.get("PLEXI_CONTEXT_DESCRIPTION"), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ROOT"), None);
+        assert_eq!(map.get("PLEXI_CONTEXT_DEPTH"), None);
         assert_eq!(map.get("PLEXI_RUNNING"), None);
+        assert_eq!(map.get("PLEXI_CALL_CREDENTIAL"), None);
+        assert_eq!(map.get("PLEXI_AGENT_SPAWNED"), None);
+        assert_eq!(map.get("PLEXI_AGENT_HARNESS"), None);
+        assert_eq!(map.get("PLEXI_AGENT_ROLE"), None);
+        assert_eq!(map.get("PLEXI_PARENT_PANE"), None);
+        assert_eq!(map.get("PLEXI_EPHEMERAL"), None);
+        assert_eq!(map.get("PLEXI_RESUME_COMMAND"), None);
+        assert_eq!(map.get("PLEXI_HOST_MCP_PORT"), None);
+        assert_eq!(map.get("PLEXI_HOST_MCP_TOKEN"), None);
         assert_eq!(map.get("PLEXI_CHANNEL"), Some(&"alpha".to_string()));
         assert_eq!(map.get("PATH"), Some(&"/usr/bin".to_string()));
     }
@@ -1668,6 +1842,37 @@ mod tests {
             env.iter().all(|(k, _)| k != "PLEXI_CHANNEL"),
             "main channel must never inherit a stale PLEXI_CHANNEL: {env:?}"
         );
+    }
+
+    #[test]
+    fn restart_coordinator_command_scrubs_host_marker_and_pane_identity() {
+        let parent = vec![
+            (crate::host::process_cleanup::SESSION_ENV.to_string(), "old-host".to_string()),
+            ("PLEXI_SOCKET".to_string(), "/tmp/notify.sock".to_string()),
+            ("PLEXI_PANE_ID".to_string(), "7".to_string()),
+            ("PLEXI_CONTEXT_ROOT".to_string(), "/work".to_string()),
+            ("PLEXI_AGENT_SPAWNED".to_string(), "1".to_string()),
+            ("PLEXI_CALL_CREDENTIAL".to_string(), "secret".to_string()),
+            ("PLEXI_CHANNEL".to_string(), "beta".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ];
+        let command = restart_coordinator_command(Path::new("/bin/true"), parent, Some("alpha"));
+        let env: std::collections::HashMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .collect();
+        for key in [
+            crate::host::process_cleanup::SESSION_ENV,
+            "PLEXI_SOCKET",
+            "PLEXI_PANE_ID",
+            "PLEXI_CONTEXT_ROOT",
+            "PLEXI_AGENT_SPAWNED",
+            "PLEXI_CALL_CREDENTIAL",
+        ] {
+            assert!(!env.contains_key(std::ffi::OsStr::new(key)), "leaked {key}");
+        }
+        assert_eq!(env.get(std::ffi::OsStr::new("PLEXI_CHANNEL")), Some(&std::ffi::OsStr::new("alpha")));
+        assert_eq!(env.get(std::ffi::OsStr::new("PATH")), Some(&std::ffi::OsStr::new("/usr/bin")));
     }
 
     #[test]
