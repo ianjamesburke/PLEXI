@@ -324,14 +324,20 @@ fn write_sealed_with_dir(path: &Path, dir: &Path, body: &[u8]) -> Result<(), Str
     crate::platform::fs::atomic_write_with_mode(path, &bytes, 0o600)
 }
 
+fn seal_state_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// Append one fact. Verifies the chain first. A bad chain is quarantined and
 /// the tip is cleared before this returns [`SealError::Untrusted`].
 pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError> {
-    if let Err(reason) = verify_audit(path) {
+    let _guard = seal_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(reason) = verify_audit_locked(path) {
         if super::host_key::is_key_unreadable(&reason) {
             return Err(SealError::Io(reason));
         }
-        reject_untrusted_audit(path, &reason);
+        reject_untrusted_audit_locked(path, &reason);
         return Err(SealError::Untrusted(reason));
     }
     let dir = profile_dir_for_path(path);
@@ -363,15 +369,20 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
     file.sync_all()
         .map_err(|error| SealError::Io(error.to_string()))?;
     let tip = format!("{seq}:{}", sha256_hex(line.as_bytes()));
-    store_tip(path, &tip).map_err(SealError::Io)?;
+    store_tip_locked(path, &tip).map_err(SealError::Io)?;
     if let Some(parent) = path.parent() {
-        mark_profile_sealed(parent);
+        mark_profile_sealed_locked(parent);
     }
     Ok(())
 }
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(path: &Path) -> Result<(), String> {
+    let _guard = seal_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    verify_audit_locked(path)
+}
+
+fn verify_audit_locked(path: &Path) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
     let tip = match tip_lookup(path) {
         Ok(value) => value,
@@ -443,6 +454,11 @@ pub fn verify_audit(path: &Path) -> Result<(), String> {
 }
 
 pub fn reject_untrusted_audit(path: &Path, reason: &str) {
+    let _guard = seal_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    reject_untrusted_audit_locked(path, reason);
+}
+
+fn reject_untrusted_audit_locked(path: &Path, reason: &str) {
     log::info!(
         "permission_seal: audit rejected {} ({reason})",
         path.display()
@@ -450,7 +466,7 @@ pub fn reject_untrusted_audit(path: &Path, reason: &str) {
     if path.exists() {
         quarantine(path);
     }
-    clear_audit_tip(path);
+    clear_audit_tip_locked(path);
 }
 
 /// True when `reason` is the pre-seal audit failure: a log with lines and no tip.
@@ -812,6 +828,11 @@ fn read_seal_state(dir: &Path) -> SealStateStatus {
 }
 
 fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<(), String> {
+    let _guard = seal_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    update_seal_state_locked(dir, mutate)
+}
+
+fn update_seal_state_locked(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<(), String> {
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
@@ -874,10 +895,15 @@ pub(crate) fn store_needs_you_tip(dir: &Path, tip: Option<&str>) -> Result<(), S
 }
 
 fn mark_profile_sealed(dir: &Path) {
+    let _guard = seal_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    mark_profile_sealed_locked(dir);
+}
+
+fn mark_profile_sealed_locked(dir: &Path) {
     if dir.as_os_str().is_empty() {
         return;
     }
-    if let Err(error) = update_seal_state(dir, |state| {
+    if let Err(error) = update_seal_state_locked(dir, |state| {
         state.sealed = true;
     }) {
         log::error!(
@@ -887,17 +913,22 @@ fn mark_profile_sealed(dir: &Path) {
     }
 }
 
-fn store_tip(path: &Path, tip: &str) -> Result<(), String> {
+fn store_tip_locked(path: &Path, tip: &str) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    update_seal_state(&dir, |state| {
+    update_seal_state_locked(&dir, |state| {
         state.sealed = true;
         state.audit_tip = Some(tip.to_string());
     })
 }
 
 fn clear_audit_tip(path: &Path) {
+    let _guard = seal_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    clear_audit_tip_locked(path);
+}
+
+fn clear_audit_tip_locked(path: &Path) {
     let dir = profile_dir_for_path(path);
-    if let Err(error) = update_seal_state(&dir, |state| {
+    if let Err(error) = update_seal_state_locked(&dir, |state| {
         state.audit_tip = None;
     }) {
         log::error!(

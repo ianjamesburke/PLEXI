@@ -11773,6 +11773,7 @@ mod agent_state_restoration_tests {
             fleet_result: None,
             fleet_seen: false,
             fleet_done_unseen: false,
+            fleet_dismissed: false,
             fleet_since: 0,
             harness: "codex".to_string(),
             config_name: Some("worker".to_string()),

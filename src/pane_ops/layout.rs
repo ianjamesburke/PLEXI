@@ -1111,7 +1111,6 @@ impl PlexiApp {
             self.windows[self.active_window].navigate_to(child);
             self.mark_agent_seen(child_pane);
             log::info!("navigate(Right): conjoined parent={parent} -> child pane={child_pane}");
-            self.resume_focused_standby_pane();
             return true;
         }
 
