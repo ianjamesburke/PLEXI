@@ -848,7 +848,10 @@ impl TerminalPane {
             .env
             .get("PLEXI_SPAWNED_BY")
             .cloned()
-            .filter(|s| !s.trim().is_empty());
+            .filter(|s| !s.trim().is_empty())
+            // A pane nobody stamped (new window/split/first shell) was opened by the
+            // person at the desktop; agent and system spawners stamp themselves.
+            .or_else(|| Some("human".to_string()));
         let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
         let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
         let agent_spawned = settings
@@ -1265,6 +1268,10 @@ impl TerminalPane {
     }
 }
 
+/// Badge for a pane its own person opened. It labels an existing header bar but
+/// never forces one: every plain shell is human-spawned.
+pub const SPAWNED_BY_HUMAN_BADGE: &str = "spawned by you";
+
 /// Format an unspoofable `spawned_by` provenance string into a concise GUI badge.
 pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
     let s = raw?.trim();
@@ -1272,7 +1279,7 @@ pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
         return None;
     }
     if s == "human" {
-        return Some("spawned by you".to_string());
+        return Some(SPAWNED_BY_HUMAN_BADGE.to_string());
     }
     if let Some(agent_name) = s.strip_prefix("agent:") {
         let name = agent_name.trim();

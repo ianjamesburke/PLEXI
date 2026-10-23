@@ -781,9 +781,9 @@ pub fn agent_create_in(
         ));
     }
     if let Some(fb) = opts.fallback.and_then(non_empty_string) {
-        if !matches!(fb, "pi" | "claude" | "codex" | "agy" | "script") {
+        if !matches!(fb, "pi" | "claude" | "codex" | "agy") {
             return Err(format!(
-                "invalid --fallback '{fb}': expected one of pi, claude, codex, agy, script"
+                "invalid --fallback '{fb}': expected one of pi, claude, codex, agy (script is only allowed as --cli)"
             ));
         }
     }

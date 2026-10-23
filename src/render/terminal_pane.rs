@@ -556,7 +556,7 @@ fn render_name_bar_and_tabs(
     } else if has_name
         || outside_workspace
         || has_escalation
-        || spawned_by_badge.is_some()
+        || spawned_by_badge.is_some_and(|b| b != crate::host::pane::SPAWNED_BY_HUMAN_BADGE)
         || waiting_results_badge.is_some()
     {
         let bar_rect = egui::Rect::from_min_size(
@@ -631,7 +631,7 @@ fn render_name_bar_and_tabs(
         {
             Some(lbl)
         } else if has_escalation
-            || spawned_by_badge.is_some()
+            || spawned_by_badge.is_some_and(|b| b != crate::host::pane::SPAWNED_BY_HUMAN_BADGE)
             || waiting_results_badge.is_some()
         {
             Some("Terminal")

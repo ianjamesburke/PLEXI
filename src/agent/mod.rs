@@ -225,10 +225,17 @@ struct SubscriptionTable {
     default: String,
 }
 
+/// `script` is a one-shot `/bin/sh -c` harness: allowed only as the explicit
+/// `cli` type, never as a `fallback` that a missing agent binary could fall into.
 fn parse_harness_cli_name(field: &str, raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
-    if matches!(trimmed, "pi" | "claude" | "codex" | "agy") {
+    let script_ok = field == "cli" && trimmed == "script";
+    if matches!(trimmed, "pi" | "claude" | "codex" | "agy") || script_ok {
         Ok(trimmed.to_string())
+    } else if field == "cli" {
+        Err(format!(
+            "settings.toml: [harness] invalid {field} '{raw}' (expected one of: pi, claude, codex, agy, script)"
+        ))
     } else {
         Err(format!(
             "settings.toml: [harness] invalid {field} '{raw}' (expected one of: pi, claude, codex, agy)"
@@ -1389,6 +1396,18 @@ default = "ask"
         let message = transcript_info_log_message("reviewer", "agent", sentinel);
         assert!(!message.contains(sentinel), "{message}");
         assert_eq!(message, "agent[reviewer] agent: len=26");
+    }
+
+    #[test]
+    fn script_harness_is_allowed_as_an_explicit_cli_but_never_as_a_fallback() {
+        let base = "[agent]\nid='s'\ndisplay_name='S'\n[harness]\n";
+        let def = AgentDefinition::parse("Run it.", &format!("{base}cli='script'")).unwrap();
+        assert_eq!(def.harness.unwrap().cli, "script");
+        let err = AgentDefinition::parse("Run it.", &format!("{base}cli='pi'\nfallback='script'"))
+            .unwrap_err();
+        assert!(err.contains("invalid fallback 'script'"), "{err}");
+        let err = AgentDefinition::parse("Run it.", &format!("{base}cli='bash'")).unwrap_err();
+        assert!(err.contains("expected one of: pi, claude, codex, agy, script"), "{err}");
     }
 
     #[test]

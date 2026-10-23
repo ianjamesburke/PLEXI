@@ -1443,8 +1443,9 @@ fn main() -> eframe::Result {
                             ))
                         }
                         PaneCmd::Self_ => cli::trace::exit(cli::pane_self_cli()),
-                        PaneCmd::Info { previous } => {
-                            cli::trace::exit(cli::pane_info_cli(previous))
+                        PaneCmd::Info { pane_id, previous } => {
+                            let pane_id = resolve_opt_pane(pane_id.as_ref());
+                            cli::trace::exit(cli::pane_info_cli(pane_id, previous))
                         }
                         PaneCmd::Capture {
                             pane_id,
