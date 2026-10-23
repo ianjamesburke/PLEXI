@@ -46,7 +46,6 @@ Submit a text turn to the running host Assistant
 |---|---|
 | `send` | Submit through the same composer, model, and permission path as the desktop Assistant |
 | `tool` | Run one Assistant host tool through the host permission gate |
-| `open` | Open an Assistant pane bound to a head |
 | `permission` | Observe and resolve pending permission requests. This is not `plexi agent request` |
 
 ### `plexi assistant send`
@@ -56,7 +55,6 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--text` | string | no | Prompt text. Omitted when `--status-for` only reads a pending turn |
-| `--head` | string | no | Lead id. The turn runs in that head's conversation |
 | `--request-id` | string | no |  |
 | `--pane-id` | string | no | Target pane id or name |
 | `--context-id` | string | no | Target context id or name |
@@ -76,16 +74,6 @@ Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","o
 |---|---|---|---|
 | `<name>` | string | yes | Tool name, for example `host.editors.list` or `host.files.edit` |
 | `--input` | string | yes | JSON object passed as the tool input |
-
-### `plexi assistant open`
-
-Open an Assistant pane bound to a head.
-
-Example: plexi assistant open --head lead-b
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--head` | string | yes | Head id created with `agent head create` |
 
 ### `plexi assistant permission`
 
@@ -178,16 +166,15 @@ Print the desktop's relay status
 
 ## `plexi command-view`
 
-Show every lead, its runs, and its queue. Send and cancel steer those leads.
+Show every registered agent and its runs. Cancel finishes an active run.
 
-The rows come from the agents API head records, runs, and each head's conversation. `open` shows the same projection in a pane. `send` runs a real model turn. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
+The rows come from the agents API agent records and runs. `open` shows the same projection in a pane. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
 
-Example: plexi command-view --json Example: plexi command-view --follow Example: plexi command-view open Example: plexi command-view send lead-a "status?" Example: plexi command-view cancel run_example
+Example: plexi command-view --json Example: plexi command-view --follow Example: plexi command-view open Example: plexi command-view cancel run_example
 
 | Subcommand | Description |
 |---|---|
 | `open` | Open the command view pane in the active context |
-| `send` | Send text to a lead. The turn runs in that head's conversation |
 | `cancel` | Stop a live run before its next tool call |
 | `resolve` | Resolve a pending approval. An agent pane is refused, and this command does not grant |
 | `allow` | Record an allow. An agent pane is refused, and this command does not grant |
@@ -195,17 +182,6 @@ Example: plexi command-view --json Example: plexi command-view --follow Example:
 ### `plexi command-view open`
 
 Open the command view pane in the active context
-
-### `plexi command-view send`
-
-Send text to a lead. The turn runs in that head's conversation.
-
-Example: plexi command-view send lead-a "status?"
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<lead>` | string | yes | Lead id |
-| `<text>` | string | yes | Prompt for that lead |
 
 ### `plexi command-view cancel`
 
@@ -626,13 +602,6 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `history` | Show closed agent runs and sessions from `~/.plexi-<channel>/agent_history.jsonl` |
 | `reopen` | Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory |
 | `hook` | Install or uninstall agent hook integrations |
-| `head` | Create or list an agent head stored under `.plexi/agents` |
-| `grants` | Inspect hard and soft tool grants recorded for agent heads in the current workspace |
-| `run` | Spawn, list, or finish a run of an agent head |
-| `assign` | Assign work to a head. The task is stored even when no pane is open |
-| `cancel` | Stop a queued or running headless task before the next tool call |
-| `conversation` | Read one head's conversation |
-| `delegate` | Start a child run whose grants are a subset of the parent run |
 
 ### `plexi agent team`
 
@@ -654,7 +623,7 @@ Optional quorum = 2 requires that many valid ballots; default: all members.
 The host always writes RESULT.md with COMPLETE, PARTIAL, or FAILED status,
 member outcomes and valid ballots. Below quorum there is no winner.
 Failed/timed-out member panes stay open for inspection.
-Grants use existing head/delegation admission; a team is not authority.
+Grants use existing delegation admission; a team is not authority.
 Format v0 may change. consult-experts uses pi, claude and codex by default.
 
 | Subcommand | Description |
@@ -950,151 +919,6 @@ Remove PLEXI agent-state hook integrations
 | `--claude-code` | flag | no | Remove Claude Code hooks |
 | `--codex` | flag | no | Remove Codex hooks |
 | `--pi` | flag | no | Remove Pi extension hooks |
-
-### `plexi agent head`
-
-Create or list an agent head stored under `.plexi/agents`.
-
-A head is a named definition. `AGENT.md` is guidance and grants nothing. `--grant tool=allow[:hard|:soft]|ask|deny` is the authority the permission gate enforces.
-
-Example: plexi agent head create lead --grant agents.ping=allow --json
-
-| Subcommand | Description |
-|---|---|
-| `create` | Create a head in the current workspace |
-| `list` | List heads in the current workspace |
-
-#### `plexi agent head create`
-
-Create a head in the current workspace
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<name>` | string | yes | Head id (lowercase slug) |
-| `--display-name` | string | no | Display name. Defaults to the head id on the host when omitted |
-| `--description` | string | no | Short description stored on the head card |
-| `--grant` | string (repeatable) | no | Grant, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable |
-
-#### `plexi agent head list`
-
-List heads in the current workspace
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--all` | flag | no | Include temporary delegated children |
-
-### `plexi agent grants`
-
-Inspect hard and soft tool grants recorded for agent heads in the current workspace.
-
-Example: plexi agent grants list --json
-
-| Subcommand | Description |
-|---|---|
-| `list` | List tool grants recorded for agent heads in the current workspace |
-
-#### `plexi agent grants list`
-
-List tool grants recorded for agent heads in the current workspace
-
-### `plexi agent run`
-
-Spawn, list, or finish a run of an agent head.
-
-The same `--admission` returns the original run. A different admission while that run is active is `assignment_conflict`.
-
-Example: plexi agent run spawn --head lead --admission adm-1 --json
-
-| Subcommand | Description |
-|---|---|
-| `spawn` | Claim a run of a head, append a ledger row, and run a model turn |
-| `list` | List runs in the current workspace |
-| `show` | Show one run |
-| `finish` | Mark a run finished so another admission can claim the head |
-
-#### `plexi agent run spawn`
-
-Claim a run of a head, append a ledger row, and run a model turn
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--head` | string | yes | Head id to run |
-| `--admission` | string | no | Admission id. The same id returns the existing run |
-| `--client-ref` | string | no | Client tag stored on the run and the ledger row |
-| `--kind` | string | no | `system` or `output` |
-| `--input-tokens` | string | no | Input tokens recorded on the ledger row |
-| `--output-tokens` | string | no | Output tokens recorded on the ledger row |
-| `--text` | string | no | Prompt for the model turn. Defaults to `run` on the host |
-
-#### `plexi agent run list`
-
-List runs in the current workspace
-
-#### `plexi agent run show`
-
-Show one run
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | yes | Run id |
-
-#### `plexi agent run finish`
-
-Mark a run finished so another admission can claim the head
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | yes | Run id |
-
-### `plexi agent assign`
-
-Assign work to a head. The task is stored even when no pane is open.
-
-The input file is JSON `{"text":"..."}` or a plain prompt. A running host starts it. A stopped host leaves it queued until the next start.
-
-Example: plexi agent assign --head lead-b --input task.json --json
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--head` | string | yes | Head that should run the task |
-| `--input` | string | yes | Task file. JSON with a `text` field, or the prompt itself |
-
-### `plexi agent cancel`
-
-Stop a queued or running headless task before the next tool call.
-
-Example: plexi agent cancel --id task_example --json
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--id` | string | yes | Task id returned by `agent assign` |
-
-### `plexi agent conversation`
-
-Read one head's conversation.
-
-`--as` names the lead that is asking. A lead cannot read another lead's conversation. Omit `--as` to read as the operator.
-
-Example: plexi agent conversation --head lead-b --json
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--head` | string | yes | Head whose conversation to read |
-| `--as` | string | no | Lead id to act as. A different head is refused |
-
-### `plexi agent delegate`
-
-Start a child run whose grants are a subset of the parent run.
-
-A grant the parent does not hold is refused, audited, and filed in Needs-you. The child is temporary and does not appear in `agent head list` unless `--all`.
-
-Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--parent-run` | string | yes | Active parent run id |
-| `--name` | string | yes | Child head name |
-| `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow[:hard|:soft]|ask|deny`. Repeatable |
 
 ## `plexi context`
 

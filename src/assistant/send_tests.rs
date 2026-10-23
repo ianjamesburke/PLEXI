@@ -136,7 +136,6 @@ fn submit_to(
         status_for: None,
         client: None,
         kind: None,
-        head: None,
     });
 }
 
@@ -152,7 +151,6 @@ fn status_for(h: &HostHarness, path: &Path, request_id: &str, turn_id: &str) {
         status_for: Some(turn_id.to_string()),
         client: None,
         kind: None,
-        head: None,
     });
 }
 

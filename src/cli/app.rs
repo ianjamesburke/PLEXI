@@ -2359,7 +2359,6 @@ pub(crate) struct AssistantSendFields<'a> {
     pub status_for: Option<&'a str>,
     pub client: Option<&'a str>,
     pub kind: Option<&'a str>,
-    pub head: Option<&'a str>,
 }
 
 pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_json::Value {
@@ -2375,7 +2374,6 @@ pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_
         "status_for": fields.status_for,
         "client": fields.client,
         "kind": fields.kind,
-        "head": fields.head,
     })
 }
 
@@ -2386,16 +2384,14 @@ pub struct AssistantSendRoute<'a> {
     pub status_for: Option<&'a str>,
     pub client: Option<&'a str>,
     pub kind: Option<&'a str>,
-    pub head: Option<&'a str>,
 }
 
 /// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
 ///
 /// `conversation` selects the phone relay's own conversation. `join_desktop`
 /// opts into the desktop transcript. `status_for` reads a turn that already
-/// returned `waiting_for_permission` and does not submit a prompt. `head`
-/// routes the turn to that lead. A phone turn never carries a grant; the
-/// desktop permission gate still admits tools.
+/// returned `waiting_for_permission` and does not submit a prompt. A phone
+/// turn never carries a grant; the desktop permission gate still admits tools.
 pub fn assistant_send_result(
     text: Option<&str>,
     request_id: Option<&str>,
@@ -2409,7 +2405,6 @@ pub fn assistant_send_result(
         status_for,
         client,
         kind,
-        head,
     } = route;
     let request_id = request_id
         .map(str::to_owned)
@@ -2422,8 +2417,7 @@ pub fn assistant_send_result(
         log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
     } else {
         log::info!(
-            "assistant_send:cli: submit request_id={request_id} head={} join_desktop={join_desktop} conversation={}",
-            head.unwrap_or(""),
+            "assistant_send:cli: submit request_id={request_id} join_desktop={join_desktop} conversation={}",
             conversation.unwrap_or("")
         );
     }
@@ -2438,7 +2432,6 @@ pub fn assistant_send_result(
         status_for,
         client: client.map(str::trim).filter(|client| !client.is_empty()),
         kind: kind.map(str::trim).filter(|kind| !kind.is_empty()),
-        head,
     });
     let content = super::request_with(
         payload,

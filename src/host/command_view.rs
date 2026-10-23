@@ -1,6 +1,6 @@
 //! Live command view over agents API records.
 //!
-//! The pane and `command-view --follow` read [`crate::agent::leads::projection`].
+//! The pane and `command-view --follow` read [`crate::agent::runs::projection`].
 //! This module does not keep a board. `enqueue`, `pause`, and `block` are not
 //! commands here, and `resolve` / `allow` do not grant.
 
@@ -32,7 +32,7 @@ pub fn publish(workspace: &Path, summary: &str) {
         revision
     };
     log::info!("command_view: revision={revision} {summary}");
-    let payload = crate::agent::leads::projection(workspace);
+    let payload = crate::agent::runs::projection(workspace);
     let timeline = crate::host::app_timeline::global();
     let Ok(mut timeline) = timeline.lock() else {
         log::warn!("command_view: timeline lock failed");
@@ -88,7 +88,7 @@ pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: Stri
         if revision != seen {
             drop(guard);
             seen = revision;
-            let mut event = crate::agent::leads::projection(&workspace);
+            let mut event = crate::agent::runs::projection(&workspace);
             if let Some(obj) = event.as_object_mut() {
                 obj.insert("type".to_string(), json!("event"));
                 obj.insert("event".to_string(), json!(STREAM));

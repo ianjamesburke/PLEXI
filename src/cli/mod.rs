@@ -1850,10 +1850,8 @@ pub use agent::{
     agent_spawn_cli, agent_start_cli, agent_status_cli, agent_wait_cli, agent_next_cli, agent_fleet_cli, agent_fleet_dismiss_cli, AgentHarness,
 };
 pub use agents_api::{
-    agent_team_dispatch, agent_assign_cli, agent_cancel_cli, agent_conversation_cli, agent_delegate_cli,
-    agent_grants_dispatch, agent_head_dispatch, agent_run_dispatch, assistant_open_head_cli,
-    command_view_cancel_cli, command_view_cli, command_view_follow_cli, command_view_refused,
-    command_view_send_cli,
+    agent_team_dispatch, command_view_cancel_cli, command_view_cli, command_view_follow_cli,
+    command_view_refused,
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
