@@ -1461,6 +1461,7 @@ impl PlexiApp {
                         }
                     }
                 }
+                self.mark_agent_seen(cid);
             }
             let results: Vec<serde_json::Value> = wait
                 .pane_ids
