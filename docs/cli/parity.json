@@ -75,6 +75,9 @@
     "cli": "agent next",
     "note": ""
   },
+  "FocusApproval": {
+    "ui-only": "Focuses the oldest desktop approval banner for its keyboard-only decision flow."
+  },
   "OpenQuickNote": {
     "cli": "note add text",
     "note": "CLI supplies text directly instead of opening the entry overlay."

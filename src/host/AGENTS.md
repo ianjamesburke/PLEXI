@@ -128,3 +128,11 @@ An experiment owns its storage in its own versioned location and never writes co
   must honor the SDK `level` field for the same reason: a debug inventory poll
   that the host rewrites as info refills the tail. Unrecognized guest message
   types warn once per type per window; repeats stay at debug.
+
+## Approval keyboard ownership
+
+Permission-banner keyboard ownership lives in `src/app/approval_keyboard.rs` and
+uses the existing focus stack. Route desktop decisions through
+`PermissionMonitor::approve_pending`; its decision lock rejects duplicate answers
+before grant or ledger mutation. Keybinding behavior is documented in
+`docs/CONFIG.md`; never route pane-injected keys into desktop approvals.

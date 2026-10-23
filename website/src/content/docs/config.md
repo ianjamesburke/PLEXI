@@ -216,6 +216,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `decrease_font_size` | decrease font size |
 | `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
 | `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
+| `focus_approval` | Focus the oldest permission banner (default cmd+alt+p). |
 | `open_file_browser` | open file browser |
 | `open_quick_note` | open quick note |
 | `open_config` | open config |
@@ -356,6 +357,7 @@ ghost_opacity = 0.75
 # [keybindings]
 # open_agents = "cmd+alt+a"
 # next_blocked_agent = "cmd+alt+b"
+# focus_approval = "cmd+alt+p"
 # toggle_command_palette = "cmd+p"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"

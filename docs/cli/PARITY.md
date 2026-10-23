@@ -34,6 +34,7 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `OpenFileBrowser` | `plexi app open file_browser` |  |
 | `OpenAgents` | `plexi pane new agents` |  |
 | `NextBlockedAgent` | `plexi agent next` |  |
+| `FocusApproval` | ui-only: Focuses the oldest desktop approval banner for its keyboard-only decision flow. |  |
 | `OpenQuickNote` | `plexi note add text` | CLI supplies text directly instead of opening the entry overlay. |
 | `OpenConfig` | `plexi config edit` |  |
 | `OpenSecretsManager` | `plexi app open secrets_manager` |  |

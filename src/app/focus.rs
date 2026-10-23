@@ -57,6 +57,7 @@ pub(crate) enum FocusKind {
     /// Needs attention review (list/detail of unresolved Needs-you items).
     /// Routing rule: `src/overlays/attention.rs`.
     AttentionOverlay,
+    ApprovalBanner,
     ConfirmClose,
     CommandPalette,
     RenamePane,
@@ -98,6 +99,7 @@ impl FocusKind {
         match self {
             Self::NotificationModal => "NotificationModal",
             Self::AttentionOverlay => "AttentionOverlay",
+            Self::ApprovalBanner => "ApprovalBanner",
             Self::ConfirmClose => "ConfirmClose",
             Self::CommandPalette => "CommandPalette",
             Self::RenamePane => "RenamePane",
@@ -121,6 +123,7 @@ impl FocusKind {
         match self {
             Self::NotificationModal => &NotificationModalOwner,
             Self::AttentionOverlay => &AttentionOverlayOwner,
+            Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
             Self::CommandPalette => &CommandPaletteOwner,
             Self::RenamePane => &RenamePaneOwner,
@@ -205,6 +208,7 @@ macro_rules! focus_owner_tokens {
 }
 
 focus_owner_tokens! {
+    ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     AttentionOverlay => AttentionOverlayOwner { key: attention_handle_key, draw: draw_attention_overlay },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },

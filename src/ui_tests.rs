@@ -1117,6 +1117,18 @@ mod tests {
             root.path().display()
         );
         h.harness().get_by_label(&caption);
+        // Arrival alone never captures keys or grants consent.
+        h.harness().key_down_modifiers(egui::Modifiers::NONE, egui::Key::A);
+        h.step();
+        h.harness().key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
+        h.step();
+        assert_eq!(monitor.list_pending().len(), 1);
+        let chord = egui::Modifiers { command: true, alt: true, ..Default::default() };
+        h.harness().key_down_modifiers(chord, egui::Key::P);
+        h.step();
+        h.harness().key_up_modifiers(chord, egui::Key::P);
+        h.step();
+        h.with_app_mut(|app| assert_eq!(app.focus_stack.last(), Some(&crate::app::FocusKind::ApprovalBanner)));
         h.save_screenshot(&evidence_png!()).expect("render banner");
     }
 

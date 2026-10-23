@@ -88,6 +88,7 @@ pub enum Action {
     OpenFileBrowser,
     OpenAgents,
     NextBlockedAgent,
+    FocusApproval,
     /// Open the quick note app (full pane, no terminal split).
     OpenQuickNote,
     /// Open config file in the text editor.
@@ -198,6 +199,7 @@ pub struct KeyBindings {
     pub increase_font_size: (egui::Modifiers, egui::Key),
     pub decrease_font_size: (egui::Modifiers, egui::Key),
     pub next_blocked_agent: (egui::Modifiers, egui::Key),
+    pub focus_approval: (egui::Modifiers, egui::Key),
     pub open_agents: (egui::Modifiers, egui::Key),
     pub open_file_browser: (egui::Modifiers, egui::Key),
     pub open_quick_note: (egui::Modifiers, egui::Key),
@@ -306,6 +308,7 @@ impl Default for KeyBindings {
             increase_font_size: (cmd(), egui::Key::Equals),
             decrease_font_size: (cmd(), egui::Key::Minus),
             next_blocked_agent: (cmd_alt(), egui::Key::B),
+            focus_approval: (cmd_alt(), egui::Key::P),
             open_agents: (cmd_alt(), egui::Key::A),
             open_file_browser: (cmd(), egui::Key::E),
             open_quick_note: (cmd(), egui::Key::Num0),
@@ -493,6 +496,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(increase_font_size, "increase_font_size");
     apply_override!(decrease_font_size, "decrease_font_size");
     apply_override!(next_blocked_agent, "next_blocked_agent");
+    apply_override!(focus_approval, "focus_approval");
     apply_override!(open_agents, "open_agents");
     apply_override!(open_file_browser, "open_file_browser");
     apply_override!(open_quick_note, "open_quick_note");
@@ -554,6 +558,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("increase_font_size", bindings.increase_font_size),
         ("decrease_font_size", bindings.decrease_font_size),
         ("next_blocked_agent", bindings.next_blocked_agent),
+        ("focus_approval", bindings.focus_approval),
         ("open_agents", bindings.open_agents),
         ("open_file_browser", bindings.open_file_browser),
         ("open_quick_note", bindings.open_quick_note),
@@ -648,6 +653,7 @@ fn reserved_host_shortcuts(
             ("increase_font_size", b.increase_font_size),
             ("decrease_font_size", b.decrease_font_size),
             ("next_blocked_agent", b.next_blocked_agent),
+            ("focus_approval", b.focus_approval),
             ("open_agents", b.open_agents),
             ("open_file_browser", b.open_file_browser),
             ("open_quick_note", b.open_quick_note),
@@ -889,6 +895,14 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             no_repeat: true,
             context: BindingContext::Global,
             action: Action::NextBlockedAgent,
+        },
+        BindingEntry {
+            modifiers: b.focus_approval.0,
+            key: b.focus_approval.1,
+            exact: true,
+            no_repeat: true,
+            context: BindingContext::Global,
+            action: Action::FocusApproval,
         },
         // toggle_notification_modal is Cmd+Shift+A; exact=true so plain Cmd+A (select-all)
         // is not consumed by the subset match.
@@ -1472,6 +1486,10 @@ mod tests {
         let table = build_binding_table(&b);
         assert_eq!(b.toggle_notification_modal, (cmd_shift(), egui::Key::A));
         assert!(table.iter().any(|e| (e.modifiers, e.key) == b.toggle_notification_modal && e.action == Action::ToggleNotificationModal));
+        assert_eq!(b.focus_approval, (cmd_alt(), egui::Key::P));
+        assert_eq!(table.iter().filter(|e| (e.modifiers, e.key) == b.focus_approval).count(), 1);
+        let approval: crate::config::KeybindingsConfig = toml::from_str("focus_approval = \"cmd+alt+g\"").unwrap();
+        assert_eq!(build_key_bindings(Some(&approval)).focus_approval, (cmd_alt(), egui::Key::G));
         assert_eq!(b.next_blocked_agent, (cmd_alt(), egui::Key::B));
         let overrides: crate::config::KeybindingsConfig = toml::from_str(
             "next_blocked_agent = \"cmd+alt+g\"").unwrap();

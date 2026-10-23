@@ -228,6 +228,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "decrease_font_size",
     "open_agents",
     "next_blocked_agent",
+    "focus_approval",
     "open_file_browser",
     "open_quick_note",
     "open_config",
@@ -601,6 +602,8 @@ pub struct KeybindingsConfig {
     pub open_agents: Option<String>,
     /// Next agent needing attention (default cmd+alt+b).
     pub next_blocked_agent: Option<String>,
+    /// Focus the oldest permission banner (default cmd+alt+p).
+    pub focus_approval: Option<String>,
     pub open_file_browser: Option<String>,
     pub open_quick_note: Option<String>,
     pub open_config: Option<String>,
@@ -670,6 +673,7 @@ impl KeybindingsConfig {
         overlay_field!(decrease_font_size);
         overlay_field!(open_agents);
         overlay_field!(next_blocked_agent);
+        overlay_field!(focus_approval);
         overlay_field!(open_file_browser);
         overlay_field!(open_quick_note);
         overlay_field!(open_config);

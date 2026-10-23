@@ -914,8 +914,7 @@ impl PlexiApp {
         }
     }
 
-    /// A framed, nonmodal permission surface. Only real pointer decisions
-    /// grant authority; ordinary typing continues in the active pane.
+    /// A nonmodal permission surface; keyboard decisions require explicit focus.
     pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
@@ -925,6 +924,7 @@ impl PlexiApp {
         // this frame stay listed alongside the banner's.
         if pending.is_empty() {
             self.approval_banner_logged = None;
+            self.leave_approval();
             return;
         }
         let pending_id = pending[0].pending_request_id.clone();
@@ -935,6 +935,13 @@ impl PlexiApp {
                 pending[0].tool
             );
             self.approval_banner_logged = Some(pending_id.clone());
+        }
+        if self.approval_keyboard.id.as_deref().is_some_and(|id| id != pending_id) {
+            self.leave_approval();
+        }
+        let remaining = self.approval_keyboard.remaining(std::time::Instant::now());
+        if !remaining.is_zero() {
+            ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)));
         }
         let request = &pending[0];
         let actor = request.actor_id.strip_prefix("pane:")
@@ -972,6 +979,14 @@ impl PlexiApp {
                     crate::ui::typography::caption(ui,
                         "Session approval covers different arguments for this tool and caller, in this app instance and workspace only. The resource stays the same. Ends when Plexi quits; revoke in Permissions.", &self.colors);
                 }
+                let armed = self.approval_keyboard.armed(std::time::Instant::now());
+                let hint = if self.approval_keyboard.confirm_always {
+                    "Always deny this tool? Enter confirm · Esc leave pending".to_string()
+                } else {
+                    format!("{} focus · a allow once · d deny · Esc leave pending · Shift+A always deny (confirm)",
+                        ctx.format_shortcut(&egui::KeyboardShortcut::new(self.key_bindings.focus_approval.0, self.key_bindings.focus_approval.1)))
+                };
+                ui.add_enabled(armed, egui::Label::new(hint));
                 ui.add_space(crate::ui::style::SPACE_MD);
                 ui.horizontal_wrapped(|ui| {
                     for &(label, choice) in &choices {
