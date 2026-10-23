@@ -1,14 +1,20 @@
-pub(crate) mod approval_keyboard;
-mod cli_actions;
 pub mod account;
-pub mod command_view_app;
+mod agent_tools;
+pub(crate) mod agents_app;
 mod app_call;
 pub mod app_trait;
+pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
+pub mod attention_queue;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
+mod cli_actions;
+pub mod command_view_app;
+mod conjoined;
 mod dispatch;
+mod event_stream;
 pub mod file_handlers;
+mod fleet;
 mod focus;
 pub(crate) mod focus_journal;
 pub mod host_mcp;
@@ -19,7 +25,6 @@ pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod lifecycle;
-mod event_stream;
 pub mod marketplace;
 pub(crate) mod notification_image;
 mod notifications;
@@ -36,17 +41,14 @@ pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
-pub mod secrets_app;
 mod secret_get;
+pub mod secrets_app;
 mod sync;
+mod team;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
-mod fleet;
-mod agent_tools;
-mod conjoined;
-mod team;
-pub(crate) mod agents_app;
 pub mod video_player_app;
+pub mod zoom;
 
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
@@ -56,9 +58,7 @@ pub(crate) use focus::{
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
-pub(crate) use notifications::{
-    load_pending_notifications_from, PendingNotification, NOTIFY_OUTCOME_CANCELLED,
-};
+pub(crate) use notifications::{load_pending_notifications_from, PendingNotification};
 
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
 /// A single arg is used as-is (it's already a shell expression — CLI path).
@@ -326,11 +326,6 @@ pub struct PlexiApp {
     pub(crate) text_overlay_browse_rx: Option<mpsc::Receiver<Option<PathBuf>>>,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
-    /// Whether the centered notification modal is visible. Primary (and only)
-    /// surface; auto-shown when a new notification arrives unless
-    /// `notifications.focus_mode` is on, in which case the modal only opens
-    /// on Cmd+Shift+A.
-    pub(crate) show_notification_modal: bool,
     /// Needs attention review state (`src/overlays/attention.rs`).
     pub(crate) attention: crate::overlays::attention::AttentionState,
     /// ID of the notification the modal is currently showing. `None` means
@@ -344,11 +339,14 @@ pub struct PlexiApp {
     pub(crate) current_notify_id: Option<String>,
     /// Focused option index for `kind = "choice"` notifications (0-based).
     /// Reset to 0 whenever the front of the queue changes.
+    #[allow(dead_code)]
     pub(crate) modal_focused_option: usize,
     /// Buffer for `kind = "input"` notifications.
+    #[allow(dead_code)]
     pub(crate) modal_input_buffer: String,
     /// Input drafts keyed by notification id. Later and queue cycling are
     /// non-terminal, so they must not discard text the user already entered.
+    #[allow(dead_code)]
     pub(crate) notification_input_drafts: HashMap<String, String>,
     /// Text being composed in the quick note modal.
     pub(crate) quick_note_text: String,
@@ -388,6 +386,7 @@ pub struct PlexiApp {
     pub(crate) notes_index_loaded: bool,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
+    #[allow(dead_code)]
     pub(crate) modal_state_notify_id: String,
     /// Lazily-decoded image-render state for notifications that carry an
     /// `image_inline` or `image_pipe_id` attachment (#74). Keyed by
@@ -619,9 +618,8 @@ pub struct PlexiApp {
     /// positions.
     pub(crate) pending_pane_pointer_frames:
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
-    /// Last pending id the banner logged, so a painted sheet is one info
-    /// line rather than one per frame.
-    approval_banner_logged: Option<String>,
+    pub zoom: zoom::ZoomState,
+    pub attention_queue: attention_queue::AttentionQueueState,
     approval_keyboard: approval_keyboard::ApprovalKeyboard,
     // Drop after the host resources that may still refer to these test paths.
     #[cfg(test)]
@@ -633,9 +631,9 @@ struct SheetButtonFrame;
 
 impl SheetButtonFrame {
     fn begin() -> Self {
-        if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(
-            &crate::config::config_dir(),
-        ) {
+        if let Some(monitor) =
+            crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+        {
             monitor.begin_sheet_frame();
         }
         Self
@@ -644,9 +642,9 @@ impl SheetButtonFrame {
 
 impl Drop for SheetButtonFrame {
     fn drop(&mut self) {
-        if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(
-            &crate::config::config_dir(),
-        ) {
+        if let Some(monitor) =
+            crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+        {
             monitor.finish_sheet_frame();
         }
     }
@@ -715,7 +713,13 @@ pub(crate) fn handle_socket_line(
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
-    handle_socket_line_in(&crate::config::config_dir(), line, mailbox, peer_ancestry, ack_writer);
+    handle_socket_line_in(
+        &crate::config::config_dir(),
+        line,
+        mailbox,
+        peer_ancestry,
+        ack_writer,
+    );
 }
 
 pub(crate) fn handle_socket_line_in(
@@ -755,29 +759,65 @@ pub(crate) fn handle_socket_line_in(
                 | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                 }
-                crate::protocol::AppRequest::AgentCall { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::AgentMessage { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::ListAppTools { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::PaneSecretGet { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::PaneSecretList { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::NeedsYouApi { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::ResourceLease { peer_ancestry: p, .. } => {
+                crate::protocol::AppRequest::AgentCall {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::AgentMessage {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::CallAppTool {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::ListAppTools {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::PaneSecretGet {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::PaneSecretList {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::NeedsYouApi {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::ResourceLease {
+                    peer_ancestry: p, ..
+                } => {
                     // Overwrite any client-supplied ancestry. A missing capture
                     // leaves the vector empty so the call cannot pretend to be a pane.
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
-                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::SetAgentState { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::AgentDone { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::AgentAsk { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::Permissions { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::CallerContext { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::AgentSpawn { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::AgentWait { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::PaneMessageSend { peer_ancestry: p, .. }
-                | crate::protocol::AppRequest::SendToPane { peer_ancestry: p, .. } => {
+                crate::protocol::AppRequest::SpawnPane {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::SetAgentState {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::AgentDone {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::AgentAsk {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::Permissions {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::CallerContext {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::AgentSpawn {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::AgentWait {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::PaneMessageSend {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::AppRequest::SendToPane {
+                    peer_ancestry: p, ..
+                } => {
                     // Same rule as CallAppTool: the wire value is never the
                     // caller's identity. None when this process has no peer
                     // capture (tests that enqueue the request directly).
@@ -791,10 +831,7 @@ pub(crate) fn handle_socket_line_in(
                     if let Some(obj) = payload.as_object_mut() {
                         match peer_ancestry {
                             Some(pids) if !pids.is_empty() => {
-                                obj.insert(
-                                    "peer_ancestry".to_string(),
-                                    serde_json::json!(pids),
-                                );
+                                obj.insert("peer_ancestry".to_string(), serde_json::json!(pids));
                                 log::info!(
                                     "pane_ipc: stamped agents_api peer ancestry ({} pid(s))",
                                     pids.len()
@@ -1025,7 +1062,13 @@ fn handle_socket_connection(
         }
     }
     // Normal path: first line plus any remaining lines as AppRequests.
-    handle_socket_line_in(trace_profile, &first, &mailbox, peer_ancestry.as_deref(), &mut write_half);
+    handle_socket_line_in(
+        trace_profile,
+        &first,
+        &mailbox,
+        peer_ancestry.as_deref(),
+        &mut write_half,
+    );
     if crate::rpc::extract_response_file_token(&first).is_some() {
         return;
     }
@@ -1042,7 +1085,13 @@ fn handle_socket_connection(
         if line.is_empty() {
             continue;
         }
-        handle_socket_line_in(trace_profile, &line, &mailbox, peer_ancestry.as_deref(), &mut write_half);
+        handle_socket_line_in(
+            trace_profile,
+            &line,
+            &mailbox,
+            peer_ancestry.as_deref(),
+            &mut write_half,
+        );
         if crate::rpc::extract_response_file_token(&line).is_some() {
             return;
         }
@@ -1620,7 +1669,7 @@ impl PlexiApp {
                     closed_pane_slots: HashMap::new(),
                     agent_attention: Default::default(),
                     fleet_history: std::cell::RefCell::new(crate::workspace::load_agent_history()),
-            pane_results: HashMap::new(),
+                    pane_results: HashMap::new(),
                     pending_result_waits: Vec::new(),
                     pending_agent_waits: Vec::new(),
                     child_result_events: HashMap::new(),
@@ -1665,7 +1714,6 @@ impl PlexiApp {
                     pending_notifications: load_pending_notifications_from(
                         &profile_dir.join("notifications.json"),
                     ),
-                    show_notification_modal: false,
                     attention: Default::default(),
                     current_notify_id: None,
                     modal_focused_option: 0,
@@ -1743,15 +1791,13 @@ impl PlexiApp {
                     terminal_traversal_lock: None,
                     focus_journal_path: profile_dir.join("focus-journal.jsonl"),
                     overlay_held_cmds: Vec::new(),
-                    agent_host: crate::agent::AgentHost::production(
-                        config.ai,
-                        model_modes,
-                    ),
+                    agent_host: crate::agent::AgentHost::production(config.ai, model_modes),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
-                    approval_banner_logged: None,
+                    zoom: zoom::ZoomState::default(),
+                    attention_queue: attention_queue::AttentionQueueState::default(),
                     approval_keyboard: Default::default(),
                 };
                 app.apply_context_transition_effects();
@@ -1805,19 +1851,15 @@ impl PlexiApp {
         let default_cwd = std::env::current_dir().unwrap_or_default();
         let mut default_registries = crate::app::registry_views::RegistryViews::new();
         default_registries.view_for_root(&default_cwd);
-        let default_registry_watchers =
-            start_registry_watchers_for(&default_registries, &ui_wake);
+        let default_registry_watchers = start_registry_watchers_for(&default_registries, &ui_wake);
 
-        let agent_host = crate::agent::AgentHost::production(
-            config.ai.clone(),
-            config.resolved_model_modes(),
-        );
+        let agent_host =
+            crate::agent::AgentHost::production(config.ai.clone(), config.resolved_model_modes());
         // Standing ruling: a context root must gitignore its app_states dir
         // (personal local data, never committed). Guarded so constructing a
         // Context never creates directories as a side effect.
         if default_root.is_dir() {
-            if let Err(error) =
-                crate::workspace::secrets::ensure_app_state_gitignore(&default_root)
+            if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(&default_root)
             {
                 log::warn!(
                     "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
@@ -1898,12 +1940,12 @@ impl PlexiApp {
             child_result_events: HashMap::new(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
-                    agent_tool_waits: Vec::new(),
-                    agent_tool_children: std::collections::HashMap::new(),
-                    conjoined_contexts: std::collections::HashMap::new(),
-                    conjoined_parent_focus: None,
-                    conjoined_parent_rect: None,
-                    team_runs: Vec::new(),
+            agent_tool_waits: Vec::new(),
+            agent_tool_children: std::collections::HashMap::new(),
+            conjoined_contexts: std::collections::HashMap::new(),
+            conjoined_parent_focus: None,
+            conjoined_parent_rect: None,
+            team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
             pending_send_approvals: Vec::new(),
@@ -1937,7 +1979,6 @@ impl PlexiApp {
             pending_notifications: load_pending_notifications_from(
                 &crate::config::config_dir().join("notifications.json"),
             ),
-            show_notification_modal: false,
             attention: Default::default(),
             current_notify_id: None,
             modal_focused_option: 0,
@@ -2018,7 +2059,8 @@ impl PlexiApp {
             pending_pane_inputs: HashMap::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
-            approval_banner_logged: None,
+            zoom: zoom::ZoomState::default(),
+            attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
         };
         // Seed the base root terminal so a fresh profile boots straight into a
@@ -2060,8 +2102,7 @@ impl PlexiApp {
         self.sidebar_visible = restored.sidebar_visible;
         self.pane_heartbeats = restored.pane_heartbeats;
         self.context_active_window = restored.context_active_window;
-        self.minimap =
-            crate::render::minimap::MinimapState::with_visible(restored.minimap_visible);
+        self.minimap = crate::render::minimap::MinimapState::with_visible(restored.minimap_visible);
         self.next_window_id = restored.next_window_id;
         self.host.seed_next_pane_id(restored.next_pane_id);
         self.apply_context_transition_effects();
@@ -2133,14 +2174,11 @@ impl PlexiApp {
         {
             return Some(posture);
         }
-        let role = pane
-            .agent_role
-            .as_deref()
-            .or_else(|| {
-                pane.standby_session
-                    .as_ref()
-                    .and_then(|s| s.config_name.as_deref())
-            })?;
+        let role = pane.agent_role.as_deref().or_else(|| {
+            pane.standby_session
+                .as_ref()
+                .and_then(|s| s.config_name.as_deref())
+        })?;
         let lookup_root = self.pane_context_authority_root(pane_id);
         let profile_dir = crate::config::config_dir();
         let posture = crate::cli::agent::resolve_agent_definition_in(
@@ -2784,213 +2822,210 @@ impl PlexiApp {
             crate::host::app_timeline::global(),
         );
         let mut app = Self {
-                pty_event_rx: rx,
-                pty_event_tx: tx,
-                last_notify_poll: std::time::Instant::now(),
-                scheduler: crate::host::scheduler::Scheduler::new(),
-                theme: theme::terminal_theme(&theme_cfg),
-                colors,
-                default_font_size: config.font_size.unwrap_or(theme::FONT_SIZE),
-                ctx,
-                router: crate::workspace::router::WorkspaceRouter::new(
-                    vec![crate::host::context::Context {
-                        name: "Test".into(),
-                        root: path.clone(),
-                        description: None,
-                        context_id: 1,
-                        parent_id: None,
-                        depth: 0,
-                        parked: false,
-                    }],
-                    0,
-                ),
-                windows: vec![Window {
+            pty_event_rx: rx,
+            pty_event_tx: tx,
+            last_notify_poll: std::time::Instant::now(),
+            scheduler: crate::host::scheduler::Scheduler::new(),
+            theme: theme::terminal_theme(&theme_cfg),
+            colors,
+            default_font_size: config.font_size.unwrap_or(theme::FONT_SIZE),
+            ctx,
+            router: crate::workspace::router::WorkspaceRouter::new(
+                vec![crate::host::context::Context {
                     name: "Test".into(),
-                    path: path.clone(),
-                    tree: egui_tiles::Tree::empty("test_tree"),
-                    panes: HashMap::new(),
-                    focused_pane: None,
-                    zoomed_pane: None,
-                    grid_x: 0,
-                    grid_y: 0,
-                    window_id: 1,
+                    root: path.clone(),
+                    description: None,
                     context_id: 1,
+                    parent_id: None,
+                    depth: 0,
+                    parked: false,
                 }],
-                active_window: 0,
-                sidebar_visible: false,
-                show_shortcuts: false,
-                show_changelog: false,
-                show_ui_gallery: false,
-                ui_gallery_normal_buf: "workspace/search".to_string(),
-                ui_gallery_focused_buf: "Focused field".to_string(),
-                ui_gallery_show_text_modal: false,
-                ui_gallery_modal_buf: String::new(),
-                quitting: false,
-                quit_press_count: 0,
-                quit_last_press: None,
-                welcome_delete_press_count: 0,
-                welcome_delete_last_press: None,
-                config,
-                binding_table: crate::host::keys::build_binding_table(&key_bindings),
-                claimed_host_key_releases: HashSet::new(),
-                key_bindings,
-                pending_close: false,
-                pending_quit: false,
-                pending_context_close: None,
-                frame_tick,
-                ui_phase: crate::platform::logging::new_ui_phase_tracker(),
-                frame_diag_window: None,
-                prev_screen_rect: None,
-                drag_window_last_seen: None,
-                pending_screenshots: Vec::new(),
-                approval_buttons: Vec::new(),
-                synthetic_input_frame: false,
-                pending_slot_waits: Vec::new(),
-                pending_agent_boots: Vec::new(),
-                pending_submits: Vec::new(),
-                pending_send_approvals: Vec::new(),
-                pane_heartbeats: HashMap::new(),
-                pane_worktrees: HashMap::new(),
-                last_worktree_close_reports: HashMap::new(),
-                pane_mailboxes: HashMap::new(),
-                pending_message_recvs: Vec::new(),
-                next_pane_message_id: 1,
-                closed_pane_slots: HashMap::new(),
-                agent_attention: Default::default(),
-                fleet_history: std::cell::RefCell::new(Vec::new()),
-                pane_results: HashMap::new(),
-                pending_result_waits: Vec::new(),
+                0,
+            ),
+            windows: vec![Window {
+                name: "Test".into(),
+                path: path.clone(),
+                tree: egui_tiles::Tree::empty("test_tree"),
+                panes: HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
+                window_id: 1,
+                context_id: 1,
+            }],
+            active_window: 0,
+            sidebar_visible: false,
+            show_shortcuts: false,
+            show_changelog: false,
+            show_ui_gallery: false,
+            ui_gallery_normal_buf: "workspace/search".to_string(),
+            ui_gallery_focused_buf: "Focused field".to_string(),
+            ui_gallery_show_text_modal: false,
+            ui_gallery_modal_buf: String::new(),
+            quitting: false,
+            quit_press_count: 0,
+            quit_last_press: None,
+            welcome_delete_press_count: 0,
+            welcome_delete_last_press: None,
+            config,
+            binding_table: crate::host::keys::build_binding_table(&key_bindings),
+            claimed_host_key_releases: HashSet::new(),
+            key_bindings,
+            pending_close: false,
+            pending_quit: false,
+            pending_context_close: None,
+            frame_tick,
+            ui_phase: crate::platform::logging::new_ui_phase_tracker(),
+            frame_diag_window: None,
+            prev_screen_rect: None,
+            drag_window_last_seen: None,
+            pending_screenshots: Vec::new(),
+            approval_buttons: Vec::new(),
+            synthetic_input_frame: false,
+            pending_slot_waits: Vec::new(),
+            pending_agent_boots: Vec::new(),
+            pending_submits: Vec::new(),
+            pending_send_approvals: Vec::new(),
+            pane_heartbeats: HashMap::new(),
+            pane_worktrees: HashMap::new(),
+            last_worktree_close_reports: HashMap::new(),
+            pane_mailboxes: HashMap::new(),
+            pending_message_recvs: Vec::new(),
+            next_pane_message_id: 1,
+            closed_pane_slots: HashMap::new(),
+            agent_attention: Default::default(),
+            fleet_history: std::cell::RefCell::new(Vec::new()),
+            pane_results: HashMap::new(),
+            pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
-                    agent_tool_waits: Vec::new(),
-                    agent_tool_children: std::collections::HashMap::new(),
-                    conjoined_contexts: std::collections::HashMap::new(),
-                    conjoined_parent_focus: None,
-                    conjoined_parent_rect: None,
-                    team_runs: Vec::new(),
-                last_sent_window_title: None,
-                permission_store_dir,
-                _test_scratch: Some(scratch),
-                renaming_window: None,
-                rename_buffer: String::new(),
-                editing_description: None,
-                description_buffer: String::new(),
-                drag_context: None,
-                parked_section_expanded: false,
-                show_command_palette: false,
-                palette_query: String::new(),
-                palette_selected: 0,
-                palette_selected_key: None,
-                palette_workspace_root: None,
-                palette_notes: Vec::new(),
-                palette_commands: Vec::new(),
-                palette_scroll_reset: false,
-                palette_agent_count_logged: None,
-                    context_visit_history: Vec::new(),
-                renaming_pane: None,
-                text_overlay: None,
-                text_overlay_browse_rx: None,
-                registries: {
-                    let mut views = crate::app::registry_views::RegistryViews::new_with_global(
-                        &path.join("nonexistent-apps-dir"),
-                    );
-                    views.view_for_root(&path);
-                    views
-                },
-                pending_notifications: Vec::new(),
-                show_notification_modal: false,
-                attention: Default::default(),
-                current_notify_id: None,
-                modal_focused_option: 0,
-                modal_input_buffer: String::new(),
-                notification_input_drafts: HashMap::new(),
-                quick_note_text: String::new(),
-                quick_note_attachments: Vec::new(),
-                quick_note_ctx: QuickNoteCtx::default(),
-                notes_migration_pending: true,
+            agent_tool_waits: Vec::new(),
+            agent_tool_children: std::collections::HashMap::new(),
+            conjoined_contexts: std::collections::HashMap::new(),
+            conjoined_parent_focus: None,
+            conjoined_parent_rect: None,
+            team_runs: Vec::new(),
+            last_sent_window_title: None,
+            permission_store_dir,
+            _test_scratch: Some(scratch),
+            renaming_window: None,
+            rename_buffer: String::new(),
+            editing_description: None,
+            description_buffer: String::new(),
+            drag_context: None,
+            parked_section_expanded: false,
+            show_command_palette: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            palette_selected_key: None,
+            palette_workspace_root: None,
+            palette_notes: Vec::new(),
+            palette_commands: Vec::new(),
+            palette_scroll_reset: false,
+            palette_agent_count_logged: None,
+            context_visit_history: Vec::new(),
+            renaming_pane: None,
+            text_overlay: None,
+            text_overlay_browse_rx: None,
+            registries: {
+                let mut views = crate::app::registry_views::RegistryViews::new_with_global(
+                    &path.join("nonexistent-apps-dir"),
+                );
+                views.view_for_root(&path);
+                views
+            },
+            pending_notifications: Vec::new(),
+            attention: Default::default(),
+            current_notify_id: None,
+            modal_focused_option: 0,
+            modal_input_buffer: String::new(),
+            notification_input_drafts: HashMap::new(),
+            quick_note_text: String::new(),
+            quick_note_attachments: Vec::new(),
+            quick_note_ctx: QuickNoteCtx::default(),
+            notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
-                notes_picker_selected: 0,
-                notes_picker_last_drawn_selected: None,
-                notes_picker_query: String::new(),
-                notes_index: crate::notes::NotesIndexCache::default(),
-                notes_index_rx: None,
-                notes_index_inflight_anchor: None,
-                notes_index_rerun: false,
-                notes_picker_shown_paths: Vec::new(),
-                notes_index_loaded: false,
-                modal_state_notify_id: String::new(),
-                notification_images: HashMap::new(),
-                notifications_enabled: false,
-                notifications_focus_mode: false,
-                notifications_sound: None,
-                notification_cue_playback: None,
-                focus_stack: Vec::new(),
-                focus_history_depth: 100,
-                pane_focus_history: Vec::new(),
-                pane_focus_future: Vec::new(),
-                navigating_history: false,
-                host: crate::host::model::HostModel::new(),
-                host_services: crate::host::services::HostServices::new(),
-                background_apps: HashMap::new(),
-                directed_pipes: HashMap::new(),
-                hot_reload: hr_watcher,
-                hot_reload_rx: hr_rx,
-                state_watch: sw_watcher,
-                state_watch_rx: sw_rx,
-                _config_watcher: None,
-                config_reload_rx: None,
-                registry_watchers: HashMap::new(),
-                workspace_dirty: false,
-                last_workspace_save: std::time::Instant::now(),
-                minimap: crate::render::minimap::MinimapState::new(),
-                last_page_x_per_row: HashMap::new(),
-                context_active_window: HashMap::new(),
-                minimap_visible_per_context: HashMap::new(),
-                next_window_id: 2,
-                pane_snapshot_len: 0,
-                pane_anims: Vec::new(),
-                edge_pulse: None,
-                click_flash: None,
-                ui_wake,
-                update_rx: None,
-                last_update_check: std::time::Instant::now(),
-                display_version: read_display_version(),
-                update_available: None,
-                update_quit_pending: false,
-                update_confirm_prompt: false,
-                shutdown_requested: false,
-                pane_ipc_rx,
-                host_subscriptions,
-                resource_leases: None,
-                event_subscribe_rx,
-                event_publish_rx,
-                pending_event_consents: std::collections::VecDeque::new(),
-                pending_app_subscription_replies: Vec::new(),
-                pending_raw_wasm_launches: std::collections::VecDeque::new(),
-                last_logged_focus: None,
-                focus_started_at: None,
-                terminal_traversal_lock: None,
-                focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
-                overlay_held_cmds: Vec::new(),
-                agent_host: crate::agent::AgentHost::inert(),
-                pending_pane_clicks: HashMap::new(),
-                pending_pane_inputs: HashMap::new(),
-                pending_pane_drags: HashMap::new(),
-                pending_pane_pointer_frames: HashMap::new(),
-                approval_banner_logged: None,
-                approval_keyboard: Default::default(),
-            };
+            notes_picker_selected: 0,
+            notes_picker_last_drawn_selected: None,
+            notes_picker_query: String::new(),
+            notes_index: crate::notes::NotesIndexCache::default(),
+            notes_index_rx: None,
+            notes_index_inflight_anchor: None,
+            notes_index_rerun: false,
+            notes_picker_shown_paths: Vec::new(),
+            notes_index_loaded: false,
+            modal_state_notify_id: String::new(),
+            notification_images: HashMap::new(),
+            notifications_enabled: false,
+            notifications_focus_mode: false,
+            notifications_sound: None,
+            notification_cue_playback: None,
+            focus_stack: Vec::new(),
+            focus_history_depth: 100,
+            pane_focus_history: Vec::new(),
+            pane_focus_future: Vec::new(),
+            navigating_history: false,
+            host: crate::host::model::HostModel::new(),
+            host_services: crate::host::services::HostServices::new(),
+            background_apps: HashMap::new(),
+            directed_pipes: HashMap::new(),
+            hot_reload: hr_watcher,
+            hot_reload_rx: hr_rx,
+            state_watch: sw_watcher,
+            state_watch_rx: sw_rx,
+            _config_watcher: None,
+            config_reload_rx: None,
+            registry_watchers: HashMap::new(),
+            workspace_dirty: false,
+            last_workspace_save: std::time::Instant::now(),
+            minimap: crate::render::minimap::MinimapState::new(),
+            last_page_x_per_row: HashMap::new(),
+            context_active_window: HashMap::new(),
+            minimap_visible_per_context: HashMap::new(),
+            next_window_id: 2,
+            pane_snapshot_len: 0,
+            pane_anims: Vec::new(),
+            edge_pulse: None,
+            click_flash: None,
+            ui_wake,
+            update_rx: None,
+            last_update_check: std::time::Instant::now(),
+            display_version: read_display_version(),
+            update_available: None,
+            update_quit_pending: false,
+            update_confirm_prompt: false,
+            shutdown_requested: false,
+            pane_ipc_rx,
+            host_subscriptions,
+            resource_leases: None,
+            event_subscribe_rx,
+            event_publish_rx,
+            pending_event_consents: std::collections::VecDeque::new(),
+            pending_app_subscription_replies: Vec::new(),
+            pending_raw_wasm_launches: std::collections::VecDeque::new(),
+            last_logged_focus: None,
+            focus_started_at: None,
+            terminal_traversal_lock: None,
+            focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
+            overlay_held_cmds: Vec::new(),
+            agent_host: crate::agent::AgentHost::inert(),
+            pending_pane_clicks: HashMap::new(),
+            pending_pane_inputs: HashMap::new(),
+            pending_pane_drags: HashMap::new(),
+            pending_pane_pointer_frames: HashMap::new(),
+            zoom: zoom::ZoomState::default(),
+            attention_queue: attention_queue::AttentionQueueState::default(),
+            approval_keyboard: Default::default(),
+        };
         // Launch paths allocate through HostModel, which otherwise starts at 1
         // in every test process. Seed a private block so a pane drop in one
         // test cannot unregister another test's tools.
         app.host
             .seed_next_pane_id(crate::testing::reserve_pane_id_block());
-        log::info!(
-            "test host: pane ids start at {}",
-            app.host.next_pane_id()
-        );
+        log::info!("test host: pane ids start at {}", app.host.next_pane_id());
         (app, pane_ipc_tx)
     }
 
@@ -3303,12 +3338,10 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::RunInLinkedTerminal { .. }
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
-        AppCommand::AssistantHostTool { name, .. } => {
-            !matches!(
-                name.as_str(),
-                "host.panes.list" | "host.panes.state" | "host.introspect"
-            )
-        }
+        AppCommand::AssistantHostTool { name, .. } => !matches!(
+            name.as_str(),
+            "host.panes.list" | "host.panes.state" | "host.introspect"
+        ),
         AppCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()
             .map(|a| a.starts_with("pane_focus:"))
@@ -3354,9 +3387,9 @@ impl PlexiApp {
                 .iter()
                 .filter(|(id, pane)| {
                     !pane.is_hidden()
-                        && window.tree.tiles.iter().any(|(_, tile)| {
-                            matches!(tile, egui_tiles::Tile::Pane(pid) if pid == *id)
-                        })
+                        && window.tree.tiles.iter().any(
+                            |(_, tile)| matches!(tile, egui_tiles::Tile::Pane(pid) if pid == *id),
+                        )
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -3785,12 +3818,20 @@ impl eframe::App for PlexiApp {
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
         // A close chord belongs to the top modal, never the pane beneath it.
         // Reuse that modal's Escape/cancel contract, including unsaved-work vetoes.
-        if self.input_captured_by_overlay() {
+        let modal_focus_open = !self.focus_stack.is_empty()
+            || (self.sidebar_visible && self.renaming_window.is_some());
+        if modal_focus_open {
             let binding = self.key_bindings.close_pane;
             let mut claimed = false;
             ctx.input_mut(|input| {
                 for event in &mut input.events {
-                    if let egui::Event::Key { key, modifiers, physical_key, .. } = event {
+                    if let egui::Event::Key {
+                        key,
+                        modifiers,
+                        physical_key,
+                        ..
+                    } = event
+                    {
                         if *key == binding.1 && modifiers.matches_logically(binding.0) {
                             claimed = true;
                             *key = egui::Key::Escape;
@@ -3805,7 +3846,7 @@ impl eframe::App for PlexiApp {
             }
         }
         let mut early_modal_cmds: Vec<crate::app::app_trait::AppCommand> = Vec::new();
-        let overlay_key_disposition = if self.input_captured_by_overlay() {
+        let mut overlay_key_disposition = if modal_focus_open {
             // Ownership-transfer (stint 0240): take this frame's input-intent
             // events out of `ctx` once, hand them to the top `FocusKind`
             // below, then give back whatever it didn't claim before rendering
@@ -3822,7 +3863,6 @@ impl eframe::App for PlexiApp {
             if qn_pressed && self.is_quick_note_preemptable() {
                 self.dismiss_preemptable_modal();
                 self.open_quick_note_modal();
-                self.sync_notification_modal_focus();
                 self.sync_command_palette_focus();
                 log::info!("quick_note: opened by preempting non-critical modal");
                 router_input.give_back(ctx);
@@ -3844,17 +3884,13 @@ impl eframe::App for PlexiApp {
                 // already done above). `handle_key` may have popped or replaced
                 // the top layer (NotesPicker/QuickNote/ContextDescription
                 // self-close), so re-read the current top rather than reusing
-                // the kind dispatched above. Only the notification modal's
-                // `draw` returns commands; every other owner returns an empty
-                // vec, leaving `early_modal_cmds` empty as before.
+                // the kind dispatched above.
                 if let Some(kind) = self.focus_stack.last().copied() {
                     early_modal_cmds = kind.owner().draw(self, ctx);
                 }
-                // The overlay may have self-closed (notification queue drained,
-                // confirm-close confirmed/cancelled, palette picked an entry,
-                // rename committed). Re-sync so the layer is accurate for the
-                // rest of this frame.
-                self.sync_notification_modal_focus();
+                // The overlay may have self-closed (confirm-close confirmed/cancelled,
+                // palette picked an entry, rename committed). Re-sync so the layer is
+                // accurate for the rest of this frame.
                 self.sync_confirm_close_focus();
                 self.sync_context_close_focus();
                 self.sync_command_palette_focus();
@@ -3903,9 +3939,11 @@ impl eframe::App for PlexiApp {
         // the same ownership rules as other host chords.
         if self.visual_owner_pane().is_some_and(|parent| {
             self.conjoined_contexts.iter().any(|(context, id)| {
-                *id == parent && self.windows.iter().any(|window| {
-                    window.context_id == *context && !window.panes.is_empty()
-                })
+                *id == parent
+                    && self
+                        .windows
+                        .iter()
+                        .any(|window| window.context_id == *context && !window.panes.is_empty())
             })
         }) {
             poll_actions_result.extend(keys::poll_actions(
@@ -3924,6 +3962,20 @@ impl eframe::App for PlexiApp {
                 overlay_open,
                 self.show_shortcuts,
             ));
+        }
+        // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
+        // Attention Queue list, Sibling Cards, Tree Atlas) after Global chords
+        // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
+        // `poll_actions` above, swallowing all remaining bare keys and `Cmd+V`
+        // so nothing leaks to any underlying pane (R40).
+        if !modal_focus_open {
+            if self.attention_queue.decision_overlay.is_some() {
+                overlay_key_disposition = self.handle_decision_overlay_input(&mut router_input);
+            } else if self.attention_queue.open {
+                overlay_key_disposition = self.handle_attention_queue_list_input(&mut router_input);
+            } else if self.zoom.level != zoom::ZoomLevel::Columns {
+                overlay_key_disposition = self.handle_zoom_surface_input(&mut router_input);
+            }
         }
         router_input.give_back(ctx);
 
@@ -3952,7 +4004,6 @@ impl eframe::App for PlexiApp {
         // Dispatch any DeliverNotifyAction commands the early modal render
         // produced. Routes back to the originating pane as NotifyAction events.
         self.dispatch_notify_action_cmds(early_modal_cmds);
-
 
         // Check if the focused app wants to close itself (e.g. after saving).
         {
@@ -4077,10 +4128,10 @@ impl eframe::App for PlexiApp {
                     let old_active_window = self.active_window;
                     let old_focus = self.windows[self.active_window].focused_pane;
                     let old_window_id = self.windows[self.active_window].window_id;
-                    let navigated = self.navigate(dir);
+                    let navigated = self.navigate_at_current_zoom_level(dir);
                     let new_window_id = self.windows[self.active_window].window_id;
                     let new_focus = self.windows[self.active_window].focused_pane;
-                    if navigated {
+                    if navigated && self.zoom.level == zoom::ZoomLevel::Columns {
                         self.windows[old_active_window].clear_zoom();
                         self.windows[self.active_window].clear_zoom();
                         log::info!(
@@ -4147,6 +4198,13 @@ impl eframe::App for PlexiApp {
                     }
                     if self.show_shortcuts {
                         self.show_shortcuts = false;
+                        continue;
+                    }
+                    if self.attention_queue.decision_overlay.is_some()
+                        || self.attention_queue.open
+                        || self.zoom.level != zoom::ZoomLevel::Columns
+                    {
+                        self.zoom_out_or_close_surface();
                         continue;
                     }
                     // If the focused app pane has a non-empty nav stack
@@ -4271,7 +4329,8 @@ impl eframe::App for PlexiApp {
                 }
                 Action::HidePane => {
                     let win = &self.windows[self.active_window];
-                    let target = win.focused_pane
+                    let target = win
+                        .focused_pane
                         .and_then(|tile| Self::find_pane_in_tile(&win.tree, tile))
                         .and_then(|id| win.panes.get(&id).map(|pane| (id, !pane.is_hidden())));
                     if let Some((pane_id, hidden)) = target {
@@ -4353,8 +4412,12 @@ impl eframe::App for PlexiApp {
                 Action::CloseApp => {
                     self.close_focused_app();
                 }
-                Action::NextBlockedAgent => { self.next_blocked_agent(); },
-                Action::FocusApproval => { self.focus_approval(); },
+                Action::NextBlockedAgent => {
+                    self.summon_decision_overlay();
+                }
+                Action::FocusApproval => {
+                    self.focus_approval();
+                }
                 Action::OpenAgents => self.open_agents_pane(),
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
@@ -4378,18 +4441,11 @@ impl eframe::App for PlexiApp {
                 Action::RenameContext => {
                     self.open_context_rename(self.router.active_idx());
                 }
-                Action::ToggleNotificationModal => {
-                    if self.show_notification_modal {
-                        self.show_notification_modal = false;
-                    } else {
-                        self.show_notification_modal = true;
-                        // Pick the next notification when re-opening the modal and
-                        // nothing is currently pinned. If something IS pinned
-                        // (user closed+reopened), keep showing that one.
-                        if self.current_notify_id.is_none() {
-                            self.current_notify_id = self.select_next_notification();
-                        }
-                    }
+                Action::ToggleAttentionQueue => {
+                    self.toggle_attention_queue_list();
+                }
+                Action::ZoomIn => {
+                    self.zoom_in_level();
                 }
                 Action::ForceReloadApp => {
                     self.force_reload_focused_app();
@@ -4449,11 +4505,7 @@ impl eframe::App for PlexiApp {
                     let _ = self.close_context_action(self.router.active().context_id);
                 }
                 Action::ContextZoomOut => {
-                    log::info!(
-                        "ContextZoomOut: popping depth stack (depth={})",
-                        self.router.current_depth()
-                    );
-                    self.zoom_out_of_context();
+                    self.zoom_out_or_close_surface();
                 }
                 Action::RunUserCommand(ref name) => {
                     log::info!("keys: executing user command binding 'run:{name}'");
@@ -4526,7 +4578,7 @@ impl eframe::App for PlexiApp {
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
-        self.draw_approval_banner(ctx);
+        self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_banner(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
@@ -4562,7 +4614,9 @@ impl eframe::App for PlexiApp {
 }
 
 fn read_display_version() -> String {
-    crate::distribution::build_tag().trim_start_matches('v').to_string()
+    crate::distribution::build_tag()
+        .trim_start_matches('v')
+        .to_string()
 }
 
 impl PlexiApp {
@@ -4803,7 +4857,10 @@ impl PlexiApp {
         self.notes_picker_entries
             .iter()
             .map(|entry| entry.path.as_path())
-            .eq(self.notes_picker_shown_paths.iter().map(std::path::PathBuf::as_path))
+            .eq(self
+                .notes_picker_shown_paths
+                .iter()
+                .map(std::path::PathBuf::as_path))
     }
 
     fn publish_notes_picker_entries(
@@ -5253,8 +5310,15 @@ pub(crate) fn restore_workspace(
                         || saved_pane.slots.contains_key("completed"))
             });
             if is_completed_ephemeral {
-                crate::workspace::archive_saved_completion(collaborators.profile_dir, saved_pane,
-                    saved_win.context_id, ctx_name_map.get(&saved_win.context_id).map(String::as_str).unwrap_or("unknown"));
+                crate::workspace::archive_saved_completion(
+                    collaborators.profile_dir,
+                    saved_pane,
+                    saved_win.context_id,
+                    ctx_name_map
+                        .get(&saved_win.context_id)
+                        .map(String::as_str)
+                        .unwrap_or("unknown"),
+                );
                 log::info!(
                     "workspace_restore: skipping completed ephemeral agent pane {}",
                     saved_pane.id
@@ -5362,9 +5426,12 @@ pub(crate) fn restore_workspace(
                         )
                     {
                         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
-                            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
-                                config.ai.clone(), config.resolved_model_modes(),
-                            ));
+                            std::sync::Arc::new(
+                                crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                                    config.ai.clone(),
+                                    config.resolved_model_modes(),
+                                ),
+                            );
                         pane_entry = Some(crate::pane_ops::restore_assistant_pane(
                             saved_pane.id,
                             app_cwd.clone(),
@@ -5436,13 +5503,10 @@ pub(crate) fn restore_workspace(
                         });
                     let is_active_top_context =
                         saved_win.context_id == initial_active_ctx_id && ctx_depth == 0;
-                    let should_auto_resume = matches!(
-                        restore_mode,
-                        config::AgentRestoreMode::Eager
-                    ) || (matches!(
-                        restore_mode,
-                        config::AgentRestoreMode::Lazy
-                    ) && is_active_top_context);
+                    let should_auto_resume =
+                        matches!(restore_mode, config::AgentRestoreMode::Eager)
+                            || (matches!(restore_mode, config::AgentRestoreMode::Lazy)
+                                && is_active_top_context);
 
                     let context_env = crate::pane_ops::create::PaneContextEnv {
                         context_id: saved_win.context_id,
@@ -5479,8 +5543,7 @@ pub(crate) fn restore_workspace(
                             .spawned_by
                             .clone()
                             .filter(|s| {
-                                !s.is_empty()
-                                    && !(s == "human" && session.parent_pane_id.is_some())
+                                !s.is_empty() && !(s == "human" && session.parent_pane_id.is_some())
                             })
                             .or_else(|| {
                                 let pid = session.parent_pane_id?;
@@ -5507,8 +5570,7 @@ pub(crate) fn restore_workspace(
                                 .insert("PLEXI_EPHEMERAL".to_string(), "1".to_string());
                         }
                         if should_auto_resume {
-                            if let Some(harness) =
-                                crate::cli::AgentHarness::parse(&session.harness)
+                            if let Some(harness) = crate::cli::AgentHarness::parse(&session.harness)
                             {
                                 let resume_cmd =
                                     harness.restore_command(session.session_id.as_deref());
@@ -5526,10 +5588,9 @@ pub(crate) fn restore_workspace(
                                     session.last_state.as_str(),
                                     resume_cmd
                                 );
-                                settings.env.insert(
-                                    "PLEXI_RESUME_COMMAND".to_string(),
-                                    resume_cmd.clone(),
-                                );
+                                settings
+                                    .env
+                                    .insert("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone());
                                 crate::pane_ops::apply_initial_cmd(
                                     &mut settings,
                                     &resume_cmd,
@@ -5554,10 +5615,11 @@ pub(crate) fn restore_workspace(
                         settings,
                         default_font_size,
                     ) {
-                        pane.name = saved_pane
-                            .name
-                            .clone()
-                            .or_else(|| effective_session.as_ref().and_then(|s| s.config_name.clone()));
+                        pane.name = saved_pane.name.clone().or_else(|| {
+                            effective_session
+                                .as_ref()
+                                .and_then(|s| s.config_name.clone())
+                        });
                         pane.name_locked = saved_pane
                             .name
                             .as_deref()
@@ -5596,9 +5658,9 @@ pub(crate) fn restore_workspace(
                                 });
                             pane.last_blocked_reason = session.last_blocked_reason;
                             pane.tail_preview = session.tail_preview.clone();
-                            pane.agent_completed =
-                                session.last_state == crate::protocol::AgentState::Completed
-                                    || saved_pane.slots.contains_key("completed");
+                            pane.agent_completed = session.last_state
+                                == crate::protocol::AgentState::Completed
+                                || saved_pane.slots.contains_key("completed");
                             pane.agent = Some(crate::protocol::PaneAgentState {
                                 pane_id: saved_pane.id,
                                 state: session.last_state.clone(),
@@ -5765,19 +5827,21 @@ pub(crate) fn restore_workspace(
 
     // Populate initial `context_state` on restored Portal panes so parent portals
     // immediately reflect child Blocked / NeedsYou / Idle states on startup.
-    let subcontext_states: std::collections::HashMap<u64, crate::host::context_state::ContextState> =
-        contexts
-            .iter()
-            .filter(|c| c.parent_id.is_some())
-            .map(|c| {
-                let state = crate::host::context_state::ContextState::compute(
-                    c.context_id,
-                    &contexts,
-                    &windows,
-                );
-                (c.context_id, state)
-            })
-            .collect();
+    let subcontext_states: std::collections::HashMap<
+        u64,
+        crate::host::context_state::ContextState,
+    > = contexts
+        .iter()
+        .filter(|c| c.parent_id.is_some())
+        .map(|c| {
+            let state = crate::host::context_state::ContextState::compute(
+                c.context_id,
+                &contexts,
+                &windows,
+            );
+            (c.context_id, state)
+        })
+        .collect();
     for win in &mut windows {
         for pane in win.panes.values_mut() {
             if let Pane::Portal(portal) = pane {
@@ -5882,18 +5946,15 @@ mod hidden_drain_tests {
         let mut h = crate::testing::HostHarness::new();
         let wake = std::sync::Arc::clone(&h.app.ui_wake);
 
-        let (state_tx, state_rx) = ui_mailbox::UiMailbox::channel(
-            std::sync::Arc::clone(&wake),
-            "test_state_watch_hidden",
-        );
+        let (state_tx, state_rx) =
+            ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&wake), "test_state_watch_hidden");
         h.app.state_watch_rx = state_rx;
         let _ = state_tx.send(crate::host::state_watch::StateChangedNotice {
             pane_id: 999,
             scope: crate::host::state_scope::StateScope::Global,
         });
 
-        let (cfg_tx, cfg_rx) =
-            ui_mailbox::UiMailbox::channel(wake, "test_config_reload_hidden");
+        let (cfg_tx, cfg_rx) = ui_mailbox::UiMailbox::channel(wake, "test_config_reload_hidden");
         h.app.config_reload_rx = Some(cfg_rx);
         let _ = cfg_tx.send(());
 
@@ -5905,12 +5966,7 @@ mod hidden_drain_tests {
             "state_watch_rx must be drained by App::logic during hidden_frame"
         );
         assert!(
-            h.app
-                .config_reload_rx
-                .as_ref()
-                .unwrap()
-                .try_recv()
-                .is_err(),
+            h.app.config_reload_rx.as_ref().unwrap().try_recv().is_err(),
             "config_reload_rx must be drained by App::logic during hidden_frame"
         );
     }

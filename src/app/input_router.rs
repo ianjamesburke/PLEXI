@@ -127,6 +127,12 @@ impl PlexiInput {
         self.events.is_empty()
     }
 
+    /// Swallow all remaining input-intent events in this frame's buffer so
+    /// nothing leaks to underlying panes or widgets.
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+    }
+
     /// Consume the whole buffer into its owned events + modifiers. Used by the
     /// focused-terminal handoff, which hands every remaining event straight to
     /// `egui_term` (the sole intended keyboard consumer for its frame) and

@@ -99,8 +99,10 @@ pub enum Action {
     OpenAssistant,
     /// Rename the active context. Bound to Cmd+Shift+R.
     RenameContext,
-    /// Toggle the notification panel overlay (Cmd+Shift+A).
-    ToggleNotificationModal,
+    /// Toggle the attention queue list (Cmd+I).
+    ToggleAttentionQueue,
+    /// Zoom in one level on the zoom ladder (Cmd+Enter).
+    ZoomIn,
     /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
     /// Cmd+R is RenamePane and Cmd+Shift+R is RenameContext, so the
     /// Option (Alt) modifier is the next free chord. No-op when the
@@ -208,7 +210,8 @@ pub struct KeyBindings {
     pub open_secrets_manager: (egui::Modifiers, egui::Key),
     pub open_assistant: (egui::Modifiers, egui::Key),
     pub force_reload_app: (egui::Modifiers, egui::Key),
-    pub toggle_notification_modal: (egui::Modifiers, egui::Key),
+    pub toggle_attention_queue: (egui::Modifiers, egui::Key),
+    pub zoom_in: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
     pub context_zoom_out: (egui::Modifiers, egui::Key),
     pub push_to_subcontext: (egui::Modifiers, egui::Key),
@@ -296,7 +299,7 @@ impl Default for KeyBindings {
             nav_back: (cmd(), egui::Key::OpenBracket),
             focus_history_forward: (cmd(), egui::Key::CloseBracket),
             toggle_sidebar: (cmd(), egui::Key::B),
-            toggle_zoom: (cmd(), egui::Key::Enter),
+            toggle_zoom: (cmd_shift(), egui::Key::Enter),
             toggle_shortcuts: (cmd(), egui::Key::Slash),
             rename_context: (cmd_shift(), egui::Key::R),
             rename_pane: (cmd(), egui::Key::R),
@@ -317,7 +320,8 @@ impl Default for KeyBindings {
             open_secrets_manager: (cmd_shift(), egui::Key::S),
             open_assistant: (cmd_ctrl(), egui::Key::A),
             force_reload_app: (cmd_alt(), egui::Key::R),
-            toggle_notification_modal: (cmd_shift(), egui::Key::A),
+            toggle_attention_queue: (cmd(), egui::Key::I),
+            zoom_in: (cmd(), egui::Key::Enter),
             open_scratchpad: (cmd_shift(), egui::Key::Space),
             context_zoom_out: (cmd(), egui::Key::Escape),
             push_to_subcontext: (cmd_alt(), egui::Key::N),
@@ -505,7 +509,8 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(open_assistant, "open_assistant");
     apply_override!(force_reload_app, "force_reload_app");
-    apply_override!(toggle_notification_modal, "toggle_notification_modal");
+    apply_override!(toggle_attention_queue, "toggle_attention_queue");
+    apply_override!(zoom_in, "zoom_in");
     apply_override!(open_scratchpad, "open_scratchpad");
     apply_override!(push_to_subcontext, "push_to_subcontext");
     apply_override!(new_child_context, "new_child_context");
@@ -567,10 +572,8 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("open_secrets_manager", bindings.open_secrets_manager),
         ("open_assistant", bindings.open_assistant),
         ("force_reload_app", bindings.force_reload_app),
-        (
-            "toggle_notification_modal",
-            bindings.toggle_notification_modal,
-        ),
+        ("toggle_attention_queue", bindings.toggle_attention_queue),
+        ("zoom_in", bindings.zoom_in),
         ("open_scratchpad", bindings.open_scratchpad),
         ("push_to_subcontext", bindings.push_to_subcontext),
         ("new_child_context", bindings.new_child_context),
@@ -604,9 +607,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     bindings
 }
 
-fn reserved_host_shortcuts(
-    bindings: &KeyBindings,
-) -> std::collections::HashMap<u64, &'static str> {
+fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<u64, &'static str> {
     let defaults = KeyBindings::default();
     let mut reserved = std::collections::HashMap::new();
     for (source, b) in [("default", &defaults), ("configured", bindings)] {
@@ -662,7 +663,8 @@ fn reserved_host_shortcuts(
             ("open_secrets_manager", b.open_secrets_manager),
             ("open_assistant", b.open_assistant),
             ("force_reload_app", b.force_reload_app),
-            ("toggle_notification_modal", b.toggle_notification_modal),
+            ("toggle_attention_queue", b.toggle_attention_queue),
+            ("zoom_in", b.zoom_in),
             ("open_scratchpad", b.open_scratchpad),
             ("context_zoom_out", b.context_zoom_out),
             ("push_to_subcontext", b.push_to_subcontext),
@@ -690,7 +692,10 @@ fn reserved_host_shortcuts(
     ] {
         reserved.insert(binding_id(cmd(), key), label);
     }
-    reserved.insert(binding_id(egui::Modifiers::NONE, egui::Key::Escape), "close_app");
+    reserved.insert(
+        binding_id(egui::Modifiers::NONE, egui::Key::Escape),
+        "close_app",
+    );
     reserved
 }
 
@@ -712,7 +717,10 @@ pub fn validate_user_keys(
             errors.push(format!("invalid key chord `{chord}` in [keys]"));
             continue;
         };
-        let Some(cmd_name) = target.strip_prefix("run:").map(str::trim).filter(|s| !s.is_empty())
+        let Some(cmd_name) = target
+            .strip_prefix("run:")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
         else {
             errors.push(format!(
                 "invalid [keys] target `{target}` for `{chord}` (expected `run:<command>`)"
@@ -919,15 +927,29 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Global,
             action: Action::FocusApproval,
         },
-        // toggle_notification_modal is Cmd+Shift+A; exact=true so plain Cmd+A (select-all)
-        // is not consumed by the subset match.
         BindingEntry {
-            modifiers: b.toggle_notification_modal.0,
-            key: b.toggle_notification_modal.1,
+            modifiers: b.toggle_attention_queue.0,
+            key: b.toggle_attention_queue.1,
             exact: true,
-            no_repeat: false,
+            no_repeat: true,
             context: BindingContext::Global,
-            action: Action::ToggleNotificationModal,
+            action: Action::ToggleAttentionQueue,
+        },
+        BindingEntry {
+            modifiers: b.zoom_in.0,
+            key: b.zoom_in.1,
+            exact: true,
+            no_repeat: true,
+            context: BindingContext::Global,
+            action: Action::ZoomIn,
+        },
+        BindingEntry {
+            modifiers: b.context_zoom_out.0,
+            key: b.context_zoom_out.1,
+            exact: true,
+            no_repeat: true,
+            context: BindingContext::Global,
+            action: Action::ContextZoomOut,
         },
         BindingEntry {
             modifiers: b.close_context.0,
@@ -1133,7 +1155,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry {
             modifiers: b.toggle_zoom.0,
             key: b.toggle_zoom.1,
-            exact: false,
+            exact: true,
             no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ToggleZoom,
@@ -1339,16 +1361,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenNotesPicker,
         },
-        // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
-        // so there is no subset conflict on this key.
-        BindingEntry {
-            modifiers: b.context_zoom_out.0,
-            key: b.context_zoom_out.1,
-            exact: false,
-            no_repeat: false,
-            context: BindingContext::Normal,
-            action: Action::ContextZoomOut,
-        },
         // ── AppActive bindings (only when app surface focused) ───────────────
         // CloseApp (Escape) — also suppressed when shortcuts overlay is open.
         BindingEntry {
@@ -1494,22 +1506,46 @@ pub fn poll_actions(
 mod tests {
     use super::*;
 
-
     #[test]
     fn attention_keys_preserve_notifications_and_use_free_binding() {
         let b = KeyBindings::default();
         let table = build_binding_table(&b);
-        assert_eq!(b.toggle_notification_modal, (cmd_shift(), egui::Key::A));
-        assert!(table.iter().any(|e| (e.modifiers, e.key) == b.toggle_notification_modal && e.action == Action::ToggleNotificationModal));
+        assert_eq!(b.toggle_attention_queue, (cmd(), egui::Key::I));
+        assert!(table
+            .iter()
+            .any(|e| (e.modifiers, e.key) == b.toggle_attention_queue
+                && e.action == Action::ToggleAttentionQueue));
+        assert!(!table
+            .iter()
+            .any(|e| (e.modifiers, e.key) == (cmd_shift(), egui::Key::A)));
         assert_eq!(b.focus_approval, (cmd_alt(), egui::Key::P));
-        assert_eq!(table.iter().filter(|e| (e.modifiers, e.key) == b.focus_approval).count(), 1);
-        let approval: crate::config::KeybindingsConfig = toml::from_str("focus_approval = \"cmd+alt+g\"").unwrap();
-        assert_eq!(build_key_bindings(Some(&approval)).focus_approval, (cmd_alt(), egui::Key::G));
+        assert_eq!(
+            table
+                .iter()
+                .filter(|e| (e.modifiers, e.key) == b.focus_approval)
+                .count(),
+            1
+        );
+        let approval: crate::config::KeybindingsConfig =
+            toml::from_str("focus_approval = \"cmd+alt+g\"").unwrap();
+        assert_eq!(
+            build_key_bindings(Some(&approval)).focus_approval,
+            (cmd_alt(), egui::Key::G)
+        );
         assert_eq!(b.next_blocked_agent, (cmd_alt(), egui::Key::B));
-        let overrides: crate::config::KeybindingsConfig = toml::from_str(
-            "next_blocked_agent = \"cmd+alt+g\"").unwrap();
-        assert_eq!(build_key_bindings(Some(&overrides)).next_blocked_agent, (cmd_alt(), egui::Key::G));
-        assert_eq!(table.iter().filter(|e| (e.modifiers, e.key) == b.next_blocked_agent).count(), 1);
+        let overrides: crate::config::KeybindingsConfig =
+            toml::from_str("next_blocked_agent = \"cmd+alt+g\"").unwrap();
+        assert_eq!(
+            build_key_bindings(Some(&overrides)).next_blocked_agent,
+            (cmd_alt(), egui::Key::G)
+        );
+        assert_eq!(
+            table
+                .iter()
+                .filter(|e| (e.modifiers, e.key) == b.next_blocked_agent)
+                .count(),
+            1
+        );
         assert!(table.iter().any(|e| e.action == Action::NextBlockedAgent));
     }
 
@@ -1536,7 +1572,8 @@ mod tests {
                 &mut claimed_key_releases,
                 /* app_active */ true,
                 /* keyboard_capture */ false,
-                /* overlay_open */ false, /* shortcuts_overlay_open */ false,
+                /* overlay_open */ false,
+                /* shortcuts_overlay_open */ false,
             );
         });
         actions
@@ -1568,9 +1605,21 @@ mod tests {
         };
         // Non-macOS: `cmd()` (`command=true, ctrl=false`) and `cmd_alt()` match Linux Ctrl chords.
         assert!(modifiers_match_exact_for_os(&linux_ctrl, &cmd(), false));
-        assert!(modifiers_match_exact_for_os(&linux_ctrl_alt, &cmd_alt(), false));
-        assert!(!modifiers_match_exact_for_os(&linux_ctrl, &cmd_alt(), false));
-        assert!(!modifiers_match_exact_for_os(&linux_ctrl_alt, &cmd(), false));
+        assert!(modifiers_match_exact_for_os(
+            &linux_ctrl_alt,
+            &cmd_alt(),
+            false
+        ));
+        assert!(!modifiers_match_exact_for_os(
+            &linux_ctrl,
+            &cmd_alt(),
+            false
+        ));
+        assert!(!modifiers_match_exact_for_os(
+            &linux_ctrl_alt,
+            &cmd(),
+            false
+        ));
 
         // macOS: `cmd` and `ctrl` are distinct physical modifiers.
         let mac_cmd_only = egui::Modifiers {
@@ -1587,8 +1636,16 @@ mod tests {
         };
         assert!(modifiers_match_exact_for_os(&mac_cmd_only, &cmd(), true));
         assert!(!modifiers_match_exact_for_os(&mac_cmd_ctrl, &cmd(), true));
-        assert!(modifiers_match_exact_for_os(&mac_cmd_ctrl, &cmd_ctrl(), true));
-        assert!(!modifiers_match_exact_for_os(&mac_cmd_only, &cmd_ctrl(), true));
+        assert!(modifiers_match_exact_for_os(
+            &mac_cmd_ctrl,
+            &cmd_ctrl(),
+            true
+        ));
+        assert!(!modifiers_match_exact_for_os(
+            &mac_cmd_only,
+            &cmd_ctrl(),
+            true
+        ));
     }
 
     #[cfg(not(target_os = "macos"))]

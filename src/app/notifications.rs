@@ -50,6 +50,7 @@ pub(crate) struct PendingNotification {
     /// Optional pipe-referenced image attachment (#74). The host drains the
     /// matching binary ring on first render and caches the texture under
     /// `PlexiApp::notification_images`.
+    #[allow(dead_code)]
     pub image_pipe_id: Option<String>,
     /// Path to a file the CLI polls for the chosen key. Set when the
     /// notification was queued by `plexi notify --choice ...`. The host writes
@@ -88,10 +89,17 @@ impl PendingNotification {
     }
 
     pub(crate) fn agent_source_pane(&self) -> u64 {
-        if self.sender_pane_id != 0 { self.sender_pane_id } else { self.dismiss_owner_pane_id }
+        if self.sender_pane_id != 0 {
+            self.sender_pane_id
+        } else {
+            self.dismiss_owner_pane_id
+        }
     }
     pub(crate) fn agent_event(&self) -> crate::agent::fleet::AgentEvent {
-        crate::agent::fleet::AgentEvent { title: self.title.clone(), body: self.body.clone() }
+        crate::agent::fleet::AgentEvent {
+            title: self.title.clone(),
+            body: self.body.clone(),
+        }
     }
 }
 
@@ -470,10 +478,8 @@ impl PlexiApp {
         if self.current_notify_id.as_deref() == Some(notify_id) {
             self.current_notify_id = None;
         }
-        if self.pending_notifications.is_empty() {
-            self.show_notification_modal = false;
-        }
         self.save_notifications();
+        self.sync_attention_queue();
         log::info!(
             "notify: dismissed id={} resolved_pane_id={}",
             notify_id,
@@ -501,12 +507,21 @@ impl PlexiApp {
         mut notification: PendingNotification,
     ) -> bool {
         let source_pane = notification.agent_source_pane();
-        let source_is_agent = self.windows.iter().find_map(|w| w.panes.get(&source_pane))
+        let source_is_agent = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&source_pane))
             .is_some_and(|p| p.as_terminal().is_some_and(|t| t.is_agent_pane()));
         if source_is_agent && self.fleet_focused_pane() == Some(source_pane) {
             log::info!("agents: suppress focused notification pane_id={source_pane}");
-            self.deliver_notify_action(notification.sender_pane_id, notification.notify_id,
-                "cancelled".into(), Some(NOTIFY_OUTCOME_CANCELLED.into()), notification.response_file, None);
+            self.deliver_notify_action(
+                notification.sender_pane_id,
+                notification.notify_id,
+                "cancelled".into(),
+                Some(NOTIFY_OUTCOME_CANCELLED.into()),
+                notification.response_file,
+                None,
+            );
             return false;
         }
         if !self.notifications_enabled {
@@ -568,17 +583,15 @@ impl PlexiApp {
 
         let is_visible = self.notification_is_visible(&notification);
         let may_interrupt = self.notification_may_interrupt(&notification);
-        let cue_played = !notification.notify_id.starts_with("agent-attention-") && self.play_notification_cue(&notification);
+        let cue_played = !notification.notify_id.starts_with("agent-attention-")
+            && self.play_notification_cue(&notification);
         self.pending_notifications.push(notification);
         self.save_notifications();
 
-        if may_interrupt {
-            self.show_notification_modal = true;
-            // Only pin the arrival as current when nothing is already pinned.
-            if self.current_notify_id.is_none() {
-                self.current_notify_id = Some(notify_id.clone());
-            }
+        if may_interrupt && self.current_notify_id.is_none() {
+            self.current_notify_id = Some(notify_id.clone());
         }
+        self.sync_attention_queue();
 
         log::info!(
             "notify: queued source={} id={} title={:?} visible={} interrupt={} cue={}",
@@ -783,6 +796,7 @@ impl PlexiApp {
     /// Revalidate the pinned queue id whenever the modal is about to render.
     /// A context/window switch can leave a still-existing id outside the
     /// current visibility scope; existence alone is not a valid selection.
+    #[allow(dead_code)]
     pub(crate) fn revalidate_notification_selection(&mut self) {
         let current_is_visible = self.current_notify_id.as_ref().is_some_and(|id| {
             self.pending_notifications
@@ -798,6 +812,7 @@ impl PlexiApp {
     /// (1-based position-in-sort-order, total visible len) for the current
     /// notify id, or `None` when modal is empty / current id is missing from
     /// visible queue. Renderer uses this for the "X of N" indicator.
+    #[allow(dead_code)]
     pub(crate) fn position_of_current(&self) -> Option<(usize, usize)> {
         let current = self.current_notify_id.as_ref()?;
         let sorted = self.sorted_notification_ids();
@@ -808,10 +823,8 @@ impl PlexiApp {
     /// Move `current_notify_id` forward (`direction = 1`) or backward
     /// (`direction = -1`) through the visible queue. No wrap
     /// at the ends. Called by Cmd+] / Cmd+[.
+    #[allow(dead_code)]
     pub(crate) fn cycle_notification(&mut self, direction: i32) {
-        if !self.show_notification_modal {
-            return;
-        }
         let sorted = self.sorted_notification_ids();
         if sorted.is_empty() {
             return;
@@ -869,11 +882,11 @@ impl PlexiApp {
             .iter()
             .filter(|n| woken_ids.contains(&n.notify_id))
             .any(|n| self.notification_may_interrupt(n));
-        if woken_notification_may_interrupt {
-            self.show_notification_modal = true;
-            if self.current_notify_id.is_none() {
-                self.current_notify_id = self.select_next_notification();
-            }
+        if woken_notification_may_interrupt && self.current_notify_id.is_none() {
+            self.current_notify_id = self.select_next_notification();
+        }
+        if !woken_ids.is_empty() {
+            self.sync_attention_queue();
         }
         for id in &expired_ids {
             let Some(pos) = self
@@ -913,6 +926,7 @@ impl PlexiApp {
         }
         if !expired_ids.is_empty() {
             self.save_notifications();
+            self.sync_attention_queue();
         }
     }
 
@@ -947,6 +961,7 @@ impl PlexiApp {
             );
         }
         self.save_notifications();
+        self.sync_attention_queue();
     }
 
     /// Count of window- or context-scoped notifications whose source_context_id == the id of ctx_idx.
@@ -1053,12 +1068,8 @@ impl PlexiApp {
             }
         }
 
-        if self.show_notification_modal && self.sorted_notification_ids().is_empty() {
-            self.show_notification_modal = false;
-            log::info!("notify:auto_dismiss: modal closed — no visible notifications remain");
-        }
-
         self.save_notifications();
+        self.sync_attention_queue();
     }
 
     /// True when `pane_id` is a pane a person would actually be looking at
@@ -1132,7 +1143,6 @@ impl PlexiApp {
                 continue;
             }
 
-            self.show_notification_modal = true;
             if self.current_notify_id.is_none() {
                 self.current_notify_id = Some(notify_id.clone());
             }

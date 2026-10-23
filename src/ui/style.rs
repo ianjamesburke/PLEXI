@@ -40,19 +40,50 @@ pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
 pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
-// `theme::font_medium` for weight contrast.
+                                  // `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
-// user reads first.
+                                     // user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
 pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.
 pub const RADIUS_MD: CornerRadius = CornerRadius::same(8);
 pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
+/// Motorways flat style corner radius (14px) for panes, cards, atlas nodes, and overlays.
+pub const RADIUS_MOTORWAYS: CornerRadius = CornerRadius::same(14);
+/// Bar / option row / code block radius (10px).
+pub const RADIUS_BAR: CornerRadius = CornerRadius::same(10);
+/// Capsule pill radius (99px).
+pub const RADIUS_PILL: CornerRadius = CornerRadius::same(99);
 // Badge-specific radius. At TEXT_HINT size the pill height is ~17 px;
 // RADIUS_MD (8) is 94% of max-oval — a cliché perfect stadium. 6 gives
 // visible corners while staying clearly rounded. Keep in sync with
 // RADIUS_BADGE in plexi_sdk/ui.py.
 pub const RADIUS_BADGE: f32 = 6.0;
+
+// ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
+pub const PATH_BAR_H: f32 = 34.0;
+#[allow(dead_code)]
+pub const STRIP_GAP: f32 = 10.0;
+pub const STRIP_PEEK_W: f32 = 28.0;
+pub const COLUMN_WIDTH_PARENT: f32 = 0.35;
+pub const COLUMN_WIDTH_CHILD: f32 = 0.65;
+pub const CARD_W: f32 = 340.0;
+pub const CARD_H: f32 = 240.0;
+pub const CARD_GAP: f32 = 16.0;
+pub const ATLAS_NODE_W: f32 = 216.0;
+pub const ATLAS_NODE_H: f32 = 84.0;
+pub const ATLAS_COL_GAP: f32 = 88.0;
+pub const ATLAS_ROW_GAP: f32 = 22.0;
+pub const EDGE_ROAD_W: f32 = 2.5;
+pub const EDGE_NEEDS_W: f32 = 3.0;
+pub const DECISION_MODAL_W: f32 = 580.0;
+pub const QUEUE_PANEL_W: f32 = 640.0;
+pub const PEEK_CARD_W: f32 = 380.0;
+pub const EDGE_BUMP_OFFSET_PX: f32 = 6.0;
+pub const EDGE_BUMP_DURATION_MS: u64 = 75;
+pub const ZOOM_DURATION_MS: u64 = 160;
+#[allow(dead_code)]
+pub const CAMERA_EASE_MS: u64 = 120;
 
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
@@ -215,6 +246,16 @@ pub fn elevation_shadow() -> egui::Shadow {
         blur: 32,
         spread: 0,
         color: egui::Color32::from_black_alpha(96),
+    }
+}
+
+/// Motorways flat offset shadow (`2px 2px 0px #0c0e14`, zero blur).
+pub fn motorways_shadow(shadow_color: egui::Color32) -> egui::Shadow {
+    egui::Shadow {
+        offset: [2, 2],
+        blur: 0,
+        spread: 0,
+        color: shadow_color,
     }
 }
 

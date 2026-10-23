@@ -23,19 +23,31 @@ struct WaitingApproval {
 }
 
 impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
-    fn present(&self, pending_id: &str, _tool: &str, _summary: &str, _actor: &str, _resource: &str)
-        -> Result<crate::broker::gate::ApprovalChoice, String>
-    {
+    fn present(
+        &self,
+        pending_id: &str,
+        _tool: &str,
+        _summary: &str,
+        _actor: &str,
+        _resource: &str,
+    ) -> Result<crate::broker::gate::ApprovalChoice, String> {
         let started = std::time::Instant::now();
         log::info!("app_call: waiting for desktop approval pending={pending_id}");
         loop {
             let expired = started.elapsed() >= self.timeout;
             if expired || !crate::host::pane_liveness::pid_is_alive(self.peer_pid) {
                 // Only cancel this request. A late click cannot restart this worker.
-                if let Err(error) = self.monitor.approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny) {
+                if let Err(error) = self
+                    .monitor
+                    .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny)
+                {
                     log::info!("app_call: cancellation pending={pending_id}: {error}");
                 }
-                let reason = if expired { "approval_timeout" } else { "caller_exited" };
+                let reason = if expired {
+                    "approval_timeout"
+                } else {
+                    "caller_exited"
+                };
                 log::info!("app_call: {reason} pending={pending_id}");
                 return Err(format!("{reason}: request was not executed"));
             }
@@ -293,9 +305,7 @@ impl PlexiApp {
                     .trim()
                     .to_string();
                 let explicit_pane = payload.get("pane_id").and_then(|v| v.as_u64());
-                let resolved_pane = peer_pane
-                    .map(|(pane_id, _, _)| pane_id)
-                    .or(explicit_pane);
+                let resolved_pane = peer_pane.map(|(pane_id, _, _)| pane_id).or(explicit_pane);
                 let resolved_context = peer_pane
                     .map(|(_, _, ctx_id)| ctx_id)
                     .or_else(|| payload.get("context_id").and_then(|v| v.as_u64()))
@@ -495,9 +505,8 @@ impl PlexiApp {
                         details.and_then(|d| d.pane_id) == Some(pid)
                             || item.actor == format!("pane:{pid}")
                     });
-                    let match_ctx = context_id.is_none_or(|cid| {
-                        details.and_then(|d| d.context_id) == Some(cid)
-                    });
+                    let match_ctx = context_id
+                        .is_none_or(|cid| details.and_then(|d| d.context_id) == Some(cid));
                     match_id && match_session && match_pane && match_ctx
                 });
                 log::info!(
@@ -645,19 +654,24 @@ impl PlexiApp {
         );
         scope.actor_type = verified.actor_type;
         scope.actor_scope = verified.actor_scope;
-        scope.posture = verified.pane_id.and_then(|pid| self.pane_permission_posture(pid));
+        scope.posture = verified
+            .pane_id
+            .and_then(|pid| self.pane_permission_posture(pid));
         let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,
             std::sync::Arc::clone(&monitor),
         );
         if wait_approved {
             let Some(peer_pid) = peer_ancestry.first().copied() else {
-                reply(serde_json::json!({"ok":false, "error_code":"permission_denied",
-                    "error":"approval waiting requires a verified live socket peer"}));
+                reply(
+                    serde_json::json!({"ok":false, "error_code":"permission_denied",
+                    "error":"approval waiting requires a verified live socket peer"}),
+                );
                 return;
             };
             dispatcher.set_presenter(std::sync::Arc::new(WaitingApproval {
-                monitor: std::sync::Arc::clone(&monitor), peer_pid,
+                monitor: std::sync::Arc::clone(&monitor),
+                peer_pid,
                 timeout: crate::cli::app::APP_CALL_APPROVAL_TIMEOUT,
             }));
         }
@@ -808,18 +822,19 @@ impl PlexiApp {
                     ui.add_sized(
                         egui::vec2(width, crate::ui::style::TEXT_CAPTION + 4.0),
                         egui::Label::new(
-                            egui::RichText::new(format!("Preview: {}", det.preview_refs.join(", ")))
-                                .size(crate::ui::style::TEXT_CAPTION)
-                                .color(colors.text_dim),
+                            egui::RichText::new(format!(
+                                "Preview: {}",
+                                det.preview_refs.join(", ")
+                            ))
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .color(colors.text_dim),
                         )
                         .truncate(),
                     );
                 });
             }
         }
-        let choices = details
-            .map(|d| d.choices.as_slice())
-            .unwrap_or(&[]);
+        let choices = details.map(|d| d.choices.as_slice()).unwrap_or(&[]);
         if matches!(
             item.kind,
             crate::broker::gate::NeedsYouKind::Question
@@ -923,223 +938,6 @@ impl PlexiApp {
         }
     }
 
-    /// A nonmodal permission surface; keyboard decisions require explicit focus.
-    pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let pending = monitor.list_pending();
-        // `approval_buttons` is cleared once per frame before the panels
-        // paint, so the sidebar's Needs-you buttons registered earlier in
-        // this frame stay listed alongside the banner's.
-        if pending.is_empty() {
-            let open = monitor.open_needs_you();
-            if let Some(item) = super::approval_keyboard::keyboard_actionable(&open) {
-                self.draw_needs_you_banner(ctx, &item);
-                return;
-            }
-            if let Some(done_item) = monitor
-                .open_needs_you()
-                .into_iter()
-                .find(|item| item.kind == crate::broker::gate::NeedsYouKind::AgentDone)
-            {
-                if self
-                    .approval_keyboard
-                    .id
-                    .as_deref()
-                    .is_some_and(|id| id != done_item.id)
-                {
-                    self.leave_approval();
-                }
-                let mut open_clicked = false;
-                let mut dismiss_clicked = false;
-                let shortcut = ctx.format_shortcut(&egui::KeyboardShortcut::new(
-                    self.key_bindings.focus_approval.0,
-                    self.key_bindings.focus_approval.1,
-                ));
-                let result_path = done_item
-                    .details
-                    .as_ref()
-                    .and_then(|d| d.preview_refs.first())
-                    .cloned();
-                crate::ui::overlay::ModalShell::centered("approval_banner")
-                    .title("Agent completed")
-                    .anchor(
-                        egui::Align2::CENTER_BOTTOM,
-                        egui::vec2(0.0, -crate::ui::style::SPACE_MD),
-                    )
-                    .scrim(false)
-                    .click_away(false)
-                    .show(ctx, &self.colors, |ui| {
-                        crate::ui::typography::body_strong(
-                            ui,
-                            done_item.summary.clone(),
-                            &self.colors,
-                        );
-                        if let Some(path) = &result_path {
-                            crate::ui::typography::caption(
-                                ui,
-                                format!("Result: {path}"),
-                                &self.colors,
-                            );
-                        }
-                        crate::ui::typography::caption(
-                            ui,
-                            format!("{shortcut} focus · Enter open result · d dismiss · Esc close"),
-                            &self.colors,
-                        );
-                        ui.add_space(crate::ui::style::SPACE_MD);
-                        ui.horizontal_wrapped(|ui| {
-                            if crate::ui::button::chrome_button(
-                                ui,
-                                "Open result",
-                                crate::ui::button::ButtonKind::Accent,
-                                &self.colors,
-                                0.0,
-                            )
-                            .clicked_by(egui::PointerButton::Primary)
-                            {
-                                open_clicked = true;
-                            }
-                            if crate::ui::button::chrome_button(
-                                ui,
-                                "Dismiss",
-                                crate::ui::button::ButtonKind::Secondary,
-                                &self.colors,
-                                0.0,
-                            )
-                            .clicked_by(egui::PointerButton::Primary)
-                            {
-                                dismiss_clicked = true;
-                            }
-                        });
-                    });
-                if open_clicked {
-                    self.open_agent_done_result(&done_item);
-                    self.leave_approval();
-                } else if dismiss_clicked {
-                    let _ = self.resolve_from_desktop(&done_item.id, false, "agent done banner");
-                    self.leave_approval();
-                }
-                return;
-            }
-            self.approval_banner_logged = None;
-            self.leave_approval();
-            return;
-        }
-        let pending_id = pending[0].pending_request_id.clone();
-        if self.approval_banner_logged.as_deref() != Some(pending_id.as_str()) {
-            log::info!(
-                "permission_monitor: approval banner shown pending={pending_id} actor={} tool={}",
-                pending[0].actor_id,
-                pending[0].tool
-            );
-            self.approval_banner_logged = Some(pending_id.clone());
-        }
-        if self.approval_keyboard.id.as_deref().is_some_and(|id| id != pending_id) {
-            self.leave_approval();
-        }
-        let remaining = self.approval_keyboard.remaining(std::time::Instant::now());
-        if !remaining.is_zero() {
-            ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)));
-        }
-        let request = &pending[0];
-        let actor = self.approval_actor_label(&request.actor_id);
-        let tool = request.tool.replace("__", " / ");
-        let caption = format!("{actor} wants to use {tool}");
-        let synthetic = self.synthetic_input_frame;
-        let mut choices = vec![
-            ("Allow once", crate::broker::gate::ApprovalChoice::Once),
-        ];
-        if request.allow_tool {
-            choices.push(("Allow for this session", crate::broker::gate::ApprovalChoice::AllowTool));
-        }
-        choices.push(("Deny", crate::broker::gate::ApprovalChoice::Deny));
-        choices.push(("Always deny", crate::broker::gate::ApprovalChoice::DenyAlways));
-        let mut chosen = None;
-        crate::ui::overlay::ModalShell::centered("approval_banner")
-            .title("Permission requested")
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
-            .scrim(false)
-            .click_away(false)
-            .show(ctx, &self.colors, |ui| {
-                crate::ui::typography::body_strong(ui, caption, &self.colors);
-                if let Some(resource) = &request.resource_id {
-                    crate::ui::typography::body(ui, format!("Resource: {resource}"), &self.colors);
-                }
-                if request.input_summary != "{}" && !request.input_summary.is_empty() {
-                    ui.collapsing("Request details", |ui| {
-                        crate::ui::typography::body(ui, &request.input_summary, &self.colors);
-                    });
-                }
-                if request.allow_tool {
-                    crate::ui::typography::caption(ui,
-                        "Session approval covers different arguments for this tool and caller, in this app instance and workspace only. The resource stays the same. Ends when Plexi quits; revoke in Permissions.", &self.colors);
-                }
-                if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
-                    if err_id == &pending_id {
-                        ui.label(
-                            egui::RichText::new(format!("Decision failed: {err_msg}"))
-                                .color(self.colors.danger)
-                                .size(crate::ui::style::TEXT_HINT),
-                        );
-                    }
-                }
-                let armed = self.approval_keyboard.armed(std::time::Instant::now());
-                let hint = if self.approval_keyboard.confirm_always {
-                    "Always deny this tool? Enter confirm · Esc leave pending".to_string()
-                } else {
-                    format!("{} focus · a allow once{} · d deny · Esc leave pending · Shift+A always deny (confirm)",
-                        ctx.format_shortcut(&egui::KeyboardShortcut::new(self.key_bindings.focus_approval.0, self.key_bindings.focus_approval.1)),
-                        if request.allow_tool { " · s allow for session" } else { "" })
-                };
-                ui.add_enabled(armed, egui::Label::new(hint));
-                ui.add_space(crate::ui::style::SPACE_MD);
-                ui.horizontal_wrapped(|ui| {
-                    for &(label, choice) in &choices {
-                        let kind = if choice == crate::broker::gate::ApprovalChoice::Once {
-                            crate::ui::button::ButtonKind::Accent
-                        } else {
-                            crate::ui::button::ButtonKind::Primary
-                        };
-                        let response = crate::ui::button::chrome_button(ui, label, kind, &self.colors, 0.0);
-                        let rect = response.rect;
-                        self.approval_buttons.push(ApprovalButton {
-                            label: label.to_string(),
-                            bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
-                            pending_request_id: pending_id.clone(),
-                        });
-                        if response.clicked_by(egui::PointerButton::Primary) {
-                            chosen = Some((label, choice));
-                        }
-                    }
-                });
-                if pending.len() > 1 {
-                    crate::ui::typography::caption(ui, format!("{} more requests waiting", pending.len() - 1), &self.colors);
-                }
-            });
-        if let Some((label, choice)) = chosen {
-            if synthetic {
-                log::info!(
-                    "permission_monitor: ignored synthetic banner click {pending_id} choice={label}"
-                );
-            } else {
-                match monitor.approve_pending(&pending_id, choice) {
-                    Ok(()) => {
-                        self.approval_keyboard.last_error = None;
-                        log::info!("permission_monitor: banner decided {pending_id} choice={label}");
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "permission_monitor: banner decide {pending_id} choice={label} failed: {error}"
-                        );
-                        self.approval_keyboard.last_error =
-                            Some((pending_id.clone(), error));
-                    }
-                }
-            }
-        }
-    }
-
     pub(crate) fn approval_actor_label(&self, actor_id: &str) -> String {
         actor_id
             .strip_prefix("pane:")
@@ -1159,9 +957,7 @@ impl PlexiApp {
                             .or_else(|| t.agent.as_ref().map(|a| a.agent.clone()))
                             .or_else(|| {
                                 t.agent_harness.as_ref().and_then(|_| {
-                                    t.name
-                                        .clone()
-                                        .filter(|n| !n.is_empty() && n != "terminal")
+                                    t.name.clone().filter(|n| !n.is_empty() && n != "terminal")
                                 })
                             })
                     });
@@ -1170,120 +966,12 @@ impl PlexiApp {
                     None => format!("Terminal pane {id}"),
                 }
             })
-            .or_else(|| actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
+            .or_else(|| {
+                actor_id
+                    .strip_prefix("agent:")
+                    .map(|id| format!("Agent {id}"))
+            })
             .unwrap_or_else(|| actor_id.to_string())
-    }
-
-    /// Banner for the oldest permission request/change, question or blocked
-    /// run. Keys `a`/`d`/`1`-`9`/Enter are handled by `needs_you_key_at`; the
-    /// buttons register in `approval_buttons` so synthetic clicks are refused.
-    fn draw_needs_you_banner(
-        &mut self,
-        ctx: &egui::Context,
-        item: &crate::broker::gate::NeedsYouRecord,
-    ) {
-        use crate::broker::gate::NeedsYouKind as K;
-        if self.approval_keyboard.id.as_deref().is_some_and(|id| id != item.id) {
-            self.leave_approval();
-        }
-        let remaining = self.approval_keyboard.remaining(std::time::Instant::now());
-        if !remaining.is_zero() {
-            ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)));
-        }
-        let view = crate::overlays::attention::attention_view(item);
-        let is_question = matches!(item.kind, K::Question | K::BlockedRun);
-        let choices: Vec<String> = item
-            .details
-            .as_ref()
-            .map(|d| d.choices.clone())
-            .unwrap_or_default();
-        let shortcut = ctx.format_shortcut(&egui::KeyboardShortcut::new(
-            self.key_bindings.focus_approval.0,
-            self.key_bindings.focus_approval.1,
-        ));
-        let hint = if !is_question {
-            format!("{shortcut} focus · a allow · d dismiss · Esc leave pending")
-        } else if choices.is_empty() {
-            format!("{shortcut} focus · Enter go to the asking pane · d dismiss · Esc leave pending")
-        } else {
-            format!(
-                "{shortcut} focus · 1-{} answer · d dismiss · Esc leave pending",
-                choices.len().min(9)
-            )
-        };
-        // (label, approve, answer)
-        let mut actions: Vec<(String, bool, Option<String>)> = Vec::new();
-        if is_question {
-            for (i, choice) in choices.iter().enumerate().take(9) {
-                actions.push((format!("{} {choice}", i + 1), true, Some(choice.clone())));
-            }
-        } else {
-            actions.push(("Allow (a)".to_string(), true, None));
-        }
-        actions.push(("Dismiss (d)".to_string(), false, None));
-        let mut chosen: Option<(bool, Option<String>)> = None;
-        crate::ui::overlay::ModalShell::centered("approval_banner")
-            .title(view.kind_label)
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
-            .scrim(false)
-            .click_away(false)
-            .show(ctx, &self.colors, |ui| {
-                crate::ui::typography::body_strong(ui, view.title.clone(), &self.colors);
-                crate::ui::typography::caption(ui, view.explanation.clone(), &self.colors);
-                if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
-                    if err_id == &item.id {
-                        ui.label(
-                            egui::RichText::new(format!("Decision failed: {err_msg}"))
-                                .color(self.colors.danger)
-                                .size(crate::ui::style::TEXT_HINT),
-                        );
-                    }
-                }
-                let armed = self.approval_keyboard.armed(std::time::Instant::now());
-                ui.add_enabled(armed, egui::Label::new(hint));
-                ui.add_space(crate::ui::style::SPACE_MD);
-                ui.horizontal_wrapped(|ui| {
-                    for (idx, (label, approve, answer)) in actions.iter().enumerate() {
-                        let kind = if idx == 0 {
-                            crate::ui::button::ButtonKind::Accent
-                        } else if *approve {
-                            crate::ui::button::ButtonKind::Primary
-                        } else {
-                            crate::ui::button::ButtonKind::Secondary
-                        };
-                        let response = crate::ui::button::chrome_button(ui, label, kind, &self.colors, 0.0);
-                        let rect = response.rect;
-                        self.approval_buttons.push(ApprovalButton {
-                            label: label.clone(),
-                            bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
-                            pending_request_id: item.id.clone(),
-                        });
-                        if response.clicked_by(egui::PointerButton::Primary) {
-                            chosen = Some((*approve, answer.clone()));
-                        }
-                    }
-                });
-            });
-        if let Some((approve, answer)) = chosen {
-            let outcome = match answer {
-                Some(answer) => {
-                    self.answer_from_desktop(&item.id, &answer, "needs-you banner")
-                }
-                None => {
-                    self.resolve_from_desktop(&item.id, approve, "needs-you banner")
-                }
-            };
-            match outcome {
-                Ok(()) => {
-                    self.approval_keyboard.last_error = None;
-                    self.leave_approval();
-                }
-                Err(error) => {
-                    self.approval_keyboard.last_error =
-                        Some((item.id.clone(), error));
-                }
-            }
-        }
     }
 
     /// Surface the one recovery action for a host seal key that startup could
@@ -1374,9 +1062,14 @@ impl PlexiApp {
         }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        match monitor.resolve_needs_you_from(id, approve, crate::broker::gate::ResolveSurface::Desktop) {
+        match monitor.resolve_needs_you_from(
+            id,
+            approve,
+            crate::broker::gate::ResolveSurface::Desktop,
+        ) {
             Ok(receipt) => {
-                if approve && receipt.run_outcome == crate::broker::gate::RunOutcome::OutcomeUnknown {
+                if approve && receipt.run_outcome == crate::broker::gate::RunOutcome::OutcomeUnknown
+                {
                     log::warn!(
                         "permission_seal: desktop {label} resolved id={} resolution={} run_outcome={} (request could not be applied)",
                         receipt.id,
@@ -1535,31 +1228,57 @@ mod tests {
 
     #[test]
     fn waiting_approval_timeout_and_dead_caller_cancel_only_the_pending_call() {
-        use crate::broker::gate::{AdmitRequest, Admission, ApprovalChoice, PermissionMonitor};
+        use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
         use crate::broker::{ActorScope, ActorType, TargetType};
         use crate::plexi_ai::tool_dispatch::PermissionPresenter;
         for (peer_pid, timeout, reason) in [
-            (std::process::id(), std::time::Duration::ZERO, "approval_timeout"),
+            (
+                std::process::id(),
+                std::time::Duration::ZERO,
+                "approval_timeout",
+            ),
             (0, std::time::Duration::from_secs(1), "caller_exited"),
         ] {
             let monitor = PermissionMonitor::ephemeral();
             let workspace = tempfile::tempdir().unwrap();
             let ask = |call_id, input_json| match monitor.admit(AdmitRequest {
-                call_id, tool: "probe.add", input_json, actor_type: ActorType::Agent,
-                actor_id: "agent:waiter", actor_scope: ActorScope::User, trust_origin: "host",
-                workspace_root: workspace.path(), context_id: 1, package_id: "probe",
-                instance_id: 1, target_type: TargetType::AppConnector,
+                call_id,
+                tool: "probe.add",
+                input_json,
+                actor_type: ActorType::Agent,
+                actor_id: "agent:waiter",
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: workspace.path(),
+                context_id: 1,
+                package_id: "probe",
+                instance_id: 1,
+                target_type: TargetType::AppConnector,
             }) {
                 Admission::Required { pending_request_id } => pending_request_id,
                 _ => panic!("expected pending request"),
             };
             let pending = ask("waited", "{}");
             let unrelated = ask("other", r#"{"other":true}"#);
-            let waiter = super::WaitingApproval { monitor: monitor.clone(), peer_pid, timeout };
-            let error = waiter.present(&pending, "probe.add", "{}", "agent:waiter", "").unwrap_err();
+            let waiter = super::WaitingApproval {
+                monitor: monitor.clone(),
+                peer_pid,
+                timeout,
+            };
+            let error = waiter
+                .present(&pending, "probe.add", "{}", "agent:waiter", "")
+                .unwrap_err();
             assert!(error.contains(reason), "{error}");
-            assert_eq!(monitor.approval_resolution(&pending), Some(ApprovalChoice::Deny));
-            assert!(monitor.approve_pending(&pending, ApprovalChoice::Once).is_err(), "late approval must not resume cancelled work");
+            assert_eq!(
+                monitor.approval_resolution(&pending),
+                Some(ApprovalChoice::Deny)
+            );
+            assert!(
+                monitor
+                    .approve_pending(&pending, ApprovalChoice::Once)
+                    .is_err(),
+                "late approval must not resume cancelled work"
+            );
             assert!(monitor.show_pending(&unrelated).is_some());
             assert!(!monitor.approval_granted(&pending));
         }

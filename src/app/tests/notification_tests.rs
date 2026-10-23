@@ -334,13 +334,11 @@ fn window_scoped_notification_visible_only_on_source_window() {
 
     // Add a second window in the same workspace so we can switch active_window.
     let win1_id = 2u64;
-    h.app
-        .windows
-        .push(same_workspace_window_below(
-            h.app.windows[0].context_id,
-            win1_id,
-            9920,
-        ));
+    h.app.windows.push(same_workspace_window_below(
+        h.app.windows[0].context_id,
+        win1_id,
+        9920,
+    ));
 
     let win0_id = h.app.windows[0].window_id;
     assert_eq!(h.app.active_window, 0);
@@ -424,54 +422,6 @@ fn stale_pinned_notification_is_replaced_after_context_switch() {
     assert_eq!(h.app.current_notify_id.as_deref(), Some("global"));
 }
 
-#[test]
-fn input_draft_survives_later_and_return() {
-    let mut h = HostHarness::new();
-    h.app.pending_notifications.push(PendingNotification {
-        notify_id: "input-later".into(),
-        kind: crate::protocol::NotifyKind::Input,
-        input_prompt: Some("Reply".into()),
-        scope: crate::protocol::NotifyScope::Global,
-        ..Default::default()
-    });
-    h.app.show_notification_modal = true;
-    h.app.current_notify_id = Some("input-later".into());
-    h.run_frames(1);
-    h.app.modal_input_buffer = "keep this reply".into();
-    h.app.stash_notification_draft();
-    h.app.show_notification_modal = false; // Later
-    h.run_frames(1);
-    h.app.show_notification_modal = true;
-    h.run_frames(1);
-    assert_eq!(h.app.modal_input_buffer, "keep this reply");
-}
-
-#[test]
-fn input_draft_survives_queue_navigation() {
-    let mut h = HostHarness::new();
-    for notify_id in ["input-first", "message-second"] {
-        h.app.pending_notifications.push(PendingNotification {
-            notify_id: notify_id.into(),
-            kind: if notify_id == "input-first" { crate::protocol::NotifyKind::Input } else { crate::protocol::NotifyKind::Message },
-            input_prompt: Some("Reply".into()),
-            scope: crate::protocol::NotifyScope::Global,
-            ..Default::default()
-        });
-    }
-    h.app.show_notification_modal = true;
-    h.app.current_notify_id = Some("input-first".into());
-    h.run_frames(1);
-    h.app.modal_input_buffer = "draft before reviewing".into();
-    h.app.stash_notification_draft();
-    h.app.cycle_notification(1);
-    h.run_frames(1);
-    assert_eq!(h.app.current_notify_id.as_deref(), Some("message-second"));
-    h.app.cycle_notification(-1);
-    h.run_frames(1);
-    assert_eq!(h.app.current_notify_id.as_deref(), Some("input-first"));
-    assert_eq!(h.app.modal_input_buffer, "draft before reviewing");
-}
-
 // ── #1635: auto-dismiss when originating pane is focused ─────────────────────
 
 /// Informational arrivals from a focused pane are already visible to the user,
@@ -511,7 +461,6 @@ fn auto_dismiss_removes_message_when_sender_focused() {
         deliver_after: None,
         origin_in_view: false,
     });
-    h.app.show_notification_modal = true;
     h.app.current_notify_id = Some("n-auto-dismiss".into());
 
     assert_eq!(h.app.pending_notifications.len(), 1, "notification queued");
@@ -521,10 +470,6 @@ fn auto_dismiss_removes_message_when_sender_focused() {
     assert!(
         h.app.pending_notifications.is_empty(),
         "non-required notification from focused pane must be auto-dismissed"
-    );
-    assert!(
-        !h.app.show_notification_modal,
-        "modal must close when queue empties via auto-dismiss"
     );
     assert!(
         h.app.current_notify_id.is_none(),
@@ -703,35 +648,6 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
 
 // ── QuickNote preemption tests (#1626) ────────────────────────────────────
 
-/// #1626: Cmd+0 with a NotificationModal on the focus stack must dismiss the
-/// modal and push FocusKind::QuickNote to the top.
-#[test]
-fn quicknote_preempts_notification_modal() {
-    let mut h = HostHarness::new();
-    h.add_test_pane();
-
-    // Simulate a NotificationModal being open.
-    h.app.push_focus_layer(FocusKind::NotificationModal);
-    assert_eq!(
-        h.app.focus_stack.last(),
-        Some(&FocusKind::NotificationModal),
-        "NotificationModal must be on top before preemption"
-    );
-    assert!(
-        h.app.is_quick_note_preemptable(),
-        "NotificationModal must be preemptable"
-    );
-
-    h.app.dismiss_preemptable_modal();
-    h.app.open_quick_note_modal();
-
-    assert_eq!(
-        h.app.focus_stack.last(),
-        Some(&FocusKind::QuickNote),
-        "QuickNote must be on top after preemption"
-    );
-}
-
 /// #1626: Cmd+0 with CommandPalette on the focus stack must dismiss the
 /// palette and push FocusKind::QuickNote to the top.
 #[test]
@@ -879,8 +795,8 @@ fn enqueue_notification_honours_master_switch() {
         "no surface may bypass the master switch"
     );
     assert!(
-        !h.app.show_notification_modal,
-        "a dropped notification must not open the modal"
+        h.app.attention_queue.decision_overlay.is_none(),
+        "a dropped notification must not open the decision overlay"
     );
 }
 
@@ -899,7 +815,7 @@ fn enqueue_notification_queues_when_enabled() {
     assert!(queued, "enabled host must queue the notification");
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert!(
-        !h.app.show_notification_modal,
+        h.app.attention_queue.decision_overlay.is_none(),
         "an informational notification must arrive quietly"
     );
     assert_eq!(
@@ -911,7 +827,10 @@ fn enqueue_notification_queues_when_enabled() {
 
 #[test]
 fn native_wasm_notification_contract_accepts_message_and_rejects_icon() {
-    assert_eq!(crate::app::dispatch::native_wasm_notification_contract_error(None), None);
+    assert_eq!(
+        crate::app::dispatch::native_wasm_notification_contract_error(None),
+        None
+    );
     assert_eq!(
         crate::app::dispatch::native_wasm_notification_contract_error(Some("check")),
         Some("native WASM notifications support title and body only; icon is unsupported")
@@ -923,14 +842,24 @@ fn enqueue_notification_rejects_when_live_queue_is_full() {
     let mut h = HostHarness::new();
     let limit = crate::app::notifications::MAX_PENDING_NOTIFICATIONS;
     h.app.pending_notifications = (0..limit)
-        .map(|index| PendingNotification { notify_id: format!("already-queued-{index}"), ..Default::default() })
+        .map(|index| PendingNotification {
+            notify_id: format!("already-queued-{index}"),
+            ..Default::default()
+        })
         .collect();
     assert!(!h.app.enqueue_notification(
         crate::app::notifications::NotifySource::App,
-        PendingNotification { notify_id: "rejected-at-capacity".into(), ..Default::default() },
+        PendingNotification {
+            notify_id: "rejected-at-capacity".into(),
+            ..Default::default()
+        },
     ));
     assert_eq!(h.app.pending_notifications.len(), limit);
-    assert!(h.app.pending_notifications.iter().all(|n| n.notify_id != "rejected-at-capacity"));
+    assert!(h
+        .app
+        .pending_notifications
+        .iter()
+        .all(|n| n.notify_id != "rejected-at-capacity"));
 }
 
 #[test]
@@ -939,17 +868,24 @@ fn notification_removal_prunes_image_cache() {
     for index in 0..8 {
         let notify_id = format!("attachment-{index}");
         h.app.pending_notifications.push(PendingNotification {
-            notify_id: notify_id.clone(), dismiss_owner_pane_id: 41, ..Default::default()
+            notify_id: notify_id.clone(),
+            dismiss_owner_pane_id: 41,
+            ..Default::default()
         });
-        h.app.notification_images.insert(notify_id.clone(), crate::app::NotificationImageState::Placeholder {
-            reason: "test attachment".into(),
-        });
-        h.app.dismiss_notification_from_sender(&notify_id, 41).expect("owner may dismiss its own notification");
+        h.app.notification_images.insert(
+            notify_id.clone(),
+            crate::app::NotificationImageState::Placeholder {
+                reason: "test attachment".into(),
+            },
+        );
+        h.app
+            .dismiss_notification_from_sender(&notify_id, 41)
+            .expect("owner may dismiss its own notification");
         assert!(h.app.notification_images.is_empty());
     }
 }
 
-/// Informational arrivals never take keyboard focus; decisions still do.
+/// Informational arrivals never take keyboard focus; decisions queue into the Attention Queue.
 #[test]
 fn enqueue_notification_only_interrupts_for_decisions() {
     let mut h = HostHarness::new();
@@ -965,7 +901,10 @@ fn enqueue_notification_only_interrupts_for_decisions() {
         1,
         "notification is queued"
     );
-    assert!(!h.app.show_notification_modal, "message must not auto-open");
+    assert!(
+        h.app.attention_queue.decision_overlay.is_none(),
+        "message must not auto-open"
+    );
     assert_eq!(h.app.visible_notification_count(), 1);
 
     let mut choice = cue_test_notification("decision");
@@ -980,8 +919,8 @@ fn enqueue_notification_only_interrupts_for_decisions() {
         .enqueue_notification(crate::app::notifications::NotifySource::App, choice);
 
     assert!(
-        h.app.show_notification_modal,
-        "choice must open the decision UI"
+        h.app.attention_queue.ask_count() >= 1,
+        "choice must enter the attention queue as an Ask"
     );
     assert_eq!(h.app.current_notify_id.as_deref(), Some("decision"));
 
@@ -1072,8 +1011,8 @@ fn cue_suppressed_for_invisible_notification() {
         "an invisible notification must not start a cue"
     );
     assert!(
-        !h.app.show_notification_modal,
-        "an invisible notification must not open the modal"
+        h.app.attention_queue.decision_overlay.is_none(),
+        "an invisible notification must not open the decision overlay"
     );
 }
 
@@ -1090,7 +1029,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     h.run_frames(2);
 
     assert!(
-        !h.app.show_notification_modal,
+        h.app.attention_queue.decision_overlay.is_none(),
         "plain CLI notify arrives quietly"
     );
     assert!(
@@ -1104,8 +1043,14 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     focused.app.notifications_focus_mode = true;
     focused.inject_ipc(cli_notify_request(None, None, None, None));
     focused.run_frames(2);
-    assert!(!focused.app.show_notification_modal, "focus mode prevents interrupt");
-    assert!(focused.app.notification_cue_playback.is_none(), "focus mode mutes cue");
+    assert!(
+        focused.app.attention_queue.decision_overlay.is_none(),
+        "focus mode prevents interrupt"
+    );
+    assert!(
+        focused.app.notification_cue_playback.is_none(),
+        "focus mode mutes cue"
+    );
 }
 
 /// 0566: the session is held on the app — a local binding would drop at end of
@@ -1252,10 +1197,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
     );
 
     let notification = &h.app.pending_notifications[0];
-    assert_eq!(
-        notification.scope,
-        crate::protocol::NotifyScope::Context
-    );
+    assert_eq!(notification.scope, crate::protocol::NotifyScope::Context);
     assert_eq!(notification.source_window_id, 0);
     assert_eq!(notification.source_context_id, context_id);
 }
@@ -1736,9 +1678,7 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            panic!(
-                "live descendant notify did not arrive within 10s — check `nc -U` availability"
-            );
+            panic!("live descendant notify did not arrive within 10s — check `nc -U` availability");
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -1850,8 +1790,7 @@ fn resurfaces_when_origin_pane_window_comes_into_view() {
         !h.app.pending_notifications[0].origin_in_view,
         "queuing while out of view must not itself count as a resurface"
     );
-    // Raising while out of view must not force the modal open either.
-    h.app.show_notification_modal = false;
+    // Raising while out of view must not select it as current.
     h.app.current_notify_id = None;
 
     // Navigate back — the pane's window comes into view.
@@ -1864,10 +1803,6 @@ fn resurfaces_when_origin_pane_window_comes_into_view() {
 
     h.app.resurface_in_view_notifications();
 
-    assert!(
-        h.app.show_notification_modal,
-        "modal must reopen on navigation into view"
-    );
     assert_eq!(h.app.current_notify_id.as_deref(), Some(notify_id));
     assert!(
         h.app.pending_notifications[0].origin_in_view,
@@ -1918,17 +1853,11 @@ fn resurfaces_for_unfocused_sibling_pane_in_multi_pane_window() {
 
     h.app.resurface_in_view_notifications();
 
-    assert!(
-        h.app.show_notification_modal,
-        "sibling pane's notification must resurface even though it never held focus"
-    );
     assert_eq!(h.app.current_notify_id.as_deref(), Some(notify_id));
 }
 
-/// #727: once resurfaced, the same notification must not reopen the modal on
-/// every subsequent frame while the origin pane stays in view — explicit
-/// dismissal (or a manual close) in that state is final until the pane
-/// leaves and returns.
+/// #727: once resurfaced, the same notification must not re-select on
+/// every subsequent frame while the origin pane stays in view.
 #[test]
 fn does_not_refire_while_pane_remains_in_view() {
     let mut h = HostHarness::new();
@@ -1940,15 +1869,10 @@ fn does_not_refire_while_pane_remains_in_view() {
         n.origin_in_view = true; // already resurfaced once
         n
     });
-    h.app.show_notification_modal = false; // user manually closed it
     h.app.current_notify_id = None;
 
     h.app.resurface_in_view_notifications();
 
-    assert!(
-        !h.app.show_notification_modal,
-        "no rising edge while still in view — must not reopen the modal"
-    );
     assert!(h.app.current_notify_id.is_none());
 }
 
@@ -1966,7 +1890,6 @@ fn rearms_after_pane_leaves_view_and_returns() {
         n.origin_in_view = true; // already resurfaced once
         n
     });
-    h.app.show_notification_modal = false;
     h.app.current_notify_id = None;
 
     // Leave view.
@@ -1978,8 +1901,8 @@ fn rearms_after_pane_leaves_view_and_returns() {
         "leaving view must clear the edge"
     );
     assert!(
-        !h.app.show_notification_modal,
-        "a falling edge must never open the modal"
+        h.app.current_notify_id.is_none(),
+        "a falling edge must never select current_notify_id"
     );
 
     // Return.
@@ -1987,10 +1910,6 @@ fn rearms_after_pane_leaves_view_and_returns() {
     h.app.router.set_active(0);
     h.app.resurface_in_view_notifications();
 
-    assert!(
-        h.app.show_notification_modal,
-        "returning to view must re-fire the resurface"
-    );
     assert_eq!(h.app.current_notify_id.as_deref(), Some(notify_id));
 }
 
@@ -2012,7 +1931,6 @@ fn resurface_runs_on_hidden_occluded_frames() {
         crate::app::notifications::NotifySource::App,
         resurface_test_notification("resurface-hidden", pane_id),
     );
-    h.app.show_notification_modal = false;
     h.app.current_notify_id = None;
 
     h.app.active_window = 0;
@@ -2021,10 +1939,6 @@ fn resurface_runs_on_hidden_occluded_frames() {
     // Only hidden/occluded passes from here — App::ui never runs.
     h.run_hidden_frames(1);
 
-    assert!(
-        h.app.show_notification_modal,
-        "resurface must fire from App::logic even while the window is hidden/occluded"
-    );
     assert_eq!(h.app.current_notify_id.as_deref(), Some("resurface-hidden"));
 }
 
@@ -2075,8 +1989,9 @@ fn background_tab_pane_is_not_in_view() {
     }
     h.app.resurface_in_view_notifications();
 
-    assert!(
-        h.app.show_notification_modal,
+    assert_eq!(
+        h.app.current_notify_id.as_deref(),
+        Some("resurface-tab"),
         "activating pane_b's tab must resurface its notification"
     );
 }
@@ -2130,7 +2045,6 @@ fn focus_mode_suppresses_resurface() {
         crate::app::notifications::NotifySource::App,
         resurface_test_notification("resurface-focus-mode", pane_id),
     );
-    h.app.show_notification_modal = false;
     h.app.current_notify_id = None;
 
     h.app.notifications_focus_mode = true;
@@ -2140,7 +2054,7 @@ fn focus_mode_suppresses_resurface() {
     h.app.resurface_in_view_notifications();
 
     assert!(
-        !h.app.show_notification_modal,
+        h.app.current_notify_id.is_none(),
         "focus mode must suppress the resurface interrupt"
     );
     assert!(

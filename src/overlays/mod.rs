@@ -1,4 +1,3 @@
-use crate::app::app_trait::AppCommand;
 use crate::spatial::tiling::PaneId;
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -9,7 +8,6 @@ pub(crate) mod command_palette;
 pub(crate) mod confirmations;
 pub(crate) mod misc;
 pub(crate) mod notes_picker;
-pub(crate) mod notification_modal;
 pub(crate) mod quick_note;
 pub(crate) mod setup;
 pub(crate) mod toolbar;

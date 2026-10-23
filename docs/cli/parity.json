@@ -190,8 +190,12 @@
   "ScrollDown": {
     "ui-only": "Moves the visible viewport; agents read pane capture output."
   },
-  "ToggleNotificationModal": {
-    "ui-only": "Opens the desktop notification viewer; agents inspect needs-you and notification records."
+  "ToggleAttentionQueue": {
+    "ui-only": "Toggles the desktop attention queue list; agents inspect needs-you and notification records."
+  },
+  "ZoomIn": {
+    "cli": "context zoom 42",
+    "note": "CLI targets an explicit context id; the shortcut steps in one level toward the ghost on the zoom ladder."
   },
   "ToggleMinimap": {
     "ui-only": "Toggles a visual navigation overlay."

@@ -25,6 +25,7 @@
 //! Decoded textures live in `PlexiApp::notification_images`, keyed by
 //! `notify_id`. The map is populated lazily on the first render and pruned by
 //! `PlexiApp::save_notifications` whenever an entry leaves the live queue.
+#![allow(dead_code)]
 
 use crate::app::{PendingNotification, PlexiApp};
 use crate::protocol::NotificationImage;

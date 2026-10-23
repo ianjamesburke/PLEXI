@@ -23,7 +23,7 @@ state_preset = "okabe-ito" # default | okabe-ito | high-contrast | mono
 # state_needs_you = "#d55e00"
 # state_interrupted = "#009e73"
 # state_error = "#f0e442"
-preset = "catppuccin-mocha"
+preset = "tokyo-night"
 # Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-day
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"

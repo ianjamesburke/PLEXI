@@ -32,7 +32,11 @@ pub enum ConfigDiagnostic {
         path: String,
         error: String,
     },
-    InvalidValue { path: String, key: String, error: String },
+    InvalidValue {
+        path: String,
+        key: String,
+        error: String,
+    },
     MisplacedTable {
         path: String,
         table: String,
@@ -118,17 +122,24 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "standby_scrollback_lines", "stalled_after_secs", "stale_failure_hours", "palette_agent_results", "os_notifications"];
-const KNOWN_CLI: &[&str] = &["tips"];
-const KNOWN_PERMISSIONS: &[&str] = &[
-    "soft_grant_days",
-    "default_posture",
-    "allow",
-    "ask",
-    "deny",
+const KNOWN_AGENTS: &[&str] = &[
+    "low",
+    "medium",
+    "high",
+    "restore_mode",
+    "standby_scrollback_lines",
+    "stalled_after_secs",
+    "stale_failure_hours",
+    "palette_agent_results",
+    "os_notifications",
 ];
+const KNOWN_CLI: &[&str] = &["tips"];
+const KNOWN_PERMISSIONS: &[&str] = &["soft_grant_days", "default_posture", "allow", "ask", "deny"];
 const KNOWN_THEME: &[&str] = &[
-    "pip_working", "pip_idle", "pip_blocked", "pip_dim",
+    "pip_working",
+    "pip_idle",
+    "pip_blocked",
+    "pip_dim",
     "state_preset",
     "state_working",
     "state_waiting",
@@ -136,7 +147,6 @@ const KNOWN_THEME: &[&str] = &[
     "state_needs_you",
     "state_interrupted",
     "state_error",
-
     "preset",
     "bg_darkest",
     "bg_sidebar",
@@ -236,7 +246,8 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_secrets_manager",
     "open_assistant",
     "force_reload_app",
-    "toggle_notification_modal",
+    "toggle_attention_queue",
+    "zoom_in",
     "open_scratchpad",
     "set_context_root_from_cwd",
     "push_to_subcontext",
@@ -314,7 +325,13 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
 
             if let Some(toml::Value::Table(t)) = table.get("attention") {
-                check_unknown_keys(t, "attention", &["style", "intensity", "dock"], &path_str, &mut diags);
+                check_unknown_keys(
+                    t,
+                    "attention",
+                    &["style", "intensity", "dock"],
+                    &path_str,
+                    &mut diags,
+                );
             }
             if let Some(toml::Value::Table(t)) = table.get("theme") {
                 check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
@@ -340,7 +357,8 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     diags.push(ConfigDiagnostic::InvalidValue {
                         path: path_str.clone(),
                         key,
-                        error: "is no longer supported; use [models.fast] / [models.slow] instead".into(),
+                        error: "is no longer supported; use [models.fast] / [models.slow] instead"
+                            .into(),
                     });
                 }
             }
@@ -348,7 +366,13 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                 check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
                 for mode in KNOWN_MODE_NAMES {
                     if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
-                        check_unknown_keys(mode_table, &format!("models.{mode}"), KNOWN_MODEL_MODE, &path_str, &mut diags);
+                        check_unknown_keys(
+                            mode_table,
+                            &format!("models.{mode}"),
+                            KNOWN_MODEL_MODE,
+                            &path_str,
+                            &mut diags,
+                        );
                     }
                 }
             }
@@ -390,16 +414,33 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
     }
 
     if let Some(models) = parsed_cfg.models.as_ref() {
-        for (name, mode) in [("fast", models.fast.as_ref()), ("slow", models.slow.as_ref())] {
+        for (name, mode) in [
+            ("fast", models.fast.as_ref()),
+            ("slow", models.slow.as_ref()),
+        ] {
             if let Some(mode) = mode {
-                for (field, value) in [("provider", mode.provider.as_deref()), ("model", mode.model.as_deref())] {
+                for (field, value) in [
+                    ("provider", mode.provider.as_deref()),
+                    ("model", mode.model.as_deref()),
+                ] {
                     if value.is_some_and(|v| v.is_empty() || v.chars().any(char::is_whitespace)) {
-                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.{field}"), error: "must be a non-empty string without whitespace".into() });
+                        diags.push(ConfigDiagnostic::InvalidValue {
+                            path: path_str.clone(),
+                            key: format!("models.{name}.{field}"),
+                            error: "must be a non-empty string without whitespace".into(),
+                        });
                     }
                 }
                 if let Some(thinking) = mode.thinking.as_deref() {
                     if !THINKING_LEVELS.contains(&thinking) {
-                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.thinking"), error: format!("{thinking:?} is not one of {}", THINKING_LEVELS.join("|")) });
+                        diags.push(ConfigDiagnostic::InvalidValue {
+                            path: path_str.clone(),
+                            key: format!("models.{name}.thinking"),
+                            error: format!(
+                                "{thinking:?} is not one of {}",
+                                THINKING_LEVELS.join("|")
+                            ),
+                        });
                     }
                 }
             }
@@ -611,7 +652,8 @@ pub struct KeybindingsConfig {
     pub open_secrets_manager: Option<String>,
     pub open_assistant: Option<String>,
     pub force_reload_app: Option<String>,
-    pub toggle_notification_modal: Option<String>,
+    pub toggle_attention_queue: Option<String>,
+    pub zoom_in: Option<String>,
     pub open_scratchpad: Option<String>,
     pub push_to_subcontext: Option<String>,
     pub new_child_context: Option<String>,
@@ -681,7 +723,8 @@ impl KeybindingsConfig {
         overlay_field!(open_secrets_manager);
         overlay_field!(open_assistant);
         overlay_field!(force_reload_app);
-        overlay_field!(toggle_notification_modal);
+        overlay_field!(toggle_attention_queue);
+        overlay_field!(zoom_in);
         overlay_field!(open_scratchpad);
         overlay_field!(push_to_subcontext);
         overlay_field!(new_child_context);
@@ -768,10 +811,17 @@ pub struct ModelModeConfig {
 
 /// Fully resolved pi-plexi target returned by `plexi config get --json models`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedModelMode { pub provider: String, pub model: String, pub thinking: String }
+pub struct ResolvedModelMode {
+    pub provider: String,
+    pub model: String,
+    pub thinking: String,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedModelModes { pub fast: ResolvedModelMode, pub slow: ResolvedModelMode }
+pub struct ResolvedModelModes {
+    pub fast: ResolvedModelMode,
+    pub slow: ResolvedModelMode,
+}
 
 impl ModelModeConfig {
     fn overlay(&mut self, other: Self) {
@@ -795,11 +845,40 @@ impl ModelModeConfig {
     }
 }
 impl ModelModesConfig {
-    fn overlay(&mut self, other: Self) { match (self.fast.as_mut(), other.fast) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.fast = Some(b), _ => {} } match (self.slow.as_mut(), other.slow) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.slow = Some(b), _ => {} } }
-    fn resolved(&self) -> ResolvedModelModes { ResolvedModelModes {
-        fast: self.fast.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "deepseek/deepseek-v4.1-flash".into(), thinking: "low".into() }),
-        slow: self.slow.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "openai/gpt-6-astra".into(), thinking: "high".into() }),
-    } }
+    fn overlay(&mut self, other: Self) {
+        match (self.fast.as_mut(), other.fast) {
+            (Some(a), Some(b)) => a.overlay(b),
+            (None, Some(b)) => self.fast = Some(b),
+            _ => {}
+        }
+        match (self.slow.as_mut(), other.slow) {
+            (Some(a), Some(b)) => a.overlay(b),
+            (None, Some(b)) => self.slow = Some(b),
+            _ => {}
+        }
+    }
+    fn resolved(&self) -> ResolvedModelModes {
+        ResolvedModelModes {
+            fast: self
+                .fast
+                .as_ref()
+                .unwrap_or(&ModelModeConfig::default())
+                .resolve(ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "deepseek/deepseek-v4.1-flash".into(),
+                    thinking: "low".into(),
+                }),
+            slow: self
+                .slow
+                .as_ref()
+                .unwrap_or(&ModelModeConfig::default())
+                .resolve(ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "openai/gpt-6-astra".into(),
+                    thinking: "high".into(),
+                }),
+        }
+    }
 }
 
 /// CLI behavior configuration.
@@ -906,7 +985,11 @@ impl AiConfig {
         if other.global_daily_usd.is_some() {
             self.global_daily_usd = other.global_daily_usd;
         }
-        if other.client.as_ref().is_some_and(|client| !client.trim().is_empty()) {
+        if other
+            .client
+            .as_ref()
+            .is_some_and(|client| !client.trim().is_empty())
+        {
             self.client = other.client;
         }
     }
@@ -955,10 +1038,18 @@ pub struct AgentsConfig {
 
 impl AgentsConfig {
     fn overlay(&mut self, other: Self) {
-        if other.os_notifications.is_some() { self.os_notifications = other.os_notifications; }
-        if other.stalled_after_secs.is_some() { self.stalled_after_secs = other.stalled_after_secs; }
-        if other.stale_failure_hours.is_some() { self.stale_failure_hours = other.stale_failure_hours; }
-        if other.palette_agent_results.is_some() { self.palette_agent_results = other.palette_agent_results; }
+        if other.os_notifications.is_some() {
+            self.os_notifications = other.os_notifications;
+        }
+        if other.stalled_after_secs.is_some() {
+            self.stalled_after_secs = other.stalled_after_secs;
+        }
+        if other.stale_failure_hours.is_some() {
+            self.stale_failure_hours = other.stale_failure_hours;
+        }
+        if other.palette_agent_results.is_some() {
+            self.palette_agent_results = other.palette_agent_results;
+        }
         if other.low.is_some() {
             self.low = other.low;
         }
@@ -1029,11 +1120,23 @@ pub struct EffectsConfig {
 
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum AttentionStyle { Off, Subtle, #[default] Normal, Loud }
+pub enum AttentionStyle {
+    Off,
+    Subtle,
+    #[default]
+    Normal,
+    Loud,
+}
 
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum AttentionDock { None, #[default] Badge, BounceOnce, BounceUntilFocused }
+pub enum AttentionDock {
+    None,
+    #[default]
+    Badge,
+    BounceOnce,
+    BounceUntilFocused,
+}
 
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq)]
 pub struct AttentionConfig {
@@ -1049,23 +1152,36 @@ pub struct AttentionConfig {
 fn attention_intensity<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
     let value = Option::<f32>::deserialize(d)?;
     if value.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
-        return Err(serde::de::Error::custom("attention.intensity must be between 0 and 1"));
+        return Err(serde::de::Error::custom(
+            "attention.intensity must be between 0 and 1",
+        ));
     }
     Ok(value)
 }
 
 impl AttentionConfig {
     fn overlay(&mut self, other: Self) {
-        if other.style.is_some() { self.style = other.style; }
-        if other.intensity.is_some() { self.intensity = other.intensity; }
-        if other.dock.is_some() { self.dock = other.dock; }
+        if other.style.is_some() {
+            self.style = other.style;
+        }
+        if other.intensity.is_some() {
+            self.intensity = other.intensity;
+        }
+        if other.dock.is_some() {
+            self.dock = other.dock;
+        }
     }
 }
 
 fn state_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     let value = Option::<String>::deserialize(d)?;
-    if value.as_deref().is_some_and(|v| !crate::ui::theme::STATE_PRESETS.contains(&v)) {
-        return Err(serde::de::Error::custom("theme.state_preset must be default, okabe-ito, high-contrast, or mono"));
+    if value
+        .as_deref()
+        .is_some_and(|v| !crate::ui::theme::STATE_PRESETS.contains(&v))
+    {
+        return Err(serde::de::Error::custom(
+            "theme.state_preset must be default, okabe-ito, high-contrast, or mono",
+        ));
     }
     Ok(value)
 }
@@ -1150,7 +1266,8 @@ fn profile_initialization_needed() -> Result<bool, String> {
         || !std::fs::read_to_string(sdk.join(".sdk_version"))
             .is_ok_and(|version| version.trim() == env!("PLEXI_BUILD_ID"))
         || crate::cli::install_host::core_pack_needs_seeding(&dir.join("apps"))
-        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("apps")).is_empty()
+        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("apps"))
+            .is_empty()
         || crate::distribution::profile_needs_seeding()?)
 }
 
@@ -1162,9 +1279,15 @@ pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
     }
     let dir = config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .open(dir.join("initialization.lock")).map_err(|e| format!("open profile initialization lock: {e}"))?;
-    lock.lock().map_err(|e| format!("lock profile initialization: {e}"))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("initialization.lock"))
+        .map_err(|e| format!("open profile initialization lock: {e}"))?;
+    lock.lock()
+        .map_err(|e| format!("lock profile initialization: {e}"))?;
     if !profile_initialization_needed()? {
         return Ok(None);
     }
@@ -1508,12 +1631,14 @@ pub fn experiments_from_path(
     let Some(table) = value.get("experiments") else {
         return Ok(Default::default());
     };
-    let table: std::collections::BTreeMap<String, bool> = table
-        .clone()
-        .try_into()
-        .map_err(|e| format!("[experiments] in {} must map names to true/false: {e}", path.display()))?;
-    crate::release::parse_experiments(&table)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    let table: std::collections::BTreeMap<String, bool> =
+        table.clone().try_into().map_err(|e| {
+            format!(
+                "[experiments] in {} must map names to true/false: {e}",
+                path.display()
+            )
+        })?;
+    crate::release::parse_experiments(&table).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn config_path() -> PathBuf {
@@ -1843,7 +1968,10 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 impl PlexiConfig {
     /// Resolve pi-plexi FAST/SLOW targets with defaults applied field-by-field.
     pub fn resolved_model_modes(&self) -> ResolvedModelModes {
-        self.models.as_ref().map(ModelModesConfig::resolved).unwrap_or_else(|| ModelModesConfig::default().resolved())
+        self.models
+            .as_ref()
+            .map(ModelModesConfig::resolved)
+            .unwrap_or_else(|| ModelModesConfig::default().resolved())
     }
     pub fn osc_pane_title_enabled(&self) -> bool {
         self.osc_pane_title.unwrap_or(true)
@@ -1957,7 +2085,9 @@ impl PlexiConfig {
     /// (theme, effects, log, notifications) are overlaid recursively.
     fn overlay(&mut self, other: Self) {
         if let Some(attention) = other.attention {
-            self.attention.get_or_insert_with(Default::default).overlay(attention);
+            self.attention
+                .get_or_insert_with(Default::default)
+                .overlay(attention);
         }
         if other.font_size.is_some() {
             self.font_size = other.font_size;
@@ -2045,7 +2175,9 @@ impl PlexiConfig {
         }
     }
 
-    pub(crate) fn overlay_for_cli(&mut self, other: Self) { self.overlay(other); }
+    pub(crate) fn overlay_for_cli(&mut self, other: Self) {
+        self.overlay(other);
+    }
 }
 
 impl CloudConfig {
@@ -2341,7 +2473,10 @@ mod tests {
 
     #[test]
     fn windows_executable_suffix_does_not_become_part_of_the_channel() {
-        assert_eq!(channel_suffix_from_basename("plexi-alpha.exe"), ".plexi-alpha");
+        assert_eq!(
+            channel_suffix_from_basename("plexi-alpha.exe"),
+            ".plexi-alpha"
+        );
         assert_eq!(channel_from_basename("plexi-alpha.exe"), Some("alpha"));
         assert_eq!(
             resolve_channel_dir("plexi-alpha.exe", Some("beta")),
@@ -2352,10 +2487,7 @@ mod tests {
     #[test]
     fn only_numbered_pr_channels_are_test_channels() {
         assert!(is_matching_test_channel(Some("pr-1"), Some("pr-1")));
-        assert!(is_matching_test_channel(
-            Some("pr-2493"),
-            Some("pr-2493")
-        ));
+        assert!(is_matching_test_channel(Some("pr-2493"), Some("pr-2493")));
 
         for (compiled, runtime) in [
             (None, Some("pr-1")),
@@ -2505,10 +2637,19 @@ mod tests {
 
     #[test]
     fn model_modes_workspace_overlay_merges_fields() {
-        let mut global: PlexiConfig = toml::from_str("[models.fast]\nprovider = \"global\"\nmodel = \"global/model\"\n").unwrap();
+        let mut global: PlexiConfig =
+            toml::from_str("[models.fast]\nprovider = \"global\"\nmodel = \"global/model\"\n")
+                .unwrap();
         global.overlay(toml::from_str("[models.fast]\nthinking = \"high\"\n").unwrap());
         let fast = global.resolved_model_modes().fast;
-        assert_eq!((fast.provider.as_str(), fast.model.as_str(), fast.thinking.as_str()), ("global", "global/model", "high"));
+        assert_eq!(
+            (
+                fast.provider.as_str(),
+                fast.model.as_str(),
+                fast.thinking.as_str()
+            ),
+            ("global", "global/model", "high")
+        );
     }
 
     #[test]
@@ -2521,12 +2662,25 @@ mod tests {
 
     #[test]
     fn model_modes_validation_names_bad_paths() {
-        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("config.toml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
         fs::write(&path, "[models.fast]\nthinking = \"turbo\"\nprovider = \"bad provider\"\n[models.turbo]\nmodel = \"x\"\n").unwrap();
-        let rendered = validate_from_path(&path).into_iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(rendered.contains("models.fast.thinking \"turbo\" is not one of off|minimal|low|medium|high|xhigh"), "{rendered}");
+        let rendered = validate_from_path(&path)
+            .into_iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains(
+                "models.fast.thinking \"turbo\" is not one of off|minimal|low|medium|high|xhigh"
+            ),
+            "{rendered}"
+        );
         assert!(rendered.contains("models.fast.provider"), "{rendered}");
-        assert!(rendered.contains("unknown key `turbo` in [models]"), "{rendered}");
+        assert!(
+            rendered.contains("unknown key `turbo` in [models]"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -2645,7 +2799,10 @@ mod tests {
         .unwrap();
 
         let diags = validate_from_path(&path);
-        assert!(diags.is_empty(), "legacy [effects] table must validate cleanly: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "legacy [effects] table must validate cleanly: {diags:?}"
+        );
 
         let loaded = PlexiConfig::load_from_path(&path).expect("legacy [effects] must load");
         let effects = loaded.effects.expect("effects table should be parsed");
@@ -2886,8 +3043,19 @@ mod legacy_ai_rejection_tests {
 
     #[test]
     fn removed_ai_keys_fail_check_and_load_in_global_and_workspace_config() {
-        for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url", "anthropic.api_key_env"] {
-            let (section, field) = key.split_once('.').map_or(("ai".to_string(), key.to_string()), |(section, field)| (format!("ai.{section}"), field.to_string()));
+        for key in [
+            "backend",
+            "openrouter.model_low",
+            "openrouter.api_key_env",
+            "ollama.host",
+            "local.base_url",
+            "anthropic.api_key_env",
+        ] {
+            let (section, field) = key
+                .split_once('.')
+                .map_or(("ai".to_string(), key.to_string()), |(section, field)| {
+                    (format!("ai.{section}"), field.to_string())
+                });
             let text = format!("[{section}]\n{field} = \"value\"\n");
             let temp = tempfile::tempdir().unwrap();
             let global = temp.path().join("config.toml");
@@ -2896,10 +3064,20 @@ mod legacy_ai_rejection_tests {
             for path in [&global, &workspace] {
                 std::fs::write(path, &text).unwrap();
                 let diagnostics = validate_from_path(path);
-                let expected = format!("ai.{key} is no longer supported; use [models.fast] / [models.slow] instead");
-                assert!(diagnostics.iter().any(|diagnostic| diagnostic.to_string().contains(&expected)), "check must reject {}: {diagnostics:?}", path.display());
+                let expected = format!(
+                    "ai.{key} is no longer supported; use [models.fast] / [models.slow] instead"
+                );
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.to_string().contains(&expected)),
+                    "check must reject {}: {diagnostics:?}",
+                    path.display()
+                );
                 match PlexiConfig::load_from_path_for_cli(path) {
-                    Err(error) => assert_eq!(error, expected, "load must reject {}", path.display()),
+                    Err(error) => {
+                        assert_eq!(error, expected, "load must reject {}", path.display())
+                    }
                     Ok(_) => panic!("load must reject {}", path.display()),
                 }
                 assert!(
@@ -2919,7 +3097,10 @@ mod distribution_profile_tests {
         let dir = tempfile::tempdir().unwrap();
         let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
         super::ensure_profile_initialized();
-        crate::cli::install_host::apply_core_pack_always(&crate::cli::install_host::GitCloner, &dir.path().join("apps"));
+        crate::cli::install_host::apply_core_pack_always(
+            &crate::cli::install_host::GitCloner,
+            &dir.path().join("apps"),
+        );
         // A directory at the lock path makes any read-write open fail, even as root.
         std::fs::create_dir(dir.path().join("initialization.lock")).unwrap();
         #[cfg(unix)]
@@ -2932,7 +3113,10 @@ mod distribution_profile_tests {
         let result = super::lock_profile_initialization();
         #[cfg(unix)]
         std::fs::set_permissions(dir.path(), original_permissions).unwrap();
-        assert!(matches!(result, Ok(None)), "fresh profile attempted a write lock: {result:?}");
+        assert!(
+            matches!(result, Ok(None)),
+            "fresh profile attempted a write lock: {result:?}"
+        );
     }
 
     #[test]
@@ -2941,7 +3125,10 @@ mod distribution_profile_tests {
         let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
         assert!(super::lock_profile_initialization().unwrap().is_some());
         super::ensure_profile_initialized();
-        crate::cli::install_host::apply_core_pack_always(&crate::cli::install_host::GitCloner, &dir.path().join("apps"));
+        crate::cli::install_host::apply_core_pack_always(
+            &crate::cli::install_host::GitCloner,
+            &dir.path().join("apps"),
+        );
         assert!(super::lock_profile_initialization().unwrap().is_none());
         std::fs::write(dir.path().join("sdk/.sdk_version"), "old-build").unwrap();
         assert!(super::lock_profile_initialization().unwrap().is_some());
@@ -2954,6 +3141,9 @@ mod distribution_profile_tests {
         std::fs::write(dir.path().join("installed_tag"), "v0.3.4").unwrap();
         assert!(super::ensure_profile_initialized());
         assert!(!super::ensure_profile_initialized());
-        assert_eq!(std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(), env!("PLEXI_BUILD_ID"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(),
+            env!("PLEXI_BUILD_ID")
+        );
     }
 }

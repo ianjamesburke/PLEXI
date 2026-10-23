@@ -21,7 +21,8 @@ fn update_check_due(last_update_check: std::time::Instant, now: std::time::Insta
 pub(crate) const WORKSPACE_SAVE_DEBOUNCE_MS: u64 = 1_000;
 
 fn workspace_save_due(last: std::time::Instant, now: std::time::Instant) -> bool {
-    now.saturating_duration_since(last) >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
+    now.saturating_duration_since(last)
+        >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
 }
 
 impl PlexiApp {
@@ -162,8 +163,13 @@ impl PlexiApp {
             log::info!("workspace: synchronous save (shutdown/update-quit)");
             log::info!("ui: restarting for update");
             let result = crate::distribution::installed()
-                .and_then(|r| r.ok_or_else(|| "no managed installation available for restart".to_string()))
-                .and_then(|r| plexi_distribution::transaction::schedule_restart(&r, std::process::id()).map_err(|e| e.to_string()));
+                .and_then(|r| {
+                    r.ok_or_else(|| "no managed installation available for restart".to_string())
+                })
+                .and_then(|r| {
+                    plexi_distribution::transaction::schedule_restart(&r, std::process::id())
+                        .map_err(|e| e.to_string())
+                });
             match result {
                 Ok(()) => {
                     self.bank_final_focus_segment();
@@ -202,7 +208,11 @@ impl PlexiApp {
         );
         self.auto_dismiss_sender_focused_notifications();
         self.resurface_in_view_notifications();
-        self.sync_notification_modal_focus();
+        if let Some(pid) = self.focused_pane_id() {
+            let active_ctx_id = self.router.active().context_id;
+            self.zoom.context_last_pane.insert(active_ctx_id, pid);
+        }
+        self.sync_attention_queue();
         self.sync_attention_focus();
         self.sync_confirm_close_focus();
         self.sync_context_close_focus();
@@ -293,6 +303,9 @@ impl PlexiApp {
             .frame(egui::Frame::new().fill(self.colors.border))
             .show_inside(ui, |_ui| {});
 
+        // Zoom path bar (context breadcrumb, column pips, calm attention queue pill)
+        self.draw_zoom_path_bar(ui);
+
         // Sidebar
         if self.sidebar_visible {
             ctx.input(|i| {
@@ -320,6 +333,17 @@ impl PlexiApp {
                 ..Default::default()
             })
             .show_inside(ui, |ui| {
+                match self.zoom.level {
+                    crate::app::zoom::ZoomLevel::SiblingCards => {
+                        self.draw_sibling_cards_canvas(ui);
+                        return;
+                    }
+                    crate::app::zoom::ZoomLevel::TreeAtlas => {
+                        self.draw_tree_atlas_canvas(ui);
+                        return;
+                    }
+                    crate::app::zoom::ZoomLevel::Columns => {}
+                }
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
                     if self.router.len() > 1 {
@@ -644,6 +668,10 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
+                let canvas_full_rect = ui.available_rect_before_wrap();
+                self.sync_strip_tree_shares();
+                let (has_left_neighbor, has_right_neighbor) = self.active_strip_clipped_neighbors();
+                let edge_bump_offset = self.zoom.active_edge_bump_offset();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
                 let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
@@ -873,13 +901,22 @@ impl PlexiApp {
                             };
                             let stroke = egui::Stroke::new(gap, stroke_color);
                             focus_painter.rect_stroke(
-                                rect,
-                                0.0,
+                                rect.translate(edge_bump_offset),
+                                crate::ui::style::RADIUS_MOTORWAYS,
                                 stroke,
                                 egui::StrokeKind::Outside,
                             );
                         }
                     }
+                }
+                if zoomed_pane.is_none() {
+                    crate::app::PlexiApp::paint_clipped_neighbor_edges(
+                        &focus_painter,
+                        canvas_full_rect,
+                        has_left_neighbor,
+                        has_right_neighbor,
+                        self.colors,
+                    );
                 }
 
                 // Expire click_flash once FLASH_DUR has elapsed.
@@ -1304,8 +1341,6 @@ impl PlexiApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
-
-        self.draw_agent_attention_toast(&ctx);
 
         // Egui focus is NOT touched here: the post-frame reconciler
         // (`reconcile_egui_focus`, called at the end of `update()`) projects

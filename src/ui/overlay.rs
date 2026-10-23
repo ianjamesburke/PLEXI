@@ -34,6 +34,7 @@ impl<'a> ModalShell<'a> {
 
     /// Render the modal above other Foreground overlays (e.g. notifications
     /// that must outrank any open modal). The scrim rises with it.
+    #[allow(dead_code)]
     pub(crate) fn order(mut self, order: egui::Order) -> Self {
         self.order = order;
         self

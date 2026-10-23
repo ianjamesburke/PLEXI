@@ -8,3 +8,4 @@ mod pane_lifecycle_consumers;
 mod shortcut_tests;
 
 mod cli_parity_tests;
+mod zoom_tests;
