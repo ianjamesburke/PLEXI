@@ -269,6 +269,8 @@ mod tests {
             )
             .unwrap();
         let out = &h.app.team_runs[0].out;
+        // The run canonicalizes its state dir (/var -> /private/var on macOS).
+        let profile = crate::platform::path::canonical_or_self(&profile);
         assert!(out.starts_with(profile.join("sessions/teams")), "{out:?}");
     }
 
