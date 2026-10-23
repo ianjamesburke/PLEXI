@@ -3260,7 +3260,7 @@ pub enum AgentCmd {
     /// Read one harness hook payload (JSON) from stdin and report the agent state.
     /// Registered automatically for agents Plexi spawns; no `jq` or shell required.
     /// Example: plexi agent hook-event --agent claude-code < payload.json
-    #[command(name = "hook-event")]
+    #[command(name = "hook-event", hide = true)]
     HookEvent {
         /// Agent name to report as (default: $PLEXI_AGENT_NAME, else claude-code)
         #[arg(long)]
