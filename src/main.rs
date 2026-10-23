@@ -736,6 +736,9 @@ fn main() -> eframe::Result {
                             json,
                         )),
                         AgentCmd::Team { cmd } => cli::trace::exit(cli::agent_team_dispatch(cmd, json)),
+                        AgentCmd::HookEvent { agent } => {
+                            cli::trace::exit(cli::agent_hook_event_cli(agent.as_deref()))
+                        }
                         AgentCmd::Hook { action } => match action {
                             HookAction::Install {
                                 claude_code,

@@ -23,6 +23,7 @@ const CODEX_HOOK_EVENTS: &[&str] = &[
 
 const PLEXI_AGENT_STATE_SCRIPT: &str = "claude-code-agent-state.sh";
 const PLEXI_PI_EXTENSION: &str = "plexi-agent-state.ts";
+const PLEXI_CLAUDE_SETTINGS: &str = "plexi-claude-settings.json";
 
 /// Resolve the workspace root from the current directory.
 pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
@@ -1233,7 +1234,10 @@ pub fn resolve_agent_spawn_in_stopping_at(
         ));
     };
     let adapter = resolve_harness_adapter(harness_cfg)?;
-    let cmd_string = build_agent_start_command(&def, adapter, task_or_message)?;
+    let cmd_string = with_auto_state_hooks(
+        adapter,
+        build_agent_start_command(&def, adapter, task_or_message)?,
+    );
     let project_cwd = workspace_root
         .or_else(|| {
             crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
@@ -1820,7 +1824,7 @@ pub fn agent_hook_install_cli(claude_code: bool, codex: bool, pi: bool) -> i32 {
         status |= install_codex_hooks(&script_str);
     }
     if pi {
-        status |= install_pi_extension(&script_str);
+        status |= install_pi_extension();
     }
     status
 }
@@ -1913,106 +1917,240 @@ fn publish_agent_state_script(binary: &str, replace: bool) -> Result<PathBuf, St
     Ok(script_path)
 }
 
+/// The registered hook command is a thin wrapper: all parsing happens in
+/// `plexi agent hook-event` (native Rust, no `jq`, no state logic in shell).
 fn agent_state_script(binary: &str) -> String {
     format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
+        r#"#!/bin/sh
 if [ -z "${{PLEXI_SOCKET:-}}" ] || [ -z "${{PLEXI_PANE_ID:-}}" ]; then
+    cat >/dev/null
     exit 0
 fi
-INPUT=$(cat)
-EVENT=$(jq -r '.hook_event_name // empty' <<< "$INPUT" 2>/dev/null || true)
-AGENT_NAME="${{PLEXI_AGENT_NAME:-claude-code}}"
-
-truncate_detail() {{
-    local max="$1"
-    local value="$2"
-    if [ "${{#value}}" -gt "$max" ]; then
-        printf '%s' "${{value:0:$max}}"
-    else
-        printf '%s' "$value"
-    fi
-}}
-
-basename_detail() {{
-    local value="$1"
-    if [ -n "$value" ]; then
-        basename "$value"
-    fi
-}}
-
-tool_detail() {{
-    local tool_name value base
-    tool_name=$(jq -r '.tool_name // .toolName // empty' <<< "$INPUT" 2>/dev/null || true)
-    case "$tool_name" in
-        Bash|bash)
-            value=$(jq -r '.tool_input.command // .tool_input.cmd // .input.command // .args.command // empty' <<< "$INPUT" 2>/dev/null || true)
-            [ -n "$value" ] && printf 'Bash: %s' "$(truncate_detail 60 "$value")" || printf 'Bash'
-            ;;
-        apply_patch)
-            value=$(jq -r '.tool_input.command // .input.command // empty' <<< "$INPUT" 2>/dev/null || true)
-            [ -n "$value" ] && printf 'Patch: %s' "$(truncate_detail 60 "$value")" || printf 'Patch'
-            ;;
-        Edit|edit)
-            value=$(jq -r '.tool_input.file_path // .tool_input.path // .input.file_path // .input.path // .args.file_path // .args.path // empty' <<< "$INPUT" 2>/dev/null || true)
-            base=$(basename_detail "$value")
-            [ -n "$base" ] && printf 'Edit: %s' "$base" || printf 'Edit'
-            ;;
-        Write|write)
-            value=$(jq -r '.tool_input.file_path // .tool_input.path // .input.file_path // .input.path // .args.file_path // .args.path // empty' <<< "$INPUT" 2>/dev/null || true)
-            base=$(basename_detail "$value")
-            [ -n "$base" ] && printf 'Write: %s' "$base" || printf 'Write'
-            ;;
-        Read|read)
-            value=$(jq -r '.tool_input.file_path // .tool_input.path // .input.file_path // .input.path // .args.file_path // .args.path // empty' <<< "$INPUT" 2>/dev/null || true)
-            base=$(basename_detail "$value")
-            [ -n "$base" ] && printf 'Read: %s' "$base" || printf 'Read'
-            ;;
-        WebSearch)
-            value=$(jq -r '.tool_input.query // .input.query // empty' <<< "$INPUT" 2>/dev/null || true)
-            [ -n "$value" ] && printf 'WebSearch: %s' "$(truncate_detail 50 "$value")" || printf 'WebSearch'
-            ;;
-        WebFetch)
-            value=$(jq -r '.tool_input.url // .input.url // empty' <<< "$INPUT" 2>/dev/null || true)
-            [ -n "$value" ] && printf 'WebFetch: %s' "$(truncate_detail 60 "$value")" || printf 'WebFetch'
-            ;;
-        Agent)
-            value=$(jq -r '.tool_input.description // .tool_input.prompt // .input.description // .input.prompt // empty' <<< "$INPUT" 2>/dev/null || true)
-            [ -n "$value" ] && printf 'Agent: %s' "$(truncate_detail 60 "$value")" || printf 'Agent'
-            ;;
-        "")
-            ;;
-        *)
-            printf '%s' "$tool_name"
-            ;;
-    esac
-}}
-
-DETAIL=""
-case "$EVENT" in
-    PreToolUse|tool_call)             STATE="working"; DETAIL=$(tool_detail) ;;
-    PermissionRequest)                STATE="blocked"; DETAIL=$(tool_detail) ;;
-    UserPromptSubmit|agent_start|before_agent_start)
-                                      STATE="working" ;;
-    PostToolUse|PostToolBatch|tool_result)
-                                      STATE="working"; DETAIL=$(tool_detail) ;;
-    SessionStart|session_start)       STATE="idle" ;;
-    Stop|agent_end)                   STATE="idle" ;;
-    StopFailure)                     STATE="idle" ;;
-    SessionEnd|session_shutdown)     STATE="idle" ;;
-    UsageLimit|BootFailure)          STATE="blocked" ;;
-    SubagentStart|SubagentStop)       exit 0 ;;
-    *)                                exit 0 ;;
-esac
-
-SESSION_ID=$(jq -r '.session_id // .sessionId // empty' <<< "$INPUT" 2>/dev/null || true)
-ARGS=(agent report --state "$STATE" --agent "$AGENT_NAME")
-[ -n "$SESSION_ID" ] && ARGS+=(--session-id "$SESSION_ID")
-[ -n "$DETAIL" ] && ARGS+=(--detail "$DETAIL")
-PLEXI_AGENT_EVENT="$EVENT" "{binary}" "${{ARGS[@]}}" >/dev/null 2>&1 || true
-exit 0
+exec "{binary}" agent hook-event --agent "${{PLEXI_AGENT_NAME:-claude-code}}"
 "#
     )
+}
+
+/// One state report derived from a harness hook payload.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct HookReport {
+    pub state: &'static str,
+    pub detail: Option<String>,
+    pub session_id: Option<String>,
+    pub event: String,
+}
+
+fn hook_str<'a>(input: &'a serde_json::Value, paths: &[&[&str]]) -> Option<&'a str> {
+    paths.iter().find_map(|path| {
+        let mut cur = input;
+        for key in *path {
+            cur = cur.get(key)?;
+        }
+        cur.as_str().and_then(non_empty_string)
+    })
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
+}
+
+fn hook_tool_detail(input: &serde_json::Value) -> Option<String> {
+    let tool = hook_str(input, &[&["tool_name"], &["toolName"]])?;
+    let path_value = || {
+        hook_str(
+            input,
+            &[
+                &["tool_input", "file_path"],
+                &["tool_input", "path"],
+                &["input", "file_path"],
+                &["input", "path"],
+                &["args", "file_path"],
+                &["args", "path"],
+            ],
+        )
+        .and_then(|p| Path::new(p).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+    };
+    let labelled = |label: &str, value: Option<String>| match value {
+        Some(v) => format!("{label}: {v}"),
+        None => label.to_string(),
+    };
+    Some(match tool {
+        "Bash" | "bash" => labelled(
+            "Bash",
+            hook_str(
+                input,
+                &[
+                    &["tool_input", "command"],
+                    &["tool_input", "cmd"],
+                    &["input", "command"],
+                    &["args", "command"],
+                ],
+            )
+            .map(|v| truncate_chars(v, 60)),
+        ),
+        "apply_patch" => labelled(
+            "Patch",
+            hook_str(input, &[&["tool_input", "command"], &["input", "command"]])
+                .map(|v| truncate_chars(v, 60)),
+        ),
+        "Edit" | "edit" => labelled("Edit", path_value()),
+        "Write" | "write" => labelled("Write", path_value()),
+        "Read" | "read" => labelled("Read", path_value()),
+        "WebSearch" => labelled(
+            "WebSearch",
+            hook_str(input, &[&["tool_input", "query"], &["input", "query"]])
+                .map(|v| truncate_chars(v, 50)),
+        ),
+        "WebFetch" => labelled(
+            "WebFetch",
+            hook_str(input, &[&["tool_input", "url"], &["input", "url"]])
+                .map(|v| truncate_chars(v, 60)),
+        ),
+        "Agent" => labelled(
+            "Agent",
+            hook_str(
+                input,
+                &[
+                    &["tool_input", "description"],
+                    &["tool_input", "prompt"],
+                    &["input", "description"],
+                    &["input", "prompt"],
+                ],
+            )
+            .map(|v| truncate_chars(v, 60)),
+        ),
+        other => other.to_string(),
+    })
+}
+
+/// Map a Claude Code / Codex / Pi hook payload to a state report. Events that
+/// carry no state (subagent lifecycle, unknown names) return `None`.
+pub(crate) fn map_hook_payload(input: &serde_json::Value) -> Option<HookReport> {
+    let event = hook_str(input, &[&["hook_event_name"]])?;
+    let (state, with_tool) = match event {
+        "PreToolUse" | "tool_call" | "PostToolUse" | "PostToolBatch" | "tool_result" => {
+            ("working", true)
+        }
+        "PermissionRequest" => ("blocked", true),
+        "UserPromptSubmit" | "agent_start" | "before_agent_start" => ("working", false),
+        "SessionStart" | "session_start" | "Stop" | "agent_end" | "StopFailure" | "SessionEnd"
+        | "session_shutdown" => ("idle", false),
+        "UsageLimit" | "BootFailure" => ("blocked", false),
+        _ => return None,
+    };
+    Some(HookReport {
+        state,
+        detail: if with_tool { hook_tool_detail(input) } else { None },
+        session_id: hook_str(input, &[&["session_id"], &["sessionId"]]).map(str::to_string),
+        event: event.to_string(),
+    })
+}
+
+/// `plexi agent hook-event [--agent <name>]` — read one harness hook payload
+/// from stdin and report the derived state. Never fails the calling hook.
+pub fn agent_hook_event_cli(agent: Option<&str>) -> i32 {
+    use std::io::Read;
+    let mut raw = String::new();
+    let _ = std::io::stdin().read_to_string(&mut raw);
+    if std::env::var_os("PLEXI_SOCKET").is_none() || std::env::var_os("PLEXI_PANE_ID").is_none() {
+        return 0;
+    }
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return 0;
+    };
+    let Some(report) = map_hook_payload(&input) else {
+        return 0;
+    };
+    let agent = agent
+        .and_then(non_empty_string)
+        .map(str::to_string)
+        .or_else(|| std::env::var("PLEXI_AGENT_NAME").ok())
+        .unwrap_or_else(|| "claude-code".to_string());
+    let _ = agent_report_cli(
+        report.state,
+        &agent,
+        report.detail.as_deref(),
+        report.session_id.as_deref(),
+        Some(&report.event),
+        None,
+    );
+    0
+}
+
+/// Hook command registered with harnesses: no shell, no `jq`.
+const NATIVE_HOOK_COMMAND: &str = "plexi agent hook-event --agent";
+
+/// Settings JSON Claude Code merges via `--settings`, registering the state hooks.
+fn claude_state_settings_json() -> String {
+    let command = format!("{NATIVE_HOOK_COMMAND} claude-code");
+    let mut hooks = serde_json::Map::new();
+    for event in CLAUDE_CODE_HOOK_EVENTS {
+        hooks.insert(
+            (*event).to_string(),
+            serde_json::json!([{"hooks": [{"type": "command", "command": command}]}]),
+        );
+    }
+    serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks })).unwrap_or_default()
+}
+
+fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
+    if std::fs::read_to_string(path).is_ok_and(|existing| existing == content) {
+        return Ok(());
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let mut staged = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|e| format!("could not stage {}: {e}", path.display()))?;
+    std::io::Write::write_all(&mut staged, content.as_bytes())
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    staged
+        .persist(path)
+        .map_err(|e| format!("could not publish {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Insert extra launch flags directly after the harness binary.
+fn insert_after_binary(command: &str, binary: &str, flags: &[String]) -> String {
+    match command.strip_prefix(binary) {
+        Some(rest) => format!("{binary} {}{rest}", flags.join(" ")),
+        None => command.to_string(),
+    }
+}
+
+/// Make state reporting work on first launch with zero `plexi agent hook
+/// install`: provision channel-neutral hook files under the shared dir and add
+/// the matching launch flags (`claude --settings`, `pi -e`). Codex has no
+/// per-launch hook flag, so it keeps the opt-in `hook install --codex`.
+/// Provisioning failures are logged and the command is returned unchanged.
+pub fn with_auto_state_hooks(adapter: &HarnessAdapter, command: String) -> String {
+    let hooks_dir = crate::config::shared_dir().join("hooks");
+    let result = match adapter.harness {
+        AgentHarness::Claude => {
+            let path = hooks_dir.join(PLEXI_CLAUDE_SETTINGS);
+            write_if_changed(&path, &claude_state_settings_json()).map(|_| {
+                vec![
+                    "--settings".to_string(),
+                    shell_quote_arg(&path.to_string_lossy()),
+                ]
+            })
+        }
+        AgentHarness::Pi => {
+            let path = hooks_dir.join(PLEXI_PI_EXTENSION);
+            write_if_changed(&path, &pi_extension_script()).map(|_| {
+                vec!["-e".to_string(), shell_quote_arg(&path.to_string_lossy())]
+            })
+        }
+        _ => return command,
+    };
+    match result {
+        Ok(flags) => insert_after_binary(&command, adapter.binary, &flags),
+        Err(e) => {
+            log::warn!("agent_hook: auto-provision for {} failed: {e}", adapter.binary);
+            command
+        }
+    }
 }
 
 fn install_claude_code_hooks(script_str: &str) -> i32 {
@@ -2139,13 +2277,13 @@ fn register_json_hook(
     Ok(changed)
 }
 
-fn install_pi_extension(script_str: &str) -> i32 {
+fn install_pi_extension() -> i32 {
     let extension_path = pi_extension_path();
-    install_pi_extension_at(&extension_path, script_str)
+    install_pi_extension_at(&extension_path)
 }
 
-pub(crate) fn install_pi_extension_at(extension_path: &Path, script_str: &str) -> i32 {
-    let content = pi_extension_script(script_str);
+pub(crate) fn install_pi_extension_at(extension_path: &Path) -> i32 {
+    let content = pi_extension_script();
     if extension_path.exists() {
         let existing = match std::fs::read_to_string(extension_path) {
             Ok(existing) => existing,
@@ -2213,96 +2351,94 @@ pub fn migrate_legacy_pi_extension_at(extension_path: &Path) -> Result<bool, Str
     Ok(true)
 }
 
-fn pi_extension_script(script_str: &str) -> String {
-    format!(
-        r#"// Plexi-managed agent state extension.
-import {{ spawn }} from "node:child_process";
-import {{ existsSync }} from "node:fs";
-import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
+fn pi_extension_script() -> String {
+    r#"// Plexi-managed agent state extension.
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const hookCommand = {script_json};
+const plexiBin = process.env.PLEXI_CLI_BIN || "plexi";
 const PLEXI_PI_PACKAGE_ACTIVE = "__PLEXI_PI_PACKAGE_ACTIVE__";
 let turnStarted = false;
 
-function isPiPlexiPackageActive(): boolean {{
+function isPiPlexiPackageActive(): boolean {
   return Boolean((globalThis as Record<string, unknown>)[PLEXI_PI_PACKAGE_ACTIVE]) ||
     process.env.PLEXI_PI_PACKAGE_ACTIVE === "1";
-}}
+}
 
-function isSessionPersisted(ctx: any): boolean {{
+function isSessionPersisted(ctx: any): boolean {
   if (turnStarted) return true;
-  try {{
+  try {
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
     return typeof file === "string" && file.trim().length > 0 && existsSync(file.trim());
-  }} catch {{
+  } catch {
     return false;
-  }}
-}}
+  }
+}
 
-function sessionId(ctx: any, requirePersisted = false): string {{
+function sessionId(ctx: any, requirePersisted = false): string {
   if (requirePersisted && !isSessionPersisted(ctx)) return "";
-  try {{
+  try {
     const id = ctx?.sessionManager?.getSessionId?.();
     if (typeof id === "string" && id.trim()) return id.trim();
     const file = ctx?.sessionManager?.getSessionFile?.();
     if (typeof file === "string" && file.trim()) return file.trim();
-  }} catch {{
-  }}
+  } catch {
+  }
   return "";
-}}
+}
 
-function report(eventName: string, payload: Record<string, unknown>, ctx: any) {{
+function report(eventName: string, payload: Record<string, unknown>, ctx: any) {
   if (isPiPlexiPackageActive()) return;
   if (!process.env.PLEXI_SOCKET || !process.env.PLEXI_PANE_ID) return;
-  if (eventName === "session_start") {{
+  if (eventName === "session_start") {
     turnStarted = false;
-  }} else if (
+  } else if (
     eventName === "before_agent_start" ||
     eventName === "agent_start" ||
     eventName === "tool_call" ||
     eventName === "tool_result" ||
     eventName === "agent_end"
-  ) {{
+  ) {
     turnStarted = true;
-  }}
+  }
   const requirePersisted = eventName === "session_start" || eventName === "session_shutdown";
-  try {{
-    const child = spawn(hookCommand, [], {{
-      env: {{ ...process.env, PLEXI_AGENT_NAME: "pi" }},
+  try {
+    const child = spawn(plexiBin, ["agent", "hook-event", "--agent", "pi"], {
+      env: { ...process.env, PLEXI_AGENT_NAME: "pi" },
       stdio: ["pipe", "ignore", "ignore"],
-    }});
-    child.on("error", () => {{}});
-    child.stdin.on("error", () => {{}});
-    child.stdin.end(JSON.stringify({{
+    });
+    child.on("error", () => {});
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify({
       hook_event_name: eventName,
       session_id: sessionId(ctx, requirePersisted),
       ...payload,
-    }}));
-  }} catch {{
-  }}
-}}
+    }));
+  } catch {
+  }
+}
 
-export default function (pi: ExtensionAPI) {{
-  pi.on("session_start", (event, ctx) => report("session_start", {{ reason: event.reason }}, ctx));
-  pi.on("before_agent_start", (_event, ctx) => report("before_agent_start", {{}}, ctx));
-  pi.on("agent_start", (_event, ctx) => report("agent_start", {{}}, ctx));
-  pi.on("tool_call", (event, ctx) => report("tool_call", {{
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (event, ctx) => report("session_start", { reason: event.reason }, ctx));
+  pi.on("before_agent_start", (_event, ctx) => report("before_agent_start", {}, ctx));
+  pi.on("agent_start", (_event, ctx) => report("agent_start", {}, ctx));
+  pi.on("tool_call", (event, ctx) => report("tool_call", {
     tool_name: event.toolName,
     tool_input: event.args,
     tool_use_id: event.toolCallId,
-  }}, ctx));
-  pi.on("tool_result", (event, ctx) => report("tool_result", {{
+  }, ctx));
+  pi.on("tool_result", (event, ctx) => report("tool_result", {
     tool_name: event.toolName,
     tool_input: event.input,
     tool_use_id: event.toolCallId,
     is_error: event.isError,
-  }}, ctx));
-  pi.on("agent_end", (_event, ctx) => report("agent_end", {{}}, ctx));
-  pi.on("session_shutdown", (_event, ctx) => report("session_shutdown", {{}}, ctx));
-}}
-"#,
-        script_json = serde_json::to_string(script_str).unwrap_or_else(|_| "\"plexi\"".to_string())
-    )
+  }, ctx));
+  pi.on("agent_end", (_event, ctx) => report("agent_end", {}, ctx));
+  pi.on("session_shutdown", (_event, ctx) => report("session_shutdown", {}, ctx));
+}
+"#
+    .to_string()
 }
 
 fn uninstall_claude_code_hooks() -> i32 {
@@ -2391,6 +2527,7 @@ pub(crate) fn uninstall_pi_extension_at(extension_path: &Path) -> i32 {
 pub fn is_plexi_pi_extension(content: &str) -> bool {
     content.contains("Plexi-managed agent state extension.")
         || (content.contains("const hookCommand =") && content.contains("PLEXI_AGENT_NAME: \"pi\""))
+        || (content.contains("const plexiBin =") && content.contains("PLEXI_AGENT_NAME: \"pi\""))
 }
 
 fn contains_plexi_agent_hook(entry: &serde_json::Value) -> bool {
@@ -2552,97 +2689,109 @@ mod agent_tests {
     }
 
     #[test]
-    fn pane_lifecycle_hook_preserves_stop_failure_and_session_end() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        use std::process::{Command, Stdio};
-        let dir = tempfile::tempdir().unwrap();
-        let capture = dir.path().join("capture");
-        fs::write(&capture, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'hook_event=%s\\n' \"${PLEXI_AGENT_EVENT:-}\"\n").unwrap();
-        fs::set_permissions(&capture, fs::Permissions::from_mode(0o755)).unwrap();
-        let script = dir.path().join("hook.sh");
-        fs::write(
-            &script,
-            super::agent_state_script(capture.to_str().unwrap())
-                .replace(">/dev/null 2>&1 || true", "|| true"),
-        )
+    fn native_hook_payloads_map_states_without_jq_or_bash() {
+        let report = |v: serde_json::Value| super::map_hook_payload(&v);
+        let r = report(serde_json::json!({"hook_event_name": "SessionStart", "session_id": "s1"}))
+            .unwrap();
+        assert_eq!((r.state, r.session_id.as_deref(), r.event.as_str()), ("idle", Some("s1"), "SessionStart"));
+        assert_eq!(
+            report(serde_json::json!({"hook_event_name": "UserPromptSubmit"})).unwrap().state,
+            "working"
+        );
+        let r = report(serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": "cargo test --lib"}
+        }))
         .unwrap();
-        let reports: Vec<_> = ["Stop", "StopFailure", "SessionEnd"]
-            .into_iter()
-            .map(|event| {
-                let mut child = Command::new("bash")
-                    .arg(&script)
-                    .env("PLEXI_SOCKET", "unused-test-socket")
-                    .env("PLEXI_PANE_ID", "7")
-                    .env("PLEXI_AGENT_NAME", "claude-code")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .unwrap();
-                write!(
-                    child.stdin.take().unwrap(),
-                    "{}",
-                    serde_json::json!({
-                        "hook_event_name": event, "session_id": "test-session"
-                    })
-                )
-                .unwrap();
-                let output = child.wait_with_output().unwrap();
-                assert!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                let args = String::from_utf8(output.stdout).unwrap();
-                assert!(
-                    args.contains("agent\nreport\n"),
-                    "hook did not report: {args}"
-                );
-                args
-            })
+        assert_eq!((r.state, r.detail.as_deref()), ("working", Some("Bash: cargo test --lib")));
+        let r = report(serde_json::json!({
+            "hook_event_name": "PermissionRequest", "tool_name": "Edit",
+            "tool_input": {"file_path": "/repo/src/main.rs"}
+        }))
+        .unwrap();
+        assert_eq!((r.state, r.detail.as_deref()), ("blocked", Some("Edit: main.rs")));
+        // Stop, StopFailure and SessionEnd keep distinct raw provenance.
+        let events: Vec<_> = ["Stop", "StopFailure", "SessionEnd"]
+            .iter()
+            .map(|e| report(serde_json::json!({"hook_event_name": e, "sessionId": "s2"})).unwrap())
             .collect();
-        assert_ne!(
-            reports[0], reports[1],
-            "normal stop and failure lost their distinction at the source"
+        assert!(events.iter().all(|r| r.state == "idle" && r.session_id.as_deref() == Some("s2")));
+        assert_eq!(
+            events.iter().map(|r| r.event.as_str()).collect::<Vec<_>>(),
+            ["Stop", "StopFailure", "SessionEnd"]
         );
-        assert_ne!(
-            reports[0], reports[2],
-            "normal stop and session end lost their distinction at the source"
-        );
-        assert_ne!(
-            reports[1], reports[2],
-            "failure and session end lost their distinction at the source"
-        );
-        for (report, event) in reports.iter().zip(["Stop", "StopFailure", "SessionEnd"]) {
-            assert!(
-                report.contains(&format!("hook_event={event}\n")),
-                "raw provenance missing: {report}"
-            );
-            assert!(
-                !report.contains("--event\n"),
-                "shared hook must retain old CLI arguments"
-            );
-        }
+        // Pi event names and tool-name-only events.
+        assert_eq!(report(serde_json::json!({"hook_event_name": "agent_end"})).unwrap().state, "idle");
+        let r = report(serde_json::json!({"hook_event_name": "tool_call", "toolName": "mcp_x"})).unwrap();
+        assert_eq!(r.detail.as_deref(), Some("mcp_x"));
+        // Stateless and unknown events are ignored.
+        assert!(report(serde_json::json!({"hook_event_name": "SubagentStart"})).is_none());
+        assert!(report(serde_json::json!({"hook_event_name": "Whatever"})).is_none());
+        assert!(report(serde_json::json!({"no_event": true})).is_none());
+        // Long details are truncated on char boundaries.
+        let long = "é".repeat(100);
+        let r = report(serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": long}
+        }))
+        .unwrap();
+        assert_eq!(r.detail.unwrap().chars().count(), "Bash: ".len() + 60);
     }
 
     #[test]
-    fn generated_hooks_detect_codex_and_pi() {
-        let shell = super::agent_state_script("/usr/local/bin/plexi");
-        assert!(shell.contains("PLEXI_AGENT_NAME"));
-        assert!(shell.contains("PreToolUse|tool_call"));
-        assert!(shell.contains("--agent \"$AGENT_NAME\""));
+    fn registered_hook_script_is_a_thin_exec_wrapper() {
+        let shell = super::agent_state_script("plexi");
+        assert!(!shell.contains("jq"), "no jq dependency");
+        assert!(shell.contains("exec \"plexi\" agent hook-event --agent"));
+    }
 
-        let pi = super::pi_extension_script("/tmp/claude-code-agent-state.sh");
+    #[test]
+    fn pi_extension_calls_plexi_directly() {
+        let pi = super::pi_extension_script();
         assert!(pi.contains("PLEXI_AGENT_NAME: \"pi\""));
         assert!(pi.contains("pi.on(\"tool_call\""));
         assert!(pi.contains("pi.on(\"agent_end\""));
+        assert!(pi.contains("spawn(plexiBin, [\"agent\", \"hook-event\", \"--agent\", \"pi\"]"));
+        assert!(!pi.contains("bash") && !pi.contains("jq"));
+        assert!(super::is_plexi_pi_extension(&pi));
     }
 
     #[test]
-    fn channel_neutral_hook_script_uses_the_bare_plexi_shim() {
-        let shell = super::agent_state_script("plexi");
-        assert!(shell.contains("\"plexi\" \"${ARGS[@]}\""));
+    fn spawn_auto_provisions_hooks_for_claude_and_pi_without_hook_install() {
+        let shared = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_shared_dir(shared.path().to_path_buf());
+        let hooks = shared.path().join("hooks");
+        let adapter = |h| super::HARNESS_ADAPTERS.iter().find(|a| a.harness == h).unwrap();
+
+        let claude = adapter(super::AgentHarness::Claude);
+        let cmd = super::with_auto_state_hooks(claude, "claude --model x 'task'".to_string());
+        let settings_path = hooks.join("plexi-claude-settings.json");
+        assert!(
+            cmd.starts_with(&format!("claude --settings '{}' --model x", settings_path.display()))
+                || cmd.starts_with(&format!("claude --settings {} --model x", settings_path.display())),
+            "{cmd}"
+        );
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        for event in super::CLAUDE_CODE_HOOK_EVENTS {
+            assert_eq!(
+                settings["hooks"][*event][0]["hooks"][0]["command"],
+                "plexi agent hook-event --agent claude-code"
+            );
+        }
+
+        let pi = adapter(super::AgentHarness::Pi);
+        let cmd = super::with_auto_state_hooks(pi, "pi --no-extensions --no-mcp 'task'".to_string());
+        let ext = hooks.join("plexi-agent-state.ts");
+        assert!(cmd.contains("--no-extensions") && cmd.contains("-e "), "{cmd}");
+        assert!(cmd.contains(&ext.to_string_lossy().to_string()), "{cmd}");
+        assert!(cmd.starts_with("pi -e "), "{cmd}");
+        assert!(super::is_plexi_pi_extension(&fs::read_to_string(&ext).unwrap()));
+
+        // Other harnesses are untouched, and provisioning is idempotent.
+        let codex = adapter(super::AgentHarness::Codex);
+        assert_eq!(super::with_auto_state_hooks(codex, "codex 'x'".to_string()), "codex 'x'");
+        let again = super::with_auto_state_hooks(pi, "pi --no-extensions 'task'".to_string());
+        assert!(again.starts_with("pi -e "));
     }
 
     #[test]
@@ -2892,7 +3041,7 @@ mod agent_tests {
         let custom_content = "// User-authored custom extension\nexport default function() {}\n";
         fs::write(&ext_path, custom_content).unwrap();
         assert_eq!(
-            super::install_pi_extension_at(&ext_path, "/tmp/claude-code-agent-state.sh"),
+            super::install_pi_extension_at(&ext_path),
             1
         );
         assert!(super::migrate_legacy_pi_extension_at(&ext_path).is_err());
@@ -2902,7 +3051,7 @@ mod agent_tests {
         // 2. Legacy Plexi-generated extension is recognized, backed up to .plexi-hook.bak, and removed on migration.
         fs::remove_file(&ext_path).unwrap();
         assert_eq!(
-            super::install_pi_extension_at(&ext_path, "/tmp/claude-code-agent-state.sh"),
+            super::install_pi_extension_at(&ext_path),
             0
         );
         let generated = fs::read_to_string(&ext_path).unwrap();

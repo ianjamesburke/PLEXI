@@ -162,7 +162,10 @@ impl PlexiApp {
         } else {
             request.task.to_string()
         };
-        let command = crate::cli::agent::build_agent_spawn_command(&def, adapter, &task)?;
+        let command = crate::cli::agent::with_auto_state_hooks(
+            adapter,
+            crate::cli::agent::build_agent_spawn_command(&def, adapter, &task)?,
+        );
         let managed = request
             .worktree
             .map(|branch| crate::host::worktree::create_worktree(&lookup_root, branch))
