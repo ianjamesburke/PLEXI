@@ -1043,10 +1043,7 @@ impl PlexiApp {
             ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)));
         }
         let request = &pending[0];
-        let actor = request.actor_id.strip_prefix("pane:")
-            .map(|id| format!("Terminal pane {id}"))
-            .or_else(|| request.actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
-            .unwrap_or_else(|| request.actor_id.clone());
+        let actor = self.approval_actor_label(&request.actor_id);
         let tool = request.tool.replace("__", " / ");
         let caption = format!("{actor} wants to use {tool}");
         let synthetic = self.synthetic_input_frame;
@@ -1141,6 +1138,40 @@ impl PlexiApp {
                 }
             }
         }
+    }
+
+    pub(crate) fn approval_actor_label(&self, actor_id: &str) -> String {
+        actor_id
+            .strip_prefix("pane:")
+            .map(|id| {
+                let agent_name = id
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|pid| {
+                        self.windows
+                            .iter()
+                            .find_map(|w| w.panes.get(&pid))
+                            .and_then(|p| p.as_terminal())
+                    })
+                    .and_then(|t| {
+                        t.agent_role
+                            .clone()
+                            .or_else(|| t.agent.as_ref().map(|a| a.agent.clone()))
+                            .or_else(|| {
+                                t.agent_harness.as_ref().and_then(|_| {
+                                    t.name
+                                        .clone()
+                                        .filter(|n| !n.is_empty() && n != "terminal")
+                                })
+                            })
+                    });
+                match agent_name {
+                    Some(name) => format!("Agent {name} (pane {id})"),
+                    None => format!("Terminal pane {id}"),
+                }
+            })
+            .or_else(|| actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
+            .unwrap_or_else(|| actor_id.to_string())
     }
 
     /// Banner for the oldest permission request/change, question or blocked

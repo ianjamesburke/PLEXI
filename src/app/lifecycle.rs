@@ -3447,16 +3447,50 @@ impl PlexiApp {
                     );
                     return;
                 }
+                let already_completed = self
+                    .pane_results
+                    .get(pane_id)
+                    .is_some_and(|r| r.committed.is_some())
+                    || self
+                        .windows
+                        .iter()
+                        .find_map(|w| w.panes.get(pane_id))
+                        .and_then(|p| p.as_terminal())
+                        .is_some_and(|t| t.agent_completed || t.slots.contains_key("completed"));
+                if (event.as_deref() == Some("HarnessExit")
+                    || *state == crate::protocol::AgentState::ExitedUnreported)
+                    && already_completed
+                {
+                    log::info!(
+                        "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state=Completed (harness_exit_after_done)"
+                    );
+                    let mut ephemeral = false;
+                    for win in &mut self.windows {
+                        if let Some(pane) = win.panes.get_mut(pane_id) {
+                            let existing_agent = pane.agent().cloned();
+                            if let Some(t) = pane.as_terminal_mut() {
+                                ephemeral = t.ephemeral;
+                                t.agent_completed = true;
+                            }
+                            if let Some(mut a) = existing_agent {
+                                a.state = crate::protocol::AgentState::Completed;
+                                let _ = pane.set_agent(Some(a));
+                            }
+                            break;
+                        }
+                    }
+                    self.refresh_portal_context_states();
+                    self.mark_workspace_dirty();
+                    if ephemeral {
+                        self.close_pane_by_id(*pane_id);
+                    }
+                    return;
+                }
                 log::info!(
                     "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail_present={}",
                     detail.is_some()
                 );
                 if event.as_deref() == Some("HarnessExit") {
-                    if self.pane_results.get(pane_id).is_some_and(|r| r.committed.is_some()) {
-                        let ephemeral = self.windows.iter().find_map(|w| w.panes.get(pane_id)).and_then(|p| p.as_terminal()).is_some_and(|t| t.ephemeral);
-                        if ephemeral { self.close_pane_by_id(*pane_id); }
-                        return;
-                    }
                     let (tail, parent_pane_id, child_agent) = self
                         .windows
                         .iter()
@@ -4564,9 +4598,14 @@ impl PlexiApp {
                                 if !workspace_roots.contains(&win.path) {
                                     workspace_roots.push(win.path.clone());
                                 }
+                                let done_state = if agent_harness.as_deref() == Some("script") {
+                                    crate::protocol::AgentState::Completed
+                                } else {
+                                    crate::protocol::AgentState::Idle
+                                };
                                 let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
                                     pane_id: *pane_id,
-                                    state: crate::protocol::AgentState::Idle,
+                                    state: done_state,
                                     agent: agent_label.clone(),
                                     detail: (!summary_str.is_empty())
                                         .then(|| summary_str.to_string()),

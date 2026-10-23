@@ -682,6 +682,8 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
         let name = pane
             .get("name")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
             .unwrap_or("pane");
         let role = pane
             .get("agent_role")

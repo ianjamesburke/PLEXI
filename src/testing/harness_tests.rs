@@ -13925,3 +13925,126 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
         Some("✳ Claude Code — /tmp/work")
     );
 }
+
+#[test]
+fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
+    let mut h = HostHarness::new();
+    let human_shell = h.add_focused_terminal();
+    let ws_dir = tempfile::tempdir().unwrap();
+    h.app.windows[0].path = ws_dir.path().to_path_buf();
+
+    if let Some(pane) = h.app.windows[0].panes.get_mut(&human_shell) {
+        if let Some(t) = pane.as_terminal_mut() {
+            t.name = Some("proj-demo-1".to_string());
+            t.name_locked = true;
+            t.spawned_by = Some("human".to_string());
+            t.initial_cwd = Some(ws_dir.path().to_path_buf());
+        }
+    }
+    let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "oneshot".into(),
+        harness: "script".into(),
+        command: "sleep 30".into(),
+        task: None,
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell),
+        name: None,
+        cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: spawn_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let oneshot_pane = read_json_response(&spawn_reply)["pane_id"]
+        .as_u64()
+        .expect("oneshot pane_id");
+
+    // 1. Script pane runs `agent done` and then the supervised wrapper reports HarnessExit (`exited_unreported`).
+    let done_reply = temp_response(ws_dir.path(), "oneshot-done");
+    h.inject_ipc(AppRequest::AgentDone {
+        pane_id: oneshot_pane,
+        result: Some("{}".to_string()),
+        summary: Some("oneshot-ok".to_string()),
+        response_file: done_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let done_json = read_json_response(&done_reply);
+    assert_eq!(done_json["ok"], true, "done_json: {done_json}");
+
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: oneshot_pane,
+        state: crate::protocol::AgentState::ExitedUnreported,
+        agent: "script".to_string(),
+        detail: Some("harness exited with code 0 without agent done".to_string()),
+        session_id: None,
+        event: Some("HarnessExit".to_string()),
+        blocked_reason: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+
+    // 2. Verify `ListPanes` + `format_pane_tree`: script pane state is Completed (not ExitedUnreported),
+    // and `pane tree` labels panes by their actual name/title instead of `"pane"`.
+    let list_reply = temp_response(ws_dir.path(), "list-b4");
+    h.inject_ipc(AppRequest::ListPanes {
+        context_id: None,
+        response_file: list_reply.clone(),
+    });
+    h.hidden_frame();
+    let mut panes = read_json_response(&list_reply)
+        .as_array()
+        .expect("panes array")
+        .clone();
+    let oneshot_entry = panes
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(oneshot_pane))
+        .expect("oneshot entry");
+    assert_eq!(
+        oneshot_entry["agent"]["state"].as_str(),
+        Some("completed"),
+        "script pane after agent done + HarnessExit must remain completed, not exited_unreported: {oneshot_entry}"
+    );
+    assert_eq!(oneshot_entry["agent_completed"].as_bool(), Some(true));
+
+    // Include a synthetic portal entry with only `"title"` (no `"name"`) to verify title fallback.
+    panes.push(serde_json::json!({
+        "id": 99,
+        "type": "portal",
+        "title": "portal:2",
+        "spawned_by": "human",
+        "parent_pane_id": null,
+    }));
+    let tree_text = crate::cli::pane::format_pane_tree(&panes, false);
+    assert!(
+        tree_text.contains(&format!("#{human_shell} \"proj-demo-1\"")),
+        "pane tree must label terminal pane by name: {tree_text}"
+    );
+    assert!(
+        tree_text.contains(&format!("└── #{oneshot_pane} agent:oneshot \"oneshot\"")),
+        "pane tree must label child agent pane by name: {tree_text}"
+    );
+    assert!(
+        tree_text.contains("#99 \"portal:2\""),
+        "pane tree must fall back to title when name is absent: {tree_text}"
+    );
+    assert!(
+        !tree_text.contains("\"pane\""),
+        "pane tree must not label named/titled panes as \"pane\": {tree_text}"
+    );
+
+    // 3. Verify permission banner actor label uses agent name for agent panes and "Terminal pane <id>" for plain terminals.
+    assert_eq!(
+        h.app.approval_actor_label(&format!("pane:{oneshot_pane}")),
+        format!("Agent oneshot (pane {oneshot_pane})")
+    );
+    assert_eq!(
+        h.app.approval_actor_label(&format!("pane:{human_shell}")),
+        format!("Terminal pane {human_shell}")
+    );
+}
