@@ -389,6 +389,7 @@ pr-install number:
       # own bundle invocation and must never acquire twice.
       ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
     fi
+    bash "$_driver_root/scripts/pr-install-seed-profile.sh" seed "{{number}}"
     # Record that this binary was built for pr-<N> at this head, so a later
     # install of the same head can prove it may reuse it.
     if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
@@ -530,6 +531,7 @@ test-infra-scripts:
     bash scripts/merge-pr.sh test-resolve-both
     bash scripts/pr-install-reuse.sh self-test
     bash scripts/pr-install-verify-sdk.sh self-test
+    bash scripts/pr-install-seed-profile.sh self-test
 
 # Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
 #   just merge-rebase feature/2155-foo   — rebase + force-push feature branch

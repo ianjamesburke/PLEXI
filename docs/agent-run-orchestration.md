@@ -56,6 +56,7 @@ None of these have a right answer derivable from state. They are the reason a mo
 A pane is a terminal attached to a running host. These need that and nothing else does:
 
 - `just pr-install <N>` and booting `plexi-pr-<N>` — long-running, produces a real installed channel profile.
+- Try-it team steps must run from a workspace with `.plexi/teams/`, or use a built-in team.
 - **Driving the installed app end to end**, including falsifiability probes (break the invariant, watch the guard fire, revert).
 - **Scene capture** and framebuffer shots via `drive-host`.
 - Anything that must observe `~/.plexi-pr-<N>/plexi.log` from the running build.
