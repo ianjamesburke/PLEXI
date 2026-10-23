@@ -11500,6 +11500,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "claude".to_string(),
                                 config_name: Some("lead".to_string()),
+                                permission_posture: None,
                                 session_id: Some("sess-active-10".to_string()),
                                 last_state: AgentState::Working,
                                 last_blocked_reason: None,
@@ -11573,6 +11574,7 @@ mod agent_state_restoration_tests {
                             fleet_since: 0,
                             harness: "codex".to_string(),
                             config_name: Some("worker".to_string()),
+                            permission_posture: None,
                             session_id: Some("thread-bg-20".to_string()),
                             last_state: AgentState::Blocked,
                             last_blocked_reason: Some(AgentBlockedReason::Unknown),
@@ -11619,6 +11621,7 @@ mod agent_state_restoration_tests {
                             fleet_since: 0,
                             harness: "pi".to_string(),
                             config_name: Some("scout".to_string()),
+                            permission_posture: None,
                             session_id: Some("pi-done-30".to_string()),
                             last_state: AgentState::Completed,
                             last_blocked_reason: None,
@@ -11785,6 +11788,7 @@ mod agent_state_restoration_tests {
             fleet_since: 0,
             harness: "codex".to_string(),
             config_name: Some("worker".to_string()),
+            permission_posture: None,
             session_id: Some("thread-enter".to_string()),
             last_state: AgentState::Idle,
             last_blocked_reason: None,
@@ -11996,6 +12000,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12029,6 +12034,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: Some("pi-unpersisted-11".to_string()),
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12062,6 +12068,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: Some("pi-persisted-12".to_string()),
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12107,6 +12114,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12140,6 +12148,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: Some("pi-unpersisted-21".to_string()),
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -13340,5 +13349,702 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
     assert!(
         human_term.pending_child_results.is_empty(),
         "plain human shell must not accumulate pending_child_results that never drain"
+    );
+    assert!(
+        h.app.pulled_child_results.contains(&worker_id),
+        "child result from plain-shell spawner must be marked delivered"
+    );
+
+    let list_reply = temp_response(dir.path(), "list-panes-after-done");
+    h.inject_ipc(AppRequest::ListPanes {
+        context_id: None,
+        response_file: list_reply.clone(),
+    });
+    h.hidden_frame();
+    let list_json = read_json_response(&list_reply);
+    let panes = list_json.as_array().expect("panes array");
+    let human_entry = panes
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(human_shell_id))
+        .expect("human shell entry in list_panes");
+    assert_eq!(human_entry["pending_child_results_count"], 0);
+
+    let tree_text = crate::cli::pane::format_pane_tree(panes, false);
+    assert!(
+        !tree_text.contains("result waiting") && !tree_text.contains("results waiting"),
+        "pane tree must not show 'result waiting' on plain-shell spawner: {tree_text}"
+    );
+
+    let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+    assert!(
+        view.tasks
+            .iter()
+            .flat_map(|t| &t.rows)
+            .all(|r| r.pending_child_results_count == 0),
+        "agents_view must not show pending child results badge for plain-shell spawner"
+    );
+
+    // Also verify that when an agent parent HAS a queued child result, viewing it
+    // via PaneResultRead clears the pending_child_results count and badge.
+    let agent_parent_id = h.add_focused_terminal();
+    {
+        let term = h.app.windows[0]
+            .panes
+            .get_mut(&agent_parent_id)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("agent parent terminal");
+        term.agent_role = Some("lead".into());
+        term.agent_harness = Some("claude".into());
+        term.pending_child_results
+            .push(crate::workspace::QueuedChildResult {
+                child_pane_id: worker_id,
+                child_agent: "helper".into(),
+                status: "completed".into(),
+                summary: Some("helper finished".into()),
+                result_json: r#"{"ok":true}"#.into(),
+                finished_at_epoch_secs: 1,
+            });
+    }
+    let read_reply = temp_response(dir.path(), "read-worker-result");
+    h.inject_ipc(AppRequest::PaneResultRead {
+        pane_id: worker_id,
+        wait: false,
+        timeout_secs: 0.0,
+        response_file: read_reply.clone(),
+    });
+    h.hidden_frame();
+    let agent_parent_term = h.app.windows[0].panes[&agent_parent_id]
+        .as_terminal()
+        .expect("agent parent terminal");
+    assert!(
+        agent_parent_term.pending_child_results.is_empty(),
+        "viewing result via PaneResultRead must clear pending_child_results on parent"
+    );
+}
+
+#[test]
+fn restored_agent_pane_enforces_permission_posture_on_pane_send() {
+    let profile_dir = tempfile::tempdir().expect("profile_dir");
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+    let ws_dir = tempfile::tempdir().expect("ws_dir");
+    let agent_dir = ws_dir.path().join(".plexi").join("agents").join("lead");
+    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+    std::fs::write(agent_dir.join("AGENT.md"), "You are lead.\n").expect("write AGENT.md");
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "lead"
+display_name = "Lead"
+default_tier = "medium"
+
+[harness]
+cli = "claude"
+
+[permissions]
+default_posture = "allow"
+allow = []
+ask = ["pane.send"]
+"#,
+    )
+    .expect("write settings.toml");
+
+    let mut tiles = egui_tiles::Tiles::default();
+    let t10 = tiles.insert_pane(10);
+    let t11 = tiles.insert_pane(11);
+    let root_tile = tiles.insert_horizontal_tile(vec![t10, t11]);
+    let tree = egui_tiles::Tree::new("restore_gate_tree", root_tile, tiles);
+
+    let ws = crate::workspace::WorkspaceFile {
+        version: 2,
+        active_context: 1,
+        sidebar_visible: false,
+        next_pane_id: 20,
+        contexts: vec![crate::host::context::Context {
+            name: crate::host::context::ContextName::custom("story"),
+            root: ws_dir.path().to_path_buf(),
+            description: None,
+            context_id: 1,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        }],
+        windows: vec![crate::workspace::SavedWindow {
+            name: String::new(),
+            path: ws_dir.path().to_path_buf(),
+            tree,
+            panes: vec![
+                crate::workspace::SavedPane {
+                    id: 10,
+                    kind: crate::workspace::SavedPaneKind::Terminal,
+                    cwd: ws_dir.path().to_path_buf(),
+                    name: Some("lead".to_string()),
+                    app_id: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: Some(crate::workspace::SavedAgentSession {
+                        fleet_result: None,
+                        fleet_seen: false,
+                        fleet_dismissed: false,
+                        fleet_done_unseen: false,
+                        fleet_since: 0,
+                        harness: "claude".to_string(),
+                        config_name: Some("lead".to_string()),
+                        permission_posture: None,
+                        session_id: Some("sess-lead-10".to_string()),
+                        last_state: crate::protocol::AgentState::Idle,
+                        last_blocked_reason: None,
+                        last_detail: None,
+                        parent_pane_id: None,
+                        spawned_by: Some("human".to_string()),
+                        pending_child_results: Vec::new(),
+                        ephemeral: false,
+                        tail_preview: None,
+                        standby_scrollback_tail: None,
+                    }),
+                },
+                crate::workspace::SavedPane {
+                    id: 11,
+                    kind: crate::workspace::SavedPaneKind::Terminal,
+                    cwd: ws_dir.path().to_path_buf(),
+                    name: Some("helper".to_string()),
+                    app_id: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: None,
+                },
+            ],
+            focused_pane: Some(t10),
+            grid_x: 0,
+            grid_y: 0,
+            window_id: 1,
+            context_id: 1,
+        }],
+        context_active_window: std::collections::HashMap::from([(1, 1)]),
+    };
+    ws.save_to(profile_dir.path()).expect("save workspace");
+
+    let mut h = HostHarness::from_profile_dir(profile_dir.path());
+    let restored_posture = h
+        .app
+        .pane_permission_posture(10)
+        .expect("restored agent pane must have permission posture");
+    assert!(
+        restored_posture.ask.iter().any(|rule| rule == "pane.send"),
+        "expected ask=[\"pane.send\"] after restore, got {restored_posture:?}"
+    );
+    let saved_after_restore = h.app.windows[0].panes[&10]
+        .as_terminal()
+        .expect("terminal 10")
+        .build_saved_agent_session()
+        .expect("saved agent session");
+    assert_eq!(
+        saved_after_restore.permission_posture.as_ref(),
+        Some(&restored_posture),
+        "build_saved_agent_session must persist permission_posture"
+    );
+
+    let lead_pid = h.app.windows[0].panes[&10]
+        .as_terminal()
+        .expect("terminal 10")
+        .backend
+        .child_pid();
+    let send_reply = temp_response(ws_dir.path(), "restored-lead-send");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: 11,
+        text: "hello from restored lead".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(send_reply.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir.path());
+    let pending = monitor.list_pending();
+    assert_eq!(
+        pending.len(),
+        1,
+        "restored agent pane must enter permission broker and file an ask on pane.send"
+    );
+    assert_eq!(pending[0].actor_id, "pane:10");
+    assert_eq!(pending[0].tool, "pane.send");
+}
+
+#[test]
+fn pane_send_allow_once_unblocks_parked_call_and_consumes_grant() {
+    let mut h = HostHarness::new();
+    let target_pane = h.add_focused_terminal();
+    let ws = h.workspace_root();
+    let agent_dir = ws.join(".plexi").join("agents").join("lead");
+    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+    std::fs::write(agent_dir.join("AGENT.md"), "You are lead.\n").expect("write AGENT.md");
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "lead"
+display_name = "Lead"
+default_tier = "medium"
+
+[harness]
+cli = "claude"
+
+[permissions]
+default_posture = "allow"
+allow = []
+ask = ["pane.send"]
+"#,
+    )
+    .expect("write settings.toml");
+
+    let (lead_pane, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "lead",
+            "claude",
+            "sleep 30",
+            "Coordinate",
+            None,
+            false,
+            None,
+            Some(ws.clone()),
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect("spawn lead");
+    let lead_pid = h.app.windows[0].panes[&lead_pane]
+        .as_terminal()
+        .expect("lead terminal")
+        .backend
+        .child_pid();
+
+    let reply_1 = temp_response(&ws, "send-parked-1");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "first message".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_1.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    assert!(
+        !std::path::Path::new(&reply_1).exists(),
+        "SendToPane must stay parked while awaiting approval decision"
+    );
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let pending = monitor.list_pending();
+    assert_eq!(pending.len(), 1);
+    let req_id = pending[0].pending_request_id.clone();
+
+    monitor
+        .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
+        .expect("approve once");
+    h.hidden_frame();
+
+    let json_1 = read_json_response(&reply_1);
+    assert_eq!(json_1["ok"], true, "parked SendToPane must proceed once approved: {json_1}");
+
+    // Second send must require a fresh approval because the Once grant was consumed.
+    let reply_2 = temp_response(&ws, "send-parked-2");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "second message".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_2.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&reply_2).exists(),
+        "second SendToPane after Once consumption must require a new approval"
+    );
+    assert_eq!(monitor.list_pending().len(), 1);
+}
+
+#[test]
+fn pane_send_allow_once_retry_consumes_grant_and_succeeds() {
+    let mut h = HostHarness::new();
+    let target_pane = h.add_focused_terminal();
+    let ws = h.workspace_root();
+    let agent_dir = ws.join(".plexi").join("agents").join("lead");
+    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+    std::fs::write(agent_dir.join("AGENT.md"), "You are lead.\n").expect("write AGENT.md");
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "lead"
+display_name = "Lead"
+default_tier = "medium"
+
+[harness]
+cli = "claude"
+
+[permissions]
+default_posture = "allow"
+allow = []
+ask = ["pane.send"]
+"#,
+    )
+    .expect("write settings.toml");
+
+    let (lead_pane, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "lead",
+            "claude",
+            "sleep 30",
+            "Coordinate",
+            None,
+            false,
+            None,
+            Some(ws.clone()),
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect("spawn lead");
+    let lead_pid = h.app.windows[0].panes[&lead_pane]
+        .as_terminal()
+        .expect("lead terminal")
+        .backend
+        .child_pid();
+
+    let reply_1 = temp_response(&ws, "send-retry-1");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "attempt 1".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_1.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    // Simulate wait expiry before the user clicks Allow once.
+    h.app.pending_send_approvals[0].expires_at =
+        std::time::Instant::now() - std::time::Duration::from_secs(1);
+    h.hidden_frame();
+
+    let json_1 = read_json_response(&reply_1);
+    assert!(
+        json_1["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("permission_denied")),
+        "expired wait must reply with permission_denied: {json_1}"
+    );
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let pending = monitor.list_pending();
+    assert_eq!(pending.len(), 1, "pending request must remain open for late approval");
+    let req_id = pending[0].pending_request_id.clone();
+
+    // User approves Allow once after the initial CLI call timed out.
+    monitor
+        .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
+        .expect("approve once");
+
+    // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
+    let reply_2 = temp_response(&ws, "send-retry-2");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "attempt 2".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_2.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    let json_2 = read_json_response(&reply_2);
+    assert_eq!(
+        json_2["ok"], true,
+        "retry after Allow once must consume the Once grant and succeed: {json_2}"
+    );
+    assert!(
+        monitor.list_pending().is_empty(),
+        "retry must not file a new ask when an unconsumed Once grant exists"
+    );
+
+    // A third call after the retry consumed the Once grant must ask again.
+    let reply_3 = temp_response(&ws, "send-retry-3");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "attempt 3".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_3.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    assert_eq!(
+        monitor.list_pending().len(),
+        1,
+        "subsequent call after Once grant was consumed must ask again"
+    );
+}
+
+#[test]
+fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_provenance() {
+    let profile_dir = tempfile::tempdir().expect("profile_dir");
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+    let ws_dir = tempfile::tempdir().expect("ws_dir");
+
+    // 1. Spawn `lead` (by human) and `helper` (by `lead`), plus a user-named pane `scratch`,
+    //    then save workspace to disk.
+    {
+        let mut h = HostHarness::from_profile_dir(profile_dir.path());
+        h.app.set_context_root(ws_dir.path().to_path_buf(), None);
+        let scratch_id = h.add_focused_terminal();
+        h.inject_ipc(AppRequest::SetPaneTitle {
+            pane_id: scratch_id,
+            name: "scratch".to_string(),
+        });
+        h.hidden_frame();
+
+        let lead_reply = temp_response(ws_dir.path(), "spawn-lead");
+        h.inject_ipc(AppRequest::AgentSpawn {
+            role: "lead".into(),
+            harness: "script".into(),
+            command: "sleep 30".into(),
+            task: None,
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: None,
+            name: None,
+            cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: false,
+            response_file: lead_reply.clone(),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        let lead_id = read_json_response(&lead_reply)["pane_id"]
+            .as_u64()
+            .expect("lead pane_id");
+
+        let helper_reply = temp_response(ws_dir.path(), "spawn-helper");
+        h.inject_ipc(AppRequest::AgentSpawn {
+            role: "helper".into(),
+            harness: "script".into(),
+            command: "sleep 30".into(),
+            task: Some("assist lead".into()),
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: Some(lead_id),
+            name: None,
+            cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: false,
+            response_file: helper_reply.clone(),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        let helper_id = read_json_response(&helper_reply)["pane_id"]
+            .as_u64()
+            .expect("helper pane_id");
+        assert_ne!(lead_id, helper_id);
+
+        h.app.save_workspace_now();
+    }
+
+    // 2. Restore workspace in a fresh host instance and emit Claude-style OSC titles
+    //    on the restored panes.
+    let mut h = HostHarness::from_profile_dir(profile_dir.path());
+    let pane_ids: Vec<u64> = h.app.windows[0].panes.keys().copied().collect();
+    assert!(
+        pane_ids.len() >= 3,
+        "scratch, lead, and helper must restore"
+    );
+    for pid in &pane_ids {
+        h.app
+            .pty_event_tx
+            .send((
+                *pid,
+                egui_term::PtyEvent::Title("✳ Claude Code — /tmp/work".to_string()),
+            ))
+            .expect("send osc title");
+    }
+    h.run_frames(1);
+
+    let list_reply = temp_response(ws_dir.path(), "list-after-restore");
+    h.inject_ipc(AppRequest::ListPanes {
+        context_id: None,
+        response_file: list_reply.clone(),
+    });
+    h.hidden_frame();
+    let list_json = read_json_response(&list_reply);
+    let panes = list_json.as_array().expect("panes array");
+
+    let lead_entry = panes
+        .iter()
+        .find(|p| p["title"].as_str() == Some("lead"))
+        .expect("lead pane must retain stable title 'lead' after restore + OSC title");
+    assert_eq!(
+        lead_entry["pty_title"].as_str(),
+        Some("✳ Claude Code — /tmp/work")
+    );
+    assert_eq!(lead_entry["spawned_by"].as_str(), Some("human"));
+
+    let helper_entry = panes
+        .iter()
+        .find(|p| p["title"].as_str() == Some("helper"))
+        .expect("helper pane must retain stable title 'helper' after restore + OSC title");
+    assert_eq!(
+        helper_entry["parent_pane_id"].as_u64(),
+        lead_entry["id"].as_u64(),
+        "helper must retain parent_pane_id across restore"
+    );
+    assert_eq!(
+        helper_entry["spawned_by"].as_str(),
+        Some("agent:lead"),
+        "helper must retain spawned_by='agent:lead' across restore"
+    );
+
+    let scratch_entry = panes
+        .iter()
+        .find(|p| p["title"].as_str() == Some("scratch"))
+        .expect("user-named pane 'scratch' must retain locked name across restore + OSC title");
+    assert_eq!(
+        scratch_entry["pty_title"].as_str(),
+        Some("✳ Claude Code — /tmp/work")
+    );
+}
+
+#[test]
+fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
+    let mut h = HostHarness::new();
+    let human_shell = h.add_focused_terminal();
+    let ws_dir = tempfile::tempdir().unwrap();
+    h.app.windows[0].path = ws_dir.path().to_path_buf();
+
+    if let Some(pane) = h.app.windows[0].panes.get_mut(&human_shell) {
+        if let Some(t) = pane.as_terminal_mut() {
+            t.name = Some("proj-demo-1".to_string());
+            t.name_locked = true;
+            t.spawned_by = Some("human".to_string());
+            t.initial_cwd = Some(ws_dir.path().to_path_buf());
+        }
+    }
+    let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "oneshot".into(),
+        harness: "script".into(),
+        command: "sleep 30".into(),
+        task: None,
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell),
+        name: None,
+        cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: spawn_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let oneshot_pane = read_json_response(&spawn_reply)["pane_id"]
+        .as_u64()
+        .expect("oneshot pane_id");
+
+    // 1. Script pane runs `agent done` and then the supervised wrapper reports HarnessExit (`exited_unreported`).
+    let done_reply = temp_response(ws_dir.path(), "oneshot-done");
+    h.inject_ipc(AppRequest::AgentDone {
+        pane_id: oneshot_pane,
+        result: Some("{}".to_string()),
+        summary: Some("oneshot-ok".to_string()),
+        response_file: done_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let done_json = read_json_response(&done_reply);
+    assert_eq!(done_json["ok"], true, "done_json: {done_json}");
+
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: oneshot_pane,
+        state: crate::protocol::AgentState::ExitedUnreported,
+        agent: "script".to_string(),
+        detail: Some("harness exited with code 0 without agent done".to_string()),
+        session_id: None,
+        event: Some("HarnessExit".to_string()),
+        blocked_reason: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+
+    // 2. Verify `ListPanes` + `format_pane_tree`: script pane state is Completed (not ExitedUnreported),
+    // and `pane tree` labels panes by their actual name/title instead of `"pane"`.
+    let list_reply = temp_response(ws_dir.path(), "list-b4");
+    h.inject_ipc(AppRequest::ListPanes {
+        context_id: None,
+        response_file: list_reply.clone(),
+    });
+    h.hidden_frame();
+    let mut panes = read_json_response(&list_reply)
+        .as_array()
+        .expect("panes array")
+        .clone();
+    let oneshot_entry = panes
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(oneshot_pane))
+        .expect("oneshot entry");
+    assert_eq!(
+        oneshot_entry["agent"]["state"].as_str(),
+        Some("completed"),
+        "script pane after agent done + HarnessExit must remain completed, not exited_unreported: {oneshot_entry}"
+    );
+    assert_eq!(oneshot_entry["agent_completed"].as_bool(), Some(true));
+
+    // Include a synthetic portal entry with only `"title"` (no `"name"`) to verify title fallback.
+    panes.push(serde_json::json!({
+        "id": 99,
+        "type": "portal",
+        "title": "portal:2",
+        "spawned_by": "human",
+        "parent_pane_id": null,
+    }));
+    let tree_text = crate::cli::pane::format_pane_tree(&panes, false);
+    assert!(
+        tree_text.contains(&format!("#{human_shell} \"proj-demo-1\"")),
+        "pane tree must label terminal pane by name: {tree_text}"
+    );
+    assert!(
+        tree_text.contains(&format!("└── #{oneshot_pane} agent:oneshot \"oneshot\"")),
+        "pane tree must label child agent pane by name: {tree_text}"
+    );
+    assert!(
+        tree_text.contains("#99 \"portal:2\""),
+        "pane tree must fall back to title when name is absent: {tree_text}"
+    );
+    assert!(
+        !tree_text.contains("\"pane\""),
+        "pane tree must not label named/titled panes as \"pane\": {tree_text}"
+    );
+
+    // 3. Verify permission banner actor label uses agent name for agent panes and "Terminal pane <id>" for plain terminals.
+    assert_eq!(
+        h.app.approval_actor_label(&format!("pane:{oneshot_pane}")),
+        format!("Agent oneshot (pane {oneshot_pane})")
+    );
+    assert_eq!(
+        h.app.approval_actor_label(&format!("pane:{human_shell}")),
+        format!("Terminal pane {human_shell}")
     );
 }

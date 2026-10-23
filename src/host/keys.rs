@@ -832,12 +832,27 @@ fn modifier_count(m: &egui::Modifiers) -> u32 {
 
 // egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input always
 // sets mac_cmd=true when Cmd is held. Raw == comparison fails on macOS.
-// Compare only the four logical fields to avoid this platform mismatch.
+// On non-macOS (Linux/Windows), egui sets both `ctrl` and `command` to true
+// when physical Ctrl is held, while `cmd()` patterns set `command=true, ctrl=false`.
 fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) -> bool {
-    actual.command == pattern.command
-        && actual.ctrl == pattern.ctrl
-        && actual.shift == pattern.shift
-        && actual.alt == pattern.alt
+    modifiers_match_exact_for_os(actual, pattern, cfg!(target_os = "macos"))
+}
+
+pub(crate) fn modifiers_match_exact_for_os(
+    actual: &egui::Modifiers,
+    pattern: &egui::Modifiers,
+    is_macos: bool,
+) -> bool {
+    if is_macos {
+        actual.command == pattern.command
+            && actual.ctrl == pattern.ctrl
+            && actual.shift == pattern.shift
+            && actual.alt == pattern.alt
+    } else {
+        (actual.command || actual.ctrl) == (pattern.command || pattern.ctrl)
+            && actual.shift == pattern.shift
+            && actual.alt == pattern.alt
+    }
 }
 
 /// Build a sorted binding table from resolved `KeyBindings`.
@@ -1534,5 +1549,108 @@ mod tests {
             actions.is_empty(),
             "plain Tab should not be consumed by host app focus; apps own it"
         );
+    }
+
+    #[test]
+    fn modifiers_match_exact_treats_command_and_ctrl_as_one_on_non_mac_and_distinct_on_mac() {
+        // Linux/Windows runtime modifiers when physical Ctrl is pressed:
+        // egui sets both `ctrl: true` and `command: true`.
+        let linux_ctrl = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let linux_ctrl_alt = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            alt: true,
+            ..egui::Modifiers::NONE
+        };
+        // Non-macOS: `cmd()` (`command=true, ctrl=false`) and `cmd_alt()` match Linux Ctrl chords.
+        assert!(modifiers_match_exact_for_os(&linux_ctrl, &cmd(), false));
+        assert!(modifiers_match_exact_for_os(&linux_ctrl_alt, &cmd_alt(), false));
+        assert!(!modifiers_match_exact_for_os(&linux_ctrl, &cmd_alt(), false));
+        assert!(!modifiers_match_exact_for_os(&linux_ctrl_alt, &cmd(), false));
+
+        // macOS: `cmd` and `ctrl` are distinct physical modifiers.
+        let mac_cmd_only = egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ctrl: false,
+            ..egui::Modifiers::NONE
+        };
+        let mac_cmd_ctrl = egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ctrl: true,
+            ..egui::Modifiers::NONE
+        };
+        assert!(modifiers_match_exact_for_os(&mac_cmd_only, &cmd(), true));
+        assert!(!modifiers_match_exact_for_os(&mac_cmd_ctrl, &cmd(), true));
+        assert!(modifiers_match_exact_for_os(&mac_cmd_ctrl, &cmd_ctrl(), true));
+        assert!(!modifiers_match_exact_for_os(&mac_cmd_only, &cmd_ctrl(), true));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn linux_ctrl_chords_fire_focus_approval_and_command_palette_without_leaking() {
+        let table = build_binding_table(&KeyBindings::default());
+        let ctx = egui::Context::default();
+
+        for (mods, key, expected) in [
+            (
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    alt: true,
+                    ..egui::Modifiers::NONE
+                },
+                egui::Key::P,
+                Action::FocusApproval,
+            ),
+            (
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..egui::Modifiers::NONE
+                },
+                egui::Key::P,
+                Action::ToggleCommandPalette,
+            ),
+        ] {
+            let mut raw = egui::RawInput {
+                modifiers: mods,
+                ..Default::default()
+            };
+            raw.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            });
+            let mut actions = Vec::new();
+            let mut remaining_events = 0;
+            let mut claimed_key_releases = std::collections::HashSet::new();
+            let _ = ctx.run_ui(raw, |ui| {
+                let ctx = ui.ctx();
+                let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
+                actions = poll_actions(
+                    &mut input,
+                    &table,
+                    &mut claimed_key_releases,
+                    /* app_active */ false,
+                    /* keyboard_capture */ false,
+                    /* overlay_open */ false,
+                    /* shortcuts_overlay_open */ false,
+                );
+                remaining_events = input.events().len();
+            });
+            assert_eq!(actions, vec![expected]);
+            assert_eq!(
+                remaining_events, 0,
+                "chord must be consumed from PlexiInput so it does not leak to the terminal"
+            );
+        }
     }
 }

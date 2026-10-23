@@ -1043,10 +1043,7 @@ impl PlexiApp {
             ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)));
         }
         let request = &pending[0];
-        let actor = request.actor_id.strip_prefix("pane:")
-            .map(|id| format!("Terminal pane {id}"))
-            .or_else(|| request.actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
-            .unwrap_or_else(|| request.actor_id.clone());
+        let actor = self.approval_actor_label(&request.actor_id);
         let tool = request.tool.replace("__", " / ");
         let caption = format!("{actor} wants to use {tool}");
         let synthetic = self.synthetic_input_frame;
@@ -1077,6 +1074,15 @@ impl PlexiApp {
                 if request.allow_tool {
                     crate::ui::typography::caption(ui,
                         "Session approval covers different arguments for this tool and caller, in this app instance and workspace only. The resource stays the same. Ends when Plexi quits; revoke in Permissions.", &self.colors);
+                }
+                if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
+                    if err_id == &pending_id {
+                        ui.label(
+                            egui::RichText::new(format!("Decision failed: {err_msg}"))
+                                .color(self.colors.danger)
+                                .size(crate::ui::style::TEXT_HINT),
+                        );
+                    }
                 }
                 let armed = self.approval_keyboard.armed(std::time::Instant::now());
                 let hint = if self.approval_keyboard.confirm_always {
@@ -1119,16 +1125,53 @@ impl PlexiApp {
             } else {
                 match monitor.approve_pending(&pending_id, choice) {
                     Ok(()) => {
-                        log::info!("permission_monitor: banner decided {pending_id} choice={label}")
+                        self.approval_keyboard.last_error = None;
+                        log::info!("permission_monitor: banner decided {pending_id} choice={label}");
                     }
                     Err(error) => {
                         log::warn!(
                             "permission_monitor: banner decide {pending_id} choice={label} failed: {error}"
-                        )
+                        );
+                        self.approval_keyboard.last_error =
+                            Some((pending_id.clone(), error));
                     }
                 }
             }
         }
+    }
+
+    pub(crate) fn approval_actor_label(&self, actor_id: &str) -> String {
+        actor_id
+            .strip_prefix("pane:")
+            .map(|id| {
+                let agent_name = id
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|pid| {
+                        self.windows
+                            .iter()
+                            .find_map(|w| w.panes.get(&pid))
+                            .and_then(|p| p.as_terminal())
+                    })
+                    .and_then(|t| {
+                        t.agent_role
+                            .clone()
+                            .or_else(|| t.agent.as_ref().map(|a| a.agent.clone()))
+                            .or_else(|| {
+                                t.agent_harness.as_ref().and_then(|_| {
+                                    t.name
+                                        .clone()
+                                        .filter(|n| !n.is_empty() && n != "terminal")
+                                })
+                            })
+                    });
+                match agent_name {
+                    Some(name) => format!("Agent {name} (pane {id})"),
+                    None => format!("Terminal pane {id}"),
+                }
+            })
+            .or_else(|| actor_id.strip_prefix("agent:").map(|id| format!("Agent {id}")))
+            .unwrap_or_else(|| actor_id.to_string())
     }
 
     /// Banner for the oldest permission request/change, question or blocked
@@ -1187,6 +1230,15 @@ impl PlexiApp {
             .show(ctx, &self.colors, |ui| {
                 crate::ui::typography::body_strong(ui, view.title.clone(), &self.colors);
                 crate::ui::typography::caption(ui, view.explanation.clone(), &self.colors);
+                if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
+                    if err_id == &item.id {
+                        ui.label(
+                            egui::RichText::new(format!("Decision failed: {err_msg}"))
+                                .color(self.colors.danger)
+                                .size(crate::ui::style::TEXT_HINT),
+                        );
+                    }
+                }
                 let armed = self.approval_keyboard.armed(std::time::Instant::now());
                 ui.add_enabled(armed, egui::Label::new(hint));
                 ui.add_space(crate::ui::style::SPACE_MD);
@@ -1213,15 +1265,24 @@ impl PlexiApp {
                 });
             });
         if let Some((approve, answer)) = chosen {
-            match answer {
+            let outcome = match answer {
                 Some(answer) => {
-                    let _ = self.answer_from_desktop(&item.id, &answer, "needs-you banner");
+                    self.answer_from_desktop(&item.id, &answer, "needs-you banner")
                 }
                 None => {
-                    let _ = self.resolve_from_desktop(&item.id, approve, "needs-you banner");
+                    self.resolve_from_desktop(&item.id, approve, "needs-you banner")
+                }
+            };
+            match outcome {
+                Ok(()) => {
+                    self.approval_keyboard.last_error = None;
+                    self.leave_approval();
+                }
+                Err(error) => {
+                    self.approval_keyboard.last_error =
+                        Some((item.id.clone(), error));
                 }
             }
-            self.leave_approval();
         }
     }
 

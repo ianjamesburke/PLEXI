@@ -4358,6 +4358,16 @@ pub fn agent_result_cli(target: Option<&str>, json: bool) -> i32 {
     let profile_dir = crate::config::config_dir();
     match read_persisted_agent_result_in(target, cwd.as_deref(), &profile_dir) {
         Ok((md_path, md, val)) => {
+            if let Some(pane_id) = val.get("pane_id").and_then(|v| v.as_u64()) {
+                let response_file = crate::rpc::response_file("agent-result-ack", "json");
+                super::try_send_to_socket_quiet(serde_json::json!({
+                    "type": "pane_result_read",
+                    "pane_id": pane_id,
+                    "wait": false,
+                    "timeout_secs": 0.0,
+                    "response_file": response_file,
+                }));
+            }
             if json {
                 println!(
                     "{}",

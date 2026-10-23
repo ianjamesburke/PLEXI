@@ -255,6 +255,7 @@ pub struct PlexiApp {
     /// is owed once the host has settled, pressed Enter, and confirmed that the
     /// prompt left the pane's input line (stint 0583).
     pub(crate) pending_submits: Vec<crate::app::pane_wait::PendingSubmit>,
+    pub(crate) pending_send_approvals: Vec<crate::app::pane_wait::PendingSendApproval>,
     /// Host-owned recurring prompts, keyed by terminal pane id.
     pub(crate) pane_heartbeats: HashMap<PaneId, PaneHeartbeat>,
     /// Worktrees created by `plexi pane new --worktree <branch>`, keyed by the
@@ -1633,6 +1634,7 @@ impl PlexiApp {
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
+                    pending_send_approvals: Vec::new(),
                     pane_heartbeats: restored.pane_heartbeats,
                     pane_worktrees: HashMap::new(),
                     last_worktree_close_reports: HashMap::new(),
@@ -1904,6 +1906,7 @@ impl PlexiApp {
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
+            pending_send_approvals: Vec::new(),
             pane_heartbeats: HashMap::new(),
             pane_worktrees: HashMap::new(),
             last_worktree_close_reports: HashMap::new(),
@@ -2118,10 +2121,41 @@ impl PlexiApp {
         &self,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
-        self.find_pane_in_any_window(pane_id)
-            .and_then(|(window, _)| self.windows[window].panes.get(&pane_id))
-            .and_then(|pane| pane.as_terminal())
-            .and_then(|pane| pane.agent_permission_posture.clone())
+        let (window, _) = self.find_pane_in_any_window(pane_id)?;
+        let pane = self.windows[window].panes.get(&pane_id)?.as_terminal()?;
+        if let Some(posture) = pane.agent_permission_posture.clone() {
+            return Some(posture);
+        }
+        if let Some(posture) = pane
+            .standby_session
+            .as_ref()
+            .and_then(|s| s.permission_posture.clone())
+        {
+            return Some(posture);
+        }
+        let role = pane
+            .agent_role
+            .as_deref()
+            .or_else(|| {
+                pane.standby_session
+                    .as_ref()
+                    .and_then(|s| s.config_name.as_deref())
+            })?;
+        let lookup_root = self.pane_context_authority_root(pane_id);
+        let profile_dir = crate::config::config_dir();
+        let posture = crate::cli::agent::resolve_agent_definition_in(
+            role,
+            &profile_dir,
+            lookup_root.as_deref(),
+        )
+        .ok()
+        .map(|(def, _)| def.posture)?;
+        if let Some(parent_id) = pane.parent_pane_id.filter(|&pid| pid != pane_id) {
+            if let Some(parent_posture) = self.pane_permission_posture(parent_id) {
+                return Some(posture.restricted_by(&parent_posture));
+            }
+        }
+        Some(posture)
     }
 
     /// Canonical context root that bounds a pane's authority.
@@ -2814,6 +2848,7 @@ impl PlexiApp {
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
+                pending_send_approvals: Vec::new(),
                 pane_heartbeats: HashMap::new(),
                 pane_worktrees: HashMap::new(),
                 last_worktree_close_reports: HashMap::new(),
@@ -3611,7 +3646,8 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Submits,
         );
         crate::platform::logging::time_drain("service_pending_submits", || {
-            self.service_pending_submits(ctx)
+            self.service_pending_submits(ctx);
+            self.service_pending_send_approvals(ctx);
         });
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -5439,6 +5475,32 @@ pub(crate) fn restore_workspace(
                                 .env
                                 .insert("PLEXI_PARENT_PANE".to_string(), parent_id.to_string());
                         }
+                        let resolved_spawned_by = session
+                            .spawned_by
+                            .clone()
+                            .filter(|s| {
+                                !s.is_empty()
+                                    && !(s == "human" && session.parent_pane_id.is_some())
+                            })
+                            .or_else(|| {
+                                let pid = session.parent_pane_id?;
+                                let parent = saved_win.panes.iter().find(|p| p.id == pid)?;
+                                if let Some(ref ps) = parent.agent_session {
+                                    let label = ps
+                                        .config_name
+                                        .as_deref()
+                                        .or(parent.name.as_deref())
+                                        .unwrap_or(&ps.harness);
+                                    Some(format!("agent:{label}"))
+                                } else {
+                                    Some("human".to_string())
+                                }
+                            })
+                            .unwrap_or_else(|| "human".to_string());
+                        session.spawned_by = Some(resolved_spawned_by.clone());
+                        settings
+                            .env
+                            .insert("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by);
                         if session.ephemeral {
                             settings
                                 .env
@@ -5492,7 +5554,15 @@ pub(crate) fn restore_workspace(
                         settings,
                         default_font_size,
                     ) {
-                        pane.name = saved_pane.name.clone();
+                        pane.name = saved_pane
+                            .name
+                            .clone()
+                            .or_else(|| effective_session.as_ref().and_then(|s| s.config_name.clone()));
+                        pane.name_locked = saved_pane
+                            .name
+                            .as_deref()
+                            .is_some_and(|n| !n.is_empty() && n != "terminal")
+                            || effective_session.is_some();
                         pane.slots = saved_pane.slots.clone();
                         if let Some(session) = effective_session {
                             pane.fleet_result = session.fleet_result.clone();
@@ -5502,9 +5572,28 @@ pub(crate) fn restore_workspace(
                             pane.fleet_since = session.fleet_since;
                             pane.ephemeral = session.ephemeral;
                             pane.parent_pane_id = session.parent_pane_id;
+                            pane.spawned_by = session.spawned_by.clone().or(pane.spawned_by);
+                            pane.pending_child_results = session.pending_child_results.clone();
                             pane.agent_harness = Some(session.harness.clone());
                             pane.agent_session_id = session.session_id.clone();
                             pane.agent_role = session.config_name.clone();
+                            pane.agent_permission_posture = session
+                                .permission_posture
+                                .clone()
+                                .or_else(|| {
+                                    let role = session.config_name.as_deref()?;
+                                    let lookup_root = cwd
+                                        .as_deref()
+                                        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
+                                        .or_else(|| ctx_root.cloned());
+                                    crate::cli::agent::resolve_agent_definition_in(
+                                        role,
+                                        collaborators.profile_dir,
+                                        lookup_root.as_deref(),
+                                    )
+                                    .ok()
+                                    .map(|(def, _)| def.posture)
+                                });
                             pane.last_blocked_reason = session.last_blocked_reason;
                             pane.tail_preview = session.tail_preview.clone();
                             pane.agent_completed =

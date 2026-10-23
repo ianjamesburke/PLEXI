@@ -107,6 +107,49 @@ pub fn install_login_shell_path() {
     }
 }
 
+/// Color-suppression vars that describe the *launcher's* output, not a pane's.
+///
+/// `NO_COLOR` / `FORCE_COLOR=0` exported by whatever started the host (a
+/// sandbox session, CI wrapper, agent harness) are inherited by every PTY
+/// child, and chalk/supports-color/Node's `getColorDepth` put them ahead of
+/// `COLORTERM` — so a pane advertising truecolor still renders monochrome
+/// (Claude Code loses its orange). A pane is a fresh terminal whose
+/// capabilities `build_env` states explicitly; a user who wants these set in
+/// panes sets them in their shell rc, which the pane's login shell sources.
+const LAUNCHER_COLOR_OVERRIDES: &[&str] = &["NO_COLOR", "FORCE_COLOR"];
+
+fn launcher_color_overrides_present(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, String)> {
+    LAUNCHER_COLOR_OVERRIDES
+        .iter()
+        .filter_map(|&k| lookup(k).map(|v| (k, v.to_string_lossy().into_owned())))
+        .collect()
+}
+
+/// Drop launcher color overrides from the host process env so no PTY child
+/// or login-shell probe inherits them. Must run before
+/// `install_login_shell_path`/`install_login_shell_env`, otherwise the probe
+/// shell inherits the launcher's value and it is re-adopted as if the user's
+/// profile had set it.
+pub fn scrub_launcher_color_overrides() {
+    let present = launcher_color_overrides_present(|k| std::env::var_os(k));
+    if present.is_empty() {
+        return;
+    }
+    for (k, _) in &present {
+        // SAFETY: called once, early in main(), before any threads read env.
+        unsafe {
+            std::env::remove_var(k);
+        }
+    }
+    let summary: Vec<String> = present.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    log::info!(
+        "shell: scrubbed launcher color overrides from pane env: [{}]",
+        summary.join(", ")
+    );
+}
+
 /// Adopt user-defined env vars from the login shell that are missing from the
 /// process environment.
 ///
@@ -132,6 +175,8 @@ pub fn install_login_shell_env() {
         "TERM_PROGRAM",
         "TERM_PROGRAM_VERSION",
         "COLORTERM",
+        "NO_COLOR",
+        "FORCE_COLOR",
         "TERMINFO",
         "SHLVL",
         "OLDPWD",
@@ -1213,6 +1258,120 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct LauncherColorEnvGuard {
+        prev_no_color: Option<std::ffi::OsString>,
+        prev_force_color: Option<std::ffi::OsString>,
+        _socket_lock: crate::cli::test_env::SocketEnvGuard,
+    }
+
+    impl LauncherColorEnvGuard {
+        fn new() -> Self {
+            let socket_lock = crate::cli::test_env::socket_env_guard();
+            Self {
+                prev_no_color: std::env::var_os("NO_COLOR"),
+                prev_force_color: std::env::var_os("FORCE_COLOR"),
+                _socket_lock: socket_lock,
+            }
+        }
+    }
+
+    impl Drop for LauncherColorEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized via SocketEnvGuard.
+            unsafe {
+                match self.prev_no_color.as_deref() {
+                    Some(v) => std::env::set_var("NO_COLOR", v),
+                    None => std::env::remove_var("NO_COLOR"),
+                }
+                match self.prev_force_color.as_deref() {
+                    Some(v) => std::env::set_var("FORCE_COLOR", v),
+                    None => std::env::remove_var("FORCE_COLOR"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn launcher_color_overrides_are_detected_for_scrubbing() {
+        let found = launcher_color_overrides_present(|k| match k {
+            "NO_COLOR" => Some("1".into()),
+            "FORCE_COLOR" => Some("0".into()),
+            _ => None,
+        });
+        assert_eq!(
+            found,
+            vec![
+                ("NO_COLOR", "1".to_string()),
+                ("FORCE_COLOR", "0".to_string())
+            ]
+        );
+        assert!(launcher_color_overrides_present(|_| None).is_empty());
+    }
+
+    #[test]
+    fn scrub_launcher_color_overrides_clears_process_and_pane_env() {
+        let _env_guard = LauncherColorEnvGuard::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let profile = tmp.path().join("profile");
+        let shared = tmp.path().join("shared");
+        let cwd = tmp.path().join("cwd");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.clone());
+        let _shared_guard = crate::config::set_test_shared_dir(shared);
+
+        // SAFETY: serialized via LauncherColorEnvGuard (holds SocketEnvGuard).
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+            std::env::set_var("FORCE_COLOR", "0");
+        }
+
+        scrub_launcher_color_overrides();
+
+        assert!(std::env::var_os("NO_COLOR").is_none());
+        assert!(std::env::var_os("FORCE_COLOR").is_none());
+
+        let built = build_env(Some(&cwd));
+        assert!(!built.contains_key("NO_COLOR"));
+        assert!(!built.contains_key("FORCE_COLOR"));
+        assert_eq!(
+            built.get("COLORTERM").map(String::as_str),
+            Some("truecolor")
+        );
+
+        let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+        let context = crate::pane_ops::create::PaneContextEnv {
+            context_id: 1,
+            name: "main".to_string(),
+            description: String::new(),
+            root: Some(cwd.clone()),
+            depth: 0,
+        };
+        for agent_pane in [false, true] {
+            let (settings, _pending) = crate::app::PlexiApp::make_backend_settings_in_profile(
+                &profile,
+                1,
+                Some(cwd.clone()),
+                &colors,
+                &context,
+                agent_pane,
+            );
+            assert!(
+                !settings.env.contains_key("NO_COLOR"),
+                "NO_COLOR leaked into make_backend_settings (agent_pane={agent_pane})"
+            );
+            assert!(
+                !settings.env.contains_key("FORCE_COLOR"),
+                "FORCE_COLOR leaked into make_backend_settings (agent_pane={agent_pane})"
+            );
+            assert_eq!(
+                settings.env.get("COLORTERM").map(String::as_str),
+                Some("truecolor")
+            );
+        }
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

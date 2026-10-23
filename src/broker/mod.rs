@@ -624,7 +624,7 @@ impl PermissionRequest {
 /// Settings say what the actor wants; only `GrantRecord`s say what the user
 /// allowed. Postures participate at the actor-specific tiers of evaluation
 /// and can never override a managed or user/workspace/session deny.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionPosture {
     pub default_posture: Decision,
     pub allow: Vec<String>,
@@ -1121,13 +1121,15 @@ impl GrantStore {
             Decision::Deny
         } else if has(Decision::Ask, true) // 5. managed ask
             || has(Decision::Ask, false) // 6. user/workspace/session ask
-            || posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))
-        // 7. actor ask
         {
             Decision::Ask
         } else if has(Decision::Allow, true) || has(Decision::Allow, false) {
-            // Persisted exact allows authorize. A posture allow-list does not.
+            // Persisted/session exact allows authorize, including over actor `ask` posture.
             Decision::Allow
+        } else if posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))
+        // 7. actor ask
+        {
+            Decision::Ask
         } else if posture.is_some_and(|p| p.default_posture == Decision::Deny)
             && !posture.is_some_and(|p| PermissionPosture::lists_contain(&p.allow, &req.target_id))
             && !posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))

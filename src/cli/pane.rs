@@ -682,6 +682,8 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
         let name = pane
             .get("name")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
             .unwrap_or("pane");
         let role = pane
             .get("agent_role")
@@ -1005,7 +1007,12 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         outcome.report();
         return outcome.exit_code();
     }
-    let content = match super::request(payload, "send-to-pane-response", "pane send") {
+    let content = match super::request_with(
+        payload,
+        "send-to-pane-response",
+        "pane send",
+        SUBMIT_REPLY_WINDOW,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
