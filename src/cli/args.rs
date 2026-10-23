@@ -2035,6 +2035,15 @@ pub enum PaneCmd {
         #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
         context: Option<String>,
     },
+    /// Show the parent/child session provenance forest across open panes (`pstree` / `ps --forest` style).
+    ///
+    /// Displays each root pane and its spawned child panes with `spawned_by`, agent role, state, and title.
+    /// Pass `--json` to output the nested forest as JSON.
+    Tree {
+        /// Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context).
+        #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
+        context: Option<String>,
+    },
     /// Move the visible focus to a specific pane.
     ///
     /// This moves what the user sees on screen — it does not change which pane an agent is running in.
@@ -2991,14 +3000,14 @@ pub enum AgentCmd {
     Create {
         /// Agent slug (`a-z`, `0-9`, `-`)
         name: String,
-        /// CLI harness to launch (`pi`, `claude`, `codex`, or `agy`)
-        #[arg(long, value_parser = ["pi", "claude", "codex", "agy"])]
+        /// CLI harness to launch (`pi`, `claude`, `codex`, `agy`, or `script`)
+        #[arg(long, value_parser = ["pi", "claude", "codex", "agy", "script"])]
         cli: String,
         /// Model identifier passed verbatim via `--model`
         #[arg(long)]
         model: Option<String>,
-        /// Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`)
-        #[arg(long, value_parser = ["pi", "claude", "codex", "agy"])]
+        /// Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`, `script`)
+        #[arg(long, value_parser = ["pi", "claude", "codex", "agy", "script"])]
         fallback: Option<String>,
         /// Short human-readable description of the agent's role
         #[arg(long)]
@@ -3077,6 +3086,27 @@ pub enum AgentCmd {
         #[arg(long)]
         task: String,
     },
+    /// Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
+    ///
+    /// Resolves `<name>` by walking up from `--cwd` (or the current directory) to the project root
+    /// (stopping at `$HOME`), then `~/.plexi-<channel>/agents/<name>/`, then built-in. Launches the
+    /// agent's configured `[harness]` (`pi`, `claude`, `codex`, `agy`) interactively in the project
+    /// directory with `AGENT.md` persona applied, the `# Plexi worker contract`, and `PLEXI_*` env set.
+    ///
+    /// Example: plexi agent start researcher
+    Start {
+        /// Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
+        name: String,
+        /// Optional initial message to send in the interactive session
+        #[arg(value_name = "MESSAGE", conflicts_with = "message")]
+        prompt: Option<String>,
+        /// Optional initial message to send in the interactive session
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+        /// Working directory for workspace lookup and the interactive agent pane
+        #[arg(long)]
+        cwd: Option<String>,
+    },
     /// Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
     ///
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
@@ -3122,6 +3152,21 @@ pub enum AgentCmd {
         /// Target pane id or name (defaults to `$PLEXI_PANE_ID`)
         #[arg(long = "pane-id")]
         pane_id: Option<PaneTarget>,
+    },
+    /// Wait for one or more child agent panes to finish via `plexi agent done` and pull their results.
+    ///
+    /// Blocks until every specified child pane has reported completion (or exited/failed) or `--timeout`
+    /// expires. Results pulled via `agent wait` are consumed so the host does not re-deliver them as a
+    /// duplicate idle-batch turn to the parent pane.
+    ///
+    /// Example: plexi agent wait 42 43 --timeout 300
+    Wait {
+        /// Child pane IDs or names to wait for
+        #[arg(required = true)]
+        pane_ids: Vec<PaneTarget>,
+        /// Timeout in seconds
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
     },
     /// Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state).
     ///

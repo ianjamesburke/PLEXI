@@ -1847,7 +1847,7 @@ pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
     agent_tool_cli, agent_ask_cli, agent_create_cli, agent_done_cli, agent_history_cli, agent_hook_install_cli,
     agent_hook_uninstall_cli, agent_list_cli, agent_reopen_cli, agent_report_cli, agent_show_cli,
-    agent_spawn_cli, agent_status_cli, agent_next_cli, agent_fleet_cli, agent_fleet_dismiss_cli, AgentHarness,
+    agent_spawn_cli, agent_start_cli, agent_status_cli, agent_wait_cli, agent_next_cli, agent_fleet_cli, agent_fleet_dismiss_cli, AgentHarness,
 };
 pub use agents_api::{
     agent_team_dispatch, agent_assign_cli, agent_cancel_cli, agent_conversation_cli, agent_delegate_cli,
@@ -1902,7 +1902,7 @@ pub use pane::{
     pane_message_recv_cli, pane_message_send_cli, pane_result_read_cli, pane_result_schema_cli,
     pane_result_write_cli, pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
     pane_slot_list_cli, pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli,
-    pane_state_cli, pane_status_cli,
+    pane_state_cli, pane_status_cli, pane_tree_cli,
 };
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{

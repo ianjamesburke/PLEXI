@@ -2,6 +2,10 @@ use super::primitives::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+fn default_agent_wait_timeout() -> f64 {
+    300.0
+}
+
 /// Agent state reported by a hook script or restored by the workspace.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -808,6 +812,20 @@ pub enum AppRequest {
         #[serde(default)]
         no_focus: bool,
         response_file: String,
+        /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
+    },
+
+    /// Blocking pull wait for one or more child agent panes to finish via `plexi agent done`
+    /// (`plexi agent wait <pane-id...>`, stint 0961).
+    AgentWait {
+        pane_ids: Vec<u64>,
+        #[serde(default = "default_agent_wait_timeout")]
+        timeout_secs: f64,
+        response_file: String,
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
     },
 
     /// Complete a worker agent's task, validating `--result` against `result_schema`

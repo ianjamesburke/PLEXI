@@ -58,6 +58,7 @@ pub enum AgentHarness {
     Codex,
     Pi,
     Agy,
+    Script,
 }
 
 impl AgentHarness {
@@ -67,6 +68,7 @@ impl AgentHarness {
             "codex" => Some(Self::Codex),
             "pi" => Some(Self::Pi),
             "agy" | "antigravity" => Some(Self::Agy),
+            "script" | "sh" | "bash" => Some(Self::Script),
             _ => None,
         }
     }
@@ -77,6 +79,7 @@ impl AgentHarness {
             Self::Codex => "codex",
             Self::Pi => "pi",
             Self::Agy => "agy",
+            Self::Script => "script",
         }
     }
 
@@ -194,30 +197,36 @@ pub struct HarnessAdapter {
     pub resume_subcommand_or_flag: &'static str,
 }
 
-pub const HARNESS_ADAPTERS: [HarnessAdapter; 4] = [
+pub const HARNESS_ADAPTERS: [HarnessAdapter; 5] = [
     HarnessAdapter {
         harness: AgentHarness::Claude,
         binary: "claude",
-        task_flag: "-p",
+        task_flag: "",
         resume_subcommand_or_flag: "--resume",
     },
     HarnessAdapter {
         harness: AgentHarness::Codex,
         binary: "codex",
-        task_flag: "exec",
+        task_flag: "",
         resume_subcommand_or_flag: "resume",
     },
     HarnessAdapter {
         harness: AgentHarness::Pi,
         binary: "pi",
-        task_flag: "-p",
+        task_flag: "",
         resume_subcommand_or_flag: "--session",
     },
     HarnessAdapter {
         harness: AgentHarness::Agy,
         binary: "agy",
-        task_flag: "--prompt",
+        task_flag: "--prompt-interactive",
         resume_subcommand_or_flag: "--resume",
+    },
+    HarnessAdapter {
+        harness: AgentHarness::Script,
+        binary: "/bin/sh",
+        task_flag: "-c",
+        resume_subcommand_or_flag: "-c",
     },
 ];
 
@@ -270,13 +279,14 @@ impl HarnessAdapter {
         self.resume_command(sid)
     }
 
-    /// Build the non-interactive / task-seeded CLI command to spawn a worker for `task`.
+    /// Build the interactive CLI command to spawn an agent conversation for `task` (or explicit
+    /// one-shot `/bin/sh -c` when `self.harness == AgentHarness::Script`).
     ///
-    /// `pi` always passes `--no-extensions --no-mcp` so headless workers never load user
-    /// extensions or MCP servers, plus any explicit `-e <path>` entries.
-    /// `pi` and `claude` receive persona text via `--append-system-prompt`.
-    /// `codex` and `agy` have no system-prompt flag; callers (`build_agent_spawn_command`)
-    /// inline `# Persona` into `task` before calling this method.
+    /// `pi` always passes `--no-extensions --no-mcp` plus any explicit `-e <path>` entries.
+    /// `pi` and `claude` receive persona/contract text via `--append-system-prompt`.
+    /// `codex` receives persona/contract text via `-c developer_instructions=...` and runs in
+    /// interactive mode (`--sandbox workspace-write -c sandbox_workspace_write.network_access=true`).
+    /// `agy` runs in interactive mode via `--prompt-interactive`.
     pub fn spawn_command(
         &self,
         task: &str,
@@ -293,6 +303,49 @@ impl HarnessAdapter {
         append_system_prompt: Option<&str>,
         extensions: &[String],
     ) -> String {
+        self.start_command_with_extensions(
+            non_empty_string(task),
+            model,
+            append_system_prompt,
+            extensions,
+        )
+    }
+
+    /// Summarize the composed CLI flags for logging without including persona or task prose.
+    #[cfg(test)]
+    pub fn spawn_flags_summary(
+        &self,
+        model: Option<&str>,
+        has_append_system_prompt: bool,
+        extensions: &[String],
+    ) -> String {
+        self.start_flags_summary(model, has_append_system_prompt, false, extensions)
+    }
+
+    /// Build the interactive CLI command to start a multi-turn conversation in a pane.
+    ///
+    /// Never passes non-interactive print/exec flags (`-p`, `--print`, `exec`, `--prompt`)
+    /// unless `self.harness == AgentHarness::Script`.
+    pub fn start_command(
+        &self,
+        message: Option<&str>,
+        model: Option<&str>,
+        append_system_prompt: Option<&str>,
+    ) -> String {
+        self.start_command_with_extensions(message, model, append_system_prompt, &[])
+    }
+
+    pub fn start_command_with_extensions(
+        &self,
+        message: Option<&str>,
+        model: Option<&str>,
+        append_system_prompt: Option<&str>,
+        extensions: &[String],
+    ) -> String {
+        if self.harness == AgentHarness::Script {
+            let cmd = message.and_then(non_empty_string).unwrap_or("true");
+            return format!("/bin/sh -c {}", shell_quote_arg(cmd));
+        }
         let mut parts = vec![self.binary.to_string()];
         if self.harness == AgentHarness::Pi {
             parts.push("--no-extensions".to_string());
@@ -308,27 +361,52 @@ impl HarnessAdapter {
             parts.push("--model".to_string());
             parts.push(shell_quote_arg(m));
         }
+        if self.harness == AgentHarness::Codex {
+            parts.extend(
+                [
+                    "--sandbox",
+                    "workspace-write",
+                    "-c",
+                    "sandbox_workspace_write.network_access=true",
+                ]
+                .map(str::to_string),
+            );
+        }
         if let Some(persona) = append_system_prompt.and_then(non_empty_string) {
-            if matches!(self.harness, AgentHarness::Pi | AgentHarness::Claude) {
-                parts.push("--append-system-prompt".to_string());
-                parts.push(shell_quote_arg(persona));
+            match self.harness {
+                AgentHarness::Pi | AgentHarness::Claude => {
+                    parts.push("--append-system-prompt".to_string());
+                    parts.push(shell_quote_arg(persona));
+                }
+                AgentHarness::Codex => {
+                    parts.push("-c".to_string());
+                    parts.push(shell_quote_arg(&format!(
+                        "developer_instructions={persona}"
+                    )));
+                }
+                AgentHarness::Agy | AgentHarness::Script => {}
             }
         }
-        parts.push(self.task_flag.to_string());
-        // Codex workers can edit their workspace and reach the host socket.
-        // Never grant a profile writable root: it contains permission records.
-        if self.harness == AgentHarness::Codex { parts.extend(["--skip-git-repo-check", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"].map(str::to_string)); }
-        parts.push(shell_quote_arg(task));
+        if let Some(msg) = message.and_then(non_empty_string) {
+            if self.harness == AgentHarness::Agy {
+                parts.push("--prompt-interactive".to_string());
+            }
+            parts.push(shell_quote_arg(msg));
+        }
         parts.join(" ")
     }
 
-    /// Summarize the composed CLI flags for logging without including persona or task prose.
-    pub fn spawn_flags_summary(
+    /// Summarize the composed interactive CLI flags for logging without persona or message prose.
+    pub fn start_flags_summary(
         &self,
         model: Option<&str>,
         has_append_system_prompt: bool,
+        has_initial_message: bool,
         extensions: &[String],
     ) -> String {
+        if self.harness == AgentHarness::Script {
+            return "-c <SCRIPT>".to_string();
+        }
         let mut flags = Vec::new();
         if self.harness == AgentHarness::Pi {
             flags.push("--no-extensions".to_string());
@@ -344,14 +422,36 @@ impl HarnessAdapter {
             flags.push("--model".to_string());
             flags.push(shell_quote_arg(m));
         }
-        if has_append_system_prompt
-            && matches!(self.harness, AgentHarness::Pi | AgentHarness::Claude)
-        {
-            flags.push("--append-system-prompt".to_string());
-            flags.push("<AGENT.md>".to_string());
+        if self.harness == AgentHarness::Codex {
+            flags.extend(
+                [
+                    "--sandbox",
+                    "workspace-write",
+                    "-c",
+                    "sandbox_workspace_write.network_access=true",
+                ]
+                .map(str::to_string),
+            );
         }
-        flags.push(self.task_flag.to_string());
-        if self.harness == AgentHarness::Codex { flags.extend(["--skip-git-repo-check", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"].map(str::to_string)); }
+        if has_append_system_prompt {
+            match self.harness {
+                AgentHarness::Pi | AgentHarness::Claude => {
+                    flags.push("--append-system-prompt".to_string());
+                    flags.push("<AGENT.md>".to_string());
+                }
+                AgentHarness::Codex => {
+                    flags.push("-c".to_string());
+                    flags.push("developer_instructions=<AGENT.md>".to_string());
+                }
+                AgentHarness::Agy | AgentHarness::Script => {}
+            }
+        }
+        if has_initial_message {
+            if self.harness == AgentHarness::Agy {
+                flags.push("--prompt-interactive".to_string());
+            }
+            flags.push("<MESSAGE>".to_string());
+        }
         flags.join(" ")
     }
 
@@ -362,6 +462,7 @@ impl HarnessAdapter {
             AgentHarness::Codex => &["session_id", "thread_id", "conversation_id"][..],
             AgentHarness::Pi => &["session_id", "sessionId", "sessionFile"][..],
             AgentHarness::Agy => &["session_id", "conversation_id", "conversationId"][..],
+            AgentHarness::Script => &["session_id"][..],
         };
         for key in candidates {
             if let Some(val) = payload
@@ -384,34 +485,33 @@ pub fn resolve_harness_adapter(
 ) -> Result<&'static HarnessAdapter, String> {
     let primary = harness_adapter(&harness_cfg.cli).ok_or_else(|| {
         format!(
-            "unknown harness cli '{}' (expected pi, claude, codex, or agy)",
+            "unknown harness cli '{}' (expected pi, claude, codex, agy, or script)",
             harness_cfg.cli
         )
     })?;
-    if super::binary_in_path(primary.binary) {
+    if primary.harness == AgentHarness::Script || super::binary_in_path(primary.binary) {
         return Ok(primary);
     }
     if let Some(ref fb_name) = harness_cfg.fallback {
         let fallback = harness_adapter(fb_name).ok_or_else(|| {
             format!(
-                "unknown fallback '{}' (expected pi, claude, codex, or agy)",
+                "unknown fallback '{}' (expected pi, claude, codex, agy, or script)",
                 fb_name
             )
         })?;
-        if super::binary_in_path(fallback.binary) {
+        if fallback.harness == AgentHarness::Script || super::binary_in_path(fallback.binary) {
             return Ok(fallback);
         }
     }
     Ok(primary)
 }
 
-/// Build the `# Plexi worker contract` section appended to every spawned worker's task.
+/// Build the `# Plexi worker contract` section included in every spawned agent session.
 pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> String {
     let mut contract = format!(
         "# Plexi worker contract\n\
-         You are agent `{}` running in a Plexi pane.\n\
-         You have one non-interactive turn. Do not ask for confirmation.\n\
-         Always finish by running: plexi agent done --summary \"<one line>\" --result '<json>'.\n\
+         You are agent `{}` running in an interactive Plexi agent session.\n\
+         Always report your final or structured task completion by running: plexi agent done --summary \"<one line>\" --result '<json>'.\n\
          If the task does not fit the result schema, run plexi agent done --summary \"<why>\" --result '{{}}' or plexi agent ask \"<question>\".",
         definition.id
     );
@@ -428,38 +528,82 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
     contract
 }
 
-/// Pure function building the exact shell command `plexi agent spawn` runs for
-/// `(definition, adapter, task)`.
+/// Unified pure function building the exact interactive shell command `plexi agent spawn`,
+/// `plexi agent start`, `plexi agent call`/`handoff`, `plexi agent team run`, and GUI/palette
+/// spawns run for `(definition, adapter, task)`.
 ///
 /// - Refuses agents without a `[harness]` table.
-/// - `pi` passes `--no-extensions --no-mcp` (plus any explicit `-e <path>` from `[harness].extensions`).
-/// - `pi` and `claude` pass `--append-system-prompt <AGENT.md text>`.
-/// - `codex` and `agy` have no system-prompt flag, so `# Persona\n<AGENT.md text>\n\n`
-///   is prepended to the task text.
-/// - Always appends `# Plexi worker contract` (including the result schema verbatim when set).
+/// - Never passes non-interactive print/exec flags (`-p`, `--print`, `exec`, `--prompt`)
+///   unless `adapter.harness == AgentHarness::Script`.
+/// - Applies `AGENT.md` persona and `# Plexi worker contract` (including `result_schema`).
 pub fn build_agent_spawn_command(
     definition: &crate::agent::AgentDefinition,
     adapter: &HarnessAdapter,
     task: &str,
 ) -> Result<String, String> {
+    build_agent_start_command(definition, adapter, non_empty_string(task))
+}
+
+/// Pure function building the exact interactive shell command `plexi agent start` and
+/// `plexi agent spawn` run for `(definition, adapter, message)`.
+///
+/// - Refuses agents without a `[harness]` table.
+/// - Never passes non-interactive print/exec flags (`-p`, `--print`, `exec`, `--prompt`)
+///   unless `adapter.harness == AgentHarness::Script`.
+/// - Applies `AGENT.md` persona and `# Plexi worker contract` even when `message` is `None`.
+pub fn build_agent_start_command(
+    definition: &crate::agent::AgentDefinition,
+    adapter: &HarnessAdapter,
+    message: Option<&str>,
+) -> Result<String, String> {
     let harness_cfg = definition.harness.as_ref().ok_or_else(|| {
         format!(
-            "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be spawned as a CLI worker)",
+            "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be started as a CLI harness session)",
             definition.id
         )
     })?;
+    if adapter.harness == AgentHarness::Script {
+        return Ok(adapter.start_command(message, None, None));
+    }
     let persona = definition.prompt.trim();
     let contract = format_worker_contract(definition);
-    let (append_prompt, full_task) = match adapter.harness {
-        AgentHarness::Pi | AgentHarness::Claude => (Some(persona), format!("{task}\n\n{contract}")),
-        AgentHarness::Codex | AgentHarness::Agy => (
-            None,
-            format!("# Persona\n{persona}\n\n{task}\n\n{contract}"),
-        ),
+    let system_instructions = if persona.is_empty() {
+        contract.clone()
+    } else {
+        format!("{persona}\n\n{contract}")
     };
-    let flags_summary = adapter.spawn_flags_summary(
+    let initial_message = message.and_then(non_empty_string);
+    let (append_prompt, effective_message) = match adapter.harness {
+        AgentHarness::Pi | AgentHarness::Claude => (
+            Some(system_instructions),
+            initial_message.map(str::to_string),
+        ),
+        AgentHarness::Codex => {
+            let dev_instructions = if persona.is_empty() {
+                contract
+            } else {
+                format!("# Persona\n{persona}\n\n{contract}")
+            };
+            (
+                Some(dev_instructions),
+                initial_message.map(str::to_string),
+            )
+        }
+        AgentHarness::Agy => {
+            let full_prompt = match (persona.is_empty(), initial_message) {
+                (false, Some(msg)) => format!("# Persona\n{persona}\n\n{msg}\n\n{contract}"),
+                (false, None) => format!("# Persona\n{persona}\n\n{contract}"),
+                (true, Some(msg)) => format!("{msg}\n\n{contract}"),
+                (true, None) => contract,
+            };
+            (None, Some(full_prompt))
+        }
+        AgentHarness::Script => (None, initial_message.map(str::to_string)),
+    };
+    let flags_summary = adapter.start_flags_summary(
         harness_cfg.model.as_deref(),
-        append_prompt.and_then(non_empty_string).is_some(),
+        append_prompt.as_deref().and_then(non_empty_string).is_some(),
+        effective_message.is_some(),
         &harness_cfg.extensions,
     );
     log::info!(
@@ -469,12 +613,16 @@ pub fn build_agent_spawn_command(
         flags_summary
     );
     if harness_cfg.extensions.is_empty() {
-        Ok(adapter.spawn_command(&full_task, harness_cfg.model.as_deref(), append_prompt))
-    } else {
-        Ok(adapter.spawn_command_with_extensions(
-            &full_task,
+        Ok(adapter.start_command(
+            effective_message.as_deref(),
             harness_cfg.model.as_deref(),
-            append_prompt,
+            append_prompt.as_deref(),
+        ))
+    } else {
+        Ok(adapter.start_command_with_extensions(
+            effective_message.as_deref(),
+            harness_cfg.model.as_deref(),
+            append_prompt.as_deref(),
             &harness_cfg.extensions,
         ))
     }
@@ -570,10 +718,7 @@ pub fn resolve_agent_definition_in(
         return Ok((def, false));
     }
 
-    if let Some(def) = registry
-        .active(trimmed)
-        .filter(|d| d.source != crate::agent::AgentSource::BuiltIn)
-    {
+    if let Some(def) = registry.active(trimmed) {
         let shadows_global = registry
             .shadowed(trimmed)
             .iter()
@@ -591,8 +736,18 @@ pub fn resolve_agent_definition_in(
         );
     }
     searched.push(global_dir.display().to_string());
+    let available: Vec<&str> = registry
+        .agents()
+        .filter(|d| d.source != crate::agent::AgentSource::BuiltIn || d.harness.is_some())
+        .map(|d| d.id.as_str())
+        .collect();
+    let available_str = if available.is_empty() {
+        "none".to_string()
+    } else {
+        available.join(", ")
+    };
     Err(format!(
-        "agent '{trimmed}' not found (searched: {})",
+        "agent '{trimmed}' not found (searched: {}; available agents: {available_str})",
         searched.join(", ")
     ))
 }
@@ -618,16 +773,16 @@ pub fn agent_create_in(
 ) -> Result<PathBuf, String> {
     validate_agent_slug(opts.name)?;
     let cli_trimmed = opts.cli.trim();
-    if !matches!(cli_trimmed, "pi" | "claude" | "codex" | "agy") {
+    if !matches!(cli_trimmed, "pi" | "claude" | "codex" | "agy" | "script") {
         return Err(format!(
-            "invalid --cli '{}': expected one of pi, claude, codex, agy",
+            "invalid --cli '{}': expected one of pi, claude, codex, agy, script",
             opts.cli
         ));
     }
     if let Some(fb) = opts.fallback.and_then(non_empty_string) {
-        if !matches!(fb, "pi" | "claude" | "codex" | "agy") {
+        if !matches!(fb, "pi" | "claude" | "codex" | "agy" | "script") {
             return Err(format!(
-                "invalid --fallback '{fb}': expected one of pi, claude, codex, agy"
+                "invalid --fallback '{fb}': expected one of pi, claude, codex, agy, script"
             ));
         }
     }
@@ -1053,6 +1208,176 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
     }
 }
 
+/// Unified resolver for `plexi agent start <name>` and `plexi agent spawn <name>` from
+/// `start_cwd` (walking up to the project root stopping at `stops`, then falling back to
+/// `profile_dir`, then built-in) that assembles the `agent_spawn` IPC payload.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_agent_spawn_in_stopping_at(
+    agent_name: &str,
+    profile_dir: &Path,
+    start_cwd: &Path,
+    task_or_message: Option<&str>,
+    subcontext: Option<&str>,
+    ephemeral_override: Option<bool>,
+    parent_pane_id: Option<u64>,
+    stops: &[PathBuf],
+) -> Result<serde_json::Value, String> {
+    let workspace_root =
+        crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
+    let (def, _) =
+        resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
+    let Some(ref harness_cfg) = def.harness else {
+        return Err(format!(
+            "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be started as a CLI harness session)",
+            def.id
+        ));
+    };
+    let adapter = resolve_harness_adapter(harness_cfg)?;
+    let cmd_string = build_agent_start_command(&def, adapter, task_or_message)?;
+    let project_cwd = workspace_root
+        .or_else(|| {
+            crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
+        })
+        .unwrap_or_else(|| start_cwd.to_path_buf());
+    let task_text = task_or_message.and_then(non_empty_string).unwrap_or_default();
+    let effective_ephemeral = match ephemeral_override {
+        Some(explicit) => explicit,
+        None => harness_cfg.ephemeral,
+    };
+
+    let mut payload = serde_json::json!({
+        "type": "agent_spawn",
+        "role": def.id,
+        "harness": adapter.harness.as_str(),
+        "command": cmd_string,
+        "task": task_text,
+        "ephemeral": effective_ephemeral,
+        "cwd": project_cwd.to_string_lossy().into_owned(),
+    });
+    if let Some(sub) = subcontext.and_then(non_empty_string) {
+        payload["subcontext"] = serde_json::Value::String(sub.to_string());
+    }
+    if let Some(pid) = parent_pane_id {
+        payload["parent_pane_id"] = serde_json::json!(pid);
+    }
+    if let Some(ref schema) = harness_cfg.result_schema {
+        payload["result_schema"] = schema.clone();
+    }
+    Ok(payload)
+}
+
+/// Resolve an interactive `plexi agent start <name>` request from `start_cwd` (walking up to the
+/// project root stopping at `stops`, then falling back to `profile_dir`, then built-in) and
+/// assemble the `agent_spawn` IPC payload.
+pub fn resolve_agent_start_in_stopping_at(
+    agent_name: &str,
+    profile_dir: &Path,
+    start_cwd: &Path,
+    message: Option<&str>,
+    parent_pane_id: Option<u64>,
+    stops: &[PathBuf],
+) -> Result<serde_json::Value, String> {
+    resolve_agent_spawn_in_stopping_at(
+        agent_name,
+        profile_dir,
+        start_cwd,
+        message,
+        None,
+        Some(false),
+        parent_pane_id,
+        stops,
+    )
+}
+
+fn resolve_effective_cwd(cwd: Option<&str>) -> Result<PathBuf, i32> {
+    match cwd.and_then(non_empty_string) {
+        Some(raw) => {
+            let p = PathBuf::from(raw);
+            if p.is_absolute() {
+                Ok(p)
+            } else {
+                match std::env::current_dir() {
+                    Ok(base) => Ok(base.join(p)),
+                    Err(e) => {
+                        eprintln!("error: could not determine current directory: {e}");
+                        Err(1)
+                    }
+                }
+            }
+        }
+        None => match std::env::current_dir() {
+            Ok(d) => Ok(d),
+            Err(e) => {
+                eprintln!("error: could not determine current directory: {e}");
+                Err(1)
+            }
+        },
+    }
+}
+
+fn dispatch_agent_spawn_payload(
+    payload: serde_json::Value,
+    response_prefix: &str,
+    label: &str,
+    json: bool,
+) -> i32 {
+    let content = match super::request(payload, response_prefix, label) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    if json {
+        println!("{content}");
+        return 0;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+            println!("{pid}");
+            return 0;
+        }
+    }
+    println!("{content}");
+    0
+}
+
+/// `plexi agent start <name> [MESSAGE] [--message <MESSAGE>] [--cwd <DIR>]`
+pub fn agent_start_cli(
+    agent_name: &str,
+    cwd: Option<&str>,
+    message: Option<&str>,
+    json: bool,
+) -> i32 {
+    log::info!(
+        "agent_start:cli: name={agent_name} cwd={cwd:?} message_present={}",
+        message.and_then(non_empty_string).is_some()
+    );
+    let effective_cwd = match resolve_effective_cwd(cwd) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let parent_pane_id = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let stops = crate::app::registry::workspace_walk_stops();
+    let payload = match resolve_agent_start_in_stopping_at(
+        agent_name,
+        &crate::config::config_dir(),
+        &effective_cwd,
+        message,
+        parent_pane_id,
+        &stops,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    dispatch_agent_spawn_payload(payload, "agent-start-response", "agent start", json)
+}
+
 /// `plexi agent spawn <name> --task "<brief>" [--subcontext <name>] [--ephemeral]`
 #[allow(clippy::too_many_arguments)]
 pub fn agent_spawn_cli(
@@ -1067,74 +1392,54 @@ pub fn agent_spawn_cli(
     log::info!(
         "agent_spawn:cli: name={agent_name} subcontext={subcontext:?} ephemeral={ephemeral}"
     );
-    let effective_cwd = cwd
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok());
-    let workspace_root = effective_cwd
-        .as_deref()
-        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
-
-    let (def, _) = match resolve_agent_definition_in(
-        agent_name,
-        &crate::config::config_dir(),
-        workspace_root.as_deref(),
-    ) {
-        Ok(pair) => pair,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
+    let effective_cwd = match resolve_effective_cwd(cwd) {
+        Ok(d) => d,
+        Err(code) => return code,
     };
-    let Some(ref harness_cfg) = def.harness else {
-        eprintln!(
-            "error: agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be spawned as a CLI worker)",
-            def.id
-        );
-        return 1;
-    };
-    let adapter = match resolve_harness_adapter(harness_cfg) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let cmd_string = match build_agent_spawn_command(&def, adapter, task) {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let effective_ephemeral = ephemeral || harness_cfg.ephemeral;
     let parent_pane_id = from_pane_id.or_else(|| {
         std::env::var("PLEXI_PANE_ID")
             .ok()
             .and_then(|v| v.parse().ok())
     });
+    let stops = crate::app::registry::workspace_walk_stops();
+    let ephemeral_override = if ephemeral { Some(true) } else { None };
+    let mut payload = match resolve_agent_spawn_in_stopping_at(
+        agent_name,
+        &crate::config::config_dir(),
+        &effective_cwd,
+        Some(task),
+        subcontext,
+        ephemeral_override,
+        parent_pane_id,
+        &stops,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    if let Some(raw_cwd) = cwd.and_then(non_empty_string) {
+        let _ = raw_cwd;
+        payload["cwd"] = serde_json::Value::String(effective_cwd.to_string_lossy().into_owned());
+    }
+    dispatch_agent_spawn_payload(payload, "agent-spawn-response", "agent spawn", json)
+}
 
-    let mut payload = serde_json::json!({
-        "type": "agent_spawn",
-        "role": def.id,
-        "harness": adapter.harness.as_str(),
-        "command": cmd_string,
-        "task": task,
-        "ephemeral": effective_ephemeral,
+/// `plexi agent wait <pane-id...> [--timeout <secs>] [--json]`
+pub fn agent_wait_cli(pane_ids: &[u64], timeout_secs: f64, json: bool) -> i32 {
+    if pane_ids.is_empty() {
+        eprintln!("error: agent wait requires at least one pane id");
+        return 1;
+    }
+    let payload = serde_json::json!({
+        "type": "agent_wait",
+        "pane_ids": pane_ids,
+        "timeout_secs": timeout_secs,
     });
-    if let Some(sub) = subcontext.and_then(non_empty_string) {
-        payload["subcontext"] = serde_json::Value::String(sub.to_string());
-    }
-    if let Some(pid) = parent_pane_id {
-        payload["parent_pane_id"] = serde_json::json!(pid);
-    }
-    if let Some(dir) = effective_cwd.as_ref().and_then(|p| p.to_str()) {
-        payload["cwd"] = serde_json::Value::String(dir.to_string());
-    }
-    if let Some(ref schema) = harness_cfg.result_schema {
-        payload["result_schema"] = schema.clone();
-    }
-
-    let content = match super::request(payload, "agent-spawn-response", "agent spawn") {
+    let wait_dur = std::time::Duration::from_secs_f64(timeout_secs.max(1.0) + 5.0);
+    let content = match super::request_with(payload, "agent-wait-response", "agent wait", wait_dur)
+    {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -1145,9 +1450,19 @@ pub fn agent_spawn_cli(
         println!("{content}");
         return 0;
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
-            println!("{pid}");
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(results) = val.get("results").and_then(|v| v.as_array()) {
+            for r in results {
+                let pid = r.get("pane_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let agent = r.get("agent").and_then(|v| v.as_str()).unwrap_or("agent");
+                let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("completed");
+                let summary = r.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                if summary.is_empty() {
+                    println!("#{pid} {agent} [{status}]");
+                } else {
+                    println!("#{pid} {agent} [{status}]: {summary}");
+                }
+            }
             return 0;
         }
     }
@@ -2629,11 +2944,12 @@ mod agent_tests {
         let probe = format!("codex() {{ printf '%s\\n' \"$@\"; }}; {command}");
         let output = std::process::Command::new("/bin/sh").args(["-c", &probe]).current_dir(cwd.path()).output().unwrap();
         assert!(output.status.success());
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), "exec\n--skip-git-repo-check\n--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\nsubmit a ballot\n");
-        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\nsubmit a ballot\n");
+        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "--sandbox workspace-write -c sandbox_workspace_write.network_access=true");
         assert!(!command.contains("--dangerously"));
         assert!(!command.contains("writable_roots"));
         assert!(!command.contains("--add-dir"));
+        assert!(!command.contains(" exec"));
     }
     #[test]
     fn multi_cli_harness_adapters_build_spawn_resume_and_capture_session_ids() {
@@ -2644,7 +2960,7 @@ mod agent_tests {
         );
         assert_eq!(
             claude.spawn_command("fix bug", Some("claude-sonnet-4-5"), None),
-            "claude --model claude-sonnet-4-5 -p 'fix bug'"
+            "claude --model claude-sonnet-4-5 'fix bug'"
         );
         assert_eq!(
             claude.capture_session_id(&serde_json::json!({"session_id": "s-1"})),
@@ -2655,7 +2971,7 @@ mod agent_tests {
         assert_eq!(codex.resume_command("thread-99"), "codex resume thread-99");
         assert_eq!(
             codex.spawn_command("run tests", None, None),
-            "codex exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true 'run tests'"
+            "codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true 'run tests'"
         );
         assert_eq!(
             codex.capture_session_id(&serde_json::json!({"thread_id": "t-99"})),
@@ -2666,7 +2982,7 @@ mod agent_tests {
         assert_eq!(pi.resume_command("pi-sess-7"), "pi --session pi-sess-7");
         assert_eq!(
             pi.spawn_command("audit module", None, None),
-            "pi --no-extensions --no-mcp -p 'audit module'"
+            "pi --no-extensions --no-mcp 'audit module'"
         );
         assert_eq!(
             pi.capture_session_id(&serde_json::json!({"sessionId": "pi-7"})),
@@ -2677,11 +2993,17 @@ mod agent_tests {
         assert_eq!(agy.resume_command("conv-123"), "agy --resume conv-123");
         assert_eq!(
             agy.spawn_command("implement stint", None, None),
-            "agy --prompt 'implement stint'"
+            "agy --prompt-interactive 'implement stint'"
         );
         assert_eq!(
             agy.capture_session_id(&serde_json::json!({"conversation_id": "conv-123"})),
             Some("conv-123".to_string())
+        );
+
+        let script = super::harness_adapter("script").expect("script adapter");
+        assert_eq!(
+            script.spawn_command("echo hello", None, None),
+            "/bin/sh -c 'echo hello'"
         );
     }
 
@@ -2707,7 +3029,7 @@ mod agent_tests {
                 .expect("valid definition")
         };
 
-        // 1. pi: uses --no-extensions --no-mcp, --append-system-prompt, --model verbatim, and appends worker contract + schema to task.
+        // 1. pi: interactive (no -p), uses --no-extensions --no-mcp, --append-system-prompt with persona + contract + schema, and initial message.
         let pi_def = make_def("pi", Some("openrouter/~z-ai/glm-flash-latest"));
         let pi_adapter = super::harness_adapter("pi").unwrap();
         let pi_cmd =
@@ -2715,13 +3037,14 @@ mod agent_tests {
                 .unwrap();
         assert!(
             pi_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.' -p "
+                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
             ),
             "unexpected pi command: {pi_cmd}"
         );
+        assert!(!pi_cmd.contains(" -p"));
         assert!(pi_cmd.contains("--no-extensions"));
         assert!(pi_cmd.contains("--no-mcp"));
-        assert!(pi_cmd.contains("Find where AgentRegistry loads"));
+        assert!(pi_cmd.ends_with("'Find where AgentRegistry loads'"));
         assert!(pi_cmd.contains("# Plexi worker contract"));
         assert!(pi_cmd.contains("agent `researcher`"));
         assert!(pi_cmd.contains("plexi agent done --summary \"<one line>\" --result "));
@@ -2733,46 +3056,50 @@ mod agent_tests {
             raw_contract.contains("plexi agent done --summary \"<one line>\" --result '<json>'")
         );
 
-        // 2. claude: uses --append-system-prompt, -p, and appends worker contract.
+        // 2. claude: interactive (no -p), uses --append-system-prompt with persona + contract.
         let claude_def = make_def("claude", Some("claude-sonnet-4-5"));
         let claude_adapter = super::harness_adapter("claude").unwrap();
         let claude_cmd =
             super::build_agent_spawn_command(&claude_def, claude_adapter, "Audit module").unwrap();
         assert!(
             claude_cmd.starts_with(
-                "claude --model claude-sonnet-4-5 --append-system-prompt 'You are a fast codebase researcher.' -p "
+                "claude --model claude-sonnet-4-5 --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
             ),
             "unexpected claude command: {claude_cmd}"
         );
+        assert!(!claude_cmd.contains(" -p"));
         assert!(claude_cmd.contains("# Plexi worker contract"));
         assert!(!claude_cmd.contains("--append-system-prompt-file"));
         assert!(!claude_cmd.contains("# Persona"));
+        assert!(claude_cmd.ends_with("'Audit module'"));
 
-        // 3. codex: no system-prompt flag; prepends `# Persona\n<AGENT.md>\n\n` to task.
+        // 3. codex: interactive (no exec); passes developer_instructions with # Persona + contract.
         let codex_def = make_def("codex", Some("gpt-5-codex"));
         let codex_adapter = super::harness_adapter("codex").unwrap();
         let codex_cmd =
             super::build_agent_spawn_command(&codex_def, codex_adapter, "Run suite").unwrap();
         assert!(
-            codex_cmd.starts_with("codex --model gpt-5-codex exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true "),
+            codex_cmd.starts_with("codex --model gpt-5-codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true -c "),
             "unexpected codex command: {codex_cmd}"
         );
+        assert!(!codex_cmd.contains(" exec "));
         assert!(!codex_cmd.contains("--append-system-prompt"));
         assert!(!codex_cmd.contains("--system-prompt"));
         assert!(
             codex_cmd.contains(
-                "# Persona\nYou are a fast codebase researcher.\n\nRun suite\n\n# Plexi worker contract"
+                "developer_instructions=# Persona\nYou are a fast codebase researcher.\n\n# Plexi worker contract"
             ),
-            "codex command must inline # Persona before task: {codex_cmd}"
+            "codex command must pass developer_instructions with # Persona and contract: {codex_cmd}"
         );
+        assert!(codex_cmd.ends_with("'Run suite'"));
 
-        // 4. agy: no system-prompt flag; prepends `# Persona\n<AGENT.md>\n\n` to task.
+        // 4. agy: interactive (--prompt-interactive); prepends `# Persona\n<AGENT.md>\n\n` to task.
         let agy_def = make_def("agy", Some("gemini-2.5-pro"));
         let agy_adapter = super::harness_adapter("agy").unwrap();
         let agy_cmd =
             super::build_agent_spawn_command(&agy_def, agy_adapter, "Implement feature").unwrap();
         assert!(
-            agy_cmd.starts_with("agy --model gemini-2.5-pro --prompt "),
+            agy_cmd.starts_with("agy --model gemini-2.5-pro --prompt-interactive "),
             "unexpected agy command: {agy_cmd}"
         );
         assert!(!agy_cmd.contains("--append-system-prompt"));
@@ -2807,10 +3134,11 @@ mod agent_tests {
             super::build_agent_spawn_command(&default_def, pi_adapter, "do task").unwrap();
         assert!(
             default_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.' -p "
+                "pi --no-extensions --no-mcp --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.\n\n# Plexi worker contract"
             ),
             "unexpected default pi command: {default_cmd}"
         );
+        assert!(!default_cmd.contains(" -p"));
         let default_flags = pi_adapter.spawn_flags_summary(
             Some("sonnet"),
             true,
@@ -2818,7 +3146,7 @@ mod agent_tests {
         );
         assert_eq!(
             default_flags,
-            "--no-extensions --no-mcp --model sonnet --append-system-prompt <AGENT.md> -p"
+            "--no-extensions --no-mcp --model sonnet --append-system-prompt <AGENT.md>"
         );
         assert!(!default_flags.contains("Secret persona text"));
 
@@ -2830,7 +3158,7 @@ mod agent_tests {
         let ext_cmd = super::build_agent_spawn_command(&ext_def, pi_adapter, "do task").unwrap();
         assert!(
             ext_cmd.starts_with(
-                "pi --no-extensions --no-mcp -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.' -p "
+                "pi --no-extensions --no-mcp -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.\n\n# Plexi worker contract"
             ),
             "unexpected explicit-extension pi command: {ext_cmd}"
         );
@@ -3028,7 +3356,8 @@ mod agent_tests {
         assert_eq!(show_json["tier"], "workspace");
         assert_eq!(show_json["shadows_global"], true);
         let spawn_cmd = show_json["spawn_command"].as_str().unwrap();
-        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona.' -p"));
+        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
+        assert!(!spawn_cmd.contains(" -p"));
         assert!(spawn_cmd.contains("<TASK>"));
     }
 
@@ -3101,6 +3430,225 @@ mod agent_tests {
         assert_eq!(
             pi.restore_command(Some(&direct_path)),
             format!("pi --session {direct_path}")
+        );
+    }
+
+    #[test]
+    fn build_agent_start_command_is_interactive_with_persona_and_worker_contract() {
+        let make_def = |cli: &str, model: Option<&str>| {
+            let model_line = model
+                .map(|m| format!("model = \"{m}\"\n"))
+                .unwrap_or_default();
+            crate::agent::AgentDefinition::parse(
+                "You are a fast codebase researcher.\n",
+                &format!(
+                    "[agent]\nid = \"researcher\"\ndisplay_name = \"Researcher\"\n\n[harness]\ncli = \"{cli}\"\n{model_line}"
+                ),
+            )
+            .expect("parse agent definition")
+        };
+
+        // 1. pi: interactive (no -p), applies persona + worker contract via --append-system-prompt.
+        let pi_def = make_def("pi", Some("openrouter/~z-ai/glm-flash-latest"));
+        let pi_adapter = super::harness_adapter("pi").unwrap();
+        let pi_cmd = super::build_agent_start_command(&pi_def, pi_adapter, None).unwrap();
+        assert!(
+            pi_cmd.starts_with(
+                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt "
+            ),
+            "unexpected pi start command: {pi_cmd}"
+        );
+        assert!(!pi_cmd.contains(" -p"), "interactive pi start must not pass -p: {pi_cmd}");
+        assert!(pi_cmd.contains("You are a fast codebase researcher."));
+        assert!(pi_cmd.contains("# Plexi worker contract"));
+
+        let pi_with_msg =
+            super::build_agent_start_command(&pi_def, pi_adapter, Some("Inspect auth")).unwrap();
+        assert!(
+            pi_with_msg.ends_with("'Inspect auth'"),
+            "pi start with initial message must append quoted message: {pi_with_msg}"
+        );
+        assert!(!pi_with_msg.contains(" -p"));
+
+        // 2. claude: interactive (no -p), applies persona + worker contract via --append-system-prompt.
+        let claude_def = make_def("claude", Some("claude-sonnet-4-5"));
+        let claude_adapter = super::harness_adapter("claude").unwrap();
+        let claude_cmd =
+            super::build_agent_start_command(&claude_def, claude_adapter, Some("Hello")).unwrap();
+        assert!(
+            claude_cmd.starts_with("claude --model claude-sonnet-4-5 --append-system-prompt "),
+            "unexpected claude start command: {claude_cmd}"
+        );
+        assert!(!claude_cmd.contains(" -p"));
+        assert!(claude_cmd.contains("You are a fast codebase researcher."));
+        assert!(claude_cmd.contains("# Plexi worker contract"));
+        assert!(claude_cmd.ends_with("Hello"));
+
+        // 3. codex: interactive (no `exec`), applies persona + worker contract via developer_instructions.
+        let codex_def = make_def("codex", Some("gpt-5-codex"));
+        let codex_adapter = super::harness_adapter("codex").unwrap();
+        let codex_cmd =
+            super::build_agent_start_command(&codex_def, codex_adapter, Some("Run checks"))
+                .unwrap();
+        assert!(
+            codex_cmd.starts_with(
+                "codex --model gpt-5-codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true -c "
+            ),
+            "unexpected codex start command: {codex_cmd}"
+        );
+        assert!(!codex_cmd.contains(" exec "), "interactive codex start must not pass exec: {codex_cmd}");
+        assert!(codex_cmd.contains("developer_instructions=# Persona\nYou are a fast codebase researcher.\n\n# Plexi worker contract"));
+        assert!(codex_cmd.ends_with("'Run checks'"));
+
+        // 4. agy: interactive (`--prompt-interactive` instead of `--prompt`).
+        let agy_def = make_def("agy", Some("gemini-2.5-pro"));
+        let agy_adapter = super::harness_adapter("agy").unwrap();
+        let agy_cmd =
+            super::build_agent_start_command(&agy_def, agy_adapter, Some("Summarize")).unwrap();
+        assert!(
+            agy_cmd.starts_with("agy --model gemini-2.5-pro --prompt-interactive "),
+            "unexpected agy start command: {agy_cmd}"
+        );
+        assert!(agy_cmd.contains("# Persona\nYou are a fast codebase researcher.\n\nSummarize\n\n# Plexi worker contract"));
+    }
+
+    #[test]
+    fn agent_start_resolves_project_then_user_stopping_at_home_and_lists_available_on_unknown() {
+        let fake_home = tempfile::tempdir().unwrap();
+        let profile = fake_home.path().join(".plexi-alpha");
+        fs::create_dir_all(&profile).unwrap();
+
+        // Put a decoy `.plexi/agents/decoy` directly under $HOME — must be ignored by walk stop.
+        let home_decoy = fake_home.path().join(".plexi").join("agents").join("decoy");
+        fs::create_dir_all(&home_decoy).unwrap();
+        fs::write(home_decoy.join("AGENT.md"), "Home decoy persona.\n").unwrap();
+        fs::write(
+            home_decoy.join("settings.toml"),
+            "[agent]\nid = \"decoy\"\ndisplay_name = \"Decoy\"\n[harness]\ncli = \"pi\"\n",
+        )
+        .unwrap();
+
+        // Seed global user agent `researcher` and `reviewer` in `~/.plexi-alpha/agents/`.
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "researcher",
+                cli: "pi",
+                model: Some("openrouter/~z-ai/glm-flash-latest"),
+                fallback: None,
+                description: Some("Global researcher"),
+                persona: Some("You are the global researcher."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: false,
+                display_name: None,
+                global: true,
+                cwd: None,
+            },
+            &profile,
+        )
+        .unwrap();
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "reviewer",
+                cli: "claude",
+                model: None,
+                fallback: None,
+                description: Some("Global reviewer"),
+                persona: Some("You are the global reviewer."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: false,
+                display_name: None,
+                global: true,
+                cwd: None,
+            },
+            &profile,
+        )
+        .unwrap();
+
+        let stops = vec![fake_home.path().to_path_buf()];
+
+        // Arbitrary project dir `~/temp/proj` with no `.plexi/agents`: resolves `researcher` from
+        // user profile dir and sets pane `cwd` to `~/temp/proj`.
+        let proj = fake_home.path().join("temp").join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        let payload = super::resolve_agent_start_in_stopping_at(
+            "researcher",
+            &profile,
+            &proj,
+            Some("First turn"),
+            None,
+            &stops,
+        )
+        .expect("resolve global researcher from ~/temp/proj");
+        assert_eq!(payload["type"], "agent_spawn");
+        assert_eq!(payload["role"], "researcher");
+        assert_eq!(payload["harness"], "pi");
+        assert_eq!(payload["ephemeral"], false);
+        assert_eq!(payload["cwd"], proj.to_string_lossy().as_ref());
+        let cmd = payload["command"].as_str().unwrap();
+        assert!(cmd.contains("You are the global researcher."));
+        assert!(cmd.contains("# Plexi worker contract"));
+        assert!(!cmd.contains(" -p"));
+
+        // Inside a nested subdirectory of a project with `.plexi/agents/researcher`, walks up to
+        // project root, shadows global, and sets pane `cwd` to the project root.
+        let nested = proj.join("crates").join("sub");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(proj.join(".plexi")).unwrap();
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "researcher",
+                cli: "claude",
+                model: Some("claude-sonnet-4-5"),
+                fallback: None,
+                description: Some("Project researcher"),
+                persona: Some("You are the project researcher."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: false,
+                display_name: None,
+                global: false,
+                cwd: Some(&proj),
+            },
+            &profile,
+        )
+        .unwrap();
+        let ws_payload = super::resolve_agent_start_in_stopping_at(
+            "researcher",
+            &profile,
+            &nested,
+            None,
+            None,
+            &stops,
+        )
+        .expect("resolve workspace researcher from nested dir");
+        assert_eq!(ws_payload["role"], "researcher");
+        assert_eq!(ws_payload["harness"], "claude");
+        assert_eq!(ws_payload["cwd"], proj.to_string_lossy().as_ref());
+        assert!(ws_payload["command"]
+            .as_str()
+            .unwrap()
+            .contains("You are the project researcher."));
+
+        // Unknown agent name fails and lists available agents; decoy at $HOME was never loaded.
+        let err = super::resolve_agent_start_in_stopping_at(
+            "nonexistent",
+            &profile,
+            &proj,
+            None,
+            None,
+            &stops,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("available agents: researcher, reviewer"),
+            "unknown agent error must list available agents: {err}"
+        );
+        assert!(
+            super::resolve_agent_start_in_stopping_at("decoy", &profile, &proj, None, None, &stops)
+                .is_err(),
+            "$HOME/.plexi/agents must not be treated as a project workspace"
         );
     }
 }

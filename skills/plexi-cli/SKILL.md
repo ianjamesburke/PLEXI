@@ -43,6 +43,7 @@ spawning. Spawn returns a pane id immediately; collect its result separately.
 ```bash
 plexi agent list
 plexi agent show <slug>
+plexi agent start <slug>
 plexi agent create <slug> --cli pi --persona "<markdown>" --result-schema '<json>' --ephemeral
 plexi agent spawn <slug> --task "<brief>" --subcontext "<name>"
 plexi pane result wait <pane_id> --timeout 300
@@ -352,8 +353,10 @@ pane count (`--json` is supported).
 - `plexi agent call`: Call an agent role and return its validated completion or blocking question as JSON
 - `plexi agent message`: Reply through a child agent's structured mailbox
 - `plexi agent handoff`: Transfer the current task to a permitted successor role
+- `plexi agent start`: Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
 - `plexi agent spawn`: Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
 - `plexi agent done`: Validate a worker's structured result against its schema, write completion slots, and exit cleanly
+- `plexi agent wait`: Wait for one or more child agent panes to finish via `plexi agent done` and pull their results
 - `plexi agent ask`: Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state)
 - `plexi agent report`: Report agent state for this pane to the host
 - `plexi agent status`: Show current agent state for all panes
@@ -478,6 +481,7 @@ pane count (`--json` is supported).
 - `plexi pane new`: Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--agent`
 - `plexi pane name`: Rename a pane
 - `plexi pane list`: List all open panes as a JSON array
+- `plexi pane tree`: Show the parent/child session provenance forest across open panes (`pstree` / `ps --forest` style)
 - `plexi pane focus`: Move the visible focus to a specific pane
 - `plexi pane heartbeat`: Configure a host-owned recurring prompt for a terminal pane
 - `plexi pane close`: Close a pane

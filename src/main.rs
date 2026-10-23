@@ -640,6 +640,20 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait})))
                         }
                         AgentCmd::Handoff { role, task } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}))),
+                        AgentCmd::Start {
+                            name,
+                            prompt,
+                            message,
+                            cwd,
+                        } => {
+                            let initial_message = message.as_deref().or(prompt.as_deref());
+                            cli::trace::exit(cli::agent_start_cli(
+                                &name,
+                                cwd.as_deref(),
+                                initial_message,
+                                json,
+                            ))
+                        }
                         AgentCmd::Spawn {
                             name,
                             task,
@@ -670,6 +684,11 @@ fn main() -> eframe::Result {
                                 summary.as_deref(),
                                 pane_id,
                             ))
+                        }
+                        AgentCmd::Wait { pane_ids, timeout } => {
+                            let resolved: Vec<u64> =
+                                pane_ids.iter().map(resolve_pane).collect();
+                            cli::trace::exit(cli::agent_wait_cli(&resolved, timeout, json))
                         }
                         AgentCmd::Ask { question, pane_id } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
@@ -1311,6 +1330,18 @@ fn main() -> eframe::Result {
                                 }
                             };
                             cli::trace::exit(cli::pane_list_cli(context_id, current))
+                        }
+                        PaneCmd::Tree { context } => {
+                            let (context_id, current) = match context.as_deref() {
+                                None => (None, false),
+                                Some("current") => (None, true),
+                                Some(s) => {
+                                    let target = cli::ContextTarget::from(s.to_string());
+                                    let id = target.resolve().unwrap_or_else(|code| cli::trace::exit(code));
+                                    (Some(id), false)
+                                }
+                            };
+                            cli::trace::exit(cli::pane_tree_cli(context_id, current, json))
                         }
                         PaneCmd::Focus { pane_id, back: _, forward } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());

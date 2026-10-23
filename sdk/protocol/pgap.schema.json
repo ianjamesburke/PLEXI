@@ -2319,6 +2319,38 @@
         },
         {
           "additionalProperties": false,
+          "description": "Blocking pull wait for one or more child agent panes to finish via `plexi agent done`\n(`plexi agent wait <pane-id...>`, stint 0961).",
+          "properties": {
+            "pane_ids": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "timeout_secs": {
+              "default": 300.0,
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "agent_wait",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_ids",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Complete a worker agent's task, validating `--result` against `result_schema`\n(stint 0666), writing `completed` and `summary` slots, and closing the\nephemeral worker pane so `collapse_subcontext_if_empty` auto-collapses the\nsub-context when all workers succeed (`plexi agent done`, stint 0802).",
           "properties": {
             "pane_id": {

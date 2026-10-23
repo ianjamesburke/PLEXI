@@ -948,7 +948,7 @@ fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Optio
 /// real login home still contains `~/.plexi-<channel>` from the installed
 /// binary. That profile directory is not a workspace. Stopping only at the
 /// overridden `$HOME` made the login home look like one.
-fn workspace_walk_stops() -> Vec<PathBuf> {
+pub(crate) fn workspace_walk_stops() -> Vec<PathBuf> {
     let mut stops = Vec::new();
     if let Some(home) = dirs::home_dir() {
         stops.push(home);

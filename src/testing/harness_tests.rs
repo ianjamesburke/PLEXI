@@ -9943,6 +9943,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             no_focus: true,
             response_file: spawn_reply.clone(),
+            peer_ancestry: None,
         });
         h.hidden_frame();
 
@@ -10068,6 +10069,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             no_focus: true,
             response_file: spawn_reply.clone(),
+            peer_ancestry: None,
         });
         h.hidden_frame();
 
@@ -10131,6 +10133,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             no_focus: true,
             response_file: spawn_reply.clone(),
+            peer_ancestry: None,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -10259,6 +10262,7 @@ mod pane_lifecycle_events {
                 initial_slots: vec![],
                 no_focus: true,
                 response_file: reply.clone(),
+                peer_ancestry: None,
             });
             h.hidden_frame();
             let spawned = read_json_response(&reply);
@@ -11503,6 +11507,8 @@ mod agent_state_restoration_tests {
                                 last_blocked_reason: None,
                                 last_detail: Some("Cargo test running".to_string()),
                                 parent_pane_id: None,
+                                spawned_by: None,
+                                pending_child_results: Vec::new(),
                                 ephemeral: false,
                                 tail_preview: Some(
                                     "Compiling plexi v0.9.0\nRunning tests...".to_string(),
@@ -11574,6 +11580,8 @@ mod agent_state_restoration_tests {
                             last_blocked_reason: Some(AgentBlockedReason::Unknown),
                             last_detail: Some("Need API schema clarification".to_string()),
                             parent_pane_id: Some(10),
+                            spawned_by: None,
+                            pending_child_results: Vec::new(),
                             ephemeral: false,
                                 tail_preview: Some("Waiting on parent answer".to_string()),
                             standby_scrollback_tail: Some(vec![
@@ -11618,6 +11626,8 @@ mod agent_state_restoration_tests {
                             last_blocked_reason: None,
                             last_detail: Some("Finished scouting".to_string()),
                             parent_pane_id: Some(10),
+                            spawned_by: None,
+                            pending_child_results: Vec::new(),
                             ephemeral: true,
                             tail_preview: Some("Done.".to_string()),
                             standby_scrollback_tail: None,
@@ -11782,6 +11792,8 @@ mod agent_state_restoration_tests {
             last_blocked_reason: None,
             last_detail: None,
             parent_pane_id: None,
+            spawned_by: None,
+            pending_child_results: Vec::new(),
             ephemeral: false,
             tail_preview: None,
             standby_scrollback_tail: Some(vec!["saved line".to_string()]),
@@ -11830,6 +11842,7 @@ mod agent_state_restoration_tests {
             initial_slots: vec![("summary".into(), "Auth audit passed".into())],
             no_focus: true,
             response_file: spawn_reply.clone(),
+            peer_ancestry: None,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -11990,6 +12003,8 @@ mod agent_state_restoration_tests {
                                 last_blocked_reason: None,
                                 last_detail: None,
                                 parent_pane_id: None,
+                                spawned_by: None,
+                                pending_child_results: Vec::new(),
                                 ephemeral: false,
                                 tail_preview: None,
                                 standby_scrollback_tail: None,
@@ -12021,6 +12036,8 @@ mod agent_state_restoration_tests {
                                 last_blocked_reason: None,
                                 last_detail: None,
                                 parent_pane_id: None,
+                                spawned_by: None,
+                                pending_child_results: Vec::new(),
                                 ephemeral: false,
                                 tail_preview: None,
                                 standby_scrollback_tail: None,
@@ -12052,6 +12069,8 @@ mod agent_state_restoration_tests {
                                 last_blocked_reason: None,
                                 last_detail: None,
                                 parent_pane_id: None,
+                                spawned_by: None,
+                                pending_child_results: Vec::new(),
                                 ephemeral: false,
                                 tail_preview: None,
                                 standby_scrollback_tail: None,
@@ -12095,6 +12114,8 @@ mod agent_state_restoration_tests {
                                 last_blocked_reason: None,
                                 last_detail: None,
                                 parent_pane_id: None,
+                                spawned_by: None,
+                                pending_child_results: Vec::new(),
                                 ephemeral: false,
                                 tail_preview: None,
                                 standby_scrollback_tail: None,
@@ -12126,6 +12147,8 @@ mod agent_state_restoration_tests {
                                 last_blocked_reason: None,
                                 last_detail: None,
                                 parent_pane_id: None,
+                                spawned_by: None,
+                                pending_child_results: Vec::new(),
                                 ephemeral: false,
                                 tail_preview: None,
                                 standby_scrollback_tail: None,
@@ -12798,4 +12821,476 @@ fn queued_spawn_wake_bypasses_idle_throttle_while_hidden() {
         "wake must consume the queue in this logic pass"
     );
     assert!(read_json_response(&response)["pane_id"].as_u64().is_some());
+}
+
+#[test]
+fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_and_posture() {
+    let fake_home = tempfile::tempdir().expect("fake home");
+    let profile_dir = fake_home.path().join(".plexi-alpha");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.clone());
+
+    // Seed global `researcher` agent with [harness] and [permissions] posture.
+    let agent_dir = profile_dir.join("agents").join("researcher");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("AGENT.md"),
+        "You are an interactive researcher.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        "[agent]\nid = \"researcher\"\ndisplay_name = \"Researcher\"\n\n[harness]\ncli = \"pi\"\nmodel = \"openrouter/~z-ai/glm-flash-latest\"\n\n[permissions]\ndefault_posture = \"deny\"\nallow = [\"pane.send\"]\n",
+    )
+    .unwrap();
+
+    let proj_dir = fake_home.path().join("temp").join("proj");
+    std::fs::create_dir_all(&proj_dir).unwrap();
+    let stops = vec![fake_home.path().to_path_buf()];
+
+    let start_payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        Some("Investigate module"),
+        None,
+        &stops,
+    )
+    .expect("resolve agent start payload");
+
+    let mut h = HostHarness::new();
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.clone());
+    let spawn_reply = temp_response(fake_home.path(), "agent-start-spawn");
+    let mut req_json = start_payload.clone();
+    // Use a harmless sleep command in the headless harness while verifying the generated interactive command.
+    assert!(
+        start_payload["command"]
+            .as_str()
+            .unwrap()
+            .contains("--append-system-prompt 'You are an interactive researcher.\n\n# Plexi worker contract")
+    );
+    assert!(!start_payload["command"].as_str().unwrap().contains(" -p"));
+    req_json["command"] = serde_json::Value::String("sleep 30".to_string());
+    req_json["response_file"] = serde_json::Value::String(spawn_reply.clone());
+
+    let app_req: AppRequest = serde_json::from_value(req_json).expect("valid AgentSpawn request");
+    h.inject_ipc(app_req);
+    h.hidden_frame();
+
+    let spawned = read_json_response(&spawn_reply);
+    assert_eq!(spawned["ok"], true, "agent start spawn must succeed: {spawned}");
+    let pane_id = spawned["pane_id"].as_u64().expect("pane_id");
+
+    // Verify PLEXI_* env and permission posture on the spawned pane.
+    let term = h.app.windows[0].panes[&pane_id]
+        .as_terminal()
+        .expect("terminal pane");
+    assert_eq!(term.agent_role.as_deref(), Some("researcher"));
+    assert_eq!(term.agent_harness.as_deref(), Some("pi"));
+    assert!(!term.ephemeral);
+    assert_eq!(
+        term.spawn_env.get("PLEXI_AGENT_ROLE").map(String::as_str),
+        Some("researcher")
+    );
+    assert_eq!(
+        term.spawn_env.get("PLEXI_AGENT_HARNESS").map(String::as_str),
+        Some("pi")
+    );
+    assert_eq!(
+        term.spawn_env.get("PLEXI_PANE_ID").map(String::as_str),
+        Some(pane_id.to_string().as_str())
+    );
+    let posture = term
+        .agent_permission_posture
+        .as_ref()
+        .expect("permission posture snapshotted from settings.toml");
+    assert!(
+        posture.allow.iter().any(|s| s == "pane.send"),
+        "expected pane.send in allow list: {posture:?}"
+    );
+    assert_eq!(
+        posture.default_posture,
+        crate::broker::Decision::Deny,
+        "expected default_posture = Deny: {posture:?}"
+    );
+
+    // Verify `pane list --json` shows `agent=researcher` and `cwd` set to `~/temp/proj`.
+    let list_reply = temp_response(fake_home.path(), "agent-start-pane-list");
+    h.inject_ipc(AppRequest::ListPanes {
+        response_file: list_reply.clone(),
+        context_id: None,
+    });
+    h.hidden_frame();
+
+    let list_json = read_json_response(&list_reply);
+    let entry = list_json
+        .as_array()
+        .expect("pane list array")
+        .iter()
+        .find(|e| e["id"].as_u64() == Some(pane_id))
+        .expect("started agent pane in pane list");
+    assert_eq!(entry["title"], "researcher");
+    assert_eq!(entry["agent_role"], "researcher");
+    assert_eq!(entry["agent_harness"], "pi");
+    assert_eq!(entry["agent"]["agent"], "researcher");
+    assert_eq!(entry["agent"]["state"], "working");
+    assert_eq!(entry["spawned_by"], "human");
+    let expected_cwd = proj_dir
+        .canonicalize()
+        .unwrap_or_else(|_| proj_dir.clone());
+    let actual_cwd = std::path::PathBuf::from(entry["cwd"].as_str().expect("pane cwd"))
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(entry["cwd"].as_str().unwrap()));
+    assert_eq!(actual_cwd, expected_cwd);
+}
+
+#[test]
+fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pane_tree() {
+    let mut h = HostHarness::new();
+    let human_shell = h.add_focused_terminal();
+    let workspace = h.workspace_root();
+    let profile = h.profile_dir().to_path_buf();
+
+    // 1. Human-spawned lead agent (`researcher`).
+    let spawn_lead_reply = temp_response(&workspace, "spawn-lead");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "researcher".into(),
+        harness: "pi".into(),
+        command: "sleep 30".into(),
+        task: Some("Investigate auth flow".into()),
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell),
+        name: None,
+        cwd: Some(workspace.to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: spawn_lead_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let lead_resp = read_json_response(&spawn_lead_reply);
+    assert_eq!(lead_resp["ok"], true);
+    let lead_pane = lead_resp["pane_id"].as_u64().unwrap();
+    assert_eq!(lead_resp["spawned_by"], "human");
+
+    // 2. Agent-spawned child (`auditor`) from `lead_pane` (`researcher`).
+    let spawn_child_reply = temp_response(&workspace, "spawn-child");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "auditor".into(),
+        harness: "claude".into(),
+        command: "sleep 30".into(),
+        task: Some("Audit token lifetimes".into()),
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(lead_pane),
+        name: None,
+        cwd: Some(workspace.to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: true,
+        response_file: spawn_child_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let child_resp = read_json_response(&spawn_child_reply);
+    assert_eq!(child_resp["ok"], true);
+    let child_pane = child_resp["pane_id"].as_u64().unwrap();
+    assert_eq!(child_resp["spawned_by"], "agent:researcher");
+    assert_eq!(child_resp["parent_pane_id"], lead_pane);
+
+    // 3. Team-spawned members (`team:consult-experts/<run_id>`).
+    let team_reply = workspace.join("team-provenance-reply.json");
+    h.app
+        .start_team(
+            &serde_json::json!({
+                "workspace": workspace,
+                "state_dir": profile,
+                "name": "consult-experts",
+                "question": "Choose caching layer",
+                "out": workspace.join("team-out"),
+            }),
+            team_reply.to_str().unwrap(),
+        )
+        .unwrap();
+    let team_run_id = h.app.team_runs[0].run_ids[0].clone();
+    let team_member_pane = h.app.team_runs[0].members[0].0;
+    let expected_team_spawner = format!("team:consult-experts/{team_run_id}");
+
+    // 4. System-spawned routine pane (`system`).
+    let routine_pane = h
+        .app
+        .fire_routine("nightly-lint", "sleep 30", "", false, &workspace)
+        .expect("routine pane");
+
+    // Verify `pane list --json` and `format_pane_tree` across all 4 origins.
+    let list_reply = temp_response(&workspace, "provenance-pane-list");
+    h.inject_ipc(AppRequest::ListPanes {
+        response_file: list_reply.clone(),
+        context_id: None,
+    });
+    h.hidden_frame();
+    let panes = read_json_response(&list_reply);
+    let arr = panes.as_array().expect("panes array");
+
+    let find_pane = |id: u64| -> &serde_json::Value {
+        arr.iter()
+            .find(|p| p["id"].as_u64() == Some(id))
+            .unwrap_or_else(|| panic!("missing pane {id} in {arr:?}"))
+    };
+    assert_eq!(find_pane(lead_pane)["spawned_by"], "human");
+    assert_eq!(find_pane(child_pane)["spawned_by"], "agent:researcher");
+    assert_eq!(find_pane(child_pane)["parent_pane_id"], lead_pane);
+    assert_eq!(find_pane(team_member_pane)["spawned_by"], expected_team_spawner);
+    assert_eq!(find_pane(routine_pane)["spawned_by"], "system");
+
+    // Verify GUI badges (`format_spawned_by_badge`).
+    assert_eq!(
+        crate::host::pane::format_spawned_by_badge(Some("human")).as_deref(),
+        Some("spawned by you")
+    );
+    assert_eq!(
+        crate::host::pane::format_spawned_by_badge(Some("agent:researcher")).as_deref(),
+        Some("spawned by researcher")
+    );
+    assert_eq!(
+        crate::host::pane::format_spawned_by_badge(Some(&expected_team_spawner)).as_deref(),
+        Some(format!("spawned by {expected_team_spawner}").as_str())
+    );
+    assert_eq!(
+        crate::host::pane::format_spawned_by_badge(Some("system")).as_deref(),
+        Some("spawned by system")
+    );
+
+    // Verify `pane tree` text and JSON formatting.
+    let tree_text = crate::cli::pane::format_pane_tree(arr, false);
+    assert!(
+        tree_text.contains(&format!("└── #{lead_pane} agent:researcher"))
+            && tree_text.contains("(spawned by human)"),
+        "unexpected tree_text:\n{tree_text}"
+    );
+    assert!(
+        tree_text.contains(&format!("    └── #{child_pane} agent:auditor"))
+            && tree_text.contains("(spawned by agent:researcher)"),
+        "unexpected tree_text:\n{tree_text}"
+    );
+    assert!(
+        tree_text.contains(&format!("(spawned by {expected_team_spawner})")),
+        "unexpected tree_text:\n{tree_text}"
+    );
+    assert!(
+        tree_text.contains(&format!("#{routine_pane} ")) && tree_text.contains("(spawned by system)"),
+        "unexpected tree_text:\n{tree_text}"
+    );
+    let tree_json: serde_json::Value =
+        serde_json::from_str(&crate::cli::pane::format_pane_tree(arr, true)).unwrap();
+    assert!(
+        tree_json.is_array() || tree_json.is_object(),
+        "expected JSON from format_pane_tree(arr, true): {tree_json}"
+    );
+}
+
+#[test]
+fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_closed_parent_readability() {
+    use crate::protocol::AgentState;
+    let mut h = HostHarness::new();
+    let human_shell = h.add_focused_terminal();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Spawn interactive parent agent (`lead`), initially Working (mid-turn).
+    let lead_reply = temp_response(dir.path(), "spawn-lead");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "lead".into(),
+        harness: "pi".into(),
+        command: "sleep 30".into(),
+        task: Some("Coordinate two workers".into()),
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell),
+        name: None,
+        cwd: None,
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: lead_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let lead_id = read_json_response(&lead_reply)["pane_id"].as_u64().unwrap();
+
+    // Spawn 3 child workers under `lead_id`.
+    let mut child_ids = Vec::new();
+    for i in 1..=3 {
+        let rep = temp_response(dir.path(), &format!("spawn-worker-{i}"));
+        h.inject_ipc(AppRequest::AgentSpawn {
+            role: format!("worker-{i}"),
+            harness: "claude".into(),
+            command: "sleep 30".into(),
+            task: Some(format!("Subtask {i}")),
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: Some(lead_id),
+            name: None,
+            cwd: None,
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: true,
+            response_file: rep.clone(),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        child_ids.push(read_json_response(&rep)["pane_id"].as_u64().unwrap());
+    }
+    let (c1, c2, c3) = (child_ids[0], child_ids[1], child_ids[2]);
+
+    // 1. Children 1 and 2 finish via `agent done` while `lead_id` is still Working (mid-turn).
+    for (cid, label, ans) in [(c1, "first Done", "alpha"), (c2, "second Done", "beta")] {
+        let done_rep = temp_response(dir.path(), &format!("done-{cid}"));
+        h.inject_ipc(AppRequest::AgentDone {
+            pane_id: cid,
+            result: Some(serde_json::json!({"answer": ans}).to_string()),
+            summary: Some(label.to_string()),
+            response_file: done_rep.clone(),
+        });
+        h.hidden_frame();
+        assert_eq!(read_json_response(&done_rep)["ok"], true);
+    }
+
+    // Because `lead_id` is Working, results MUST be queued on `lead_id`, NOT delivered yet.
+    {
+        let lead_term = h.app.windows[0].panes[&lead_id].as_terminal().unwrap();
+        assert_eq!(
+            lead_term.pending_child_results.len(),
+            2,
+            "two children finishing mid-turn must queue on parent pane"
+        );
+        assert!(
+            !h.app.delivered_child_batches.contains_key(&lead_id),
+            "must not type results into parent mid-turn"
+        );
+    }
+
+    // Verify `agents_view` surfaces `pending_child_results_count == 2` for GUI badge ("2 results waiting").
+    let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+    let lead_row = fleet
+        .tasks
+        .iter()
+        .flat_map(|t| &t.rows)
+        .find(|r| r.pane_id == lead_id)
+        .expect("lead row in fleet");
+    assert_eq!(lead_row.pending_child_results_count, 2);
+
+    // 2. When `lead_id` reports `Idle`, ALL queued results (c1 and c2) are delivered as ONE batched turn!
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: lead_id,
+        state: AgentState::Idle,
+        agent: "pi".into(),
+        detail: None,
+        session_id: Some("lead-sess-1".into()),
+        event: Some("Stop".into()),
+        blocked_reason: None,
+    });
+    h.hidden_frame();
+
+    {
+        let lead_term = h.app.windows[0].panes[&lead_id].as_terminal().unwrap();
+        assert!(
+            lead_term.pending_child_results.is_empty(),
+            "queued child results must be drained when parent reports Idle"
+        );
+    }
+    let batches = h
+        .app
+        .delivered_child_batches
+        .get(&lead_id)
+        .expect("delivered batch recorded");
+    assert_eq!(batches.len(), 1, "two queued results must be delivered as ONE batched turn");
+    assert!(batches[0].contains("[Plexi child results (2)]"));
+    assert!(batches[0].contains(&format!("worker-1 (#{c1}) [completed]: first Done")));
+    assert!(batches[0].contains(&format!("worker-2 (#{c2}) [completed]: second Done")));
+
+    // 3. `wait-then-no-duplicate`: put `lead_id` back in Working state, pull `c3` via `AgentWait`,
+    //    finish `c3`, then transition `lead_id` to `Idle` -> `c3` is NOT re-delivered!
+    // Clear any in-flight submit from batch 1 first.
+    h.app.pending_submits.clear();
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: lead_id,
+        state: AgentState::Working,
+        agent: "pi".into(),
+        detail: None,
+        session_id: Some("lead-sess-1".into()),
+        event: Some("UserPromptSubmit".into()),
+        blocked_reason: None,
+    });
+    h.hidden_frame();
+
+    let wait_c3_reply = temp_response(dir.path(), "wait-c3");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![c3],
+        timeout_secs: 30.0,
+        response_file: wait_c3_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&wait_c3_reply).exists(),
+        "AgentWait must block until c3 finishes"
+    );
+
+    let done_c3_reply = temp_response(dir.path(), "done-c3");
+    h.inject_ipc(AppRequest::AgentDone {
+        pane_id: c3,
+        result: Some(serde_json::json!({"answer": "gamma"}).to_string()),
+        summary: Some("third Done".into()),
+        response_file: done_c3_reply.clone(),
+    });
+    h.hidden_frame();
+
+    let waited_json = read_json_response(&wait_c3_reply);
+    assert_eq!(waited_json["ok"], true);
+    assert_eq!(waited_json["results"][0]["pane_id"], c3);
+    assert_eq!(waited_json["results"][0]["result"]["answer"], "gamma");
+
+    // Transition `lead_id` to Idle -> no second batch is delivered because c3 was pulled via AgentWait!
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: lead_id,
+        state: AgentState::Idle,
+        agent: "pi".into(),
+        detail: None,
+        session_id: Some("lead-sess-1".into()),
+        event: Some("Stop".into()),
+        blocked_reason: None,
+    });
+    h.hidden_frame();
+    assert_eq!(
+        h.app.delivered_child_batches[&lead_id].len(),
+        1,
+        "result pulled via AgentWait must not be re-delivered on parent Idle"
+    );
+
+    // 4. Close parent pane (`lead_id`) -> child results remain readable via CLI (`AgentWait` and `ResultRead`).
+    let close_lead = temp_response(dir.path(), "close-lead");
+    h.inject_ipc(AppRequest::ClosePane {
+        pane_id: lead_id,
+        response_file: Some(close_lead),
+    });
+    h.hidden_frame();
+    assert!(h.app.find_pane_in_any_window(lead_id).is_none());
+
+    let wait_after_close = temp_response(dir.path(), "wait-after-parent-close");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![c1, c2, c3],
+        timeout_secs: 5.0,
+        response_file: wait_after_close.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let after_close_json = read_json_response(&wait_after_close);
+    assert_eq!(after_close_json["ok"], true);
+    assert_eq!(after_close_json["results"].as_array().unwrap().len(), 3);
 }

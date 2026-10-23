@@ -455,6 +455,9 @@ fn select_terminal_agent<'a>(
         return observed;
     };
     if hook.state != crate::protocol::AgentState::Idle {
+        if hook_reported_at.is_none() && observed.is_some() {
+            return observed;
+        }
         return Some(hook);
     }
     let hook_is_stale = hook_reported_at
@@ -753,6 +756,10 @@ pub struct TerminalPane {
     pub ephemeral: bool,
     /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
     pub parent_pane_id: Option<u64>,
+    /// Unspoofable spawner provenance (`"human"`, `"agent:<name>"`, `"team:<team>/<run_id>"`, `"system"`).
+    pub spawned_by: Option<String>,
+    /// Queued child `agent done` results waiting for this interactive parent pane to become Idle.
+    pub pending_child_results: Vec<crate::workspace::QueuedChildResult>,
     /// True when the pane was spawned for or by an agent (including plain shells
     /// created by an agent via `plexi pane new`). Disqualifies the pane from
     /// human-owned user authority (`is_human_owned`).
@@ -779,6 +786,8 @@ pub struct TerminalPane {
     pub standby_resume_command: Option<String>,
     /// Working directory captured when entering `[Plexi Standby]`.
     pub standby_cwd: Option<PathBuf>,
+    /// Working directory configured when spawning the PTY backend.
+    pub initial_cwd: Option<PathBuf>,
     /// Most recent CLI resume invocation dispatched by startup restore or Standby wake.
     pub last_resumed_command: Option<String>,
     /// Last OSC 2 title string the process wrote, tracked independently of `name` and `name_locked`.
@@ -835,6 +844,11 @@ impl TerminalPane {
             .env
             .get("PLEXI_PARENT_PANE")
             .and_then(|v| v.parse::<u64>().ok());
+        let spawned_by = settings
+            .env
+            .get("PLEXI_SPAWNED_BY")
+            .cloned()
+            .filter(|s| !s.trim().is_empty());
         let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
         let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
         let agent_spawned = settings
@@ -845,6 +859,7 @@ impl TerminalPane {
             || agent_harness.is_some()
             || agent_role.is_some();
         let last_resumed_command = settings.env.get("PLEXI_RESUME_COMMAND").cloned();
+        let initial_cwd = settings.working_directory.clone();
         #[cfg(test)]
         let spawn_env = settings.env.clone();
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
@@ -866,6 +881,8 @@ impl TerminalPane {
             font_size: default_font_size,
             ephemeral,
             parent_pane_id,
+            spawned_by,
+            pending_child_results: Vec::new(),
             agent_spawned,
             agent_harness,
             agent_session_id: None,
@@ -877,6 +894,7 @@ impl TerminalPane {
             standby_session: None,
             standby_resume_command: None,
             standby_cwd: None,
+            initial_cwd,
             last_resumed_command,
             pty_title: None,
             outside_workspace_cached: false,
@@ -916,6 +934,11 @@ impl TerminalPane {
     /// `plexi pane new`) never qualify.
     pub fn is_human_owned(&self) -> bool {
         !self.is_agent_pane() && !self.agent_spawned && self.parent_pane_id.is_none()
+    }
+
+    /// Human-readable provenance badge for GUI headers (`"spawned by you"`, `"spawned by researcher"`, etc.).
+    pub fn spawned_by_badge(&self) -> Option<String> {
+        format_spawned_by_badge(self.spawned_by.as_deref())
     }
 
     /// True when this terminal pane is running an idle shell (not exited, not an
@@ -1093,6 +1116,12 @@ impl TerminalPane {
             if self.parent_pane_id.is_some() {
                 s.parent_pane_id = self.parent_pane_id;
             }
+            if self.spawned_by.is_some() {
+                s.spawned_by = self.spawned_by.clone();
+            }
+            if !self.pending_child_results.is_empty() {
+                s.pending_child_results = self.pending_child_results.clone();
+            }
             s.fleet_result = self.fleet_result.clone();
             s.fleet_seen = self.fleet_seen;
             s.fleet_dismissed = self.fleet_dismissed;
@@ -1147,6 +1176,8 @@ impl TerminalPane {
             last_blocked_reason: self.last_blocked_reason,
             last_detail,
             parent_pane_id: self.parent_pane_id,
+            spawned_by: self.spawned_by.clone(),
+            pending_child_results: self.pending_child_results.clone(),
             ephemeral: self.ephemeral,
             tail_preview: self.capture_tail_preview(),
             standby_scrollback_tail: self.capture_standby_scrollback_tail(standby_scrollback_lines),
@@ -1192,6 +1223,7 @@ impl TerminalPane {
             context_id,
             context_name: context_name.to_string(),
             parent_pane_id: session.parent_pane_id,
+            spawned_by: session.spawned_by,
             pane_name: self.name.clone(),
             harness: session.harness,
             config_name: session.config_name,
@@ -1233,6 +1265,33 @@ impl TerminalPane {
     }
 }
 
+/// Format an unspoofable `spawned_by` provenance string into a concise GUI badge.
+pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s == "human" {
+        return Some("spawned by you".to_string());
+    }
+    if let Some(agent_name) = s.strip_prefix("agent:") {
+        let name = agent_name.trim();
+        if !name.is_empty() {
+            return Some(format!("spawned by {name}"));
+        }
+    }
+    if let Some(team_spec) = s.strip_prefix("team:") {
+        let spec = team_spec.trim();
+        if !spec.is_empty() {
+            return Some(format!("spawned by team:{spec}"));
+        }
+    }
+    if s == "system" {
+        return Some("spawned by system".to_string());
+    }
+    Some(format!("spawned by {s}"))
+}
+
 #[cfg(test)]
 mod agent_source_tests {
     use super::*;
@@ -1253,6 +1312,8 @@ mod agent_source_tests {
             last_blocked_reason: None,
             last_detail: None,
             parent_pane_id: None,
+            spawned_by: None,
+            pending_child_results: Vec::new(),
             ephemeral: false,
             tail_preview: None,
             standby_scrollback_tail: None,
