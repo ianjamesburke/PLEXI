@@ -180,11 +180,11 @@ restore_mode = "lazy"
 
 `restore_mode` controls how persisted agent sessions (`SavedAgentSession` in `workspace.toml`) are restored on host startup:
 
-- `"lazy"` (default): active-context agent panes with a `session_id` auto-resume in their restored `cwd` via their Harness Adapter (`claude --resume <id>`, `codex resume <id>`, `pi --session <id>`, `agy --resume <id>`), while background and sub-context agent panes restore their status dots, slots, and `Blocked` / `NeedsYou` badges into a lightweight `[Plexi Standby]` banner that resumes on focus, `Enter`, or `plexi pane send`.
+- `"lazy"` (default): active-context agent panes with a `session_id` auto-resume in their restored `cwd` via their Harness Adapter (`claude --resume <id>`, `codex resume <id>`, `pi --session <id>`, `agy --resume <id>`), while background and sub-context agent panes restore their status dots, slots, and `Blocked` / `NeedsYou` badges into a lightweight `[Plexi Standby]` view. It resumes only when Enter is pressed or explicit input is sent with `plexi pane send`.
 - `"eager"`: all persisted non-ephemeral agent panes with a `session_id` auto-resume immediately on startup.
 - `"off"`: persisted agent panes restore as plain shell terminals without running harness resume commands.
 
-In all modes, mid-turn `Working` panes restore as `Interrupted` with their `tail_preview`, and ephemeral `Completed` squad worker panes are skipped on startup.
+In all modes, mid-turn `Working` panes restore as `Interrupted` with their `tail_preview`, and ephemeral `Completed` squad worker panes are skipped on startup. Set `[agents].standby_scrollback_lines` (default `20`) to control how many scrollback lines a Standby view saves and shows.
 
 ## CLI
 

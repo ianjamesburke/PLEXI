@@ -8,6 +8,46 @@ use std::sync::mpsc::Sender;
 
 pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 2;
 
+fn short_session_id(id: &str) -> &str {
+    const MAX_SESSION_ID_CHARS: usize = 12;
+    let end = id
+        .char_indices()
+        .nth(MAX_SESSION_ID_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(id.len());
+    &id[..end]
+}
+
+fn standby_session_line(
+    session: &crate::workspace::SavedAgentSession,
+    cached_resume_command: Option<&str>,
+) -> String {
+    match (
+        crate::cli::AgentHarness::parse(&session.harness),
+        session.session_id.as_deref().filter(|id| !id.trim().is_empty()),
+    ) {
+        (Some(harness), Some(id))
+            if cached_resume_command.is_some_and(|command| command != harness.adapter().binary) =>
+        {
+            format!(
+                "{} · resumes session {} ({})",
+                session.harness,
+                short_session_id(id),
+                session.last_state.as_str()
+            )
+        }
+        (Some(crate::cli::AgentHarness::Pi), Some(id)) => format!(
+            "{} · session {} not found, Enter starts a new one",
+            session.harness,
+            short_session_id(id)
+        ),
+        _ => format!(
+            "{} · no saved session, Enter starts a new one",
+            session.harness
+        ),
+    }
+}
+
 /// Runtime-neutral, read-only representation returned by `plexi pane state`.
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct SemanticPaneState {
@@ -735,6 +775,8 @@ pub struct TerminalPane {
     /// When present, this background/sub-context agent pane was restored into lightweight
     /// `[Plexi Standby]` and has not yet launched its agent CLI process.
     pub standby_session: Option<crate::workspace::SavedAgentSession>,
+    /// Resume command captured when entering Standby, so rendering never probes session files.
+    pub standby_resume_command: Option<String>,
     /// Working directory captured when entering `[Plexi Standby]`.
     pub standby_cwd: Option<PathBuf>,
     /// Most recent CLI resume invocation dispatched by startup restore or Standby wake.
@@ -833,6 +875,7 @@ impl TerminalPane {
             tail_preview: None,
             agent_completed: false,
             standby_session: None,
+            standby_resume_command: None,
             standby_cwd: None,
             last_resumed_command,
             pty_title: None,
@@ -896,14 +939,22 @@ impl TerminalPane {
         self.standby_session.is_some()
     }
 
-    /// Formatted `[Plexi Standby]` banner line when this pane is in Standby.
+    /// Formatted `[Plexi Standby]` label and resume instruction when this pane is in Standby.
     pub fn standby_banner(&self) -> Option<String> {
         let s = self.standby_session.as_ref()?;
-        let sid = s.session_id.as_deref().unwrap_or("untracked");
-        let state = s.last_state.as_str();
+        let label = self
+            .name
+            .as_deref()
+            .or(self.agent_role.as_deref())
+            .unwrap_or(&s.harness);
+        let cwd = self
+            .standby_cwd
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "unknown directory".to_string());
+        let session_line = standby_session_line(s, self.standby_resume_command.as_deref());
         Some(format!(
-            "[Plexi Standby] {} session {} ({}) — Press Enter or focus to resume",
-            s.harness, sid, state
+            "[Plexi Standby] {label} · {cwd}\n{session_line}\n[Enter] resume"
         ))
     }
 
@@ -911,6 +962,7 @@ impl TerminalPane {
     /// into the terminal's PTY in its restored `cwd`.
     pub fn resume_from_standby(&mut self) -> Option<String> {
         let standby = self.standby_session.take()?;
+        self.standby_resume_command = None;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
         let cmd = harness.map(|h| h.restore_command(standby.session_id.as_deref()));
         if let Some(ref resume_cmd) = cmd {
@@ -966,6 +1018,18 @@ impl TerminalPane {
         }
     }
 
+    /// Capture the saved Standby view tail, retaining blank rows between content.
+    pub fn capture_standby_scrollback_tail(&self, lines: usize) -> Option<Vec<String>> {
+        if self.is_standby() {
+            return self
+                .standby_session
+                .as_ref()
+                .and_then(|session| session.standby_scrollback_tail.clone());
+        }
+        let tail = self.backend.capture_lines(lines);
+        (!tail.is_empty()).then_some(tail)
+    }
+
     fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
         use crate::protocol::AgentState;
         if previous == next { return; }
@@ -995,6 +1059,14 @@ impl TerminalPane {
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
     /// if it is an agent pane.
     pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
+        self.build_saved_agent_session_with_scrollback(20)
+    }
+
+    /// Build the persisted agent session with a bounded Standby scrollback tail.
+    pub fn build_saved_agent_session_with_scrollback(
+        &self,
+        standby_scrollback_lines: usize,
+    ) -> Option<crate::workspace::SavedAgentSession> {
         if !self.is_agent_pane() {
             return None;
         }
@@ -1077,6 +1149,7 @@ impl TerminalPane {
             parent_pane_id: self.parent_pane_id,
             ephemeral: self.ephemeral,
             tail_preview: self.capture_tail_preview(),
+            standby_scrollback_tail: self.capture_standby_scrollback_tail(standby_scrollback_lines),
         })
     }
 
@@ -1165,6 +1238,46 @@ mod agent_source_tests {
     use super::*;
     use crate::protocol::{AgentState, PaneAgentState};
     use std::time::{Duration, Instant};
+
+    fn saved_session(harness: &str, session_id: Option<&str>) -> crate::workspace::SavedAgentSession {
+        crate::workspace::SavedAgentSession {
+            fleet_result: None,
+            fleet_seen: false,
+            fleet_done_unseen: false,
+            fleet_dismissed: false,
+            fleet_since: 0,
+            harness: harness.to_string(),
+            config_name: None,
+            session_id: session_id.map(str::to_string),
+            last_state: AgentState::Blocked,
+            last_blocked_reason: None,
+            last_detail: None,
+            parent_pane_id: None,
+            ephemeral: false,
+            tail_preview: None,
+            standby_scrollback_tail: None,
+        }
+    }
+
+    #[test]
+    fn standby_banner_describes_resume_and_new_session_cases() {
+        assert_eq!(
+            standby_session_line(
+                &saved_session("codex", Some("thread-0123456789")),
+                Some("codex resume thread-0123456789"),
+            ),
+            "codex · resumes session thread-01234 (blocked)"
+        );
+        assert_eq!(
+            standby_session_line(&saved_session("claude", None), Some("claude")),
+            "claude · no saved session, Enter starts a new one"
+        );
+
+        assert_eq!(
+            standby_session_line(&saved_session("pi", Some("missing-session")), Some("pi")),
+            "pi · session missing-sess not found, Enter starts a new one"
+        );
+    }
 
     fn state(state: AgentState) -> PaneAgentState {
         PaneAgentState {

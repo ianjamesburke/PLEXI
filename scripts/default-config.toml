@@ -96,6 +96,7 @@ low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
 # restore_mode = "lazy"        # "lazy" (active context resumes, background enters Standby), "eager", or "off"
+# standby_scrollback_lines = 20 # scrollback rows saved and shown in a Standby pane
 
 [cli]
 tips = true

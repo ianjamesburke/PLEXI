@@ -118,7 +118,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "stalled_after_secs", "stale_failure_hours", "palette_agent_results", "os_notifications"];
+const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "standby_scrollback_lines", "stalled_after_secs", "stale_failure_hours", "palette_agent_results", "os_notifications"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_PERMISSIONS: &[&str] = &[
     "soft_grant_days",
@@ -917,8 +917,8 @@ impl AiConfig {
 #[serde(rename_all = "lowercase")]
 pub enum AgentRestoreMode {
     /// Active-context agent panes with a session ID auto-resume; background and
-    /// sub-context agent panes restore into lightweight Standby until focused,
-    /// pressed Enter, or sent input.
+    /// sub-context agent panes restore into lightweight Standby until Enter is
+    /// pressed or explicit input is sent.
     #[default]
     Lazy,
     /// All restored agent panes with a session ID auto-resume immediately on startup.
@@ -949,6 +949,8 @@ pub struct AgentsConfig {
     pub high: Option<String>,
     /// Startup restoration mode for saved agent sessions: `"lazy"` (default), `"eager"`, or `"off"`.
     pub restore_mode: Option<AgentRestoreMode>,
+    /// Number of scrollback lines saved for a lazy-restored Standby pane (default 20).
+    pub standby_scrollback_lines: Option<usize>,
 }
 
 impl AgentsConfig {
@@ -968,6 +970,9 @@ impl AgentsConfig {
         }
         if other.restore_mode.is_some() {
             self.restore_mode = other.restore_mode;
+        }
+        if other.standby_scrollback_lines.is_some() {
+            self.standby_scrollback_lines = other.standby_scrollback_lines;
         }
     }
 }
@@ -1856,6 +1861,14 @@ impl PlexiConfig {
             .as_ref()
             .and_then(|a| a.restore_mode)
             .unwrap_or_default()
+    }
+
+    /// Number of terminal scrollback lines retained for a Standby restore view.
+    pub fn standby_scrollback_lines(&self) -> usize {
+        self.agents
+            .as_ref()
+            .and_then(|a| a.standby_scrollback_lines)
+            .unwrap_or(20)
     }
 
     /// Load the global config only — no project-level merge. Most call sites

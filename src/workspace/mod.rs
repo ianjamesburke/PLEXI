@@ -109,6 +109,9 @@ pub struct SavedAgentSession {
     pub ephemeral: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_preview: Option<String>,
+    /// Saved terminal scrollback shown while a lazily restored pane is in Standby.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standby_scrollback_tail: Option<Vec<String>>,
 }
 
 /// Closed-run history ledger record written to `~/.plexi-<channel>/agent_history.jsonl`
@@ -841,6 +844,7 @@ mod tests {
                 parent_pane_id: Some(1),
                 ephemeral: true,
                 tail_preview: Some("Waiting for permission...".to_string()),
+                standby_scrollback_tail: Some(vec!["Waiting for permission...".to_string()]),
             }),
         };
         let json = serde_json::to_string(&pane).expect("serialize SavedPane");
@@ -860,6 +864,25 @@ mod tests {
         assert_eq!(
             session.tail_preview.as_deref(),
             Some("Waiting for permission...")
+        );
+        assert_eq!(
+            session.standby_scrollback_tail,
+            Some(vec!["Waiting for permission...".to_string()])
+        );
+
+        let mut legacy_json: serde_json::Value = serde_json::from_str(&json).expect("saved pane JSON");
+        legacy_json["agent_session"]
+            .as_object_mut()
+            .expect("agent session object")
+            .remove("standby_scrollback_tail");
+        let legacy: SavedPane = serde_json::from_value(legacy_json).expect("legacy SavedPane");
+        assert_eq!(
+            legacy
+                .agent_session
+                .expect("legacy agent session")
+                .standby_scrollback_tail,
+            None,
+            "old workspaces without a Standby scrollback tail remain readable"
         );
 
         let dir = tempfile::tempdir().expect("tempdir");

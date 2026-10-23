@@ -698,7 +698,6 @@ impl PlexiApp {
                 ctx.navigate_to(pane_tile);
             }
         }
-        self.resume_focused_standby_pane();
     }
 
     pub(crate) fn switch_to_tab(&mut self, container_tile: TileId, idx: usize) {
@@ -726,7 +725,6 @@ impl PlexiApp {
                 ctx.navigate_to(pane_tile);
             }
         }
-        self.resume_focused_standby_pane();
         log::info!("tab_click: switched to tab index={idx} in container={container_tile:?}");
     }
 
@@ -1113,7 +1111,6 @@ impl PlexiApp {
             self.windows[self.active_window].navigate_to(child);
             self.mark_agent_seen(child_pane);
             log::info!("navigate(Right): conjoined parent={parent} -> child pane={child_pane}");
-            self.resume_focused_standby_pane();
             return true;
         }
 
@@ -1194,9 +1191,6 @@ impl PlexiApp {
             self.navigate_page(dx, dy);
             self.active_window != old_active_window
         };
-        if moved {
-            self.resume_focused_standby_pane();
-        }
         moved
     }
 

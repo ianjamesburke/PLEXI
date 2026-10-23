@@ -43,6 +43,29 @@ const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
+fn standby_view_rects(
+    content_rect: egui::Rect,
+    banner_height: f32,
+    hint_height: f32,
+) -> (egui::Rect, egui::Rect, egui::Rect) {
+    let hint_height = hint_height.min(content_rect.height());
+    let available_banner_height = (content_rect.height() - hint_height).max(0.0);
+    let banner_height = banner_height.min(available_banner_height);
+    let banner_rect = egui::Rect::from_min_size(
+        content_rect.min,
+        Vec2::new(content_rect.width(), banner_height),
+    );
+    let tail_rect = egui::Rect::from_min_max(
+        egui::pos2(content_rect.min.x, banner_rect.max.y),
+        egui::pos2(content_rect.max.x, content_rect.max.y - hint_height),
+    );
+    let hint_rect = egui::Rect::from_min_size(
+        egui::pos2(content_rect.min.x, content_rect.max.y - hint_height),
+        Vec2::new(content_rect.width(), hint_height),
+    );
+    (banner_rect, tail_rect, hint_rect)
+}
+
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
 /// Returns (close_exited, tab_action).
@@ -171,26 +194,58 @@ pub fn render(
     if let Some(banner) = terminal.standby_banner() {
         let rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
-        let tail = terminal.tail_preview.clone();
-        let response = ui.interact(
-            rect,
-            egui::Id::new(("plexi_standby_banner", *pane_id)),
-            egui::Sense::click(),
-        );
+        let tail = terminal
+            .standby_session
+            .as_ref()
+            .and_then(|session| session.standby_scrollback_tail.clone())
+            .unwrap_or_default()
+            .join("\n");
+        let (banner, hint) = banner.rsplit_once('\n').unwrap_or((&banner, "[Enter] resume"));
+        let content_rect = rect.shrink2(Vec2::new(16.0, 12.0));
+        let font = egui::FontId::monospace(terminal.font_size);
+        let banner_height = ui.fonts_mut(|fonts| {
+            fonts
+                .layout(banner.to_owned(), font.clone(), colors.accent, content_rect.width())
+                .size()
+                .y
+        });
+        let hint_height = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(hint.to_owned(), font.clone(), colors.accent)
+                .size()
+                .y
+        });
+        let (banner_rect, tail_rect, hint_rect) =
+            standby_view_rects(content_rect, banner_height, hint_height);
         ui.scope_builder(
-            egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 12.0))),
+            egui::UiBuilder::new().max_rect(banner_rect),
             |ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(&banner)
-                            .monospace()
-                            .size(terminal.font_size)
-                            .color(colors.accent),
-                    );
-                    if let Some(tail) = tail.as_deref().filter(|s| !s.trim().is_empty()) {
-                        ui.add_space(8.0);
+                ui.set_clip_rect(banner_rect);
+                ui.label(
+                    egui::RichText::new(banner)
+                        .monospace()
+                        .size(terminal.font_size)
+                        .color(colors.accent),
+                );
+            },
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(hint_rect), |ui| {
+            ui.set_clip_rect(hint_rect);
+            ui.label(
+                egui::RichText::new(hint)
+                    .monospace()
+                    .size(terminal.font_size)
+                    .color(colors.accent),
+            );
+        });
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(tail_rect),
+            |ui| {
+                ui.set_clip_rect(tail_rect);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    if !tail.is_empty() {
                         ui.label(
-                            egui::RichText::new(tail)
+                            egui::RichText::new(&tail)
                                 .monospace()
                                 .size((terminal.font_size - 1.0).max(9.0))
                                 .color(colors.text_dim),
@@ -199,9 +254,6 @@ pub fn render(
                 });
             },
         );
-        if response.clicked() {
-            terminal.resume_from_standby();
-        }
         if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
     crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
         return (false, tab_action);
@@ -701,4 +753,22 @@ fn is_terminal_outside_workspace(
     terminal.outside_workspace_checked_at = Some(Instant::now());
     terminal.outside_workspace_root = Some(root.to_path_buf());
     outside_workspace
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_wrapped_standby_banner_keeps_enter_hint_visible() {
+        let content = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 88.0));
+        // A realistic long pane name + cwd wraps to four terminal lines at this width.
+        let (banner, tail, hint) = standby_view_rects(content, 56.0, 14.0);
+
+        assert_eq!(banner.min, content.min);
+        assert_eq!(banner.height(), 56.0);
+        assert_eq!(tail.min.y, banner.max.y);
+        assert_eq!(tail.max.y, hint.min.y);
+        assert_eq!(hint.max, content.max, "Enter hint has its own reserved line");
+    }
 }

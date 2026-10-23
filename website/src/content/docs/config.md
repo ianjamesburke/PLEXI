@@ -162,6 +162,7 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 | `medium` | string | claude sonnet with --dangerously-skip-permissions | Standard work. Default: claude sonnet with --dangerously-skip-permissions. |
 | `high` | string | claude with --dangerously-skip-permissions | Complex/autonomous tasks. Default: claude with --dangerously-skip-permissions. |
 | `restore_mode` | AgentRestoreMode | — | Startup restoration mode for saved agent sessions: `"lazy"` (default), `"eager"`, or `"off"`. |
+| `standby_scrollback_lines` | integer | — | Number of scrollback lines saved for a lazy-restored Standby pane (default 20). |
 
 ### Keybindings (`[keybindings]`)
 
@@ -379,6 +380,7 @@ low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
 # restore_mode = "lazy"        # "lazy" (active context resumes, background enters Standby), "eager", or "off"
+# standby_scrollback_lines = 20 # scrollback rows saved and shown in a Standby pane
 
 [cli]
 tips = true
