@@ -532,9 +532,10 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
                     team.quorum = Some(team.quorum());
                     log::info!(
                         "agent_team: show name={name} workspace={}",
-                        workspace
-                            .as_ref()
-                            .map_or_else(|| "[global]".to_string(), |path| path.display().to_string())
+                        workspace.as_ref().map_or_else(
+                            || "[global]".to_string(),
+                            |path| path.display().to_string()
+                        )
                     );
                     if json {
                         println!("{}", serde_json::json!({"name":name,"team":team}));
@@ -563,14 +564,20 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
             timeout,
         } => {
             let out = out.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
-            // A global or built-in team has no workspace state to adopt. Its
-            // runs and grants live under the active channel profile instead.
-            let global_scope = workspace.is_none();
-            let execution_scope = workspace.clone().unwrap_or_else(crate::config::config_dir);
+            // Resolve the definition before assigning any execution or state
+            // binding.  A missing folder definition is normal: global and
+            // built-in teams run from home and unconfigured repositories.
+            let (_, config_root) = match crate::agent::team::load_from_cwd(&cwd, &name) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return 1;
+                }
+            };
             (
                 json!({"type":"agents_api", "op":"team_run", "payload": {
-                    "workspace": execution_scope, "team_workspace": workspace,
-                    "global_scope": global_scope, "name":name, "question":question,
+                    "execution_cwd": cwd, "config_root": config_root,
+                    "state_dir": crate::config::config_dir(), "name":name, "question":question,
                     "out":out, "options":options, "timeout":timeout,
                     "caller_pane":std::env::var("PLEXI_PANE_ID").ok().and_then(|p| p.parse::<u64>().ok())
                 }}),
@@ -607,6 +614,12 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
 }
 
 pub(crate) fn team_run_text(value: &Value) -> String {
+    if value.get("ok").and_then(Value::as_bool) == Some(false) {
+        return value["error"]
+            .as_str()
+            .unwrap_or("team run was refused")
+            .to_string();
+    }
     format!(
         "{}\nRESULT.md: {}",
         value["report"]

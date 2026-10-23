@@ -26,11 +26,12 @@ mod tests {
         let reply = workspace.join("timeout.json");
         h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
         let run_ids = h.app.team_runs[0].run_ids.clone();
+        let state_dir = h.profile_dir().to_path_buf();
         let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
         // Exercise the same broker entry point used by a run-scoped MCP bearer.
         let denied = crate::agent::heads::handle_request(
             "call",
-            &json!({"workspace":workspace,"run_id":run_ids[1],"tool":"agents.review","input_json":"{}"}),
+            &json!({"workspace":state_dir.clone(),"run_id":run_ids[1],"tool":"agents.review","input_json":"{}"}),
         );
         assert_eq!(denied["error_code"], "permission_denied", "{denied}");
         h.app.team_runs[0].deadline = std::time::Instant::now();
@@ -46,7 +47,7 @@ mod tests {
         for id in run_ids {
             let run = crate::agent::heads::handle_request(
                 "show_run",
-                &json!({"workspace":workspace,"id":id}),
+                &json!({"workspace":state_dir,"id":id}),
             );
             assert_eq!(run["run"]["active"], false);
         }
@@ -74,9 +75,13 @@ mod tests {
         h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":panes[2],"state":"exited_unreported","agent":"script",
             "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
         h.hidden_frame();
-        let response: Value = serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
+        let response: Value =
+            serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["status"], "PARTIAL");
-        assert_eq!(h.app.pane_results[&panes[2]].committed.as_ref().unwrap()["unvalidated"], true);
+        assert_eq!(
+            h.app.pane_results[&panes[2]].committed.as_ref().unwrap()["unvalidated"],
+            true
+        );
         let report = std::fs::read_to_string(workspace.join("out/RESULT.md")).unwrap();
         assert!(report.contains("Quorum degraded: 2 of 3 valid ballots"));
         assert!(report.contains("exited without report (not a valid ballot)"));
@@ -87,14 +92,21 @@ mod tests {
         let reply = workspace.join("reply.json");
         h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
         let pane = h.app.team_runs[0].members[0].0;
-        h.app.pane_results.entry(pane).or_default().set_schema(json!({"type":"object","required":["ranking"]}), None).unwrap();
+        h.app
+            .pane_results
+            .entry(pane)
+            .or_default()
+            .set_schema(json!({"type":"object","required":["ranking"]}), None)
+            .unwrap();
         h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":pane,"state":"exited_unreported","agent":"script",
             "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
         h.hidden_frame();
         let fallback = h.app.pane_results[&pane].committed.as_ref().unwrap();
         assert_eq!(fallback["source"], "final_output");
         assert_eq!(fallback["unvalidated"], true);
-        assert!(fallback["schema_error"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(fallback["schema_error"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
     }
     fn check_failed_team(quorum: Option<usize>, valid: usize, status: &str) {
         let (mut h, workspace) = scripted_fixture();
@@ -261,14 +273,13 @@ mod tests {
     }
 
     #[test]
-    fn global_scope_must_use_the_host_profile() {
+    fn team_run_keeps_execution_cwd_separate_from_channel_state() {
         let mut h = HostHarness::new();
         h.add_test_pane();
         let workspace = h.workspace_root();
         let reply = workspace.join("reply.json");
 
-        let error = h
-            .app
+        h.app
             .start_team(
                 &json!({
                     "workspace": workspace, "name": "consult-experts", "question": "Choose",
@@ -276,16 +287,15 @@ mod tests {
                 }),
                 reply.to_str().unwrap(),
             )
-            .unwrap_err();
+            .unwrap();
 
-        assert!(error.contains("global team scope must use the host profile"));
-        assert!(h.app.team_runs.is_empty());
+        assert_eq!(h.app.team_runs.len(), 1);
     }
 
     #[test]
-    fn global_scope_keeps_the_callers_context_authorization() {
+    fn human_pane_can_run_global_team_from_live_cwd() {
         let mut h = HostHarness::new();
-        let caller = h.add_test_pane();
+        let caller = h.add_focused_terminal();
         let profile = h.profile_dir().to_path_buf();
         let teams = profile.join("teams");
         std::fs::create_dir_all(&teams).unwrap();
@@ -296,8 +306,7 @@ mod tests {
         .unwrap();
         let reply = profile.join("reply.json");
 
-        let error = h
-            .app
+        h.app
             .start_team(
                 &json!({
                     "workspace": profile, "name": "global-team", "question": "Choose",
@@ -305,9 +314,47 @@ mod tests {
                 }),
                 reply.to_str().unwrap(),
             )
+            .unwrap();
+
+        assert_eq!(h.app.team_runs.len(), 1);
+    }
+
+    #[test]
+    fn agent_cannot_gain_team_authority_by_changing_directory() {
+        let mut h = HostHarness::new();
+        let caller = h.add_focused_terminal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&caller)
+            .unwrap()
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                agent: "codex".into(),
+                state: crate::protocol::AgentState::Working,
+                pane_id: caller,
+                detail: None,
+                session_id: None,
+            }));
+        let profile = h.profile_dir().to_path_buf();
+        let teams = profile.join("teams");
+        std::fs::create_dir_all(&teams).unwrap();
+        std::fs::write(
+            teams.join("global-team.toml"),
+            toml::to_string(&crate::agent::team::builtin()).unwrap(),
+        )
+        .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let error = h
+            .app
+            .start_team(
+                &json!({
+                    "execution_cwd": outside.path(), "state_dir": profile,
+                    "name": "global-team", "question": "Choose", "caller_pane": caller,
+                }),
+                h.workspace_root().join("reply.json").to_str().unwrap(),
+            )
             .unwrap_err();
 
-        assert!(error.contains("context"), "{error}");
+        assert!(error.contains("admission refused for pane:"), "{error}");
         assert!(h.app.team_runs.is_empty());
     }
 
@@ -423,7 +470,11 @@ use std::time::{Duration, Instant};
 pub(crate) struct TeamRun {
     team: Team,
     question: String,
-    workspace: PathBuf,
+    /// Live folder where every coordinator/member command executes.
+    execution_cwd: PathBuf,
+    /// Channel-owned storage for head/run state. This is never inferred from
+    /// the execution directory or a folder definition.
+    state_dir: PathBuf,
     out: PathBuf,
     response_file: String,
     root_pane: u64,
@@ -463,35 +514,45 @@ impl PlexiApp {
         payload: &Value,
         response_file: &str,
     ) -> Result<(), String> {
-        let workspace = PathBuf::from(field(payload, "workspace")?)
-            .canonicalize()
-            .map_err(|e| format!("team workspace: {e}"))?;
+        // Keep execution, optional definition lookup, and persistent state as
+        // distinct bindings. In particular, a config directory must not become
+        // the authority or cwd merely because it supplied a team definition.
+        let execution_cwd = PathBuf::from(
+            field(payload, "execution_cwd").or_else(|_| field(payload, "workspace"))?,
+        )
+        .canonicalize()
+        .map_err(|e| format!("team execution directory: {e}"))?;
+        let state_dir = PathBuf::from(
+            field(payload, "state_dir")
+                .unwrap_or_else(|_| crate::config::config_dir().display().to_string()),
+        )
+        .canonicalize()
+        .map_err(|e| format!("team state directory: {e}"))?;
+        let profile = crate::platform::path::canonical_or_self(&crate::config::config_dir());
+        if state_dir != profile {
+            return Err(format!(
+                "team state directory must be the channel data directory ({})",
+                profile.display()
+            ));
+        }
         let name = field(payload, "name")?;
         let question = field(payload, "question")?;
         if question.trim().is_empty() {
             return Err("question cannot be empty".into());
         }
-        let profile = crate::platform::path::canonical_or_self(&crate::config::config_dir());
-        let requested_global_scope = payload["global_scope"].as_bool().unwrap_or(false);
-        let global_scope = requested_global_scope && workspace == profile;
-        if requested_global_scope && !global_scope {
-            return Err(format!(
-                "global team scope must use the host profile ({})",
-                profile.display()
-            ));
-        }
-        // Requests sent before `team_workspace` was added used `workspace` for
-        // both execution and definition lookup. Keep that behavior for every
-        // non-global request.
-        let team_workspace = if global_scope {
-            None
-        } else {
-            payload["team_workspace"]
-                .as_str()
-                .map(Path::new)
-                .or(Some(workspace.as_path()))
-        };
-        let mut team = crate::agent::team::load(team_workspace, &name)?;
+        let config_root = payload["config_root"]
+            .as_str()
+            .map(PathBuf::from)
+            .map(|path| crate::platform::path::canonical_or_self(&path))
+            // Compatibility for in-host callers predating the separate
+            // bindings. The CLI always sends config_root explicitly.
+            .or_else(|| {
+                payload
+                    .get("execution_cwd")
+                    .is_none()
+                    .then(|| execution_cwd.clone())
+            });
+        let mut team = crate::agent::team::load(config_root.as_deref(), &name)?;
         if let Some(options) = payload["options"].as_array().filter(|a| !a.is_empty()) {
             team.options = options
                 .iter()
@@ -515,16 +576,7 @@ impl PlexiApp {
         let out = payload["out"]
             .as_str()
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                if global_scope {
-                    crate::config::config_dir()
-                        .join("sessions")
-                        .join("teams")
-                        .join(&id)
-                } else {
-                    workspace.join("team-results").join(&id)
-                }
-            });
+            .unwrap_or_else(|| state_dir.join("sessions").join("teams").join(&id));
         if !out.is_absolute() {
             return Err("output directory must be absolute".into());
         }
@@ -553,16 +605,19 @@ impl PlexiApp {
         }
         let parent_grants: Vec<_> = union.iter().map(|(t, d)| format!("{t}={d}")).collect();
         let caller_human = caller.is_some_and(|p| self.is_human_owned_pane(p));
-        // Global execution uses the profile as its workspace, but it must not
-        // fabricate context authority for the requesting pane.
-        let caller_ctx_root = caller.and_then(|p| self.pane_context_authority_root(p));
+        // A human's command follows the shell's live directory while retaining
+        // its context membership. Agents keep their existing grant envelope;
+        // changing directory cannot widen it.
+        let caller_ctx_root = caller.and_then(|p| {
+            caller_human
+                .then_some(execution_cwd.clone())
+                .or_else(|| self.pane_context_authority_root(p))
+        });
         let caller_ctx_denied = caller.is_some_and(|p| {
-            let ws_canon = crate::platform::path::canonical_or_self(&workspace);
-            caller_ctx_root.as_ref() != Some(&ws_canon)
-                || !self.pane_may_access_context_root(p, &workspace)
+            !caller_human && !self.pane_may_access_context_root(p, &execution_cwd)
         });
         api(
-            &workspace,
+            &state_dir,
             "create_head",
             json!({
                 "name": id,
@@ -576,7 +631,7 @@ impl PlexiApp {
             }),
         )?;
         let parent = api(
-            &workspace,
+            &state_dir,
             "spawn_run",
             json!({"head":id,"journal_only":true,"admission":id}),
         )?;
@@ -589,7 +644,7 @@ impl PlexiApp {
             Some(&id),
             false,
             caller,
-            Some(workspace.clone()),
+            Some(execution_cwd.clone()),
             None,
             None,
             false,
@@ -598,7 +653,7 @@ impl PlexiApp {
         let (root_pane, context_id) = match spawned {
             Ok(ids) => ids,
             Err(error) => {
-                if let Err(cleanup) = api(&workspace, "finish_run", json!({"id":parent_run})) {
+                if let Err(cleanup) = api(&state_dir, "finish_run", json!({"id":parent_run})) {
                     log::error!("team setup cleanup: {cleanup}");
                 }
                 return Err(error);
@@ -617,7 +672,8 @@ impl PlexiApp {
         let mut run = TeamRun {
             team,
             question,
-            workspace,
+            execution_cwd,
+            state_dir,
             out,
             response_file: response_file.into(),
             root_pane,
@@ -657,7 +713,7 @@ impl PlexiApp {
         for (i, member) in run.team.members.iter().enumerate() {
             let head = format!("{}-{i}", run.run_ids[0].replace('_', "-"));
             let child = api(
-                &run.workspace,
+                &run.state_dir,
                 "delegate",
                 json!({"parent_run":run.run_ids[0],"name":head,"grants":member.grants}),
             )?;
@@ -686,7 +742,7 @@ impl PlexiApp {
                 None,
                 false,
                 Some(run.root_pane),
-                Some(run.workspace.clone()),
+                Some(run.execution_cwd.clone()),
                 Some(run.team.schema()),
                 Some(&field(&child, "run_token")?),
                 false,
@@ -722,10 +778,17 @@ impl PlexiApp {
                     .and_then(|p| p.as_terminal());
                 if terminal
                     .and_then(|terminal| terminal.agent.as_ref())
-                    .is_some_and(|agent| agent.state == crate::protocol::AgentState::ExitedUnreported)
+                    .is_some_and(|agent| {
+                        agent.state == crate::protocol::AgentState::ExitedUnreported
+                    })
                 {
-                    let text = self.pane_results.get(pane).and_then(|r| r.committed.as_ref())
-                        .and_then(|value| value.get("unvalidated_text").or_else(|| value.get("text")))
+                    let text = self
+                        .pane_results
+                        .get(pane)
+                        .and_then(|r| r.committed.as_ref())
+                        .and_then(|value| {
+                            value.get("unvalidated_text").or_else(|| value.get("text"))
+                        })
                         .and_then(|value| value.as_str())
                         .unwrap_or_default()
                         .to_string();
@@ -744,8 +807,7 @@ impl PlexiApp {
                         Err(error) => MemberOutcome::Failed(format!("invalid ballot: {error}")),
                     });
                 }
-                let Some(terminal) = terminal
-                else {
+                let Some(terminal) = terminal else {
                     return Some(MemberOutcome::Failed(
                         "pane closed before completion".into(),
                     ));
@@ -805,7 +867,10 @@ impl PlexiApp {
             .collect();
         // Keep every pane and valid ballot. A clean unreported exit remains a warning.
         for ((pane, _), outcome) in run.members.iter().zip(&outcomes) {
-            if !matches!(outcome, MemberOutcome::Ballot(_) | MemberOutcome::ExitedWithoutReport(_)) {
+            if !matches!(
+                outcome,
+                MemberOutcome::Ballot(_) | MemberOutcome::ExitedWithoutReport(_)
+            ) {
                 self.mark_agent_failed(*pane, &outcome.summary());
             }
         }
@@ -823,7 +888,7 @@ impl PlexiApp {
             Ok(())
         });
         for id in run.run_ids.iter().rev() {
-            if let Err(error) = api(&run.workspace, "finish_run", json!({"id":id})) {
+            if let Err(error) = api(&run.state_dir, "finish_run", json!({"id":id})) {
                 log::error!("agent_team: finish run {id}: {error}");
                 outcome = Err(error);
             }
@@ -943,14 +1008,21 @@ impl PlexiApp {
                 let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
                     pane_id,
                     state: crate::protocol::AgentState::ExitedUnreported,
-                    agent: agent.as_ref().map(|a| a.agent.clone()).unwrap_or_else(|| "worker".into()),
+                    agent: agent
+                        .as_ref()
+                        .map(|a| a.agent.clone())
+                        .unwrap_or_else(|| "worker".into()),
                     detail: Some(reason.into()),
                     session_id: agent.and_then(|a| a.session_id),
                 }));
                 break;
             }
         }
-        self.report_agent_attention(pane_id, &crate::protocol::AgentState::ExitedUnreported, Some(reason));
+        self.report_agent_attention(
+            pane_id,
+            &crate::protocol::AgentState::ExitedUnreported,
+            Some(reason),
+        );
         self.refresh_portal_context_states();
         self.mark_workspace_dirty();
     }
