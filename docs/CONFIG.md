@@ -38,7 +38,7 @@ plexi config check                 Validate known keys and TOML syntax.
 plexi config reset                 Back up config.toml → config.toml.bak and write the default template.
 ```
 
-`config list` is the canonical way to discover valid keys before writing. Every `config` subcommand defaults to the workspace config when inside a workspace and the channel-global config otherwise. Override with `-g`/`--global` or `-w`/`--workspace`.
+`config list` is the canonical way to discover valid keys before writing. Every `config` subcommand defaults to the folder config when the current directory has one and the channel-global config otherwise. Override with `-g`/`--global` or `-f`/`--folder`.
 
 ## Theme
 
@@ -170,7 +170,7 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 restore_mode = "lazy"
 ```
 
-`restore_mode` controls how persisted agent sessions (`SavedAgentSession` in `workspace.toml`) are restored on host startup:
+`restore_mode` controls how persisted agent sessions (`SavedAgentSession` in `folder.toml`) are restored on host startup:
 
 - `"lazy"` (default): active-context agent panes with a `session_id` auto-resume in their restored `cwd` via their Harness Adapter (`claude --resume <id>`, `codex resume <id>`, `pi --session <id>`, `agy --resume <id>`), while background and sub-context agent panes restore their status dots, slots, and `Blocked` / `NeedsYou` badges into a lightweight `[Plexi Standby]` banner that resumes on focus, `Enter`, or `plexi pane send`.
 - `"eager"`: all persisted non-ephemeral agent panes with a `session_id` auto-resume immediately on startup.

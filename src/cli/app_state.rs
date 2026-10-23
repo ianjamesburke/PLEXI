@@ -49,7 +49,7 @@ fn caller_label() -> String {
 }
 
 /// The context root this invocation addresses. Mirrors `notes::cli_context_root`
-/// — `PLEXI_CONTEXT_ROOT` when a pane exports it, else the active workspace
+/// — `PLEXI_CONTEXT_ROOT` when a pane exports it, else the active folder
 /// root. A root that does not exist is an error rather than something to
 /// create: creating it would silently manufacture a context the user never
 /// established.
@@ -57,7 +57,7 @@ fn cli_context_root() -> Result<PathBuf, String> {
     let root = match std::env::var_os("PLEXI_CONTEXT_ROOT").filter(|v| !v.is_empty()) {
         Some(root) => PathBuf::from(root),
         None => crate::config::active_workspace_root()
-            .ok_or_else(|| "no context root — this shell is not inside a Plexi context and no active workspace root is set".to_string())?,
+            .ok_or_else(|| "no context root — this shell is not inside a Plexi context and no active folder root is set".to_string())?,
     };
     if !root.is_dir() {
         return Err(format!(

@@ -53,7 +53,7 @@ echo "workspace: $WORKDIR"
 echo "binary: $BIN_PATH"
 echo "profile: $PROFILE"
 
-"$BIN" workspace init
+"$BIN" folder init
 
 # A mapped window is required: the ask-tier approval is a real pointer click.
 if ! "$BIN" host start --ephemeral --timeout-secs 90 >"$WORKDIR/host-start.out" 2>"$WORKDIR/host-start.err"; then

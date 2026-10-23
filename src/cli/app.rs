@@ -44,9 +44,9 @@ pub(super) fn describe_app_init_collision(app_dir: &std::path::Path, name: &str)
 
 /// `plexi app init [--lang python|rust] [--global] <name> [--open]`
 ///
-/// Without `--global`: walks up from CWD looking for the nearest workspace
+/// Without `--global`: walks up from CWD looking for the nearest folder
 /// (ancestor with `<channel_dir>/`). If none is found, exits with an error
-/// directing the user to pass `--global` or `cd` into a workspace.
+/// directing the user to pass `--global` or `cd` into a folder.
 ///
 /// With `--global`: scaffolds directly into the global registry
 /// (`~/.plexi-<channel>/apps/<name>/`).
@@ -110,10 +110,10 @@ pub fn app_init(
             Some(root) => root.join(&channel_dir).join("apps").join(name),
             None => {
                 eprintln!(
-                    "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
+                    "error: no folder found (no {channel_dir}/ directory in any ancestor)."
                 );
                 eprintln!(
-                    "  Use --global to create a global app, or cd into a project with a workspace."
+                    "  Use --global to create a global app, or cd into a project with a folder."
                 );
                 return 1;
             }
@@ -2508,7 +2508,7 @@ mod app_install_workspace_tests {
     }
 
     /// `plexi app install <path>` must succeed from a bare directory with no
-    /// `.plexi/` workspace. Install goes to the global channel apps dir — workspace
+    /// `.plexi/` folder. Install goes to the global channel apps dir — folder
     /// resolution is never consulted for path-based installs.
     #[test]
     fn install_from_path_succeeds_without_workspace() {
@@ -2528,7 +2528,7 @@ mod app_install_workspace_tests {
 
         assert_eq!(
             code, 0,
-            "install from path must succeed without a workspace"
+            "install from path must succeed without a folder"
         );
     }
 

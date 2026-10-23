@@ -266,7 +266,7 @@ fn demo_supported_on(platform: InstallPlatform) -> bool {
 fn print_intro() {
     eprintln!("\x1b[1;36mPlexi - Quick Tutorial\x1b[0m");
     explain(&[
-        "Plexi is a local app workspace for terminals, app panes, notes, contexts, notifications, and agent-driven work.",
+        "Plexi is a local app for terminals, app panes, notes, contexts, notifications, and agent-driven work.",
         "This demo watches Plexi events and advances as you try the core host controls. Keep this terminal visible when you can.",
     ]);
 }

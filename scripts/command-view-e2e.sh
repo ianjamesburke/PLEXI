@@ -70,7 +70,7 @@ echo "mock: $PLEXI_OPENROUTER_BASE_URL"
 echo "approvals: HUMAN_APPROVE (real pointer click; no CLI resolve)"
 echo "command view reads agents API records; #2707 in-memory board is not the data source"
 
-"$BIN" workspace init
+"$BIN" folder init
 if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
   echo "FAIL: host start"
   exit 1

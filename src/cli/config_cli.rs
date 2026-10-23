@@ -276,8 +276,8 @@ pub fn config_check_report(
         ConfigScope::Global => {
             targets.push((global_cfg, global_cmds, "global"));
         }
-        ConfigScope::Workspace => {
-            let root = workspace_root.ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+        ConfigScope::Folder => {
+            let root = workspace_root.ok_or_else(|| "not inside a Plexi folder".to_string())?;
             let ws_cfg = crate::config::workspace_config_path(root);
             let ws_cmds = root.join(crate::cli::commands_file());
             targets.push((ws_cfg, ws_cmds, "workspace"));
@@ -572,7 +572,7 @@ fn config_paths_for_scope(
     let workspace = crate::config::active_workspace_root();
     match scope {
         ConfigScope::Global => Ok(vec![crate::config::config_path()]),
-        ConfigScope::Workspace => Ok(vec![config_path_for_scope(scope, workspace.as_deref())?]),
+        ConfigScope::Folder => Ok(vec![config_path_for_scope(scope, workspace.as_deref())?]),
         // Machine-readable reads match the host's field-level global + workspace
         // merge, so `config get --json models` is safe for pi-plexi in a workspace.
         ConfigScope::Effective => Ok(match workspace {
@@ -583,7 +583,7 @@ fn config_paths_for_scope(
 }
 
 /// Resolve the one config file selected by a config command. With no explicit
-/// scope flag, every config verb targets the active workspace when there is
+/// scope flag, every config verb targets the active folder when there is
 /// one and the channel-global config otherwise.
 fn config_path_for_scope(
     scope: ConfigScope,
@@ -591,8 +591,8 @@ fn config_path_for_scope(
 ) -> Result<PathBuf, String> {
     match scope {
         ConfigScope::Global => Ok(crate::config::config_path()),
-        ConfigScope::Workspace => {
-            let root = workspace_root.ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+        ConfigScope::Folder => {
+            let root = workspace_root.ok_or_else(|| "not inside a Plexi folder".to_string())?;
             Ok(crate::config::workspace_config_path(root))
         }
         ConfigScope::Effective => Ok(workspace_root.map_or_else(
@@ -862,7 +862,7 @@ mod tests {
         assert_eq!(
             config_path_for_scope(ConfigScope::Effective, Some(workspace.path())).unwrap(),
             workspace_path,
-            "default set/get/reset scope must select the workspace config"
+            "default set/get/reset scope must select the folder config"
         );
         assert_eq!(
             config_path_for_scope(ConfigScope::Global, Some(workspace.path())).unwrap(),
@@ -885,7 +885,7 @@ mod tests {
         assert!(workspace_path.exists());
         assert!(
             !global_path.exists(),
-            "default workspace operations must not touch global config"
+            "default folder operations must not touch global config"
         );
     }
 
@@ -941,7 +941,7 @@ mod tests {
         // Misplaced `[commands]` in config.toml must warn naming commands.toml (exit 0 for warnings).
         std::fs::write(&ws_cfg, "config_version = 1\n\n[commands]\ngs = \"git status\"\n").unwrap();
         let (bad_cfg_report, bad_cfg_code) =
-            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+            config_check_report(ConfigScope::Folder, Some(workspace.path())).unwrap();
         assert_eq!(bad_cfg_code, 0, "warnings exit 0:\n{bad_cfg_report}");
         assert!(
             bad_cfg_report.contains("[commands] is ignored in config.toml; put it in")
@@ -957,7 +957,7 @@ mod tests {
         )
         .unwrap();
         let (bad_cmds_report, bad_cmds_code) =
-            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+            config_check_report(ConfigScope::Folder, Some(workspace.path())).unwrap();
         assert_eq!(bad_cmds_code, 0, "warnings exit 0:\n{bad_cmds_report}");
         assert!(
             bad_cmds_report.contains(&format!(
@@ -967,7 +967,7 @@ mod tests {
                 "[keys] is ignored in commands.toml; put it in {}",
                 ws_cfg.display()
             )),
-            "misplaced config tables in workspace commands.toml must point to workspace config.toml:\n{bad_cmds_report}"
+            "misplaced config tables in folder commands.toml must point to folder config.toml:\n{bad_cmds_report}"
         );
 
         // Global commands.toml with misplaced `[keys]` points to `~/.plexi-<channel>/config.toml`.

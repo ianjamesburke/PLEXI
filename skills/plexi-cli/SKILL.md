@@ -262,9 +262,9 @@ pane count (`--json` is supported).
 - `plexi command-view allow`: Record an allow
 <!-- /experiment -->
 - `plexi run`: Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
-- `plexi workspace`: Set up a .plexi/ workspace in your project folder
-- `plexi workspace init`: Set up a .plexi/ workspace in the current directory
-- `plexi workspace clean`: Remove pane slot files for panes that are no longer open
+- `plexi folder`: Add optional folder config (.plexi-<channel>/) to a project folder
+- `plexi folder init`: Create optional folder config in the current directory
+- `plexi folder clean`: Remove pane slot files for panes that are no longer open
 <!-- experiment: change_sets -->
 - `plexi changes`: Preview and accept an agent's file edit before it is written
 <!-- /experiment -->
@@ -310,19 +310,19 @@ pane count (`--json` is supported).
 - `plexi secret exec`: Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory
 <!-- /experiment -->
 <!-- experiment: routines -->
-- `plexi routine`: Manage workspace routines — scheduled shell commands
+- `plexi routine`: Manage routines declared in folder config — scheduled shell commands
 <!-- /experiment -->
 <!-- experiment: routines -->
-- `plexi routine list`: List routines defined in the workspace's routines.toml with their schedule and next fire time
+- `plexi routine list`: List routines defined in the folder's routines.toml with their schedule and next fire time
 <!-- /experiment -->
 <!-- experiment: routines -->
-- `plexi routine run`: Manually trigger a named routine from the workspace's routines.toml
+- `plexi routine run`: Manually trigger a named routine from the folder's routines.toml
 <!-- /experiment -->
 <!-- experiment: routines -->
-- `plexi routine add`: Add a routine to the workspace's routines.toml
+- `plexi routine add`: Add a routine to the folder's routines.toml
 <!-- /experiment -->
 <!-- experiment: routines -->
-- `plexi routine remove`: Remove a routine from the workspace's routines.toml
+- `plexi routine remove`: Remove a routine from the folder's routines.toml
 <!-- /experiment -->
 <!-- experiment: routines -->
 - `plexi routine enable`: Re-enable a disabled routine (removes its `enabled = false` key)
@@ -336,13 +336,13 @@ pane count (`--json` is supported).
 - `plexi agent team run`: Run independent team members in one task and wait for RESULT.md
 - `plexi agent next`: Focus the next live agent needing attention (needs-you, blocked, done-unseen)
 - `plexi agent fleet`: Show tasks and their workers, ordered by attention, with blocking reasons
-- `plexi agent create`: Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
-- `plexi agent list`: List active agents from both workspace and global tiers
+- `plexi agent create`: Create a new agent definition (`AGENT.md` + `settings.toml`) in the folder or global tier.
+- `plexi agent list`: List active agents from both folder and global tiers
 - `plexi agent show`: Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command
 - `plexi agent call`: Call an agent role and return its validated completion or blocking question as JSON
 - `plexi agent message`: Reply through a child agent's structured mailbox
 - `plexi agent handoff`: Transfer the current task to a permitted successor role
-- `plexi agent spawn`: Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
+- `plexi agent spawn`: Spawn a CLI worker agent from the agent registry (`<folder>/.plexi/agents/<name>/` or global)
 - `plexi agent done`: Validate a worker's structured result against its schema, write completion slots, and exit cleanly
 - `plexi agent ask`: Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state)
 - `plexi agent report`: Report agent state for this pane to the host
@@ -356,16 +356,16 @@ pane count (`--json` is supported).
 - `plexi agent head`: Create or list an agent head stored under `.plexi/agents`
 <!-- /experiment -->
 <!-- experiment: leads -->
-- `plexi agent head create`: Create a head in the current workspace
+- `plexi agent head create`: Create a head in the current context
 <!-- /experiment -->
 <!-- experiment: leads -->
-- `plexi agent head list`: List heads in the current workspace
+- `plexi agent head list`: List heads in the current context
 <!-- /experiment -->
 <!-- experiment: leads -->
-- `plexi agent grants`: Inspect hard and soft tool grants recorded for agent heads in the current workspace
+- `plexi agent grants`: Inspect hard and soft tool grants recorded for agent heads in the current context
 <!-- /experiment -->
 <!-- experiment: leads -->
-- `plexi agent grants list`: List tool grants recorded for agent heads in the current workspace
+- `plexi agent grants list`: List tool grants recorded for agent heads in the current context
 <!-- /experiment -->
 <!-- experiment: leads -->
 - `plexi agent run`: Spawn, list, or finish a run of an agent head
@@ -374,7 +374,7 @@ pane count (`--json` is supported).
 - `plexi agent run spawn`: Claim a run of a head, append a ledger row, and run a model turn
 <!-- /experiment -->
 <!-- experiment: leads -->
-- `plexi agent run list`: List runs in the current workspace
+- `plexi agent run list`: List runs in the current context
 <!-- /experiment -->
 <!-- experiment: leads -->
 - `plexi agent run show`: Show one run
@@ -562,7 +562,7 @@ pane count (`--json` is supported).
 - `plexi update`: Update this channel's managed package, or restore its previous generation
 - `plexi uninstall`: Remove this channel's recorded package and launchers
 - `plexi host`: Launch, stop, or check a headless-friendly Plexi host from the CLI
-- `plexi host restart`: Restart this channel, restoring the saved workspace
+- `plexi host restart`: Restart this channel, restoring your saved contexts
 - `plexi host start`: Launch this channel's app bundle detached and wait for readiness
 - `plexi host stop`: Stop the running host and every pane agent for this channel
 - `plexi host log`: Write one info-level marker line into the running host's channel log

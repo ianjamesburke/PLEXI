@@ -1,4 +1,4 @@
-//! The workspace TOML config model (`workspace.toml`, `secrets.toml`) and the
+//! The workspace TOML config model (`folder.toml`, `secrets.toml`) and the
 //! canonical-name resolver every consumer shares: PGAP `secrets.get`,
 //! `plexi run`, terminal PTY env injection, and host integrations.
 
@@ -20,7 +20,7 @@ pub struct WorkspaceConfig {
     pub context: Option<WorkspaceContextConfig>,
 }
 
-/// `[context]` section in workspace.toml. Provides default name and
+/// `[context]` section in folder.toml. Provides default name and
 /// description for the anchor's root context. Both fields are optional.
 #[derive(Deserialize, Debug, Clone)]
 pub struct WorkspaceContextConfig {
@@ -29,12 +29,12 @@ pub struct WorkspaceContextConfig {
 }
 
 impl WorkspaceConfig {
-    /// Read `<root>/<channel_dir>/workspace.toml`. Returns `None` if the file does
+    /// Read `<root>/<channel_dir>/folder.toml`. Returns `None` if the file does
     /// not exist; returns `Err` only on a present-but-invalid file.
     pub fn load(workspace_root: &Path) -> Result<Option<Self>, String> {
         let path = workspace_root
             .join(crate::config::workspace_channel_dir())
-            .join("workspace.toml");
+            .join("folder.toml");
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -252,7 +252,7 @@ pub fn resolve_terminal_env(
     store: &dyn NonDestructiveStore,
 ) -> Result<HashMap<String, Zeroizing<String>>, String> {
     let cfg = WorkspaceConfig::load(workspace_root)?
-        .ok_or_else(|| format!("workspace.toml missing at {}", workspace_root.display()))?;
+        .ok_or_else(|| format!("folder.toml missing at {}", workspace_root.display()))?;
     let router = WorkspaceSecrets::load(workspace_root)?
         .ok_or_else(|| format!("secrets.toml missing at {}", workspace_root.display()))?;
 
@@ -293,7 +293,7 @@ mod tests {
         let channel_dir = crate::config::workspace_channel_dir();
         std::fs::create_dir_all(root.join(&channel_dir)).unwrap();
         std::fs::write(
-            root.join(&channel_dir).join("workspace.toml"),
+            root.join(&channel_dir).join("folder.toml"),
             format!("id = \"{workspace_id}\"\n"),
         )
         .unwrap();
@@ -460,7 +460,7 @@ mod tests {
         let channel_dir = crate::config::workspace_channel_dir();
         std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         std::fs::write(
-            tmp.path().join(&channel_dir).join("workspace.toml"),
+            tmp.path().join(&channel_dir).join("folder.toml"),
             "id = \"ws-1\"\n",
         )
         .unwrap();
@@ -493,7 +493,7 @@ mod tests {
         let channel_dir = crate::config::workspace_channel_dir();
         std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         std::fs::write(
-            tmp.path().join(&channel_dir).join("workspace.toml"),
+            tmp.path().join(&channel_dir).join("folder.toml"),
             "id = \"ws-1\"\n",
         )
         .unwrap();
@@ -547,7 +547,7 @@ mod tests {
         let channel_dir = crate::config::workspace_channel_dir();
         std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         std::fs::write(
-            tmp.path().join(&channel_dir).join("workspace.toml"),
+            tmp.path().join(&channel_dir).join("folder.toml"),
             "id = \"ws-1\"\n",
         )
         .unwrap();

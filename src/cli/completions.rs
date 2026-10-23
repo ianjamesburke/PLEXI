@@ -61,7 +61,7 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
 ///
 /// Called by the hidden `_complete-run` subcommand. Emits one name per line,
 /// merging global (`config_dir()/commands.toml` + `config_dir()/scripts/`) and
-/// workspace (`.plexi[-channel]/commands.toml`) commands with workspace winning
+/// folder (`.plexi[-channel]/commands.toml`) commands with folder winning
 /// on name collisions.
 pub fn complete_run_cli() -> i32 {
     let cwd = match std::env::current_dir() {
@@ -96,7 +96,7 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         let mut buf = Vec::new();
         generate(shell_variant, &mut cmd, binary_name, &mut buf);
         let script = String::from_utf8(buf).unwrap_or_default();
-        let script = fix_zsh_workspace_path_conflict(&script);
+        let script = fix_zsh_start_dir_conflict(&script);
         let script = inject_zsh_open_completions(&script, binary_name);
         let script = inject_zsh_run_completions(&script, binary_name);
         print!("{script}");
@@ -197,19 +197,19 @@ __{binary_name}_run_completions() {{
     result
 }
 
-/// clap_complete emits `workspace_path` as a positional spec before the
-/// subcommand slot. When the user types `plexi workspace <Tab>`, zsh assigns
-/// "workspace" to that spec (position 1) instead of the subcommand slot
+/// clap_complete emits `start_dir` as a positional spec before the
+/// subcommand slot. When the user types `plexi folder <Tab>`, zsh assigns
+/// "folder" to that spec (position 1) instead of the subcommand slot
 /// (position 2), so `$line[2]` is empty and no subcommand case matches.
 ///
-/// Fix: strip the conflicting workspace_path spec and reindex the outer
+/// Fix: strip the conflicting start_dir spec and reindex the outer
 /// dispatch from `$line[2]` to `$line[1]`. All nested subcommand blocks
 /// already use `$line[1]`, so a global `$line[2]` → `$line[1]` substitution
 /// only affects the outer dispatch.
-fn fix_zsh_workspace_path_conflict(script: &str) -> String {
+fn fix_zsh_start_dir_conflict(script: &str) -> String {
     let without_spec: String = script
         .lines()
-        .filter(|line| !line.contains("::workspace_path"))
+        .filter(|line| !line.contains("::start_dir"))
         .flat_map(|line| [line, "\n"])
         .collect();
     without_spec.replace("$line[2]", "$line[1]")
@@ -217,7 +217,7 @@ fn fix_zsh_workspace_path_conflict(script: &str) -> String {
 
 #[cfg(test)]
 mod completions_tests {
-    use super::fix_zsh_workspace_path_conflict;
+    use super::fix_zsh_start_dir_conflict;
     use clap::CommandFactory;
     use clap_complete::{generate, Shell};
 
@@ -229,16 +229,16 @@ mod completions_tests {
     }
 
     #[test]
-    fn zsh_fix_removes_workspace_path_spec() {
+    fn zsh_fix_removes_start_dir_spec() {
         let raw = generated_zsh();
         assert!(
-            raw.contains("workspace_path"),
-            "raw script should contain workspace_path spec"
+            raw.contains("start_dir"),
+            "raw script should contain start_dir spec"
         );
-        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let fixed = fix_zsh_start_dir_conflict(&raw);
         assert!(
-            !fixed.contains("workspace_path"),
-            "fixed script must not contain workspace_path spec"
+            !fixed.contains("start_dir"),
+            "fixed script must not contain start_dir spec"
         );
     }
 
@@ -249,7 +249,7 @@ mod completions_tests {
             raw.contains("$line[2]"),
             "raw script should use line[2] for outer dispatch"
         );
-        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let fixed = fix_zsh_start_dir_conflict(&raw);
         assert!(
             !fixed.contains("$line[2]"),
             "fixed script must not contain $line[2] — outer dispatch should use $line[1]"
@@ -259,30 +259,30 @@ mod completions_tests {
     #[test]
     fn zsh_fix_preserves_workspace_subcommand_completions() {
         let raw = generated_zsh();
-        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let fixed = fix_zsh_start_dir_conflict(&raw);
         assert!(
-            fixed.contains("_plexi__subcmd__workspace_commands"),
-            "workspace subcommand completion function must still be present"
+            fixed.contains("_plexi__subcmd__folder_commands"),
+            "folder subcommand completion function must still be present"
         );
         assert!(
-            fixed.contains("(workspace)"),
-            "workspace case branch must still be present"
+            fixed.contains("(folder)"),
+            "folder case branch must still be present"
         );
     }
 
     #[test]
     fn zsh_fix_is_idempotent() {
         let raw = generated_zsh();
-        let once = fix_zsh_workspace_path_conflict(&raw);
-        let twice = fix_zsh_workspace_path_conflict(&once);
+        let once = fix_zsh_start_dir_conflict(&raw);
+        let twice = fix_zsh_start_dir_conflict(&once);
         assert_eq!(once, twice, "fix must be idempotent");
     }
 
     #[test]
     fn zsh_run_completions_injected() {
-        use super::{fix_zsh_workspace_path_conflict, inject_zsh_run_completions};
+        use super::{fix_zsh_start_dir_conflict, inject_zsh_run_completions};
         let raw = generated_zsh();
-        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let fixed = fix_zsh_start_dir_conflict(&raw);
         let patched = inject_zsh_run_completions(&fixed, "plexi");
         assert!(
             patched.contains("__plexi_run_completions"),
@@ -300,9 +300,9 @@ mod completions_tests {
 
     #[test]
     fn zsh_run_completions_injection_is_idempotent() {
-        use super::{fix_zsh_workspace_path_conflict, inject_zsh_run_completions};
+        use super::{fix_zsh_start_dir_conflict, inject_zsh_run_completions};
         let raw = generated_zsh();
-        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let fixed = fix_zsh_start_dir_conflict(&raw);
         let once = inject_zsh_run_completions(&fixed, "plexi");
         let twice = inject_zsh_run_completions(&once, "plexi");
         assert_eq!(once, twice, "run injection must be idempotent");

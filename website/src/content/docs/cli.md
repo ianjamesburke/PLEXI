@@ -245,11 +245,11 @@ Resolution and precedence rules:
 
 (1) Global tier: `config_dir()/commands.toml` (`~/.plexi-alpha/commands.toml` on alpha, `~/.plexi-beta/commands.toml` on beta, `~/.plexi/commands.toml` on stable) plus executable files in `config_dir()/scripts/` (`~/.plexi-<channel>/scripts/`, or `~/.plexi/scripts/` on stable).
 
-(2) Workspace tier: `<workspace>/.plexi-<channel>/commands.toml` (`<workspace>/.plexi/commands.toml` on stable), where `<workspace>` is the nearest ancestor of the starting `cwd` containing a `.plexi-<channel>/` directory (`.plexi/` on stable) via `resolve_workspace_root_stopping_at`. The upward walk stops at `$HOME` and the passwd login home directory so `~` is never treated as a workspace. Fallback (`resolve_commands_workspace_root`): `cwd` itself when `cwd/.plexi-<channel>/commands.toml` (or `cwd/.plexi/commands.toml` on stable) exists and is distinct from the global `commands.toml`.
+(2) Folder tier: `<folder>/.plexi-<channel>/commands.toml` (`<folder>/.plexi/commands.toml` on stable), where `<folder>` is the nearest ancestor of the starting `cwd` containing a `.plexi-<channel>/` directory (`.plexi/` on stable) via `resolve_workspace_root_stopping_at`. The upward walk stops at `$HOME` and the passwd login home directory so `~` is never treated as a folder. Fallback (`resolve_commands_workspace_root`): `cwd` itself when `cwd/.plexi-<channel>/commands.toml` (or `cwd/.plexi/commands.toml` on stable) exists and is distinct from the global `commands.toml`.
 
-(3) Starting directory by surface: `plexi run` in a terminal uses the shell's `cwd`. The command palette (`Cmd+P`) uses the focused pane's `cwd`, then falls back to the active context root (`effective_commands_workspace_root`); `Edit commands` opens that workspace's `commands.toml` (creating it from template if absent), or the global `commands.toml` when outside a workspace. `[keys]` `"<chord>" = "run:<name>"` bindings in `~/.plexi-<channel>/config.toml` (or `<repo>/.plexi-<channel>/config.toml`; `~/.plexi/config.toml` on stable) use the adopted/host workspace root, falling back to the active context root (`run_user_command_by_name`, validated by `plexi config check` against reserved shortcuts).
+(3) Starting directory by surface: `plexi run` in a terminal uses the shell's `cwd`. The command palette (`Cmd+P`) uses the focused pane's `cwd`, then falls back to the active context root (`effective_commands_workspace_root`); `Edit commands` opens that folder's `commands.toml` (creating it from template if absent), or the global `commands.toml` when outside a folder. `[keys]` `"<chord>" = "run:<name>"` bindings in `~/.plexi-<channel>/config.toml` (or `<repo>/.plexi-<channel>/config.toml`; `~/.plexi/config.toml` on stable) use the adopted/host folder root, falling back to the active context root (`run_user_command_by_name`, validated by `plexi config check` against reserved shortcuts).
 
-(4) Precedence: workspace `commands.toml` > global `commands.toml` > global `scripts/`, merged by command name. `plexi run` with no arguments lists both scopes (`[workspace]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret names only, never values). Any secrets listed in a command definition are injected as environment variables automatically when the command runs.
+(4) Precedence: folder `commands.toml` > global `commands.toml` > global `scripts/`, merged by command name. `plexi run` with no arguments lists both scopes (`[folder]` and `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret names only, never values). Any secrets listed in a command definition are injected as environment variables automatically when the command runs.
 
 (5) Live reload: `commands.toml` and `scripts/` are re-read from disk on every command palette open and every `plexi run` or keybinding invocation — no host restart is needed.
 
@@ -262,24 +262,24 @@ Example: plexi run dev Example: plexi run play Example: plexi run --json
 | `<command>` | string | no | Command name to run (omit to list available commands) |
 | `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command as $1, $2, … and $@ positional params |
 
-## `plexi workspace`
+## `plexi folder`
 
-Set up a .plexi/ workspace in your project folder.
+Add optional folder config (.plexi-<channel>/) to a project folder.
 
-Run this once inside your project directory to enable workspace-scoped secrets and commands.
+Run this inside a project directory to enable folder-scoped secrets, commands and apps. Plexi works without it.
 
 | Subcommand | Description |
 |---|---|
-| `init` | Set up a .plexi/ workspace in the current directory |
+| `init` | Create optional folder config in the current directory |
 | `clean` | Remove pane slot files for panes that are no longer open |
 
-### `plexi workspace init`
+### `plexi folder init`
 
-Set up a .plexi/ workspace in the current directory.
+Create optional folder config in the current directory.
 
-Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`, and `commands.toml` so that secrets, apps, and commands are scoped to this project.
+Never required: Plexi runs in any directory, and global or built-in definitions work without it. Run this inside a project folder to add local settings. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `folder.toml`, `secrets.toml`, `apps.toml`, and `commands.toml` so that secrets, apps, and commands are scoped to this project.
 
-### `plexi workspace clean`
+### `plexi folder clean`
 
 Remove pane slot files for panes that are no longer open
 
@@ -367,7 +367,7 @@ Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`). Scripts sho
 
 Store and retrieve secrets (API keys, passwords, tokens).
 
-Secrets use macOS Keychain or, on Linux, Secret Service with a labeled encrypted-file fallback. Global, workspace, and folder scopes share that Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for backend selection and legacy plaintext migration. Folder secrets are an experiment, off by default in V1. Enable with `plexi experiments enable folder_secrets`, then `plexi host restart` (add `--yes` from a pane on that host). `secret set NAME --folder DIR` binds a value to a directory. New human terminal panes opened there or below it can receive the value as an environment variable. Folder-secret grant/read commands are experimental and are not supported in V1.
+Secrets use macOS Keychain or, on Linux, Secret Service with a labeled encrypted-file fallback. Global, folder-config, and per-directory scopes share that Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for backend selection and legacy plaintext migration. Folder secrets are an experiment, off by default in V1. Enable with `plexi experiments enable folder_secrets`, then `plexi host restart` (add `--yes` from a pane on that host). `secret set NAME --folder DIR` binds a value to a directory. New human terminal panes opened there or below it can receive the value as an environment variable. Folder-secret grant/read commands are experimental and are not supported in V1.
 
 Same-user native processes are not isolated from each other. A process running as this user can still read a value that a pane already holds. Folder secrets stop accidental injection into the wrong directory.
 
@@ -413,7 +413,7 @@ Looks up the secret for the current project first, then falls back to the global
 
 Show stored secrets.
 
-Inside a workspace, shows project secrets plus user-scope secrets. Outside a workspace, falls back to user-scope secrets. Use --global to show only user-scope secrets from any directory.
+Inside a folder, shows project secrets plus user-scope secrets. Outside a folder, falls back to user-scope secrets. Use --global to show only user-scope secrets from any directory.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -477,9 +477,9 @@ Refused with `permission_denied` when the caller is a pane agent, including a ch
 
 ## `plexi routine`
 
-Manage workspace routines — scheduled shell commands.
+Manage routines declared in folder config — scheduled shell commands.
 
-Routines are declared in `routines.toml` inside the workspace channel directory — `{workspace_channel_dir}/routines.toml`, e.g. `.plexi-alpha/routines.toml` on the alpha channel — and run automatically on schedule. **Requires Plexi to be running** — there is no background daemon. Routines only fire while the host process is open.
+Routines are declared in `routines.toml` inside the folder config directory — `{workspace_channel_dir}/routines.toml`, e.g. `.plexi-alpha/routines.toml` on the alpha channel — and run automatically on schedule. **Requires Plexi to be running** — there is no background daemon. Routines only fire while the host process is open.
 
 Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
 
@@ -522,20 +522,20 @@ Singular unit names (`every 1 minute`) and am/pm times (`daily at 9am`) are acce
 
 | Subcommand | Description |
 |---|---|
-| `list` | List routines defined in the workspace's routines.toml with their schedule and next fire time |
-| `run` | Manually trigger a named routine from the workspace's routines.toml |
-| `add` | Add a routine to the workspace's routines.toml |
-| `remove` | Remove a routine from the workspace's routines.toml |
+| `list` | List routines defined in the folder's routines.toml with their schedule and next fire time |
+| `run` | Manually trigger a named routine from the folder's routines.toml |
+| `add` | Add a routine to the folder's routines.toml |
+| `remove` | Remove a routine from the folder's routines.toml |
 | `enable` | Re-enable a disabled routine (removes its `enabled = false` key) |
 | `disable` | Disable a routine without deleting it (sets `enabled = false`; it never fires until re-enabled) |
 
 ### `plexi routine list`
 
-List routines defined in the workspace's routines.toml with their schedule and next fire time
+List routines defined in the folder's routines.toml with their schedule and next fire time
 
 ### `plexi routine run`
 
-Manually trigger a named routine from the workspace's routines.toml.
+Manually trigger a named routine from the folder's routines.toml.
 
 The routine fires exactly like a scheduled run: into its configured context when one is named (erroring if that context does not exist), otherwise into the caller's context.
 
@@ -546,7 +546,7 @@ The routine fires exactly like a scheduled run: into its configured context when
 
 ### `plexi routine add`
 
-Add a routine to the workspace's routines.toml.
+Add a routine to the folder's routines.toml.
 
 The schedule is validated against the same parser the scheduler uses, so an accepted routine is guaranteed to fire. Hand-written comments elsewhere in the file are preserved.
 
@@ -560,7 +560,7 @@ The schedule is validated against the same parser the scheduler uses, so an acce
 
 ### `plexi routine remove`
 
-Remove a routine from the workspace's routines.toml
+Remove a routine from the folder's routines.toml
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -589,8 +589,8 @@ Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
 An agent is a directory containing `AGENT.md` (persona / system prompt) and
 `settings.toml` (`[agent]` metadata + `[harness]` CLI worker config).
 
-Two tiers exist, and workspace definitions shadow global ones with the same name:
-- Workspace: `<workspace>/.plexi/agents/<name>/`
+Two tiers exist, and folder definitions shadow global ones with the same name:
+- Folder: `<folder>/.plexi/agents/<name>/`
 - Global:    `~/.plexi-<channel>/agents/<name>/` (pass `--global` to `create`)
 
 End-to-end worker workflow:
@@ -610,13 +610,13 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `team` | Inspect or run a stored team of independent ranking agents. |
 | `next` | Focus the next live agent needing attention (needs-you, blocked, done-unseen) |
 | `fleet` | Show tasks and their workers, ordered by attention, with blocking reasons |
-| `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
-| `list` | List active agents from both workspace and global tiers |
+| `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the folder or global tier. |
+| `list` | List active agents from both folder and global tiers |
 | `show` | Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command |
 | `call` | Call an agent role and return its validated completion or blocking question as JSON |
 | `message` | Reply through a child agent's structured mailbox |
 | `handoff` | Transfer the current task to a permitted successor role |
-| `spawn` | Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
+| `spawn` | Spawn a CLI worker agent from the agent registry (`<folder>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
 | `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
 | `report` | Report agent state for this pane to the host |
@@ -625,7 +625,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `reopen` | Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory |
 | `hook` | Install or uninstall agent hook integrations |
 | `head` | Create or list an agent head stored under `.plexi/agents` |
-| `grants` | Inspect hard and soft tool grants recorded for agent heads in the current workspace |
+| `grants` | Inspect hard and soft tool grants recorded for agent heads in the current context |
 | `run` | Spawn, list, or finish a run of an agent head |
 | `assign` | Assign work to a head. The task is stored even when no pane is open |
 | `cancel` | Stop a queued or running headless task before the next tool call |
@@ -636,7 +636,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 
 Inspect or run a stored team of independent ranking agents.
 
-Team v0 TOML is resolved from workspace channel teams/<name>.toml,
+Team v0 TOML is resolved from folder-config teams/<name>.toml,
 then profile teams/<name>.toml, then built-in consult-experts.
 Fields: version = 0; options = ["Proceed", "Experiment", "Defer"].
 Each [[members]] has role, harness (pi/claude/codex/agy/script),
@@ -676,7 +676,7 @@ Run independent team members in one task and wait for RESULT.md
 |---|---|---|---|
 | `<name>` | string | yes |  |
 | `--question` | string | yes |  |
-| `--out` | string | no | Output directory (default: team-results/<run-id> in a workspace, or the channel profile's sessions/teams/ outside one) |
+| `--out` | string | no | Output directory (default: team-results/<run-id> in a folder with config, or the channel state directory's sessions/teams/ outside one) |
 | `--option` | string (repeatable) | no | Replace the stored options; repeat for each option (at least two) |
 | `--timeout` | string | no | Host-side deadline in seconds; unfinished members are reported as timed out Default: `600`. |
 
@@ -694,9 +694,9 @@ Show tasks and their workers, ordered by attention, with blocking reasons
 
 ### `plexi agent create`
 
-Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
+Create a new agent definition (`AGENT.md` + `settings.toml`) in the folder or global tier.
 
-Writes `<workspace>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)
+Writes `<folder>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)
 and validates the directory through `AgentDefinition::load_dir`. Refuses to overwrite an
 existing agent directory.
 
@@ -727,18 +727,18 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
 | `--result-schema` | string | no | Optional JSON Schema string or path to a schema file enforced on `plexi agent done` |
 | `--ephemeral` | flag | no | Auto-close the worker pane on clean exit (`0`) |
 | `--display-name` | string | no | Human-facing display name in `[agent]` (defaults to `<name>`) |
-| `--global` | flag | no | Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace |
-| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--global` | flag | no | Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the folder |
+| `--cwd` | string | no | Directory used to resolve the folder root (defaults to current working directory) |
 
 ### `plexi agent list`
 
-List active agents from both workspace and global tiers.
+List active agents from both folder and global tiers.
 
-Prints each agent's name, tier (`workspace` or `global`), CLI + model (or `assistant` when no `[harness]` table is present), description, and whether it shadows a global agent.
+Prints each agent's name, tier (`folder` or `global`), CLI + model (or `assistant` when no `[harness]` table is present), description, and whether it shadows a global agent.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--cwd` | string | no | Directory used to resolve the folder root (defaults to current working directory) |
 
 ### `plexi agent show`
 
@@ -747,7 +747,7 @@ Show the resolved definition for `<name>`, its directory path, and its exact `sp
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Agent name to inspect |
-| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--cwd` | string | no | Directory used to resolve the folder root (defaults to current working directory) |
 
 ### `plexi agent call`
 
@@ -781,20 +781,20 @@ Transfer the current task to a permitted successor role
 
 ### `plexi agent spawn`
 
-Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
+Spawn a CLI worker agent from the agent registry (`<folder>/.plexi/agents/<name>/` or global).
 
-Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`, and launches the worker pane. Codex workers (including calls and team members) use `exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true`. They can write in their workspace and use the network; Plexi adds no profile writable root.
+Loads `<name>` through `AgentRegistry` (folder shadowing global), refuses agents without a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`, and launches the worker pane. Codex workers (including calls and team members) use `exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true`. They can write in their working directory and use the network; Plexi adds no profile writable root.
 
 Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<name>` | string | yes | Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/` |
+| `<name>` | string | yes | Agent name in `<folder>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/` |
 | `--task` | string | yes | Task brief passed to the spawned agent harness |
 | `--subcontext` | string | no | Sub-context name to spawn into |
 | `--ephemeral` | flag | no | Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish |
 | `--from` | string | no | Parent/caller pane id or name (defaults to `$PLEXI_PANE_ID`) |
-| `--cwd` | string | no | Working directory for workspace lookup and the spawned worker pane |
+| `--cwd` | string | no | Working directory for folder lookup and the spawned worker pane |
 
 ### `plexi agent done`
 
@@ -922,12 +922,12 @@ Example: plexi agent head create lead --grant agents.ping=allow --json
 
 | Subcommand | Description |
 |---|---|
-| `create` | Create a head in the current workspace |
-| `list` | List heads in the current workspace |
+| `create` | Create a head in the current context |
+| `list` | List heads in the current context |
 
 #### `plexi agent head create`
 
-Create a head in the current workspace
+Create a head in the current context
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -938,7 +938,7 @@ Create a head in the current workspace
 
 #### `plexi agent head list`
 
-List heads in the current workspace
+List heads in the current context
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -946,17 +946,17 @@ List heads in the current workspace
 
 ### `plexi agent grants`
 
-Inspect hard and soft tool grants recorded for agent heads in the current workspace.
+Inspect hard and soft tool grants recorded for agent heads in the current context.
 
 Example: plexi agent grants list --json
 
 | Subcommand | Description |
 |---|---|
-| `list` | List tool grants recorded for agent heads in the current workspace |
+| `list` | List tool grants recorded for agent heads in the current context |
 
 #### `plexi agent grants list`
 
-List tool grants recorded for agent heads in the current workspace
+List tool grants recorded for agent heads in the current context
 
 ### `plexi agent run`
 
@@ -969,7 +969,7 @@ Example: plexi agent run spawn --head lead --admission adm-1 --json
 | Subcommand | Description |
 |---|---|
 | `spawn` | Claim a run of a head, append a ledger row, and run a model turn |
-| `list` | List runs in the current workspace |
+| `list` | List runs in the current context |
 | `show` | Show one run |
 | `finish` | Mark a run finished so another admission can claim the head |
 
@@ -989,7 +989,7 @@ Claim a run of a head, append a ledger row, and run a model turn
 
 #### `plexi agent run list`
 
-List runs in the current workspace
+List runs in the current context
 
 #### `plexi agent run show`
 
@@ -1270,11 +1270,11 @@ The non-interactive form of the review `plexi app open <file.wasm>` runs at a TT
 
 Install an app from a local path, a remote source, or a pack file.
 
-Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store. Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
+Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store. Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack. Folder pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable) |
+| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the folder pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable) |
 | `--pack` | string | no | Install from a pack file or 'core' |
 | `--refresh` | flag | no | With --pack: re-extract already-installed `local:` apps from this binary's embedded tree, replacing the installed copy. The update path for bundled core apps on stable channels |
 | `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently |
@@ -1385,7 +1385,7 @@ Scaffolds the folder structure and files you need to build a Plexi app: manifest
 
 Pass `--adopt <dir>` (or `--adopt` inside an app directory) to write or refresh `plexi.scaffold.toml` for a pre-existing app without creating or modifying any source files.
 
-By default, a newly scaffolded app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
+By default, a newly scaffolded app is placed in your folder's app directory. If no folder is detected, pass --global to scaffold into the global registry.
 
 Use --open to launch it in a split-right pane after scaffolding. See `sdk/python/AUTHORING.md` for the canonical authoring guide.
 
@@ -1395,7 +1395,7 @@ Use --open to launch it in a split-right pane after scaffolding. See `sdk/python
 | `--adopt` | flag | no | Write or refresh `plexi.scaffold.toml` for an existing app directory without altering source files |
 | `--wasm` | string | no | Create a Rust WASM component app with the Plexi WASM SDK |
 | `--lang` | string | no | App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
-| `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
+| `--global` | flag | no | Scaffold into the global app registry instead of the folder |
 | `--open` | flag | no | Open the app in a split-right pane after scaffolding |
 | `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
 | `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
@@ -1473,7 +1473,7 @@ Search the public marketplace catalog
 
 Pull git-backed installed apps to their latest source revision.
 
-Canonical app update command. Resolves workspace-local apps when run inside a workspace, and skips installed apps that are not git checkouts.
+Canonical app update command. Resolves workspace-local apps when run inside a folder, and skips installed apps that are not git checkouts.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2156,7 +2156,7 @@ List event streams currently declared by running apps
 
 Print the host MCP server config for an MCP-aware agent.
 
-Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
+Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call this context's app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
@@ -2500,68 +2500,68 @@ Reload configuration in the running host
 
 Validate the selected config.toml and report any errors.
 
-Reads the workspace config inside a workspace, otherwise the global config.
+Reads the folder config inside a folder, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
+| `--folder` / `-f` | flag | no | Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config edit`
 
 Open the selected config.toml in your $EDITOR.
 
-Opens the workspace config inside a workspace, otherwise the global config.
+Opens the folder config inside a folder, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
+| `--folder` / `-f` | flag | no | Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config get`
 
 Print a config key from the selected config.toml to stdout.
 
-Supports dotted keys: agents.low, agents.medium, agents.high. Reads the workspace config inside a workspace, otherwise the global config.
+Supports dotted keys: agents.low, agents.medium, agents.high. Reads the folder config inside a folder, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
+| `--folder` / `-f` | flag | no | Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 | `<key>` | string | yes | Dotted key to retrieve (e.g. agents.medium) |
 
 ### `plexi config reset`
 
 Overwrite the selected config.toml with the built-in default template.
 
-Writes the workspace config inside a workspace, otherwise the global config. Creates a backup at config.toml.bak before overwriting.
+Writes the folder config inside a folder, otherwise the global config. Creates a backup at config.toml.bak before overwriting.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
+| `--folder` / `-f` | flag | no | Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config list`
 
 Print all known config keys with type, current value, and description.
 
-Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output. Reads the workspace config inside a workspace, otherwise the global config.
+Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output. Reads the folder config inside a folder, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
+| `--folder` / `-f` | flag | no | Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 
 ### `plexi config set`
 
 Set one or more keys in the selected config.toml.
 
-Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14). Writes the workspace config inside a workspace, otherwise the global config. Pass --global to read or write only the global config.
+Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14). Writes the folder config inside a folder, otherwise the global config. Pass --global to read or write only the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable) |
-| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
+| `--folder` / `-f` | flag | no | Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable) |
 | `<pairs>` | string (repeatable) | yes | One or more KEY=VALUE pairs to write |
 
 ## `plexi note`
@@ -2644,7 +2644,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
 | Subcommand | Description |
 |---|---|
-| `restart` | Restart this channel, restoring the saved workspace |
+| `restart` | Restart this channel, restoring your saved contexts |
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host and every pane agent for this channel |
 | `log` | Write one info-level marker line into the running host's channel log |
@@ -2653,7 +2653,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
 ### `plexi host restart`
 
-Restart this channel, restoring the saved workspace
+Restart this channel, restoring your saved contexts
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2672,7 +2672,7 @@ Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
 | `--layout` | string | no | TOML file with `[[pane]]` tables to seed on boot |
 | `--pane` | string (repeatable) | no | A pane to seed: 'cwd=<dir>[,cmd=<command>][,tab|window]'. Repeatable |
 | `--timeout-secs` | string | no | Seconds to wait for the host to confirm readiness (default 15) |
-| `--ephemeral` | flag | no | Boot a hermetic session: skip workspace restore on start and skip workspace save on shutdown. For automated runs (scene runners, release gates) that must never see or clobber the channel's saved session |
+| `--ephemeral` | flag | no | Boot a hermetic session: skip session restore on start and skip session save on shutdown. For automated runs (scene runners, release gates) that must never see or clobber the channel's saved session |
 | `--background` | flag | no | Launch without activating Plexi or taking focus. On macOS this uses Accessory activation policy, so the host has no normal Dock or menu-bar presence and should be driven through the CLI |
 
 ### `plexi host stop`

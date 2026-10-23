@@ -62,7 +62,7 @@ pub fn list_cli() -> i32 {
     if !workspace.is_empty() {
         if let Some(root) = workspace_root {
             println!();
-            println!("Workspace apps ({})", root.display());
+            println!("Folder apps ({})", root.display());
             for (id, name, version, badge) in &workspace {
                 if badge.is_empty() {
                     println!("  {:30} {:30} {}", id, name, version);

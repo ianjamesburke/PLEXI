@@ -344,7 +344,7 @@ All `plexi` subcommands work identically on alpha, beta, stable, and PR builds. 
 | `plexi pane <subcommand>` | Pane management (name, close, list, focus) |
 | `plexi notify` | Emit a notification (see Notifications section) |
 | `plexi context` | Query or set the active workspace context |
-| `plexi workspace` | Workspace management (init, status) |
+| `plexi folder` | Workspace management (init, status) |
 | `plexi secret` | Secret management (set, get, list, delete) |
 | `plexi run <name>` | Run a named command from the registry |
 | `plexi completions <shell>` | Output shell completions (zsh, bash, fish) |

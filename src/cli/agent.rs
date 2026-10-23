@@ -24,7 +24,7 @@ const CODEX_HOOK_EVENTS: &[&str] = &[
 const PLEXI_AGENT_STATE_SCRIPT: &str = "claude-code-agent-state.sh";
 const PLEXI_PI_EXTENSION: &str = "plexi-agent-state.ts";
 
-/// Resolve the workspace root from the current directory.
+/// Resolve the folder root from the current directory.
 pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
@@ -44,7 +44,7 @@ pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
 
 fn workspace_not_found_error(cwd: &Path) -> String {
     format!(
-        "error: no {}/ workspace found at or above {}.\n  Run `plexi workspace init` first.",
+        "error: no {}/ folder config found at or above {}.\n  This command keeps its queue in folder config; run `plexi folder init` here to add it.\n  Team runs and other context commands work without it.",
         crate::config::workspace_channel_dir(),
         cwd.display()
     )
@@ -243,7 +243,7 @@ impl HarnessAdapter {
         format!("{} {} {}", self.binary, self.resume_subcommand_or_flag, sid)
     }
 
-    /// Build the CLI command to restore an agent pane on workspace startup or standby wake.
+    /// Build the CLI command to restore an agent pane on folder startup or standby wake.
     /// Falls back to a bare harness binary launch when `session_id` is absent or when a
     /// `pi` session ID has no persisted session file on disk.
     pub fn restore_command(&self, session_id: Option<&str>) -> String {
@@ -524,7 +524,7 @@ pub fn validate_agent_slug(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve an agent by `<name>` through `AgentRegistry` (workspace tier shadowing global tier).
+/// Resolve an agent by `<name>` through `AgentRegistry` (folder tier shadowing global tier).
 /// If an agent directory for `<name>` exists on disk with a broken `AGENT.md` or `settings.toml`,
 /// returns that parse error rather than silently ignoring it.
 pub fn resolve_agent_definition_in(
@@ -693,7 +693,7 @@ pub fn agent_create_in(
             crate::app::registry::resolve_agent_create_workspace_root(&effective_cwd)
         else {
             return Err(format!(
-                "no project workspace (.plexi/ or .git) found at or above {}; run inside a project or pass --global",
+                "no project folder (.plexi/ or .git) found at or above {}; run inside a project or pass --global",
                 effective_cwd.display()
             ));
         };
@@ -900,7 +900,7 @@ pub fn agent_list_in(
     }
 
     if rows.is_empty() {
-        return Ok("No agents found in workspace or global registry.".to_string());
+        return Ok("No agents found in folder or global registry.".to_string());
     }
 
     let mut lines = Vec::with_capacity(rows.len());
@@ -2197,8 +2197,8 @@ mod agent_tests {
     fn workspace_not_found_error_uses_the_active_channel_directory() {
         let _channel = crate::config::set_test_channel("alpha");
         let error = super::workspace_not_found_error(std::path::Path::new("/tmp/no-workspace"));
-        assert!(error.contains(".plexi-alpha/ workspace"), "{error}");
-        assert!(!error.contains("no .plexi/ workspace"), "{error}");
+        assert!(error.contains(".plexi-alpha/ folder config"), "{error}");
+        assert!(!error.contains("no .plexi/ folder"), "{error}");
     }
 
     #[test]
@@ -2861,7 +2861,7 @@ mod agent_tests {
             cwd: Some(&subdir),
         };
         let created =
-            super::agent_create_in(&opts, profile.path()).expect("create workspace agent");
+            super::agent_create_in(&opts, profile.path()).expect("create folder agent");
         assert_eq!(
             created,
             ws.path().join(".plexi").join("agents").join("researcher")
@@ -2935,7 +2935,7 @@ mod agent_tests {
         let no_ws_err = super::agent_create_in(&no_ws_opts, profile.path()).unwrap_err();
         assert!(
             no_ws_err.contains("--global"),
-            "missing workspace error must mention --global: {no_ws_err}"
+            "missing folder error must mention --global: {no_ws_err}"
         );
         assert!(!profile.path().join("agents").join("orphan").exists());
     }
@@ -2991,12 +2991,12 @@ mod agent_tests {
                 cli: "pi",
                 model: Some("openrouter/~z-ai/glm-flash-latest"),
                 fallback: None,
-                description: Some("Workspace researcher"),
-                persona: Some("Workspace persona."),
+                description: Some("Folder researcher"),
+                persona: Some("Folder persona."),
                 persona_file: None,
                 result_schema: None,
                 ephemeral: true,
-                display_name: Some("Workspace Researcher"),
+                display_name: Some("Folder Researcher"),
                 global: false,
                 cwd: Some(ws.path()),
             },
@@ -3028,7 +3028,7 @@ mod agent_tests {
         assert_eq!(show_json["tier"], "workspace");
         assert_eq!(show_json["shadows_global"], true);
         let spawn_cmd = show_json["spawn_command"].as_str().unwrap();
-        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona.' -p"));
+        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Folder persona.' -p"));
         assert!(spawn_cmd.contains("<TASK>"));
     }
 

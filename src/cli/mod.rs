@@ -6,7 +6,7 @@ pub(super) fn commands_file() -> String {
     format!("{}/commands.toml", crate::config::workspace_channel_dir())
 }
 
-/// Parsed workspace (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
+/// Parsed folder (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
 /// or global (`~/.plexi-<channel>/commands.toml`, or `~/.plexi/commands.toml` on stable) commands file.
 #[derive(Deserialize)]
 pub struct PlexiCommands {
@@ -207,7 +207,7 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
 }
 
 /// Default starter template written when `Edit commands` creates a missing
-/// workspace (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
+/// folder (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
 /// or global (`~/.plexi-<channel>/commands.toml`, or `~/.plexi/commands.toml` on stable) `commands.toml`.
 pub const COMMANDS_TEMPLATE: &str = "\
 # Plexi Commands
@@ -268,7 +268,7 @@ pub fn ensure_commands_file(workspace_root: Option<&std::path::Path>) -> std::pa
     path
 }
 
-/// Resolve the workspace root for `commands.toml` lookup from `cwd`.
+/// Resolve the folder root for `commands.toml` lookup from `cwd`.
 ///
 /// Walks up via [`crate::app::registry::resolve_workspace_root`]; if that
 /// returns `None` (for example in a scratch directory under `$HOME`), falls
@@ -299,7 +299,7 @@ pub(super) fn merged_secret_names(config: &PlexiCommands, entry: &CommandEntry) 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UserCommandScope {
-    /// Defined in the focused workspace's channel-scoped `commands.toml`.
+    /// Defined in the focused folder's channel-scoped `commands.toml`.
     Workspace,
     /// Defined in the global profile (`config_dir()/commands.toml` or `config_dir()/scripts/`).
     Global,
@@ -316,10 +316,10 @@ impl UserCommandScope {
 
 /// A user-authored command resolved for the command palette and `plexi run`.
 ///
-/// Mirrors what `plexi run <name>` resolves from the given workspace cwd:
+/// Mirrors what `plexi run <name>` resolves from the given folder cwd:
 /// global commands (`config_dir()/commands.toml` and executable scripts in
-/// `config_dir()/scripts/`) merge with workspace commands
-/// (`<workspace>/.plexi[-channel]/commands.toml`), with workspace winning on
+/// `config_dir()/scripts/`) merge with folder commands
+/// (`<folder>/.plexi[-channel]/commands.toml`), with folder winning on
 /// name collisions. `secrets` lists required secret names only — never values.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ResolvedUserCommand {
@@ -339,11 +339,11 @@ pub struct ResolvedUserCommand {
     pub split: bool,
 }
 
-/// Resolve merged global + workspace user commands, returning an error string if
+/// Resolve merged global + folder user commands, returning an error string if
 /// a present `commands.toml` cannot be read or parsed.
 ///
 /// Precedence (highest wins per command `name`):
-/// 1. Workspace `<workspace_root>/<workspace_channel_dir()>/commands.toml` (`scope = workspace`)
+/// 1. Folder `<workspace_root>/<workspace_channel_dir()>/commands.toml` (`scope = folder`)
 /// 2. Global `<config_dir()>/commands.toml` (`scope = global`)
 /// 3. Executable scripts in `<config_dir()>/scripts/` (`scope = global`)
 pub fn resolve_user_commands_checked(
@@ -442,8 +442,8 @@ pub fn resolve_user_commands_checked(
 
 /// Resolve user commands for the command palette, mirroring `plexi run`
 /// per-name layering: global commands (`config_dir()/commands.toml` and
-/// `config_dir()/scripts/`) merge with workspace commands
-/// (`<workspace>/.plexi[-channel]/commands.toml`), and workspace entries win on
+/// `config_dir()/scripts/`) merge with folder commands
+/// (`<folder>/.plexi[-channel]/commands.toml`), and folder entries win on
 /// name collisions. A present-but-unparseable `commands.toml` yields no
 /// commands rather than silently masking the parse error, because `plexi run`
 /// errors in that state.
@@ -1916,7 +1916,7 @@ pub use run::{run_command_for_root, run_command_for_root_from_pane};
 pub use validate::validate_cli;
 pub use workspace::{
     folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,
-    folder_secret_set, workspace_clean_cli, workspace_init, workspace_secret_delete,
+    folder_secret_set, folder_clean_cli, folder_init, workspace_secret_delete,
     workspace_secret_get, workspace_secret_list, workspace_secret_set,
 };
 
@@ -1926,7 +1926,7 @@ mod resolve_user_commands_tests {
         ensure_commands_file, resolve_user_commands, UserCommandScope, COMMANDS_TEMPLATE,
     };
 
-    /// Build a workspace tempdir whose channel-scoped commands.toml holds `body`.
+    /// Build a folder tempdir whose channel-scoped commands.toml holds `body`.
     fn workspace_with_commands(body: &str) -> (tempfile::TempDir, crate::config::TestChannelGuard) {
         let guard = crate::config::set_test_channel("test");
         let tmp = tempfile::tempdir().unwrap();
@@ -1968,8 +1968,8 @@ build = { run = "cargo build", description = "Build it", secrets = ["API_KEY"] }
         let (tmp, _g) = workspace_with_commands(
             r#"
 [commands]
-bar = { run = "echo ws-bar", description = "Workspace bar" }
-foo = { run = "echo ws-foo", description = "Workspace foo override" }
+bar = { run = "echo ws-bar", description = "Folder bar" }
+foo = { run = "echo ws-foo", description = "Folder foo override" }
 "#,
         );
         let profile = tempfile::tempdir().unwrap();

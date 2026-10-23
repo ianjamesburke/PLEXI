@@ -15,7 +15,7 @@ fn monitor() -> std::sync::Arc<PermissionMonitor> {
 fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {
     let dir = root.join(crate::config::workspace_channel_dir());
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("workspace.toml"), format!("id = \"{workspace_id}\"\n")).unwrap();
+    std::fs::write(dir.join("folder.toml"), format!("id = \"{workspace_id}\"\n")).unwrap();
     let names = inject
         .iter()
         .map(|name| format!("\"{name}\""))
