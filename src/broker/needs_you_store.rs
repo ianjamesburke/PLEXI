@@ -344,7 +344,8 @@ fn validate(items: &[DiskItem]) -> Result<Vec<RestoredItem>, String> {
             | NeedsYouKind::PermissionChange
             | NeedsYouKind::PermissionRequest
             | NeedsYouKind::Integrity
-            | NeedsYouKind::Keychain => {
+            | NeedsYouKind::Keychain
+            | NeedsYouKind::AgentDone => {
                 if item.pending.is_some() {
                     return Err(format!(
                         "item {} is not an approval and cannot carry a pending grant",

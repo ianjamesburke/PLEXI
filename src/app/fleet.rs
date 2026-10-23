@@ -137,7 +137,7 @@ impl PlexiApp {
         dismissed_ids
     }
 
-    fn agent_inputs(&self) -> Vec<AgentInput> {
+    pub(crate) fn agent_inputs(&self) -> Vec<AgentInput> {
         let mut input = Vec::new();
         let needs_you =
             crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
@@ -167,12 +167,13 @@ impl PlexiApp {
                     .and_then(|a| a.detail.clone())
                     .filter(|s| !s.is_empty());
                 let human_record = needs_you.iter().find(|n| {
-                    n.resource == format!("pane:{pane_id}")
-                        || n.actor == format!("pane:{pane_id}")
-                        || n.run_tag
-                            .as_ref()
-                            .zip(t.agent_session_id.as_ref())
-                            .is_some_and(|(a, b)| a == b)
+                    n.kind != crate::broker::gate::NeedsYouKind::AgentDone
+                        && (n.resource == format!("pane:{pane_id}")
+                            || n.actor == format!("pane:{pane_id}")
+                            || n.run_tag
+                                .as_ref()
+                                .zip(t.agent_session_id.as_ref())
+                                .is_some_and(|(a, b)| a == b))
                 });
                 let state = if human_record.is_some() {
                     AgentState::NeedsYou
@@ -893,8 +894,8 @@ mod attention_tests {
 #[derive(Default)]
 pub(crate) struct AttentionState {
     dock: crate::platform::attention::DockState,
-    reports: std::collections::HashMap<u64, AgentState>,
-    pending_os: Vec<(u64, AgentState, crate::agent::fleet::AgentEvent)>,
+    pub(crate) reports: std::collections::HashMap<u64, AgentState>,
+    pub(crate) pending_os: Vec<(u64, AgentState, crate::agent::fleet::AgentEvent)>,
     toast_until: Option<std::time::Instant>,
 }
 
@@ -965,11 +966,130 @@ impl PlexiApp {
             super::notifications::NotifySource::HostInternal,
             notification,
         );
-        if matches!(state, AgentState::NeedsYou | AgentState::Blocked) {
+        if matches!(state, AgentState::NeedsYou | AgentState::Blocked)
+            || (*state == AgentState::Completed && !self.pane_has_parent_agent(pane_id))
+        {
             self.agent_attention
                 .pending_os
                 .push((pane_id, state.clone(), event));
         }
+    }
+
+    pub(crate) fn pane_has_parent_agent(&self, pane_id: u64) -> bool {
+        if let Some(t) = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane_id))
+            .and_then(|p| p.as_terminal())
+        {
+            if let Some(ref sb) = t.spawned_by {
+                if sb.starts_with("agent:") || sb.starts_with("team:") {
+                    return true;
+                }
+                if sb == "human" {
+                    return false;
+                }
+            }
+        }
+        let parent_id = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane_id))
+            .and_then(|p| p.as_terminal())
+            .and_then(|t| t.parent_pane_id)
+            .or_else(|| {
+                self.fleet_history
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|r| r.pane_id == pane_id)
+                    .and_then(|r| r.parent_pane_id)
+            });
+        let Some(parent_id) = parent_id else {
+            return false;
+        };
+        if let Some(pane) = self.windows.iter().find_map(|w| w.panes.get(&parent_id)) {
+            if let Some(t) = pane.as_terminal() {
+                if t.is_agent_pane() {
+                    return true;
+                }
+            }
+        }
+        self.fleet_history
+            .borrow()
+            .iter()
+            .any(|r| r.pane_id == parent_id)
+    }
+
+    pub(crate) fn open_agent_done_result(
+        &mut self,
+        record: &crate::broker::gate::NeedsYouRecord,
+    ) -> Option<std::path::PathBuf> {
+        let pane_id = record
+            .details
+            .as_ref()
+            .and_then(|d| d.pane_id)
+            .or_else(|| {
+                record
+                    .actor
+                    .strip_prefix("pane:")
+                    .and_then(|s| s.parse::<u64>().ok())
+            });
+        let result_path = record
+            .details
+            .as_ref()
+            .and_then(|d| d.preview_refs.first().map(String::as_str))
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                if !record.resource.starts_with("pane:") && !record.resource.is_empty() {
+                    Some(std::path::PathBuf::from(&record.resource))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                pane_id.and_then(|id| {
+                    self.windows.iter().find_map(|w| {
+                        let t = w.panes.get(&id)?.as_terminal()?;
+                        let base = t
+                            .initial_cwd
+                            .as_ref()
+                            .or(t.standby_cwd.as_ref())
+                            .unwrap_or(&w.path);
+                        Some(
+                            base.join(".plexi")
+                                .join("results")
+                                .join(id.to_string())
+                                .join("RESULT.md"),
+                        )
+                    })
+                })
+            });
+        if let Some(ref path) = result_path {
+            let path_str = path.to_string_lossy().into_owned();
+            if let Err(e) = self.launch_app_by_id_with_layout(
+                "text-editor",
+                Some("split_h".into()),
+                &[path_str],
+                None,
+            ) {
+                log::warn!("attention: open result viewer failed for {}: {e}", path.display());
+            } else {
+                log::info!("attention: opened agent result {}", path.display());
+            }
+        }
+        if let Some(id) = pane_id {
+            self.mark_agent_seen(id);
+        }
+        let _ = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .resolve_needs_you_from(
+                &record.id,
+                true,
+                crate::broker::gate::ResolveSurface::Desktop,
+            );
+        self.attention.open = false;
+        result_path
     }
 
     pub(crate) fn clear_agent_attention_notification(&mut self, pane_id: u64) {

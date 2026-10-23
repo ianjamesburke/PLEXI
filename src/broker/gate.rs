@@ -67,6 +67,9 @@ pub enum NeedsYouKind {
     /// rotates the key and reseals grants when the old secret stays unreadable.
     /// It does not mint a grant.
     Keychain,
+    /// A human-started agent finished via `plexi agent done`. Opening or
+    /// dismissing the result settles the item and never mints a grant.
+    AgentDone,
 }
 
 /// Shown when saved permissions cannot load because the seal key is unreadable.
@@ -89,6 +92,7 @@ impl NeedsYouKind {
             Self::PermissionRequest => "permission_request",
             Self::Integrity => "integrity",
             Self::Keychain => "keychain",
+            Self::AgentDone => "agent_done",
         }
     }
 
@@ -1806,7 +1810,10 @@ impl PermissionMonitor {
                     return Err(format!("needs-you item {id} could not be audited"));
                 }
             }
-            NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
+            NeedsYouKind::Question
+            | NeedsYouKind::BlockedRun
+            | NeedsYouKind::Integrity
+            | NeedsYouKind::AgentDone => {
                 let resolution = final_resolution;
                 let decision = if approve { "approved" } else { "denied" };
                 if !self.close_needs_you(id, resolution, decision, "") {

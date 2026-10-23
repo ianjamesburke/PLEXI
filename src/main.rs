@@ -678,6 +678,10 @@ fn main() -> eframe::Result {
                                 pane_id,
                             ))
                         }
+                        AgentCmd::Result { pane, pane_flag } => {
+                            let target = pane.as_deref().or(pane_flag.as_deref());
+                            cli::trace::exit(cli::agent_result_cli(target, json))
+                        }
                         AgentCmd::Wait { pane_ids, timeout } => {
                             let resolved: Vec<u64> =
                                 pane_ids.iter().map(resolve_pane).collect();

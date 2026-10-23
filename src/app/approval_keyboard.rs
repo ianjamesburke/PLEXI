@@ -58,6 +58,17 @@ impl PlexiApp {
             self.push_focus_layer(FocusKind::ApprovalBanner);
             log::info!("approval: focused id={}", request.pending_request_id);
             self.ctx.request_repaint_after(ARM_DELAY);
+        } else if let Some(done_item) = crate::overlays::attention::open_items()
+            .into_iter()
+            .find(|item| item.kind == crate::broker::gate::NeedsYouKind::AgentDone)
+        {
+            self.approval_keyboard
+                .focus(done_item.id.clone(), Instant::now());
+            self.focus_stack
+                .retain(|kind| *kind != FocusKind::ApprovalBanner);
+            self.push_focus_layer(FocusKind::ApprovalBanner);
+            log::info!("approval: focused agent_done id={}", done_item.id);
+            self.ctx.request_repaint_after(ARM_DELAY);
         }
     }
 
@@ -90,6 +101,46 @@ impl PlexiApp {
         }
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
         if monitor.show_pending(&id).is_none() {
+            if let Some(done_record) = monitor.get_needs_you(&id).filter(|r| {
+                r.resolution.is_none() && r.kind == crate::broker::gate::NeedsYouKind::AgentDone
+            }) {
+                let key = owned.events().iter().find_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } if *modifiers == egui::Modifiers::NONE => Some(*key),
+                    _ => None,
+                });
+                match key {
+                    Some(egui::Key::Escape) => {
+                        self.leave_approval();
+                    }
+                    Some(egui::Key::Enter) => {
+                        log::info!("approval: opening agent_done result id={id} via=keyboard");
+                        self.open_agent_done_result(&done_record);
+                        self.approval_keyboard
+                            .held_decision_keys
+                            .insert(egui::Key::Enter);
+                        self.leave_approval();
+                    }
+                    Some(egui::Key::D) => {
+                        let _ = monitor.resolve_needs_you_from(
+                            &id,
+                            false,
+                            crate::broker::gate::ResolveSurface::Desktop,
+                        );
+                        self.approval_keyboard
+                            .held_decision_keys
+                            .insert(egui::Key::D);
+                        self.leave_approval();
+                    }
+                    _ => {}
+                }
+                return KeyDisposition::Consumed;
+            }
             self.leave_approval();
             return KeyDisposition::Consumed;
         }
@@ -346,6 +397,184 @@ mod tests {
         assert!(
             !next_key.is_empty(),
             "input resumes after the decision key is released"
+        );
+    }
+
+    #[test]
+    fn human_started_agent_done_surfaces_persists_opens_result_and_survives_close() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let (pane_id, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "researcher",
+                "pi",
+                "sleep 30",
+                "Audit auth",
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        if let Some((wi, _)) = h.app.find_pane_in_any_window(pane_id) {
+            if let Some(crate::host::pane::Pane::Terminal(t)) = h.app.windows[wi].panes.get_mut(&pane_id) {
+                t.spawned_by = Some("human".to_string());
+                t.agent_session_id = Some("sess-0962".to_string());
+                t.initial_cwd = Some(root.clone());
+            }
+        }
+        h.app.agent_attention.pending_os.clear();
+
+        let done_reply = root.join("done.json");
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            pane_id,
+            result: Some("{\"answer\":\"42\"}".into()),
+            summary: Some("Audit complete".into()),
+            response_file: done_reply.to_string_lossy().into_owned(),
+        });
+        h.hidden_frame();
+
+        let reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&done_reply).unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        let md_path = std::path::PathBuf::from(reply["result_path"].as_str().unwrap());
+        let json_path = std::path::PathBuf::from(reply["json_path"].as_str().unwrap());
+        assert!(md_path.exists(), "RESULT.md must be persisted on disk");
+        assert!(json_path.exists(), "result.json must be persisted on disk");
+        assert!(
+            std::fs::read_to_string(&md_path)
+                .unwrap()
+                .contains("Audit complete")
+        );
+
+        // OS notification queued for human-started completed agent.
+        h.app.agent_attention.reports.remove(&pane_id);
+        h.app.report_agent_attention(
+            pane_id,
+            &crate::protocol::AgentState::Completed,
+            Some("Audit complete"),
+        );
+        assert!(
+            h.app.agent_attention.pending_os.iter().any(|(id, state, _)| {
+                *id == pane_id && *state == crate::protocol::AgentState::Completed
+            }),
+            "human-started agent done must queue an OS notification"
+        );
+
+        // AgentDone NeedsYou item is open with "<agent> done: <summary>".
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let open = monitor.open_needs_you();
+        let done_item = open
+            .iter()
+            .find(|r| r.kind == crate::broker::gate::NeedsYouKind::AgentDone)
+            .expect("human-started agent done must file a NeedsYouKind::AgentDone item");
+        assert_eq!(done_item.summary, "researcher done: Audit complete");
+
+        // Agent state remains Completed (not overridden to NeedsYou).
+        let agent_input = h
+            .app
+            .agent_inputs()
+            .into_iter()
+            .find(|a| a.pane_id == pane_id)
+            .unwrap();
+        assert_eq!(agent_input.state, crate::protocol::AgentState::Completed);
+
+        // Keyboard-only flow: focus_approval (Cmd+Alt+P) -> Enter opens RESULT.md in text-editor split and settles item.
+        let now = Instant::now();
+        h.app.focus_approval();
+        assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&done_item.id));
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app
+            .approval_key_at(&mut input(egui::Key::Enter, egui::Modifiers::NONE), now);
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .all(|r| r.id != done_item.id),
+            "Enter must settle the AgentDone attention item"
+        );
+        assert!(
+            h.app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.values())
+                .any(|p| matches!(p, crate::host::pane::Pane::App(app) if app.manifest_id == "text-editor")),
+            "Enter must open RESULT.md in a text-editor viewer pane"
+        );
+
+        // Close the pane and verify `read_persisted_agent_result_in` still resolves by pane_id, session_id, role, and latest.
+        h.app.close_pane_by_id(pane_id);
+        for selector in [
+            None,
+            Some(pane_id.to_string()),
+            Some("sess-0962".to_string()),
+            Some("researcher".to_string()),
+        ] {
+            let (_, _, persisted) = crate::cli::agent::read_persisted_agent_result_in(
+                selector.as_deref(),
+                Some(&root),
+                &crate::config::config_dir(),
+            )
+            .expect("persisted result must remain readable after pane close");
+            assert_eq!(persisted["summary"], "Audit complete");
+            assert_eq!(persisted["result"]["answer"], "42");
+        }
+
+        // Verify a child agent with a parent agent does NOT file a human AgentDone item.
+        let (parent, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "lead",
+                "pi",
+                "sleep 30",
+                "Lead task",
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let (child, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "worker",
+                "pi",
+                "sleep 30",
+                "Subtask",
+                None,
+                true,
+                Some(parent),
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let child_reply = root.join("child_done.json");
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            pane_id: child,
+            result: Some("{\"sub\":1}".into()),
+            summary: Some("Child done".into()),
+            response_file: child_reply.to_string_lossy().into_owned(),
+        });
+        h.hidden_frame();
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .all(|r| r.kind != crate::broker::gate::NeedsYouKind::AgentDone),
+            "child agent with parent agent must not file a human AgentDone attention item"
         );
     }
 }
