@@ -12,6 +12,11 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 
 **Delete rule:** delete the PRM in the same PR that closes its last stint task. The stint task is the delete trigger.
 
+`plexi agent team run <name>` resolves a workspace team by walking up from the
+current directory, then the active channel profile's `teams/` directory, then
+built-ins. Global and built-in teams run outside a workspace; their default
+reports are stored under that profile's `sessions/teams/` directory.
+
 ## Active PRMs
 
 | File | Covers | Stint |

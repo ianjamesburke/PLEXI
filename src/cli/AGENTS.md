@@ -116,6 +116,10 @@ context and resource; it ends when Plexi quits and is revocable in Permissions.
 
 Any change to a CLI verb, flag, or agent-facing behavior updates this file **and** `skills/plexi-cli/SKILL.md` in the same PR. Regenerate the skill following `skills/AGENTS.md`; edit `skills/plexi-cli/intro.md` when a workflow changes. Shell completions are generated from the clap tree (`completions_cli`), so a new flag needs no hand-written block; verify with `plexi completions zsh | grep <flag>`.
 
+`agent team run` resolves a workspace team first, then the active channel
+profile and built-ins. It may run global or built-in teams without a workspace;
+those runs use the profile scope and default to its `sessions/teams/` directory.
+
 ## Distribution commands
 
 Shell completion installation and missing shared-hook recovery follow

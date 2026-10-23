@@ -3406,7 +3406,7 @@ pub enum AgentTeamCmd {
         name: String,
         #[arg(long)]
         question: String,
-        /// Output directory (default: a new team-results/<run-id> in the workspace).
+        /// Output directory (default: team-results/<run-id> in a workspace, or the channel profile's sessions/teams/ outside one).
         #[arg(long)]
         out: Option<std::path::PathBuf>,
         /// Replace the stored options; repeat for each option (at least two).

@@ -36,14 +36,18 @@ pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
     match crate::app::registry::resolve_workspace_root(&cwd) {
         Some(root) => Ok(root),
         None => {
-            eprintln!(
-                "error: no .plexi/ workspace found at or above {}.\n  \
-                 Run `plexi workspace init` first.",
-                cwd.display()
-            );
+            eprintln!("{}", workspace_not_found_error(&cwd));
             Err(1)
         }
     }
+}
+
+fn workspace_not_found_error(cwd: &Path) -> String {
+    format!(
+        "error: no {}/ workspace found at or above {}.\n  Run `plexi workspace init` first.",
+        crate::config::workspace_channel_dir(),
+        cwd.display()
+    )
 }
 
 /// Multi-CLI harness identifiers supported natively by Plexi.
@@ -2188,6 +2192,14 @@ fn backup_existing_file(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod agent_tests {
     use std::fs;
+
+    #[test]
+    fn workspace_not_found_error_uses_the_active_channel_directory() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let error = super::workspace_not_found_error(std::path::Path::new("/tmp/no-workspace"));
+        assert!(error.contains(".plexi-alpha/ workspace"), "{error}");
+        assert!(!error.contains("no .plexi/ workspace"), "{error}");
+    }
 
     #[test]
     fn register_json_hook_is_idempotent_and_agent_specific() {

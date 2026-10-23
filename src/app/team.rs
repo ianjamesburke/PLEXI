@@ -230,6 +230,106 @@ mod tests {
     }
 
     #[test]
+    fn global_team_run_defaults_output_under_profile_sessions() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let profile = h.profile_dir().to_path_buf();
+        let global_teams = profile.join("teams");
+        std::fs::create_dir_all(&global_teams).unwrap();
+        let mut team = crate::agent::team::builtin();
+        for member in &mut team.members {
+            member.harness = "script".into();
+            member.command = Some("true".into());
+        }
+        std::fs::write(
+            global_teams.join("global-team.toml"),
+            toml::to_string(&team).unwrap(),
+        )
+        .unwrap();
+        let reply = profile.join("reply.json");
+        h.app
+            .start_team(
+                &json!({
+                    "workspace": profile.clone(), "name": "global-team", "question": "Choose",
+                    "global_scope": true, "timeout": 60
+                }),
+                reply.to_str().unwrap(),
+            )
+            .unwrap();
+        let out = &h.app.team_runs[0].out;
+        assert!(out.starts_with(profile.join("sessions/teams")), "{out:?}");
+    }
+
+    #[test]
+    fn global_scope_must_use_the_host_profile() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let workspace = h.workspace_root();
+        let reply = workspace.join("reply.json");
+
+        let error = h
+            .app
+            .start_team(
+                &json!({
+                    "workspace": workspace, "name": "consult-experts", "question": "Choose",
+                    "global_scope": true,
+                }),
+                reply.to_str().unwrap(),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("global team scope must use the host profile"));
+        assert!(h.app.team_runs.is_empty());
+    }
+
+    #[test]
+    fn global_scope_keeps_the_callers_context_authorization() {
+        let mut h = HostHarness::new();
+        let caller = h.add_test_pane();
+        let profile = h.profile_dir().to_path_buf();
+        let teams = profile.join("teams");
+        std::fs::create_dir_all(&teams).unwrap();
+        std::fs::write(
+            teams.join("global-team.toml"),
+            toml::to_string(&crate::agent::team::builtin()).unwrap(),
+        )
+        .unwrap();
+        let reply = profile.join("reply.json");
+
+        let error = h
+            .app
+            .start_team(
+                &json!({
+                    "workspace": profile, "name": "global-team", "question": "Choose",
+                    "global_scope": true, "caller_pane": caller,
+                }),
+                reply.to_str().unwrap(),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("context"), "{error}");
+        assert!(h.app.team_runs.is_empty());
+    }
+
+    #[test]
+    fn legacy_team_request_uses_its_workspace_definition() {
+        let (mut h, workspace) = scripted_fixture();
+        let reply = workspace.join("reply.json");
+
+        h.app
+            .start_team(
+                &json!({
+                    "workspace": workspace, "name": "test-team", "question": "Choose",
+                    "out": workspace.join("out"),
+                }),
+                reply.to_str().unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(h.app.team_runs.len(), 1);
+    }
+
+    #[test]
     fn team_run_collects_three_agent_done_results_while_hidden_and_records_trace() {
         let mut h = HostHarness::new();
         h.add_test_pane();
@@ -371,7 +471,27 @@ impl PlexiApp {
         if question.trim().is_empty() {
             return Err("question cannot be empty".into());
         }
-        let mut team = crate::agent::team::load(&workspace, &name)?;
+        let profile = crate::platform::path::canonical_or_self(&crate::config::config_dir());
+        let requested_global_scope = payload["global_scope"].as_bool().unwrap_or(false);
+        let global_scope = requested_global_scope && workspace == profile;
+        if requested_global_scope && !global_scope {
+            return Err(format!(
+                "global team scope must use the host profile ({})",
+                profile.display()
+            ));
+        }
+        // Requests sent before `team_workspace` was added used `workspace` for
+        // both execution and definition lookup. Keep that behavior for every
+        // non-global request.
+        let team_workspace = if global_scope {
+            None
+        } else {
+            payload["team_workspace"]
+                .as_str()
+                .map(Path::new)
+                .or(Some(workspace.as_path()))
+        };
+        let mut team = crate::agent::team::load(team_workspace, &name)?;
         if let Some(options) = payload["options"].as_array().filter(|a| !a.is_empty()) {
             team.options = options
                 .iter()
@@ -395,7 +515,16 @@ impl PlexiApp {
         let out = payload["out"]
             .as_str()
             .map(PathBuf::from)
-            .unwrap_or_else(|| workspace.join("team-results").join(&id));
+            .unwrap_or_else(|| {
+                if global_scope {
+                    crate::config::config_dir()
+                        .join("sessions")
+                        .join("teams")
+                        .join(&id)
+                } else {
+                    workspace.join("team-results").join(&id)
+                }
+            });
         if !out.is_absolute() {
             return Err("output directory must be absolute".into());
         }
@@ -424,6 +553,8 @@ impl PlexiApp {
         }
         let parent_grants: Vec<_> = union.iter().map(|(t, d)| format!("{t}={d}")).collect();
         let caller_human = caller.is_some_and(|p| self.is_human_owned_pane(p));
+        // Global execution uses the profile as its workspace, but it must not
+        // fabricate context authority for the requesting pane.
         let caller_ctx_root = caller.and_then(|p| self.pane_context_authority_root(p));
         let caller_ctx_denied = caller.is_some_and(|p| {
             let ws_canon = crate::platform::path::canonical_or_self(&workspace);

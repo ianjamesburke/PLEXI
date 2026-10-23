@@ -523,41 +523,38 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
             return 1;
         }
     };
-    let workspace = if matches!(&cmd, AgentTeamCmd::Show { .. }) {
-        crate::app::registry::resolve_workspace_root(&cwd).unwrap_or_else(|| cwd.clone())
-    } else {
-        match crate::cli::agent::resolve_workspace_cwd() {
-            Ok(root) => root,
-            Err(code) => return code,
-        }
-    };
+    let workspace = crate::app::registry::resolve_workspace_root(&cwd);
     let (payload, json_out, timeout) = match cmd {
-        AgentTeamCmd::Show { name } => match crate::agent::team::load(&workspace, &name) {
-            Ok(mut team) => {
-                team.tie_break = Some(team.tie_break().to_string());
-                team.quorum = Some(team.quorum());
-                log::info!(
-                    "agent_team: show name={name} workspace={}",
-                    workspace.display()
-                );
-                if json {
-                    println!("{}", serde_json::json!({"name":name,"team":team}));
-                } else {
-                    match toml::to_string_pretty(&team) {
-                        Ok(text) => println!("{text}"),
-                        Err(error) => {
-                            eprintln!("error: serialize team: {error}");
-                            return 1;
+        AgentTeamCmd::Show { name } => {
+            match crate::agent::team::load(workspace.as_deref(), &name) {
+                Ok(mut team) => {
+                    team.tie_break = Some(team.tie_break().to_string());
+                    team.quorum = Some(team.quorum());
+                    log::info!(
+                        "agent_team: show name={name} workspace={}",
+                        workspace
+                            .as_ref()
+                            .map_or_else(|| "[global]".to_string(), |path| path.display().to_string())
+                    );
+                    if json {
+                        println!("{}", serde_json::json!({"name":name,"team":team}));
+                    } else {
+                        match toml::to_string_pretty(&team) {
+                            Ok(text) => println!("{text}"),
+                            Err(error) => {
+                                eprintln!("error: serialize team: {error}");
+                                return 1;
+                            }
                         }
                     }
+                    return 0;
                 }
-                return 0;
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return 1;
+                }
             }
-            Err(error) => {
-                eprintln!("error: {error}");
-                return 1;
-            }
-        },
+        }
         AgentTeamCmd::Run {
             name,
             question,
@@ -566,9 +563,14 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
             timeout,
         } => {
             let out = out.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
+            // A global or built-in team has no workspace state to adopt. Its
+            // runs and grants live under the active channel profile instead.
+            let global_scope = workspace.is_none();
+            let execution_scope = workspace.clone().unwrap_or_else(crate::config::config_dir);
             (
                 json!({"type":"agents_api", "op":"team_run", "payload": {
-                    "workspace": workspace, "name":name, "question":question,
+                    "workspace": execution_scope, "team_workspace": workspace,
+                    "global_scope": global_scope, "name":name, "question":question,
                     "out":out, "options":options, "timeout":timeout,
                     "caller_pane":std::env::var("PLEXI_PANE_ID").ok().and_then(|p| p.parse::<u64>().ok())
                 }}),
@@ -588,14 +590,28 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
     };
     let value = match serde_json::from_str::<Value>(&body) {
         Ok(value) => value,
-        Err(error) => { eprintln!("error: invalid team reply: {error}"); return 1; }
+        Err(error) => {
+            eprintln!("error: invalid team reply: {error}");
+            return 1;
+        }
     };
-    if json_out { println!("{body}"); }
-    else { println!("{}", team_run_text(&value)); }
-    if let Err(code) = super::check_reply_error(&body) { return code; }
+    if json_out {
+        println!("{body}");
+    } else {
+        println!("{}", team_run_text(&value));
+    }
+    if let Err(code) = super::check_reply_error(&body) {
+        return code;
+    }
     0
 }
 
 pub(crate) fn team_run_text(value: &Value) -> String {
-    format!("{}\nRESULT.md: {}", value["report"].as_str().unwrap_or_else(|| value["error"].as_str().unwrap_or("No team report returned")), value["result_path"].as_str().unwrap_or("unavailable"))
+    format!(
+        "{}\nRESULT.md: {}",
+        value["report"]
+            .as_str()
+            .unwrap_or_else(|| value["error"].as_str().unwrap_or("No team report returned")),
+        value["result_path"].as_str().unwrap_or("unavailable")
+    )
 }
