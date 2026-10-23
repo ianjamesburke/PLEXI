@@ -222,7 +222,7 @@ pub fn render(
             |ui| {
                 ui.set_clip_rect(banner_rect);
                 ui.label(
-                    egui::RichText::new(&banner)
+                    egui::RichText::new(banner)
                         .monospace()
                         .size(terminal.font_size)
                         .color(colors.accent),
