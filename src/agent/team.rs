@@ -1,7 +1,7 @@
 //! Stored team v0: independent ballots over one option set, then Borda.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -294,6 +294,15 @@ pub(crate) fn load(workspace: Option<&Path>, name: &str) -> Result<Team, String>
         ))
     }
 }
+
+/// Resolve a team definition from a live execution directory.  Configuration
+/// discovery is deliberately an optional lookup input: callers may execute in
+/// any directory even when no folder configuration exists there.
+pub(crate) fn load_from_cwd(cwd: &Path, name: &str) -> Result<(Team, Option<PathBuf>), String> {
+    let config_root = crate::app::registry::resolve_workspace_root(cwd);
+    let team = load(config_root.as_deref(), name)?;
+    Ok((team, config_root))
+}
 impl Team {
     pub(crate) fn quorum(&self) -> usize {
         self.quorum.unwrap_or(self.members.len())
@@ -424,7 +433,9 @@ impl MemberOutcome {
     pub(crate) fn summary(&self) -> String {
         match self {
             Self::Ballot(ballot) => format!("ballot: {}", ballot.ranking.join(" → ")),
-            Self::ExitedWithoutReport(text) => format!("exited without report (not a valid ballot): {text}"),
+            Self::ExitedWithoutReport(text) => {
+                format!("exited without report (not a valid ballot): {text}")
+            }
             Self::Failed(reason) => format!("failed: {reason}"),
             Self::TimedOut => "timed out".into(),
         }
@@ -450,10 +461,13 @@ pub(crate) fn report(
             _ => None,
         })
         .collect();
-    let unreported: Vec<_> = outcomes.iter().filter_map(|outcome| match outcome {
-        MemberOutcome::ExitedWithoutReport(text) => Some(text),
-        _ => None,
-    }).collect();
+    let unreported: Vec<_> = outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            MemberOutcome::ExitedWithoutReport(text) => Some(text),
+            _ => None,
+        })
+        .collect();
     // A clean single-turn harness exit can still carry useful final text. It is an
     // abstention, not a failed vote: publish the remaining ballots as degraded.
     let has_hard_failure = outcomes
@@ -477,7 +491,12 @@ pub(crate) fn report(
         ballots.len()
     );
     if degraded {
-        text.push_str(&format!("\nQuorum degraded: {} of {} valid ballots; {} exited without report.\n", ballots.len(), team.members.len(), unreported.len()));
+        text.push_str(&format!(
+            "\nQuorum degraded: {} of {} valid ballots; {} exited without report.\n",
+            ballots.len(),
+            team.members.len(),
+            unreported.len()
+        ));
     }
     let excluded: Vec<_> = team
         .members

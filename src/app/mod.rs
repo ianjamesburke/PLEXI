@@ -2128,6 +2128,13 @@ impl PlexiApp {
         if !target_canon.starts_with(&pane_root) {
             return false;
         }
+        // A person may organize panes into nested contexts without losing
+        // access to folders they already controlled. Agent panes still run
+        // every narrowing check below, so cd and context creation never widen
+        // their delegated reach.
+        if self.is_human_owned_pane(pane_id) {
+            return true;
+        }
         if target_canon != pane_root {
             // Check 1: another context in the router is rooted at a deeper
             // directory under `pane_root` that contains `target_canon`.

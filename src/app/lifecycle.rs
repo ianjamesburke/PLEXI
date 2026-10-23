@@ -457,13 +457,6 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
-                if op == "team_run" {
-                    if let Err(error) = self.start_team(payload, response_file) {
-                        log::error!("agent_team: start failed: {error}");
-                        crate::rpc::write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
-                    }
-                    return;
-                }
                 let mut payload = payload.clone();
                 if let Some(obj) = payload.as_object_mut() {
                     obj.remove("caller_human_pane");
@@ -487,7 +480,8 @@ impl PlexiApp {
                         let human_pane = self.is_human_owned_pane(pane_id);
                         let ctx_root = self.pane_context_authority_root(pane_id);
                         let target_ws = obj
-                            .get("workspace")
+                            .get("execution_cwd")
+                            .or_else(|| obj.get("workspace"))
                             .and_then(|v| v.as_str())
                             .map(std::path::PathBuf::from);
                         let target_cwd = obj
@@ -517,6 +511,13 @@ impl PlexiApp {
                             obj.insert("caller_context_denied".to_string(), serde_json::json!(true));
                         }
                     }
+                }
+                if op == "team_run" {
+                    if let Err(error) = self.start_team(&payload, response_file) {
+                        log::error!("agent_team: start failed: {error}");
+                        crate::rpc::write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                    }
+                    return;
                 }
                 let mut value = crate::agent::heads::handle_request(op, &payload);
                 if let Some(port) = crate::app::host_mcp::bound_port() {

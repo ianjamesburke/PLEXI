@@ -21,8 +21,7 @@ use crate::broker::gate::{
     Admission, AdmitRequest, NeedsYouDetails, NeedsYouFile, NeedsYouKind, PermissionMonitor,
 };
 use crate::broker::{
-    ActorScope, ActorType, Decision, GrantDuration, GrantKind, GrantRecord, GrantSource,
-    TargetType,
+    ActorScope, ActorType, Decision, GrantDuration, GrantKind, GrantRecord, GrantSource, TargetType,
 };
 use crate::plexi_ai::ledger::{self, LedgerRow};
 
@@ -275,9 +274,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
         if let Ok(mut card) = read_head(&head_dir) {
             let mut changed = false;
             for grant in &mut card.grants {
-                if grant.tool == tool
-                    && grant.kind == GrantKind::Soft
-                    && grant.decision == "allow"
+                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
                 {
                     grant.decision = "ask".to_string();
                     grant.expires_at = None;
@@ -302,9 +299,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
             }
             let mut changed = false;
             for grant in &mut run.grants {
-                if grant.tool == tool
-                    && grant.kind == GrantKind::Soft
-                    && grant.decision == "allow"
+                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
                 {
                     grant.decision = "ask".to_string();
                     grant.expires_at = None;
@@ -878,16 +873,17 @@ fn pane_session_grants(workspace: &Path, pane_id: u64) -> Vec<ToolGrant> {
 }
 
 fn user_context_authority_grants(workspace: &Path, context_root: &Path) -> Vec<ToolGrant> {
-    if workspace == context_root {
-        vec![ToolGrant {
-            tool: "*".to_string(),
-            decision: "allow".to_string(),
-            kind: GrantKind::Hard,
-            expires_at: None,
-        }]
-    } else {
-        Vec::new()
-    }
+    // The host has already authenticated this as a human-owned caller and
+    // checked its live execution directory. Persistent state is intentionally
+    // a separate channel directory, so comparing it to that directory would
+    // turn a storage choice into an authorization denial.
+    let _ = (workspace, context_root);
+    vec![ToolGrant {
+        tool: "*".to_string(),
+        decision: "allow".to_string(),
+        kind: GrantKind::Hard,
+        expires_at: None,
+    }]
 }
 
 pub fn handle_request(op: &str, payload: &Value) -> Value {
@@ -900,6 +896,10 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
     };
     monitor().expire_soft_grants();
     let caller_pane = payload.get("caller_pane").and_then(|v| v.as_u64());
+    let caller_human_pane = payload
+        .get("caller_human_pane")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let caller_context_root = payload
         .get("caller_context_root")
         .and_then(|v| v.as_str())
@@ -909,9 +909,10 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
         .get("caller_context_denied")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
-        || caller_context_root
-            .as_ref()
-            .is_some_and(|ctx_root| ctx_root != &workspace);
+        || (!caller_human_pane
+            && caller_context_root
+                .as_ref()
+                .is_some_and(|ctx_root| ctx_root != &workspace));
     if caller_context_denied {
         let actor = caller_pane
             .map(|p| format!("pane:{p}"))
@@ -927,8 +928,9 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             "ok": false,
             "error_code": "permission_denied",
             "error": format!(
-                "pane has no authority over context '{}' (authority is scoped to its own context root)",
-                workspace.display()
+                "admission refused for {actor}: requested '{}' is outside allowed scope '{}'. Run from a human-owned pane in the target folder, or cd back to the allowed folder.",
+                workspace.display(),
+                caller_context_root.as_ref().map_or_else(|| "unknown".to_string(), |root| root.display().to_string())
             ),
         });
     }
@@ -965,7 +967,9 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     } else {
                         let pane_grants = pane_session_grants(&workspace, pane_id);
                         if pane_grants.is_empty() {
-                            log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
+                            log::info!(
+                                "agents_api: create_head pane={caller_pane:?} holds no grants"
+                            );
                         } else {
                             log::info!(
                                 "agents_api: create_head pane={caller_pane:?} session_grants={}",
@@ -1154,10 +1158,7 @@ fn list_grants(workspace: &Path) -> Value {
                     || rec.workspace_root.is_none())
         })
         .map(|rec| {
-            let head = rec
-                .actor_id
-                .strip_prefix("agent:")
-                .unwrap_or(&rec.actor_id);
+            let head = rec.actor_id.strip_prefix("agent:").unwrap_or(&rec.actor_id);
             json!({
                 "grant_id": rec.grant_id,
                 "actor_id": rec.actor_id,
@@ -2008,9 +2009,7 @@ mod tests {
         let audit_rows = monitor().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
-                row.kind == "deny"
-                    && row.resource_id == "agents.admin"
-                    && row.actor == "agent:lead"
+                row.kind == "deny" && row.resource_id == "agents.admin" && row.actor == "agent:lead"
             }),
             "expected deny AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
@@ -2199,7 +2198,10 @@ mod tests {
                 "input_json": "{}",
             }),
         );
-        assert_eq!(ping_after["ok"], true, "hard grant must not expire: {ping_after}");
+        assert_eq!(
+            ping_after["ok"], true,
+            "hard grant must not expire: {ping_after}"
+        );
 
         // Audit log contains the soft expiry row (`kind: "expire"`, `decision: "ask"`).
         let audit_path = crate::config::config_dir().join("permission-audit.jsonl");
@@ -2211,9 +2213,7 @@ mod tests {
         let audit_rows = monitor().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
-                row.kind == "expire"
-                    && row.resource_id == "agents.review"
-                    && row.decision == "ask"
+                row.kind == "expire" && row.resource_id == "agents.review" && row.decision == "ask"
             }),
             "expected expire AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
