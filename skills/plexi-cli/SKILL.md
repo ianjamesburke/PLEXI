@@ -440,7 +440,7 @@ pane count (`--json` is supported).
 - `plexi pane close`: Close a pane
 - `plexi pane send`: Type text into another pane as if it came from the keyboard, or pass `--submit` for host-confirmed prompt submission
 - `plexi pane self`: Print the id of the pane you are currently in
-- `plexi pane info`: Print details about the current pane (or the previously focused pane) as JSON
+- `plexi pane info`: Print details about a pane (default: the current pane, or the previously focused pane) as JSON
 - `plexi pane capture`: Capture the last N lines of a pane's output as a JSON array
 - `plexi pane status`: Report one composite working, idle, blocked, or unknown verdict as JSON
 - `plexi pane key`: Send a key press to a pane

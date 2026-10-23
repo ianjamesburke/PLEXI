@@ -1478,7 +1478,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `close` | Close a pane. Omit the pane id to close the pane you are currently in |
 | `send` | Type text into another pane as if it came from the keyboard, or pass `--submit` for host-confirmed prompt submission |
 | `self` | Print the id of the pane you are currently in |
-| `info` | Print details about the current pane (or the previously focused pane) as JSON |
+| `info` | Print details about a pane (default: the current pane, or the previously focused pane) as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
 | `status` | Report one composite working, idle, blocked, or unknown verdict as JSON |
 | `key` | Send a key press to a pane |
@@ -1667,10 +1667,13 @@ Useful in scripts: MY_PANE=$(plexi pane self)
 
 ### `plexi pane info`
 
-Print details about the current pane (or the previously focused pane) as JSON
+Print details about a pane (default: the current pane, or the previously focused pane) as JSON.
+
+Example: plexi pane info 42
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
+| `<pane_id>` | string | no | Pane id or name to describe. Defaults to the current pane (PLEXI_PANE_ID) |
 | `--previous` | string | no | Return info for a previously focused pane. With no value, returns the immediately previous pane (step 1). Provide an integer N to walk back N steps in focus history.  Examples: plexi pane info --previous      # pane focused 1 step ago plexi pane info --previous 3    # pane focused 3 steps ago |
 
 ### `plexi pane capture`

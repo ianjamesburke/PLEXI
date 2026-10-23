@@ -820,7 +820,7 @@ pub fn pane_self_cli() -> i32 {
 /// When `steps` is `Some(n)`, walks back N steps in focus history.
 /// Merges in client-side fields (socket, channel) and pretty-prints the result
 /// as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli(previous: Option<u64>) -> i32 {
+pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -836,20 +836,25 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
             "steps": steps,
         })
     } else {
-        let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!(
-                    "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane"
-                );
-                return 1;
-            }
-        };
-        let pane_id: u64 = match pane_id_str.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                return 1;
+        let pane_id: u64 = match pane_id {
+            Some(id) => id,
+            None => {
+                let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+                    Ok(v) => v,
+                    Err(_) => {
+                        eprintln!(
+                            "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane, or pass a pane id"
+                        );
+                        return 1;
+                    }
+                };
+                match pane_id_str.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+                        return 1;
+                    }
+                }
             }
         };
         log::info!("pane_info:cli: pane_id={pane_id}");

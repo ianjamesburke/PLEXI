@@ -848,7 +848,10 @@ impl TerminalPane {
             .env
             .get("PLEXI_SPAWNED_BY")
             .cloned()
-            .filter(|s| !s.trim().is_empty());
+            .filter(|s| !s.trim().is_empty())
+            // A pane nobody stamped (new window/split/first shell) was opened by the
+            // person at the desktop; agent and system spawners stamp themselves.
+            .or_else(|| Some("human".to_string()));
         let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
         let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
         let agent_spawned = settings

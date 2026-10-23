@@ -2106,8 +2106,13 @@ pub enum PaneCmd {
     /// Useful in scripts: MY_PANE=$(plexi pane self)
     #[command(name = "self")]
     Self_,
-    /// Print details about the current pane (or the previously focused pane) as JSON.
+    /// Print details about a pane (default: the current pane, or the previously focused pane) as JSON.
+    ///
+    /// Example: plexi pane info 42
     Info {
+        /// Pane id or name to describe. Defaults to the current pane (PLEXI_PANE_ID).
+        #[arg(conflicts_with = "previous")]
+        pane_id: Option<PaneTarget>,
         /// Return info for a previously focused pane. With no value, returns the immediately
         /// previous pane (step 1). Provide an integer N to walk back N steps in focus history.
         ///
@@ -3949,6 +3954,24 @@ mod tests {
             pane_key_help.contains("pane send") && pane_key_help.contains("--submit"),
             "plexi pane key --help must cross-reference pane send --submit for confirmed submission:\n{pane_key_help}"
         );
+    }
+
+    #[test]
+    fn pane_info_accepts_a_positional_pane_id() {
+        use super::{Commands, PaneCmd};
+        let parse = |args: &[&str]| Cli::try_parse_from(args);
+        let cli = parse(&["plexi", "pane", "info", "42"]).expect("pane info 42");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane { cmd: PaneCmd::Info { pane_id: Some(ref t), previous: None } })
+                if t == &super::PaneTarget::from(42)
+        ));
+        let cli = parse(&["plexi", "pane", "info"]).expect("pane info");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pane { cmd: PaneCmd::Info { pane_id: None, previous: None } })
+        ));
+        assert!(parse(&["plexi", "pane", "info", "42", "--previous"]).is_err());
     }
 
     #[test]

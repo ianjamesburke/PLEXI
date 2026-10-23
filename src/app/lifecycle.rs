@@ -2150,6 +2150,15 @@ impl PlexiApp {
                             self.apply_inline_pane_name(response_pane_id, pane_name);
                         }
                     }
+                    // Provenance comes from the verified socket peer, never the
+                    // wire: `pane new` from an agent pane is that agent's child,
+                    // from a plain terminal it is the person's own pane. The
+                    // parent link is left alone so no result delivery is implied.
+                    let (_, spawned_by) = self.resolve_unspoofable_spawner(
+                        spec.from_pane_id,
+                        spec.peer_ancestry.as_deref(),
+                    );
+                    self.set_pane_spawned_by(response_pane_id, spawned_by, None);
                 }
                 self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
             }

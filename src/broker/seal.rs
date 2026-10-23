@@ -577,7 +577,12 @@ pub fn scrub_pane_env(env: &mut HashMap<String, String>, agent_pane: bool) {
             || key_hex
                 .as_ref()
                 .is_some_and(|key| value.contains(key.as_str()) || name.contains(key.as_str()));
+        // `PLEXI_SOCKET` is the host's command endpoint, which lives inside the
+        // profile. An agent needs it for `plexi agent done/report/spawn`; the
+        // host authenticates callers by kernel peer identity, not by knowing
+        // the path, so it is the one profile-bearing value agents keep.
         let profile_hit = agent_pane
+            && name != "PLEXI_SOCKET"
             && (name == "PLEXI_PROFILE"
                 || name == "PLEXI_CONFIG_DIR"
                 || value_has_profile(value, &profile_text)
@@ -1272,7 +1277,11 @@ mod tests {
         env.insert("PLEXI_CHANNEL".into(), "pr-test".into());
         env.insert("OK".into(), "fine".into());
         scrub_pane_env(&mut env, true);
-        assert!(!env.contains_key("PLEXI_SOCKET"));
+        assert_eq!(
+            env.get("PLEXI_SOCKET").map(String::as_str),
+            Some(format!("{}/notify.sock", dir.path().display()).as_str()),
+            "agent panes keep the command socket so `agent done` works without a manual export"
+        );
         assert!(!env.contains_key("PLEXI_PROFILE"));
         assert!(!env.contains_key("LEAK"));
         assert_eq!(

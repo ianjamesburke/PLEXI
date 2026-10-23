@@ -329,3 +329,53 @@ fn caller_context_is_answered_from_the_verified_peer() {
     assert_eq!(outside["ok"], true, "{outside}");
     assert!(outside["pane_id"].is_null() && outside["context_root"].is_null(), "{outside}");
 }
+
+/// 0961 follow-up: a pane from `plexi agent spawn` carries its own routing env,
+/// so `agent done` needs no manual `PLEXI_SOCKET` export, and the host accepts
+/// the done from that pane's own process.
+#[test]
+fn agent_done_works_from_a_spawned_pane_without_a_manual_socket_export() {
+    let mut h = HostHarness::new();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let (pane, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "researcher", "pi", "sleep 30", "Audit auth", None, false, None, None, None, None,
+            false, None,
+        )
+        .unwrap();
+    let (pid, env) = {
+        let (win, _) = h.app.find_pane_in_any_window(pane).unwrap();
+        let term = h.app.windows[win].panes.get(&pane).unwrap().as_terminal().unwrap();
+        (term.backend.child_pid(), term.spawn_env.clone())
+    };
+    assert_eq!(
+        env.get("PLEXI_SOCKET").map(String::as_str),
+        Some(crate::platform::ipc::endpoint().as_str()),
+        "spawned pane must inherit the host socket"
+    );
+    assert_eq!(env.get("PLEXI_PANE_ID"), Some(&pane.to_string()));
+
+    let reply_path = root.join("spawned-done.json");
+    let done = AppRequest::AgentDone {
+        pane_id: pane,
+        result: Some("{\"answer\":42}".into()),
+        summary: Some("done".into()),
+        peer_ancestry: None,
+        response_file: reply_path.to_string_lossy().into_owned(),
+    };
+    let reply = socket_request(&mut h, &done, &[pid], &reply_path);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(h.app.pane_results.get(&pane).is_some_and(|r| r.committed.is_some()));
+}
+
+#[test]
+fn plain_panes_are_stamped_spawned_by_human_with_a_badge() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let (win, _) = h.app.find_pane_in_any_window(pane).unwrap();
+    let term = h.app.windows[win].panes.get(&pane).unwrap().as_terminal().unwrap();
+    assert_eq!(term.spawned_by.as_deref(), Some("human"));
+    assert_eq!(term.spawned_by_badge().as_deref(), Some("spawned by you"));
+}
