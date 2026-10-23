@@ -190,6 +190,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         println!("{notify_id}");
         return 0;
     };
+    crate::rpc::register_client_stream(response_file.clone(), stream);
     log::info!("notify:cli: polling for response at {response_file:?}");
 
     let timeout =
@@ -247,6 +248,10 @@ pub fn dismiss_notify_cli(
         eprintln!("error: could not write to socket: {e}");
         return 1;
     }
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    let mut ack = [0u8; 1];
+    let _ = std::io::Read::read_exact(&mut stream, &mut ack);
+    crate::rpc::register_client_stream(response_file.clone(), stream);
     match crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(30))) {
         Ok(result) if result.trim() == "dismissed" => 0,
         Ok(result) => {

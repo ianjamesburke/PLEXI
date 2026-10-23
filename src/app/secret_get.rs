@@ -6,14 +6,9 @@
 //! pending id. Contract: `src/cli/AGENTS.md`.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use super::PlexiApp;
 use crate::workspace::secrets::{ReadResult, SecretActor, SecretScope};
-
-/// A reply that carries a value is removed after this long even when the
-/// caller could not delete it (a sandboxed agent cannot write the profile).
-const VALUE_REPLY_TTL: Duration = Duration::from_secs(15);
 
 impl PlexiApp {
     pub(crate) fn serve_secret_list(
@@ -238,27 +233,14 @@ fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope,
 }
 
 fn write_reply(path: &Path, body: serde_json::Value, holds_value: bool) {
-    if let Err(error) =
-        crate::platform::fs::atomic_write_with_mode(path, body.to_string().as_bytes(), 0o600)
-    {
-        log::error!("secret_get: reply write to {} failed: {error}", path.display());
-        return;
-    }
-    if holds_value {
-        let path = path.to_path_buf();
-        let spawned = std::thread::Builder::new()
-            .name("secret-get-reply-expiry".into())
-            .spawn(move || {
-                std::thread::sleep(VALUE_REPLY_TTL);
-                match std::fs::remove_file(&path) {
-                    Ok(()) => log::info!("secret_get: removed unread value reply"),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => log::warn!("secret_get: value reply cleanup failed: {error}"),
-                }
-            });
-        if let Err(error) = spawned {
-            log::warn!("secret_get: value reply expiry thread failed: {error}");
-        }
+    let token = path.to_string_lossy();
+    let wrote = if holds_value {
+        crate::rpc::write_stream_only_json_response(&token, body)
+    } else {
+        crate::rpc::write_json_response(&token, body)
+    };
+    if !wrote {
+        log::error!("secret_get: reply write for {} failed", path.display());
     }
 }
 
@@ -330,21 +312,105 @@ mod list_tests {
     }
 
     fn secret_get_request(h: &mut HostHarness, name: &str, peer: &[u32]) -> serde_json::Value {
-        let response_file = crate::config::config_dir()
-            .join("rpc")
-            .join(format!("secret-get-{}.json", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(response_file.parent().unwrap()).unwrap();
+        let response_file = crate::rpc::response_file("secret-get", "json");
         let request = crate::protocol::AppRequest::PaneSecretGet {
             name: name.into(),
             global: false,
             workspace_root: Some(h.workspace_root()),
             peer_ancestry: vec![],
-            response_file: response_file.display().to_string(),
+            response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
-        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut Vec::new());
+        let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::rpc::register_client_stream(response_file.clone(), client_stream);
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut server_stream);
+        drop(server_stream);
         h.hidden_frame();
-        serde_json::from_str(&std::fs::read_to_string(response_file).unwrap()).unwrap()
+        let body = crate::rpc::poll_string(
+            &response_file,
+            Some(std::time::Duration::from_secs(2)),
+        )
+        .unwrap();
+        assert!(
+            !std::path::Path::new(&response_file).exists(),
+            "secret_get must never create a response file on disk"
+        );
+        serde_json::from_str(&body).unwrap()
+    }
+
+    #[test]
+    fn secret_get_returns_value_over_socket_stream_without_creating_rpc_file() {
+        let mut h = HostHarness::new();
+        let ws = h.workspace_root();
+        let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
+        let secret_name = "STREAM_ONLY_SECRET";
+        let secret_val = "plaintext-never-hits-disk-0970";
+        let account = secrets::keychain_workspace_name(&cfg.id, secret_name);
+        secrets::system_store().set(&account, secret_val).unwrap();
+
+        write_agent_role(
+            &ws,
+            "worker-allow-secret",
+            "[permissions]\ndefault_posture = \"allow\"\nallow = [\"secret.get\"]",
+        );
+        let (pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "worker-allow-secret",
+                "pi",
+                "sleep 30",
+                "Read secret",
+                None,
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let pid = h.terminal_backend(pane).child_pid();
+
+        let rpc_dir = crate::config::config_dir().join("rpc");
+        let ask = secret_get_request(&mut h, secret_name, &[pid]);
+        assert_eq!(ask["status"], "permission_required", "{ask}");
+        let pending_id = ask["pending_request_id"].as_str().unwrap();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Once)
+            .unwrap();
+
+        let reply = secret_get_request(&mut h, secret_name, &[pid]);
+        assert_eq!(reply["status"], "value", "{reply}");
+        assert_eq!(reply["value"], secret_val);
+
+        if let Ok(entries) = std::fs::read_dir(&rpc_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let name_str = fname.to_string_lossy();
+                assert!(
+                    !name_str.starts_with("secret-get-"),
+                    "found unexpected secret-get file on disk: {}",
+                    entry.path().display()
+                );
+            }
+        }
+
+        // Without a registered socket stream, value replies are refused rather than written to disk.
+        let unbacked = crate::rpc::response_file("secret-get-unbacked", "json");
+        super::write_reply(
+            std::path::Path::new(&unbacked),
+            serde_json::json!({"status": "value", "value": secret_val}),
+            true,
+        );
+        assert!(
+            !std::path::Path::new(&unbacked).exists(),
+            "value reply without a socket stream must never fall back to disk"
+        );
+
+        secrets::system_store().delete(&account).unwrap();
     }
 
     #[test]

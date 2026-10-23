@@ -1363,6 +1363,7 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
         eprintln!("error: could not send log marker: {e}");
         return 1;
     }
+    crate::rpc::register_client_stream(response_file.clone(), stream);
 
     match crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
         Ok(_) => 0,

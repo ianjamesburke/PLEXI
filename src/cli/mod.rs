@@ -1444,7 +1444,16 @@ fn send_line_to_socket(
             bytes_written: written,
         });
     }
-    Ok(fd.into())
+    let stream: crate::platform::ipc::IpcStream = fd.into();
+    let _ = stream.set_nonblocking(false);
+    if let Ok(text) = std::str::from_utf8(line) {
+        if let Some(token) = crate::rpc::extract_response_file_token(text) {
+            if let Ok(cloned) = stream.try_clone() {
+                crate::rpc::register_client_stream(token, cloned);
+            }
+        }
+    }
+    Ok(stream)
 }
 
 /// Windows counterpart of the raw-fd path above.
@@ -1479,6 +1488,13 @@ fn send_line_to_socket(
             // landed whole or the caller must retry the whole thing.
             bytes_written: 0,
         })?;
+    if let Ok(text) = std::str::from_utf8(line) {
+        if let Some(token) = crate::rpc::extract_response_file_token(text) {
+            if let Ok(cloned) = stream.try_clone() {
+                crate::rpc::register_client_stream(token, cloned);
+            }
+        }
+    }
     Ok(stream)
 }
 

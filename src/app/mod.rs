@@ -696,12 +696,27 @@ const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 /// only variants that carry a `peer_pid` field — so `handle_pane_ipc_request`
 /// can resolve the sender pane from a value the client never controlled,
 /// instead of trusting the wire-supplied `source_context_id`/`source_pane_id`.
+pub(crate) trait SocketAckWriter: std::io::Write {
+    fn clone_reply_stream(&self) -> Option<crate::platform::ipc::IpcStream> {
+        None
+    }
+}
+
+impl SocketAckWriter for crate::platform::ipc::IpcStream {
+    fn clone_reply_stream(&self) -> Option<crate::platform::ipc::IpcStream> {
+        self.try_clone().ok()
+    }
+}
+
+impl SocketAckWriter for Vec<u8> {}
+impl SocketAckWriter for std::io::Sink {}
+
 #[cfg(test)]
 pub(crate) fn handle_socket_line(
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     peer_ancestry: Option<&[u32]>,
-    ack_writer: &mut impl std::io::Write,
+    ack_writer: &mut impl SocketAckWriter,
 ) {
     handle_socket_line_in(&crate::config::config_dir(), line, mailbox, peer_ancestry, ack_writer);
 }
@@ -711,7 +726,7 @@ pub(crate) fn handle_socket_line_in(
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     peer_ancestry: Option<&[u32]>,
-    ack_writer: &mut impl std::io::Write,
+    ack_writer: &mut impl SocketAckWriter,
 ) {
     if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line) {
         if frame["type"] == "cli_trace" {
@@ -814,8 +829,16 @@ pub(crate) fn handle_socket_line_in(
                     log::warn!("pane_ipc: peer identity ack write failed: {e}");
                 }
             }
+            let reply_token = crate::rpc::extract_response_file_token(line);
+            if let Some(ref token) = reply_token {
+                if let Some(reply_stream) = ack_writer.clone_reply_stream() {
+                    crate::rpc::ReplyRegistry::register(token.clone(), reply_stream);
+                }
+            }
             if mailbox.send(cmd).is_ok() {
                 log::debug!("pane_ipc: request queued — mailbox wakes idle UI thread");
+            } else if let Some(ref token) = reply_token {
+                crate::rpc::ReplyRegistry::remove(token);
             }
         }
         Err(e) => {
@@ -1001,6 +1024,9 @@ fn handle_socket_connection(
     }
     // Normal path: first line plus any remaining lines as AppRequests.
     handle_socket_line_in(trace_profile, &first, &mailbox, peer_ancestry.as_deref(), &mut write_half);
+    if crate::rpc::extract_response_file_token(&first).is_some() {
+        return;
+    }
     loop {
         let line = match read_socket_frame(&mut reader) {
             Ok(Some(line)) => line,
@@ -1015,6 +1041,9 @@ fn handle_socket_connection(
             continue;
         }
         handle_socket_line_in(trace_profile, &line, &mailbox, peer_ancestry.as_deref(), &mut write_half);
+        if crate::rpc::extract_response_file_token(&line).is_some() {
+            return;
+        }
     }
 }
 
