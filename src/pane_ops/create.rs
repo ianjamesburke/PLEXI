@@ -1579,6 +1579,19 @@ impl PlexiApp {
             .position(|c| c.context_id == parent_ctx_id)
             .map(|idx| self.router.get(idx).root.clone())
             .unwrap_or_else(|| self.windows[parent_win_idx].path.clone());
+        let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(cwd_override.as_deref().unwrap_or(&parent_root));
+        let profile = crate::config::config_dir();
+        let has_definition = profile.join("agents").join(role).is_dir()
+            || workspace.as_ref().is_some_and(|root| crate::agent::workspace_agents_dir(root).join(role).is_dir());
+        let posture = if has_definition {
+            crate::cli::agent::resolve_agent_definition_in(role, &profile, workspace.as_deref())?.0.posture
+        } else {
+            // Ad-hoc team roles and resumed unconfigured harnesses still ask.
+            crate::broker::PermissionPosture {
+                default_posture: crate::broker::Decision::Ask,
+                allow: vec![], ask: vec![], deny: vec![],
+            }
+        };
         let parent_depth = self
             .router
             .position(|c| c.context_id == parent_ctx_id)
@@ -1719,6 +1732,10 @@ impl PlexiApp {
         pane.parent_pane_id = parent_pane_id;
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
+        pane.agent_posture = Some(posture.clone());
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .bind_pane_posture(new_id, &posture);
+        log::info!("agent: snapshotted permission posture pane={new_id} role={role}");
         pane.name = Some(role.to_string());
         pane.name_locked = true;
         pane.agent = Some(crate::protocol::PaneAgentState {

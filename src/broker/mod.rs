@@ -627,7 +627,7 @@ impl PermissionRequest {
 /// Settings say what the actor wants; only `GrantRecord`s say what the user
 /// allowed. Postures participate at the actor-specific tiers of evaluation
 /// and can never override a managed or user/workspace/session deny.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionPosture {
     pub default_posture: Decision,
     pub allow: Vec<String>,

@@ -11482,6 +11482,7 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                posture: None,
                                 fleet_result: None,
                                 fleet_seen: false,
                                 fleet_done_unseen: false,
@@ -11551,6 +11552,7 @@ mod agent_state_restoration_tests {
                         launch: None,
                         slots: bg_slots,
                         agent_session: Some(SavedAgentSession {
+                            posture: None,
                             fleet_result: None,
                             fleet_seen: false,
                             fleet_done_unseen: false,
@@ -11589,6 +11591,7 @@ mod agent_state_restoration_tests {
                         launch: None,
                         slots: HashMap::new(),
                         agent_session: Some(SavedAgentSession {
+                            posture: None,
                             fleet_result: None,
                             fleet_seen: false,
                             fleet_done_unseen: false,
@@ -11885,6 +11888,7 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                posture: None,
                                 fleet_result: None,
                                 fleet_seen: false,
                                 fleet_done_unseen: false,
@@ -11914,6 +11918,7 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                posture: None,
                                 fleet_result: None,
                                 fleet_seen: false,
                                 fleet_done_unseen: false,
@@ -11943,6 +11948,7 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                posture: None,
                                 fleet_result: None,
                                 fleet_seen: false,
                                 fleet_done_unseen: false,
@@ -11984,6 +11990,7 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                posture: None,
                                 fleet_result: None,
                                 fleet_seen: false,
                                 fleet_done_unseen: false,
@@ -12013,6 +12020,7 @@ mod agent_state_restoration_tests {
                             launch: None,
                             slots: HashMap::new(),
                             agent_session: Some(SavedAgentSession {
+                                posture: None,
                                 fleet_result: None,
                                 fleet_seen: false,
                                 fleet_done_unseen: false,

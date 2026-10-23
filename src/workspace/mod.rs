@@ -84,6 +84,8 @@ pub struct SavedPane {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct SavedAgentSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture: Option<crate::broker::PermissionPosture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet_result: Option<serde_json::Value>,
     #[serde(default)]
     pub fleet_seen: bool,
@@ -823,6 +825,7 @@ mod tests {
             launch: None,
             slots: slots.clone(),
             agent_session: Some(SavedAgentSession {
+                posture: None,
                 fleet_result: None,
                 fleet_seen: false,
                 fleet_done_unseen: false,

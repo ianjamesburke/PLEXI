@@ -264,6 +264,10 @@ impl PlexiApp {
     /// 0013/0014) so capability-gated app requests take the identical host
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
+        if let crate::protocol::AppRequest::AuthenticatedPaneWrite { request, peer_ancestry } = cmd {
+            self.handle_authenticated_pane_write(*request, &peer_ancestry);
+            return;
+        }
         match &cmd {
             crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, conversation_id, join_desktop, status_for, client, kind, head } => {
                 if let Some(head) = head {
@@ -5513,5 +5517,350 @@ mod context_sub_trace_tests {
             vec![(1, "a")]
         );
         assert_eq!(launched_pairs(&[1, 2], &[Some("a".into())]), vec![(1, "a")]);
+    }
+}
+
+/// CLI input mutations share one admission seam; aliases share their wire request.
+pub(super) fn pane_write_tool(
+    request: &crate::protocol::AppRequest,
+) -> Option<(&'static str, Option<&str>)> {
+    use crate::protocol::AppRequest::*;
+    match request {
+        SendToPane { response_file, .. } => Some(("pane.send", response_file.as_deref())),
+        SlotWrite { response_file, .. } => Some(("pane.slot.write", Some(response_file))),
+        PaneHeartbeat { response_file, .. } => Some(("pane.heartbeat", response_file.as_deref())),
+        ClickPane { response_file, .. } | ClickPaneNode { response_file, .. } => {
+            Some(("pane.click", response_file.as_deref()))
+        }
+        DragPane { response_file, .. } => Some(("pane.drag", response_file.as_deref())),
+        DropFile { response_file, .. } => Some(("pane.drop", Some(response_file))),
+        AgentMessage { response_file, .. } => Some(("agent.message", Some(response_file))),
+        KeyPane { response_file, .. } => Some(("pane.key", response_file.as_deref())),
+        SendAppAction { response_file, .. } => Some(("app.action", response_file.as_deref())),
+        PaneMessageSend { response_file, .. } => Some(("pane.message.send", Some(response_file))),
+        _ => None,
+    }
+}
+
+impl PlexiApp {
+    fn handle_authenticated_pane_write(
+        &mut self,
+        request: crate::protocol::AppRequest,
+        ancestry: &[u32],
+    ) {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+        let Some((tool, response)) = pane_write_tool(&request) else {
+            return;
+        };
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let peer = self.resolve_socket_peer_pane(ancestry);
+        let caller = match &request {
+            crate::protocol::AppRequest::AgentMessage {
+                parent_pane_id,
+                call_credential,
+                ..
+            } => monitor
+                .authenticate_call(
+                    *parent_pane_id,
+                    call_credential.as_deref(),
+                    peer.map(|(id, _, _)| id),
+                )
+                .ok()
+                .and_then(|verified| verified.pane_id)
+                .and_then(|id| {
+                    self.find_pane_in_any_window(id).map(|(win, _)| {
+                        (
+                            id,
+                            self.windows[win].context_id,
+                            self.windows[win].window_id,
+                        )
+                    })
+                }),
+            _ => peer,
+        };
+        let Some((pane, context_id, _)) = caller else {
+            monitor.note_denial("session:unscoped", "pane-write", tool, "", "identity");
+            if let Some(path) = response {
+                crate::rpc::write_json_response(
+                    path,
+                    serde_json::json!({"ok":false,"error":"permission_denied: caller identity could not be verified"}),
+                );
+            }
+            return;
+        };
+        // A bearer agent credential is not human authority. Only the socket
+        // peer of a human-owned pane takes the user bypass.
+        if peer.is_some() && self.is_human_owned_pane(pane) {
+            self.handle_pane_ipc_request(request);
+            return;
+        }
+        let Some(root) = self.context_root_for(context_id) else {
+            monitor.note_denial(
+                &format!("pane:{pane}"),
+                "pane-write",
+                tool,
+                "",
+                "context_missing",
+            );
+            if let Some(path) = response {
+                crate::rpc::write_json_response(
+                    path,
+                    serde_json::json!({"ok":false,"error":"permission_denied"}),
+                );
+            }
+            return;
+        };
+        let actor = format!("pane:{pane}");
+        let call = format!("pane-write-{}", uuid::Uuid::new_v4());
+        let mut input = serde_json::to_value(&request).expect("serializable pane write");
+        // Reply paths and transport identity are not operation arguments.
+        if let Some(object) = input.as_object_mut() {
+            object.remove("response_file");
+            object.remove("peer_ancestry");
+            object.remove("call_credential");
+        }
+        match monitor.admit(AdmitRequest {
+            call_id: &call,
+            tool,
+            input_json: &input.to_string(),
+            actor_type: ActorType::Agent,
+            actor_id: &actor,
+            actor_scope: ActorScope::User,
+            trust_origin: "plexi-cli",
+            workspace_root: &root,
+            context_id,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        }) {
+            Admission::Proceed {
+                grant_id,
+                fingerprint,
+                resource_id,
+                ..
+            } => {
+                if let Err(error) = monitor.note_use(
+                    &actor,
+                    &call,
+                    &grant_id,
+                    &fingerprint,
+                    resource_id.as_deref().unwrap_or(""),
+                    "",
+                ) {
+                    log::error!("pane write audit failed: {error}");
+                    if let Some(path) = response {
+                        crate::rpc::write_json_response(
+                            path,
+                            serde_json::json!({"ok":false,"error":"audit_failed"}),
+                        );
+                    }
+                    return;
+                }
+                monitor.consume_once(&grant_id, None);
+                self.handle_pane_ipc_request(request);
+            }
+            admission => {
+                let body = match admission {
+                    Admission::Required { pending_request_id } => {
+                        serde_json::json!({"ok":false,"error":"permission_required","pending_request_id":pending_request_id})
+                    }
+                    _ => serde_json::json!({"ok":false,"error":"permission_denied"}),
+                };
+                if let Some(path) = response {
+                    crate::rpc::write_json_response(path, body);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod harness_posture_tests {
+    use crate::broker::gate::PermissionMonitor;
+    use crate::protocol::AppRequest;
+    use crate::testing::HostHarness;
+
+    #[test]
+    fn harness_posture_snapshot_blocks_writes_and_preserves_human_authority() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let human = h.add_focused_terminal();
+        let dir = crate::agent::workspace_agents_dir(&root).join("researcher");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENT.md"), "Research carefully.").unwrap();
+        let settings = "[agent]\nid='researcher'\ndisplay_name='Researcher'\n[harness]\ncli='pi'\n[permissions]\ndefault_posture='ask'\ndeny=['secret.get','pane.send','pane.message.send','agent.message']\n";
+        std::fs::write(dir.join("settings.toml"), settings).unwrap();
+        let (worker, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "researcher",
+                "pi",
+                "sleep 30",
+                "Research",
+                None,
+                false,
+                Some(human),
+                Some(root.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            settings.replace("deny=[", "allow=["),
+        )
+        .unwrap();
+        let term = h.app.windows[0].panes[&worker].as_terminal().unwrap();
+        let peer = term.backend.child_pid();
+        let saved = term.build_saved_agent_session().unwrap();
+        let encoded = serde_json::to_value(&saved).unwrap();
+        let restored: crate::workspace::SavedAgentSession =
+            serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(saved.posture, restored.posture);
+        let mut legacy = encoded;
+        legacy.as_object_mut().unwrap().remove("posture");
+        assert!(
+            serde_json::from_value::<crate::workspace::SavedAgentSession>(legacy)
+                .unwrap()
+                .posture
+                .is_none()
+        );
+        assert_eq!(saved.posture.unwrap().deny[0], "secret.get");
+        let monitor = PermissionMonitor::for_profile(h.profile_dir());
+        for submit in [false, true] {
+            let response = root.join(format!("send-{submit}.json"));
+            let request = AppRequest::SendToPane {
+                pane_id: human,
+                text: "blocked".into(),
+                submit,
+                paste: false,
+                response_file: Some(response.to_string_lossy().into_owned()),
+            };
+            crate::app::handle_socket_line(
+                &serde_json::to_string(&request).unwrap(),
+                &h.ipc_tx,
+                Some(&[peer]),
+                &mut std::io::sink(),
+            );
+            h.app.drain_pane_cmd_channel();
+            let reply: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap();
+            assert_eq!(reply["error"], "permission_denied");
+        }
+        let response = root.join("message.json");
+        let message = AppRequest::PaneMessageSend {
+            pane_id: human,
+            payload: serde_json::json!({"text":"blocked"}).to_string(),
+            submit: true,
+            peer_ancestry: Some(vec![1]),
+            response_file: response.to_string_lossy().into_owned(),
+        };
+        crate::app::handle_socket_line(
+            &serde_json::to_string(&message).unwrap(),
+            &h.ipc_tx,
+            Some(&[peer]),
+            &mut std::io::sink(),
+        );
+        h.app.drain_pane_cmd_channel();
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap();
+        assert_eq!(reply["error"], "permission_denied");
+        assert!(monitor.list_pending().is_empty());
+        let response = root.join("credential-message.json");
+        let token = monitor.issue_credential(
+            Some(worker),
+            h.app.windows[0].context_id,
+            &root,
+            "agent:researcher",
+        );
+        let message = AppRequest::AgentMessage {
+            pane_id: human,
+            text: "blocked".into(),
+            parent_pane_id: Some(worker),
+            call_credential: Some(token),
+            peer_ancestry: vec![],
+            wait: false,
+            response_file: response.to_string_lossy().into_owned(),
+        };
+        crate::app::handle_socket_line(
+            &serde_json::to_string(&message).unwrap(),
+            &h.ipc_tx,
+            Some(&[]),
+            &mut std::io::sink(),
+        );
+        h.app.drain_pane_cmd_channel();
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap();
+        assert_eq!(reply["error"], "permission_denied");
+        assert!(monitor.list_pending().is_empty());
+        assert_eq!(
+            monitor
+                .audit_records()
+                .iter()
+                .filter(|r| r.decision == "deny")
+                .count(),
+            4
+        );
+        let response = root.join("human.json");
+        let human_peer = h.app.windows[0].panes[&human]
+            .as_terminal()
+            .unwrap()
+            .backend
+            .child_pid();
+        assert!(h.app.is_human_owned_pane(human));
+        h.app
+            .handle_pane_ipc_request(AppRequest::AuthenticatedPaneWrite {
+                request: Box::new(AppRequest::SendToPane {
+                    pane_id: human,
+                    text: "human".into(),
+                    submit: false,
+                    paste: false,
+                    response_file: Some(response.to_string_lossy().into_owned()),
+                }),
+                peer_ancestry: vec![human_peer],
+            });
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert!(monitor.list_pending().is_empty());
+
+        // A credential alone authenticates an agent; it cannot impersonate a
+        // human socket peer, even when it is bound to the human's pane.
+        let response = root.join("credential-human.json");
+        let token = monitor.issue_credential(
+            Some(human),
+            h.app.windows[0].context_id,
+            &root,
+            "agent:lead",
+        );
+        let request = AppRequest::AgentMessage {
+            pane_id: worker,
+            text: "requires approval".into(),
+            parent_pane_id: Some(human),
+            call_credential: Some(token),
+            peer_ancestry: vec![],
+            wait: false,
+            response_file: response.to_string_lossy().into_owned(),
+        };
+        crate::app::handle_socket_line(
+            &serde_json::to_string(&request).unwrap(),
+            &h.ipc_tx,
+            Some(&[]),
+            &mut std::io::sink(),
+        );
+        h.app.drain_pane_cmd_channel();
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap();
+        assert_eq!(reply["error"], "permission_required");
+        assert_eq!(monitor.list_pending().len(), 1);
+    }
+
+    #[test]
+    fn harness_posture_envelope_cannot_be_supplied_by_socket_client() {
+        assert!(serde_json::from_str::<AppRequest>(r#"{"type":"authenticated_pane_write","request":{"type":"send_to_pane","pane_id":1,"text":"x"},"peer_ancestry":[]}"#).is_err());
     }
 }

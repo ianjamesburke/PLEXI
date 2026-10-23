@@ -428,7 +428,8 @@ mod tests {
         use std::os::unix::net::UnixListener;
         use std::process::{Command, Stdio};
         let mut h = HostHarness::new();
-        let parent = h.add_test_pane();
+        let parent = h.add_focused_terminal();
+        let parent_pid = h.app.windows[0].panes[&parent].as_terminal().unwrap().backend.child_pid();
         let (child, _) = h
             .app
             .spawn_agent_worker_pane(
@@ -506,7 +507,7 @@ mod tests {
             let mut wire = String::new();
             reader.read_line(&mut wire).unwrap();
             // This is the production socket decoder, not direct typed IPC injection.
-            crate::app::handle_socket_line(&wire, &h.ipc_tx, Some(&[]), reader.get_mut());
+            crate::app::handle_socket_line(&wire, &h.ipc_tx, Some(&[parent_pid]), reader.get_mut());
             h.hidden_frame();
             let delivered = h
                 .app

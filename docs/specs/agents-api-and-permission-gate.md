@@ -1327,3 +1327,22 @@ merging to alpha or cutting releases; hosted runtime and multi-tenant qualificat
 full no-window daemon qualification; arbitrary native sandbox guarantees; general
 workflow DSL; universal merge/CRDT and destructive-media selective undo; full video
 export/NLE. Local P1–P5 contracts must remain usable without any of those services.
+
+## Harness worker boundary
+
+Harness-native tools are **outside Plexi's permission gate**: pi's built-in
+bash/read/write/edit, Claude's `claude -p` without a Plexi-selected permission
+mode, Codex's workspace-write sandbox with network enabled, and `agy --prompt`.
+Their shell, filesystem, environment, credentials, and network access are governed
+by the harness and operating system, not the agent's Plexi `[permissions]` table.
+A posture does not sandbox a worker process.
+
+The snapshot contract lives in [the host contract](../../src/host/AGENTS.md#harness-worker-permissions).
+Socket-originated `pane send` (including submit and command aliases), `pane message
+send`, `pane key`, `pane heartbeat`, `pane click` (pixels or nodes), `pane drag`,
+`pane drop`, `pane slot write`, `app action`, and `agent message` use admission for agent callers.
+The corresponding permission targets are `pane.send`, `pane.message.send`,
+`pane.key`, `pane.heartbeat`, `pane.click`, `pane.drag`, `pane.drop`, `pane.slot.write`, `app.action`,
+and `agent.message`. Human-owned panes retain user authority; unverified socket callers are denied. This coverage does
+not mean every CLI mutation is gated; existing secret, connector and app-tool
+admission paths remain separate consumers of the same monitor.

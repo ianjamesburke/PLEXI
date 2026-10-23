@@ -128,3 +128,14 @@ An experiment owns its storage in its own versioned location and never writes co
   must honor the SDK `level` field for the same reason: a debug inventory poll
   that the host rewrites as info refills the tail. Unrecognized guest message
   types warn once per type per window; repeats stay at debug.
+
+## Harness worker permissions
+
+A worker pane owns a permission posture snapshot taken at spawn and persisted in
+`SavedAgentSession` with a serde default for older workspaces. Admission resolves
+`pane:<id>` against the monitor's copy of that snapshot; it never reloads agent
+settings during a run. Deny records a ledger row without creating a banner. Ask
+uses the existing pending-request flow; posture allow is not user authorization.
+
+Harness-native tools are **outside Plexi's gate**. See the boundary and CLI
+coverage in [the permission gate spec](../../docs/specs/agents-api-and-permission-gate.md#harness-worker-boundary).

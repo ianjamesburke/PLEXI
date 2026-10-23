@@ -435,6 +435,7 @@ pub(crate) const AUDIT_MEM_CAP: usize = 4096;
 pub struct PermissionMonitor {
     store: Arc<Mutex<GrantStore>>,
     pending: Mutex<Vec<Pending>>,
+    pane_postures: Mutex<BTreeMap<u64, super::PermissionPosture>>,
     /// Choices already applied, so a sheet and a dispatcher can both approve once.
     resolutions: Mutex<std::collections::HashMap<String, ApprovalChoice>>,
     session_id: String,
@@ -834,6 +835,7 @@ impl PermissionMonitor {
         Self {
             store,
             pending: Mutex::new(Vec::new()),
+            pane_postures: Mutex::new(BTreeMap::new()),
             resolutions: Mutex::new(std::collections::HashMap::new()),
             session_id,
             credentials: Mutex::new(std::collections::HashMap::new()),
@@ -911,6 +913,14 @@ impl PermissionMonitor {
         self.admission.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Copy the host-owned spawn/restore snapshot, never reload agent settings here.
+    pub fn bind_pane_posture(&self, pane: u64, posture: &super::PermissionPosture) {
+        self.pane_postures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pane, posture.clone());
+    }
+
     pub fn admit(&self, req: AdmitRequest<'_>) -> Admission {
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
             log::info!(
@@ -949,7 +959,13 @@ impl PermissionMonitor {
         let request = PermissionRequest::exact(&binding);
         self.expire_soft_grants();
         let now = self.now_secs();
-        let decision = self.store().evaluate_at(&request, None, now);
+        let posture = req.actor_id.strip_prefix("pane:")
+            .and_then(|id| id.parse::<u64>().ok())
+            .and_then(|id| {
+                self.pane_postures.lock().unwrap_or_else(|e| e.into_inner())
+                    .get(&id).cloned()
+            });
+        let decision = self.store().evaluate_at(&request, posture.as_ref(), now);
         log::info!(
             "permission_monitor: admit actor={} tool={} resource={:?} call_id={} -> {}",
             binding.actor_id,
@@ -4590,6 +4606,34 @@ mod tests {
             instance_id: binding.instance_id.unwrap_or(0),
             target_type: binding.target_type,
         })
+    }
+
+    #[test]
+    fn harness_posture_deny_is_silent_and_ask_is_one_pending() {
+        let monitor = PermissionMonitor::ephemeral();
+        let mut binding = binding(&fingerprint_args("{}").unwrap());
+        binding.actor_id = "pane:964".into();
+        binding.target_id = "secret.get".into();
+        let mut posture = super::super::PermissionPosture {
+            default_posture: Decision::Ask, allow: vec![], ask: vec![],
+            deny: vec!["secret.get".into(), "pane.send".into()],
+        };
+        monitor.bind_pane_posture(964, &posture);
+        // A later settings edit cannot mutate the monitor's snapshot.
+        posture.deny.clear();
+        assert!(matches!(admit_of(&monitor, &binding, "{}"), Admission::Denied { .. }));
+        assert!(monitor.pending.lock().unwrap().is_empty());
+        assert!(monitor.audit_records().iter().any(|r| r.decision == "deny"));
+        binding.target_id = "pane.send".into();
+        assert!(matches!(admit_of(&monitor, &binding, "{}"), Admission::Denied { .. }));
+        binding.target_id = "secret.get".into();
+        binding.actor_id = "pane:965".into();
+        posture.ask.push("secret.get".into());
+        monitor.bind_pane_posture(965, &posture);
+        for _ in 0..2 {
+            assert!(matches!(admit_of(&monitor, &binding, "{}"), Admission::Required { .. }));
+        }
+        assert_eq!(monitor.pending.lock().unwrap().len(), 1);
     }
 
     #[test]

@@ -803,6 +803,11 @@ pub(crate) fn handle_socket_line_in(
                     log::warn!("pane_ipc: peer identity ack write failed: {e}");
                 }
             }
+            let cmd = if lifecycle::pane_write_tool(&cmd).is_some() {
+                crate::protocol::AppRequest::AuthenticatedPaneWrite {
+                    request: Box::new(cmd), peer_ancestry: peer_ancestry.unwrap_or(&[]).to_vec(),
+                }
+            } else { cmd };
             if mailbox.send(cmd).is_ok() {
                 log::debug!("pane_ipc: request queued — mailbox wakes idle UI thread");
             }
@@ -5457,6 +5462,11 @@ pub(crate) fn restore_workspace(
                             pane.agent_harness = Some(session.harness.clone());
                             pane.agent_session_id = session.session_id.clone();
                             pane.agent_role = session.config_name.clone();
+                            pane.agent_posture = session.posture.clone();
+                            if let Some(posture) = &pane.agent_posture {
+                                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                                    .bind_pane_posture(pane.id, posture);
+                            }
                             pane.last_blocked_reason = session.last_blocked_reason;
                             pane.tail_preview = session.tail_preview.clone();
                             pane.agent_completed =

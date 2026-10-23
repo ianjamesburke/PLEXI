@@ -119,6 +119,10 @@ pub struct PaneAgentState {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AppRequest {
+    /// Host-only socket identity envelope. Cannot be supplied over the wire.
+    #[serde(skip)]
+    #[schemars(skip)]
+    AuthenticatedPaneWrite { request: Box<AppRequest>, peer_ancestry: Vec<u32> },
     /// Rename a context through the same commit handler as the desktop editor.
     ContextRename { context_id: u64, name: String, response_file: String },
     /// Close a context, honoring the desktop confirmation policy.
