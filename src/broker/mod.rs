@@ -403,17 +403,6 @@ impl GrantRecord {
                 && self.target_type == TargetType::Capability
                 && req.target_type == TargetType::Capability;
         }
-        if self.tool_scoped {
-            return match &self.resource_id {
-                Some(id) => req.resource_id.as_deref() == Some(id.as_str()),
-                None => true,
-            };
-        }
-        if !self.args_unbound
-            && (self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint)
-        {
-            return false;
-        }
         if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
             return false;
         }
@@ -423,6 +412,14 @@ impl GrantRecord {
         if self.package_id != req.package_id
             || self.instance_id != req.instance_id
             || self.context_id != req.context_id
+        {
+            return false;
+        }
+        if self.tool_scoped {
+            return true;
+        }
+        if !self.args_unbound
+            && (self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint)
         {
             return false;
         }
@@ -1291,6 +1288,26 @@ mod tests {
 
     fn agent_request() -> PermissionRequest {
         PermissionRequest::exact(&agent_binding())
+    }
+
+    #[test]
+    fn tool_scoped_grant_keeps_actor_origin_and_context_bound() {
+        let mut grant = agent_grant(Decision::Allow, GrantSource::Session);
+        grant.tool_scoped = true;
+        let request = agent_request();
+        assert!(grant.matches(&request, grant.created_at));
+
+        let mut other_origin = agent_binding();
+        other_origin.trust_origin = "other-host".to_string();
+        assert!(!grant.matches(&PermissionRequest::exact(&other_origin), grant.created_at));
+
+        let mut other_scope = agent_binding();
+        other_scope.actor_scope = ActorScope::User;
+        assert!(!grant.matches(&PermissionRequest::exact(&other_scope), grant.created_at));
+
+        let mut other_context = agent_binding();
+        other_context.context_id = Some(4);
+        assert!(!grant.matches(&PermissionRequest::exact(&other_context), grant.created_at));
     }
 
     #[test]
