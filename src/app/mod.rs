@@ -323,7 +323,6 @@ pub struct PlexiApp {
     pub(crate) text_overlay: Option<(TextInputOverlay, OverlayTarget)>,
     /// Receiver for async folder-picker results (Browse button).
     pub(crate) text_overlay_browse_rx: Option<mpsc::Receiver<Option<PathBuf>>>,
-    pub(crate) features: crate::features::FeatureFlags,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
     /// Whether the centered notification modal is visible. Primary (and only)
@@ -1417,7 +1416,6 @@ impl PlexiApp {
             config.keybindings.as_ref(),
             config.keys.as_ref(),
         );
-        let features = crate::features::FeatureFlags::from_config(&config);
         let notifications_enabled = config
             .notifications
             .as_ref()
@@ -1625,7 +1623,6 @@ impl PlexiApp {
                     text_overlay: None,
                     text_overlay_browse_rx: None,
                     registries,
-                    features,
                     pending_notifications: load_pending_notifications_from(
                         &profile_dir.join("notifications.json"),
                     ),
@@ -1896,7 +1893,6 @@ impl PlexiApp {
             text_overlay: None,
             text_overlay_browse_rx: None,
             registries: default_registries,
-            features,
             pending_notifications: load_pending_notifications_from(
                 &crate::config::config_dir().join("notifications.json"),
             ),
@@ -2705,7 +2701,6 @@ impl PlexiApp {
                 );
             }
         }
-        let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
             ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
                 std::sync::Arc::clone(&ui_wake),
@@ -2837,7 +2832,6 @@ impl PlexiApp {
                     views.view_for_root(&path);
                     views
                 },
-                features,
                 pending_notifications: Vec::new(),
                 show_notification_modal: false,
                 attention: Default::default(),

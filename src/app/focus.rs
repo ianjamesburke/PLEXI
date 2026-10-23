@@ -996,9 +996,6 @@ impl PlexiApp {
 
         self.focus_history_depth = fresh.focus_history_depth.unwrap_or(100);
 
-        // Feature flags
-        self.features = crate::features::FeatureFlags::from_config(&fresh);
-
         // Replace the cached config
         self.config = fresh;
         self.key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
@@ -1360,39 +1357,5 @@ impl PlexiApp {
         self.context_visit_history.retain(|&id| id != context_id);
         self.context_visit_history.insert(0, context_id);
         self.context_visit_history.truncate(50);
-    }
-
-    pub(super) fn draw_feature_effects(&self, ctx: &egui::Context) {
-        use egui::{Color32, Stroke};
-
-        // CRT effect — scanlines + green phosphor tint
-        if self.features.is_enabled("crt") {
-            egui::Area::new(egui::Id::new("crt_overlay"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .order(egui::Order::Foreground)
-                .interactable(false)
-                .show(ctx, |ui| {
-                    let screen = ctx.content_rect();
-                    let painter = ui.painter();
-
-                    // Green phosphor tint
-                    painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 40, 0, 18));
-
-                    // Scanlines every 3 pixels
-                    let mut y = screen.top();
-                    while y < screen.bottom() {
-                        painter.line_segment(
-                            [egui::pos2(screen.left(), y), egui::pos2(screen.right(), y)],
-                            Stroke::new(0.5_f32, Color32::from_black_alpha(38)),
-                        );
-                        y += 3.0;
-                    }
-
-                    crate::platform::frame_diag::note(
-                        crate::platform::frame_diag::RepaintCause::CrtEffect,
-                    );
-                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
-                });
-        }
     }
 }
