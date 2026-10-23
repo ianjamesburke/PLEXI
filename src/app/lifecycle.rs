@@ -4088,12 +4088,13 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={parent_pane_id:?}"
                 );
+                // A bare spawn joins a sub-context named for the role, like `--subcontext <role>`.
                 let result = self.spawn_agent_worker_pane(
                     role,
                     harness,
                     command,
                     task.as_deref().unwrap_or_default(),
-                    subcontext.as_deref(),
+                    Some(subcontext.as_deref().filter(|s| !s.is_empty()).unwrap_or(role.as_str())),
                     *ephemeral,
                     *parent_pane_id,
                     cwd.as_deref().map(std::path::PathBuf::from),

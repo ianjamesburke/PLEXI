@@ -9906,6 +9906,48 @@ mod pane_lifecycle_events {
     }
 
     #[test]
+    fn bare_agent_spawn_without_subcontext_flag_lands_in_a_role_named_subcontext() {
+        let mut h = HostHarness::new();
+        let master_pane = h.add_focused_terminal();
+        let dir = tempfile::tempdir().unwrap();
+        let reply = temp_response(dir.path(), "bare-spawn");
+        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+            role: "researcher".into(),
+            harness: "pi".into(),
+            command: "sleep 30".into(),
+            task: Some("Audit auth".into()),
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: Some(master_pane),
+            name: None,
+            cwd: None,
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: true,
+            response_file: reply.clone(),
+        });
+        h.hidden_frame();
+
+        let spawned = read_json_response(&reply);
+        assert_eq!(spawned["ok"], true, "bare spawn must succeed: {spawned}");
+        let worker_id = spawned["pane_id"].as_u64().expect("worker pane_id");
+        let ctx_id = spawned["context_id"].as_u64().expect("context id");
+        assert_eq!(spawned["context_name"], "researcher");
+        assert!(spawned["portal_pane_id"].as_u64().is_some(), "portal left in the parent: {spawned}");
+        let parent_ctx = h.app.windows[0].context_id;
+        assert_ne!(ctx_id, parent_ctx, "bare spawn must not land in the launching context");
+        let child_win = h
+            .app
+            .windows
+            .iter()
+            .find(|w| w.context_id == ctx_id)
+            .expect("sub-context window");
+        assert!(child_win.panes.contains_key(&worker_id));
+        assert!(!h.app.windows[0].panes.contains_key(&worker_id));
+    }
+
+    #[test]
     fn agent_spawn_and_done_validates_schema_writes_slots_and_collapses_ephemeral_subcontext() {
         let mut h = HostHarness::new();
         let master_pane = h.add_focused_terminal();
