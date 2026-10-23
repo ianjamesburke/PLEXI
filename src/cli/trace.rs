@@ -201,6 +201,35 @@ mod tests {
     }
 
     #[test]
+    fn cli_trace_redacts_agent_hook_detail_in_both_flag_forms() {
+        let sentinel = "Agent: SENTINEL_SECRET";
+        let spaced = [
+            "plexi", "agent", "report", "--state", "working", "--detail", sentinel,
+        ]
+        .map(str::to_string);
+        let equals = [
+            "plexi",
+            "agent",
+            "report",
+            "--state=working",
+            "--detail=Agent: SENTINEL_SECRET",
+        ]
+        .map(str::to_string);
+
+        let spaced_safe = redact_argv(&spaced, &[]);
+        assert_eq!(&spaced_safe[..6], &spaced[..6]);
+        assert!(is_text_placeholder(&spaced_safe[6]));
+        assert!(!spaced_safe.join(" ").contains("SENTINEL_SECRET"));
+
+        let equals_safe = redact_argv(&equals, &[]);
+        assert_eq!(equals_safe[..4], equals[..4]);
+        assert!(equals_safe[4]
+            .strip_prefix("--detail=")
+            .is_some_and(is_text_placeholder));
+        assert!(!equals_safe.join(" ").contains("SENTINEL_SECRET"));
+    }
+
+    #[test]
     fn cli_trace_grammar_sentinels() {
         let cases: &[&[&str]] = &[
             &[
@@ -214,6 +243,22 @@ mod tests {
             &["agent", "--json", "ask", "SENTINEL"],
             &["agent", "ask", "--socket", "/tmp/host.sock", "SENTINEL"],
             &["agent", "ask", "--pane-id=42", "SENTINEL"],
+            &[
+                "agent",
+                "report",
+                "--state",
+                "working",
+                "--detail",
+                "Agent: SENTINEL",
+            ],
+            &[
+                "agent",
+                "report",
+                "--state=working",
+                "--detail=Agent: SENTINEL",
+            ],
+            &["notify", "--title", "SENTINEL", "--body=SENTINEL"],
+            &["assistant", "send", "--text=SENTINEL"],
             &["pane", "message", "--json", "send", "42", "-SENTINEL"],
             &["pane", "send", "42", "-SENTINEL"],
             &["pane", "send", "42", "--secret-SENTINEL"],
@@ -535,6 +580,11 @@ fn content_id(id: &str) -> bool {
             | "receipt"
             | "description"
             | "content"
+            // Hook reports carry tool commands and prompt-derived text here.
+            | "detail"
+            // Notifications are callable from agent and hook workflows.
+            | "title"
+            | "body"
     )
 }
 
