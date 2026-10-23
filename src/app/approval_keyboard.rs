@@ -6,7 +6,7 @@ use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-pub(super) const ARM_DELAY: Duration = Duration::from_secs(1);
+pub(crate) const ARM_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 pub(super) struct ApprovalKeyboard {
@@ -44,6 +44,44 @@ impl ApprovalKeyboard {
     }
 }
 
+/// Needs-you kinds the keyboard controller can decide besides gate approvals.
+pub(crate) fn is_keyboard_actionable(kind: crate::broker::gate::NeedsYouKind) -> bool {
+    use crate::broker::gate::NeedsYouKind as K;
+    matches!(
+        kind,
+        K::PermissionRequest | K::PermissionChange | K::Question | K::BlockedRun
+    )
+}
+
+/// The oldest open item the keyboard controller decides (ties broken by id).
+pub(crate) fn keyboard_actionable(
+    items: &[crate::broker::gate::NeedsYouRecord],
+) -> Option<crate::broker::gate::NeedsYouRecord> {
+    items
+        .iter()
+        .filter(|item| is_keyboard_actionable(item.kind))
+        .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+        .cloned()
+}
+
+/// Digit keys `1`-`9` map to choice indexes `0..9`.
+pub(crate) fn choice_index_for_key(key: egui::Key) -> Option<usize> {
+    use egui::Key;
+    [
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ]
+    .iter()
+    .position(|k| *k == key)
+}
+
 impl PlexiApp {
     pub(crate) fn focus_approval(&mut self) {
         if self.synthetic_input_frame {
@@ -57,6 +95,18 @@ impl PlexiApp {
                 .retain(|kind| *kind != FocusKind::ApprovalBanner);
             self.push_focus_layer(FocusKind::ApprovalBanner);
             log::info!("approval: focused id={}", request.pending_request_id);
+            self.ctx.request_repaint_after(ARM_DELAY);
+        } else if let Some(item) = keyboard_actionable(&crate::overlays::attention::open_items())
+        {
+            self.approval_keyboard.focus(item.id.clone(), Instant::now());
+            self.focus_stack
+                .retain(|kind| *kind != FocusKind::ApprovalBanner);
+            self.push_focus_layer(FocusKind::ApprovalBanner);
+            log::info!(
+                "approval: focused needs_you id={} kind={}",
+                item.id,
+                item.kind.as_str()
+            );
             self.ctx.request_repaint_after(ARM_DELAY);
         } else if let Some(done_item) = crate::overlays::attention::open_items()
             .into_iter()
@@ -101,6 +151,13 @@ impl PlexiApp {
         }
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
         if monitor.show_pending(&id).is_none() {
+            if let Some(record) = monitor
+                .get_needs_you(&id)
+                .filter(|r| r.resolution.is_none() && is_keyboard_actionable(r.kind))
+            {
+                self.needs_you_key_at(&record, &owned, now);
+                return KeyDisposition::Consumed;
+            }
             if let Some(done_record) = monitor.get_needs_you(&id).filter(|r| {
                 r.resolution.is_none() && r.kind == crate::broker::gate::NeedsYouKind::AgentDone
             }) {
@@ -182,6 +239,12 @@ impl PlexiApp {
             {
                 Some(ApprovalChoice::Once)
             }
+            Some((egui::Key::S, egui::Modifiers::NONE))
+                if !self.approval_keyboard.confirm_always
+                    && monitor.show_pending(&id).is_some_and(|r| r.allow_tool) =>
+            {
+                Some(ApprovalChoice::AllowTool)
+            }
             Some((egui::Key::D, egui::Modifiers::NONE))
                 if !self.approval_keyboard.confirm_always =>
             {
@@ -196,7 +259,10 @@ impl PlexiApp {
             }
             if matches!(
                 choice,
-                ApprovalChoice::Once | ApprovalChoice::Deny | ApprovalChoice::DenyAlways
+                ApprovalChoice::Once
+                    | ApprovalChoice::AllowTool
+                    | ApprovalChoice::Deny
+                    | ApprovalChoice::DenyAlways
             ) {
                 if let Some((key, _)) = key {
                     self.approval_keyboard.held_decision_keys.insert(key);
@@ -205,6 +271,75 @@ impl PlexiApp {
             self.leave_approval();
         }
         KeyDisposition::Consumed
+    }
+
+    /// Keys for a focused permission request/change, question or blocked run.
+    /// Same guards as gate approvals: armed focus, exact modifiers, fresh presses.
+    fn needs_you_key_at(
+        &mut self,
+        record: &crate::broker::gate::NeedsYouRecord,
+        owned: &PlexiInput,
+        now: Instant,
+    ) {
+        use crate::broker::gate::NeedsYouKind as K;
+        if !self.approval_keyboard.armed(now) {
+            return;
+        }
+        let Some(key) = owned.events().iter().find_map(|event| match event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if *modifiers == egui::Modifiers::NONE => Some(*key),
+            _ => None,
+        }) else {
+            return;
+        };
+        let id = record.id.as_str();
+        let is_question = matches!(record.kind, K::Question | K::BlockedRun);
+        let choices = record
+            .details
+            .as_ref()
+            .map(|d| d.choices.as_slice())
+            .unwrap_or(&[]);
+        let decided = match key {
+            egui::Key::Escape => {
+                self.leave_approval();
+                return;
+            }
+            egui::Key::A if !is_question => {
+                self.resolve_from_desktop(id, true, "approval keyboard").is_ok()
+            }
+            egui::Key::D => self.resolve_from_desktop(id, false, "approval keyboard").is_ok(),
+            egui::Key::Enter if is_question && choices.is_empty() => {
+                let pane = record
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.pane_id)
+                    .or_else(|| record.actor.strip_prefix("pane:").and_then(|s| s.parse().ok()));
+                if let Some((win, tile)) = pane.and_then(|p| self.find_pane_in_any_window(p)) {
+                    self.active_window = win;
+                    self.set_window_focused_pane(win, tile);
+                    log::info!("approval: jumped to asking pane id={id} via=keyboard");
+                }
+                self.approval_keyboard.held_decision_keys.insert(key);
+                self.leave_approval();
+                return;
+            }
+            other if is_question => match choice_index_for_key(other).and_then(|i| choices.get(i)) {
+                Some(answer) => self.answer_from_desktop(id, answer, "approval keyboard").is_ok(),
+                None => return,
+            },
+            _ => return,
+        };
+        log::info!(
+            "approval: decided needs_you id={id} kind={} key={key:?} ok={decided} via=keyboard",
+            record.kind.as_str()
+        );
+        self.approval_keyboard.held_decision_keys.insert(key);
+        self.leave_approval();
     }
 
     // The nonmodal banner is painted once, alongside the other desktop banners.
@@ -576,5 +711,182 @@ mod tests {
                 .all(|r| r.kind != crate::broker::gate::NeedsYouKind::AgentDone),
             "child agent with parent agent must not file a human AgentDone attention item"
         );
+    }
+
+    fn file_item(
+        monitor: &PermissionMonitor,
+        kind: crate::broker::gate::NeedsYouKind,
+        tag: &str,
+        choices: &[&str],
+    ) -> String {
+        monitor
+            .file_needs_you_with_details(
+                crate::broker::gate::NeedsYouFile {
+                    kind,
+                    actor: "pane:7".into(),
+                    resource: format!("res-{tag}"),
+                    summary: format!("summary {tag}"),
+                    expires_at: None,
+                    run_tag: Some(tag.to_string()),
+                },
+                Some(crate::broker::gate::NeedsYouDetails {
+                    choices: choices.iter().map(|c| c.to_string()).collect(),
+                    pane_id: Some(7),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .0
+    }
+
+    fn is_open(monitor: &PermissionMonitor, id: &str) -> bool {
+        monitor.open_needs_you().iter().any(|r| r.id == id)
+    }
+
+    #[test]
+    fn keyboard_a_resolves_permission_request_and_change_after_arm() {
+        use crate::broker::gate::NeedsYouKind as K;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let req = file_item(&monitor, K::PermissionRequest, "run-a", &[]);
+        h.app.focus_approval();
+        assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&req));
+        let now = Instant::now();
+        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_key_at(
+            &mut input(egui::Key::A, egui::Modifiers::NONE),
+            now + ARM_DELAY - Duration::from_millis(1),
+        );
+        assert!(is_open(&monitor, &req), "must not decide before the arm guard");
+        h.app.approval_key_at(
+            &mut input(egui::Key::A, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        assert!(!is_open(&monitor, &req));
+        assert!(h.app.approval_keyboard.id.is_none());
+
+        let change = file_item(&monitor, K::PermissionChange, "run-b", &[]);
+        h.app.focus_approval();
+        assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&change));
+        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_key_at(
+            &mut input(egui::Key::D, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        assert!(!is_open(&monitor, &change));
+    }
+
+    #[test]
+    fn keyboard_digit_answers_question_and_blocked_run() {
+        use crate::broker::gate::NeedsYouKind as K;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let now = Instant::now();
+        let q = file_item(&monitor, K::Question, "run-q", &["Proceed", "Abort"]);
+        h.app.focus_approval();
+        assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&q));
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        // An out-of-range digit does nothing.
+        h.app
+            .approval_key_at(&mut input(egui::Key::Num3, egui::Modifiers::NONE), now);
+        assert!(is_open(&monitor, &q));
+        // `a` never answers a question.
+        h.app
+            .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
+        assert!(is_open(&monitor, &q));
+        h.app
+            .approval_key_at(&mut input(egui::Key::Num2, egui::Modifiers::NONE), now);
+        assert!(!is_open(&monitor, &q));
+        assert_eq!(monitor.get_needs_you(&q).unwrap().answer.as_deref(), Some("Abort"));
+
+        let blocked = file_item(&monitor, K::BlockedRun, "run-blocked", &["Retry"]);
+        h.app.focus_approval();
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app
+            .approval_key_at(&mut input(egui::Key::Num1, egui::Modifiers::NONE), now);
+        assert!(!is_open(&monitor, &blocked));
+        assert_eq!(
+            monitor.get_needs_you(&blocked).unwrap().answer.as_deref(),
+            Some("Retry")
+        );
+    }
+
+    #[test]
+    fn keyboard_needs_you_rejects_synthetic_and_modified_keys() {
+        use crate::broker::gate::NeedsYouKind as K;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let req = file_item(&monitor, K::PermissionRequest, "run-s", &[]);
+        h.app.focus_approval();
+        let now = Instant::now();
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.synthetic_input_frame = true;
+        h.app
+            .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
+        assert!(is_open(&monitor, &req));
+        h.app.synthetic_input_frame = false;
+        h.app
+            .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::SHIFT), now);
+        assert!(is_open(&monitor, &req));
+    }
+
+    fn apply_pending(h: &mut HostHarness) {
+        let items = crate::overlays::attention::open_items();
+        let record = items.get(h.app.attention.selected).cloned();
+        let action = h.app.attention.pending.take().expect("key queued an action");
+        let ctx = h.app.ctx.clone();
+        h.app.apply_attention_action(&ctx, action, record.as_ref());
+    }
+
+    #[test]
+    fn attention_overlay_keys_decide_actionable_items_under_arm_guard() {
+        use crate::broker::gate::NeedsYouKind as K;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let req = file_item(&monitor, K::PermissionRequest, "run-o", &[]);
+        h.app.open_attention_overlay("test");
+        let now = h.app.attention.armed_at.unwrap();
+        h.app.attention.selected = 0;
+        h.app
+            .attention_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
+        assert!(h.app.attention.pending.is_none(), "arm guard holds the first second");
+        h.app.synthetic_input_frame = true;
+        h.app.attention_key_at(
+            &mut input(egui::Key::A, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        assert!(h.app.attention.pending.is_none(), "synthetic frames cannot approve");
+        h.app.synthetic_input_frame = false;
+        h.app.attention_key_at(
+            &mut input(egui::Key::A, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        assert_eq!(
+            h.app.attention.pending,
+            Some(crate::overlays::attention::AttentionAction::Resolve(true))
+        );
+        apply_pending(&mut h);
+        assert!(!is_open(&monitor, &req));
+
+        let q = file_item(&monitor, K::Question, "run-oq", &["Proceed", "Abort"]);
+        h.app.attention.selected = 0;
+        h.app.attention.armed_at = Some(now);
+        h.app.attention_key_at(
+            &mut input(egui::Key::Num1, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        apply_pending(&mut h);
+        assert!(!is_open(&monitor, &q));
+        assert_eq!(monitor.get_needs_you(&q).unwrap().answer.as_deref(), Some("Proceed"));
+
+        let change = file_item(&monitor, K::PermissionChange, "run-od", &[]);
+        h.app.attention.selected = 0;
+        h.app.attention.armed_at = Some(now);
+        h.app.attention_key_at(
+            &mut input(egui::Key::D, egui::Modifiers::NONE),
+            now + ARM_DELAY,
+        );
+        apply_pending(&mut h);
+        assert!(!is_open(&monitor, &change));
     }
 }

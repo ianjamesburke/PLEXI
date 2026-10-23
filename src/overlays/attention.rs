@@ -277,6 +277,9 @@ pub(crate) struct AttentionState {
     pub item_id: Option<String>,
     /// Action requested by a key this frame; applied by `draw` (needs `ctx`).
     pub pending: Option<AttentionAction>,
+    /// When keyboard decisions become live for the selected item (1s arm guard,
+    /// restarted whenever the overlay opens or the selected item changes).
+    pub armed_at: Option<std::time::Instant>,
 }
 
 impl AttentionState {
@@ -292,6 +295,7 @@ impl AttentionState {
         if self.item_id.as_deref() != current {
             self.reset_item_state();
             self.item_id = current.map(str::to_string);
+            self.armed_at = Some(std::time::Instant::now());
         }
     }
 
@@ -325,6 +329,11 @@ pub(crate) enum AttentionAction {
     Acknowledge,
     OpenResult,
     DismissDone,
+    /// Allow (`true`) or dismiss (`false`) the selected permission request,
+    /// permission change, question or blocked run.
+    Resolve(bool),
+    /// Answer the selected question with its choice at this index.
+    Answer(usize),
     Close,
 }
 
@@ -340,6 +349,7 @@ impl PlexiApp {
         self.attention.selected = 0;
         self.attention.reset_item_state();
         self.attention.item_id = None;
+        self.attention.armed_at = Some(std::time::Instant::now());
     }
 
     pub(crate) fn close_attention_overlay(&mut self) {
@@ -357,16 +367,82 @@ impl PlexiApp {
     }
 
     pub(crate) fn attention_handle_key(&mut self, input: &mut PlexiInput) -> KeyDisposition {
+        self.attention_key_at(input, std::time::Instant::now())
+    }
+
+    /// The selected item's kind and choice count when it is a keyboard-decidable
+    /// kind and the 1s arm guard has passed on a real (non-synthetic) frame.
+    fn armed_actionable(&self, now: std::time::Instant) -> Option<(NeedsYouKind, usize)> {
+        if self.synthetic_input_frame {
+            return None;
+        }
+        let armed = self.attention.armed_at.is_some_and(|at| {
+            now.saturating_duration_since(at) >= crate::app::approval_keyboard::ARM_DELAY
+        });
+        let items = open_items();
+        let item = items.get(self.attention.selected)?;
+        (armed && crate::app::approval_keyboard::is_keyboard_actionable(item.kind)).then(|| {
+            (
+                item.kind,
+                item.details.as_ref().map_or(0, |d| d.choices.len()),
+            )
+        })
+    }
+
+    pub(crate) fn attention_key_at(
+        &mut self,
+        input: &mut PlexiInput,
+        now: std::time::Instant,
+    ) -> KeyDisposition {
         use egui::{Key, Modifiers};
         let none = Modifiers::NONE;
-        let action = if input.consume_key(none, Key::Escape) {
+        let selected_kind = open_items().get(self.attention.selected).map(|i| i.kind);
+        let selected_actionable =
+            selected_kind.is_some_and(crate::app::approval_keyboard::is_keyboard_actionable);
+        let armed = self.armed_actionable(now);
+        let is_question = matches!(
+            selected_kind,
+            Some(NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+        );
+        let decision = if selected_actionable {
+            let mut found = None;
+            if input.consume_key_no_repeat(none, Key::D) {
+                found = Some(AttentionAction::Resolve(false));
+            } else if !is_question && input.consume_key_no_repeat(none, Key::A) {
+                found = Some(AttentionAction::Resolve(true));
+            } else if is_question {
+                for key in [
+                    Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6,
+                    Key::Num7, Key::Num8, Key::Num9,
+                ] {
+                    if input.consume_key_no_repeat(none, key) {
+                        found = crate::app::approval_keyboard::choice_index_for_key(key)
+                            .map(AttentionAction::Answer);
+                        break;
+                    }
+                }
+            }
+            // A decision key pressed before the arm guard is swallowed, not applied.
+            found.filter(|action| match (armed, action) {
+                (Some((_, choices)), AttentionAction::Answer(i)) => *i < choices,
+                (Some(_), _) => true,
+                (None, _) => false,
+            })
+        } else {
+            None
+        };
+        let action = if decision.is_some() {
+            decision
+        } else if input.consume_key(none, Key::Escape) {
             Some(AttentionAction::Close)
         } else if input.consume_key(none, Key::ArrowDown) || input.consume_key(none, Key::J) {
             let count = open_items().len();
             (count > 0).then(|| AttentionAction::Select((self.attention.selected + 1).min(count - 1)))
         } else if input.consume_key(none, Key::ArrowUp) || input.consume_key(none, Key::K) {
             Some(AttentionAction::Select(self.attention.selected.saturating_sub(1)))
-        } else if input.consume_key(none, Key::D) {
+        } else if input.consume_key(none, Key::T)
+            || (!selected_actionable && input.consume_key(none, Key::D))
+        {
             Some(AttentionAction::ToggleTechnical)
         } else if input.consume_key(none, Key::C) {
             Some(AttentionAction::CopyError)
@@ -566,6 +642,20 @@ impl PlexiApp {
                                 }
                             }
                         }
+                        if matches!(
+                            record.kind,
+                            NeedsYouKind::PermissionRequest | NeedsYouKind::PermissionChange
+                        ) && chrome_button(ui, "Allow (A)", ButtonKind::Accent, &colors, 0.0)
+                            .clicked_by(egui::PointerButton::Primary)
+                        {
+                            action = Some(AttentionAction::Resolve(true));
+                        }
+                        if crate::app::approval_keyboard::is_keyboard_actionable(record.kind)
+                            && chrome_button(ui, "Dismiss (D)", ButtonKind::Secondary, &colors, 0.0)
+                                .clicked_by(egui::PointerButton::Primary)
+                        {
+                            action = Some(AttentionAction::Resolve(false));
+                        }
                         if record.kind == NeedsYouKind::Keychain {
                             if chrome_button(ui, "Continue", ButtonKind::Accent, &colors, 0.0)
                                 .clicked()
@@ -672,7 +762,7 @@ impl PlexiApp {
                 ui.horizontal(|ui| {
                     typography::caption(
                         ui,
-                        "↑/↓ select · C copy error · L session logs · D details · Esc close",
+                        "↑/↓ select · A allow · D dismiss · 1-9 answer · C copy error · L session logs · T details · Esc close",
                         &colors,
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -698,7 +788,7 @@ impl PlexiApp {
         });
     }
 
-    fn apply_attention_action(
+    pub(crate) fn apply_attention_action(
         &mut self,
         ctx: &egui::Context,
         action: AttentionAction,
@@ -816,6 +906,33 @@ impl PlexiApp {
                 };
                 log::info!("attention: open result id={}", record.id);
                 self.open_agent_done_result(record);
+            }
+            AttentionAction::Resolve(approve) => {
+                let Some(record) = record
+                    .filter(|r| crate::app::approval_keyboard::is_keyboard_actionable(r.kind))
+                else {
+                    return;
+                };
+                log::info!(
+                    "attention: resolve id={} kind={} approve={approve}",
+                    record.id,
+                    record.kind.as_str()
+                );
+                self.finish_attention_resolve(&record.id, approve, "attention keyboard");
+            }
+            AttentionAction::Answer(idx) => {
+                let Some((record, answer)) = record.and_then(|r| {
+                    let answer = r.details.as_ref()?.choices.get(idx)?.clone();
+                    matches!(r.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+                        .then_some((r, answer))
+                }) else {
+                    return;
+                };
+                log::info!("attention: keyboard answer id={} index={idx}", record.id);
+                match self.answer_from_desktop(&record.id, &answer, "attention keyboard") {
+                    Ok(()) => self.attention.reset_item_state(),
+                    Err(error) => self.set_attention_feedback(error, true),
+                }
             }
             AttentionAction::DismissDone => {
                 let Some(record) = record.filter(|r| r.kind == NeedsYouKind::AgentDone) else {

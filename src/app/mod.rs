@@ -1,4 +1,4 @@
-mod approval_keyboard;
+pub(crate) mod approval_keyboard;
 mod cli_actions;
 pub mod account;
 pub mod command_view_app;

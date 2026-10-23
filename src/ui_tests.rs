@@ -1275,7 +1275,7 @@ mod tests {
         h.run_steps(2);
         h.with_app_mut(|a| a.open_attention_overlay("test"));
         h.run_steps(3);
-        h.harness().key_press(egui::Key::D);
+        h.harness().key_press(egui::Key::T);
         h.run_steps(2);
         h.save_screenshot(&evidence_png!(suffix)).expect("render attention");
     }
