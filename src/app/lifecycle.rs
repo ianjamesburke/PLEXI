@@ -1994,8 +1994,23 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) =
-                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
+                    let fallback = app_path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("app");
+                    let title = Self::anchored_launch_title(spec.name.as_deref(), fallback);
+                    // No explicit layout means `app open` from a pane: nest it
+                    // on that pane. An explicit `--split` stays a sibling.
+                    let prepared = if spec.layout.is_none() {
+                        self.prepare_app_launch_window(spec.from_pane_id, &title)
+                    } else {
+                        super::space::PreparedAppLaunch::InPlace
+                    };
+                    let (target_win, orig_focused_in_target) = if prepared.is_anchored() {
+                        (self.active_window, None)
+                    } else {
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active)
+                    };
                     launch_result = self
                         .launch_app_by_path_with_layout_no_review_modal(
                             &app_path.to_string_lossy(),
@@ -2008,31 +2023,49 @@ impl PlexiApp {
                                 response_pane_id = pane_id;
                             }
                         });
-                    if spec.from_pane_id.is_some() {
-                        self.active_window = active;
-                        // Undo the temporary focus redirect when launch failed.
-                        if launch_result.is_err() {
+                    if prepared.is_anchored() {
+                        self.finish_app_launch(
+                            prepared,
+                            launch_result.is_ok(),
+                            spec.no_focus,
+                            spec.name.as_deref(),
+                        );
+                    } else {
+                        if spec.from_pane_id.is_some() {
+                            self.active_window = active;
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
+                        }
+                        if spec.no_focus {
+                            self.active_window = active;
                             self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
-                    }
-                    if spec.no_focus {
-                        self.active_window = active;
-                        self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
                 } else if let crate::app::launch_spec::PaneLaunchTarget::AppId(type_id) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) =
-                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active);
+                    let title = Self::anchored_launch_title(spec.name.as_deref(), type_id);
+                    // No explicit layout means `app open` from a pane: nest it
+                    // on that pane. An explicit `--split` stays a sibling.
+                    let prepared = if spec.layout.is_none() {
+                        self.prepare_app_launch_window(spec.from_pane_id, &title)
+                    } else {
+                        super::space::PreparedAppLaunch::InPlace
+                    };
+                    let (target_win, orig_focused_in_target) = if prepared.is_anchored() {
+                        (self.active_window, None)
+                    } else {
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active)
+                    };
                     // CLI/spawn-request app opens default to a sibling split, never
                     // an overlay takeover of the caller's pane. Manifest `[launch]
                     // placement` still overrides the default (stint 0330).
                     //
-                    // `self.active_window` has already been redirected to the
-                    // target window above (when `from_pane_id` named one), so
-                    // its context_id is the launch's actual target context —
-                    // matching what `launch_app_by_id_with_layout` itself
-                    // resolves against (stint 0724 Phase B).
+                    // When the open came from a pane with no explicit layout,
+                    // `prepare_app_launch_window` already pointed `active_window`
+                    // at that pane's new space. Otherwise the redirect above
+                    // targets the caller's window.
                     let target_context_id = self.windows[self.active_window].context_id;
                     let placement = crate::pane_ops::cli_open_placement(
                         spec.layout.clone(),
@@ -2054,16 +2087,24 @@ impl PlexiApp {
                                 response_pane_id = existing_id;
                             }
                         });
-                    if spec.from_pane_id.is_some() {
-                        self.active_window = active;
-                        // Undo the temporary focus redirect when launch failed.
-                        if launch_result.is_err() {
+                    if prepared.is_anchored() {
+                        self.finish_app_launch(
+                            prepared,
+                            launch_result.is_ok(),
+                            spec.no_focus,
+                            spec.name.as_deref(),
+                        );
+                    } else {
+                        if spec.from_pane_id.is_some() {
+                            self.active_window = active;
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
+                        }
+                        if spec.no_focus {
+                            self.active_window = active;
                             self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
-                    }
-                    if spec.no_focus {
-                        self.active_window = active;
-                        self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
                 }
                 if let Some(wt) = created_worktree {
@@ -5402,7 +5443,7 @@ impl PlexiApp {
 
     /// Apply an inline pane name immediately after spawn. Sets `name_locked` so
     /// OSC title sequences don't overwrite the explicit label.
-    fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
+    pub(crate) fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
         log::info!("pane_ipc: spawn_pane: applying inline name={pane_name:?} to pane_id={pane_id}");
         for win in &mut self.windows {
             if let Some(pane) = win.panes.get_mut(&pane_id) {

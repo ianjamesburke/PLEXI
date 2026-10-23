@@ -4,7 +4,7 @@ size = [1280.0, 800.0]
 agent_children = "seed"
 
 [[steps]]
-assert_label = { target = "host", label = "implementer · working" }
+assert_label = { target = "host", label = "agent-tools-scene · 2 panes · 2 working" }
 
 [[steps]]
 key = { target = "host", value = "cmd+down" }

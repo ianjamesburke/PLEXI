@@ -596,17 +596,33 @@ mod tests {
         });
         h.run_steps(4);
         h.save_screenshot(&evidence_png!("_strip")).unwrap();
-        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
+        h.with_app_mut(|app| {
+            app.router.get_mut(0).name = "PLEXI".into();
+        });
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
         h.run_steps(4);
         h.with_app(|app| {
             assert_eq!(app.conjoined_parent(), Some(parent));
-            assert_eq!(app.visual_owner_pane(), Some(parent));
-            assert_eq!(app.fleet_focused_pane(), Some(parent));
-            let parent_rect = app.visible_pane_rect(parent).unwrap();
-            let child_rect = app.windows[app.active_window].tree.root.and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile)).unwrap();
-            let share = parent_rect.width() / (parent_rect.width() + child_rect.width());
-            assert!((share - 0.35).abs() < 0.01, "parent share: {share}");
+            let focused = app.fleet_focused_pane();
+            assert_ne!(focused, Some(parent), "dive focuses a pane inside the space");
+            assert!(!app.windows[app.active_window].panes.contains_key(&parent), "the space fills the frame");
+            let path = crate::host::space_coord::join_coordinate(&app.space_coordinate());
+            assert!(path.starts_with("PLEXI \u{203a} agent-tools-preview"), "{path}");
+            assert!(!path.contains("team-"), "{path}");
             assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
+            let parent_rect = app.visible_pane_rect(parent).expect("launcher rect");
+            let right = app.windows[app.active_window]
+                .panes
+                .keys()
+                .filter_map(|id| app.visible_pane_rect(*id))
+                .map(|rect| rect.right())
+                .fold(parent_rect.right(), f32::max);
+            let span = right - parent_rect.left();
+            let share = parent_rect.width() / span;
+            assert!(
+                (share - 0.35).abs() < 0.03,
+                "launcher share {share} rect={parent_rect:?} span={span}"
+            );
         });
         h.save_screenshot(&evidence_png!("_view")).unwrap();
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
@@ -657,8 +673,18 @@ mod tests {
         for shape in &h.harness().output().shapes {
             gallery_text_shapes(&shape.shape, &mut texts);
         }
-        assert!(texts.iter().any(|(_, text)| text.contains("researcher") && text.contains("child of lead")), "{texts:?}");
-        assert!(!texts.iter().any(|(_, text)| text.starts_with("↳ lead")));
+        let path = h.with_app(|app| crate::host::space_coord::join_coordinate(&app.space_coordinate()));
+        assert!(
+            path.contains("lineage-preview") && path.contains("researcher"),
+            "{path}"
+        );
+        assert!(!path.contains("child of"), "{path}");
+        assert!(
+            texts.iter().any(|(_, text)| text.contains(&path))
+                || h.harness().query_by_label(&path).is_some(),
+            "{path} missing from {texts:?}"
+        );
+        assert!(!texts.iter().any(|(_, text)| text.contains("child of")));
         h.save_screenshot(&evidence_png!()).unwrap();
     }
 
@@ -685,12 +711,215 @@ mod tests {
                 && r.stroke.color == accent && r.stroke.width == gap
                 && r.stroke_kind == egui::StrokeKind::Outside)
         }));
-        assert!(h.harness().query_by_label("↳ research · child of lead").is_some());
+        assert!(h.harness().query_all_by_label_contains("research").next().is_some());
+        assert!(h.harness().query_all_by_label_contains("pane").next().is_some());
+        assert!(h.harness().query_by_label("↳ research · child of lead").is_none());
         h.save_screenshot(&evidence_png!()).unwrap();
         h.with_app_mut(|app| {
             let (win, _) = app.find_pane_in_any_window(parent).unwrap();
             app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap().name = None;
             assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
+        });
+    }
+
+    /// Prototype B: a pane that contains a space shows one summary, Cmd+Enter
+    /// fills the frame, and the coordinate bar is the human path back out.
+    #[test]
+    fn screenshot_nested_space_coordinate() {
+        let browser_root = tempfile::tempdir().expect("browser root");
+        let browser_path = browser_root.path().to_path_buf();
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        let (portal_id, helper_id) = h.with_app_mut(|app| {
+            app.router.get_mut(0).name = "PLEXI".into();
+            let root_id = app.router.active().context_id;
+            let child_id = root_id + 80;
+            app.router.push(crate::host::context::Context {
+                name: "researcher".to_string().into(),
+                root: browser_path.clone(),
+                description: Some("checking the source".to_string()),
+                context_id: child_id,
+                parent_id: Some(root_id),
+                depth: 1,
+                parked: false,
+            });
+            let helper_id = app.host.alloc_pane_id();
+            let helper = AppPane {
+                pip_status: None,
+                id: helper_id,
+                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                    browser_path.clone(),
+                ))),
+                workspace_root: browser_path.clone(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "notes".to_string(),
+                name: "helper-2".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: Some(crate::protocol::PaneAgentState {
+                    pane_id: helper_id,
+                    state: crate::protocol::AgentState::Blocked,
+                    agent: "pi".to_string(),
+                    detail: Some("need a decision".to_string()),
+                    session_id: None,
+                }),
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let mut child_panes = std::collections::HashMap::new();
+            child_panes.insert(helper_id, Pane::App(Box::new(helper)));
+            let mut child_tiles = egui_tiles::Tiles::default();
+            let child_tile = child_tiles.insert_pane(helper_id);
+            let child_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.context_active_window.insert(child_id, child_window_id);
+            app.windows.push(Window {
+                name: "researcher".to_string(),
+                path: browser_path.clone(),
+                tree: egui_tiles::Tree::new("researcher", child_tile, child_tiles),
+                panes: child_panes,
+                focused_pane: Some(child_tile),
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
+                window_id: child_window_id,
+                context_id: child_id,
+            });
+            let portal_id = app.host.alloc_pane_id();
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(
+                portal_id,
+                Pane::Portal(Box::new(PortalPane {
+                    pane_id: portal_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                    hidden: false,
+                })),
+            );
+            let portal_tile = win.tree.tiles.insert_pane(portal_id);
+            win.tree.root = Some(portal_tile);
+            win.focused_pane = Some(portal_tile);
+            (portal_id, helper_id)
+        });
+        h.run_steps(3);
+        assert!(
+            h.harness()
+                .query_by_label("researcher · 1 pane · 1 blocked")
+                .is_some(),
+            "the parent pane shows the space's human name"
+        );
+        assert!(h.harness().query_by_label_contains("team-").is_none());
+        h.save_screenshot(&evidence_png!("_summary")).unwrap();
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(3);
+        let path = h.with_app(|app| {
+            assert_eq!(app.fleet_focused_pane(), Some(helper_id));
+            assert!(!app.windows[app.active_window].panes.contains_key(&portal_id));
+            crate::host::space_coord::join_coordinate(&app.space_coordinate())
+        });
+        assert_eq!(path, "PLEXI \u{203a} researcher \u{203a} helper-2");
+        assert!(h.harness().query_by_label(&path).is_some(), "{path}");
+        h.save_screenshot(&evidence_png!("_coordinate")).unwrap();
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Backspace);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.space_coordinate(), vec!["PLEXI".to_string()]);
+            assert_eq!(app.router.current_depth(), 0);
+        });
+        assert!(h.harness().query_by_label(&path).is_none());
+    }
+
+    /// `app open --cli git` from a pane anchors beside that pane: launcher on
+    /// the left, the git renderer on the right, under a human coordinate.
+    #[test]
+    fn screenshot_app_open_cli_anchors_beside_launcher() {
+        let descriptor_dir = tempfile::tempdir().expect("descriptor dir");
+        let descriptor = descriptor_dir.path().join("git.json");
+        std::fs::write(
+            &descriptor,
+            r#"{"plexi_version":"1","name":"git","version":"2","commands":[{"name":"status","description":"Show the working tree status"},{"name":"log","description":"Show commit logs"}]}"#,
+        )
+        .unwrap();
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let launcher = h.with_app_mut(|app| {
+            app.router.get_mut(0).name = "PLEXI".into();
+            let (tile, pane_id) = app.add_test_pane();
+            app.windows[app.active_window].focused_pane = Some(tile);
+            app.handle_pane_ipc_request(crate::protocol::AppRequest::SpawnPane {
+                type_id: "cli-renderer".into(),
+                layout: None,
+                args: vec![descriptor.to_string_lossy().to_string()],
+                from_pane_id: Some(pane_id),
+                request_id: None,
+                response_file: None,
+                ephemeral: false,
+                cwd: None,
+                no_focus: false,
+                path: None,
+                workspace_root: None,
+                target_context: None,
+                context_name: None,
+                name: Some("git".into()),
+                agent_cmd: None,
+                boot_timeout_secs: None,
+                worktree: None,
+                result_schema: None,
+                peer_ancestry: None,
+            });
+            pane_id
+        });
+        h.run_steps(4);
+        let path = h.with_app(|app| {
+            assert_eq!(app.conjoined_parent(), Some(launcher));
+            assert!(!app.windows[app.active_window].panes.contains_key(&launcher));
+            let path = crate::host::space_coord::join_coordinate(&app.space_coordinate());
+            assert!(path.starts_with("PLEXI \u{203a} git"), "{path}");
+            assert!(!path.contains("team-") && !path.contains("agent-tools-"), "{path}");
+            let parent_rect = app.visible_pane_rect(launcher).expect("launcher rect");
+            let right = app.windows[app.active_window]
+                .panes
+                .keys()
+                .filter_map(|id| app.visible_pane_rect(*id))
+                .map(|rect| rect.right())
+                .fold(parent_rect.right(), f32::max);
+            let span = right - parent_rect.left();
+            let share = parent_rect.width() / span;
+            assert!(
+                (share - 0.35).abs() < 0.03,
+                "launcher share {share} rect={parent_rect:?} span={span}"
+            );
+            path
+        });
+        assert!(h.harness().query_by_label(&path).is_some(), "{path}");
+        h.save_screenshot(&evidence_png!("_git")).unwrap();
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Backspace);
+        h.run_steps(2);
+        let summary = h.with_app(|app| {
+            assert_eq!(app.conjoined_parent(), None);
+            assert_eq!(app.fleet_focused_pane(), Some(launcher));
+            assert_eq!(app.router.current_depth(), 0);
+            app.space_faces_for(&app.child_agent_strips())
+                .get(&launcher)
+                .expect("launcher summary")
+                .label()
+        });
+        assert!(summary.starts_with("git · "), "{summary}");
+        assert!(h.harness().query_by_label(&summary).is_some(), "{summary}");
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.conjoined_parent(), Some(launcher));
+            let path = crate::host::space_coord::join_coordinate(&app.space_coordinate());
+            assert!(path.starts_with("PLEXI \u{203a} git"), "{path}");
         });
     }
 

@@ -132,9 +132,8 @@ pub struct Context {
     /// Parent context_id for sub-contexts. None = top-level.
     #[serde(default)]
     pub parent_id: Option<u64>,
-    /// Nesting depth. 0 = root level. Capped at 3.
-    /// Kept for backward-compatible deserialization but should be derived
-    /// from `parent_id` chain at runtime.
+    /// Nesting depth. 0 = root. Derived from the parent chain; not a product cap.
+    /// Kept for backward-compatible deserialization.
     #[serde(default)]
     pub depth: u32,
     /// When true, this context is parked: hidden from the active sidebar list,

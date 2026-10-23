@@ -975,9 +975,9 @@ impl PlexiApp {
     }
 
     fn context_notification_count_recursive_limited(&self, ctx_id: u64, depth: u32) -> usize {
-        // Depth > 3 is impossible in valid data (creation is capped), but guard
-        // against cycles in manually-edited workspace files to prevent stack overflow.
-        if depth > 3 {
+        // Cycle guard only. Spaces nest arbitrarily deep; 32 matches the
+        // coordinate walk. A longer chain is treated as corrupt data.
+        if depth > 32 {
             return 0;
         }
         let direct = self

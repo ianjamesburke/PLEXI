@@ -1204,6 +1204,10 @@ impl PlexiApp {
             log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
             return false;
         };
+        // Attention, notification clicks, and palette jumps all come through
+        // here. Rebuild the depth stack so a nested pane is dived to and
+        // Cmd+Esc / Cmd+Backspace can surface back along the coordinate.
+        let depth_changed = self.sync_space_depth(ctx_id);
         // An explicit pane selection transfers input out of the pinned parent.
         // Otherwise host_input_owner keeps returning that parent even though
         // the destination window has selected its child tile.
@@ -1243,6 +1247,13 @@ impl PlexiApp {
             );
         }
         self.resume_standby_pane(pane_id);
+        if depth_changed {
+            log::info!(
+                "space: coordinate pane={pane_id} depth={} path={}",
+                self.router.current_depth(),
+                crate::host::space_coord::join_coordinate(&self.space_coordinate())
+            );
+        }
         true
     }
 

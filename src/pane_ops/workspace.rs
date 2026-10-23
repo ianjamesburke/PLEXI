@@ -1416,6 +1416,10 @@ impl PlexiApp {
                     self.active_window = win_idx;
                     self.windows[win_idx].focused_pane = focused_tile;
                 }
+                log::info!(
+                    "space: surface coordinate={}",
+                    crate::host::space_coord::join_coordinate(&self.space_coordinate())
+                );
                 return true;
             }
         }

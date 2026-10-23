@@ -501,7 +501,7 @@ impl PlexiApp {
                     }
 
                     // --- Normal row via SidebarRow ---
-                    let ctx_name = self.router.get(i).name.to_string();
+                    let ctx_name = self.space_title(ctx_id);
                     let badge_count = if is_active {
                         self.visible_notification_count()
                     } else {
@@ -651,9 +651,9 @@ impl PlexiApp {
 
                     if self.parked_section_expanded {
                         for &i in &parked_order {
+                            let ctx_id = self.router.get(i).context_id;
+                            let ctx_name = self.space_title(ctx_id);
                             let ctx = self.router.get(i);
-                            let ctx_name = ctx.name.to_string();
-                            let ctx_id = ctx.context_id;
                             let subtitle = Some(ctx.root.display().to_string());
 
                             let pane_dots = self.sidebar_pane_dots(ctx_id, false);

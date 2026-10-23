@@ -54,12 +54,7 @@ impl PlexiApp {
                 .map(|m| m.open_needs_you())
                 .unwrap_or_default();
         for win in &self.windows {
-            let context_name = self
-                .router
-                .iter()
-                .find(|c| c.context_id == win.context_id)
-                .map(|c| c.name.displayed().to_string())
-                .unwrap_or_default();
+            let context_name = self.space_title(win.context_id);
             for (&pane_id, pane) in &win.panes {
                 let Some(t) = pane.as_terminal() else {
                     continue;

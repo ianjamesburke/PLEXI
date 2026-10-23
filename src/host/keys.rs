@@ -18,7 +18,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+Ctrl+J/K           — move context down/up
 // Cmd+Q                       — quit
 // Cmd+B                       — toggle sidebar
-// Cmd+Enter                   — zoom into sub-context (Portal focus) or toggle pane zoom
+// Cmd+Enter                   — dive into the focused pane's nested space, or toggle pane zoom
+// Cmd+Escape / Cmd+Backspace  — surface one level out of a nested space
 // Cmd+/                       — toggle shortcuts overlay
 // Cmd+P                       — command palette
 // Cmd+R                       — rename pane
@@ -1311,12 +1312,21 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             action: Action::OpenNotesPicker,
         },
         // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
-        // so there is no subset conflict on this key.
+        // so there is no subset conflict on this key. Cmd+Backspace is the second
+        // surface chord; exact so it does not claim Shift/Alt variants.
         BindingEntry {
             modifiers: b.context_zoom_out.0,
             key: b.context_zoom_out.1,
             exact: false,
             no_repeat: false,
+            context: BindingContext::Normal,
+            action: Action::ContextZoomOut,
+        },
+        BindingEntry {
+            modifiers: cmd(),
+            key: egui::Key::Backspace,
+            exact: true,
+            no_repeat: true,
             context: BindingContext::Normal,
             action: Action::ContextZoomOut,
         },
@@ -1478,6 +1488,27 @@ mod tests {
         assert_eq!(build_key_bindings(Some(&overrides)).next_blocked_agent, (cmd_alt(), egui::Key::G));
         assert_eq!(table.iter().filter(|e| (e.modifiers, e.key) == b.next_blocked_agent).count(), 1);
         assert!(table.iter().any(|e| e.action == Action::NextBlockedAgent));
+    }
+
+    #[test]
+    fn cmd_backspace_and_cmd_escape_both_surface() {
+        let table = build_binding_table(&KeyBindings::default());
+        let zooms: Vec<_> = table
+            .iter()
+            .filter(|e| matches!(e.action, Action::ContextZoomOut))
+            .collect();
+        assert!(
+            zooms
+                .iter()
+                .any(|e| e.key == egui::Key::Escape && e.modifiers.command),
+            "Cmd+Escape surfaces"
+        );
+        assert!(
+            zooms
+                .iter()
+                .any(|e| e.key == egui::Key::Backspace && e.modifiers.command && e.exact),
+            "Cmd+Backspace surfaces"
+        );
     }
 
     /// Run `poll_actions` for a single Tab keypress with an active app surface.

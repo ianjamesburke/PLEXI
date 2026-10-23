@@ -43,6 +43,7 @@ pub(crate) mod ui_mailbox;
 mod fleet;
 mod agent_tools;
 mod conjoined;
+mod space;
 mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
@@ -3917,35 +3918,38 @@ impl eframe::App for PlexiApp {
 
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
-            let context = &self.windows[self.active_window];
-            let pane_name = context
-                .focused_pane
-                .and_then(|tile_id| context.tree.tiles.get(tile_id))
-                .and_then(|tile| {
-                    if let egui_tiles::Tile::Pane(pane_id) = tile {
-                        context.panes.get(pane_id)
-                    } else {
-                        None
-                    }
-                })
-                .and_then(|pane| {
-                    if let Some(t) = pane.as_terminal() {
-                        t.name.clone()
-                    } else {
-                        pane.as_app().map(|a| a.name.clone())
-                    }
-                });
-            let ws = self.router.active();
-            let ws_id = ws.context_id;
+            let (pane_name, grid_x, grid_y) = {
+                let context = &self.windows[self.active_window];
+                let pane_name = context
+                    .focused_pane
+                    .and_then(|tile_id| context.tree.tiles.get(tile_id))
+                    .and_then(|tile| {
+                        if let egui_tiles::Tile::Pane(pane_id) = tile {
+                            context.panes.get(pane_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .and_then(|pane| {
+                        if let Some(t) = pane.as_terminal() {
+                            t.name.clone()
+                        } else {
+                            pane.as_app().map(|a| a.name.clone())
+                        }
+                    });
+                (pane_name, context.grid_x, context.grid_y)
+            };
+            let ws_id = self.router.active().context_id;
             let window_count = self
                 .windows
                 .iter()
                 .filter(|c| c.context_id == ws_id)
                 .count();
+            let space_name = self.space_title(ws_id);
             let context_label = if window_count > 1 {
-                format!("{} ({},{})", ws.name, context.grid_x, context.grid_y)
+                format!("{space_name} ({grid_x},{grid_y})")
             } else {
-                ws.name.to_string()
+                space_name
             };
             let title = match pane_name {
                 Some(name) => format!("{} — {}", context_label, name),
