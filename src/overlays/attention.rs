@@ -168,6 +168,28 @@ pub(crate) fn attention_view(record: &NeedsYouRecord) -> AttentionView {
             "The run does not continue until you respond.".to_string(),
             "Open the agent's pane to respond.".to_string(),
         ),
+        NeedsYouKind::AgentDone => {
+            let result_body = record
+                .details
+                .as_ref()
+                .and_then(|d| d.preview_refs.first())
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .unwrap_or_else(|| record.summary.clone());
+            let path_line = record
+                .details
+                .as_ref()
+                .and_then(|d| d.preview_refs.first())
+                .map(|p| format!("Result path: {p}"))
+                .unwrap_or_else(|| "Completed".to_string());
+            (
+                "Completed",
+                Severity::Info,
+                record.summary.clone(),
+                result_body,
+                path_line,
+                "Press Enter to open the result.".to_string(),
+            )
+        }
     };
     AttentionView {
         id: record.id.clone(),
@@ -301,6 +323,8 @@ pub(crate) enum AttentionAction {
     /// Keychain recovery (`approve = true`) or "Not now" (`false`).
     Keychain(bool),
     Acknowledge,
+    OpenResult,
+    DismissDone,
     Close,
 }
 
@@ -375,6 +399,7 @@ impl PlexiApp {
         match items.get(self.attention.selected)?.kind {
             NeedsYouKind::Keychain => Some(AttentionAction::Keychain(true)),
             NeedsYouKind::Integrity => Some(AttentionAction::Acknowledge),
+            NeedsYouKind::AgentDone => Some(AttentionAction::OpenResult),
             _ => None,
         }
     }
@@ -557,6 +582,17 @@ impl PlexiApp {
                                 .clicked()
                         {
                             action = Some(AttentionAction::Acknowledge);
+                        } else if record.kind == NeedsYouKind::AgentDone {
+                            if chrome_button(ui, "Open result", ButtonKind::Accent, &colors, 0.0)
+                                .clicked()
+                            {
+                                action = Some(AttentionAction::OpenResult);
+                            }
+                            if chrome_button(ui, "Dismiss", ButtonKind::Secondary, &colors, 0.0)
+                                .clicked()
+                            {
+                                action = Some(AttentionAction::DismissDone);
+                            }
                         }
                         if chrome_button(ui, "Copy error", ButtonKind::Secondary, &colors, 0.0)
                             .clicked()
@@ -773,6 +809,20 @@ impl PlexiApp {
                 };
                 log::info!("attention: acknowledged integrity issue id={}", record.id);
                 self.finish_attention_resolve(&record.id, false, "integrity acknowledge");
+            }
+            AttentionAction::OpenResult => {
+                let Some(record) = record.filter(|r| r.kind == NeedsYouKind::AgentDone) else {
+                    return;
+                };
+                log::info!("attention: open result id={}", record.id);
+                self.open_agent_done_result(record);
+            }
+            AttentionAction::DismissDone => {
+                let Some(record) = record.filter(|r| r.kind == NeedsYouKind::AgentDone) else {
+                    return;
+                };
+                log::info!("attention: dismissed agent done id={}", record.id);
+                self.finish_attention_resolve(&record.id, false, "agent done dismiss");
             }
         }
     }

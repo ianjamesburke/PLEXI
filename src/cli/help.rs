@@ -546,8 +546,8 @@ mod tests {
             agent,
             [
                 "team", "next", "fleet", "create", "list", "show", "call", "message", "handoff",
-                "start", "spawn", "done", "wait", "ask", "report", "status", "history", "reopen",
-                "hook"
+                "start", "spawn", "done", "result", "wait", "ask", "report", "status", "history",
+                "reopen", "hook"
             ],
             "{agent:?}"
         );

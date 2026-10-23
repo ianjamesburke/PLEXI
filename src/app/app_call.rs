@@ -884,11 +884,16 @@ impl PlexiApp {
             }
             return;
         }
+        let primary_label = if item.kind == crate::broker::gate::NeedsYouKind::AgentDone {
+            "Open result"
+        } else {
+            "Approve"
+        };
         let mut chosen = None;
         ui.horizontal(|ui| {
             ui.add_space(16.0);
             for (label, approve, kind) in [
-                ("Approve", true, crate::ui::button::ButtonKind::Accent),
+                (primary_label, true, crate::ui::button::ButtonKind::Accent),
                 ("Dismiss", false, crate::ui::button::ButtonKind::Secondary),
             ] {
                 let response = crate::ui::button::chrome_button(ui, label, kind, &colors, 0.0)
@@ -910,7 +915,11 @@ impl PlexiApp {
                 item.id,
                 item.kind.as_str()
             );
-            let _ = self.resolve_from_desktop(&item.id, approve, "sidebar needs-you");
+            if item.kind == crate::broker::gate::NeedsYouKind::AgentDone && approve {
+                self.open_agent_done_result(item);
+            } else {
+                let _ = self.resolve_from_desktop(&item.id, approve, "sidebar needs-you");
+            }
         }
     }
 
@@ -923,6 +932,91 @@ impl PlexiApp {
         // paint, so the sidebar's Needs-you buttons registered earlier in
         // this frame stay listed alongside the banner's.
         if pending.is_empty() {
+            if let Some(done_item) = monitor
+                .open_needs_you()
+                .into_iter()
+                .find(|item| item.kind == crate::broker::gate::NeedsYouKind::AgentDone)
+            {
+                if self
+                    .approval_keyboard
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| id != done_item.id)
+                {
+                    self.leave_approval();
+                }
+                let mut open_clicked = false;
+                let mut dismiss_clicked = false;
+                let shortcut = ctx.format_shortcut(&egui::KeyboardShortcut::new(
+                    self.key_bindings.focus_approval.0,
+                    self.key_bindings.focus_approval.1,
+                ));
+                let result_path = done_item
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.preview_refs.first())
+                    .cloned();
+                crate::ui::overlay::ModalShell::centered("approval_banner")
+                    .title("Agent completed")
+                    .anchor(
+                        egui::Align2::CENTER_BOTTOM,
+                        egui::vec2(0.0, -crate::ui::style::SPACE_MD),
+                    )
+                    .scrim(false)
+                    .click_away(false)
+                    .show(ctx, &self.colors, |ui| {
+                        crate::ui::typography::body_strong(
+                            ui,
+                            done_item.summary.clone(),
+                            &self.colors,
+                        );
+                        if let Some(path) = &result_path {
+                            crate::ui::typography::caption(
+                                ui,
+                                format!("Result: {path}"),
+                                &self.colors,
+                            );
+                        }
+                        crate::ui::typography::caption(
+                            ui,
+                            format!("{shortcut} focus · Enter open result · d dismiss · Esc close"),
+                            &self.colors,
+                        );
+                        ui.add_space(crate::ui::style::SPACE_MD);
+                        ui.horizontal_wrapped(|ui| {
+                            if crate::ui::button::chrome_button(
+                                ui,
+                                "Open result",
+                                crate::ui::button::ButtonKind::Accent,
+                                &self.colors,
+                                0.0,
+                            )
+                            .clicked_by(egui::PointerButton::Primary)
+                            {
+                                open_clicked = true;
+                            }
+                            if crate::ui::button::chrome_button(
+                                ui,
+                                "Dismiss",
+                                crate::ui::button::ButtonKind::Secondary,
+                                &self.colors,
+                                0.0,
+                            )
+                            .clicked_by(egui::PointerButton::Primary)
+                            {
+                                dismiss_clicked = true;
+                            }
+                        });
+                    });
+                if open_clicked {
+                    self.open_agent_done_result(&done_item);
+                    self.leave_approval();
+                } else if dismiss_clicked {
+                    let _ = self.resolve_from_desktop(&done_item.id, false, "agent done banner");
+                    self.leave_approval();
+                }
+                return;
+            }
             self.approval_banner_logged = None;
             self.leave_approval();
             return;

@@ -3131,6 +3131,21 @@ pub enum AgentCmd {
         #[arg(long = "pane-id")]
         pane_id: Option<PaneTarget>,
     },
+    /// Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`).
+    ///
+    /// Reads `<workspace>/.plexi/results/<pane-or-run-id>/RESULT.md` (and `result.json`),
+    /// defaulting to the most recently completed agent result when `<pane>` is omitted.
+    ///
+    /// Example: plexi agent result
+    /// Example: plexi agent result 42 --json
+    Result {
+        /// Pane ID, agent role name, or run/session ID (defaults to latest completed run)
+        #[arg(value_name = "PANE")]
+        pane: Option<String>,
+        /// Pane ID, agent role name, or run/session ID (alias for positional `<PANE>`)
+        #[arg(long = "pane", visible_alias = "pane-id", value_name = "PANE", conflicts_with = "pane")]
+        pane_flag: Option<String>,
+    },
     /// Wait for one or more child agent panes to finish via `plexi agent done` and pull their results.
     ///
     /// Blocks until every specified child pane has reported completion (or exited/failed) or `--timeout`

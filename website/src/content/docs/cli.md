@@ -595,6 +595,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `start` | Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `spawn` | Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
+| `result` | Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`) |
 | `wait` | Wait for one or more child agent panes to finish via `plexi agent done` and pull their results |
 | `ask` | Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state) |
 | `report` | Report agent state for this pane to the host |
@@ -804,6 +805,19 @@ Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit com
 | `--result` | string | yes | Structured JSON result payload |
 | `--summary` | string | no | Human- and master-readable completion summary written to the `summary` slot |
 | `--pane-id` | string | no | Target pane id or name (defaults to `$PLEXI_PANE_ID`) |
+
+### `plexi agent result`
+
+Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`).
+
+Reads `<workspace>/.plexi/results/<pane-or-run-id>/RESULT.md` (and `result.json`), defaulting to the most recently completed agent result when `<pane>` is omitted.
+
+Example: plexi agent result Example: plexi agent result 42 --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane>` | string | no | Pane ID, agent role name, or run/session ID (defaults to latest completed run) |
+| `--pane` | string | no | Pane ID, agent role name, or run/session ID (alias for positional `<PANE>`) |
 
 ### `plexi agent wait`
 

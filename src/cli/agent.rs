@@ -3889,3 +3889,353 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
     println!("{reply}");
     if super::reply_error(&reply).is_some() { 1 } else { 0 }
 }
+
+fn is_safe_result_dir_key(key: &str) -> bool {
+    let trimmed = key.trim();
+    !trimmed.is_empty()
+        && trimmed != "."
+        && trimmed != ".."
+        && !trimmed.contains('/')
+        && !trimmed.contains('\\')
+}
+
+pub fn format_agent_done_markdown(
+    agent_role: &str,
+    summary: &str,
+    committed: &serde_json::Value,
+) -> String {
+    let role = if agent_role.trim().is_empty() {
+        "agent"
+    } else {
+        agent_role.trim()
+    };
+    let mut md = String::new();
+    if summary.trim().is_empty() {
+        md.push_str(&format!("# {role} done\n\n"));
+    } else {
+        md.push_str(&format!("# {role} done: {}\n\n", summary.trim()));
+        md.push_str(&format!("**Summary:** {}\n\n", summary.trim()));
+    }
+    if let Some(text) = committed
+        .get("markdown")
+        .or_else(|| committed.get("report"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        md.push_str(text.trim());
+        md.push_str("\n\n");
+    }
+    let pretty = serde_json::to_string_pretty(committed).unwrap_or_else(|_| committed.to_string());
+    md.push_str("```json\n");
+    md.push_str(&pretty);
+    md.push_str("\n```\n");
+    md
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn persist_agent_done_result(
+    pane_id: u64,
+    agent_role: &str,
+    harness: Option<&str>,
+    session_id: Option<&str>,
+    summary: &str,
+    committed: &serde_json::Value,
+    workspace_roots: &[PathBuf],
+    profile_dir: &Path,
+) -> Result<(PathBuf, PathBuf, String, serde_json::Value), String> {
+    let markdown = format_agent_done_markdown(agent_role, summary, committed);
+    let primary_base = workspace_roots
+        .first()
+        .map(|ws| ws.join(".plexi").join("results"))
+        .unwrap_or_else(|| profile_dir.join("results"));
+    let primary_dir = primary_base.join(pane_id.to_string());
+    let primary_md = primary_dir.join("RESULT.md");
+    let primary_json = primary_dir.join("result.json");
+
+    let mut map = match committed {
+        serde_json::Value::Object(obj) => obj.clone(),
+        _ => serde_json::Map::new(),
+    };
+    map.entry("ok".to_string())
+        .or_insert_with(|| serde_json::Value::Bool(true));
+    map.entry("status".to_string())
+        .or_insert_with(|| serde_json::Value::String("completed".to_string()));
+    map.insert("pane_id".to_string(), serde_json::json!(pane_id));
+    map.entry("agent".to_string())
+        .or_insert_with(|| serde_json::Value::String(agent_role.to_string()));
+    if let Some(h) = harness {
+        map.entry("harness".to_string())
+            .or_insert_with(|| serde_json::Value::String(h.to_string()));
+    }
+    if let Some(sid) = session_id {
+        map.entry("session_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(sid.to_string()));
+    }
+    map.entry("summary".to_string())
+        .or_insert_with(|| serde_json::Value::String(summary.to_string()));
+    map.insert("result".to_string(), committed.clone());
+    map.insert(
+        "markdown".to_string(),
+        serde_json::Value::String(markdown.clone()),
+    );
+    map.insert(
+        "result_path".to_string(),
+        serde_json::Value::String(primary_md.to_string_lossy().into_owned()),
+    );
+    map.insert(
+        "json_path".to_string(),
+        serde_json::Value::String(primary_json.to_string_lossy().into_owned()),
+    );
+
+    let json_val = serde_json::Value::Object(map);
+    let json_bytes =
+        serde_json::to_string_pretty(&json_val).map_err(|e| format!("serialize result: {e}"))?;
+
+    let mut bases: Vec<PathBuf> = workspace_roots
+        .iter()
+        .map(|ws| ws.join(".plexi").join("results"))
+        .collect();
+    let profile_results = profile_dir.join("results");
+    if !bases.contains(&profile_results) {
+        bases.push(profile_results);
+    }
+
+    let mut keys = vec![pane_id.to_string()];
+    if let Some(sid) = session_id.filter(|s| is_safe_result_dir_key(s)) {
+        if !keys.iter().any(|k| k == sid) {
+            keys.push(sid.to_string());
+        }
+    }
+    if is_safe_result_dir_key(agent_role) && !keys.iter().any(|k| k == agent_role) {
+        keys.push(agent_role.to_string());
+    }
+
+    for base in &bases {
+        std::fs::create_dir_all(base)
+            .map_err(|e| format!("create {}: {e}", base.display()))?;
+        let _ = std::fs::write(base.join("latest.json"), &json_bytes);
+        let _ = std::fs::write(base.join("RESULT.md"), &markdown);
+        for key in &keys {
+            let dir = base.join(key);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("create {}: {e}", dir.display()))?;
+            let md_path = dir.join("RESULT.md");
+            let js_path = dir.join("result.json");
+            std::fs::write(&md_path, &markdown)
+                .map_err(|e| format!("write {}: {e}", md_path.display()))?;
+            std::fs::write(&js_path, &json_bytes)
+                .map_err(|e| format!("write {}: {e}", js_path.display()))?;
+        }
+    }
+
+    log::info!(
+        "agent_done: persisted result pane_id={pane_id} agent={agent_role} path={}",
+        primary_md.display()
+    );
+    Ok((primary_md, primary_json, markdown, json_val))
+}
+
+pub fn read_persisted_agent_result_in(
+    target: Option<&str>,
+    cwd: Option<&Path>,
+    profile_dir: &Path,
+) -> Result<(PathBuf, String, serde_json::Value), String> {
+    let normalized_target = target
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.strip_prefix('#').unwrap_or(s));
+
+    let mut bases = Vec::new();
+    if let Some(dir) = cwd {
+        if let Some(ws) = crate::app::registry::resolve_agent_lookup_workspace_root(dir) {
+            let b = ws.join(".plexi").join("results");
+            if !bases.contains(&b) {
+                bases.push(b);
+            }
+        }
+        let b = dir.join(".plexi").join("results");
+        if !bases.contains(&b) {
+            bases.push(b);
+        }
+    }
+    let profile_base = profile_dir.join("results");
+    if !bases.contains(&profile_base) {
+        bases.push(profile_base);
+    }
+
+    for base in &bases {
+        if let Some(key) = normalized_target {
+            if is_safe_result_dir_key(key) {
+                let dir = base.join(key);
+                let js_path = dir.join("result.json");
+                let md_path = dir.join("RESULT.md");
+                if js_path.is_file() {
+                    let raw = std::fs::read_to_string(&js_path)
+                        .map_err(|e| format!("read {}: {e}", js_path.display()))?;
+                    let val: serde_json::Value = serde_json::from_str(&raw)
+                        .map_err(|e| format!("parse {}: {e}", js_path.display()))?;
+                    let md = std::fs::read_to_string(&md_path).unwrap_or_else(|_| {
+                        val.get("markdown")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&raw)
+                            .to_string()
+                    });
+                    let reported_md = val
+                        .get("result_path")
+                        .and_then(|v| v.as_str())
+                        .map(PathBuf::from)
+                        .unwrap_or(md_path);
+                    return Ok((reported_md, md, val));
+                }
+            }
+            let latest_js = base.join("latest.json");
+            if latest_js.is_file() {
+                if let Ok(raw) = std::fs::read_to_string(&latest_js) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        let matches_key = val
+                            .get("pane_id")
+                            .and_then(|v| v.as_u64())
+                            .is_some_and(|id| id.to_string() == key)
+                            || val
+                                .get("agent")
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|a| a == key)
+                            || val
+                                .get("session_id")
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|s| s == key);
+                        if matches_key {
+                            let md_path = val
+                                .get("result_path")
+                                .and_then(|v| v.as_str())
+                                .map(PathBuf::from)
+                                .unwrap_or_else(|| base.join("RESULT.md"));
+                            let md = std::fs::read_to_string(&md_path).unwrap_or_else(|_| {
+                                val.get("markdown")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&raw)
+                                    .to_string()
+                            });
+                            return Ok((md_path, md, val));
+                        }
+                    }
+                }
+            }
+        } else {
+            let latest_js = base.join("latest.json");
+            if latest_js.is_file() {
+                let raw = std::fs::read_to_string(&latest_js)
+                    .map_err(|e| format!("read {}: {e}", latest_js.display()))?;
+                let val: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|e| format!("parse {}: {e}", latest_js.display()))?;
+                let md_path = val
+                    .get("result_path")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| base.join("RESULT.md"));
+                let md = std::fs::read_to_string(&md_path).unwrap_or_else(|_| {
+                    val.get("markdown")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&raw)
+                        .to_string()
+                });
+                return Ok((md_path, md, val));
+            }
+        }
+    }
+
+    // Fallback to agent_history.jsonl when available.
+    for record in crate::workspace::load_agent_history().into_iter().rev() {
+        let Some(ref committed) = record.result else {
+            continue;
+        };
+        let matches = match normalized_target {
+            Some(key) => {
+                record.pane_id.to_string() == key
+                    || record.run_id == key
+                    || record.config_name.as_deref() == Some(key)
+                    || record.pane_name.as_deref() == Some(key)
+                    || record.session_id.as_deref() == Some(key)
+            }
+            None => true,
+        };
+        if matches {
+            let role = record
+                .config_name
+                .as_deref()
+                .or(record.pane_name.as_deref())
+                .unwrap_or(&record.harness);
+            let summary = record.summary.as_deref().unwrap_or_default();
+            let md = format_agent_done_markdown(role, summary, committed);
+            let md_path = record
+                .cwd
+                .join(".plexi")
+                .join("results")
+                .join(record.pane_id.to_string())
+                .join("RESULT.md");
+            let mut map = match committed {
+                serde_json::Value::Object(obj) => obj.clone(),
+                _ => serde_json::Map::new(),
+            };
+            map.entry("ok".to_string())
+                .or_insert_with(|| serde_json::Value::Bool(true));
+            map.entry("status".to_string())
+                .or_insert_with(|| serde_json::Value::String("completed".to_string()));
+            map.insert("pane_id".to_string(), serde_json::json!(record.pane_id));
+            map.entry("agent".to_string())
+                .or_insert_with(|| serde_json::Value::String(role.to_string()));
+            map.entry("summary".to_string())
+                .or_insert_with(|| serde_json::Value::String(summary.to_string()));
+            map.insert("result".to_string(), committed.clone());
+            map.insert("markdown".to_string(), serde_json::Value::String(md.clone()));
+            map.insert(
+                "result_path".to_string(),
+                serde_json::Value::String(md_path.to_string_lossy().into_owned()),
+            );
+            return Ok((md_path, md, serde_json::Value::Object(map)));
+        }
+    }
+
+    match normalized_target {
+        Some(key) => Err(format!("no completed agent result found for '{key}'")),
+        None => Err("no completed agent result found".to_string()),
+    }
+}
+
+/// `plexi agent result [<pane>] [--json]`
+pub fn agent_result_cli(target: Option<&str>, json: bool) -> i32 {
+    log::info!("agent_result:cli: target={target:?} json={json}");
+    let cwd = std::env::current_dir().ok();
+    let profile_dir = crate::config::config_dir();
+    match read_persisted_agent_result_in(target, cwd.as_deref(), &profile_dir) {
+        Ok((md_path, md, val)) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string())
+                );
+            } else {
+                print!("{md}");
+                if !md.ends_with('\n') {
+                    println!();
+                }
+                println!("RESULT.md: {}", md_path.display());
+            }
+            0
+        }
+        Err(err) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "error": err,
+                    })
+                );
+            } else {
+                eprintln!("error: {err}");
+            }
+            1
+        }
+    }
+}

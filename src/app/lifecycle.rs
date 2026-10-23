@@ -4290,10 +4290,14 @@ impl PlexiApp {
                             true,
                         );
                         let mut agent_label = "agent".to_string();
+                        let mut agent_harness = None;
                         let mut session_id = None;
                         let mut parent_pane_id = None;
+                        let mut workspace_roots = Vec::new();
+                        let mut pane_ctx_id = None;
                         for win in &mut self.windows {
                             if let Some(pane) = win.panes.get_mut(pane_id) {
+                                pane_ctx_id = Some(win.context_id);
                                 if let Some(t) = pane.as_terminal_mut() {
                                     parent_pane_id = t.parent_pane_id;
                                     t.agent_completed = true;
@@ -4302,14 +4306,32 @@ impl PlexiApp {
                                     t.fleet_seen = false;
                                     t.fleet_since = crate::platform::clock::now_secs();
                                     t.last_blocked_reason = None;
+                                    agent_harness = t.agent_harness.clone();
                                     if let Some(ref r) = t.agent_role {
                                         agent_label = r.clone();
                                     } else if let Some(ref h) = t.agent_harness {
                                         agent_label = h.clone();
                                     } else if let Some(ref a) = t.agent {
                                         agent_label = a.agent.clone();
+                                    } else if let Some(ref n) = t.name {
+                                        if !n.trim().is_empty() && n != "terminal" {
+                                            agent_label = n.clone();
+                                        }
+                                    }
+                                    if let Some(ref cwd) = t.initial_cwd {
+                                        if let Some(ws) =
+                                            crate::app::registry::resolve_agent_lookup_workspace_root(cwd)
+                                        {
+                                            workspace_roots.push(ws);
+                                        }
+                                        if !workspace_roots.contains(cwd) {
+                                            workspace_roots.push(cwd.clone());
+                                        }
                                     }
                                     session_id = t.agent_session_id.clone();
+                                }
+                                if !workspace_roots.contains(&win.path) {
+                                    workspace_roots.push(win.path.clone());
                                 }
                                 let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
                                     pane_id: *pane_id,
@@ -4322,8 +4344,76 @@ impl PlexiApp {
                                 break;
                             }
                         }
+                        if let Some(cid) = pane_ctx_id {
+                            if let Some(ctx) = self.router.iter().find(|c| c.context_id == cid) {
+                                if !workspace_roots.contains(&ctx.root) {
+                                    workspace_roots.insert(0, ctx.root.clone());
+                                }
+                            }
+                        }
+                        if workspace_roots.is_empty() {
+                            workspace_roots.push(self.router.active().root.clone());
+                        }
+                        let profile_dir = crate::config::config_dir();
+                        let persisted = crate::cli::agent::persist_agent_done_result(
+                            *pane_id,
+                            &agent_label,
+                            agent_harness.as_deref(),
+                            session_id.as_deref(),
+                            summary_str,
+                            &committed,
+                            &workspace_roots,
+                            &profile_dir,
+                        );
+                        let (result_md_path, result_json_path) = match persisted {
+                            Ok((md_p, js_p, _, _)) => (
+                                Some(md_p.to_string_lossy().into_owned()),
+                                Some(js_p.to_string_lossy().into_owned()),
+                            ),
+                            Err(e) => {
+                                log::warn!("agent_done: failed to persist result for pane {pane_id}: {e}");
+                                (None, None)
+                            }
+                        };
                         self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
-                        self.report_agent_attention(*pane_id, &crate::protocol::AgentState::Completed, None);
+                        if !self.pane_has_parent_agent(*pane_id) {
+                            let done_title = if summary_str.trim().is_empty() {
+                                format!("{agent_label} done")
+                            } else {
+                                format!("{agent_label} done: {}", summary_str.trim())
+                            };
+                            let resource = result_md_path
+                                .clone()
+                                .unwrap_or_else(|| format!("pane:{pane_id}"));
+                            if let Err(e) =
+                                crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
+                                    .file_needs_you_with_details(
+                                        crate::broker::gate::NeedsYouFile {
+                                            kind: crate::broker::gate::NeedsYouKind::AgentDone,
+                                            actor: format!("pane:{pane_id}"),
+                                            resource,
+                                            summary: done_title,
+                                            expires_at: None,
+                                            run_tag: session_id
+                                                .clone()
+                                                .or_else(|| Some(format!("pane:{pane_id}"))),
+                                        },
+                                        Some(crate::broker::gate::NeedsYouDetails {
+                                            pane_id: Some(*pane_id),
+                                            session_id: session_id.clone(),
+                                            preview_refs: result_md_path.clone().into_iter().collect(),
+                                            ..Default::default()
+                                        }),
+                                    )
+                            {
+                                log::warn!("agent_done: could not file attention item for pane {pane_id}: {e}");
+                            }
+                        }
+                        self.report_agent_attention(
+                            *pane_id,
+                            &crate::protocol::AgentState::Completed,
+                            (!summary_str.is_empty()).then_some(summary_str),
+                        );
                         if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
                         self.mark_workspace_dirty();
                         let provenance = Provenance {
@@ -4363,6 +4453,8 @@ impl PlexiApp {
                                 "pane_id": pane_id,
                                 "slot": "completed",
                                 "path": path.to_string_lossy(),
+                                "result_path": result_md_path,
+                                "json_path": result_json_path,
                                 "bytes": bytes,
                                 "result": committed,
                                 "summary": summary,
@@ -4370,6 +4462,8 @@ impl PlexiApp {
                             Err(e) => serde_json::json!({
                                 "ok": true,
                                 "pane_id": pane_id,
+                                "result_path": result_md_path,
+                                "json_path": result_json_path,
                                 "result": committed,
                                 "summary": summary,
                                 "slot_warning": e,
