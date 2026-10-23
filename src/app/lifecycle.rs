@@ -665,7 +665,11 @@ impl PlexiApp {
                         }
                         let (pane_type, title, cwd) = match pane {
                             crate::host::pane::Pane::Terminal(t) => {
-                                let name = t.name.clone().unwrap_or_else(|| "terminal".to_string());
+                                let name = t
+                                    .name
+                                    .clone()
+                                    .or_else(|| t.agent_role.clone())
+                                    .unwrap_or_else(|| "terminal".to_string());
                                 let cwd = t
                                     .standby_cwd
                                     .as_ref()
@@ -709,6 +713,9 @@ impl PlexiApp {
                             "heartbeat": self.pane_heartbeat_json(*pane_id),
                         });
                         if let crate::host::pane::Pane::Terminal(t) = pane {
+                            entry["name"] =
+                                serde_json::json!(t.name.clone().or_else(|| t.agent_role.clone()));
+                            entry["pty_title"] = serde_json::json!(t.pty_title);
                             entry["parent_pane_id"] = serde_json::json!(t.parent_pane_id);
                             entry["spawned_by"] =
                                 serde_json::json!(t.spawned_by.as_deref().unwrap_or("human"));
@@ -817,7 +824,9 @@ impl PlexiApp {
                                 let mut obj = serde_json::json!({
                                     "id": pane_id,
                                     "type": "terminal",
-                                    "title": t.name.clone().unwrap_or_else(|| "terminal".to_string()),
+                                    "title": t.name.clone().or_else(|| t.agent_role.clone()).unwrap_or_else(|| "terminal".to_string()),
+                                    "name": t.name.clone().or_else(|| t.agent_role.clone()),
+                                    "pty_title": t.pty_title,
                                     "focused": focused,
                                     "context_id": win.context_id,
                                     "context_name": self.context_name_for(win.context_id),
@@ -5817,9 +5826,9 @@ impl PlexiApp {
                                         Some(title_trimmed.to_string())
                                     };
                                     if osc_enabled {
-                                        if t.name_locked {
+                                        if t.name_locked || t.agent_role.is_some() {
                                             log::debug!(
-                                                "osc_title: pane {id} name locked, skipping"
+                                                "osc_title: pane {id} name locked or agent pane, skipping"
                                             );
                                         } else {
                                             let is_empty = title_trimmed.is_empty();

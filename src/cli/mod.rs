@@ -563,6 +563,23 @@ impl PaneTarget {
                 Ok(id)
             }
             Err(msg) => {
+                let role_candidates: Vec<(u64, String)> = entries
+                    .iter()
+                    .filter_map(|v| {
+                        let id = v.get("id")?.as_u64()?;
+                        let role = v
+                            .get("agent_role")
+                            .and_then(|n| n.as_str())
+                            .filter(|s| !s.is_empty())?;
+                        Some((id, role.to_string()))
+                    })
+                    .collect();
+                if let Ok(id) = resolve_target_from_candidates("pane", q, &role_candidates) {
+                    log::info!(
+                        "cli:target: pane target {q:?} resolved via agent_role to pane_id={id}"
+                    );
+                    return Ok(id);
+                }
                 log::warn!("cli:target: pane target {q:?} failed: {msg}");
                 eprintln!("error: {msg}");
                 Err(1)

@@ -13794,3 +13794,134 @@ ask = ["pane.send"]
         "subsequent call after Once grant was consumed must ask again"
     );
 }
+
+#[test]
+fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_provenance() {
+    let profile_dir = tempfile::tempdir().expect("profile_dir");
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+    let ws_dir = tempfile::tempdir().expect("ws_dir");
+
+    // 1. Spawn `lead` (by human) and `helper` (by `lead`), plus a user-named pane `scratch`,
+    //    then save workspace to disk.
+    {
+        let mut h = HostHarness::from_profile_dir(profile_dir.path());
+        h.app.set_context_root(ws_dir.path().to_path_buf(), None);
+        let scratch_id = h.add_focused_terminal();
+        h.inject_ipc(AppRequest::SetPaneTitle {
+            pane_id: scratch_id,
+            name: "scratch".to_string(),
+        });
+        h.hidden_frame();
+
+        let lead_reply = temp_response(ws_dir.path(), "spawn-lead");
+        h.inject_ipc(AppRequest::AgentSpawn {
+            role: "lead".into(),
+            harness: "script".into(),
+            command: "sleep 30".into(),
+            task: None,
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: None,
+            name: None,
+            cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: false,
+            response_file: lead_reply.clone(),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        let lead_id = read_json_response(&lead_reply)["pane_id"]
+            .as_u64()
+            .expect("lead pane_id");
+
+        let helper_reply = temp_response(ws_dir.path(), "spawn-helper");
+        h.inject_ipc(AppRequest::AgentSpawn {
+            role: "helper".into(),
+            harness: "script".into(),
+            command: "sleep 30".into(),
+            task: Some("assist lead".into()),
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: Some(lead_id),
+            name: None,
+            cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: vec![],
+            no_focus: false,
+            response_file: helper_reply.clone(),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        let helper_id = read_json_response(&helper_reply)["pane_id"]
+            .as_u64()
+            .expect("helper pane_id");
+        assert_ne!(lead_id, helper_id);
+
+        h.app.save_workspace_now();
+    }
+
+    // 2. Restore workspace in a fresh host instance and emit Claude-style OSC titles
+    //    on the restored panes.
+    let mut h = HostHarness::from_profile_dir(profile_dir.path());
+    let pane_ids: Vec<u64> = h.app.windows[0].panes.keys().copied().collect();
+    assert!(
+        pane_ids.len() >= 3,
+        "scratch, lead, and helper must restore"
+    );
+    for pid in &pane_ids {
+        h.app
+            .pty_event_tx
+            .send((
+                *pid,
+                egui_term::PtyEvent::Title("✳ Claude Code — /tmp/work".to_string()),
+            ))
+            .expect("send osc title");
+    }
+    h.run_frames(1);
+
+    let list_reply = temp_response(ws_dir.path(), "list-after-restore");
+    h.inject_ipc(AppRequest::ListPanes {
+        context_id: None,
+        response_file: list_reply.clone(),
+    });
+    h.hidden_frame();
+    let list_json = read_json_response(&list_reply);
+    let panes = list_json.as_array().expect("panes array");
+
+    let lead_entry = panes
+        .iter()
+        .find(|p| p["title"].as_str() == Some("lead"))
+        .expect("lead pane must retain stable title 'lead' after restore + OSC title");
+    assert_eq!(
+        lead_entry["pty_title"].as_str(),
+        Some("✳ Claude Code — /tmp/work")
+    );
+    assert_eq!(lead_entry["spawned_by"].as_str(), Some("human"));
+
+    let helper_entry = panes
+        .iter()
+        .find(|p| p["title"].as_str() == Some("helper"))
+        .expect("helper pane must retain stable title 'helper' after restore + OSC title");
+    assert_eq!(
+        helper_entry["parent_pane_id"].as_u64(),
+        lead_entry["id"].as_u64(),
+        "helper must retain parent_pane_id across restore"
+    );
+    assert_eq!(
+        helper_entry["spawned_by"].as_str(),
+        Some("agent:lead"),
+        "helper must retain spawned_by='agent:lead' across restore"
+    );
+
+    let scratch_entry = panes
+        .iter()
+        .find(|p| p["title"].as_str() == Some("scratch"))
+        .expect("user-named pane 'scratch' must retain locked name across restore + OSC title");
+    assert_eq!(
+        scratch_entry["pty_title"].as_str(),
+        Some("✳ Claude Code — /tmp/work")
+    );
+}

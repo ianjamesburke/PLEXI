@@ -5475,6 +5475,32 @@ pub(crate) fn restore_workspace(
                                 .env
                                 .insert("PLEXI_PARENT_PANE".to_string(), parent_id.to_string());
                         }
+                        let resolved_spawned_by = session
+                            .spawned_by
+                            .clone()
+                            .filter(|s| {
+                                !s.is_empty()
+                                    && !(s == "human" && session.parent_pane_id.is_some())
+                            })
+                            .or_else(|| {
+                                let pid = session.parent_pane_id?;
+                                let parent = saved_win.panes.iter().find(|p| p.id == pid)?;
+                                if let Some(ref ps) = parent.agent_session {
+                                    let label = ps
+                                        .config_name
+                                        .as_deref()
+                                        .or(parent.name.as_deref())
+                                        .unwrap_or(&ps.harness);
+                                    Some(format!("agent:{label}"))
+                                } else {
+                                    Some("human".to_string())
+                                }
+                            })
+                            .unwrap_or_else(|| "human".to_string());
+                        session.spawned_by = Some(resolved_spawned_by.clone());
+                        settings
+                            .env
+                            .insert("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by);
                         if session.ephemeral {
                             settings
                                 .env
@@ -5528,7 +5554,15 @@ pub(crate) fn restore_workspace(
                         settings,
                         default_font_size,
                     ) {
-                        pane.name = saved_pane.name.clone();
+                        pane.name = saved_pane
+                            .name
+                            .clone()
+                            .or_else(|| effective_session.as_ref().and_then(|s| s.config_name.clone()));
+                        pane.name_locked = saved_pane
+                            .name
+                            .as_deref()
+                            .is_some_and(|n| !n.is_empty() && n != "terminal")
+                            || effective_session.is_some();
                         pane.slots = saved_pane.slots.clone();
                         if let Some(session) = effective_session {
                             pane.fleet_result = session.fleet_result.clone();
@@ -5538,6 +5572,8 @@ pub(crate) fn restore_workspace(
                             pane.fleet_since = session.fleet_since;
                             pane.ephemeral = session.ephemeral;
                             pane.parent_pane_id = session.parent_pane_id;
+                            pane.spawned_by = session.spawned_by.clone().or(pane.spawned_by);
+                            pane.pending_child_results = session.pending_child_results.clone();
                             pane.agent_harness = Some(session.harness.clone());
                             pane.agent_session_id = session.session_id.clone();
                             pane.agent_role = session.config_name.clone();
