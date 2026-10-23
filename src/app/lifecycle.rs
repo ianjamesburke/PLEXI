@@ -2154,11 +2154,27 @@ impl PlexiApp {
                     // wire: `pane new` from an agent pane is that agent's child,
                     // from a plain terminal it is the person's own pane. The
                     // parent link is left alone so no result delivery is implied.
-                    let (_, spawned_by) = self.resolve_unspoofable_spawner(
+                    let (caller_pane_id, spawned_by) = self.resolve_unspoofable_spawner(
                         spec.from_pane_id,
                         spec.peer_ancestry.as_deref(),
                     );
                     self.set_pane_spawned_by(response_pane_id, spawned_by, None);
+                    if let Some(parent_posture) =
+                        caller_pane_id.and_then(|cid| self.pane_permission_posture(cid))
+                    {
+                        if let Some((win_idx, _)) = self.find_pane_in_any_window(response_pane_id) {
+                            if let Some(term) = self.windows[win_idx]
+                                .panes
+                                .get_mut(&response_pane_id)
+                                .and_then(|p| p.as_terminal_mut())
+                            {
+                                term.agent_permission_posture = Some(match term.agent_permission_posture.take() {
+                                    Some(child) => child.restricted_by(&parent_posture),
+                                    None => parent_posture,
+                                });
+                            }
+                        }
+                    }
                 }
                 self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
             }

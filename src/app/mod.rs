@@ -2118,10 +2118,41 @@ impl PlexiApp {
         &self,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
-        self.find_pane_in_any_window(pane_id)
-            .and_then(|(window, _)| self.windows[window].panes.get(&pane_id))
-            .and_then(|pane| pane.as_terminal())
-            .and_then(|pane| pane.agent_permission_posture.clone())
+        let (window, _) = self.find_pane_in_any_window(pane_id)?;
+        let pane = self.windows[window].panes.get(&pane_id)?.as_terminal()?;
+        if let Some(posture) = pane.agent_permission_posture.clone() {
+            return Some(posture);
+        }
+        if let Some(posture) = pane
+            .standby_session
+            .as_ref()
+            .and_then(|s| s.permission_posture.clone())
+        {
+            return Some(posture);
+        }
+        let role = pane
+            .agent_role
+            .as_deref()
+            .or_else(|| {
+                pane.standby_session
+                    .as_ref()
+                    .and_then(|s| s.config_name.as_deref())
+            })?;
+        let lookup_root = self.pane_context_authority_root(pane_id);
+        let profile_dir = crate::config::config_dir();
+        let posture = crate::cli::agent::resolve_agent_definition_in(
+            role,
+            &profile_dir,
+            lookup_root.as_deref(),
+        )
+        .ok()
+        .map(|(def, _)| def.posture)?;
+        if let Some(parent_id) = pane.parent_pane_id.filter(|&pid| pid != pane_id) {
+            if let Some(parent_posture) = self.pane_permission_posture(parent_id) {
+                return Some(posture.restricted_by(&parent_posture));
+            }
+        }
+        Some(posture)
     }
 
     /// Canonical context root that bounds a pane's authority.
@@ -5505,6 +5536,23 @@ pub(crate) fn restore_workspace(
                             pane.agent_harness = Some(session.harness.clone());
                             pane.agent_session_id = session.session_id.clone();
                             pane.agent_role = session.config_name.clone();
+                            pane.agent_permission_posture = session
+                                .permission_posture
+                                .clone()
+                                .or_else(|| {
+                                    let role = session.config_name.as_deref()?;
+                                    let lookup_root = cwd
+                                        .as_deref()
+                                        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
+                                        .or_else(|| ctx_root.cloned());
+                                    crate::cli::agent::resolve_agent_definition_in(
+                                        role,
+                                        collaborators.profile_dir,
+                                        lookup_root.as_deref(),
+                                    )
+                                    .ok()
+                                    .map(|(def, _)| def.posture)
+                                });
                             pane.last_blocked_reason = session.last_blocked_reason;
                             pane.tail_preview = session.tail_preview.clone();
                             pane.agent_completed =

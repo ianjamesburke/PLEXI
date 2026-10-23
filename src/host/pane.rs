@@ -1104,6 +1104,9 @@ impl TerminalPane {
             if let Some(ref role) = self.agent_role {
                 s.config_name = Some(role.clone());
             }
+            if self.agent_permission_posture.is_some() {
+                s.permission_posture = self.agent_permission_posture.clone();
+            }
             if let Some(ref a) = self.agent {
                 s.last_state = a.state.clone();
                 if a.detail.is_some() {
@@ -1174,6 +1177,7 @@ impl TerminalPane {
             fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
+            permission_posture: self.agent_permission_posture.clone(),
             session_id,
             last_state,
             last_blocked_reason: self.last_blocked_reason,
@@ -1230,6 +1234,7 @@ impl TerminalPane {
             pane_name: self.name.clone(),
             harness: session.harness,
             config_name: session.config_name,
+            permission_posture: session.permission_posture,
             session_id: session.session_id,
             cwd,
             ephemeral: session.ephemeral,
@@ -1314,6 +1319,7 @@ mod agent_source_tests {
             fleet_since: 0,
             harness: harness.to_string(),
             config_name: None,
+            permission_posture: None,
             session_id: session_id.map(str::to_string),
             last_state: AgentState::Blocked,
             last_blocked_reason: None,

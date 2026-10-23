@@ -110,6 +110,8 @@ pub struct SavedAgentSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_posture: Option<crate::broker::PermissionPosture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub last_state: crate::protocol::AgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +154,8 @@ pub struct AgentHistoryRecord {
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_posture: Option<crate::broker::PermissionPosture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub cwd: PathBuf,
@@ -856,6 +860,7 @@ mod tests {
                 fleet_since: 0,
                 harness: "claude".to_string(),
                 config_name: Some("implementer".to_string()),
+                permission_posture: None,
                 session_id: Some("sess-42".to_string()),
                 last_state: AgentState::Blocked,
                 last_blocked_reason: Some(AgentBlockedReason::PermissionPrompt),
@@ -918,6 +923,7 @@ mod tests {
             cwd: PathBuf::from("/tmp/work"),
             harness: "claude".to_string(),
             config_name: Some("implementer".to_string()),
+            permission_posture: None,
             session_id: Some("sess-42".to_string()),
             last_state: AgentState::Completed,
             last_blocked_reason: None,
@@ -954,6 +960,7 @@ pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context
         pane_id: pane.id, context_id, context_name: context_name.into(), parent_pane_id: session.parent_pane_id,
         spawned_by: session.spawned_by.clone(),
         pane_name: pane.name.clone(), harness: session.harness.clone(), config_name: session.config_name.clone(),
+        permission_posture: session.permission_posture.clone(),
         session_id: session.session_id.clone(), cwd: pane.cwd.clone(), ephemeral: session.ephemeral,
         last_state: crate::protocol::AgentState::Completed, last_blocked_reason: None,
         last_detail: session.last_detail.clone(), summary: session.last_detail.clone(), result,

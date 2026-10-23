@@ -11500,6 +11500,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "claude".to_string(),
                                 config_name: Some("lead".to_string()),
+                                permission_posture: None,
                                 session_id: Some("sess-active-10".to_string()),
                                 last_state: AgentState::Working,
                                 last_blocked_reason: None,
@@ -11573,6 +11574,7 @@ mod agent_state_restoration_tests {
                             fleet_since: 0,
                             harness: "codex".to_string(),
                             config_name: Some("worker".to_string()),
+                            permission_posture: None,
                             session_id: Some("thread-bg-20".to_string()),
                             last_state: AgentState::Blocked,
                             last_blocked_reason: Some(AgentBlockedReason::Unknown),
@@ -11619,6 +11621,7 @@ mod agent_state_restoration_tests {
                             fleet_since: 0,
                             harness: "pi".to_string(),
                             config_name: Some("scout".to_string()),
+                            permission_posture: None,
                             session_id: Some("pi-done-30".to_string()),
                             last_state: AgentState::Completed,
                             last_blocked_reason: None,
@@ -11785,6 +11788,7 @@ mod agent_state_restoration_tests {
             fleet_since: 0,
             harness: "codex".to_string(),
             config_name: Some("worker".to_string()),
+            permission_posture: None,
             session_id: Some("thread-enter".to_string()),
             last_state: AgentState::Idle,
             last_blocked_reason: None,
@@ -11996,6 +12000,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12029,6 +12034,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: Some("pi-unpersisted-11".to_string()),
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12062,6 +12068,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: Some("pi-persisted-12".to_string()),
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12107,6 +12114,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -12140,6 +12148,7 @@ mod agent_state_restoration_tests {
                                 fleet_since: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                permission_posture: None,
                                 session_id: Some("pi-unpersisted-21".to_string()),
                                 last_state: AgentState::Idle,
                                 last_blocked_reason: None,
@@ -13341,4 +13350,160 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         human_term.pending_child_results.is_empty(),
         "plain human shell must not accumulate pending_child_results that never drain"
     );
+}
+
+#[test]
+fn restored_agent_pane_enforces_permission_posture_on_pane_send() {
+    let profile_dir = tempfile::tempdir().expect("profile_dir");
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+    let ws_dir = tempfile::tempdir().expect("ws_dir");
+    let agent_dir = ws_dir.path().join(".plexi").join("agents").join("lead");
+    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+    std::fs::write(agent_dir.join("AGENT.md"), "You are lead.\n").expect("write AGENT.md");
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "lead"
+display_name = "Lead"
+default_tier = "medium"
+
+[harness]
+cli = "claude"
+
+[permissions]
+default_posture = "allow"
+allow = []
+ask = ["pane.send"]
+"#,
+    )
+    .expect("write settings.toml");
+
+    let mut tiles = egui_tiles::Tiles::default();
+    let t10 = tiles.insert_pane(10);
+    let t11 = tiles.insert_pane(11);
+    let root_tile = tiles.insert_horizontal_tile(vec![t10, t11]);
+    let tree = egui_tiles::Tree::new("restore_gate_tree", root_tile, tiles);
+
+    let ws = crate::workspace::WorkspaceFile {
+        version: 2,
+        active_context: 1,
+        sidebar_visible: false,
+        next_pane_id: 20,
+        contexts: vec![crate::host::context::Context {
+            name: crate::host::context::ContextName::custom("story"),
+            root: ws_dir.path().to_path_buf(),
+            description: None,
+            context_id: 1,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        }],
+        windows: vec![crate::workspace::SavedWindow {
+            name: String::new(),
+            path: ws_dir.path().to_path_buf(),
+            tree,
+            panes: vec![
+                crate::workspace::SavedPane {
+                    id: 10,
+                    kind: crate::workspace::SavedPaneKind::Terminal,
+                    cwd: ws_dir.path().to_path_buf(),
+                    name: Some("lead".to_string()),
+                    app_id: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: Some(crate::workspace::SavedAgentSession {
+                        fleet_result: None,
+                        fleet_seen: false,
+                        fleet_dismissed: false,
+                        fleet_done_unseen: false,
+                        fleet_since: 0,
+                        harness: "claude".to_string(),
+                        config_name: Some("lead".to_string()),
+                        permission_posture: None,
+                        session_id: Some("sess-lead-10".to_string()),
+                        last_state: crate::protocol::AgentState::Idle,
+                        last_blocked_reason: None,
+                        last_detail: None,
+                        parent_pane_id: None,
+                        spawned_by: Some("human".to_string()),
+                        pending_child_results: Vec::new(),
+                        ephemeral: false,
+                        tail_preview: None,
+                        standby_scrollback_tail: None,
+                    }),
+                },
+                crate::workspace::SavedPane {
+                    id: 11,
+                    kind: crate::workspace::SavedPaneKind::Terminal,
+                    cwd: ws_dir.path().to_path_buf(),
+                    name: Some("helper".to_string()),
+                    app_id: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: None,
+                },
+            ],
+            focused_pane: Some(t10),
+            grid_x: 0,
+            grid_y: 0,
+            window_id: 1,
+            context_id: 1,
+        }],
+        context_active_window: std::collections::HashMap::from([(1, 1)]),
+    };
+    ws.save_to(profile_dir.path()).expect("save workspace");
+
+    let mut h = HostHarness::from_profile_dir(profile_dir.path());
+    let restored_posture = h
+        .app
+        .pane_permission_posture(10)
+        .expect("restored agent pane must have permission posture");
+    assert!(
+        restored_posture.ask.iter().any(|rule| rule == "pane.send"),
+        "expected ask=[\"pane.send\"] after restore, got {restored_posture:?}"
+    );
+    let saved_after_restore = h.app.windows[0].panes[&10]
+        .as_terminal()
+        .expect("terminal 10")
+        .build_saved_agent_session()
+        .expect("saved agent session");
+    assert_eq!(
+        saved_after_restore.permission_posture.as_ref(),
+        Some(&restored_posture),
+        "build_saved_agent_session must persist permission_posture"
+    );
+
+    let lead_pid = h.app.windows[0].panes[&10]
+        .as_terminal()
+        .expect("terminal 10")
+        .backend
+        .child_pid();
+    let send_reply = temp_response(ws_dir.path(), "restored-lead-send");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: 11,
+        text: "hello from restored lead".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(send_reply.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir.path());
+    let pending = monitor.list_pending();
+    assert_eq!(
+        pending.len(),
+        1,
+        "restored agent pane must enter permission broker and file an ask on pane.send"
+    );
+    assert_eq!(pending[0].actor_id, "pane:10");
+    assert_eq!(pending[0].tool, "pane.send");
 }
