@@ -36,6 +36,9 @@ pub enum QueueCategory {
     Failed = 1,
     Result = 2,
     Done = 3,
+    /// Host lifecycle / integrity notices. Always sorted below every ask and
+    /// cleared once seen; never counted as asks.
+    Notice = 4,
 }
 
 impl QueueCategory {
@@ -45,6 +48,7 @@ impl QueueCategory {
             Self::Failed => "✕",
             Self::Result => "●",
             Self::Done => "✓",
+            Self::Notice => "!",
         }
     }
 
@@ -54,6 +58,7 @@ impl QueueCategory {
             Self::Failed => "Failed",
             Self::Result => "Result waiting",
             Self::Done => "Done",
+            Self::Notice => "Notice",
         }
     }
 }
@@ -162,6 +167,14 @@ impl DecisionOverlayState {
     }
 }
 
+pub fn acknowledge_options() -> Vec<QueueOption> {
+    vec![QueueOption {
+        key: "acknowledge".to_string(),
+        label: "Acknowledge".to_string(),
+        recommended: true,
+    }]
+}
+
 pub fn default_ask_options() -> Vec<QueueOption> {
     vec![
         QueueOption {
@@ -207,6 +220,9 @@ pub struct AttentionQueueState {
     pub transient_hint: Option<(String, Instant)>,
     /// Monotonic counter for ordering arrivals when timestamps tie.
     pub next_seq: u64,
+    /// Notice ids shown to the person (overlay or list opened). Once they are
+    /// no longer on screen, they are acknowledged and cleared.
+    pub seen_notice_ids: HashSet<String>,
 }
 
 impl AttentionQueueState {
@@ -552,6 +568,13 @@ impl PlexiApp {
             let (context_id, pane_name, context_path) = self.describe_pane_for_queue(pane_id);
             let category = if item.kind == NeedsYouKind::AgentDone {
                 QueueCategory::Done
+            } else if item.kind == NeedsYouKind::Integrity {
+                // One notice per (kind, resource), however many restarts filed it.
+                let key = format!("notice:{}", item.resource);
+                if !seen_ids.insert(key) {
+                    continue;
+                }
+                QueueCategory::Notice
             } else {
                 QueueCategory::Ask
             };
@@ -576,6 +599,8 @@ impl PlexiApp {
                     .collect()
             } else if category == QueueCategory::Ask {
                 default_ask_options()
+            } else if category == QueueCategory::Notice {
+                acknowledge_options()
             } else {
                 Vec::new()
             };
@@ -856,6 +881,8 @@ impl PlexiApp {
             self.attention_queue.selected_idx = self.attention_queue.items.len() - 1;
         }
 
+        self.clear_seen_notices();
+
         // Check if an open Decision Overlay's target pane died or ask resolved externally.
         if let Some(ref overlay) = self.attention_queue.decision_overlay {
             let pane_alive = self.find_pane_in_any_window(overlay.pane_id).is_some();
@@ -871,11 +898,101 @@ impl PlexiApp {
         }
     }
 
+    /// Acknowledge every open integrity record sharing the notice's resource,
+    /// so a restart loop cannot leave duplicates behind.
+    fn acknowledge_notice(&mut self, notice_id: &str) {
+        let resource = self
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.id == notice_id)
+            .and_then(|b| match &b.source {
+                QueueSource::NeedsYou { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            })
+            .and_then(|rid| {
+                PermissionMonitor::for_profile(&crate::config::config_dir())
+                    .open_needs_you()
+                    .into_iter()
+                    .find(|r| r.id == rid)
+                    .map(|r| r.resource)
+            });
+        let mut ids = vec![notice_id.to_string()];
+        if let Some(resource) = resource {
+            ids.extend(
+                PermissionMonitor::for_profile(&crate::config::config_dir())
+                    .open_needs_you()
+                    .into_iter()
+                    .filter(|r| r.kind == NeedsYouKind::Integrity && r.resource == resource)
+                    .map(|r| r.id),
+            );
+        }
+        ids.sort();
+        ids.dedup();
+        for id in ids {
+            if let Err(error) = self.resolve_from_desktop(&id, false, "notice acknowledge") {
+                log::warn!("attention_queue: acknowledge {id} not persisted: {error}");
+            }
+            self.attention_queue.dismissed_ids.insert(id);
+        }
+        self.attention_queue.seen_notice_ids.remove(notice_id);
+        log::info!("attention_queue: acknowledged notice {notice_id}");
+    }
+
+    /// Notices that were shown and are no longer on screen are acknowledged.
+    fn clear_seen_notices(&mut self) {
+        if self.attention_queue.open {
+            self.mark_notices_seen();
+        }
+        if self.attention_queue.seen_notice_ids.is_empty() {
+            return;
+        }
+        let on_screen = self
+            .attention_queue
+            .decision_overlay
+            .as_ref()
+            .map(|o| o.ask_id.clone());
+        let list_open = self.attention_queue.open;
+        let stale: Vec<String> = self
+            .attention_queue
+            .items
+            .iter()
+            .filter(|b| {
+                b.category == QueueCategory::Notice
+                    && self.attention_queue.seen_notice_ids.contains(&b.id)
+                    && !list_open
+                    && on_screen.as_deref() != Some(b.id.as_str())
+            })
+            .map(|b| b.id.clone())
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for id in &stale {
+            self.acknowledge_notice(id);
+        }
+        self.attention_queue
+            .items
+            .retain(|b| !stale.contains(&b.id));
+    }
+
+    fn mark_notices_seen(&mut self) {
+        let ids: Vec<String> = self
+            .attention_queue
+            .items
+            .iter()
+            .filter(|b| b.category == QueueCategory::Notice)
+            .map(|b| b.id.clone())
+            .collect();
+        self.attention_queue.seen_notice_ids.extend(ids);
+    }
+
     /// Toggle the pulled-up attention queue bar list (`Cmd+I`).
     pub fn toggle_attention_queue_list(&mut self) {
         self.sync_attention_queue();
         self.attention_queue.open = !self.attention_queue.open;
         if self.attention_queue.open {
+            self.mark_notices_seen();
             self.attention_queue.selected_idx = 0;
             log::info!(
                 "attention_queue: opened list (items={}, asks={})",
@@ -895,11 +1012,17 @@ impl PlexiApp {
             .attention_queue
             .items
             .iter()
-            .find(|b| b.id == ask_id && b.category == QueueCategory::Ask)
+            .find(|b| {
+                b.id == ask_id
+                    && matches!(b.category, QueueCategory::Ask | QueueCategory::Notice)
+            })
             .cloned()
         else {
             return false;
         };
+        if bar.category == QueueCategory::Notice {
+            self.attention_queue.seen_notice_ids.insert(bar.id.clone());
+        }
         self.jump_to_pane_at_columns(bar.pane_id);
         self.attention_queue.open = false;
         self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
@@ -1009,7 +1132,9 @@ impl PlexiApp {
                 request_id,
                 is_question,
             } => {
-                if *is_question {
+                if option.key == "acknowledge" {
+                    self.acknowledge_notice(request_id);
+                } else if *is_question {
                     let _ = self.answer_from_desktop(request_id, &option.label, "decision overlay");
                 } else {
                     let approve = option.key != "deny"
@@ -1475,7 +1600,7 @@ impl PlexiApp {
                             let glyph_color = match bar.category {
                                 QueueCategory::Ask => colors.zoom_needs,
                                 QueueCategory::Failed => colors.zoom_failed,
-                                QueueCategory::Result | QueueCategory::Done => colors.text_dim,
+                                QueueCategory::Result | QueueCategory::Done | QueueCategory::Notice => colors.text_dim,
                             };
 
                             let resp = egui::Frame::NONE

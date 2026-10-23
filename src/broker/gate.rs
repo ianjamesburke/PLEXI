@@ -2419,6 +2419,21 @@ impl PermissionMonitor {
     }
 
     pub(crate) fn file_integrity_memory_only(&self, reason: &str) {
+        // One open queue-integrity notice at a time, however many restarts.
+        if self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .any(|row| {
+                row.resolution.is_none()
+                    && row.kind == NeedsYouKind::Integrity
+                    && row.resource == "needs-you"
+            })
+        {
+            log::info!("needs_you: queue-integrity notice already open, not re-filing");
+            return;
+        }
         let id = format!("ny_{}", uuid::Uuid::new_v4());
         let summary = format!(
             "Needs you queue failed its integrity check ({reason}). Stored entries in that file were not loaded."

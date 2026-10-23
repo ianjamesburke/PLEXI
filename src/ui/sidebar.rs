@@ -355,40 +355,6 @@ impl PlexiApp {
                 }
             });
         });
-        // One fixed-height entry, however long a diagnostic is. The full text
-        // lives in the attention review, never in the navigation header.
-        let waiting = crate::overlays::attention::open_items();
-        if !waiting.is_empty() {
-            let label = crate::overlays::attention::sidebar_label(waiting.len());
-            let mut open_attention = false;
-            let attention_col = crate::ui::activity::needs_you_color(&self.colors);
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                let width = (ui.available_width() - 12.0).max(0.0);
-                let button = egui::Button::new(
-                    RichText::new(label)
-                        .size(crate::ui::style::TEXT_CAPTION)
-                        .color(attention_col),
-                )
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(Stroke::new(1.0_f32, attention_col))
-                .truncate()
-                .min_size(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H));
-                if ui
-                    .add_sized(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H), button)
-                    .on_hover_text("Review items that need your attention")
-                    .clicked()
-                {
-                    open_attention = true;
-                }
-            });
-            if open_attention {
-                self.open_attention_overlay("sidebar");
-            }
-            if let Some(item) = crate::overlays::attention::oldest_actionable(&waiting).cloned() {
-                self.draw_sidebar_needs_you_actions(ui, &item);
-            }
-        }
         ui.add_space(4.0);
 
         let num_contexts = self.router.len();

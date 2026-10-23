@@ -336,7 +336,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry {
         command: PaletteCommand::OpenAttention,
         name: "Review issues needing attention",
-        description: "Open the Needs attention review for approvals, Keychain and integrity issues",
+        description: "Open the attention queue for approvals, questions and host notices",
         search_text: "needs attention review issues errors problems keychain integrity approvals recovery diagnostics",
     },
     PaletteCommandEntry {
@@ -1865,7 +1865,15 @@ impl PlexiApp {
                 }
             },
             PaletteCommand::Host(action) => self.run_palette_host_binding(action),
-            PaletteCommand::OpenAttention => self.open_attention_overlay("palette"),
+            PaletteCommand::OpenAttention => {
+                self.sync_attention_queue();
+                self.attention_queue.open = true;
+                self.attention_queue.selected_idx = 0;
+                log::info!(
+                    "attention_queue: opened source=palette-needs-attention items={}",
+                    self.attention_queue.items.len()
+                );
+            }
             PaletteCommand::StatePreset(preset) => {
                 let result =
                     crate::config::edit::edit_config_file(&crate::config::config_path(), |doc| {
