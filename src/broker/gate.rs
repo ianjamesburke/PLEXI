@@ -1104,6 +1104,11 @@ impl PermissionMonitor {
             return Err("tool allowance is only available for app tools".to_string());
         }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
+            let grant_id = if choice == ApprovalChoice::DenyAlways {
+                self.record_tool_scoped(&pending.binding, Decision::Deny, None)?
+            } else {
+                String::new()
+            };
             self.pending
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1112,11 +1117,6 @@ impl PermissionMonitor {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(pending_id.to_string(), choice);
-            let grant_id = if choice == ApprovalChoice::DenyAlways {
-                self.record_tool_scoped(&pending.binding, Decision::Deny, None)?
-            } else {
-                String::new()
-            };
             let decision = if choice == ApprovalChoice::DenyAlways {
                 "deny_always"
             } else {
@@ -1202,14 +1202,6 @@ impl PermissionMonitor {
                 return Err(message);
             }
         }
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|row| row.id != pending_id);
-        self.resolutions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(pending_id.to_string(), choice);
         let trace_extra = serde_json::json!({
             "context_id": binding.context_id,
             "pending_request_id": pending_id,
@@ -1221,25 +1213,44 @@ impl PermissionMonitor {
                 ApprovalChoice::Deny | ApprovalChoice::DenyAlways => "deny",
             },
         });
-        self.audit_with(&AuditFact {
-            kind: "grant".to_string(),
-            actor: binding.actor_id.clone(),
-            call_id: binding.call_id,
-            grant_id: grant_id.clone(),
-            resource_id: binding.resource_id.unwrap_or_default(),
-            args_fingerprint: binding.args_fingerprint,
-            operation_id: String::new(),
-            decision: match choice {
-                ApprovalChoice::Once => "allow_once",
-                ApprovalChoice::Session => "allow_session",
-                ApprovalChoice::Always => "allow_until",
-                ApprovalChoice::AllowTool => "allow_tool_session",
-                ApprovalChoice::Deny | ApprovalChoice::DenyAlways => "deny",
+        if let Err(error) = self.audit_with(
+            &AuditFact {
+                kind: "grant".to_string(),
+                actor: binding.actor_id.clone(),
+                call_id: binding.call_id,
+                grant_id: grant_id.clone(),
+                resource_id: binding.resource_id.unwrap_or_default(),
+                args_fingerprint: binding.args_fingerprint,
+                operation_id: String::new(),
+                decision: match choice {
+                    ApprovalChoice::Once => "allow_once",
+                    ApprovalChoice::Session => "allow_session",
+                    ApprovalChoice::Always => "allow_until",
+                    ApprovalChoice::AllowTool => "allow_tool_session",
+                    ApprovalChoice::Deny | ApprovalChoice::DenyAlways => "deny",
+                }
+                .to_string(),
+                revision_before: String::new(),
+                revision_after: String::new(),
+            },
+            trace_extra,
+        ) {
+            self.store()
+                .records_mut()
+                .retain(|row| row.grant_id != grant_id);
+            if choice == ApprovalChoice::Always {
+                let _ = self.store().try_save();
             }
-            .to_string(),
-            revision_before: String::new(),
-            revision_after: String::new(),
-        }, trace_extra)?;
+            return Err(error);
+        }
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|row| row.id != pending_id);
+        self.resolutions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pending_id.to_string(), choice);
         log::info!("permission_monitor: approved pending {pending_id} as {grant_id}");
         let _ = self.close_needs_you(
             pending_id,
