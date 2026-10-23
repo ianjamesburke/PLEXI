@@ -36,8 +36,26 @@ pi -ne \
 
 The package registers `plexi/fast` (FAST) and `plexi/slow` (SLOW) even outside
 Plexi. These are explicit selections, with no prompt classifier or fallback.
-The bootstrap targets live in `src/model-modes.ts`. Each selected alias requires
-its exact target and thinking capability; missing targets produce an error.
+Plexi resolves the targets from its channel config at extension load and each
+session start with `plexi config get --json models` (a short timeout). Configure
+them globally or per workspace; each omitted field keeps its built-in default:
+
+```toml
+[models.fast]
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash"
+thinking = "low"
+
+[models.slow]
+provider = "openrouter"
+model = "openai/gpt-6-astra"
+thinking = "high"
+```
+
+Allowed thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and
+`xhigh`. If config access or validation fails, pi-plexi uses these defaults and
+logs one warning; each selected alias still requires its exact target and
+thinking capability, so missing targets produce an error.
 Inactive aliases do not resolve targets or change the selected model.
 
 ## Switching FAST/SLOW

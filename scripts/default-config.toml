@@ -43,26 +43,19 @@ ghost_opacity = 0.75
 # sound = "/System/Library/Sounds/Ping.aiff"   # cue played on arrival; unset = silent
 
 [ai]
-backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
 # client = "personal"          # default AI ledger tag; a run can override it
 
-[ai.openrouter]
-api_key_env  = "OPENROUTER_API_KEY"
-model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5"
-model_high   = "anthropic/claude-fable-5"
-
-# [ai.ollama]
-# host         = "http://localhost:11434"
-# model_low    = "llama3.2:3b"
-# model_medium = "llama3.3:70b"
-# model_high   = "qwq:32b"
-
-# [ai.local]                   # any OpenAI-compatible server; api_key_env optional
-# base_url     = "http://127.0.0.1:3456"
-# model_low    = "claude-haiku-4-5"
-# model_medium = "claude-opus-5"
-# model_high   = "claude-fable-5"
+# FAST/SLOW targets for pi-plexi and the host AI broker. Each field may be
+# overridden independently; omitted fields use these defaults. OpenRouter API
+# keys are resolved as OPENROUTER_API_KEY through Plexi secrets or the process.
+# [models.fast]
+# provider = "openrouter"
+# model = "deepseek/deepseek-v4.1-flash"
+# thinking = "low"             # off | minimal | low | medium | high | xhigh
+# [models.slow]
+# provider = "openrouter"
+# model = "openai/gpt-6-astra"
+# thinking = "high"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart

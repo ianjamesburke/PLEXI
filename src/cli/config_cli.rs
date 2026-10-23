@@ -181,11 +181,6 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("agents.high", "string", "Command for high-tier agent tasks"),
     // ai.*
     (
-        "ai.backend",
-        "string",
-        "AI backend: openrouter (default) or ollama",
-    ),
-    (
         "ai.per_app_daily_usd",
         "float",
         "Per-app daily spend cap in USD (default 1.00)",
@@ -195,38 +190,6 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "float",
         "Global daily spend cap in USD (default 10.00)",
     ),
-    (
-        "ai.openrouter.api_key_env",
-        "string",
-        "Env var for OpenRouter API key (default OPENROUTER_API_KEY)",
-    ),
-    (
-        "ai.openrouter.model_low",
-        "string",
-        "OpenRouter low-tier model",
-    ),
-    (
-        "ai.openrouter.model_medium",
-        "string",
-        "OpenRouter medium-tier model",
-    ),
-    (
-        "ai.openrouter.model_high",
-        "string",
-        "OpenRouter high-tier model",
-    ),
-    (
-        "ai.ollama.host",
-        "string",
-        "Ollama host URL (default http://localhost:11434)",
-    ),
-    ("ai.ollama.model_low", "string", "Ollama low-tier model"),
-    (
-        "ai.ollama.model_medium",
-        "string",
-        "Ollama medium-tier model",
-    ),
-    ("ai.ollama.model_high", "string", "Ollama high-tier model"),
     // cli.*
     (
         "cli.tips",
@@ -464,8 +427,8 @@ pub fn config_edit(scope: ConfigScope) -> i32 {
     }
 }
 
-pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
-    log::info!("config_get: resolving key={key} scope={scope:?}");
+pub fn config_get(key: &str, scope: ConfigScope, json: bool) -> i32 {
+    log::info!("config_get: resolving key={key} scope={scope:?} json={json}");
 
     // Load the selected config as a raw TOML value and walk the dot-separated key.
     let paths = match config_paths_for_scope(scope, false) {
@@ -475,10 +438,21 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
             return 1;
         }
     };
-    config_get_from_paths(key, &paths)
+    config_get_from_paths_with_json(key, &paths, json)
 }
 
+#[cfg(test)]
 fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
+    config_get_from_paths_with_json(key, paths, false)
+}
+
+fn config_get_from_paths_with_json(key: &str, paths: &[PathBuf], json: bool) -> i32 {
+    if json && (key == "models" || key == "models.fast" || key == "models.slow") {
+        match resolved_models_json(key, paths) {
+            Ok(value) => { println!("{value}"); return 0; }
+            Err(error) => { eprintln!("error: {error}"); return 1; }
+        }
+    }
     let mut root = toml::Value::Table(toml::map::Map::new());
     for path in paths {
         match std::fs::read_to_string(path) {
@@ -513,6 +487,25 @@ fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
 
     println!("{}", toml_value_to_string(current));
     0
+}
+
+fn resolved_models_json(key: &str, paths: &[PathBuf]) -> Result<String, String> {
+    let mut config = crate::config::PlexiConfig::default();
+    for path in paths {
+        match crate::config::PlexiConfig::load_from_path_for_cli(path) {
+            Ok(Some(next)) => config.overlay_for_cli(next),
+            Ok(None) => {}
+            Err(error) => return Err(format!("could not parse {}: {error}", path.display())),
+        }
+    }
+    let modes = config.resolved_model_modes();
+    let value = match key {
+        "models.fast" => serde_json::to_value(modes.fast),
+        "models.slow" => serde_json::to_value(modes.slow),
+        _ => serde_json::to_value(modes),
+    }
+    .map_err(|error| format!("could not serialize resolved {key}: {error}"))?;
+    serde_json::to_string(&value).map_err(|error| format!("could not serialize resolved {key}: {error}"))
 }
 
 /// Recursively merge `src` on top of `dst` — table keys in `src` override `dst`;
@@ -576,10 +569,17 @@ fn config_paths_for_scope(
     scope: ConfigScope,
     _include_missing_workspace: bool,
 ) -> Result<Vec<PathBuf>, String> {
-    Ok(vec![config_path_for_scope(
-        scope,
-        crate::config::active_workspace_root().as_deref(),
-    )?])
+    let workspace = crate::config::active_workspace_root();
+    match scope {
+        ConfigScope::Global => Ok(vec![crate::config::config_path()]),
+        ConfigScope::Workspace => Ok(vec![config_path_for_scope(scope, workspace.as_deref())?]),
+        // Machine-readable reads match the host's field-level global + workspace
+        // merge, so `config get --json models` is safe for pi-plexi in a workspace.
+        ConfigScope::Effective => Ok(match workspace {
+            Some(root) => vec![crate::config::config_path(), crate::config::workspace_config_path(&root)],
+            None => vec![crate::config::config_path()],
+        }),
+    }
 }
 
 /// Resolve the one config file selected by a config command. With no explicit
@@ -887,6 +887,23 @@ mod tests {
             !global_path.exists(),
             "default workspace operations must not touch global config"
         );
+    }
+
+    #[test]
+    fn config_get_json_models_returns_resolved_global_and_workspace_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("config.toml");
+        let workspace = dir.path().join("workspace/.plexi/config.toml");
+        std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+        std::fs::write(&global, "[models.fast]\nprovider = \"global\"\nmodel = \"global/fast\"\n[models.slow]\nthinking = \"minimal\"\n").unwrap();
+        std::fs::write(&workspace, "[models.fast]\nthinking = \"high\"\n[models.slow]\nmodel = \"workspace/slow\"\n").unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(
+            &resolved_models_json("models", &[global, workspace]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["fast"], serde_json::json!({"provider": "global", "model": "global/fast", "thinking": "high"}));
+        assert_eq!(value["slow"], serde_json::json!({"provider": "openrouter", "model": "workspace/slow", "thinking": "minimal"}));
     }
 
     #[test]

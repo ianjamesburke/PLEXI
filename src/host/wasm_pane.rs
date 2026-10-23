@@ -1451,7 +1451,7 @@ impl WasmPane {
                 let response = broker.dispatch(
                     AiBrokerRequest {
                         app_id,
-                        model_tier,
+                        model_mode: crate::plexi_ai::broker::ModelMode::from_wasm_tier(model_tier),
                         concrete_model: None,
                         reasoning_effort: None,
                         system: req.system,
@@ -1790,7 +1790,9 @@ fn host_http_to_wit(response: HostHttpResponse) -> WitHttpResponse {
 }
 
 fn default_live_broker() -> LiveAiBroker {
-    LiveAiBroker::new(crate::config::PlexiConfig::load().ai)
+    let config = crate::config::PlexiConfig::load();
+    let modes = config.resolved_model_modes();
+    LiveAiBroker::with_model_modes(config.ai, modes)
 }
 
 // ─── Live adapter ───────────────────────────────────────────────────────────
@@ -2983,7 +2985,7 @@ mod tests {
             on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
         ) -> crate::plexi_ai::broker::AiBrokerResponse {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(request.model_tier, ModelTier::Medium);
+            assert_eq!(request.model_mode, crate::plexi_ai::broker::ModelMode::Fast);
             assert_eq!(request.messages.len(), 1);
             on_delta(crate::plexi_ai::turn_loop::TurnDelta::Text("stream "));
             crate::plexi_ai::broker::AiBrokerResponse::ok("stream final".to_string(), 3, 4)

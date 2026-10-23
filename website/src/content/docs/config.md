@@ -134,38 +134,19 @@ plexi secret set openrouter-api-key --global
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `backend` | string | — | Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`. |
 | `per_app_daily_usd` | float | $1.00 | Per-app daily spend cap in USD. Default $1.00. |
 | `global_daily_usd` | float | $10.00 | Global daily spend cap across all apps in USD. Default $10.00. |
 | `client` | string | — | Default ledger client tag for Assistant and agent runs that do not set one. Free-form (`narrative`, `du`, `personal`). A blank or missing value leaves the row's client null. |
 
-#### OpenRouter (`[ai.openrouter]`)
+### Model modes (`[models.fast]`, `[models.slow]`)
+
+pi-plexi and the host AI broker read resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently. OpenRouter keys use the existing `OPENROUTER_API_KEY` secret lookup.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `api_key_env` | string | `OPENROUTER_API_KEY` | Environment variable name for the API key. Default: `OPENROUTER_API_KEY`. |
-| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
-
-#### Ollama (`[ai.ollama]`)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `host` | string | `http://localhost:11434` | Ollama host URL. Default: `http://localhost:11434`. |
-| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
-
-#### Local OpenAI-compatible (`[ai.local]`)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `base_url` | string | — | Server base URL. Required — no default. e.g. "http://127.0.0.1:3456" |
-| `api_key_env` | string | — | Environment variable name for the API key. Unset = no auth header (for local proxies that accept unauthenticated requests). |
-| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `provider` | string | — | Model registry provider. Must be non-empty and contain no whitespace. |
+| `model` | string | — | Provider model identifier. Must be non-empty and contain no whitespace. |
+| `thinking` | string | — | Pi thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. |
 
 ### Agents (`[agents]`)
 
@@ -343,26 +324,19 @@ ghost_opacity = 0.75
 # sound = "/System/Library/Sounds/Ping.aiff"   # cue played on arrival; unset = silent
 
 [ai]
-backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
 # client = "personal"          # default AI ledger tag; a run can override it
 
-[ai.openrouter]
-api_key_env  = "OPENROUTER_API_KEY"
-model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5"
-model_high   = "anthropic/claude-fable-5"
-
-# [ai.ollama]
-# host         = "http://localhost:11434"
-# model_low    = "llama3.2:3b"
-# model_medium = "llama3.3:70b"
-# model_high   = "qwq:32b"
-
-# [ai.local]                   # any OpenAI-compatible server; api_key_env optional
-# base_url     = "http://127.0.0.1:3456"
-# model_low    = "claude-haiku-4-5"
-# model_medium = "claude-opus-5"
-# model_high   = "claude-fable-5"
+# FAST/SLOW targets for pi-plexi and the host AI broker. Each field may be
+# overridden independently; omitted fields use these defaults. OpenRouter API
+# keys are resolved as OPENROUTER_API_KEY through Plexi secrets or the process.
+# [models.fast]
+# provider = "openrouter"
+# model = "deepseek/deepseek-v4.1-flash"
+# thinking = "low"             # off | minimal | low | medium | high | xhigh
+# [models.slow]
+# provider = "openrouter"
+# model = "openai/gpt-6-astra"
+# thinking = "high"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart

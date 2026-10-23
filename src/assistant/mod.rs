@@ -2095,7 +2095,7 @@ impl AssistantApp {
         };
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
-            model_tier: tier,
+            model_mode: match tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
             concrete_model,
             reasoning_effort: effort,
             system,
@@ -2112,7 +2112,7 @@ impl AssistantApp {
         log::info!(
             "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={} client={:?} kind={}",
             agent.id,
-            request.model_tier.as_str(),
+            request.model_mode.as_str(),
             request
                 .concrete_model
                 .as_ref()
@@ -5322,12 +5322,12 @@ enabled = ["allowed.tool"]
                 "Writer system prompt\n\n{GROUNDING_RULE}\n\nCompaction status: No compaction is running."
             )
         );
-        assert_eq!(seen[0].model_tier, ModelTier::Medium);
+        assert_eq!(seen[0].model_mode, crate::plexi_ai::broker::ModelMode::Fast);
         assert_eq!(
             seen[0].concrete_model.as_ref().unwrap().model,
             "anthropic/medium"
         );
-        assert_eq!(seen[1].model_tier, ModelTier::Low);
+        assert_eq!(seen[1].model_mode, crate::plexi_ai::broker::ModelMode::Fast);
         assert_eq!(
             seen[1].concrete_model.as_ref().unwrap().model,
             "anthropic/low"

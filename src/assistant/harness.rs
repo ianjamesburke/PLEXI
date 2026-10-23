@@ -415,7 +415,7 @@ impl AiBroker for ScriptedBroker {
         let mut trace = self.trace.lock().unwrap();
         trace.push(OrchestrationEvent::Selection {
             agent,
-            tier: request.model_tier.as_str().to_string(),
+            tier: request.model_mode.as_str().to_string(),
             provider: route.map(|route| route.provider.clone()),
             model: route.map(|route| route.model.clone()),
         });
@@ -708,7 +708,7 @@ mod tests {
         TraceAssertions {
             selection: Some(ExpectedSelection {
                 agent: "verifier".to_string(),
-                tier: "low".to_string(),
+                tier: "fast".to_string(),
                 provider: Some("openrouter".to_string()),
                 model: Some("test/cheap".to_string()),
             }),

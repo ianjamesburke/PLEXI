@@ -1,8 +1,7 @@
 pub mod edit;
 pub mod watcher;
 
-use crate::protocol::ModelTier;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 // ── Config validation (#1116) ───────────────────────────────────────────────
@@ -33,6 +32,7 @@ pub enum ConfigDiagnostic {
         path: String,
         error: String,
     },
+    InvalidValue { path: String, key: String, error: String },
     MisplacedTable {
         path: String,
         table: String,
@@ -46,7 +46,8 @@ impl ConfigDiagnostic {
         match self {
             Self::ReadError { .. }
             | Self::ParseError { .. }
-            | Self::InvalidKeyBinding { .. } => true,
+            | Self::InvalidKeyBinding { .. }
+            | Self::InvalidValue { .. } => true,
             Self::DeprecatedSection { error, .. } => *error,
             Self::UnknownKey { .. } | Self::MisplacedTable { .. } => false,
         }
@@ -59,6 +60,7 @@ impl std::fmt::Display for ConfigDiagnostic {
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
             Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
+            Self::InvalidValue { path, key, error } => write!(f, "{path}: {key} {error}"),
             Self::MisplacedTable {
                 path,
                 table,
@@ -98,6 +100,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "log",
     "notifications",
     "ai",
+    "models",
     "confirm_quit",
     "confirm_close",
     "confirm_context_close",
@@ -171,23 +174,9 @@ const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_CLOUD: &[&str] = &["retain_local_history"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "sound"];
-const KNOWN_AI: &[&str] = &[
-    "backend",
-    "openrouter",
-    "ollama",
-    "local",
-    "per_app_daily_usd",
-    "global_daily_usd",
-];
-const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
-const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
-const KNOWN_AI_LOCAL: &[&str] = &[
-    "base_url",
-    "api_key_env",
-    "model_low",
-    "model_medium",
-    "model_high",
-];
+const KNOWN_AI: &[&str] = &["per_app_daily_usd", "global_daily_usd", "client"];
+const KNOWN_MODE_NAMES: &[&str] = &["fast", "slow"];
+const KNOWN_MODEL_MODE: &[&str] = &["provider", "model", "thinking"];
 const KNOWN_MARKETPLACE: &[&str] = &[
     "registry_url",
     "cdn_url",
@@ -346,20 +335,20 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("ai") {
                 check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
-                if let Some(toml::Value::Table(or)) = t.get("openrouter") {
-                    check_unknown_keys(
-                        or,
-                        "ai.openrouter",
-                        KNOWN_AI_OPENROUTER,
-                        &path_str,
-                        &mut diags,
-                    );
+                for key in legacy_ai_keys(t) {
+                    diags.push(ConfigDiagnostic::InvalidValue {
+                        path: path_str.clone(),
+                        key,
+                        error: "is no longer supported; use [models.fast] / [models.slow] instead".into(),
+                    });
                 }
-                if let Some(toml::Value::Table(ol)) = t.get("ollama") {
-                    check_unknown_keys(ol, "ai.ollama", KNOWN_AI_OLLAMA, &path_str, &mut diags);
-                }
-                if let Some(toml::Value::Table(lo)) = t.get("local") {
-                    check_unknown_keys(lo, "ai.local", KNOWN_AI_LOCAL, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("models") {
+                check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
+                for mode in KNOWN_MODE_NAMES {
+                    if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
+                        check_unknown_keys(mode_table, &format!("models.{mode}"), KNOWN_MODEL_MODE, &path_str, &mut diags);
+                    }
                 }
             }
             if let Some(toml::Value::Table(t)) = table.get("keybindings") {
@@ -399,7 +388,62 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
         }
     }
 
+    if let Some(models) = parsed_cfg.models.as_ref() {
+        for (name, mode) in [("fast", models.fast.as_ref()), ("slow", models.slow.as_ref())] {
+            if let Some(mode) = mode {
+                for (field, value) in [("provider", mode.provider.as_deref()), ("model", mode.model.as_deref())] {
+                    if value.is_some_and(|v| v.is_empty() || v.chars().any(char::is_whitespace)) {
+                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.{field}"), error: "must be a non-empty string without whitespace".into() });
+                    }
+                }
+                if let Some(thinking) = mode.thinking.as_deref() {
+                    if !THINKING_LEVELS.contains(&thinking) {
+                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.thinking"), error: format!("{thinking:?} is not one of {}", THINKING_LEVELS.join("|")) });
+                    }
+                }
+            }
+        }
+    }
+
     diags
+}
+
+fn legacy_ai_keys(ai: &toml::map::Map<String, toml::Value>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if ai.contains_key("backend") {
+        keys.push("ai.backend".to_string());
+    }
+    for (provider, value) in ai {
+        if provider == "backend" {
+            continue;
+        }
+        if matches!(provider.as_str(), "openrouter" | "ollama" | "local") {
+            if let Some(table) = value.as_table() {
+                for key in table.keys() {
+                    keys.push(format!("ai.{provider}.{key}"));
+                }
+            } else {
+                keys.push(format!("ai.{provider}"));
+            }
+        } else if value
+            .as_table()
+            .is_some_and(|table| table.contains_key("api_key_env"))
+        {
+            // Providers outside the retired built-in set can still carry the
+            // old credential field. Reject it here rather than letting TOML
+            // deserialization silently discard an unknown provider table.
+            keys.push(format!("ai.{provider}.api_key_env"));
+        }
+    }
+    keys
+}
+
+fn legacy_ai_error(data: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(data).ok()?;
+    let ai = value.get("ai")?.as_table()?;
+    legacy_ai_keys(ai).into_iter().next().map(|key| {
+        format!("{key} is no longer supported; use [models.fast] / [models.slow] instead")
+    })
 }
 
 const KNOWN_COMMANDS_TOP_LEVEL: &[&str] = &["commands", "secrets"];
@@ -663,6 +707,9 @@ pub struct PlexiConfig {
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
+    /// Pi FAST/SLOW targets (`[models.fast]` and `[models.slow]`). Every field
+    /// is optional and resolves to the built-in target when omitted.
+    pub models: Option<ModelModesConfig>,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
@@ -691,6 +738,64 @@ pub struct PlexiConfig {
     /// Unmapped extensions fall through to manifest associations, then builtin
     /// media players, then the OS default.
     pub file_handlers: Option<std::collections::HashMap<String, String>>,
+}
+
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// FAST/SLOW target overrides for pi-plexi.
+#[derive(Deserialize, Default, Clone)]
+pub struct ModelModesConfig {
+    /// FAST target override. Unset fields use the FAST defaults.
+    pub fast: Option<ModelModeConfig>,
+    /// SLOW target override. Unset fields use the SLOW defaults.
+    pub slow: Option<ModelModeConfig>,
+}
+
+/// One pi-plexi target. Provider, model, and thinking can each be overridden independently.
+#[derive(Deserialize, Default, Clone)]
+pub struct ModelModeConfig {
+    /// Model registry provider. Must be non-empty and contain no whitespace.
+    pub provider: Option<String>,
+    /// Provider model identifier. Must be non-empty and contain no whitespace.
+    pub model: Option<String>,
+    /// Pi thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+    pub thinking: Option<String>,
+}
+
+/// Fully resolved pi-plexi target returned by `plexi config get --json models`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelMode { pub provider: String, pub model: String, pub thinking: String }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelModes { pub fast: ResolvedModelMode, pub slow: ResolvedModelMode }
+
+impl ModelModeConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.provider.is_some() {
+            self.provider = other.provider;
+        }
+        if other.model.is_some() {
+            self.model = other.model;
+        }
+        if other.thinking.is_some() {
+            self.thinking = other.thinking;
+        }
+    }
+
+    fn resolve(&self, default: ResolvedModelMode) -> ResolvedModelMode {
+        ResolvedModelMode {
+            provider: self.provider.clone().unwrap_or(default.provider),
+            model: self.model.clone().unwrap_or(default.model),
+            thinking: self.thinking.clone().unwrap_or(default.thinking),
+        }
+    }
+}
+impl ModelModesConfig {
+    fn overlay(&mut self, other: Self) { match (self.fast.as_mut(), other.fast) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.fast = Some(b), _ => {} } match (self.slow.as_mut(), other.slow) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.slow = Some(b), _ => {} } }
+    fn resolved(&self) -> ResolvedModelModes { ResolvedModelModes {
+        fast: self.fast.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "deepseek/deepseek-v4.1-flash".into(), thinking: "low".into() }),
+        slow: self.slow.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "openai/gpt-6-astra".into(), thinking: "high".into() }),
+    } }
 }
 
 /// CLI behavior configuration.
@@ -763,19 +868,9 @@ impl PermissionsConfig {
     }
 }
 
-/// Plexi AI broker configuration (`ai.query` capability).
-///
-/// `backend` selects the provider: `"openrouter"` (default), `"ollama"`, or
-/// `"local"` (any OpenAI-compatible server). API keys are NOT stored here —
-/// export `OPENROUTER_API_KEY` in your shell profile (`~/.zshrc`,
-/// `~/.zprofile`, etc.). Never store API keys in plaintext config files.
+/// Non-model AI settings (`ai.query` capability).
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
-    /// Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`.
-    pub backend: Option<String>,
-    pub openrouter: Option<OpenRouterBackendConfig>,
-    pub ollama: Option<OllamaBackendConfig>,
-    pub local: Option<LocalBackendConfig>,
     /// Per-app daily spend cap in USD. Default $1.00.
     pub per_app_daily_usd: Option<f64>,
     /// Global daily spend cap across all apps in USD. Default $10.00.
@@ -798,79 +893,9 @@ impl AiConfig {
     }
 }
 
-/// Per-tier concrete model identifiers. Every AI backend section carries this
-/// same triple, flattened into the section table so the keys stay
-/// `model_low` / `model_medium` / `model_high` on disk.
-#[derive(Deserialize, Default, Clone)]
-pub struct ModelTiers {
-    /// Low-tier model. Concrete identifiers are backend-specific; see the example config below.
-    pub model_low: Option<String>,
-    /// Medium-tier model. Concrete identifiers are backend-specific; see the example config below.
-    pub model_medium: Option<String>,
-    /// High-tier model. Concrete identifiers are backend-specific; see the example config below.
-    pub model_high: Option<String>,
-}
-
-impl ModelTiers {
-    /// The configured model for `tier`, if any.
-    pub fn resolve(&self, tier: ModelTier) -> Option<String> {
-        match tier {
-            ModelTier::Low => self.model_low.clone(),
-            ModelTier::Medium => self.model_medium.clone(),
-            ModelTier::High => self.model_high.clone(),
-        }
-    }
-
-    fn overlay(&mut self, other: Self) {
-        if other.model_low.is_some() {
-            self.model_low = other.model_low;
-        }
-        if other.model_medium.is_some() {
-            self.model_medium = other.model_medium;
-        }
-        if other.model_high.is_some() {
-            self.model_high = other.model_high;
-        }
-    }
-}
-
-/// OpenRouter backend configuration.
-#[derive(Deserialize, Default, Clone)]
-pub struct OpenRouterBackendConfig {
-    /// Environment variable name for the API key. Default: `OPENROUTER_API_KEY`.
-    pub api_key_env: Option<String>,
-    #[serde(flatten)]
-    pub tiers: ModelTiers,
-}
-
-/// Ollama backend configuration.
-#[derive(Deserialize, Default, Clone)]
-pub struct OllamaBackendConfig {
-    /// Ollama host URL. Default: `http://localhost:11434`.
-    pub host: Option<String>,
-    #[serde(flatten)]
-    pub tiers: ModelTiers,
-}
-
-/// Local OpenAI-compatible backend configuration (any server speaking the
-/// OpenAI chat-completions API, e.g. a Meridian proxy).
-#[derive(Deserialize, Default, Clone)]
-pub struct LocalBackendConfig {
-    /// Server base URL. Required — no default. e.g. "http://127.0.0.1:3456"
-    pub base_url: Option<String>,
-    /// Environment variable name for the API key. Unset = no auth header
-    /// (for local proxies that accept unauthenticated requests).
-    pub api_key_env: Option<String>,
-    #[serde(flatten)]
-    pub tiers: ModelTiers,
-}
-
 impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
-        if other.backend.is_some() {
-            self.backend = other.backend;
-        }
         if other.per_app_daily_usd.is_some() {
             self.per_app_daily_usd = other.per_app_daily_usd;
         }
@@ -880,51 +905,6 @@ impl AiConfig {
         if other.client.as_ref().is_some_and(|client| !client.trim().is_empty()) {
             self.client = other.client;
         }
-        match (self.openrouter.as_mut(), other.openrouter) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.openrouter = Some(incoming),
-            _ => {}
-        }
-        match (self.ollama.as_mut(), other.ollama) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.ollama = Some(incoming),
-            _ => {}
-        }
-        match (self.local.as_mut(), other.local) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.local = Some(incoming),
-            _ => {}
-        }
-    }
-}
-
-impl OpenRouterBackendConfig {
-    fn overlay(&mut self, other: Self) {
-        if other.api_key_env.is_some() {
-            self.api_key_env = other.api_key_env;
-        }
-        self.tiers.overlay(other.tiers);
-    }
-}
-
-impl OllamaBackendConfig {
-    fn overlay(&mut self, other: Self) {
-        if other.host.is_some() {
-            self.host = other.host;
-        }
-        self.tiers.overlay(other.tiers);
-    }
-}
-
-impl LocalBackendConfig {
-    fn overlay(&mut self, other: Self) {
-        if other.base_url.is_some() {
-            self.base_url = other.base_url;
-        }
-        if other.api_key_env.is_some() {
-            self.api_key_env = other.api_key_env;
-        }
-        self.tiers.overlay(other.tiers);
     }
 }
 
@@ -1849,6 +1829,10 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 }
 
 impl PlexiConfig {
+    /// Resolve pi-plexi FAST/SLOW targets with defaults applied field-by-field.
+    pub fn resolved_model_modes(&self) -> ResolvedModelModes {
+        self.models.as_ref().map(ModelModesConfig::resolved).unwrap_or_else(|| ModelModesConfig::default().resolved())
+    }
     pub fn osc_pane_title_enabled(&self) -> bool {
         self.osc_pane_title.unwrap_or(true)
     }
@@ -1897,12 +1881,31 @@ impl PlexiConfig {
                 return None;
             }
         };
+        if let Some(error) = legacy_ai_error(&data) {
+            log::warn!("Failed to validate config file {}: {error}", path.display());
+            return None;
+        }
         match toml::from_str::<Self>(&data) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
                 log::warn!("Failed to parse config file {}: {e}", path.display());
                 Some(Self::default())
             }
+        }
+    }
+
+    /// CLI-only strict parser used by machine-readable config access.
+    pub(crate) fn load_from_path_for_cli(path: &Path) -> Result<Option<Self>, String> {
+        match std::fs::read_to_string(path) {
+            Ok(data) => {
+                if let Some(error) = legacy_ai_error(&data) {
+                    Err(error)
+                } else {
+                    toml::from_str(&data).map(Some).map_err(|e| e.to_string())
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -1977,6 +1980,11 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.ai = Some(incoming),
             _ => {}
         }
+        match (self.models.as_mut(), other.models) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.models = Some(incoming),
+            _ => {}
+        }
         match (self.keybindings.as_mut(), other.keybindings) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.keybindings = Some(incoming),
@@ -2008,6 +2016,8 @@ impl PlexiConfig {
             _ => {}
         }
     }
+
+    pub(crate) fn overlay_for_cli(&mut self, other: Self) { self.overlay(other); }
 }
 
 impl CloudConfig {
@@ -2450,6 +2460,48 @@ mod tests {
     }
 
     #[test]
+    fn model_modes_resolve_defaults_and_partial_overrides() {
+        let defaults = PlexiConfig::default().resolved_model_modes();
+        assert_eq!(defaults.fast.provider, "openrouter");
+        assert_eq!(defaults.fast.model, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(defaults.fast.thinking, "low");
+        assert_eq!(defaults.slow.provider, "openrouter");
+        assert_eq!(defaults.slow.model, "openai/gpt-6-astra");
+        assert_eq!(defaults.slow.thinking, "high");
+        let cfg: PlexiConfig = toml::from_str("[models.fast]\nmodel = \"custom/flash\"\n").unwrap();
+        let modes = cfg.resolved_model_modes();
+        assert_eq!(modes.fast.provider, "openrouter");
+        assert_eq!(modes.fast.model, "custom/flash");
+        assert_eq!(modes.fast.thinking, "low");
+    }
+
+    #[test]
+    fn model_modes_workspace_overlay_merges_fields() {
+        let mut global: PlexiConfig = toml::from_str("[models.fast]\nprovider = \"global\"\nmodel = \"global/model\"\n").unwrap();
+        global.overlay(toml::from_str("[models.fast]\nthinking = \"high\"\n").unwrap());
+        let fast = global.resolved_model_modes().fast;
+        assert_eq!((fast.provider.as_str(), fast.model.as_str(), fast.thinking.as_str()), ("global", "global/model", "high"));
+    }
+
+    #[test]
+    fn resolved_model_modes_json_has_both_named_targets() {
+        let value = serde_json::to_value(PlexiConfig::default().resolved_model_modes()).unwrap();
+        assert_eq!(value["fast"]["provider"], "openrouter");
+        assert_eq!(value["fast"]["thinking"], "low");
+        assert_eq!(value["slow"]["model"], "openai/gpt-6-astra");
+    }
+
+    #[test]
+    fn model_modes_validation_names_bad_paths() {
+        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("config.toml");
+        fs::write(&path, "[models.fast]\nthinking = \"turbo\"\nprovider = \"bad provider\"\n[models.turbo]\nmodel = \"x\"\n").unwrap();
+        let rendered = validate_from_path(&path).into_iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(rendered.contains("models.fast.thinking \"turbo\" is not one of off|minimal|low|medium|high|xhigh"), "{rendered}");
+        assert!(rendered.contains("models.fast.provider"), "{rendered}");
+        assert!(rendered.contains("unknown key `turbo` in [models]"), "{rendered}");
+    }
+
+    #[test]
     fn validate_known_keybindings_cover_pane_hide_and_context_park() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -2460,128 +2512,6 @@ mod tests {
         .unwrap();
         let diags = validate_from_path(&path);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
-    }
-
-    #[test]
-    fn validate_ai_local_config_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
-            "[ai]\nbackend = \"local\"\n\
-             [ai.local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             api_key_env = \"MERIDIAN_API_KEY\"\n\
-             model_low = \"claude-haiku-4-5\"\n\
-             model_medium = \"claude-opus-5\"\n\
-             model_high = \"claude-fable-5\"\n",
-        )
-        .unwrap();
-        let diags = validate_from_path(&path);
-        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
-    }
-
-    #[test]
-    fn validate_ai_local_unknown_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "[ai.local]\nhost = \"http://127.0.0.1:3456\"\n").unwrap();
-        let diags = validate_from_path(&path);
-        assert_eq!(diags.len(), 1);
-        assert!(diags[0].to_string().contains("host"));
-        assert!(diags[0].to_string().contains("[ai.local]"));
-    }
-
-    #[test]
-    fn ai_local_config_parses_round_trip() {
-        let cfg: PlexiConfig = toml::from_str(
-            "[ai]\nbackend = \"local\"\n\
-             [ai.local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             model_high = \"claude-fable-5\"\n",
-        )
-        .unwrap();
-        let ai = cfg.ai.unwrap();
-        assert_eq!(ai.backend.as_deref(), Some("local"));
-        let local = ai.local.unwrap();
-        assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(local.api_key_env, None);
-        assert_eq!(local.tiers.model_high.as_deref(), Some("claude-fable-5"));
-    }
-
-    /// The tier triple is a flattened `ModelTiers`, so the keys must still sit
-    /// directly in each backend table on disk — no `[ai.<backend>.tiers]`.
-    #[test]
-    fn flattened_model_tiers_parse_from_each_backend_section() {
-        let cfg: PlexiConfig = toml::from_str(
-            "[ai.openrouter]\n\
-             api_key_env = \"OPENROUTER_API_KEY\"\n\
-             model_low = \"or-low\"\n\
-             [ai.ollama]\n\
-             host = \"http://localhost:11434\"\n\
-             model_medium = \"ol-medium\"\n\
-             [ai.local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             model_high = \"lo-high\"\n",
-        )
-        .unwrap();
-        let ai = cfg.ai.unwrap();
-
-        let or = ai.openrouter.unwrap();
-        assert_eq!(or.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
-        assert_eq!(or.tiers.resolve(ModelTier::Low).as_deref(), Some("or-low"));
-        assert_eq!(or.tiers.resolve(ModelTier::High), None);
-
-        let ol = ai.ollama.unwrap();
-        assert_eq!(ol.host.as_deref(), Some("http://localhost:11434"));
-        assert_eq!(
-            ol.tiers.resolve(ModelTier::Medium).as_deref(),
-            Some("ol-medium")
-        );
-
-        let lo = ai.local.unwrap();
-        assert_eq!(lo.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(
-            lo.tiers.resolve(ModelTier::High).as_deref(),
-            Some("lo-high")
-        );
-    }
-
-    #[test]
-    fn ai_local_overlay_merges_fields() {
-        let mut base: AiConfig = toml::from_str(
-            "backend = \"openrouter\"\n\
-             [local]\n\
-             base_url = \"http://127.0.0.1:3456\"\n\
-             model_low = \"claude-haiku-4-5\"\n",
-        )
-        .unwrap();
-        let project: AiConfig = toml::from_str(
-            "backend = \"local\"\n\
-             [local]\n\
-             model_low = \"claude-opus-5\"\n\
-             model_high = \"claude-fable-5\"\n",
-        )
-        .unwrap();
-        base.overlay(project);
-        assert_eq!(base.backend.as_deref(), Some("local"));
-        let local = base.local.unwrap();
-        // Project value wins; unset project fields keep the base value.
-        assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(local.tiers.model_low.as_deref(), Some("claude-opus-5"));
-        assert_eq!(local.tiers.model_high.as_deref(), Some("claude-fable-5"));
-    }
-
-    #[test]
-    fn ai_local_overlay_adopts_section_when_base_absent() {
-        let mut base = AiConfig::default();
-        let project: AiConfig =
-            toml::from_str("[local]\nbase_url = \"http://127.0.0.1:3456\"\n").unwrap();
-        base.overlay(project);
-        assert_eq!(
-            base.local.unwrap().base_url.as_deref(),
-            Some("http://127.0.0.1:3456")
-        );
     }
 
     #[test]
@@ -2897,6 +2827,38 @@ mod tests {
                     !doc.contains(claim),
                     "{name} claims {claim:?}; Python apps run sandboxed through the \
                      CPython-in-WASM adapter (docs/wasm-runtime.md § Security Model)"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod legacy_ai_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn removed_ai_keys_fail_check_and_load_in_global_and_workspace_config() {
+        for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url", "anthropic.api_key_env"] {
+            let (section, field) = key.split_once('.').map_or(("ai".to_string(), key.to_string()), |(section, field)| (format!("ai.{section}"), field.to_string()));
+            let text = format!("[{section}]\n{field} = \"value\"\n");
+            let temp = tempfile::tempdir().unwrap();
+            let global = temp.path().join("config.toml");
+            let workspace = temp.path().join("workspace/.plexi/config.toml");
+            std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+            for path in [&global, &workspace] {
+                std::fs::write(path, &text).unwrap();
+                let diagnostics = validate_from_path(path);
+                let expected = format!("ai.{key} is no longer supported; use [models.fast] / [models.slow] instead");
+                assert!(diagnostics.iter().any(|diagnostic| diagnostic.to_string().contains(&expected)), "check must reject {}: {diagnostics:?}", path.display());
+                match PlexiConfig::load_from_path_for_cli(path) {
+                    Err(error) => assert_eq!(error, expected, "load must reject {}", path.display()),
+                    Ok(_) => panic!("load must reject {}", path.display()),
+                }
+                assert!(
+                    PlexiConfig::load_from_path(path).is_none(),
+                    "host load must reject {}",
+                    path.display()
                 );
             }
         }

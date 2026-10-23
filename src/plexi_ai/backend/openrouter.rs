@@ -708,7 +708,11 @@ fn apply_reasoning_config(
     effort: Option<super::ReasoningEffort>,
 ) {
     if let Some(effort) = effort {
-        body["reasoning"] = serde_json::json!({ "effort": effort.label() });
+        if effort == super::ReasoningEffort::Off {
+            body["reasoning"] = serde_json::json!({ "enabled": false });
+        } else {
+            body["reasoning"] = serde_json::json!({ "effort": effort.label() });
+        }
     } else if tier == Some(ModelTier::Low) {
         body["reasoning"] = serde_json::json!({ "enabled": false });
     }
@@ -770,6 +774,17 @@ mod tests {
             Some(crate::plexi_ai::backend::ReasoningEffort::High),
         );
         assert_eq!(body["reasoning"], serde_json::json!({"effort": "high"}));
+    }
+
+    #[test]
+    fn off_reasoning_effort_disables_reasoning_in_payload() {
+        let mut body = serde_json::json!({});
+        apply_reasoning_config(
+            &mut body,
+            Some(ModelTier::Low),
+            Some(crate::plexi_ai::backend::ReasoningEffort::Off),
+        );
+        assert_eq!(body["reasoning"], serde_json::json!({"enabled": false}));
     }
 
     /// Verify that the system prompt is injected as a leading messages-array

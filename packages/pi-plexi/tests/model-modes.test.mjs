@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createPiPlexiExtension } from '../extensions/index.ts';
-import { MODEL_MODES } from '../src/model-modes.ts';
+import { DEFAULT_MODEL_MODES, registerModelModes } from '../src/model-modes.ts';
 import { migrateSettings, backupProfile, migrateProfile, rollbackProfile, safePath } from '../src/migrate-model-modes.mjs';
 
 const settings = { defaultProvider: 'ian-router', defaultModel: 'auto', compaction: { enabled: true }, packages: ['npm:@alexlikevibe/pi-jev', '/local/pi-plexi'], custom: { retain: 1 } };
@@ -23,7 +23,7 @@ test('detached registration is lazy; exact targets and supported thinking are en
   createPiPlexiExtension({ env: {}, homeDir: process.env.HOME })({ registerVirtualModel: model => models.push(model), registerTool() {}, registerCommand() {}, on() {} });
   assert.deepEqual(models.map(m => [m.provider, m.id, m.name]), [['plexi', 'fast', 'FAST'], ['plexi', 'slow', 'SLOW']]);
   for (const [i, alias] of models.entries()) {
-    const mode = MODEL_MODES[i];
+    const mode = DEFAULT_MODEL_MODES[i];
     const target = { provider: mode.provider, id: mode.model, reasoning: true };
     const ctx = { modelRegistry: { find(provider, id) { assert.equal(provider, mode.provider); assert.equal(id, mode.model); return target; } } };
     assert.deepEqual(alias.route({}, ctx), { model: target, thinkingLevel: mode.thinking });
@@ -33,6 +33,17 @@ test('detached registration is lazy; exact targets and supported thinking are en
     target.reasoning = true; target.thinkingLevelMap = { [mode.thinking]: null };
     assert.throws(() => alias.route({}, ctx), /does not support thinking/);
   }
+});
+
+test('thinking off routes a non-reasoning target', () => {
+  const models = [];
+  const modes = registerModelModes({ registerVirtualModel: model => models.push(model), registerCommand() {} });
+  modes.setModes([
+    { id: 'fast', name: 'FAST', provider: 'test', model: 'plain', thinking: 'off' },
+    { ...DEFAULT_MODEL_MODES[1] },
+  ]);
+  const target = { provider: 'test', id: 'plain', reasoning: false };
+  assert.deepEqual(models[0].route({}, { modelRegistry: { find: () => target } }), { model: target, thinkingLevel: 'off' });
 });
 
 function commandHarness() {
@@ -46,7 +57,7 @@ function commandHarness() {
   };
   createPiPlexiExtension({ env: {}, homeDir: process.env.HOME })(pi);
   const notifications = [];
-  const models = new Map(MODEL_MODES.map((mode) => [mode.id, { provider: 'plexi', id: mode.id }]));
+  const models = new Map(DEFAULT_MODEL_MODES.map((mode) => [mode.id, { provider: 'plexi', id: mode.id }]));
   const ctx = {
     modelRegistry: { find(provider, id) { return provider === 'plexi' ? models.get(id) : undefined; } },
     ui: {
@@ -63,8 +74,8 @@ test('FAST/SLOW commands register and switch virtual models', async () => {
   await commands.get('fast').handler('', ctx);
   await commands.get('slow').handler('', ctx);
   assert.deepEqual(pi.models, [{ provider: 'plexi', id: 'fast' }, { provider: 'plexi', id: 'slow' }]);
-  assert.deepEqual(pi.thinking, ['medium', 'high']);
-  assert.deepEqual(notifications, [['Model: FAST (plexi/fast)', undefined], ['Model: SLOW (plexi/slow)', undefined]]);
+  assert.deepEqual(pi.thinking, ['low', 'high']);
+  assert.deepEqual(notifications, [['Model: FAST (openrouter/deepseek/deepseek-v4.1-flash, thinking low)', undefined], ['Model: SLOW (openrouter/openai/gpt-6-astra, thinking high)', undefined]]);
 });
 
 test('/models handles arguments, picker state, cancel, and completions', async () => {
@@ -80,7 +91,7 @@ test('/models handles arguments, picker state, cancel, and completions', async (
   assert.deepEqual(ctx.ui.lastSelect, {
     title: 'Model',
     options: [
-      'FAST — openrouter/xiaomi/mimo-v2.6-pro (thinking medium) (current)',
+      'FAST — openrouter/deepseek/deepseek-v4.1-flash (thinking low) (current)',
       'SLOW — openrouter/openai/gpt-6-astra (thinking high)',
     ],
   });
@@ -90,9 +101,9 @@ test('/models handles arguments, picker state, cancel, and completions', async (
   assert.deepEqual(pi.models, [{ provider: 'plexi', id: 'fast' }, { provider: 'plexi', id: 'slow' }]);
   assert.equal(pi.models.length, countBeforeCancel);
   assert.deepEqual(notifications, [
-    ['Model: FAST (plexi/fast)', undefined],
+    ['Model: FAST (openrouter/deepseek/deepseek-v4.1-flash, thinking low)', undefined],
     ['Unknown model. Choose: fast, slow.', 'error'],
-    ['Model: SLOW (plexi/slow)', undefined],
+    ['Model: SLOW (openrouter/openai/gpt-6-astra, thinking high)', undefined],
   ]);
 });
 
@@ -111,7 +122,7 @@ test('model selection reports missing or rejected virtual models', async () => {
 test('pure settings migration preserves unrelated fields and package filters', () => {
   const output = migrateSettings(settings);
   assert.equal(settings.defaultProvider, 'ian-router');
-  assert.equal(output.defaultProvider, 'plexi'); assert.equal(output.defaultModel, 'fast'); assert.equal(output.defaultThinkingLevel, 'medium');
+  assert.equal(output.defaultProvider, 'plexi'); assert.equal(output.defaultModel, 'fast'); assert.equal(output.defaultThinkingLevel, 'low');
   assert.deepEqual(output.enabledModels, ['plexi/fast', 'plexi/slow']);
   assert.deepEqual(output.compaction, settings.compaction); assert.deepEqual(output.custom, settings.custom);
   assert.deepEqual(output.packages[0], { source: settings.packages[0], extensions: ['-extensions/routing.ts'] });

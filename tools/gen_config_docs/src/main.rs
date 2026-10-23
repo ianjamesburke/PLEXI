@@ -296,6 +296,7 @@ plexi config reset
         "log",
         "notifications",
         "ai",
+        "models",
         "keybindings",
         "keys",
         "agents",
@@ -378,20 +379,9 @@ plexi secret set openrouter-api-key --global
         emit_table_refs(&scalar);
     }
 
-    println!("#### OpenRouter (`[ai.openrouter]`)\n");
-    if let Some(s) = structs.get("OpenRouterBackendConfig") {
-        emit_table(&s.fields);
-    }
-
-    println!("#### Ollama (`[ai.ollama]`)\n");
-    if let Some(s) = structs.get("OllamaBackendConfig") {
-        emit_table(&s.fields);
-    }
-
-    println!("#### Local OpenAI-compatible (`[ai.local]`)\n");
-    if let Some(s) = structs.get("LocalBackendConfig") {
-        emit_table(&s.fields);
-    }
+    println!("### Model modes (`[models.fast]`, `[models.slow]`)\n");
+    println!("pi-plexi and the host AI broker read resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently. OpenRouter keys use the existing `OPENROUTER_API_KEY` secret lookup.\n");
+    if let Some(s) = structs.get("ModelModeConfig") { emit_table(&s.fields); }
 
     // ── Agents ───────────────────────────────────────────────────────────────
     print!(

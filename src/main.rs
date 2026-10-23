@@ -1937,7 +1937,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::config_edit(scope.scope()));
                         }
                         ConfigCmd::Get { scope, key } => {
-                            cli::trace::exit(cli::config_get(&key, scope.scope()));
+                            cli::trace::exit(cli::config_get(&key, scope.scope(), json));
                         }
                         ConfigCmd::Reset { scope } => {
                             cli::trace::exit(cli::config_reset(scope.scope()));

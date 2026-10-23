@@ -31,6 +31,7 @@ Experiments are read from the global config only. A workspace `.plexi` config th
 plexi config list                  Print all known keys with type, value, and description.
 plexi config list --json           Same, as a JSON array.
 plexi config get KEY               Print a value from the selected config file.
+plexi config get --json models     Print resolved pi-plexi FAST/SLOW targets as JSON.
 plexi config set KEY=VALUE ...     Write one or more keys in-place (e.g. theme.preset=dracula).
 plexi config edit                  Open config.toml in $EDITOR.
 plexi config check                 Validate known keys and TOML syntax.
@@ -61,6 +62,23 @@ The `[attention]` table controls NeedsYou emphasis and Dock delivery. Changes ap
 
 ## AI
 
+## Pi FAST/SLOW model modes
+
+`pi-plexi` reads the resolved targets with `plexi config get --json models`.
+Configure either mode globally or in workspace config; omitted fields inherit
+the built-in value. See the generated configuration reference for field details
+and allowed thinking levels.
+
+```toml
+[models.fast]
+model = "deepseek/deepseek-v4.1-flash"
+thinking = "low"
+
+[models.slow]
+model = "openai/gpt-6-astra"
+thinking = "high"
+```
+
 OpenRouter is the default cloud backend. Store the key in the global Plexi secret store:
 
 ```
@@ -76,41 +94,18 @@ export OPENROUTER_API_KEY=...
 Do not paste API keys into config.toml.
 
 ```toml
-[ai]
-backend = "openrouter"
+[models.fast]
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash"
+thinking = "low"
 
-[ai.openrouter]
-api_key_env  = "OPENROUTER_API_KEY"
-model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5"
-model_high   = "anthropic/claude-fable-5"
+[models.slow]
+provider = "openrouter"
+model = "openai/gpt-6-astra"
+thinking = "high"
 ```
 
-Use Ollama for local models:
-
-```toml
-[ai]
-backend = "ollama"
-
-[ai.ollama]
-host         = "http://localhost:11434"
-model_low    = "llama3.2:3b"
-model_medium = "llama3.3:70b"
-model_high   = "qwq:32b"
-```
-
-Use `local` for any other OpenAI-compatible chat-completions server (e.g. a Meridian proxy). `base_url` is required. `api_key_env` is optional: when set, the named environment variable must hold the key; when unset, no auth header is sent.
-
-```toml
-[ai]
-backend = "local"
-
-[ai.local]
-base_url     = "http://127.0.0.1:3456"
-model_low    = "claude-haiku-4-5"
-model_medium = "claude-opus-5"
-model_high   = "claude-fable-5"
-```
+`[models.fast]` and `[models.slow]` replace the retired `ai.backend` and every `ai.openrouter`, `ai.ollama`, and `ai.local` model key. OpenRouter uses the existing `OPENROUTER_API_KEY` secret lookup; no API-key config knob is supported.
 
 Optional AI spend caps, and the default ledger client tag. A run can override `client`; when both are unset the ledger row stores null. `kind` is not a config key — it defaults to `output` per run.
 
@@ -268,26 +263,16 @@ ghost_opacity = 0.75
 # sound = "/System/Library/Sounds/Ping.aiff"   # cue played on arrival; unset = silent
 
 [ai]
-backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
 # client = "personal"          # default AI ledger tag; a run can override it
 
-[ai.openrouter]
-api_key_env  = "OPENROUTER_API_KEY"
-model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5"
-model_high   = "anthropic/claude-fable-5"
-
-# [ai.ollama]
-# host         = "http://localhost:11434"
-# model_low    = "llama3.2:3b"
-# model_medium = "llama3.3:70b"
-# model_high   = "qwq:32b"
-
-# [ai.local]                   # any OpenAI-compatible server; api_key_env optional
-# base_url     = "http://127.0.0.1:3456"
-# model_low    = "claude-haiku-4-5"
-# model_medium = "claude-opus-5"
-# model_high   = "claude-fable-5"
+# [models.fast]
+# provider = "openrouter"
+# model = "deepseek/deepseek-v4.1-flash"
+# thinking = "low"
+# [models.slow]
+# provider = "openrouter"
+# model = "openai/gpt-6-astra"
+# thinking = "high"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart
