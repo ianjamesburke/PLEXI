@@ -14048,3 +14048,141 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         format!("Terminal pane {human_shell}")
     );
 }
+
+mod restore_followups_0983b {
+    use super::*;
+    use crate::host::context::{Context, ContextName};
+    use crate::protocol::{AgentState, AppRequest};
+    use crate::workspace::{
+        SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
+    };
+    use std::collections::HashMap;
+
+    #[test]
+    fn restore_skips_completed_script_pane() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut tiles = egui_tiles::Tiles::default();
+        let t30 = tiles.insert_pane(30);
+        let tree = egui_tiles::Tree::new("script_tree", t30, tiles);
+        let ws = WorkspaceFile {
+            version: 2,
+            active_context: 0,
+            sidebar_visible: true,
+            next_pane_id: 50,
+            contexts: vec![Context {
+                name: ContextName::custom("script-ctx"),
+                root: tmp.path().to_path_buf(),
+                description: None,
+                context_id: 1,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            }],
+            windows: vec![SavedWindow {
+                name: "main".to_string(),
+                path: tmp.path().to_path_buf(),
+                tree,
+                panes: vec![SavedPane {
+                    id: 30,
+                    kind: SavedPaneKind::Terminal,
+                    cwd: tmp.path().to_path_buf(),
+                    name: Some("finished-script".to_string()),
+                    app_id: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
+                    slots: HashMap::new(),
+                    agent_session: Some(SavedAgentSession {
+                        fleet_result: None,
+                        fleet_seen: false,
+                        fleet_dismissed: false,
+                        fleet_done_unseen: false,
+                        fleet_since: 0,
+                        harness: "script".to_string(),
+                        config_name: None,
+                        permission_posture: None,
+                        session_id: None,
+                        last_state: AgentState::Completed,
+                        last_blocked_reason: None,
+                        last_detail: None,
+                        parent_pane_id: None,
+                        spawned_by: None,
+                        pending_child_results: Vec::new(),
+                        ephemeral: false,
+                        tail_preview: None,
+                        standby_scrollback_tail: Some(vec!["final output line".to_string()]),
+                    }),
+                }],
+                focused_pane: Some(t30),
+                grid_x: 0,
+                grid_y: 0,
+                window_id: 1,
+                context_id: 1,
+            }],
+            context_active_window: HashMap::from([(1, 1)]),
+        };
+        ws.save_to(profile_dir.path()).expect("save workspace");
+        let mut h = HostHarness::from_profile_dir(profile_dir.path());
+
+        let (win_idx, _) = h.app.find_pane_in_any_window(30).expect("pane 30");
+        let term = h.app.windows[win_idx].panes[&30]
+            .as_terminal()
+            .expect("pane 30");
+        assert!(term.is_standby(), "finished script keeps its final output");
+        assert_eq!(term.standby_resume_command, None);
+        assert!(term.agent_completed);
+        assert_eq!(term.last_resumed_command, None);
+        let banner = term.standby_banner().expect("banner");
+        assert!(!banner.contains("Enter"), "banner offered resume: {banner}");
+
+        let send_resp = temp_response(tmp.path(), "wake-30");
+        h.inject_ipc(AppRequest::SendToPane {
+            pane_id: 30,
+            text: "\n".to_string(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        let term = h.app.windows[win_idx].panes[&30]
+            .as_terminal()
+            .expect("pane 30");
+        assert!(term.is_standby(), "Enter must not resume a finished script");
+        assert_eq!(term.last_resumed_command, None);
+    }
+
+    #[test]
+    fn oneshot_chip_seen_after_result_delivered() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|p| p.as_terminal_mut())
+                .expect("terminal");
+            t.agent_harness = Some("script".to_string());
+            t.agent_completed = true;
+            t.fleet_done_unseen = true;
+            t.fleet_seen = false;
+        }
+        h.app.mark_child_result_delivered(pane_id);
+        let t = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.as_terminal())
+            .expect("terminal");
+        assert!(
+            t.fleet_seen,
+            "delivered child result must mark the chip seen"
+        );
+        assert!(
+            t.build_saved_agent_session().is_some_and(|s| s.fleet_seen),
+            "seen flag must persist across restart"
+        );
+    }
+}

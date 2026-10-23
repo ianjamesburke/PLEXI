@@ -60,6 +60,16 @@ pub(crate) use notifications::{
     load_pending_notifications_from, PendingNotification, NOTIFY_OUTCOME_CANCELLED,
 };
 
+/// A oneshot script pane that already finished must not be respawned as a
+/// live `/bin/sh` on restore; it comes back as completed.
+pub(crate) fn is_finished_script_session(session: &crate::workspace::SavedAgentSession) -> bool {
+    crate::cli::AgentHarness::parse(&session.harness) == Some(crate::cli::AgentHarness::Script)
+        && matches!(
+            session.last_state,
+            crate::protocol::AgentState::Completed | crate::protocol::AgentState::ExitedUnreported
+        )
+}
+
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
 /// A single arg is used as-is (it's already a shell expression — CLI path).
 /// Multiple args are joined with shell quoting so word-splitting is preserved.
@@ -5436,13 +5446,13 @@ pub(crate) fn restore_workspace(
                         });
                     let is_active_top_context =
                         saved_win.context_id == initial_active_ctx_id && ctx_depth == 0;
-                    let should_auto_resume = matches!(
-                        restore_mode,
-                        config::AgentRestoreMode::Eager
-                    ) || (matches!(
-                        restore_mode,
-                        config::AgentRestoreMode::Lazy
-                    ) && is_active_top_context);
+                    let finished_script = effective_session
+                        .as_ref()
+                        .is_some_and(is_finished_script_session);
+                    let should_auto_resume = !finished_script
+                        && (matches!(restore_mode, config::AgentRestoreMode::Eager)
+                            || (matches!(restore_mode, config::AgentRestoreMode::Lazy)
+                                && is_active_top_context));
 
                     let context_env = crate::pane_ops::create::PaneContextEnv {
                         context_id: saved_win.context_id,
@@ -5538,7 +5548,7 @@ pub(crate) fn restore_workspace(
                             }
                         }
                     }
-                    let standby_resume_command = (!should_auto_resume)
+                    let standby_resume_command = (!should_auto_resume && !finished_script)
                         .then(|| {
                             effective_session.as_ref().and_then(|session| {
                                 crate::cli::AgentHarness::parse(&session.harness).map(|harness| {
