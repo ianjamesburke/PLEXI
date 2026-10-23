@@ -1310,7 +1310,6 @@ impl PlexiApp {
         }
 
         self.draw_agent_attention_toast(&ctx);
-        self.draw_feature_effects(&ctx);
 
         // Egui focus is NOT touched here: the post-frame reconciler
         // (`reconcile_egui_focus`, called at the end of `update()`) projects

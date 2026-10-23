@@ -23,7 +23,6 @@ mod cloud;
 mod config;
 mod distribution;
 mod editor;
-mod features;
 mod file_browser;
 mod host;
 mod mcp_http;

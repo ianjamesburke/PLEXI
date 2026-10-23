@@ -1893,7 +1893,15 @@ impl PlexiConfig {
             return None;
         }
         match toml::from_str::<Self>(&data) {
-            Ok(cfg) => Some(cfg),
+            Ok(cfg) => {
+                if cfg.effects.as_ref().is_some_and(|e| e.crt.is_some()) {
+                    log::debug!(
+                        "config: ignoring retired `[effects] crt` toggle in {}",
+                        path.display()
+                    );
+                }
+                Some(cfg)
+            }
             Err(e) => {
                 log::warn!("Failed to parse config file {}: {e}", path.display());
                 Some(Self::default())
@@ -2611,6 +2619,25 @@ mod tests {
 
         let custom: EffectsConfig = toml::from_str("ghost_opacity = 0.6\n").unwrap();
         assert_eq!(custom.unfocused_opacity(), Some(0.6));
+    }
+
+    #[test]
+    fn legacy_effects_table_loads_cleanly_without_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[effects]\ncrt = true\nghost = true\nghost_opacity = 0.8\n",
+        )
+        .unwrap();
+
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty(), "legacy [effects] table must validate cleanly: {diags:?}");
+
+        let loaded = PlexiConfig::load_from_path(&path).expect("legacy [effects] must load");
+        let effects = loaded.effects.expect("effects table should be parsed");
+        assert_eq!(effects.crt, Some(true));
+        assert_eq!(effects.unfocused_opacity(), Some(0.8));
     }
 
     #[test]
