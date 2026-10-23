@@ -190,10 +190,6 @@ pub struct PlexiApp {
     pub(crate) ui_gallery_focused_buf: String,
     pub(crate) ui_gallery_show_text_modal: bool,
     pub(crate) ui_gallery_modal_buf: String,
-    pub(crate) show_cli_setup_prompt: bool,
-    /// `None` = idle/success (modal closes on success), `Some(false)` = not found.
-    pub(crate) cli_setup_check_result: Option<bool>,
-    pub(crate) show_completions_banner: bool,
     pub(crate) quitting: bool,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
@@ -1596,9 +1592,6 @@ impl PlexiApp {
                     ui_gallery_focused_buf: "Focused field".to_string(),
                     ui_gallery_show_text_modal: false,
                     ui_gallery_modal_buf: String::new(),
-                    show_cli_setup_prompt: crate::cli::setup::should_prompt(),
-                    cli_setup_check_result: None,
-                    show_completions_banner: crate::cli::setup::should_prompt_completions(),
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
@@ -1870,9 +1863,6 @@ impl PlexiApp {
             ui_gallery_focused_buf: "Focused field".to_string(),
             ui_gallery_show_text_modal: false,
             ui_gallery_modal_buf: String::new(),
-            show_cli_setup_prompt: crate::cli::setup::should_prompt(),
-            cli_setup_check_result: None,
-            show_completions_banner: crate::cli::setup::should_prompt_completions(),
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
@@ -2928,9 +2918,6 @@ impl PlexiApp {
                 pane_anims: Vec::new(),
                 edge_pulse: None,
                 click_flash: None,
-                show_cli_setup_prompt: false,
-                cli_setup_check_result: None,
-                show_completions_banner: false,
                 ui_wake,
                 update_rx: None,
                 last_update_check: std::time::Instant::now(),
@@ -3159,10 +3146,12 @@ impl PlexiApp {
             shell::withhold_terminal_secrets(&mut env, working_directory.as_deref());
         }
         crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
+        let shell_path = shell::detect_shell();
+        let args = shell::default_shell_args(&shell_path, agent_pane);
         (
             BackendSettings {
-                shell: shell::detect_shell(),
-                args: vec!["-l".to_string()],
+                shell: shell_path,
+                args,
                 env,
                 dynamic_colors: theme::terminal_dynamic_colors(colors),
                 working_directory,
@@ -3835,7 +3824,6 @@ impl eframe::App for PlexiApp {
                 self.sync_command_palette_focus();
                 self.sync_rename_pane_focus();
                 self.sync_context_rename_focus();
-                self.sync_cli_setup_prompt_focus();
                 self.sync_text_input_focus();
                 self.sync_capability_modal_focus();
                 self.sync_event_consent_focus();

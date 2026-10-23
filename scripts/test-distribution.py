@@ -113,22 +113,29 @@ def main(args):
         old = package(root, installer, args.platform, 'stable', 'old')
         new = package(root, installer, args.platform, 'stable', 'new')
         alpha = package(root, installer, args.platform, 'alpha', 'new')
-        def install(path, success=True, custom_env=env):
+        def install(path, success=True, custom_env=env, extra_args=()):
             channel = json.loads((path / 'package.json').read_text())['channel']
-            return run([installer, '--package', path, '--channel', channel, '--applications-dir', apps, '--install-only'], custom_env, success)
+            return run([installer, '--package', path, '--channel', channel, '--applications-dir', apps, '--install-only', *extra_args], custom_env, success)
         receipt_path = root / 'custom install/stable/installation.json'
         def active(): return json.loads(receipt_path.read_text())['active']['build_id']
         if os.name != 'nt' and shutil.which('zsh'):
             # Cache a mapping whose autoload file disappeared, as in the report.
             run(['zsh', '-fc', 'autoload -Uz compinit; compinit -d "$HOME/.zcompdump"; compdef _plexi plexi; compdump'], env)
             (home / '.zshrc').write_text('autoload -Uz compinit\ncompinit -C\n')
-        def check_completions(build, channel='stable'):
+        def check_dropin_completions(channel='stable'):
             if os.name == 'nt': return
             name = 'plexi' if channel == 'stable' else 'plexi-' + channel
             receipt = json.loads((root / f'custom install/{channel}/installation.json').read_text())
             completion = Path(receipt['root']) / 'completions/zsh' / ('_' + name)
-            assert completion.is_file(), f'missing installed completion: {completion}'
-            assert any(p['path'] == str(completion) for p in receipt['integrations'])
+            fish_dropin = Path(env['XDG_DATA_HOME']) / 'fish/vendor_completions.d' / f'{name}.fish'
+            bash_dropin = Path(env['XDG_DATA_HOME']) / 'bash-completion/completions' / name
+            for expected in (completion, fish_dropin, bash_dropin):
+                assert expected.is_file(), f'missing installed completion: {expected}'
+                assert any(p['path'] == str(expected) for p in receipt['integrations']), f'untracked completion: {expected}'
+        def check_completions(build, channel='stable'):
+            if os.name == 'nt': return
+            name = 'plexi' if channel == 'stable' else 'plexi-' + channel
+            check_dropin_completions(channel)
             if shutil.which('zsh'):
                 output = run(['zsh', '-ic', f'[[ ${{_comps[{name}]}} == _{name} ]] && _{name}'], env)
                 assert output.stdout.strip() == build, output
@@ -140,6 +147,15 @@ def main(args):
             assert f'complete -F _{name} {name}' in output.stdout, output
         initial = install(old)
         assert active() == 'old'
+        check_dropin_completions('stable')
+        if os.name != 'nt':
+            # Default install never edits shell dotfiles silently.
+            if shutil.which('zsh'):
+                assert (home / '.zshrc').read_text() == 'autoload -Uz compinit\ncompinit -C\n'
+            assert not (home / '.bashrc').exists()
+            assert not (home / '.profile').exists()
+            assert json.loads(receipt_path.read_text())['path_edits'] == []
+            install(old, extra_args=['--modify-path'])
         check_completions('old')
         if os.name != 'nt' and shutil.which('zsh'):
             zsh_dir = home / 'custom zsh'
@@ -147,7 +163,7 @@ def main(args):
             user_rc = home / 'linked-zshrc'
             user_rc.write_text('autoload -Uz compinit\ncompinit -C\n')
             (zsh_dir / '.zshrc').symlink_to(user_rc)
-            install(old, custom_env=env | {'PLEXI_ORIG_ZDOTDIR': str(zsh_dir), 'ZDOTDIR': '/unused/host-integration'})
+            install(old, custom_env=env | {'PLEXI_ORIG_ZDOTDIR': str(zsh_dir), 'ZDOTDIR': '/unused/host-integration'}, extra_args=['--modify-path'])
             output = run(['zsh', '-ic', '_plexi'], env | {'ZDOTDIR': str(zsh_dir)})
             assert output.stdout.strip() == 'old', output
             assert (zsh_dir / '.zshrc').is_symlink()
@@ -170,7 +186,7 @@ def main(args):
             output = run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', 'plexi --build-info'], shell_env)
             assert json.loads(output.stdout)['build_id'] == 'old'
             assert shadow.read_text().endswith('echo stale\n')
-        install(alpha)
+        install(alpha, extra_args=['--modify-path'] if os.name != 'nt' else ())
         check_completions('new', 'alpha')
         check_completions('old')
         listed = json.loads(run([installer, 'list'], env).stdout)

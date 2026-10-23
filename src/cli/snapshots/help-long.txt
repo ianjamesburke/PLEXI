@@ -34,6 +34,7 @@ System:
   experiments   List, enable, or disable experiments (features outside the stable v1 surface)
   skill         Install the agent skill compiled into this binary
   completions   Print a shell completion script to stdout
+  cli           Install the Plexi CLI launcher, drop-in completions, and shell PATH registration
   host          Launch, stop, or check a headless-friendly Plexi host from the CLI
   lease         Acquire process-lifetime capacity before starting work. Pauses exit with code 2
   config        Check your Plexi config file for errors

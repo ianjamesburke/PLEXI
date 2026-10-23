@@ -79,11 +79,12 @@ pub fn complete_run_cli() -> i32 {
     0
 }
 
-pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
+pub fn render_completions(shell: &str, binary_name: &str) -> Result<Vec<u8>, String> {
     use clap_complete::{generate, Shell};
     let Ok(shell_variant) = shell.parse::<Shell>() else {
-        eprintln!("error: unsupported shell {shell:?} — supported: bash, zsh, fish");
-        return 1;
+        return Err(format!(
+            "unsupported shell {shell:?} — supported: bash, zsh, fish"
+        ));
     };
     log::info!(
         "completions: generating {:?} completions for binary {:?}",
@@ -99,11 +100,26 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         let script = fix_zsh_workspace_path_conflict(&script);
         let script = inject_zsh_open_completions(&script, binary_name);
         let script = inject_zsh_run_completions(&script, binary_name);
-        print!("{script}");
+        Ok(script.into_bytes())
     } else {
-        generate(shell_variant, &mut cmd, binary_name, &mut std::io::stdout());
+        let mut buf = Vec::new();
+        generate(shell_variant, &mut cmd, binary_name, &mut buf);
+        Ok(buf)
     }
-    0
+}
+
+pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
+    match render_completions(shell, binary_name) {
+        Ok(bytes) => {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&bytes);
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
 }
 
 /// Inject a dynamic completion function for `plexi app open <TAB>` into the

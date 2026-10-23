@@ -279,6 +279,19 @@ pub enum LeaseCmd {
 }
 
 #[derive(Subcommand)]
+pub enum CliSetupCmd {
+    /// Install the `~/.local/bin` launcher, drop-in completions, and shell PATH registration.
+    Setup {
+        /// Append PATH and completion blocks to ~/.zshrc, ~/.bashrc, ~/.profile, and config.fish
+        #[arg(long, overrides_with = "no_modify_path")]
+        modify_path: bool,
+        /// Do not edit shell startup files (.zshrc, .bashrc, .profile, config.fish)
+        #[arg(long, overrides_with = "modify_path")]
+        no_modify_path: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum Commands {
     /// Acquire process-lifetime capacity before starting work. Pauses exit with code 2.
     Lease {
@@ -587,6 +600,27 @@ pub enum Commands {
     Completions {
         /// Shell name: zsh, bash, or fish
         shell: Option<String>,
+    },
+    /// Install the Plexi CLI launcher, drop-in completions, and shell PATH registration.
+    ///
+    /// Inside Plexi panes, `plexi` and tab completions are injected automatically
+    /// without editing your shell dotfiles. Run `plexi cli setup` to install the
+    /// `~/.local/bin` launcher and XDG/Homebrew completion drop-in files and append
+    /// PATH and completion blocks to your shell startup files (`.zshrc`, `.bashrc`,
+    /// `.profile`, `config.fish`). Pass `--no-modify-path` to skip dotfile edits.
+    ///
+    /// Example: plexi cli setup
+    /// Example: plexi cli setup --no-modify-path
+    #[command(next_help_heading = "System")]
+    Cli {
+        #[command(subcommand)]
+        cmd: Option<CliSetupCmd>,
+        /// Append PATH and completion blocks to ~/.zshrc, ~/.bashrc, ~/.profile, and config.fish
+        #[arg(long, overrides_with = "no_modify_path")]
+        modify_path: bool,
+        /// Do not edit shell startup files (.zshrc, .bashrc, .profile, config.fish)
+        #[arg(long, overrides_with = "modify_path")]
+        no_modify_path: bool,
     },
     /// Check your Plexi config file for errors.
     Config {

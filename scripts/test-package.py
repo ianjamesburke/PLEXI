@@ -93,12 +93,12 @@ def main(args):
             name = 'plexi' if channel == 'stable' else 'plexi-' + channel
             completion = receipt_path.parent / 'completions/zsh' / ('_' + name)
             assert completion.is_file(), 'package install omitted shell completions'
+            assert (home / 'data/fish/vendor_completions.d' / f'{name}.fish').is_file(), 'package install omitted fish drop-in completion'
+            assert (home / 'data/bash-completion/completions' / name).is_file(), 'package install omitted bash drop-in completion'
+            assert not (home / '.zshrc').exists(), 'default package install must not modify .zshrc'
+            assert not (home / '.bashrc').exists(), 'default package install must not modify .bashrc'
             if shutil.which('zsh'):
-                # A fresh interactive shell must define the actual generated
-                # function, not merely cache its missing autoload name.
-                run(['zsh', '-ic', f'[[ ${{_comps[{name}]}} == _{name} ]] && [[ $functions[_{name}] != *"autoload -X"* ]]'])
                 run(['zsh', '-n', completion])
-            run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', f'complete -p {name}'])
         if args.gui:
             started = False
             try:
@@ -169,6 +169,13 @@ def main(args):
         # Removal runs from the unpacked installer, so it can also delete the
         # Windows application executable and stable launcher without a file lock.
         env.pop('PLEXI_SOCKET', None)
+        if os.name != 'nt' and not channel.startswith('pr-'):
+            run([executable, 'cli', 'setup', '--modify-path'])
+            if shutil.which('zsh'):
+                # After explicit opt-in setup, a fresh interactive shell must define
+                # the actual generated function, not merely cache its missing autoload name.
+                run(['zsh', '-ic', f'[[ ${{_comps[{name}]}} == _{name} ]] && [[ $functions[_{name}] != *"autoload -X"* ]]'])
+            run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', f'complete -p {name}'])
         run([installer, 'remove', '--receipt', receipt_path.parent])
         assert not receipt_path.exists()
         (args.output / 'result.json').write_text(json.dumps({'channel': manifest['channel'], 'build_id': manifest['build_id'], 'runtime': 'pass', 'gui': 'pass' if args.gui else 'not-run', 'removal': 'pass'}, indent=2))

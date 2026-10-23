@@ -29,6 +29,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "experiments",
             "skill",
             "completions",
+            "cli",
             "host",
             "lease",
             "config",

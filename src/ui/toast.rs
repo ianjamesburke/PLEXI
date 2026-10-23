@@ -20,6 +20,7 @@ impl<'a> ToastShell<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn offset(mut self, offset: egui::Vec2) -> Self {
         self.offset = offset;
         self

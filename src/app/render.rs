@@ -209,7 +209,6 @@ impl PlexiApp {
         self.sync_command_palette_focus();
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
-        self.sync_cli_setup_prompt_focus();
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
         self.sync_event_consent_focus();
@@ -1267,9 +1266,6 @@ impl PlexiApp {
 
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
-
-        // First-launch completions nudge
-        self.draw_completions_banner(&ctx);
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
         let ws_id = self.router.active().context_id;

@@ -1234,6 +1234,7 @@ impl PlexiApp {
                 .iter_mut()
                 .find_map(|w| w.panes.get_mut(&parent_id))
                 .and_then(|p| p.as_terminal_mut())
+                .filter(|term| term.is_agent_pane())
                 .map(|term| {
                     term.pending_child_results
                         .retain(|r| r.child_pane_id != child_id);

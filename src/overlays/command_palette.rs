@@ -200,6 +200,8 @@ enum PaletteCommand {
     SwitchCommandsScope,
     /// Open the Needs attention review (`overlays::attention`).
     OpenAttention,
+    /// Install the CLI launcher, completions, and PATH registration for external terminals.
+    SetupCli,
     UiUpcycle(&'static str),
 }
 
@@ -336,6 +338,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         name: "Review issues needing attention",
         description: "Open the Needs attention review for approvals, Keychain and integrity issues",
         search_text: "needs attention review issues errors problems keychain integrity approvals recovery diagnostics",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::SetupCli,
+        name: "Install 'plexi' CLI in PATH",
+        description: "Install the ~/.local/bin launcher, completions, and PATH registration",
+        search_text: "install plexi cli path completions setup terminal command",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote),
@@ -901,6 +909,7 @@ fn palette_host_binding(
         | PaletteCommand::EditCommands
         | PaletteCommand::SwitchCommandsScope
         | PaletteCommand::OpenAttention
+        | PaletteCommand::SetupCli
         | PaletteCommand::StatePreset(_)
         | PaletteCommand::UiUpcycle(_) => return None,
         PaletteCommand::Host(other) => {
@@ -1850,6 +1859,17 @@ impl PlexiApp {
             PaletteCommand::SwitchCommandsScope => {
                 self.switch_focused_commands_editor_scope();
             }
+            PaletteCommand::SetupCli => match crate::cli::setup::setup_external_shell(true) {
+                Ok(report) => {
+                    log::info!(
+                        "palette: SetupCli installed {} at {} (rc_files={:?})",
+                        report.cli_name,
+                        report.shim_path.display(),
+                        report.modified_rc_files
+                    );
+                }
+                Err(error) => log::error!("palette: SetupCli failed: {error}"),
+            },
         }
     }
 
@@ -2911,6 +2931,7 @@ mod tests {
                 PaletteCommand::OpenWorkspaceConfig
                 | PaletteCommand::EditCommands
                 | PaletteCommand::SwitchCommandsScope
+                | PaletteCommand::SetupCli
                 | PaletteCommand::StatePreset(_)
         | PaletteCommand::UiUpcycle(_) => {
                     assert!(

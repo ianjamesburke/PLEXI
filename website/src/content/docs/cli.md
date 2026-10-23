@@ -2341,6 +2341,27 @@ Example: plexi completions zsh >> ~/.zshrc
 |---|---|---|---|
 | `<shell>` | string | no | Shell name: zsh, bash, or fish |
 
+## `plexi cli`
+
+Install the Plexi CLI launcher, drop-in completions, and shell PATH registration.
+
+Inside Plexi panes, `plexi` and tab completions are injected automatically without editing your shell dotfiles. Run `plexi cli setup` to install the `~/.local/bin` launcher and XDG/Homebrew completion drop-in files and append PATH and completion blocks to your shell startup files (`.zshrc`, `.bashrc`, `.profile`, `config.fish`). Pass `--no-modify-path` to skip dotfile edits.
+
+Example: plexi cli setup Example: plexi cli setup --no-modify-path
+
+| Subcommand | Description |
+|---|---|
+| `setup` | Install the `~/.local/bin` launcher, drop-in completions, and shell PATH registration |
+
+### `plexi cli setup`
+
+Install the `~/.local/bin` launcher, drop-in completions, and shell PATH registration
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--modify-path` | flag | no | Append PATH and completion blocks to ~/.zshrc, ~/.bashrc, ~/.profile, and config.fish |
+| `--no-modify-path` | flag | no | Do not edit shell startup files (.zshrc, .bashrc, .profile, config.fish) |
+
 ## `plexi config`
 
 Check your Plexi config file for errors

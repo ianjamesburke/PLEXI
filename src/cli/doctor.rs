@@ -235,6 +235,7 @@ pub fn doctor_cli(json: bool) -> i32 {
             }
         } else {
             println!("No apps installed.");
+            print_shell_section(&installation["shell"]);
             print_llm_section(&llm_servers);
             print_openrouter_section(&openrouter);
         }
@@ -303,6 +304,7 @@ pub fn doctor_cli(json: bool) -> i32 {
             );
         }
 
+        print_shell_section(&installation["shell"]);
         print_llm_section(&llm_servers);
         print_openrouter_section(&openrouter);
     }
@@ -345,9 +347,34 @@ fn print_llm_section(servers: &[LlmServerReport]) {
     }
 }
 
+fn print_shell_section(shell: &serde_json::Value) {
+    let cli_name = shell["cli_name"].as_str().unwrap_or("plexi");
+    let shim_path = shell["shim_path"].as_str().unwrap_or("~/.local/bin/plexi");
+    let shim_installed = shell["shim_installed"].as_bool().unwrap_or(false);
+    let in_path = shell["in_path"].as_bool().unwrap_or(false);
+    let completions = shell["completions_installed"].as_bool().unwrap_or(false);
+    println!("\nCLI & shell:");
+    println!(
+        "  shim ({cli_name}): {} ({shim_path})",
+        if shim_installed { "installed" } else { "missing" }
+    );
+    println!(
+        "  external PATH: {}",
+        if in_path { "configured" } else { "not in PATH" }
+    );
+    println!(
+        "  completions: {}",
+        if completions { "installed" } else { "missing" }
+    );
+    if !shim_installed || !in_path || !completions {
+        println!("  --> run: plexi cli setup");
+    }
+}
+
 fn installation_report() -> (serde_json::Value, bool) {
     let cli = crate::distribution::build_info();
     let running = super::host::running_build_info();
+    let shell = crate::cli::setup::external_shell_status();
     match crate::distribution::installed() {
         Ok(Some(receipt)) => {
             let package_error = plexi_distribution::package::Package::load(&receipt.active.path)
@@ -355,9 +382,9 @@ fn installation_report() -> (serde_json::Value, bool) {
             let cli_matches = cli["build_id"].as_str() == Some(&receipt.active.build_id);
             let running_matches = running.as_ref().and_then(|v| v["build_id"].as_str()).map(|id| id == receipt.active.build_id);
             let healthy = package_error.is_none() && cli_matches && running_matches != Some(false);
-            (serde_json::json!({ "cli": cli, "installed": receipt, "running": running, "cli_matches_installed": cli_matches, "running_matches_installed": running_matches, "package_error": package_error }), healthy)
+            (serde_json::json!({ "cli": cli, "installed": receipt, "running": running, "shell": shell, "cli_matches_installed": cli_matches, "running_matches_installed": running_matches, "package_error": package_error }), healthy)
         }
-        Ok(None) => (serde_json::json!({ "cli": cli, "running": running, "managed": false }), true),
-        Err(error) => (serde_json::json!({ "cli": cli, "running": running, "error": error }), false),
+        Ok(None) => (serde_json::json!({ "cli": cli, "running": running, "shell": shell, "managed": false }), true),
+        Err(error) => (serde_json::json!({ "cli": cli, "running": running, "shell": shell, "error": error }), false),
     }
 }

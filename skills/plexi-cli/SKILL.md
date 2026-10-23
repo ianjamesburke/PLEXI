@@ -510,6 +510,8 @@ pane count (`--json` is supported).
 - `plexi skill draft`: Draft a reusable skill or commands.toml snippet from captured CLI calls
 - `plexi skill install`: Write this binary's skill for one agent CLI, or all supported agents
 - `plexi completions`: Print a shell completion script to stdout
+- `plexi cli`: Install the Plexi CLI launcher, drop-in completions, and shell PATH registration
+- `plexi cli setup`: Install the `~/.local/bin` launcher, drop-in completions, and shell PATH registration
 - `plexi config`: Check your Plexi config file for errors
 - `plexi config reload`: Reload configuration in the running host
 - `plexi config check`: Validate the selected config.toml and report any errors
