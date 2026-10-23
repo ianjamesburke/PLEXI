@@ -127,14 +127,49 @@ pub(crate) fn set_test_pane_context_root(path: &std::path::Path) -> TestPaneCont
     TestPaneContextGuard(prev)
 }
 
+/// The calling pane's live context authority, asked of the host from the
+/// kernel-verified socket peer. Outer `None`: the host could not be asked.
+/// `Some(None)`: the caller is outside every pane (a human at a plain terminal).
+#[cfg(not(test))]
+fn host_caller_context() -> Option<Option<std::path::PathBuf>> {
+    static CACHE: std::sync::OnceLock<Option<Option<std::path::PathBuf>>> =
+        std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let socket = super::resolve_command_socket()?;
+            let reply = crate::rpc::request_json(
+                &socket,
+                serde_json::json!({"type": "caller_context"}),
+                std::time::Duration::from_secs(3),
+            )
+            .ok()?;
+            if reply.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return None;
+            }
+            Some(
+                reply
+                    .get("context_root")
+                    .and_then(|v| v.as_str())
+                    .map(std::path::PathBuf::from),
+            )
+        })
+        .clone()
+}
+
 pub(crate) fn active_pane_context_root() -> Option<std::path::PathBuf> {
     #[cfg(test)]
     let raw = TEST_PANE_CONTEXT_ROOT.with(|cell| cell.borrow().clone())?;
+    // The host owns the live router and the verified peer identity. The
+    // environment is only a fallback when no host answers: it goes stale after
+    // `context set-root` and a child can unset it.
     #[cfg(not(test))]
-    let raw = std::env::var("PLEXI_CONTEXT_ROOT")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)?;
+    let raw = match host_caller_context() {
+        Some(root) => root?,
+        None => std::env::var("PLEXI_CONTEXT_ROOT")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)?,
+    };
     let raw_canon = crate::platform::path::canonical_or_self(&raw);
     let ws_root = crate::app::registry::resolve_workspace_root(&raw_canon)
         .map(|p| crate::platform::path::canonical_or_self(&p));

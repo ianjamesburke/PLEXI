@@ -449,55 +449,6 @@ fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
     }
 }
 
-/// Outcome of `plexi pane result write`.
-#[derive(Debug, PartialEq)]
-pub enum PaneResultWriteOutcome {
-    /// Validated against schema and committed once.
-    Committed(String),
-    /// Rejected synchronously by the host (malformed JSON, schema violation, or already set).
-    Rejected {
-        error_code: Option<String>,
-        message: String,
-    },
-}
-
-impl PaneResultWriteOutcome {
-    pub fn exit_code(&self) -> i32 {
-        match self {
-            PaneResultWriteOutcome::Committed(_) => 0,
-            PaneResultWriteOutcome::Rejected { .. } => 1,
-        }
-    }
-}
-
-/// Pure mapper for `pane_result_write` replies.
-pub fn pane_result_write_outcome(reply: &str) -> PaneResultWriteOutcome {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
-        return PaneResultWriteOutcome::Rejected {
-            error_code: None,
-            message: format!("invalid pane result write response from host: {reply}"),
-        };
-    };
-    if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
-        && value.get("error").is_none()
-    {
-        return PaneResultWriteOutcome::Committed(reply.to_string());
-    }
-    let error_code = value
-        .get("error_code")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let raw_msg = value
-        .get("error")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("pane result write rejected");
-    let message = format_coded_error(error_code.as_deref(), raw_msg);
-    PaneResultWriteOutcome::Rejected {
-        error_code,
-        message,
-    }
-}
-
 /// Outcome of `plexi pane result <id>` / `plexi pane result read <id>`.
 ///
 /// Distinguishes:
@@ -582,107 +533,6 @@ pub fn pane_result_read_outcome(
         ),
         Err(e) => PaneResultReadOutcome::Failed(e.to_string()),
     }
-}
-
-/// `plexi pane result schema <first> [second] [--pane-id <id>]`
-pub fn pane_result_schema_cli(
-    first: &str,
-    second: Option<&str>,
-    pane_id_flag: Option<u64>,
-) -> i32 {
-    let (pane_id, spec) = match second {
-        Some(spec_str) => match super::PaneTarget::from(first.to_string()).resolve() {
-            Ok(id) => (Some(id), spec_str),
-            Err(code) => return code,
-        },
-        None => (pane_id_flag, first),
-    };
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
-        Ok(id) => id,
-        Err(code) => return code,
-    };
-    let cwd = std::env::current_dir().ok();
-    let schema = match crate::host::pane_result::parse_schema_spec(spec, cwd.as_deref()) {
-        Ok(schema) => schema,
-        Err(e) => {
-            log::warn!("pane_result_schema:cli: invalid schema for pane {resolved_pane_id}: {e}");
-            eprintln!("error: invalid_schema: {e}");
-            return 1;
-        }
-    };
-    log::info!("pane_result_schema:cli: pane_id={resolved_pane_id}");
-    let content = match super::request(
-        serde_json::json!({
-            "type": "pane_result_schema_set",
-            "pane_id": resolved_pane_id,
-            "schema": schema,
-        }),
-        "pane-result-schema-response",
-        "pane result schema",
-    ) {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    if let Some(msg) = host_error_text(&content) {
-        eprintln!("error: {msg}");
-        return 1;
-    }
-    print_json_output(&content)
-}
-
-/// `plexi pane result write [first] [second] [--pane-id <id>]`
-pub fn pane_result_write_cli(
-    first: Option<&str>,
-    second: Option<&str>,
-    pane_id_flag: Option<u64>,
-) -> i32 {
-    let (pane_id, raw_json) = match (first, second) {
-        (Some(id_str), Some(json_str)) => {
-            match super::PaneTarget::from(id_str.to_string()).resolve() {
-                Ok(id) => (Some(id), json_str.to_string()),
-                Err(code) => return code,
-            }
-        }
-        (Some(json_str), None) => (pane_id_flag, json_str.to_string()),
-        (None, None) => {
-            use std::io::Read as _;
-            let mut buf = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                eprintln!("error: could not read stdin: {e}");
-                return 1;
-            }
-            (pane_id_flag, buf)
-        }
-        (None, Some(json_str)) => (pane_id_flag, json_str.to_string()),
-    };
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
-        Ok(id) => id,
-        Err(code) => return code,
-    };
-    log::info!(
-        "pane_result_write:cli: pane_id={resolved_pane_id} bytes={}",
-        raw_json.len()
-    );
-    let content = match super::request(
-        serde_json::json!({
-            "type": "pane_result_write",
-            "pane_id": resolved_pane_id,
-            "payload": raw_json,
-        }),
-        "pane-result-write-response",
-        "pane result write",
-    ) {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    let outcome = pane_result_write_outcome(&content);
-    match &outcome {
-        PaneResultWriteOutcome::Committed(body) => return print_json_output(body),
-        PaneResultWriteOutcome::Rejected { message, .. } => {
-            eprintln!("error: {message}");
-        }
-    }
-    outcome.exit_code()
 }
 
 /// `plexi pane result [pane_id] [--wait] [--timeout <SECS>]`
@@ -2246,39 +2096,6 @@ mod pane_result_tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
-    fn write_outcome_distinguishes_committed_invalid_and_already_set() {
-        let ok = pane_result_write_outcome(
-            r#"{"ok":true,"pane_id":7,"result":{"status":"pass","pr":42}}"#,
-        );
-        assert_eq!(ok.exit_code(), 0);
-        assert!(matches!(ok, PaneResultWriteOutcome::Committed(_)));
-
-        let invalid = pane_result_write_outcome(
-            r#"{"ok":false,"pane_id":7,"error_code":"invalid_result","error":"$: missing required property \"status\""}"#,
-        );
-        assert_eq!(invalid.exit_code(), 1);
-        assert_eq!(
-            invalid,
-            PaneResultWriteOutcome::Rejected {
-                error_code: Some("invalid_result".to_string()),
-                message: "invalid_result: $: missing required property \"status\"".to_string(),
-            }
-        );
-
-        let already = pane_result_write_outcome(
-            r#"{"ok":false,"pane_id":7,"error_code":"result_already_set","error":"pane result has already been written and can only be written once"}"#,
-        );
-        assert_eq!(already.exit_code(), 1);
-        assert_eq!(
-            already,
-            PaneResultWriteOutcome::Rejected {
-                error_code: Some("result_already_set".to_string()),
-                message: "result_already_set: pane result has already been written and can only be written once".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn read_outcome_distinguishes_validated_no_result_yet_and_invalid_result() {
         let valid = pane_result_read_outcome(Ok(SlotReply::Data(
             br#"{"status":"pass","pr":42}"#.to_vec(),
@@ -2334,13 +2151,7 @@ mod pane_result_tests {
     }
 
     #[test]
-    fn schema_cli_rejects_bad_schema_before_socket_contact() {
-        let code = pane_result_schema_cli("not json or a file", None, Some(7));
-        assert_eq!(code, 1);
-    }
-
-    #[test]
-    fn write_and_read_cli_roundtrip_over_socket() {
+    fn read_cli_roundtrip_over_socket() {
         let env = socket_env_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("notify.sock");
@@ -2348,23 +2159,6 @@ mod pane_result_tests {
         env.set(&socket_path);
 
         let handle = std::thread::spawn(move || {
-            // 1. Rejected write
-            let (stream, _) = listener.accept().expect("accept 1");
-            let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).expect("read 1");
-            let p1: serde_json::Value = serde_json::from_str(&line).expect("json 1");
-            assert_eq!(p1["type"], "pane_result_write");
-            assert_eq!(p1["pane_id"], 7);
-            crate::rpc::write_json_response(
-                p1["response_file"].as_str().unwrap(),
-                serde_json::json!({
-                    "ok": false,
-                    "pane_id": 7,
-                    "error_code": "invalid_result",
-                    "error": "$: missing required property \"status\"",
-                }),
-            );
-
             // 2. Read while last write is invalid -> sidecar .err with invalid_result (exit 1)
             let (stream, _) = listener.accept().expect("accept 2");
             let mut line = String::new();
@@ -2398,20 +2192,6 @@ mod pane_result_tests {
                 }),
             );
 
-            // 4. Valid write (exit 0)
-            let (stream, _) = listener.accept().expect("accept 4");
-            let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).expect("read 4");
-            let p4: serde_json::Value = serde_json::from_str(&line).expect("json 4");
-            crate::rpc::write_json_response(
-                p4["response_file"].as_str().unwrap(),
-                serde_json::json!({
-                    "ok": true,
-                    "pane_id": 7,
-                    "result": { "status": "pass" },
-                }),
-            );
-
             // 5. Read committed result (exit 0)
             let (stream, _) = listener.accept().expect("accept 5");
             let mut line = String::new();
@@ -2421,13 +2201,8 @@ mod pane_result_tests {
             crate::rpc::write_json_response(rf5, serde_json::json!({ "status": "pass" }));
         });
 
-        assert_eq!(pane_result_write_cli(Some("{}"), None, Some(7)), 1);
         assert_eq!(pane_result_read_cli(Some(7), false, 300.0), 1);
         assert_eq!(pane_result_read_cli(Some(8), false, 300.0), 2);
-        assert_eq!(
-            pane_result_write_cli(Some(r#"{"status":"pass"}"#), None, Some(7)),
-            0
-        );
         assert_eq!(pane_result_read_cli(Some(7), false, 300.0), 0);
 
         handle.join().expect("listener thread");

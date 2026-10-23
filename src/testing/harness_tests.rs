@@ -8343,7 +8343,7 @@ mod agent_boot {
     }
 
     fn report_agent(h: &mut HostHarness, pane_id: u64, state: AgentState) {
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id,
             state,
             agent: "claude-code".to_string(),
@@ -9985,7 +9985,7 @@ mod pane_lifecycle_events {
 
         // 1. Invalid result payload is rejected synchronously by schema validation.
         let bad_done = temp_response(dir.path(), "agent-done-bad");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
             pane_id: worker_id,
             result: Some(r#"{"wrong": 123}"#.into()),
             summary: Some("incomplete".into()),
@@ -9998,7 +9998,7 @@ mod pane_lifecycle_events {
 
         // 2. Valid result payload commits result, writes `completed` + `summary` slots.
         let good_done = temp_response(dir.path(), "agent-done-good");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
             pane_id: worker_id,
             result: Some(r#"{"pr_url": "https://github.com/org/repo/pull/802"}"#.into()),
             summary: Some("Shipped agent squads".into()),
@@ -10165,7 +10165,7 @@ mod pane_lifecycle_events {
         // Tier 1 (`plexi agent ask`): worker transitions to Blocked, writes `question` slot,
         // rolls up `ContextStatus::Blocked` on parent PortalPane, and does NOT file human NeedsYou.
         let ask_reply = temp_response(dir.path(), "agent-ask");
-        h.inject_ipc(crate::protocol::AppRequest::AgentAsk {
+        h.inject_ipc(crate::protocol::AppRequest::AgentAsk { peer_ancestry: None,
             pane_id: worker_id,
             question: "Should we use BTreeMap or HashMap?".into(),
             response_file: ask_reply.clone(),
@@ -11380,7 +11380,7 @@ mod agent_state_restoration_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
 
         h.app.workspace_dirty = false;
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id,
             state: AgentState::Working,
             agent: "claude".to_string(),
@@ -11846,7 +11846,7 @@ mod agent_state_restoration_tests {
         let spawned = read_json_response(&spawn_reply);
         let worker_id = spawned["pane_id"].as_u64().unwrap();
 
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: worker_id,
             state: AgentState::Completed,
             agent: "pi".into(),
@@ -12194,7 +12194,7 @@ mod agent_state_restoration_tests {
 
         // Starting and immediately exiting a blank `pi` instance (reporting `idle` with `session_id: None`)
         // on pane 12 must NOT clobber its previously persisted `agent_session_id`.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: 12,
             state: AgentState::Idle,
             agent: "pi".to_string(),
@@ -12204,7 +12204,7 @@ mod agent_state_restoration_tests {
             blocked_reason: None,
         });
         h.hidden_frame();
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: 12,
             state: AgentState::Idle,
             agent: "pi".to_string(),
@@ -13149,7 +13149,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     // 1. Children 1 and 2 finish via `agent done` while `lead_id` is still Working (mid-turn).
     for (cid, label, ans) in [(c1, "first Done", "alpha"), (c2, "second Done", "beta")] {
         let done_rep = temp_response(dir.path(), &format!("done-{cid}"));
-        h.inject_ipc(AppRequest::AgentDone {
+        h.inject_ipc(AppRequest::AgentDone { peer_ancestry: None,
             pane_id: cid,
             result: Some(serde_json::json!({"answer": ans}).to_string()),
             summary: Some(label.to_string()),
@@ -13184,7 +13184,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     assert_eq!(lead_row.pending_child_results_count, 2);
 
     // 2. When `lead_id` reports `Idle`, ALL queued results (c1 and c2) are delivered as ONE batched turn!
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Idle,
         agent: "pi".into(),
@@ -13216,7 +13216,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     //    finish `c3`, then transition `lead_id` to `Idle` -> `c3` is NOT re-delivered!
     // Clear any in-flight submit from batch 1 first.
     h.app.pending_submits.clear();
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Working,
         agent: "pi".into(),
@@ -13241,7 +13241,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     );
 
     let done_c3_reply = temp_response(dir.path(), "done-c3");
-    h.inject_ipc(AppRequest::AgentDone {
+    h.inject_ipc(AppRequest::AgentDone { peer_ancestry: None,
         pane_id: c3,
         result: Some(serde_json::json!({"answer": "gamma"}).to_string()),
         summary: Some("third Done".into()),
@@ -13255,7 +13255,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     assert_eq!(waited_json["results"][0]["result"]["answer"], "gamma");
 
     // Transition `lead_id` to Idle -> no second batch is delivered because c3 was pulled via AgentWait!
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Idle,
         agent: "pi".into(),

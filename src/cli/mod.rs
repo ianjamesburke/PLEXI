@@ -1913,8 +1913,8 @@ pub use permissions::permissions_cli;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,
-    pane_message_recv_cli, pane_message_send_cli, pane_result_read_cli, pane_result_schema_cli,
-    pane_result_write_cli, pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
+    pane_message_recv_cli, pane_message_send_cli, pane_result_read_cli, 
+     pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
     pane_slot_list_cli, pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli,
     pane_state_cli, pane_status_cli, pane_tree_cli,
 };

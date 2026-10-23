@@ -689,7 +689,7 @@ mod attention_tests {
         let agent = h.add_focused_terminal();
         let other = h.add_test_pane();
         h.focus_pane(other);
-        let report = AppRequest::SetAgentState {
+        let report = AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "pi".into(),
@@ -733,7 +733,7 @@ mod attention_tests {
         h.focus_pane(other);
 
         // 1. Agent reports needs_you -> files NeedsYouKind::Question, appears in open_items and agent next.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -751,7 +751,7 @@ mod attention_tests {
 
         // 2. Agent reports idle -> withdraws its attention item without recording an approval,
         // clears the attention notification, and removes the agent from `agent next`.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Idle,
             agent: "test".into(),
@@ -801,7 +801,7 @@ mod attention_tests {
 
         // 3. Also verify working and completed withdraw blocked/needs_you items,
         // while a broker-filed PermissionRequest is NOT withdrawn by an agent state report.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Blocked,
             agent: "test".into(),
@@ -831,7 +831,7 @@ mod attention_tests {
         h.hidden_frame();
         assert_eq!(crate::overlays::attention::open_items().len(), 2);
 
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Working,
             agent: "test".into(),
@@ -862,7 +862,7 @@ mod attention_tests {
                 crate::broker::gate::ResolveSurface::Desktop,
             )
             .unwrap();
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -874,7 +874,7 @@ mod attention_tests {
         h.hidden_frame();
         assert_eq!(crate::overlays::attention::open_items().len(), 1);
 
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Completed,
             agent: "test".into(),

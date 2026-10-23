@@ -772,6 +772,11 @@ pub(crate) fn handle_socket_line_in(
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
                 crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::SetAgentState { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::AgentDone { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::AgentAsk { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::Permissions { peer_ancestry: p, .. }
+                | crate::protocol::AppRequest::CallerContext { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::AgentSpawn { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::AgentWait { peer_ancestry: p, .. }
                 | crate::protocol::AppRequest::PaneMessageSend { peer_ancestry: p, .. }

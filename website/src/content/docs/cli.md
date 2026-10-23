@@ -1489,7 +1489,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
 | `message` | Send and receive structured messages via a host-managed per-pane FIFO mailbox |
-| `result` | Declare a result schema, write a schema-validated structured result once, or read a pane's validated result |
+| `result` | Read a pane's validated structured result |
 
 ### `plexi pane hide`
 
@@ -1901,9 +1901,9 @@ Defaults to `PLEXI_PANE_ID`. With `--timeout N` or `--wait`, blocks host-side wi
 
 ### `plexi pane result`
 
-Declare a result schema, write a schema-validated structured result once, or read a pane's validated result.
+Read a pane's validated structured result.
 
-Spawners declare the JSON Schema at spawn (`plexi pane new --result-schema <schema>`) or at brief time (`plexi pane result schema <schema> [--pane-id <id>]`). The worker agent writes its structured JSON object once via `plexi pane result write <json>`: the host validates it against the declared schema synchronously and rejects malformed or schema-violating payloads back to the agent (exit 1 with the validation error) so the agent can self-correct before any consumer sees it.
+Spawners declare the JSON Schema at spawn (`plexi pane new --result-schema <schema>`). The worker agent returns its structured JSON once via `plexi agent done --result <json>`: the host validates it against the declared schema synchronously and rejects malformed or schema-violating payloads back to the agent (exit 1 with the validation error) so the agent can self-correct before any consumer sees it.
 
 Reading via `plexi pane result <id>` (or `plexi pane result read <id>`) prints the validated JSON object to stdout and exits 0, or exits 2 with `error_code: "no_result_yet"` when no result has been written yet (or on `--wait` timeout), or exits 1 with `error_code: "invalid_result"` when the last attempted write was rejected and no valid result has been committed yet.
 
@@ -1911,8 +1911,6 @@ Reading via `plexi pane result <id>` (or `plexi pane result read <id>`) prints t
 |---|---|
 | `read` | Read a pane's validated structured result as JSON |
 | `wait` | Block host-side until a pane commits a valid structured result, then print it |
-| `write` | Validate and commit a structured JSON object once for a pane |
-| `schema` | Declare a JSON Schema (inline JSON object or path to a `.json` file) for a pane's result |
 
 #### `plexi pane result read`
 
@@ -1940,32 +1938,6 @@ Agent spawn returns immediately. Wait in bounded slices with `plexi pane result 
 | `<pane_id>` | string | no | Pane id or name (positional form). Defaults to PLEXI_PANE_ID |
 | `--pane-id` | string | no | Pane id or name. Same as the positional form; defaults to PLEXI_PANE_ID |
 | `--timeout` | string | no | Seconds to wait before exiting 2 Default: `300`. |
-
-#### `plexi pane result write`
-
-Validate and commit a structured JSON object once for a pane.
-
-If the payload is not a JSON object or violates the pane's declared result schema, the host rejects it synchronously (exit 1 with the validation error on stderr) and leaves the result uncommitted so the agent can self-correct and retry. Once a valid result is committed, subsequent writes are rejected with `result_already_set`.
-
-Accepts `write <json> [--pane-id <id>]`, `write <pane_id> <json>`, or reads stdin when `<json>` is omitted.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<first>` | string | no | JSON object payload (or pane id or name when two positional arguments are given). Reads stdin when omitted |
-| `<second>` | string | no | JSON object payload when the first positional argument is a pane id or name |
-| `--pane-id` | string | no | Pane id or name. Defaults to PLEXI_PANE_ID |
-
-#### `plexi pane result schema`
-
-Declare a JSON Schema (inline JSON object or path to a `.json` file) for a pane's result.
-
-Accepts `schema <json-or-path> [--pane-id <id>]` or `schema <pane_id> <json-or-path>`.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<first>` | string | yes | Inline JSON Schema object or path to a schema file (or pane id or name when two arguments are given) |
-| `<second>` | string | no | Inline JSON Schema object or path to a schema file when the first argument is a pane id or name |
-| `--pane-id` | string | no | Pane id or name. Defaults to PLEXI_PANE_ID |
 
 ## `plexi events`
 

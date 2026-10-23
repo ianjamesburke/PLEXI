@@ -353,6 +353,10 @@ pub enum AppRequest {
         event: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blocked_reason: Option<AgentBlockedReason>,
+        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
+        /// read from the wire: the host derives the caller pane from it.
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
     },
     /// Report an app's own pip status (red/yellow/green) for its activity dot.
     /// Fire-and-forget; set by the app process via `App.set_pip_status`. Takes
@@ -821,6 +825,10 @@ pub enum AppRequest {
         result: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
+        /// read from the wire: the host derives the caller pane from it.
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
 
@@ -845,6 +853,10 @@ pub enum AppRequest {
     AgentAsk {
         pane_id: u64,
         question: String,
+        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
+        /// read from the wire: the host derives the caller pane from it.
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
 
@@ -1100,6 +1112,18 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<String>,
+        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
+        /// read from the wire: the host derives the caller pane from it.
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
+        response_file: String,
+    },
+    /// Ask the host which pane (if any) the socket peer lives in and that pane's
+    /// live context authority root. The CLI uses this instead of the stale
+    /// `PLEXI_CONTEXT_ROOT` / `PLEXI_PANE_ID` environment.
+    CallerContext {
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
     /// List items waiting on the human. The host expires due items first.

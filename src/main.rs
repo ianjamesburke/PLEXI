@@ -1581,8 +1581,6 @@ fn main() -> eframe::Result {
                             pane_id_flag,
                             wait,
                             timeout,
-                            write,
-                            schema,
                         } => match cmd {
                             Some(PaneResultCmd::Read {
                                 pane_id,
@@ -1611,52 +1609,14 @@ fn main() -> eframe::Result {
                                     timeout,
                                 ))
                             }
-                            Some(PaneResultCmd::Write {
-                                first,
-                                second,
-                                pane_id_flag,
-                            }) => {
-                                let pane_id_flag = resolve_opt_pane(pane_id_flag.as_ref());
-                                cli::trace::exit(cli::pane_result_write_cli(
-                                    first.as_deref(),
-                                    second.as_deref(),
-                                    pane_id_flag,
-                                ))
-                            }
-                            Some(PaneResultCmd::Schema {
-                                first,
-                                second,
-                                pane_id_flag,
-                            }) => {
-                                let pane_id_flag = resolve_opt_pane(pane_id_flag.as_ref());
-                                cli::trace::exit(cli::pane_result_schema_cli(
-                                    &first,
-                                    second.as_deref(),
-                                    pane_id_flag,
-                                ))
-                            }
                             None => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                if let Some(json_str) = write {
-                                    cli::trace::exit(cli::pane_result_write_cli(
-                                        Some(&json_str),
-                                        None,
-                                        resolved,
-                                    ));
-                                } else if let Some(schema_spec) = schema {
-                                    cli::trace::exit(cli::pane_result_schema_cli(
-                                        &schema_spec,
-                                        None,
-                                        resolved,
-                                    ));
-                                } else {
-                                    cli::trace::exit(cli::pane_result_read_cli(
-                                        resolved,
-                                        wait,
-                                        timeout,
-                                    ));
-                                }
+                                cli::trace::exit(cli::pane_result_read_cli(
+                                    resolved,
+                                    wait,
+                                    timeout,
+                                ));
                             }
                         },
                         PaneCmd::New {
