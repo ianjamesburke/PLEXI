@@ -1040,12 +1040,39 @@ impl PlexiApp {
             .into_iter()
             .partition(|wait| wait.pane_id == pane_id);
         self.pending_result_waits = live;
+        self.mark_child_result_delivered(pane_id);
         for wait in matched {
             log::info!(
                 "pane_result_wait: pane_id={pane_id} delivered validated result ({} bytes) to parked waiter",
                 bytes.len()
             );
             crate::rpc::write_response(&wait.response_file, &bytes);
+        }
+    }
+
+    /// Mark a child agent result as delivered/viewed so it does not remain
+    /// queued in any parent pane's `pending_child_results`.
+    pub(crate) fn mark_child_result_delivered(&mut self, child_id: u64) {
+        self.pulled_child_results.insert(child_id);
+        let mut changed = false;
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(term) = pane.as_terminal_mut() {
+                    let before = term.pending_child_results.len();
+                    if !term.is_agent_pane() {
+                        term.pending_child_results.clear();
+                    } else {
+                        term.pending_child_results
+                            .retain(|r| r.child_pane_id != child_id);
+                    }
+                    if term.pending_child_results.len() != before {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.mark_workspace_dirty();
         }
     }
 
@@ -1262,7 +1289,11 @@ impl PlexiApp {
             if queued {
                 self.mark_workspace_dirty();
                 let _ = self.flush_pending_child_results_if_idle(parent_id);
+            } else {
+                self.mark_child_result_delivered(child_id);
             }
+        } else {
+            self.mark_child_result_delivered(child_id);
         }
     }
 

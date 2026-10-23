@@ -1364,13 +1364,18 @@ impl PlexiApp {
                     );
                     return;
                 }
+                if self.child_result_events.contains_key(pane_id) {
+                    self.mark_child_result_delivered(*pane_id);
+                }
                 if let Some(committed) = self
                     .pane_results
                     .get(pane_id)
                     .and_then(|state| state.committed.as_ref())
+                    .cloned()
                 {
+                    self.mark_child_result_delivered(*pane_id);
                     let mut bytes =
-                        serde_json::to_vec(committed).unwrap_or_else(|_| b"{}".to_vec());
+                        serde_json::to_vec(&committed).unwrap_or_else(|_| b"{}".to_vec());
                     bytes.push(b'\n');
                     log::info!(
                         "pane_result_read: pane_id={pane_id} satisfied immediately ({} bytes)",

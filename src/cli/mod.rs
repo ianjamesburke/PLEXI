@@ -1505,6 +1505,17 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     }
 }
 
+pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
+    if let Some(socket_path) = resolve_command_socket() {
+        let line = format!("{payload}\n");
+        let _ = send_line_to_socket(
+            &socket_path,
+            line.as_bytes(),
+            std::time::Duration::from_millis(250),
+        );
+    }
+}
+
 fn send_to_socket_connected(payload: serde_json::Value) -> Result<crate::platform::ipc::IpcStream, i32> {
     let socket_path = match resolve_command_socket() {
         Some(path) => path,

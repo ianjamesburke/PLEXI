@@ -13350,6 +13350,76 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         human_term.pending_child_results.is_empty(),
         "plain human shell must not accumulate pending_child_results that never drain"
     );
+    assert!(
+        h.app.pulled_child_results.contains(&worker_id),
+        "child result from plain-shell spawner must be marked delivered"
+    );
+
+    let list_reply = temp_response(dir.path(), "list-panes-after-done");
+    h.inject_ipc(AppRequest::ListPanes {
+        context_id: None,
+        response_file: list_reply.clone(),
+    });
+    h.hidden_frame();
+    let list_json = read_json_response(&list_reply);
+    let panes = list_json.as_array().expect("panes array");
+    let human_entry = panes
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(human_shell_id))
+        .expect("human shell entry in list_panes");
+    assert_eq!(human_entry["pending_child_results_count"], 0);
+
+    let tree_text = crate::cli::pane::format_pane_tree(panes, false);
+    assert!(
+        !tree_text.contains("result waiting") && !tree_text.contains("results waiting"),
+        "pane tree must not show 'result waiting' on plain-shell spawner: {tree_text}"
+    );
+
+    let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+    assert!(
+        view.tasks
+            .iter()
+            .flat_map(|t| &t.rows)
+            .all(|r| r.pending_child_results_count == 0),
+        "agents_view must not show pending child results badge for plain-shell spawner"
+    );
+
+    // Also verify that when an agent parent HAS a queued child result, viewing it
+    // via PaneResultRead clears the pending_child_results count and badge.
+    let agent_parent_id = h.add_focused_terminal();
+    {
+        let term = h.app.windows[0]
+            .panes
+            .get_mut(&agent_parent_id)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("agent parent terminal");
+        term.agent_role = Some("lead".into());
+        term.agent_harness = Some("claude".into());
+        term.pending_child_results
+            .push(crate::workspace::QueuedChildResult {
+                child_pane_id: worker_id,
+                child_agent: "helper".into(),
+                status: "completed".into(),
+                summary: Some("helper finished".into()),
+                result_json: r#"{"ok":true}"#.into(),
+                finished_at_epoch_secs: 1,
+            });
+    }
+    let read_reply = temp_response(dir.path(), "read-worker-result");
+    h.inject_ipc(AppRequest::PaneResultRead {
+        pane_id: worker_id,
+        wait: false,
+        timeout_secs: 0.0,
+        response_file: read_reply.clone(),
+    });
+    h.hidden_frame();
+    let agent_parent_term = h.app.windows[0].panes[&agent_parent_id]
+        .as_terminal()
+        .expect("agent parent terminal");
+    assert!(
+        agent_parent_term.pending_child_results.is_empty(),
+        "viewing result via PaneResultRead must clear pending_child_results on parent"
+    );
 }
 
 #[test]
