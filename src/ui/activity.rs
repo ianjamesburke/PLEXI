@@ -327,11 +327,7 @@ pub fn paint_attention_chrome(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "NEEDS YOU",
-            crate::ui::theme::font_medium(
-                (crate::ui::style::TEXT_TITLE_XL * 1.5)
-                    .min(rect.width() / 6.5)
-                    .min(rect.height() / 3.0),
-            ),
+            crate::ui::theme::font_medium((crate::ui::style::TEXT_TITLE_XL * 1.5).min(rect.width() / 6.5).min(rect.height() / 3.0)),
             color.gamma_multiply(0.35 * visual.alpha),
         );
         if visual.animate && time - entered < 0.3 {
@@ -350,47 +346,18 @@ mod tests {
         let ctx = egui::Context::default();
         let frame = |time, state: &AgentState, reduced| {
             set_attention(&ctx, Default::default(), reduced);
-            let output = ctx.run_ui(
-                egui::RawInput {
-                    time: Some(time),
-                    ..Default::default()
-                },
-                |ui| {
-                    paint_pip(
-                        ui.painter(),
-                        egui::pos2(30.0, 30.0),
-                        4.0,
-                        Some(state),
-                        egui::Color32::WHITE,
-                        false,
-                    );
-                },
-            );
+            let output = ctx.run_ui(egui::RawInput { time:Some(time),..Default::default() }, |ui| {
+                paint_pip(ui.painter(),egui::pos2(30.0,30.0),4.0,Some(state),egui::Color32::WHITE,false);
+            });
             output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
         };
-        for n in 0..4 {
-            frame(n as f64, &AgentState::NeedsYou, false);
-        }
-        let delay = frame(4.0, &AgentState::NeedsYou, false);
-        assert!(
-            delay >= std::time::Duration::from_millis(99)
-                && delay < std::time::Duration::from_millis(200),
-            "{delay:?}"
-        );
-        for n in 5..9 {
-            frame(n as f64, &AgentState::Working, false);
-        }
-        assert_eq!(
-            frame(9.0, &AgentState::Working, false),
-            std::time::Duration::MAX
-        );
-        for n in 10..14 {
-            frame(n as f64, &AgentState::NeedsYou, true);
-        }
-        assert_eq!(
-            frame(14.0, &AgentState::NeedsYou, true),
-            std::time::Duration::MAX
-        );
+        for n in 0..4 { frame(n as f64, &AgentState::NeedsYou, false); }
+        let delay = frame(4.0,&AgentState::NeedsYou,false);
+        assert!(delay >= std::time::Duration::from_millis(99) && delay < std::time::Duration::from_millis(200), "{delay:?}");
+        for n in 5..9 { frame(n as f64,&AgentState::Working,false); }
+        assert_eq!(frame(9.0,&AgentState::Working,false),std::time::Duration::MAX);
+        for n in 10..14 { frame(n as f64,&AgentState::NeedsYou,true); }
+        assert_eq!(frame(14.0,&AgentState::NeedsYou,true),std::time::Duration::MAX);
     }
 
     #[test]

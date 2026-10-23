@@ -24,10 +24,7 @@ fn standby_session_line(
 ) -> String {
     match (
         crate::cli::AgentHarness::parse(&session.harness),
-        session
-            .session_id
-            .as_deref()
-            .filter(|id| !id.trim().is_empty()),
+        session.session_id.as_deref().filter(|id| !id.trim().is_empty()),
     ) {
         (Some(harness), Some(id))
             if cached_resume_command.is_some_and(|command| command != harness.adapter().binary) =>
@@ -645,10 +642,7 @@ impl Pane {
                     if let Some(ref mut standby) = t.standby_session {
                         standby.last_state = a.state.clone();
                         standby.last_detail = a.detail.clone();
-                        if a.session_id
-                            .as_deref()
-                            .is_some_and(|s| !s.trim().is_empty())
-                        {
+                        if a.session_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
                             standby.session_id = a.session_id.clone();
                         }
                     }
@@ -841,10 +835,7 @@ impl TerminalPane {
         mut settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
-        settings.env.insert(
-            super::process_cleanup::SESSION_ENV.into(),
-            super::process_cleanup::session_marker().into(),
-        );
+        settings.env.insert(super::process_cleanup::SESSION_ENV.into(), super::process_cleanup::session_marker().into());
         let ephemeral = settings
             .env
             .get("PLEXI_EPHEMERAL")
@@ -1033,11 +1024,10 @@ impl TerminalPane {
     /// any previously preserved `tail_preview`.
     pub fn capture_tail_preview(&self) -> Option<String> {
         if self.is_standby() {
-            return self.tail_preview.clone().or_else(|| {
-                self.standby_session
-                    .as_ref()
-                    .and_then(|s| s.tail_preview.clone())
-            });
+            return self
+                .tail_preview
+                .clone()
+                .or_else(|| self.standby_session.as_ref().and_then(|s| s.tail_preview.clone()));
         }
         let lines: Vec<String> = self
             .backend
@@ -1066,19 +1056,11 @@ impl TerminalPane {
         (!tail.is_empty()).then_some(tail)
     }
 
-    fn update_fleet_transition(
-        &mut self,
-        previous: Option<&crate::protocol::AgentState>,
-        next: Option<&crate::protocol::AgentState>,
-    ) {
+    fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
         use crate::protocol::AgentState;
-        if previous == next {
-            return;
-        }
+        if previous == next { return; }
         self.fleet_since = crate::platform::clock::now_secs();
-        if next == Some(&AgentState::Completed)
-            || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle))
-        {
+        if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
             self.fleet_done_unseen = true;
             self.fleet_seen = false;
             self.fleet_dismissed = false;
@@ -1094,21 +1076,9 @@ impl TerminalPane {
 
     pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            now,
-        )
-        .map(|a| a.state.clone());
+        let before = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
         self.observed_agent = observed;
-        let after = select_terminal_agent(
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            now,
-        )
-        .map(|a| a.state.clone());
+        let after = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
@@ -1340,10 +1310,7 @@ mod agent_source_tests {
     use crate::protocol::{AgentState, PaneAgentState};
     use std::time::{Duration, Instant};
 
-    fn saved_session(
-        harness: &str,
-        session_id: Option<&str>,
-    ) -> crate::workspace::SavedAgentSession {
+    fn saved_session(harness: &str, session_id: Option<&str>) -> crate::workspace::SavedAgentSession {
         crate::workspace::SavedAgentSession {
             fleet_result: None,
             fleet_seen: false,

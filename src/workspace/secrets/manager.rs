@@ -154,10 +154,8 @@ fn inventory_for_scope(
             if let (SecretTarget::Workspace { root, .. }, Some(pane_root)) = (&target, pane_root) {
                 if !crate::platform::path::canonical_or_self(root).starts_with(pane_root) {
                     skipped.push(SkippedSecrets::OutsidePaneContext {
-                        scope: "workspace".into(),
-                        path: root.clone(),
-                        pane_context_root: pane_root.to_path_buf(),
-                        pane_context_name: None,
+                        scope: "workspace".into(), path: root.clone(),
+                        pane_context_root: pane_root.to_path_buf(), pane_context_name: None,
                     });
                 } else {
                     targets.push(target);

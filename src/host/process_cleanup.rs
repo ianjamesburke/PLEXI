@@ -2,9 +2,9 @@
 //! recorded root pid is also its process-group id. The host marker follows
 //! children across nohup, setsid and reparenting; it is never inherited by a
 //! host launched through `plexi host start`.
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use std::path::Path;
 #[cfg(unix)]
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -34,10 +34,7 @@ const SESSION_RECORD: &str = "pane-session";
 /// selecting another host's panes.
 pub(crate) fn record_session_marker(profile: &Path) {
     let path = profile.join(SESSION_RECORD);
-    if let Err(error) = std::fs::write(
-        &path,
-        format!("{}\n{}\n", std::process::id(), session_marker()),
-    ) {
+    if let Err(error) = std::fs::write(&path, format!("{}\n{}\n", std::process::id(), session_marker())) {
         log::warn!("quit: could not record pane session marker at {path:?}: {error}");
     }
 }
@@ -152,15 +149,14 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     let tmux_start = Instant::now();
     stop_marked_tmux_sessions(tmux, marker, deadline);
     report.tmux = tmux_start.elapsed();
-    KillReport { grace, ..report }
+    KillReport {
+        grace,
+        ..report
+    }
 }
 
 // Shutdown helpers must not let an unresponsive tmux server stall host exit.
-fn quit_helper(
-    program: &str,
-    args: &[&str],
-    deadline: Instant,
-) -> std::io::Result<std::process::Output> {
+fn quit_helper(program: &str, args: &[&str], deadline: Instant) -> std::io::Result<std::process::Output> {
     if Instant::now() >= deadline {
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -209,8 +205,7 @@ fn stop_marked_tmux_sessions(tmux: &str, marker: &str, deadline: Instant) {
             break;
         }
         let env = match quit_helper(
-            tmux,
-            &["show-environment", "-t", session, SESSION_ENV],
+            tmux, &["show-environment", "-t", session, SESSION_ENV],
             deadline,
         ) {
             Ok(output) => output,
@@ -473,10 +468,7 @@ mod tests {
         // Signals sent before the shell installs its trap would just kill it.
         let ready_deadline = Instant::now() + Duration::from_secs(10);
         while !ready.exists() {
-            assert!(
-                Instant::now() < ready_deadline,
-                "fixture never became ready"
-            );
+            assert!(Instant::now() < ready_deadline, "fixture never became ready");
             std::thread::sleep(Duration::from_millis(5));
         }
         let registration = PaneProcessGroup::record_for(child.0.id(), &marker);
@@ -681,7 +673,10 @@ mod tests {
             let evidence = std::path::PathBuf::from(
                 std::env::var(EVIDENCE_ENV).expect("fixture evidence path"),
             );
-            let env = crate::cli::host::restart_coordinator_env(std::env::vars().collect(), None);
+            let env = crate::cli::host::restart_coordinator_env(
+                std::env::vars().collect(),
+                None,
+            );
             let mut command = std::process::Command::new("/bin/sleep");
             command
                 .arg("600")
@@ -734,10 +729,7 @@ mod tests {
                     break pid;
                 }
             }
-            assert!(
-                Instant::now() < deadline,
-                "coordinator fixture did not start"
-            );
+            assert!(Instant::now() < deadline, "coordinator fixture did not start");
             std::thread::sleep(Duration::from_millis(10));
         };
         let report = stop_marked_processes(
@@ -745,10 +737,7 @@ mod tests {
             Duration::from_millis(20),
             Instant::now() + Duration::from_secs(1),
         );
-        assert!(
-            report.groups >= 1,
-            "marked parent was not selected: {report:?}"
-        );
+        assert!(report.groups >= 1, "marked parent was not selected: {report:?}");
         match parent.wait() {
             Ok(status) => assert!(!status.success()),
             // The parallel test binary can reap a fixture that its marker
@@ -763,7 +752,8 @@ mod tests {
         let parent_result = unsafe { libc::kill(parent_pid, 0) };
         let parent_error = std::io::Error::last_os_error();
         assert_eq!(
-            parent_result, -1,
+            parent_result,
+            -1,
             "marked parent pid {parent_pid} remained after marker sweep"
         );
         assert_eq!(

@@ -54,9 +54,9 @@ mod keychain_prompt_guard {
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
+use crate::protocol::AppRequest;
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{AppPane, AppRuntime, Pane};
-use crate::protocol::AppRequest;
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
@@ -148,7 +148,10 @@ pub(crate) fn reserve_test_context_id() -> u64 {
 /// private per-user dir there.
 #[cfg(test)]
 pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("plexi-scratch-{label}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "plexi-scratch-{label}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -903,8 +906,6 @@ impl HostHarness {
 }
 
 #[cfg(test)]
-mod agent_security_tests;
-#[cfg(test)]
 mod cargo_lease;
 #[cfg(test)]
 mod daw_gate;
@@ -912,6 +913,8 @@ mod daw_gate;
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
+#[cfg(test)]
+mod agent_security_tests;
 #[cfg(test)]
 mod permission_gate_tests;
 

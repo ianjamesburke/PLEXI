@@ -60,10 +60,7 @@ impl LogExcerpt {
         let mut parts = vec![format!("Covers {}", self.covers)];
         parts.push(format!("source: {}", self.sources.join(", ")));
         if self.correlated_lines > 0 {
-            parts.push(format!(
-                "{} line(s) mention this issue",
-                self.correlated_lines
-            ));
+            parts.push(format!("{} line(s) mention this issue", self.correlated_lines));
         }
         if self.partial {
             parts.push("partial: session start could not be established".to_string());
@@ -283,7 +280,9 @@ pub fn prepare_excerpt(
         }
         header.push_str("Redacted: credential-like values replaced with [redacted]\n");
         if withheld > 0 {
-            header.push_str(&format!("Withheld: {withheld} agent transcript line(s)\n"));
+            header.push_str(&format!(
+                "Withheld: {withheld} agent transcript line(s)\n"
+            ));
         }
         header.push_str("---\n");
         header
@@ -357,14 +356,8 @@ mod tests {
              continuation line\n\
              [2026-10-16 03:05:00] [WARN] [a] ny_abc failed\n",
         );
-        let ex = prepare_excerpt(
-            &path,
-            Some(at("2026-10-16 02:59:00")),
-            "ny_abc",
-            4096,
-            65536,
-        )
-        .unwrap();
+        let ex = prepare_excerpt(&path, Some(at("2026-10-16 02:59:00")), "ny_abc", 4096, 65536)
+            .unwrap();
         assert!(!ex.clipboard_text.contains("old session"));
         assert!(ex.clipboard_text.contains("continuation line"));
         assert!(ex.clipboard_text.contains("Issue: ny_abc"));
@@ -387,19 +380,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut body = String::from("[2026-10-16 03:00:00] [WARN] [a] ny_key early failure\n");
         for i in 0..400 {
-            body.push_str(&format!(
-                "[2026-10-16 03:01:00] [INFO] [a] filler line {i}\n"
-            ));
+            body.push_str(&format!("[2026-10-16 03:01:00] [INFO] [a] filler line {i}\n"));
         }
         let path = write_log(dir.path(), &body);
-        let ex = prepare_excerpt(
-            &path,
-            Some(at("2026-10-16 02:00:00")),
-            "ny_key",
-            2048,
-            1 << 20,
-        )
-        .unwrap();
+        let ex = prepare_excerpt(&path, Some(at("2026-10-16 02:00:00")), "ny_key", 2048, 1 << 20)
+            .unwrap();
         assert!(ex.clipboard_truncated);
         assert!(ex.clipboard_text.contains("ny_key early failure"));
         assert!(ex.clipboard_text.contains("omitted"));
@@ -423,7 +408,8 @@ mod tests {
     #[test]
     fn missing_log_is_a_visible_error() {
         let dir = tempfile::tempdir().unwrap();
-        let error = prepare_excerpt(&dir.path().join("nope.log"), None, "x", 10, 10).unwrap_err();
+        let error =
+            prepare_excerpt(&dir.path().join("nope.log"), None, "x", 10, 10).unwrap_err();
         assert!(error.contains("could not open"));
     }
 

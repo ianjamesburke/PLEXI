@@ -585,7 +585,10 @@ pub fn build_agent_start_command(
             } else {
                 format!("# Persona\n{persona}\n\n{contract}")
             };
-            (Some(dev_instructions), initial_message.map(str::to_string))
+            (
+                Some(dev_instructions),
+                initial_message.map(str::to_string),
+            )
         }
         AgentHarness::Agy => {
             let full_prompt = match (persona.is_empty(), initial_message) {
@@ -600,10 +603,7 @@ pub fn build_agent_start_command(
     };
     let flags_summary = adapter.start_flags_summary(
         harness_cfg.model.as_deref(),
-        append_prompt
-            .as_deref()
-            .and_then(non_empty_string)
-            .is_some(),
+        append_prompt.as_deref().and_then(non_empty_string).is_some(),
         effective_message.is_some(),
         &harness_cfg.extensions,
     );
@@ -1225,7 +1225,8 @@ pub fn resolve_agent_spawn_in_stopping_at(
 ) -> Result<serde_json::Value, String> {
     let workspace_root =
         crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
-    let (def, _) = resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
+    let (def, _) =
+        resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
     let Some(ref harness_cfg) = def.harness else {
         return Err(format!(
             "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be started as a CLI harness session)",
@@ -1242,9 +1243,7 @@ pub fn resolve_agent_spawn_in_stopping_at(
             crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
         })
         .unwrap_or_else(|| start_cwd.to_path_buf());
-    let task_text = task_or_message
-        .and_then(non_empty_string)
-        .unwrap_or_default();
+    let task_text = task_or_message.and_then(non_empty_string).unwrap_or_default();
     let effective_ephemeral = match ephemeral_override {
         Some(explicit) => explicit,
         None => harness_cfg.ephemeral,
@@ -1460,10 +1459,7 @@ pub fn agent_wait_cli(pane_ids: &[u64], timeout_secs: f64, json: bool) -> i32 {
             for r in results {
                 let pid = r.get("pane_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let agent = r.get("agent").and_then(|v| v.as_str()).unwrap_or("agent");
-                let status = r
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("completed");
+                let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("completed");
                 let summary = r.get("summary").and_then(|v| v.as_str()).unwrap_or("");
                 if summary.is_empty() {
                     println!("#{pid} {agent} [{status}]");
@@ -2045,11 +2041,7 @@ pub(crate) fn map_hook_payload(input: &serde_json::Value) -> Option<HookReport> 
     };
     Some(HookReport {
         state,
-        detail: if with_tool {
-            hook_tool_detail(input)
-        } else {
-            None
-        },
+        detail: if with_tool { hook_tool_detail(input) } else { None },
         session_id: hook_str(input, &[&["session_id"], &["sessionId"]]).map(str::to_string),
         event: event.to_string(),
     })
@@ -2107,7 +2099,8 @@ fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
         return Ok(());
     }
     let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let mut staged = tempfile::NamedTempFile::new_in(dir)
         .map_err(|e| format!("could not stage {}: {e}", path.display()))?;
     std::io::Write::write_all(&mut staged, content.as_bytes())
@@ -2145,18 +2138,16 @@ pub fn with_auto_state_hooks(adapter: &HarnessAdapter, command: String) -> Strin
         }
         AgentHarness::Pi => {
             let path = hooks_dir.join(PLEXI_PI_EXTENSION);
-            write_if_changed(&path, &pi_extension_script())
-                .map(|_| vec!["-e".to_string(), shell_quote_arg(&path.to_string_lossy())])
+            write_if_changed(&path, &pi_extension_script()).map(|_| {
+                vec!["-e".to_string(), shell_quote_arg(&path.to_string_lossy())]
+            })
         }
         _ => return command,
     };
     match result {
         Ok(flags) => insert_after_binary(&command, adapter.binary, &flags),
         Err(e) => {
-            log::warn!(
-                "agent_hook: auto-provision for {} failed: {e}",
-                adapter.binary
-            );
+            log::warn!("agent_hook: auto-provision for {} failed: {e}", adapter.binary);
             command
         }
     }
@@ -2702,14 +2693,9 @@ mod agent_tests {
         let report = |v: serde_json::Value| super::map_hook_payload(&v);
         let r = report(serde_json::json!({"hook_event_name": "SessionStart", "session_id": "s1"}))
             .unwrap();
+        assert_eq!((r.state, r.session_id.as_deref(), r.event.as_str()), ("idle", Some("s1"), "SessionStart"));
         assert_eq!(
-            (r.state, r.session_id.as_deref(), r.event.as_str()),
-            ("idle", Some("s1"), "SessionStart")
-        );
-        assert_eq!(
-            report(serde_json::json!({"hook_event_name": "UserPromptSubmit"}))
-                .unwrap()
-                .state,
+            report(serde_json::json!({"hook_event_name": "UserPromptSubmit"})).unwrap().state,
             "working"
         );
         let r = report(serde_json::json!({
@@ -2717,40 +2703,26 @@ mod agent_tests {
             "tool_input": {"command": "cargo test --lib"}
         }))
         .unwrap();
-        assert_eq!(
-            (r.state, r.detail.as_deref()),
-            ("working", Some("Bash: cargo test --lib"))
-        );
+        assert_eq!((r.state, r.detail.as_deref()), ("working", Some("Bash: cargo test --lib")));
         let r = report(serde_json::json!({
             "hook_event_name": "PermissionRequest", "tool_name": "Edit",
             "tool_input": {"file_path": "/repo/src/main.rs"}
         }))
         .unwrap();
-        assert_eq!(
-            (r.state, r.detail.as_deref()),
-            ("blocked", Some("Edit: main.rs"))
-        );
+        assert_eq!((r.state, r.detail.as_deref()), ("blocked", Some("Edit: main.rs")));
         // Stop, StopFailure and SessionEnd keep distinct raw provenance.
         let events: Vec<_> = ["Stop", "StopFailure", "SessionEnd"]
             .iter()
             .map(|e| report(serde_json::json!({"hook_event_name": e, "sessionId": "s2"})).unwrap())
             .collect();
-        assert!(events
-            .iter()
-            .all(|r| r.state == "idle" && r.session_id.as_deref() == Some("s2")));
+        assert!(events.iter().all(|r| r.state == "idle" && r.session_id.as_deref() == Some("s2")));
         assert_eq!(
             events.iter().map(|r| r.event.as_str()).collect::<Vec<_>>(),
             ["Stop", "StopFailure", "SessionEnd"]
         );
         // Pi event names and tool-name-only events.
-        assert_eq!(
-            report(serde_json::json!({"hook_event_name": "agent_end"}))
-                .unwrap()
-                .state,
-            "idle"
-        );
-        let r = report(serde_json::json!({"hook_event_name": "tool_call", "toolName": "mcp_x"}))
-            .unwrap();
+        assert_eq!(report(serde_json::json!({"hook_event_name": "agent_end"})).unwrap().state, "idle");
+        let r = report(serde_json::json!({"hook_event_name": "tool_call", "toolName": "mcp_x"})).unwrap();
         assert_eq!(r.detail.as_deref(), Some("mcp_x"));
         // Stateless and unknown events are ignored.
         assert!(report(serde_json::json!({"hook_event_name": "SubagentStart"})).is_none());
@@ -2788,24 +2760,14 @@ mod agent_tests {
         let shared = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_shared_dir(shared.path().to_path_buf());
         let hooks = shared.path().join("hooks");
-        let adapter = |h| {
-            super::HARNESS_ADAPTERS
-                .iter()
-                .find(|a| a.harness == h)
-                .unwrap()
-        };
+        let adapter = |h| super::HARNESS_ADAPTERS.iter().find(|a| a.harness == h).unwrap();
 
         let claude = adapter(super::AgentHarness::Claude);
         let cmd = super::with_auto_state_hooks(claude, "claude --model x 'task'".to_string());
         let settings_path = hooks.join("plexi-claude-settings.json");
         assert!(
-            cmd.starts_with(&format!(
-                "claude --settings '{}' --model x",
-                settings_path.display()
-            )) || cmd.starts_with(&format!(
-                "claude --settings {} --model x",
-                settings_path.display()
-            )),
+            cmd.starts_with(&format!("claude --settings '{}' --model x", settings_path.display()))
+                || cmd.starts_with(&format!("claude --settings {} --model x", settings_path.display())),
             "{cmd}"
         );
         let settings: serde_json::Value =
@@ -2818,25 +2780,16 @@ mod agent_tests {
         }
 
         let pi = adapter(super::AgentHarness::Pi);
-        let cmd =
-            super::with_auto_state_hooks(pi, "pi --no-extensions --no-mcp 'task'".to_string());
+        let cmd = super::with_auto_state_hooks(pi, "pi --no-extensions --no-mcp 'task'".to_string());
         let ext = hooks.join("plexi-agent-state.ts");
-        assert!(
-            cmd.contains("--no-extensions") && cmd.contains("-e "),
-            "{cmd}"
-        );
+        assert!(cmd.contains("--no-extensions") && cmd.contains("-e "), "{cmd}");
         assert!(cmd.contains(&ext.to_string_lossy().to_string()), "{cmd}");
         assert!(cmd.starts_with("pi -e "), "{cmd}");
-        assert!(super::is_plexi_pi_extension(
-            &fs::read_to_string(&ext).unwrap()
-        ));
+        assert!(super::is_plexi_pi_extension(&fs::read_to_string(&ext).unwrap()));
 
         // Other harnesses are untouched, and provisioning is idempotent.
         let codex = adapter(super::AgentHarness::Codex);
-        assert_eq!(
-            super::with_auto_state_hooks(codex, "codex 'x'".to_string()),
-            "codex 'x'"
-        );
+        assert_eq!(super::with_auto_state_hooks(codex, "codex 'x'".to_string()), "codex 'x'");
         let again = super::with_auto_state_hooks(pi, "pi --no-extensions 'task'".to_string());
         assert!(again.starts_with("pi -e "));
     }
@@ -3087,14 +3040,20 @@ mod agent_tests {
         // 1. Unknown user extension is preserved and never overwritten or removed.
         let custom_content = "// User-authored custom extension\nexport default function() {}\n";
         fs::write(&ext_path, custom_content).unwrap();
-        assert_eq!(super::install_pi_extension_at(&ext_path), 1);
+        assert_eq!(
+            super::install_pi_extension_at(&ext_path),
+            1
+        );
         assert!(super::migrate_legacy_pi_extension_at(&ext_path).is_err());
         assert_eq!(fs::read_to_string(&ext_path).unwrap(), custom_content);
         assert!(!bak_path.exists());
 
         // 2. Legacy Plexi-generated extension is recognized, backed up to .plexi-hook.bak, and removed on migration.
         fs::remove_file(&ext_path).unwrap();
-        assert_eq!(super::install_pi_extension_at(&ext_path), 0);
+        assert_eq!(
+            super::install_pi_extension_at(&ext_path),
+            0
+        );
         let generated = fs::read_to_string(&ext_path).unwrap();
         assert!(super::is_plexi_pi_extension(&generated));
         assert!(generated.contains("__PLEXI_PI_PACKAGE_ACTIVE__"));
@@ -3108,36 +3067,17 @@ mod agent_tests {
 
     #[test]
     fn supervised_worker_reports_nonzero_and_clean_exit_without_completion() {
-        for (command, code) in [
-            ("exit 1", 1),
-            ("true", 0),
-            ("printf 'output\\n'; exit 7", 7),
-        ] {
+        for (command, code) in [("exit 1", 1), ("true", 0), ("printf 'output\\n'; exit 7", 7)] {
             let wrapped = super::supervised_worker_command(command, "printf '%s\\n'", "script");
-            let output = std::process::Command::new("/bin/sh")
-                .args(["-c", &wrapped])
-                .output()
-                .unwrap();
+            let output = std::process::Command::new("/bin/sh").args(["-c", &wrapped]).output().unwrap();
             assert!(output.status.success());
             let text = String::from_utf8(output.stdout).unwrap();
             assert!(text.contains("HarnessExit"), "{text}");
-            assert!(
-                text.contains(&format!(
-                    "harness exited with code {code} without agent done"
-                )),
-                "{text}"
-            );
+            assert!(text.contains(&format!("harness exited with code {code} without agent done")), "{text}");
             let args: Vec<_> = text.lines().collect();
             assert!(
                 args.windows(2).any(|pair| {
-                    pair == [
-                        "--state",
-                        if code == 0 {
-                            "exited_unreported"
-                        } else {
-                            "failed"
-                        },
-                    ]
+                    pair == ["--state", if code == 0 { "exited_unreported" } else { "failed" }]
                 }),
                 "{text}"
             );
@@ -3151,17 +3091,10 @@ mod agent_tests {
         let command = adapter.spawn_command("submit a ballot", None, None);
         // A shell function records the exact argv delivered in the non-git cwd.
         let probe = format!("codex() {{ printf '%s\\n' \"$@\"; }}; {command}");
-        let output = std::process::Command::new("/bin/sh")
-            .args(["-c", &probe])
-            .current_dir(cwd.path())
-            .output()
-            .unwrap();
+        let output = std::process::Command::new("/bin/sh").args(["-c", &probe]).current_dir(cwd.path()).output().unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\nsubmit a ballot\n");
-        assert_eq!(
-            adapter.spawn_flags_summary(None, false, &[]),
-            "--sandbox workspace-write -c sandbox_workspace_write.network_access=true"
-        );
+        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "--sandbox workspace-write -c sandbox_workspace_write.network_access=true");
         assert!(!command.contains("--dangerously"));
         assert!(!command.contains("writable_roots"));
         assert!(!command.contains("--add-dir"));
@@ -3674,10 +3607,7 @@ mod agent_tests {
             ),
             "unexpected pi start command: {pi_cmd}"
         );
-        assert!(
-            !pi_cmd.contains(" -p"),
-            "interactive pi start must not pass -p: {pi_cmd}"
-        );
+        assert!(!pi_cmd.contains(" -p"), "interactive pi start must not pass -p: {pi_cmd}");
         assert!(pi_cmd.contains("You are a fast codebase researcher."));
         assert!(pi_cmd.contains("# Plexi worker contract"));
 
@@ -3715,10 +3645,7 @@ mod agent_tests {
             ),
             "unexpected codex start command: {codex_cmd}"
         );
-        assert!(
-            !codex_cmd.contains(" exec "),
-            "interactive codex start must not pass exec: {codex_cmd}"
-        );
+        assert!(!codex_cmd.contains(" exec "), "interactive codex start must not pass exec: {codex_cmd}");
         assert!(codex_cmd.contains("developer_instructions=# Persona\nYou are a fast codebase researcher.\n\n# Plexi worker contract"));
         assert!(codex_cmd.ends_with("'Run checks'"));
 
@@ -3959,16 +3886,18 @@ pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 
     0
 }
 
-pub fn agent_fleet_dismiss_cli(target: Option<&str>, all_failed: bool, json: bool) -> i32 {
+pub fn agent_fleet_dismiss_cli(
+    target: Option<&str>,
+    all_failed: bool,
+    json: bool,
+) -> i32 {
     let parsed_target = match target {
         Some(raw) => {
             let trimmed = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
             match trimmed.parse::<u64>() {
                 Ok(id) => Some(id),
                 Err(_) => {
-                    eprintln!(
-                        "error: invalid pane id '{raw}' (expected a numeric id like 215 or #215)"
-                    );
+                    eprintln!("error: invalid pane id '{raw}' (expected a numeric id like 215 or #215)");
                     return 1;
                 }
             }
@@ -4074,19 +4003,9 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         }
     };
     match &mut request {
-        crate::protocol::AppRequest::AgentCall {
-            parent_pane_id,
-            call_credential,
-            ..
-        }
-        | crate::protocol::AppRequest::AgentMessage {
-            parent_pane_id,
-            call_credential,
-            ..
-        } => {
-            *parent_pane_id = std::env::var("PLEXI_PANE_ID")
-                .ok()
-                .and_then(|s| s.parse().ok());
+        crate::protocol::AppRequest::AgentCall { parent_pane_id, call_credential, .. }
+        | crate::protocol::AppRequest::AgentMessage { parent_pane_id, call_credential, .. } => {
+            *parent_pane_id = std::env::var("PLEXI_PANE_ID").ok().and_then(|s| s.parse().ok());
             *call_credential = std::env::var("PLEXI_CALL_CREDENTIAL").ok();
         }
         _ => {
@@ -4095,17 +4014,11 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         }
     }
     if let crate::protocol::AppRequest::AgentCall { cwd, .. } = &mut request {
-        *cwd = std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned());
+        *cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
     }
-    let timeout = if matches!(
-        request,
-        crate::protocol::AppRequest::AgentCall {
-            asynchronous: false,
-            handoff: false,
-            ..
-        } | crate::protocol::AppRequest::AgentMessage { wait: true, .. }
+    let timeout = if matches!(request,
+        crate::protocol::AppRequest::AgentCall { asynchronous: false, handoff: false, .. }
+        | crate::protocol::AppRequest::AgentMessage { wait: true, .. }
     ) {
         std::time::Duration::from_secs(86405)
     } else {
@@ -4123,11 +4036,7 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         Err(code) => return code,
     };
     println!("{reply}");
-    if super::reply_error(&reply).is_some() {
-        1
-    } else {
-        0
-    }
+    if super::reply_error(&reply).is_some() { 1 } else { 0 }
 }
 
 fn is_safe_result_dir_key(key: &str) -> bool {
@@ -4251,12 +4160,14 @@ pub fn persist_agent_done_result(
     }
 
     for base in &bases {
-        std::fs::create_dir_all(base).map_err(|e| format!("create {}: {e}", base.display()))?;
+        std::fs::create_dir_all(base)
+            .map_err(|e| format!("create {}: {e}", base.display()))?;
         let _ = std::fs::write(base.join("latest.json"), &json_bytes);
         let _ = std::fs::write(base.join("RESULT.md"), &markdown);
         for key in &keys {
             let dir = base.join(key);
-            std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("create {}: {e}", dir.display()))?;
             let md_path = dir.join("RESULT.md");
             let js_path = dir.join("result.json");
             std::fs::write(&md_path, &markdown)
@@ -4425,10 +4336,7 @@ pub fn read_persisted_agent_result_in(
             map.entry("summary".to_string())
                 .or_insert_with(|| serde_json::Value::String(summary.to_string()));
             map.insert("result".to_string(), committed.clone());
-            map.insert(
-                "markdown".to_string(),
-                serde_json::Value::String(md.clone()),
-            );
+            map.insert("markdown".to_string(), serde_json::Value::String(md.clone()));
             map.insert(
                 "result_path".to_string(),
                 serde_json::Value::String(md_path.to_string_lossy().into_owned()),

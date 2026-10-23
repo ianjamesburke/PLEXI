@@ -836,23 +836,15 @@ pub(super) fn migrate_linux_file_store(destination: &dyn SecretStore) {
         }
         for (account, value) in &entries {
             if let Err(err) = destination.set(account, value) {
-                log::error!(
-                    "workspace_secrets: legacy Linux migration failed for account={account}: {err}"
-                );
+                log::error!("workspace_secrets: legacy Linux migration failed for account={account}: {err}");
                 return;
             }
         }
         if let Err(err) = std::fs::remove_file(&path) {
-            log::error!(
-                "workspace_secrets: migrated legacy Linux secrets but could not remove {}: {err}",
-                path.display()
-            );
+            log::error!("workspace_secrets: migrated legacy Linux secrets but could not remove {}: {err}", path.display());
             return;
         }
-        log::info!(
-            "workspace_secrets: migrated {} Linux secret(s) from plaintext storage",
-            entries.len()
-        );
+        log::info!("workspace_secrets: migrated {} Linux secret(s) from plaintext storage", entries.len());
     });
 }
 

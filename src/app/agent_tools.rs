@@ -221,8 +221,7 @@ impl PlexiApp {
             if let Some(old) = parent {
                 // Preserve the successor reference as the caller's validated completion.
                 let result = handoff_result.ok_or("missing prepared handoff completion")?;
-                self.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone {
-                    peer_ancestry: None,
+                self.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
                     pane_id: old,
                     result: Some(result),
                     summary: Some(format!("Handed off to {}", def.id)),
@@ -531,8 +530,7 @@ mod tests {
                     process.try_wait().unwrap().is_none(),
                     "--wait returned before child outcome"
                 );
-                h.inject_ipc(crate::protocol::AppRequest::AgentAsk {
-                    peer_ancestry: None,
+                h.inject_ipc(crate::protocol::AppRequest::AgentAsk { peer_ancestry: None,
                     pane_id: child,
                     question: "Need anything else?".into(),
                     response_file: root.join("ask.json").to_string_lossy().into_owned(),
@@ -794,8 +792,7 @@ mod tests {
         h.app
             .park_agent_tool_wait(child, call_reply.to_str().unwrap());
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
-            peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
             pane_id: child,
             result: Some("{\"wrong\":1}".into()),
             summary: None,
@@ -804,8 +801,7 @@ mod tests {
         h.hidden_frame();
         assert_eq!(read(&done_reply)["error_code"], "invalid_result");
         assert!(!call_reply.exists());
-        h.inject_ipc(crate::protocol::AppRequest::AgentAsk {
-            peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentAsk { peer_ancestry: None,
             pane_id: child,
             question: "Which branch?".into(),
             response_file: root.join("ask.json").to_string_lossy().into_owned(),
@@ -816,8 +812,7 @@ mod tests {
         let completion = root.join("completion.json");
         h.app
             .park_agent_tool_wait(child, completion.to_str().unwrap());
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
-            peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
             pane_id: child,
             result: Some("{\"ok\":true}".into()),
             summary: Some("Verified".into()),

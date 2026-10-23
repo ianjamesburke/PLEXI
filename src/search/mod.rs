@@ -752,10 +752,7 @@ fn score_text_target(pattern: &str, text: &str) -> Option<(i64, Vec<Range<usize>
             let pos_penalty = (start as i64) * 8;
             let score = tier_bonus + length_bonus + case_bonus - pos_penalty;
 
-            if best_contiguous
-                .as_ref()
-                .is_none_or(|(best, _)| score > *best)
-            {
+            if best_contiguous.as_ref().is_none_or(|(best, _)| score > *best) {
                 best_contiguous = Some((score, std::iter::once(byte_start..byte_end).collect()));
             }
         }
@@ -771,11 +768,7 @@ fn score_text_target(pattern: &str, text: &str) -> Option<(i64, Vec<Range<usize>
         let (pat_orig, pat_low) = pat_chars[0];
         let tc = text_chars[j];
         if tc.lower == pat_low {
-            let case_bonus = if has_upper && pat_orig == tc.ch {
-                50
-            } else {
-                0
-            };
+            let case_bonus = if has_upper && pat_orig == tc.ch { 50 } else { 0 };
             let start_penalty = (j as i64) * 4;
             dp[0][j] = 100 + tc.boundary_bonus + case_bonus - start_penalty;
         }
@@ -788,11 +781,7 @@ fn score_text_target(pattern: &str, text: &str) -> Option<(i64, Vec<Range<usize>
             if tc.lower != pat_low {
                 continue;
             }
-            let case_bonus = if has_upper && pat_orig == tc.ch {
-                50
-            } else {
-                0
-            };
+            let case_bonus = if has_upper && pat_orig == tc.ch { 50 } else { 0 };
             let mut best_prev = NEG_INF;
             let mut best_k = i - 1;
 
@@ -1019,9 +1008,7 @@ pub fn scan_str_for_query(content: &str, query: &str) -> Option<ContentMatch> {
 
     for (idx, raw_line) in content.lines().enumerate() {
         let line_no = idx + 1;
-        if let Some((byte_range, exact_case)) =
-            find_substring_in_line(raw_line, trimmed, &query_lower, has_upper)
-        {
+        if let Some((byte_range, exact_case)) = find_substring_in_line(raw_line, trimmed, &query_lower, has_upper) {
             total_matching_lines += 1;
             let replace = match &first_match {
                 None => true,
@@ -1036,9 +1023,10 @@ pub fn scan_str_for_query(content: &str, query: &str) -> Option<ContentMatch> {
     let (line_number, raw_line, raw_range, exact_case) = first_match?;
     let (line_preview, line_ranges) = build_line_preview(raw_line, raw_range);
     let additional_matches = total_matching_lines.saturating_sub(1);
-    let match_score =
-        3_200 + if exact_case { 250 } else { 0 } + ((additional_matches.min(10) as i64) * 40)
-            - ((line_number.min(500) as i64) * 2);
+    let match_score = 3_200
+        + if exact_case { 250 } else { 0 }
+        + ((additional_matches.min(10) as i64) * 40)
+        - ((line_number.min(500) as i64) * 2);
 
     Some(ContentMatch {
         line_number,
@@ -1117,14 +1105,8 @@ fn build_line_preview(raw_line: &str, match_range: Range<usize>) -> (String, Vec
     let leading_trimmed = raw_line.len() - trimmed_start.len();
     let trimmed = trimmed_start.trim_end();
 
-    let adj_start = match_range
-        .start
-        .saturating_sub(leading_trimmed)
-        .min(trimmed.len());
-    let adj_end = match_range
-        .end
-        .saturating_sub(leading_trimmed)
-        .min(trimmed.len());
+    let adj_start = match_range.start.saturating_sub(leading_trimmed).min(trimmed.len());
+    let adj_end = match_range.end.saturating_sub(leading_trimmed).min(trimmed.len());
 
     let char_count = trimmed.chars().count();
     if char_count <= MAX_PREVIEW_CHARS {
@@ -1138,7 +1120,10 @@ fn build_line_preview(raw_line: &str, match_range: Range<usize>) -> (String, Vec
 
     // Window around the match so the matched span stays visible in the preview.
     let chars: Vec<(usize, char)> = trimmed.char_indices().collect();
-    let match_char_idx = chars.iter().position(|(b, _)| *b >= adj_start).unwrap_or(0);
+    let match_char_idx = chars
+        .iter()
+        .position(|(b, _)| *b >= adj_start)
+        .unwrap_or(0);
     let half = MAX_PREVIEW_CHARS / 3;
     let win_start_char = match_char_idx.saturating_sub(half);
     let win_end_char = (win_start_char + MAX_PREVIEW_CHARS).min(chars.len());
@@ -1588,7 +1573,8 @@ fn search_worker_loop(
                     content: Some(snippet),
                 };
             } else if merged_hits.len() < MAX_SEARCH_HITS {
-                let score = content_match.match_score + recency_boost(entry.modified, now)
+                let score = content_match.match_score
+                    + recency_boost(entry.modified, now)
                     - ((entry.depth.min(20) as i64) * 15);
                 let idx = merged_hits.len();
                 existing_by_path.insert(entry.path.clone(), idx);
@@ -1905,11 +1891,7 @@ mod tests {
             "Overview\nThe QuantumFluxCapacitor lives here.\n",
         )
         .unwrap();
-        fs::write(
-            dir.path().join("nested/deep/binary.dat"),
-            b"\x00QuantumFluxCapacitor",
-        )
-        .unwrap();
+        fs::write(dir.path().join("nested/deep/binary.dat"), b"\x00QuantumFluxCapacitor").unwrap();
 
         let wake: Arc<dyn UiWake> = Arc::new(crate::app::ui_mailbox::RecordingWake::new());
         let mut session = SearchSession::new();

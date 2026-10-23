@@ -602,44 +602,44 @@ pub fn resolve_opt_pane_target(target: Option<&PaneTarget>) -> Result<Option<u64
     }
 }
 pub mod crawl;
-pub mod experiments;
 pub mod help;
 pub mod introspect;
-mod pane_caller;
-mod queued_spawn;
 pub mod registry;
 pub mod setup;
-pub mod skill_draft;
-pub mod skill_install;
+mod pane_caller;
+mod queued_spawn;
 #[cfg(test)]
 mod skill_surface;
+pub mod experiments;
+pub mod skill_install;
+pub mod trace;
+pub mod skill_draft;
 pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;
-pub mod trace;
 
 pub mod account;
+pub(crate) mod lease;
 pub mod agent;
 pub mod agents_api;
 pub mod ai;
 pub mod app;
 pub mod app_check;
-pub mod app_state;
 pub mod changes;
+pub mod app_state;
 pub mod completions;
 pub mod config_cli;
 pub mod context_cli;
-pub mod debug;
 pub mod demo;
 pub mod descriptor;
 pub mod doctor;
 pub mod events;
 pub mod host;
 pub mod install;
+pub mod debug;
+pub mod ledger;
 mod install_hint;
 pub mod install_host;
-pub(crate) mod lease;
-pub mod ledger;
 pub mod list;
 pub mod marketplace;
 pub mod notes;
@@ -706,9 +706,7 @@ pub(super) fn print_json_output(json_str: &str) -> i32 {
                         log::warn!("print_json_output: jq exited non-zero ({status}), falling back to serde");
                     }
                     Err(e) => {
-                        log::warn!(
-                            "print_json_output: jq wait failed ({e}), falling back to serde"
-                        );
+                        log::warn!("print_json_output: jq wait failed ({e}), falling back to serde");
                     }
                 }
             }
@@ -996,7 +994,10 @@ pub(super) fn command_socket_available() -> bool {
         .lock()
         .ok()
         .is_some_and(|g| g.is_some());
-    command_socket_available_from(has_override, std::env::var_os("PLEXI_SOCKET").is_some())
+    command_socket_available_from(
+        has_override,
+        std::env::var_os("PLEXI_SOCKET").is_some(),
+    )
 }
 
 /// Poll an RPC response file with the standard CLI error reporting: timeout
@@ -1532,9 +1533,7 @@ pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
     }
 }
 
-fn send_to_socket_connected(
-    payload: serde_json::Value,
-) -> Result<crate::platform::ipc::IpcStream, i32> {
+fn send_to_socket_connected(payload: serde_json::Value) -> Result<crate::platform::ipc::IpcStream, i32> {
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -1737,15 +1736,8 @@ mod transport_deadline_tests {
         let (server, _) = listener.accept().unwrap();
         let mut pid: libc::pid_t = 0;
         let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
-        let rc = unsafe {
-            libc::getsockopt(
-                server.as_raw_fd(),
-                libc::SOL_LOCAL,
-                libc::LOCAL_PEERPID,
-                &mut pid as *mut _ as *mut libc::c_void,
-                &mut len,
-            )
-        };
+        let rc = unsafe { libc::getsockopt(server.as_raw_fd(), libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID, &mut pid as *mut _ as *mut libc::c_void, &mut len) };
         assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
         assert_eq!(pid as u32, std::process::id());
         drop(client);
@@ -1897,11 +1889,9 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
 pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
-    agent_ask_cli, agent_create_cli, agent_done_cli, agent_fleet_cli, agent_fleet_dismiss_cli,
-    agent_history_cli, agent_hook_event_cli, agent_hook_install_cli, agent_hook_uninstall_cli,
-    agent_list_cli, agent_next_cli, agent_reopen_cli, agent_report_cli, agent_result_cli,
-    agent_show_cli, agent_spawn_cli, agent_start_cli, agent_status_cli, agent_tool_cli,
-    agent_wait_cli, AgentHarness,
+    agent_tool_cli, agent_ask_cli, agent_create_cli, agent_done_cli, agent_history_cli, agent_hook_install_cli,
+    agent_hook_event_cli, agent_hook_uninstall_cli, agent_list_cli, agent_reopen_cli, agent_report_cli, agent_result_cli, agent_show_cli,
+    agent_spawn_cli, agent_start_cli, agent_status_cli, agent_wait_cli, agent_next_cli, agent_fleet_cli, agent_fleet_dismiss_cli, AgentHarness,
 };
 pub use agents_api::{
     agent_team_dispatch, command_view_cancel_cli, command_view_cli, command_view_follow_cli,
@@ -1909,11 +1899,10 @@ pub use agents_api::{
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_adopt, app_call_cli, app_info, app_init, app_inspect_cli,
-    app_install_package, app_install_with_pin, app_list, app_package_cli, app_prune_cli,
-    app_render, app_test_cli, app_tools_cli, app_uninstall, app_update_cli,
-    assistant_permission_cli, assistant_send_cli, assistant_tool_cli, needs_you_api_cli,
-    needs_you_cli, InstallConfirm,
+    app_action_cli, app_adopt, app_call_cli, app_tools_cli, assistant_permission_cli,
+    assistant_send_cli, assistant_tool_cli, needs_you_api_cli, needs_you_cli, app_info, app_init,
+    app_inspect_cli, app_install_package, app_install_with_pin, app_list, app_package_cli,
+    app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
 pub use changes::{
@@ -1933,11 +1922,12 @@ pub use demo::demo_cli;
 pub use doctor::doctor_cli;
 pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
-    events_subscribe_cli, pane_lifecycle_follow_cli, pane_lifecycle_wait_cli, EmitArgs,
+    events_subscribe_cli, pane_lifecycle_wait_cli, pane_lifecycle_follow_cli, EmitArgs,
 };
 pub use host::{host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
-    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, self_update_cli,
+    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
+    self_update_cli,
 };
 pub use ledger::ledger_summary_cli;
 pub use list::{freeze_cli, parse_notify_choice};
@@ -1947,22 +1937,22 @@ pub use open::{
     app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
     parse_prefix, AgentBootRequest, OpenPrefix, PaneNewCliArgs,
 };
+pub use permissions::permissions_cli;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,
-    pane_message_recv_cli, pane_message_send_cli, pane_result_read_cli, pane_self_cli,
-    pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
-    pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli, pane_status_cli,
-    pane_tree_cli,
+    pane_message_recv_cli, pane_message_send_cli, pane_result_read_cli, 
+     pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
+    pane_slot_list_cli, pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli,
+    pane_state_cli, pane_status_cli, pane_tree_cli,
 };
-pub use permissions::permissions_cli;
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
-#[cfg(test)]
-pub(crate) use run::format_list_commands_for_root;
 pub use run::{
     parse_step, run_command, run_list_commands, run_steps_with, substitute_step_args, ParsedStep,
     StepRunReport,
 };
+#[cfg(test)]
+pub(crate) use run::format_list_commands_for_root;
 #[cfg(test)]
 pub use run::{run_command_for_root, run_command_for_root_from_pane};
 pub use validate::validate_cli;
@@ -1974,7 +1964,9 @@ pub use workspace::{
 
 #[cfg(test)]
 mod resolve_user_commands_tests {
-    use super::{ensure_commands_file, resolve_user_commands, UserCommandScope, COMMANDS_TEMPLATE};
+    use super::{
+        ensure_commands_file, resolve_user_commands, UserCommandScope, COMMANDS_TEMPLATE,
+    };
 
     /// Build a workspace tempdir whose channel-scoped commands.toml holds `body`.
     fn workspace_with_commands(body: &str) -> (tempfile::TempDir, crate::config::TestChannelGuard) {
@@ -2067,10 +2059,7 @@ global_cmd = "echo global-toml"
         let ws_path = ensure_commands_file(Some(ws.path()));
         assert_eq!(ws_path, ws.path().join(".plexi-test").join("commands.toml"));
         assert!(ws_path.is_file());
-        assert_eq!(
-            std::fs::read_to_string(&ws_path).unwrap(),
-            COMMANDS_TEMPLATE
-        );
+        assert_eq!(std::fs::read_to_string(&ws_path).unwrap(), COMMANDS_TEMPLATE);
         assert!(resolve_user_commands(Some(ws.path())).is_empty());
 
         let global_path = ensure_commands_file(None);
@@ -2180,10 +2169,7 @@ mod spawn_gate_tests {
 }
 
 /// Run a host action and return its acknowledged result, including host errors.
-pub fn host_action_cli(
-    mut payload: serde_json::Value,
-    identity: Option<(&str, Option<u64>, &str)>,
-) -> i32 {
+pub fn host_action_cli(mut payload: serde_json::Value, identity: Option<(&str, Option<u64>, &str)>) -> i32 {
     if let Some((field, explicit, env)) = identity {
         let id = explicit.or_else(|| std::env::var(env).ok()?.parse().ok());
         let Some(id) = id else {
@@ -2198,14 +2184,8 @@ pub fn host_action_cli(
                 eprintln!("error: {}", reply["error"].as_str().unwrap_or(&content));
                 1
             }
-            Ok(_) => {
-                println!("{content}");
-                0
-            }
-            Err(error) => {
-                eprintln!("error: invalid host response: {error}");
-                1
-            }
+            Ok(_) => { println!("{content}"); 0 }
+            Err(error) => { eprintln!("error: invalid host response: {error}"); 1 }
         },
         Err(code) => code,
     }

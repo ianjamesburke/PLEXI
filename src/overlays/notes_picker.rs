@@ -62,10 +62,8 @@ impl PlexiApp {
         &self,
         path: &std::path::Path,
     ) -> Option<crate::spatial::tiling::PaneId> {
-        (0..self.windows.len()).find_map(|idx| {
-            self.find_open_text_editor_tile(idx, path)
-                .map(|(_, pane)| pane)
-        })
+        (0..self.windows.len())
+            .find_map(|idx| self.find_open_text_editor_tile(idx, path).map(|(_, pane)| pane))
     }
 
     /// Indices into `notes_picker_entries` matching the current query, ranked:
@@ -84,8 +82,8 @@ impl PlexiApp {
             .enumerate()
             .filter_map(|(i, e)| {
                 let title = e.title.to_lowercase();
-                let candidate =
-                    crate::search::CandidateInput::new(&e.title).with_secondary(&e.search_text);
+                let candidate = crate::search::CandidateInput::new(&e.title)
+                    .with_secondary(&e.search_text);
                 let score = crate::search::score_candidate(&query, &candidate, now)
                     .map(|m| m.total)
                     .unwrap_or(0);
@@ -532,10 +530,7 @@ mod tests {
         draw_picker_frame(&mut app, &ctx);
         let offset_after_down = picker_scroll_offset(&ctx);
         assert_eq!(app.notes_picker_selected, 18);
-        assert!(
-            offset_after_down > 0.0,
-            "selection past the visible window must scroll down"
-        );
+        assert!(offset_after_down > 0.0, "selection past the visible window must scroll down");
 
         for _ in 0..15 {
             press_picker_key(&mut app, &ctx, egui::Key::ArrowUp);
@@ -543,10 +538,7 @@ mod tests {
         draw_picker_frame(&mut app, &ctx);
         let offset_after_up = picker_scroll_offset(&ctx);
         assert_eq!(app.notes_picker_selected, 3);
-        assert!(
-            offset_after_up < offset_after_down,
-            "selection above the visible window must scroll back up"
-        );
+        assert!(offset_after_up < offset_after_down, "selection above the visible window must scroll back up");
     }
 
     #[test]

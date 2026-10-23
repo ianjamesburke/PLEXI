@@ -971,7 +971,10 @@ impl PlexiApp {
             for wait in done {
                 let pane_alive = self.pane_exists(wait.pane_id);
                 let (timeout, error) = if pane_alive {
-                    log::info!("pane_message_recv: pane_id={} timed out", wait.pane_id);
+                    log::info!(
+                        "pane_message_recv: pane_id={} timed out",
+                        wait.pane_id
+                    );
                     (
                         true,
                         format!("timed out waiting for message on pane {}", wait.pane_id),
@@ -1153,7 +1156,12 @@ impl PlexiApp {
                 );
             }
         }
-        let Some(next_expiry) = self.pending_result_waits.iter().map(|w| w.expires_at).min() else {
+        let Some(next_expiry) = self
+            .pending_result_waits
+            .iter()
+            .map(|w| w.expires_at)
+            .min()
+        else {
             return;
         };
         let predicted_frame =
@@ -1189,30 +1197,13 @@ fn unconfirmed_reply(pane_id: u64, tail: &[String], retried: bool) -> Value {
 
 impl PlexiApp {
     /// Common mailbox delivery for CLI send and the Agents pane reply composer.
-    pub(crate) fn enqueue_pane_message(
-        &mut self,
-        pane_id: u64,
-        from_pane_id: Option<u64>,
-        payload: String,
-    ) -> (u64, bool) {
+    pub(crate) fn enqueue_pane_message(&mut self, pane_id: u64, from_pane_id: Option<u64>, payload: String) -> (u64, bool) {
         let id = self.next_pane_message_id;
         self.next_pane_message_id = id.saturating_add(1);
-        let timestamp_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        self.pane_mailboxes
-            .entry(pane_id)
-            .or_default()
-            .push_back(PaneMessage {
-                id,
-                pane_id,
-                to_pane_id: pane_id,
-                from_pane_id,
-                sender_pane_id: from_pane_id,
-                payload,
-                timestamp_ms,
-            });
+        let timestamp_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        self.pane_mailboxes.entry(pane_id).or_default().push_back(PaneMessage {
+            id, pane_id, to_pane_id: pane_id, from_pane_id, sender_pane_id: from_pane_id, payload, timestamp_ms,
+        });
         let delivered = self.complete_message_recvs(pane_id);
         (id, delivered)
     }
@@ -1352,10 +1343,9 @@ impl PlexiApp {
             .find_map(|w| w.panes.get_mut(&parent_pane_id))
             .and_then(|p| p.as_terminal_mut())
         {
-            term.backend
-                .process_command(egui_term::BackendCommand::Write(
-                    batch_text.clone().into_bytes(),
-                ));
+            term.backend.process_command(egui_term::BackendCommand::Write(
+                batch_text.clone().into_bytes(),
+            ));
         }
         self.delivered_child_batches
             .entry(parent_pane_id)

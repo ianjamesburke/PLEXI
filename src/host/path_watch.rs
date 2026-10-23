@@ -42,32 +42,28 @@ impl PathWatch {
     ) -> Result<Self, String> {
         let changed = Arc::new(AtomicBool::new(false));
         let (raw_tx, raw_rx) = mpsc::channel::<()>();
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<Event>| match res {
-                Ok(ev) => {
-                    if !matches!(
-                        ev.kind,
-                        EventKind::Modify(_)
-                            | EventKind::Create(_)
-                            | EventKind::Remove(_)
-                            | EventKind::Any
-                    ) {
-                        return;
-                    }
-                    let relevant = match &file_name {
-                        Some(name) => ev
-                            .paths
-                            .iter()
-                            .any(|p| p.file_name() == Some(name.as_os_str())),
-                        None => true,
-                    };
-                    if relevant {
-                        let _ = raw_tx.send(());
-                    }
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| match res {
+            Ok(ev) => {
+                if !matches!(
+                    ev.kind,
+                    EventKind::Modify(_)
+                        | EventKind::Create(_)
+                        | EventKind::Remove(_)
+                        | EventKind::Any
+                ) {
+                    return;
                 }
-                Err(e) => log::warn!("path_watch: watcher error ({source}): {e}"),
-            })
-            .map_err(|e| format!("path_watch: create watcher for {}: {e}", dir.display()))?;
+                let relevant = match &file_name {
+                    Some(name) => ev.paths.iter().any(|p| p.file_name() == Some(name.as_os_str())),
+                    None => true,
+                };
+                if relevant {
+                    let _ = raw_tx.send(());
+                }
+            }
+            Err(e) => log::warn!("path_watch: watcher error ({source}): {e}"),
+        })
+        .map_err(|e| format!("path_watch: create watcher for {}: {e}", dir.display()))?;
         watcher
             .watch(dir, RecursiveMode::NonRecursive)
             .map_err(|e| format!("path_watch: watch {}: {e}", dir.display()))?;
@@ -118,9 +114,7 @@ mod tests {
     }
 
     fn arm() {
-        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            200,
-        )));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(200)));
     }
 
     #[test]
@@ -132,15 +126,11 @@ mod tests {
         let watch = PathWatch::new(dir.path(), Some("a.txt".into()), wake.clone(), "test").unwrap();
         arm();
         // FSEvents can replay the seed write after the watch arms; settle it.
-        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            500,
-        )));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(500)));
         let _ = watch.take_changed();
 
         std::fs::write(dir.path().join("other.txt"), "x").unwrap();
-        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            500,
-        )));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(500)));
         assert!(!watch.take_changed(), "sibling writes are filtered out");
 
         std::fs::write(&file, "2").unwrap();

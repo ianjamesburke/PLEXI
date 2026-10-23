@@ -408,7 +408,9 @@ pub(super) fn stream_openai_compatible(
             return;
         }
         Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!("io error from {endpoint}: {e}")));
+            let _ = tx.send(StreamEvent::Error(format!(
+                "io error from {endpoint}: {e}"
+            )));
             return;
         }
     };
@@ -462,9 +464,7 @@ pub(super) fn stream_openai_compatible(
         // the token. Stop reading and drop `tx` — the turn loop returns the
         // partial text accumulated so far rather than draining the full stream.
         if request.cancel.is_cancelled() {
-            log::info!(
-                "openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream"
-            );
+            log::info!("openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream");
             return;
         }
         let line = match line_result {
@@ -1114,11 +1114,7 @@ mod tests {
             r#"data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":194,"completion_tokens":12,"cost":"0.021"}}"#,
             "data: [DONE]",
         ]);
-        assert_eq!(
-            cost,
-            Some(0.021),
-            "the final chunk's cost replaces an earlier one"
-        );
+        assert_eq!(cost, Some(0.021), "the final chunk's cost replaces an earlier one");
     }
 
     /// OpenRouter needs `usage.include` (and still accepts the OpenAI
@@ -1155,10 +1151,7 @@ mod tests {
             openrouter_url("http://127.0.0.1:9/v1/", "generation?id=gen-1"),
             "http://127.0.0.1:9/v1/generation?id=gen-1"
         );
-        assert_eq!(
-            normalize_openrouter_root("  http://127.0.0.1:9/v1/ "),
-            "http://127.0.0.1:9/v1"
-        );
+        assert_eq!(normalize_openrouter_root("  http://127.0.0.1:9/v1/ "), "http://127.0.0.1:9/v1");
         assert!(is_json_completion("application/json; charset=utf-8"));
         assert!(!is_json_completion("text/event-stream"));
     }
@@ -1185,12 +1178,7 @@ mod tests {
         assert!(matches!(events.first(), Some(StreamEvent::Text(text)) if text == "json-body"));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Done {
-                input_tokens: Some(50),
-                output_tokens: Some(7),
-                cost_usd: None,
-                generation_id: None
-            })
+            Some(StreamEvent::Done { input_tokens: Some(50), output_tokens: Some(7), cost_usd: None, generation_id: None })
         ));
 
         let (tx, rx) = mpsc::channel();
@@ -1203,11 +1191,7 @@ mod tests {
         let events: Vec<_> = rx.into_iter().collect();
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Done {
-                input_tokens: None,
-                output_tokens: None,
-                ..
-            })
+            Some(StreamEvent::Done { input_tokens: None, output_tokens: None, .. })
         ));
     }
 }

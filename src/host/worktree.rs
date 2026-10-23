@@ -372,7 +372,9 @@ fn create_worktree_with(
             stdout.trim()
         };
         log::warn!("pane_worktree: `wtp add` failed for branch={branch:?}: {detail}");
-        return Err(format!("`wtp add` failed for branch '{branch}': {detail}"));
+        return Err(format!(
+            "`wtp add` failed for branch '{branch}': {detail}"
+        ));
     }
 
     // Resolve the created path via `wtp cd <branch>`, falling back to the last

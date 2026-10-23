@@ -74,14 +74,7 @@ pub fn record(
     call_id: Option<&str>,
     data: Value,
 ) {
-    record_in(
-        &crate::config::config_dir(),
-        kind,
-        context_id,
-        pane_id,
-        call_id,
-        data,
-    );
+    record_in(&crate::config::config_dir(), kind, context_id, pane_id, call_id, data);
 }
 
 /// Record into an explicit profile directory.
@@ -104,10 +97,7 @@ pub fn record_in(
     };
     let mut map = slots().lock().unwrap_or_else(|e| e.into_inner());
     let slot = map.entry(key.clone()).or_default();
-    if let (Some(pane), Some(session)) = (
-        pane_id,
-        pending.data["payload"]["provenance"]["session_id"].as_str(),
-    ) {
+    if let (Some(pane), Some(session)) = (pane_id, pending.data["payload"]["provenance"]["session_id"].as_str()) {
         slot.agent_sessions.insert(pane, session.to_string());
     }
     match slot.active.as_mut() {
@@ -189,10 +179,7 @@ fn write_row(profile: &Path, active: &mut Active, pending: Pending) {
     let mut line = match serde_json::to_string(&row) {
         Ok(line) => line,
         Err(e) => {
-            log::warn!(
-                "flight_recorder: could not serialize {} row: {e}",
-                pending.kind
-            );
+            log::warn!("flight_recorder: could not serialize {} row: {e}", pending.kind);
             return;
         }
     };
@@ -224,10 +211,7 @@ fn point_latest_at(profile: &Path, session_id: &str) {
         // overwrite: the rename below also replaces `latest.jsonl`.
         if tmp.symlink_metadata().is_ok() {
             if let Err(e) = std::fs::remove_file(&tmp) {
-                log::warn!(
-                    "flight_recorder: stale {} not removable: {e}",
-                    tmp.display()
-                );
+                log::warn!("flight_recorder: stale {} not removable: {e}", tmp.display());
             }
         }
         std::os::unix::fs::symlink(&target, &tmp).and_then(|()| std::fs::rename(&tmp, &latest))
@@ -291,23 +275,16 @@ pub fn resolve_session(profile: &Path, wanted: &str) -> Result<String, String> {
     if let Ok(entries) = std::fs::read_dir(sessions_dir(profile)) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(id) = session_id_of_file(&name) else {
-                continue;
-            };
-            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
-                continue;
-            };
+            let Some(id) = session_id_of_file(&name) else { continue };
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
             if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
                 newest = Some((modified, id));
             }
         }
     }
-    newest.map(|(_, id)| id).ok_or_else(|| {
-        format!(
-            "no recorded sessions in {}",
-            sessions_dir(profile).display()
-        )
-    })
+    newest
+        .map(|(_, id)| id)
+        .ok_or_else(|| format!("no recorded sessions in {}", sessions_dir(profile).display()))
 }
 
 /// Every row of `session_id` across live and archived segments, in `seq` order.
@@ -328,10 +305,7 @@ pub fn read_session(profile: &Path, session_id: &str) -> Result<(Vec<Value>, usi
         let text = match std::fs::read_to_string(entry.path()) {
             Ok(text) => text,
             Err(e) => {
-                log::warn!(
-                    "flight_recorder: cannot read {}: {e}",
-                    entry.path().display()
-                );
+                log::warn!("flight_recorder: cannot read {}: {e}", entry.path().display());
                 continue;
             }
         };
@@ -391,9 +365,7 @@ pub fn list_session_ids(profile: &Path) -> Vec<String> {
     if let Ok(entries) = std::fs::read_dir(sessions_dir(profile)) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(id) = session_id_of_file(&name) else {
-                continue;
-            };
+            let Some(id) = session_id_of_file(&name) else { continue };
             let modified = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -416,10 +388,7 @@ mod tests {
 
     #[test]
     fn file_names_map_back_to_session_ids() {
-        assert_eq!(
-            session_id_of_file("sess-abc.jsonl").as_deref(),
-            Some("sess-abc")
-        );
+        assert_eq!(session_id_of_file("sess-abc.jsonl").as_deref(), Some("sess-abc"));
         assert_eq!(
             session_id_of_file("sess-abc-2026-03-01.jsonl").as_deref(),
             Some("sess-abc")
@@ -436,14 +405,7 @@ mod tests {
     fn backlog_is_flushed_in_order_once_the_session_is_adopted() {
         let dir = tempfile::tempdir().unwrap();
         record_in(dir.path(), "first", Some(1), None, None, json!({"n": 1}));
-        record_in(
-            dir.path(),
-            "second",
-            None,
-            Some(7),
-            Some("call-1"),
-            json!({"n": 2}),
-        );
+        record_in(dir.path(), "second", None, Some(7), Some("call-1"), json!({"n": 2}));
         adopt_session(dir.path(), "sess-test");
         record_in(dir.path(), "third", None, None, None, json!({}));
         let (rows, skipped) = read_session(dir.path(), "sess-test").unwrap();
@@ -462,9 +424,7 @@ mod tests {
 /// Transport-only trace frames never dispatch a host action or confer identity.
 /// The caller pane is diagnostic provenance, not an authorization credential.
 pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), String> {
-    let id = frame["id"]
-        .as_str()
-        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+    let id = frame["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok())
         .ok_or("cli_trace: missing/invalid invocation id")?;
     let kind = match frame["phase"].as_str() {
         Some("start") => "cli_call_started",
@@ -473,35 +433,19 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
     };
     let argv: Vec<String> = serde_json::from_value(frame["argv"].clone())
         .map_err(|error| format!("cli_trace: invalid argv: {error}"))?;
-    let argv =
-        crate::cli::trace::redact_argv(&argv, &crate::cli::trace::known_secret_names(profile));
+    let argv = crate::cli::trace::redact_argv(&argv, &crate::cli::trace::known_secret_names(profile));
     let pane = frame["pane_id"].as_u64();
-    let agent_session = frame["agent_session_id"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| {
-            pane.and_then(|pane| {
-                let key = crate::platform::path::canonical_or_self(profile);
-                slots()
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get(&key)
-                    .and_then(|slot| slot.agent_sessions.get(&pane))
-                    .cloned()
-            })
-        });
-    record_in(
-        profile,
-        kind,
-        None,
-        pane,
-        Some(id),
-        json!({
-            "argv": argv, "agent_session_id": agent_session,
-            "exit_code": if kind == "cli_call" { frame["exit_code"].clone() } else { Value::Null },
-            "started_at": frame["ts"],
-        }),
-    );
+    let agent_session = frame["agent_session_id"].as_str().map(str::to_string)
+        .or_else(|| pane.and_then(|pane| {
+            let key = crate::platform::path::canonical_or_self(profile);
+            slots().lock().unwrap_or_else(|e| e.into_inner()).get(&key)
+                .and_then(|slot| slot.agent_sessions.get(&pane)).cloned()
+        }));
+    record_in(profile, kind, None, pane, Some(id), json!({
+        "argv": argv, "agent_session_id": agent_session,
+        "exit_code": if kind == "cli_call" { frame["exit_code"].clone() } else { Value::Null },
+        "started_at": frame["ts"],
+    }));
     log::info!("cli_trace: captured {kind} call={id} pane={pane:?}");
     Ok(())
 }
@@ -513,13 +457,10 @@ pub(crate) fn cli_calls(rows: Vec<Value>, pane: Option<u64>) -> Vec<Value> {
     let mut calls: Vec<Value> = Vec::new();
     for mut row in rows {
         if !matches!(row["kind"].as_str(), Some("cli_call" | "cli_call_started"))
-            || pane.is_some_and(|pane| row["pane_id"].as_u64() != Some(pane))
-        {
+            || pane.is_some_and(|pane| row["pane_id"].as_u64() != Some(pane)) {
             continue;
         }
-        let Some(id) = row["call_id"].as_str().map(str::to_string) else {
-            continue;
-        };
+        let Some(id) = row["call_id"].as_str().map(str::to_string) else { continue };
         if let Some(index) = positions.get(&id).copied() {
             let previous: &mut Value = &mut calls[index];
             row["seq"] = previous["seq"].clone();
@@ -542,45 +483,24 @@ mod cli_trace_tests {
     fn cli_trace_records_redacted_calls_and_actual_exit_status() {
         let dir = tempfile::tempdir().unwrap();
         adopt_session(dir.path(), "sess-test-cli");
-        record_in(
-            dir.path(),
-            "timeline_event",
-            None,
-            Some(19),
-            None,
-            json!({"payload":{"provenance":{"session_id":"agent-19"}}}),
-        );
+        record_in(dir.path(), "timeline_event", None, Some(19), None,
+            json!({"payload":{"provenance":{"session_id":"agent-19"}}}));
         let id = uuid::Uuid::new_v4().to_string();
-        handle_cli_trace(
-            dir.path(),
-            &json!({"id":id,"phase":"start","pane_id":19,
-            "argv":["plexi-alpha","pane","new","--right"],"ts":"2026-10-21T00:00:00Z"}),
-        )
-        .unwrap();
+        handle_cli_trace(dir.path(), &json!({"id":id,"phase":"start","pane_id":19,
+            "argv":["plexi-alpha","pane","new","--right"],"ts":"2026-10-21T00:00:00Z"})).unwrap();
         handle_cli_trace(dir.path(), &json!({"id":id,"phase":"exit","exit_code":2,"pane_id":19,"argv":["plexi-alpha","pane","new","--right"]})).unwrap();
         let secret_id = uuid::Uuid::new_v4().to_string();
-        handle_cli_trace(
-            dir.path(),
-            &json!({"id":secret_id,"phase":"start","pane_id":20,
-            "argv":["plexi","secret","set","FOO","bar"]}),
-        )
-        .unwrap();
+        handle_cli_trace(dir.path(), &json!({"id":secret_id,"phase":"start","pane_id":20,
+            "argv":["plexi","secret","set","FOO","bar"]})).unwrap();
         let (rows, _) = read_session(dir.path(), "sess-test-cli").unwrap();
         let calls = cli_calls(rows.clone(), Some(19));
         assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0]["data"]["argv"],
-            json!(["plexi-alpha", "pane", "new", "--right"])
-        );
+        assert_eq!(calls[0]["data"]["argv"], json!(["plexi-alpha","pane","new","--right"]));
         assert_eq!(calls[0]["data"]["exit_code"], 2);
         assert_eq!(calls[0]["data"]["agent_session_id"], "agent-19");
         let calls = cli_calls(rows, Some(20));
         assert_eq!(calls[0]["data"]["argv"][4], "<redacted>");
         assert!(calls[0]["data"]["exit_code"].is_null());
-        assert!(
-            !std::fs::read_to_string(dir.path().join("sessions/sess-test-cli.jsonl"))
-                .unwrap()
-                .contains("bar")
-        );
+        assert!(!std::fs::read_to_string(dir.path().join("sessions/sess-test-cli.jsonl")).unwrap().contains("bar"));
     }
 }

@@ -7,8 +7,8 @@ pub mod intent;
 pub(crate) use helpers::MediaKind;
 pub use helpers::{ColumnId, Entry, SortDirection};
 pub use intent::{
-    parse_file_explorer_intent, rank_file_explorer_candidates, CandidateResolution,
-    FileExplorerContext, FileExplorerIntent, PaletteCandidate,
+    CandidateResolution, FileExplorerContext, FileExplorerIntent, PaletteCandidate,
+    parse_file_explorer_intent, rank_file_explorer_candidates,
 };
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
@@ -25,8 +25,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use helpers::{
-    format_modified, format_size, is_text_preview_candidate, read_text_preview, sort_entries,
-    ColumnConfig, ColumnModel, DirStats, TextPreview,
+    ColumnConfig, ColumnModel, DirStats, TextPreview, format_modified, format_size,
+    is_text_preview_candidate, read_text_preview, sort_entries,
 };
 use icons::paint_entry_icon;
 
@@ -108,7 +108,11 @@ struct FileOperationClipboard {
 /// Paint `texture` centered in `slot`, scaled down to fit without cropping or
 /// distortion. Never scales up: a small image sits at its native size in the
 /// middle of the slot rather than turning into a blurry stretch.
-fn paint_fitted_texture(painter: &egui::Painter, slot: egui::Rect, texture: &egui::TextureHandle) {
+fn paint_fitted_texture(
+    painter: &egui::Painter,
+    slot: egui::Rect,
+    texture: &egui::TextureHandle,
+) {
     let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
     let scale = (slot.width() / tex_size.x)
         .min(slot.height() / tex_size.y)
@@ -195,17 +199,16 @@ fn classify_key(
     {
         return Some(FileBrowserAction::Rename);
     }
-    if !text_entry_active && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Y)
+    if !text_entry_active
+        && !input.modifiers().any()
+        && key_pressed_no_repeat(input, egui::Key::Y)
     {
         return Some(FileBrowserAction::CopyPath);
     }
     if !text_entry_active
         && !input.modifiers().shift
         && (cmd_key_pressed_no_repeat(input, egui::Key::C, false)
-            || input
-                .events()
-                .iter()
-                .any(|e| matches!(e, egui::Event::Copy)))
+            || input.events().iter().any(|e| matches!(e, egui::Event::Copy)))
     {
         return Some(FileBrowserAction::Copy);
     }
@@ -240,7 +243,9 @@ fn classify_key(
     if key_pressed_no_repeat(input, egui::Key::Escape) {
         return Some(FileBrowserAction::Escape);
     }
-    if text_entry_active && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Tab)
+    if text_entry_active
+        && !input.modifiers().any()
+        && key_pressed_no_repeat(input, egui::Key::Tab)
     {
         return Some(FileBrowserAction::TabComplete);
     }
@@ -288,11 +293,15 @@ fn classify_key(
     {
         return Some(FileBrowserAction::EnterPaletteSlash);
     }
-    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any()
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::S)
+        && !input.modifiers().any()
     {
         return Some(FileBrowserAction::ToggleSort);
     }
-    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers().any()
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::I)
+        && !input.modifiers().any()
     {
         return Some(FileBrowserAction::ToggleInspector);
     }
@@ -302,7 +311,9 @@ fn classify_key(
     {
         return Some(FileBrowserAction::ToggleQuickLook);
     }
-    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any()
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::T)
+        && !input.modifiers().any()
     {
         return Some(FileBrowserAction::CdTerminalAndClose);
     }
@@ -582,8 +593,13 @@ impl FileBrowserApp {
         if self.in_search {
             let shallow = self.shallow_walk_entries();
             let hidden = crate::search::HiddenPolicy::from_show_hidden(self.columns.show_hidden);
-            self.search_session
-                .update_query(&self.cwd, hidden, &self.search_query, &shallow, true);
+            self.search_session.update_query(
+                &self.cwd,
+                hidden,
+                &self.search_query,
+                &shallow,
+                true,
+            );
             self.sync_search_indices();
             self.selected = self
                 .selected
@@ -2533,11 +2549,7 @@ impl FileBrowserApp {
             let segments = Self::breadcrumb_segments(&self.cwd);
 
             let measure = |ui: &egui::Ui, s: &str| -> f32 {
-                ui.fonts_mut(|f| {
-                    f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE)
-                        .size()
-                        .x
-                })
+                ui.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE).size().x)
             };
             let sep_w = measure(ui, "/") + style::SPACE_XS * 2.0;
             let ellipsis_w = measure(ui, "\u{2026}") + sep_w;
@@ -2615,7 +2627,8 @@ impl FileBrowserApp {
                     )
                     .frame(false),
                 );
-                let synthetic_click = pending_click.is_some_and(|click| click.targets_id(btn.id));
+                let synthetic_click =
+                    pending_click.is_some_and(|click| click.targets_id(btn.id));
                 if btn.clicked() || synthetic_click {
                     navigate_target = Some(seg_path.clone());
                 }
@@ -3082,7 +3095,7 @@ impl FileBrowserApp {
                 let mut start = 0;
                 while start < all.len() - 1 && !fits(&all[start..]) {
                     start += 1;
-                }
+                };
                 let hint_resp = HintBar::new(&all[start..])
                     .inline_status_bar()
                     .show_measured(ui, colors);
@@ -3438,7 +3451,8 @@ impl App for FileBrowserApp {
                 }
                 self.palette_query.push_str(&text);
                 if self.palette_query.starts_with("//") {
-                    self.palette_query = format!("/{}", self.palette_query.trim_start_matches('/'));
+                    self.palette_query =
+                        format!("/{}", self.palette_query.trim_start_matches('/'));
                 }
                 self.palette_selected = 0;
                 KeyDisposition::Consumed
@@ -4228,10 +4242,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Unique name so a leftover in the real Trash can never be mistaken
         // for this run, and so it can be cleared afterwards.
-        let name = format!(
-            "plexi-0786-trash-{}.txt",
-            crate::platform::clock::now_nanos()
-        );
+        let name = format!("plexi-0786-trash-{}.txt", crate::platform::clock::now_nanos());
         fs::write(dir.path().join(&name), "x").unwrap();
         let mut app = FileBrowserApp::new(dir.path().to_path_buf());
         app.select_path(&dir.path().join(&name));
@@ -4240,10 +4251,7 @@ mod tests {
         assert!(app.pending_operation.is_some());
         app.confirm_pending_operation().expect("confirm trash");
 
-        assert!(
-            !dir.path().join(&name).exists(),
-            "the item left the directory"
-        );
+        assert!(!dir.path().join(&name).exists(), "the item left the directory");
         assert!(
             !dir.path().join(".Trash").exists(),
             "no in-project .Trash folder is created"
@@ -4277,8 +4285,7 @@ mod tests {
                 .iter_mut()
                 .flat_map(|w| w.panes.values_mut())
                 .find_map(|pane| {
-                    let crate::host::pane::AppRuntime::Builtin(app) =
-                        &mut pane.as_app_mut()?.runtime
+                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
                     else {
                         return None;
                     };
@@ -4315,15 +4322,13 @@ mod tests {
         let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
         assert!(!app.service_external(&wake), "arming changes nothing");
-        std::thread::sleep(crate::testing::load_aware_timeout(
-            std::time::Duration::from_millis(300),
-        ));
+        std::thread::sleep(crate::testing::load_aware_timeout(std::time::Duration::from_millis(300)));
         let before = app.entries.len();
         app.select_path(&dir.path().join("bravo.txt"));
         fs::write(dir.path().join("0-from-agent.txt"), "hi").unwrap();
 
-        let deadline = std::time::Instant::now()
-            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        let deadline =
+            std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
         while std::time::Instant::now() < deadline && app.entries.len() == before {
             app.service_external(&wake);
             std::thread::sleep(std::time::Duration::from_millis(25));
@@ -4735,7 +4740,10 @@ mod tests {
         for id in ColumnId::ALL {
             app.columns.set_column_visible(id, true);
         }
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, DETAILS_HEADER_H));
+        let rect = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(960.0, DETAILS_HEADER_H),
+        );
         let columns = app.details_columns(rect);
 
         assert_eq!(columns.len(), ColumnId::ALL.len());
@@ -5058,10 +5066,7 @@ mod tests {
         assert!(app.in_search);
 
         let pasted = run_handle_key(&mut app, vec![Event::Paste("alp".to_string())]);
-        assert!(
-            pasted,
-            "Event::Paste in search mode must append to search_query"
-        );
+        assert!(pasted, "Event::Paste in search mode must append to search_query");
         assert_eq!(app.search_query, "alp");
         assert!(
             !sub.join("parent_file.txt").exists(),
@@ -5069,16 +5074,10 @@ mod tests {
         );
 
         // Backspace while search_query is non-empty deletes the trailing character and stays in sub.
-        let backspaced = run_handle_key(
-            &mut app,
-            vec![key_event(Key::Backspace, Modifiers::default())],
-        );
+        let backspaced = run_handle_key(&mut app, vec![key_event(Key::Backspace, Modifiers::default())]);
         assert!(backspaced);
         assert_eq!(app.search_query, "al");
-        assert_eq!(
-            app.cwd, sub,
-            "Backspace in search mode must not navigate to parent directory"
-        );
+        assert_eq!(app.cwd, sub, "Backspace in search mode must not navigate to parent directory");
 
         // Even when search_query is emptied, Backspace in search mode must not navigate to parent.
         app.search_query.clear();
@@ -5123,11 +5122,7 @@ mod tests {
             + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
         while std::time::Instant::now() < deadline {
             let _ = app.service_external(&wake);
-            if app
-                .search_session
-                .hits()
-                .iter()
-                .any(|h| h.path == nested_dir)
+            if app.search_session.hits().iter().any(|h| h.path == nested_dir)
                 && !app.search_session.is_scanning()
             {
                 break;
@@ -5143,13 +5138,9 @@ mod tests {
         app.selected = dir_idx;
 
         // Pressing Enter on a directory search hit navigates cwd into that directory and exits search.
-        let entered_dir =
-            run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        let entered_dir = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(entered_dir);
-        assert!(
-            !app.in_search,
-            "activating directory result must exit search mode"
-        );
+        assert!(!app.in_search, "activating directory result must exit search mode");
         assert_eq!(
             app.cwd, nested_dir,
             "activating directory result must navigate cwd into that directory"
@@ -5193,10 +5184,7 @@ mod tests {
         let entered_file =
             run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(entered_file);
-        assert!(
-            !app.in_search,
-            "activating file/content result must exit search mode"
-        );
+        assert!(!app.in_search, "activating file/content result must exit search mode");
         assert_eq!(app.opened_files.last(), Some(&content_file));
     }
 
@@ -5213,10 +5201,7 @@ mod tests {
         for (w, h) in [(1100.0_f32, 720.0_f32), (640.0_f32, 520.0_f32)] {
             let mut app = FileBrowserApp::new(dir.path().to_path_buf());
             let raw = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(w, h),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h))),
                 ..Default::default()
             };
             let _ = ctx.run_ui(raw, |ui| {
@@ -5401,11 +5386,7 @@ mod tests {
         assert_eq!(app.opened_files.last(), Some(&expected_path));
 
         let cmds = app.take_pending_commands();
-        assert_eq!(
-            cmds.len(),
-            1,
-            "CreateFile with open_in_editor must queue OpenArtifact"
-        );
+        assert_eq!(cmds.len(), 1, "CreateFile with open_in_editor must queue OpenArtifact");
         assert!(matches!(
             &cmds[0],
             AppCommand::OpenArtifact {
@@ -5454,10 +5435,7 @@ mod tests {
             ],
         );
         assert!(toggled);
-        assert!(
-            !app.in_palette,
-            "palette must close after executing /hidden"
-        );
+        assert!(!app.in_palette, "palette must close after executing /hidden");
         assert!(
             app.columns.show_hidden,
             "/hidden + Enter must toggle columns.show_hidden on"
@@ -5504,7 +5482,10 @@ mod tests {
         assert!(!app.in_palette);
         assert!(dir.path().join("specs").is_dir());
         assert!(!dir.path().join("Untitled Folder").exists());
-        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("specs"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("specs")
+        );
 
         // 2. Selecting `/new folder` without a name argument and pressing Enter pre-fills `/new folder `.
         run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);

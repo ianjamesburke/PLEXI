@@ -693,10 +693,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "idempotent": true,
         });
     }
-    if let Some(active) = runs
-        .iter()
-        .find(|run| run.agent_id == agent.id && run.active)
-    {
+    if let Some(active) = runs.iter().find(|run| run.agent_id == agent.id && run.active) {
         log::info!(
             "agents_api: assignment_conflict agent={} active_run={} admission={admission_id}",
             agent.id,
@@ -1020,7 +1017,10 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
         }
         "list_grants" => list_grants(&workspace),
         "spawn_run" => {
-            let agent_id = payload.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+            let agent_id = payload
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let agent = match find_agent(&workspace, agent_id) {
                 Ok(agent) => agent,
                 Err(error) => return error,
@@ -1458,7 +1458,10 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
 
 pub fn projection(workspace: &Path) -> Value {
     let workspace = crate::platform::path::canonical_or_self(workspace);
-    let agents = handle_request("list_agents", &json!({"workspace": workspace, "all": true}));
+    let agents = handle_request(
+        "list_agents",
+        &json!({"workspace": workspace, "all": true}),
+    );
     let runs = handle_request("list_runs", &json!({"workspace": &workspace}));
     let pending = serde_json::to_value(monitor().list_pending()).unwrap_or(json!([]));
     json!({

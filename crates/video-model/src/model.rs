@@ -26,54 +26,30 @@ pub const TICKS_PER_SECOND: u64 = 1000;
 /// hand-rolled checker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    ZeroFpsTerm {
-        source: SourceId,
-        num: u32,
-        den: u32,
-    },
-    MissingClipSource {
-        clip: ClipId,
-        source: SourceId,
-    },
-    EmptyClipWindow {
-        clip: ClipId,
-        source_in: u64,
-        source_out: u64,
-    },
-    ClipWindowExceedsSource {
-        clip: ClipId,
-        source_out: u64,
-        duration: u64,
-    },
-    ClipTimelineOverflow {
-        clip: ClipId,
-    },
-    OverlappingClips {
-        track: TrackKind,
-        first: ClipId,
-        second: ClipId,
-    },
-    DuplicateId {
-        id: u64,
-    },
-    IdNotBelowNextId {
-        id: u64,
-        next_id: u64,
-    },
-    DanglingSelection {
-        clip: ClipId,
-    },
+    ZeroFpsTerm { source: SourceId, num: u32, den: u32 },
+    MissingClipSource { clip: ClipId, source: SourceId },
+    EmptyClipWindow { clip: ClipId, source_in: u64, source_out: u64 },
+    ClipWindowExceedsSource { clip: ClipId, source_out: u64, duration: u64 },
+    ClipTimelineOverflow { clip: ClipId },
+    OverlappingClips { track: TrackKind, first: ClipId, second: ClipId },
+    DuplicateId { id: u64 },
+    IdNotBelowNextId { id: u64, next_id: u64 },
+    DanglingSelection { clip: ClipId },
 }
 
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ZeroFpsTerm { source, num, den } => {
-                write!(f, "source {} fps {num}/{den} has a zero term", source.0)
-            }
-            Self::MissingClipSource { clip, source } => {
-                write!(f, "clip {} references missing source {}", clip.0, source.0)
-            }
+            Self::ZeroFpsTerm { source, num, den } => write!(
+                f,
+                "source {} fps {num}/{den} has a zero term",
+                source.0
+            ),
+            Self::MissingClipSource { clip, source } => write!(
+                f,
+                "clip {} references missing source {}",
+                clip.0, source.0
+            ),
             Self::EmptyClipWindow {
                 clip,
                 source_in,
@@ -233,7 +209,8 @@ impl Project {
     }
 
     pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|e| format!("video project deserialization failed: {e}"))
+        serde_json::from_str(json)
+            .map_err(|e| format!("video project deserialization failed: {e}"))
     }
 
     #[must_use]
@@ -526,11 +503,9 @@ impl VideoModel {
     /// `Rejected` the model is untouched.
     pub fn apply(&mut self, cmd: VideoCommand) -> ApplyOutcome {
         match cmd {
-            VideoCommand::AddSource {
-                path,
-                duration,
-                fps,
-            } => self.add_source(path, duration, fps),
+            VideoCommand::AddSource { path, duration, fps } => {
+                self.add_source(path, duration, fps)
+            }
             VideoCommand::RemoveSource { source } => self.remove_source(source),
             VideoCommand::AddClip {
                 track,
@@ -708,10 +683,13 @@ impl VideoModel {
         if current.position == position {
             return ApplyOutcome::NoOp;
         }
-        if let Err(e) =
-            self.project
-                .check_placement("MoveClip", track, position, current.length(), Some(clip))
-        {
+        if let Err(e) = self.project.check_placement(
+            "MoveClip",
+            track,
+            position,
+            current.length(),
+            Some(clip),
+        ) {
             return ApplyOutcome::Rejected(e);
         }
         self.record();
@@ -747,10 +725,13 @@ impl VideoModel {
             ));
         };
         let new_length = current.source_out - source_in;
-        if let Err(e) =
-            self.project
-                .check_placement("TrimIn", track, new_position, new_length, Some(clip))
-        {
+        if let Err(e) = self.project.check_placement(
+            "TrimIn",
+            track,
+            new_position,
+            new_length,
+            Some(clip),
+        ) {
             return ApplyOutcome::Rejected(e);
         }
         self.record();

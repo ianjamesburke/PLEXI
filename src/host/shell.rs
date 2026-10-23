@@ -338,10 +338,7 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
 
 /// Decide injection before resolving any values: restored agent panes must
 /// not read Keychain secrets only to remove them immediately afterwards.
-pub(crate) fn build_env_with_secrets(
-    working_directory: Option<&Path>,
-    inject: bool,
-) -> HashMap<String, String> {
+pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: bool) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     env.insert("TERM".into(), "xterm-256color".into());
@@ -427,9 +424,7 @@ pub(crate) fn build_env_with_secrets(
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    if let Some(dir) = working_directory.filter(|_| {
-        inject && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
-    }) {
+    if let Some(dir) = working_directory.filter(|_| inject && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)) {
         match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store())
         {
             Ok(resolved) => {
@@ -531,10 +526,7 @@ pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Op
         let dir = crate::platform::path::canonical_or_self(dir);
         let resolved: Vec<_> = crate::workspace::secrets::list_folder_secrets(
             crate::workspace::secrets::folder_store(),
-        )
-        .into_iter()
-        .filter(|meta| dir.starts_with(&meta.folder))
-        .collect();
+        ).into_iter().filter(|meta| dir.starts_with(&meta.folder)).collect();
         if resolved.is_empty() {
             return;
         }

@@ -276,10 +276,7 @@ pub(crate) fn agent_pane_blocks_pairing_confirm(pane_list: &Value, pane_id: Opti
     let Some(rows) = pane_list.as_array() else {
         return true;
     };
-    match rows
-        .iter()
-        .find(|row| row.get("id").and_then(|id| id.as_u64()) == Some(pane_id))
-    {
+    match rows.iter().find(|row| row.get("id").and_then(|id| id.as_u64()) == Some(pane_id)) {
         Some(row) => row.get("agent").is_some_and(|agent| !agent.is_null()),
         None => true,
     }
@@ -457,17 +454,15 @@ fn answer_needs_you(
     approve: bool,
 ) -> Result<(), String> {
     let request_id = json_str(message, "request_id");
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
     let body = if let Some(id) = id {
         log::info!(
             "relay: phone needs-you resolve host_id={} id={id} approve={approve}",
             session.identity.host_id
         );
-        match monitor.resolve_needs_you_from(
-            &id,
-            approve,
-            crate::broker::gate::ResolveSurface::Phone,
-        ) {
+        match monitor.resolve_needs_you_from(&id, approve, crate::broker::gate::ResolveSurface::Phone)
+        {
             Ok(receipt) => json!({
                 "type": "needs_you_result",
                 "request_id": request_id,
@@ -556,20 +551,15 @@ fn handle_relay_message(
                 .get("qr_url")
                 .and_then(|value| value.as_str())
                 .unwrap_or("/");
-            let pending = relay_crypto::generate_desktop_key()
-                .map_err(|_| "could not generate a pairing key".to_string())?;
+            let pending = relay_crypto::generate_desktop_key().map_err(|_| {
+                "could not generate a pairing key".to_string()
+            })?;
             persist_desktop_key(&session.identity.host_id, &pending)?;
             let qr_url = relay_crypto::qr_with_public_key(qr_url, &pending.public);
             let key_fingerprint = relay_crypto::key_fingerprint(&pending.public);
             session.pending_key = Some(pending);
             session.pairing_id = Some(pairing_id.to_string());
-            write_status(
-                session,
-                "waiting_for_phone",
-                Some(code),
-                Some(&qr_url),
-                None,
-            )?;
+            write_status(session, "waiting_for_phone", Some(code), Some(&qr_url), None)?;
             // The code and the key fingerprint are shown to the person at this
             // desktop. Neither is logged. The public key is only in the URL
             // fragment, which the relay never receives.
@@ -849,8 +839,12 @@ fn forward_assistant_reply(
     let error_text = value.get("error").and_then(|item| item.as_str());
     if reply_text.is_some() || error_text.is_some() {
         if let Some(phone) = session.phone_sessions.get_mut(device_id) {
-            match relay_crypto::seal_reply(phone, reply_text.unwrap_or(""), error_text, request_id)
-            {
+            match relay_crypto::seal_reply(
+                phone,
+                reply_text.unwrap_or(""),
+                error_text,
+                request_id,
+            ) {
                 Ok(sealed) => {
                     if let Err(error) = persist_phone_session(device_id, phone) {
                         log::error!("relay: phone session was not stored outcome={error}");
@@ -865,7 +859,9 @@ fn forward_assistant_reply(
                 }
             }
         } else {
-            log::info!("relay: phone reply dropped request_id={request_id} outcome=no_session");
+            log::info!(
+                "relay: phone reply dropped request_id={request_id} outcome=no_session"
+            );
             reply["state"] = json!("failed");
         }
     }
@@ -1341,7 +1337,9 @@ fn persist_desktop_key(host_id: &str, key: &relay_crypto::PendingDesktopKey) -> 
         .map_err(|error| format!("relay keychain: {error}"))
 }
 
-fn load_phone_sessions(devices: &[PairedDevice]) -> HashMap<String, relay_crypto::PhoneSession> {
+fn load_phone_sessions(
+    devices: &[PairedDevice],
+) -> HashMap<String, relay_crypto::PhoneSession> {
     let store = crate::workspace::secrets::system_store();
     let mut sessions = HashMap::new();
     for device in devices {
@@ -1363,10 +1361,7 @@ fn load_phone_sessions(devices: &[PairedDevice]) -> HashMap<String, relay_crypto
     sessions
 }
 
-fn persist_phone_session(
-    device_id: &str,
-    phone: &relay_crypto::PhoneSession,
-) -> Result<(), String> {
+fn persist_phone_session(device_id: &str, phone: &relay_crypto::PhoneSession) -> Result<(), String> {
     crate::workspace::secrets::system_store()
         .set(&phone_session_account(device_id), &phone.to_record())
         .map_err(|error| format!("relay keychain: {error}"))
@@ -1388,10 +1383,7 @@ fn accept_sealed(
         session.phone_sessions.get_mut(device_id),
     )?;
     match opened {
-        relay_crypto::PhoneOpen::New {
-            opened,
-            session: phone,
-        } => {
+        relay_crypto::PhoneOpen::New { opened, session: phone } => {
             if let Err(error) = persist_phone_session(device_id, &phone) {
                 log::error!("relay: phone session was not stored outcome={error}");
             }
@@ -1836,10 +1828,7 @@ mod tests {
             "enabled = true\nurl = \"wss://relay.example.test\"\n",
         )
         .unwrap();
-        assert_eq!(
-            super::start_host_relay(),
-            super::HostRelayStart::ExperimentOff
-        );
+        assert_eq!(super::start_host_relay(), super::HostRelayStart::ExperimentOff);
         assert!(super::live_connection().is_none());
     }
 
@@ -1967,8 +1956,8 @@ mod tests {
         assert_eq!(dispatch_from_env(true, true), Dispatch::Echo);
         assert_eq!(dispatch_from_env(true, false), Dispatch::Host);
         assert_eq!(dispatch_from_env(false, true), Dispatch::Host);
-        let payload =
-            super::super::app::assistant_send_payload(&super::super::app::AssistantSendFields {
+        let payload = super::super::app::assistant_send_payload(
+            &super::super::app::AssistantSendFields {
                 text: "hello from the phone",
                 request_id: "req-1",
                 response_file: "/tmp/response",
@@ -1979,7 +1968,8 @@ mod tests {
                 status_for: None,
                 client: None,
                 kind: None,
-            });
+            },
+        );
         assert_eq!(payload["type"], "submit_assistant_turn");
         assert!(payload.get("approved").is_none());
         assert!(payload.get("grant").is_none());
@@ -2270,12 +2260,7 @@ mod tests {
         let (turn_status, _, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(seal_turn(
-                profile.path(),
-                &first_state,
-                "req-resume",
-                "still paired",
-            )),
+            Some(seal_turn(profile.path(), &first_state, "req-resume", "still paired")),
             Some(&cookie),
         );
         assert_eq!(turn_status, 202);
@@ -2299,12 +2284,7 @@ mod tests {
         let (revoked_status, _, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(seal_turn(
-                profile.path(),
-                &first_state,
-                "req-revoked",
-                "gone",
-            )),
+            Some(seal_turn(profile.path(), &first_state, "req-revoked", "gone")),
             Some(&cookie),
         );
         assert_eq!(revoked_status, 401);

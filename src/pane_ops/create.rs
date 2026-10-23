@@ -122,9 +122,7 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
                 crate::app::text_editor_app::TextEditorApp::new_with_workspace(path, ws_root),
             ))
         }
-        "mcp-renderer" => Some(Box::new(
-            crate::render::mcp_renderer_app::McpRendererApp::new(args, cwd.to_path_buf()),
-        )),
+        "mcp-renderer" => Some(Box::new(crate::render::mcp_renderer_app::McpRendererApp::new(args, cwd.to_path_buf()))),
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
             Some(Box::new(
@@ -367,11 +365,15 @@ pub(crate) fn restore_app_pane_in_profile(
     match launch {
         crate::workspace::SavedAppLaunch::Python { app_dir, args } => {
             if !app_dir.is_dir() {
-                return Err(format!("app directory not found at {}", app_dir.display()));
+                return Err(format!(
+                    "app directory not found at {}",
+                    app_dir.display()
+                ));
             }
-            let config = crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
+            let config =
+                crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
             let permissions = gate_app_permissions_in_profile(
                 profile_dir,
                 &config.app_id,
@@ -395,7 +397,9 @@ pub(crate) fn restore_app_pane_in_profile(
             let name = saved_name
                 .map(String::from)
                 .unwrap_or_else(|| runtime.display_name());
-            log::info!("workspace_restore: restored python app_id={app_id} pane_id={pane_id}");
+            log::info!(
+                "workspace_restore: restored python app_id={app_id} pane_id={pane_id}"
+            );
             let pane = Pane::App(Box::new(crate::host::pane::AppPane {
                 pip_status: None,
                 id: pane_id,
@@ -479,7 +483,9 @@ pub(crate) fn restore_app_pane_in_profile(
             let name = saved_name
                 .map(String::from)
                 .unwrap_or_else(|| live.display_name());
-            log::info!("workspace_restore: restored wasm app_id={manifest_id} pane_id={pane_id}");
+            log::info!(
+                "workspace_restore: restored wasm app_id={manifest_id} pane_id={pane_id}"
+            );
             let pane = Pane::App(Box::new(crate::host::pane::AppPane {
                 pip_status: None,
                 id: pane_id,
@@ -988,7 +994,10 @@ impl PlexiApp {
         Ok(())
     }
 
-    fn open_wasm_app_instance(&mut self, spec: WasmAppInstanceSpec<'_>) -> Result<PaneId, String> {
+    fn open_wasm_app_instance(
+        &mut self,
+        spec: WasmAppInstanceSpec<'_>,
+    ) -> Result<PaneId, String> {
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
         let WasmAppInstanceSpec {
             app_id,
@@ -1414,8 +1423,13 @@ impl PlexiApp {
         inject_folder_secrets: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
-        let (mut settings, pending_credential) =
-            Self::make_backend_settings(new_id, cwd, &self.colors, context, agent_pane);
+        let (mut settings, pending_credential) = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            context,
+            agent_pane,
+        );
         if let Some(cmd) = initial_cmd {
             log::info!(
                 "create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}"
@@ -1477,8 +1491,13 @@ impl PlexiApp {
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
              vertical={vertical} keep_focus={keep_focus} initial_cmd={initial_cmd:?}"
         );
-        let (mut settings, pending_credential) =
-            Self::make_backend_settings(new_id, cwd, &self.colors, &context, agent_pane);
+        let (mut settings, pending_credential) = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            &context,
+            agent_pane,
+        );
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1772,12 +1791,15 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(target_win_idx);
         let effective_cwd_for_schema = effective_cwd.clone();
-        let (mut settings, pending_credential) =
-            Self::make_backend_settings(new_id, Some(effective_cwd), &self.colors, &context, true);
+        let (mut settings, pending_credential) = Self::make_backend_settings(
+            new_id,
+            Some(effective_cwd),
+            &self.colors,
+            &context,
+            true,
+        );
         if let Some(token) = run_token {
-            settings
-                .env
-                .insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
+            settings.env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
         }
         if let Some(pid) = parent_pane_id {
             settings
@@ -1800,16 +1822,9 @@ impl PlexiApp {
             .env
             .insert("PLEXI_AGENT_TASK".into(), task.to_string());
         let supervised;
-        let worker_command = if harness == "team" {
-            cmd
-        } else {
-            let exe =
-                std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
-            let reporter = format!(
-                "{} --socket {}",
-                crate::host::shell::shell_quote(&exe.to_string_lossy()),
-                crate::host::shell::shell_quote(&crate::platform::ipc::endpoint())
-            );
+        let worker_command = if harness == "team" { cmd } else {
+            let exe = std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
+            let reporter = format!("{} --socket {}", crate::host::shell::shell_quote(&exe.to_string_lossy()), crate::host::shell::shell_quote(&crate::platform::ipc::endpoint()));
             supervised = crate::cli::agent::supervised_worker_command(cmd, &reporter, harness);
             &supervised
         };
@@ -1824,17 +1839,16 @@ impl PlexiApp {
             settings,
             self.default_font_size,
         ) else {
-            return Err(format!(
-                "failed to create terminal pane for agent role '{role}'"
-            ));
+            return Err(format!("failed to create terminal pane for agent role '{role}'"));
         };
         pane.ephemeral = ephemeral;
         pane.parent_pane_id = parent_pane_id;
         pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
-        let lookup_root =
-            crate::app::registry::resolve_agent_lookup_workspace_root(&effective_cwd_for_schema);
+        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(
+            &effective_cwd_for_schema,
+        );
         pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(
             role,
             &crate::config::config_dir(),
@@ -1848,7 +1862,9 @@ impl PlexiApp {
                 .unwrap_or(child)
         })
         .map_err(|error| {
-            log::info!("agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}");
+            log::info!(
+                "agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}"
+            );
             error
         })
         .ok();
@@ -1889,9 +1905,7 @@ impl PlexiApp {
                 .or_default()
                 .set_schema(schema.clone(), Some(&effective_cwd_for_schema))
             {
-                log::warn!(
-                    "agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}"
-                );
+                log::warn!("agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}");
                 self.pane_results.entry(new_id).or_default().schema = Some(schema);
             }
         }
@@ -2692,30 +2706,19 @@ impl PlexiApp {
     pub(crate) fn open_command_view(&mut self, workspace: &std::path::Path) -> Result<u64, String> {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             return Err(crate::release::feature_unavailable_text(
-                crate::release::ReleaseFeature::Assistant,
-            ));
+                    crate::release::ReleaseFeature::Assistant,
+                ));
         }
         let context_id = self.windows[self.active_window].context_id;
-        if let Some((win_idx, slot, depth)) =
-            self.locate_app_instance("command-view", Some(context_id))
-        {
+        if let Some((win_idx, slot, depth)) = self.locate_app_instance("command-view", Some(context_id)) {
             self.reveal_and_focus_instance(win_idx, slot, depth);
             return Ok(slot);
         }
-        let app = Box::new(crate::app::command_view_app::CommandViewApp::new(
-            workspace.to_path_buf(),
-        ));
+        let app = Box::new(crate::app::command_view_app::CommandViewApp::new(workspace.to_path_buf()));
         let perms = crate::app::permissions::AppPermissions::builtin();
         let predicted = self.host.next_pane_id();
         log::info!("command_view: opening pane for {}", workspace.display());
-        self.open_builtin_app_pane(
-            app,
-            perms,
-            workspace.to_path_buf(),
-            None,
-            Some("split_h"),
-            None,
-        );
+        self.open_builtin_app_pane(app, perms, workspace.to_path_buf(), None, Some("split_h"), None);
         Ok(predicted)
     }
 
@@ -2764,11 +2767,9 @@ impl PlexiApp {
             "assistant: opening pane for workspace {} in context {caller_context_id}",
             workspace_root.display()
         );
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
-            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
-                self.config.ai.clone(),
-                self.config.resolved_model_modes(),
-            ));
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
+            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
+        );
         let app = Box::new(crate::assistant::AssistantApp::new(
             workspace_root.clone(),
             broker,
@@ -2795,10 +2796,7 @@ impl PlexiApp {
             return None;
         }
         let win_idx = match context_id {
-            Some(id) => self
-                .windows
-                .iter()
-                .position(|window| window.context_id == id)?,
+            Some(id) => self.windows.iter().position(|window| window.context_id == id)?,
             None => self.active_window,
         };
         let caller_context_id = self.windows[win_idx].context_id;
@@ -2823,11 +2821,9 @@ impl PlexiApp {
             .context_root_for(caller_context_id)
             .or_else(crate::config::active_workspace_root)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
-            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
-                self.config.ai.clone(),
-                self.config.resolved_model_modes(),
-            ));
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
+            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
+        );
         let app = Box::new(crate::assistant::AssistantApp::new(
             workspace_root.clone(),
             broker,
@@ -3322,12 +3318,8 @@ fn gate_app_permissions_in_profile(
 /// `media_io` experiment is on, every media capability is withheld before the
 /// app's permissions reach any dispatch path. Additive to the capability
 /// model — it only removes grants.
-fn apply_media_release_gate(
-    app_id: &str,
-    permissions: &mut crate::app::permissions::AppPermissions,
-) {
-    if permissions.is_builtin
-        || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
+fn apply_media_release_gate(app_id: &str, permissions: &mut crate::app::permissions::AppPermissions) {
+    if permissions.is_builtin || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
     {
         return;
     }
@@ -3339,6 +3331,7 @@ fn apply_media_release_gate(
         crate::release::log_feature_blocked(crate::release::ReleaseFeature::MediaIo);
     }
 }
+
 
 fn gate_wasm_sets(
     app_id: &str,
@@ -3365,11 +3358,8 @@ fn gate_wasm_sets_in_profile(
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
 ) {
-    crate::broker::gate::PermissionMonitor::for_profile(profile_dir).materialize_wasm_sets(
-        app_id,
-        workspace_root,
-        declared,
-    )
+    crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
+        .materialize_wasm_sets(app_id, workspace_root, declared)
 }
 
 fn wasm_runtime_capabilities_from_permissions(
@@ -3508,8 +3498,7 @@ mod tests {
     fn raw_wasm_launch_uses_registered_manifest_identity_for_release_gate() {
         let _channel = crate::config::set_test_channel("main");
         // WasmApps on so the launch reaches the manifest-identity gate; DAW stays off.
-        let _experiments =
-            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let global_apps = tempfile::tempdir().expect("global apps");
         let app_dir = global_apps.path().join("daw");
         std::fs::create_dir_all(&app_dir).expect("create app dir");

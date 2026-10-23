@@ -167,10 +167,7 @@ impl StateStore {
         }
         let bytes = serde_json::to_vec(&self.data).map_err(|e| e.to_string())?;
         std::fs::write(path, &bytes).map_err(|e| e.to_string())?;
-        log::info!(
-            "{}",
-            Self::format_persist_trace(path, bytes.len(), replaced)
-        );
+        log::info!("{}", Self::format_persist_trace(path, bytes.len(), replaced));
         Ok(())
     }
 
@@ -329,9 +326,9 @@ impl HostCtx {
     }
 
     pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
-        self.pipe_handles.iter().find_map(|(&handle, binding)| {
-            (!binding.binary && binding.id == pipe_id).then_some(handle)
-        })
+        self.pipe_handles
+            .iter()
+            .find_map(|(&handle, binding)| (!binding.binary && binding.id == pipe_id).then_some(handle))
     }
 }
 
@@ -1106,20 +1103,12 @@ mod tests {
             .json_pipe_handle("directed.pipe")
             .expect("host registered a JSON handle");
         let claimed = ctx
-            .open(
-                "directed.pipe".to_string(),
-                PipeType::Json,
-                PipeDirection::Duplex,
-            )
+            .open("directed.pipe".to_string(), PipeType::Json, PipeDirection::Duplex)
             .expect("guest open claims pre-registered directed pipe handle");
         assert_eq!(claimed, host_handle);
         assert!(
-            ctx.open(
-                "directed.pipe".to_string(),
-                PipeType::Json,
-                PipeDirection::Duplex
-            )
-            .is_err(),
+            ctx.open("directed.pipe".to_string(), PipeType::Json, PipeDirection::Duplex)
+                .is_err(),
             "second guest open on an already-claimed pipe must return AlreadyOpen"
         );
     }
@@ -1503,10 +1492,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
 
         let mut store = StateStore::persistent(path.clone())?;
         assert!(store.snapshot().entries.is_empty());
-        assert!(
-            !path.exists(),
-            "opening a missing store does not create a file"
-        );
+        assert!(!path.exists(), "opening a missing store does not create a file");
 
         store.set("interval".to_string(), b"5000".to_vec()).unwrap();
         let first_bytes = std::fs::read(&path)?;

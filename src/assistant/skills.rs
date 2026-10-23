@@ -446,9 +446,7 @@ mod tests {
             "the build flow must still forbid terminals for build work"
         );
         assert!(
-            skill
-                .instructions
-                .contains("Never route around one via host.terminals.run"),
+            skill.instructions.contains("Never route around one via host.terminals.run"),
             "a scope refusal must be a final answer, not a cue to use a terminal"
         );
         assert_eq!(

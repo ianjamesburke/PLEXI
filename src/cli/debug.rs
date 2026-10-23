@@ -30,11 +30,7 @@ pub fn debug_session_list_cli(json: bool) -> i32 {
             Err(error) => log::warn!("debug session list: {error}"),
         }
     }
-    log::info!(
-        "debug session list: {} session(s) in {}",
-        summaries.len(),
-        profile.display()
-    );
+    log::info!("debug session list: {} session(s) in {}", summaries.len(), profile.display());
     if json {
         println!("{}", json!({ "sessions": summaries }));
         return 0;
@@ -133,11 +129,7 @@ fn join_nums(v: &Value) -> String {
         .as_array()
         .map(|a| a.iter().map(|n| n.to_string()).collect())
         .unwrap_or_default();
-    if items.is_empty() {
-        "-".into()
-    } else {
-        items.join(",")
-    }
+    if items.is_empty() { "-".into() } else { items.join(",") }
 }
 
 fn join_strs(v: &Value) -> String {
@@ -149,11 +141,7 @@ fn join_strs(v: &Value) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    if items.is_empty() {
-        "-".into()
-    } else {
-        items.join(",")
-    }
+    if items.is_empty() { "-".into() } else { items.join(",") }
 }
 
 /// Keep rows for `pane`, plus the permission/tool rows of calls that pane made
@@ -223,9 +211,7 @@ fn content_text(content: &Value) -> String {
                 Some("tool_use" | "toolCall") => format!(
                     "[tool {} {}]",
                     part["name"].as_str().unwrap_or("?"),
-                    part.get("input")
-                        .or_else(|| part.get("arguments"))
-                        .unwrap_or(&Value::Null)
+                    part.get("input").or_else(|| part.get("arguments")).unwrap_or(&Value::Null)
                 ),
                 Some("tool_result") => format!("[tool result {}]", content_text(&part["content"])),
                 Some(other) => format!("[{other}]"),
@@ -319,12 +305,7 @@ fn clip(text: &str) -> String {
 }
 
 fn clip_command(command: &str) -> String {
-    truncate_line(
-        &command
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t"),
-    )
+    truncate_line(&command.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))
 }
 
 fn truncate_line(text: &str) -> String {
@@ -466,16 +447,8 @@ pub(crate) fn render_line(entry: &Value, utc: bool) -> String {
         "{time} {:>5}  {}  {}{}",
         entry["seq"].as_u64().unwrap_or(0),
         entry["kind"].as_str().unwrap_or("?"),
-        if entry["kind"] == "cli_call" {
-            summary_of(entry)
-        } else {
-            clip(&summary_of(entry))
-        },
-        if ids.is_empty() {
-            String::new()
-        } else {
-            format!("  ({ids})")
-        }
+        if entry["kind"] == "cli_call" { summary_of(entry) } else { clip(&summary_of(entry)) },
+        if ids.is_empty() { String::new() } else { format!("  ({ids})") }
     )
 }
 

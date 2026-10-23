@@ -242,10 +242,7 @@ pub(crate) fn enforce_pane_context_scope(
 /// Keep secret lookup inside the pane's context while reusing the registry's
 /// channel and home-directory exclusions. Never reinterpret a parent profile
 /// as this pane's workspace (the H8 request walked from ~/temp into $HOME).
-fn secret_workspace_root(
-    cwd: &std::path::Path,
-    context: Option<&std::path::Path>,
-) -> Option<std::path::PathBuf> {
+fn secret_workspace_root(cwd: &std::path::Path, context: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
     let cwd = crate::platform::path::canonical_or_self(cwd);
     let root = crate::app::registry::resolve_workspace_root(&cwd)?;
     let root = crate::platform::path::canonical_or_self(&root);
@@ -260,8 +257,7 @@ fn secret_workspace_root(
 
 fn secret_not_set(name: &str) -> String {
     let directory = crate::config::workspace_channel_dir();
-    let binary = directory
-        .strip_prefix(".plexi-")
+    let binary = directory.strip_prefix(".plexi-")
         .map(|channel| format!("plexi-{channel}"))
         .unwrap_or_else(|| "plexi".into());
     format!("{name} not set; run `{binary} secret set {name}`")
@@ -464,8 +460,7 @@ pub(crate) fn store_workspace_secret(
     effective_friendly: &str,
     value: &str,
 ) -> Result<Vec<String>, String> {
-    let account =
-        crate::workspace::secrets::keychain_workspace_name(workspace_id, effective_friendly);
+    let account = crate::workspace::secrets::keychain_workspace_name(workspace_id, effective_friendly);
     store.set(&account, value).map_err(|e| {
         log::warn!("secret_set:cli: keychain write failed for {account}: {e}");
         format!("keychain write failed: {e}")
@@ -679,18 +674,11 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
         "global": global,
         "workspace_root": workspace_root,
     });
-    let reply = match super::request_with(
-        payload,
-        "secret-get-response",
-        "secret get",
-        std::time::Duration::from_secs(120),
-    ) {
+    let reply = match super::request_with(payload, "secret-get-response", "secret get", std::time::Duration::from_secs(120)) {
         Ok(content) => content,
         Err(code) => {
             log::info!("secret_get:cli: host gate unreachable from a pane; refusing");
-            eprintln!(
-                "error: a pane reads secrets through the Plexi host, and the host did not answer"
-            );
+            eprintln!("error: a pane reads secrets through the Plexi host, and the host did not answer");
             println!("permission_denied");
             return code.max(1);
         }
@@ -704,23 +692,14 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
     };
     match reply.get("status").and_then(|status| status.as_str()) {
         Some("value") => {
-            println!(
-                "{}",
-                reply
-                    .get("value")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-            );
+            println!("{}", reply.get("value").and_then(|v| v.as_str()).unwrap_or_default());
             0
         }
         Some("permission_required") => {
             println!("permission_required");
             println!(
                 "pending_request_id={}",
-                reply
-                    .get("pending_request_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
+                reply.get("pending_request_id").and_then(|v| v.as_str()).unwrap_or_default()
             );
             eprintln!("Click Allow on the Plexi window, then run this again.");
             2
@@ -736,10 +715,7 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
         _ => {
             eprintln!(
                 "error: {}",
-                reply
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("secret get failed")
+                reply.get("error").and_then(|v| v.as_str()).unwrap_or("secret get failed")
             );
             1
         }
@@ -779,10 +755,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
                     eprintln!("error: {}", secret_not_set(friendly));
                     1
                 }
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    1
-                }
+                Err(error) => { eprintln!("error: {error}"); 1 }
             };
         }
 
@@ -807,10 +780,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
                 let account = keychain_workspace_name(&cfg.id, friendly);
                 let value = match store.get_interactive(&account) {
                     Ok(value) => value,
-                    Err(error) => {
-                        eprintln!("error: {error}");
-                        return 1;
-                    }
+                    Err(error) => { eprintln!("error: {error}"); return 1; }
                 };
                 if let Some(value) = value {
                     log::info!(
@@ -843,10 +813,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
                 eprintln!("error: {}", secret_not_set(friendly));
                 1
             }
-            Err(error) => {
-                eprintln!("error: {error}");
-                1
-            }
+            Err(error) => { eprintln!("error: {error}"); 1 }
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -965,7 +932,8 @@ fn read_secret_value(name: &str, from_env: bool) -> Result<zeroize::Zeroizing<St
 }
 
 fn audit_folder_denial(actor: &str, resource: &str, call_id: &str) {
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
     monitor.note_denial(actor, call_id, resource, "", "permission_denied");
     log::info!("folder_secrets: refused actor={actor} resource={resource} call_id={call_id}");
 }
@@ -1334,21 +1302,25 @@ mod secret_set_tests {
 
     #[test]
     fn cli_secret_grant_does_not_write_an_allow_or_the_value() {
-        let _enabled =
-            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let _enabled = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("profile");
         let _guard = crate::config::set_test_profile_dir(profile.clone());
         let folder = dir.path().join("B");
         fs::create_dir(&folder).unwrap();
-        let code = folder_secret_grant("FOLDER_B_SECRET", Some("me"), None, Some(folder.as_path()));
+        let code = folder_secret_grant(
+            "FOLDER_B_SECRET",
+            Some("me"),
+            None,
+            Some(folder.as_path()),
+        );
         assert_eq!(code, 1);
         assert!(
             !profile.join("grants.toml").exists(),
             "the cli must not record a folder-secret allow"
         );
-        let audit =
-            fs::read_to_string(profile.join("permission-audit.jsonl")).expect("refusal is audited");
+        let audit = fs::read_to_string(profile.join("permission-audit.jsonl"))
+            .expect("refusal is audited");
         assert!(audit.contains("permission_denied"));
         assert!(audit.contains("FOLDER_B_SECRET"));
         assert!(!audit.contains("secret-value-canary"));
@@ -1637,10 +1609,7 @@ mod secret_root_tests {
         let _pane = set_test_pane_context_root(&context);
         assert!(enforce_pane_context_scope(&cwd, false, "secret.workspace").is_ok());
         std::fs::create_dir_all(context.join(&channel)).unwrap();
-        assert_eq!(
-            secret_workspace_root(&cwd, Some(&context)),
-            Some(context.canonicalize().unwrap())
-        );
+        assert_eq!(secret_workspace_root(&cwd, Some(&context)), Some(context.canonicalize().unwrap()));
         if let Some(home) = dirs::home_dir() {
             assert_eq!(secret_workspace_root(&home, Some(&home)), None);
         }
@@ -1648,9 +1617,6 @@ mod secret_root_tests {
     #[test]
     fn missing_secret_message_names_the_channel_binary_once() {
         let _channel = crate::config::set_test_channel("alpha");
-        assert_eq!(
-            secret_not_set("FOO"),
-            "FOO not set; run `plexi-alpha secret set FOO`"
-        );
+        assert_eq!(secret_not_set("FOO"), "FOO not set; run `plexi-alpha secret set FOO`");
     }
 }

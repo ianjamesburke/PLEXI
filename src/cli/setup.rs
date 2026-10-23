@@ -273,15 +273,13 @@ pub fn ensure_local_shim() -> Result<PathBuf, String> {
             std::fs::write(&launcher, script.as_bytes())
                 .map_err(|e| format!("write shim {}: {e}", launcher.display()))?;
             let _ = std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755));
-            log::info!(
-                "cli_setup: self-healed local shim at {}",
-                launcher.display()
-            );
+            log::info!("cli_setup: self-healed local shim at {}", launcher.display());
         }
         if !channel.starts_with("pr-") {
             let name = plexi_distribution::release::command_name(&channel);
             for shell in ["fish", "bash", "zsh"] {
-                for dropin in plexi_distribution::transaction::dropin_completion_paths(&name, shell)
+                for dropin in
+                    plexi_distribution::transaction::dropin_completion_paths(&name, shell)
                 {
                     if !dropin.exists() && !dropin.is_symlink() {
                         if let Ok(bytes) = crate::cli::completions::render_completions(shell, &name)
@@ -324,7 +322,8 @@ pub fn setup_external_shell(modify_path: bool) -> Result<CliSetupReport, String>
         if !channel.starts_with("pr-") {
             let name = plexi_distribution::release::command_name(&channel);
             for shell in ["fish", "bash", "zsh"] {
-                for dropin in plexi_distribution::transaction::dropin_completion_paths(&name, shell)
+                for dropin in
+                    plexi_distribution::transaction::dropin_completion_paths(&name, shell)
                 {
                     if let Ok(bytes) = crate::cli::completions::render_completions(shell, &name) {
                         if let Some(parent) = dropin.parent() {
@@ -446,7 +445,8 @@ pub fn external_shell_status() -> serde_json::Value {
     let shim_exists = shim_path.is_file() || is_installed();
     let bin_dir = shim_path.parent().map(Path::to_path_buf);
     let in_path = bin_dir.as_ref().is_some_and(|dir| {
-        std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|p| p == *dir))
+        std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|p| p == *dir))
     });
     let rc_configured = crate::distribution::installed()
         .ok()
@@ -527,15 +527,21 @@ mod tests {
         // 1. Self-heal shim + drop-in completions must NOT touch .zshrc/.bashrc/.profile.
         let shim = super::ensure_local_shim().expect("ensure_local_shim");
         assert!(shim.is_file(), "local shim must be created at {shim:?}");
-        assert!(xdg_data
-            .join("fish/vendor_completions.d/plexi-alpha.fish")
-            .is_file());
-        assert!(xdg_data
-            .join("bash-completion/completions/plexi-alpha")
-            .is_file());
-        assert!(profile
-            .join("shell-integration/zsh/completions/_plexi-alpha")
-            .is_file());
+        assert!(
+            xdg_data
+                .join("fish/vendor_completions.d/plexi-alpha.fish")
+                .is_file()
+        );
+        assert!(
+            xdg_data
+                .join("bash-completion/completions/plexi-alpha")
+                .is_file()
+        );
+        assert!(
+            profile
+                .join("shell-integration/zsh/completions/_plexi-alpha")
+                .is_file()
+        );
         assert!(!home.join(".zshrc").exists());
         assert!(!home.join(".bashrc").exists());
         assert!(!home.join(".profile").exists());

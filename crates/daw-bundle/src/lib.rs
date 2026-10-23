@@ -118,7 +118,8 @@ impl BundleDoc {
     }
 
     pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|e| format!("daw bundle deserialization failed: {e}"))
+        serde_json::from_str(json)
+            .map_err(|e| format!("daw bundle deserialization failed: {e}"))
     }
 
     /// Rebuilds a live model, rejecting invariant-violating state (corrupted
@@ -156,15 +157,8 @@ mod tests {
         let media = media_relpath(&hash);
         let mut model = DawModel::new();
         for cmd in [
-            DawCommand::AddTrack {
-                kind: TrackKind::Audio,
-                name: "Guitar".into(),
-            },
-            DawCommand::AddSource {
-                kind: TrackKind::Audio,
-                path: media,
-                duration: 4 * beat,
-            },
+            DawCommand::AddTrack { kind: TrackKind::Audio, name: "Guitar".into() },
+            DawCommand::AddSource { kind: TrackKind::Audio, path: media, duration: 4 * beat },
             DawCommand::AddClip {
                 track: TrackId(1),
                 source: SourceId(2),
@@ -172,10 +166,7 @@ mod tests {
                 length: 2 * beat,
                 source_offset: 0,
             },
-            DawCommand::AddTrack {
-                kind: TrackKind::Audio,
-                name: "Synth".into(),
-            },
+            DawCommand::AddTrack { kind: TrackKind::Audio, name: "Synth".into() },
             DawCommand::AddSource {
                 kind: TrackKind::Audio,
                 path: "demo:pluck".into(),

@@ -139,8 +139,8 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         response_file_str
     );
 
-    use crate::platform::ipc::{self, IpcStream};
     use std::io::Write;
+    use crate::platform::ipc::{self, IpcStream};
     let mut stream = match IpcStream::connect(&socket_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -235,8 +235,8 @@ pub fn dismiss_notify_cli(
         "source_pane_id": source_pane_id,
         "response_file": response_file,
     });
-    use crate::platform::ipc::IpcStream;
     use std::io::Write;
+    use crate::platform::ipc::IpcStream;
     let mut stream = match IpcStream::connect(&socket_path) {
         Ok(stream) => stream,
         Err(e) => {

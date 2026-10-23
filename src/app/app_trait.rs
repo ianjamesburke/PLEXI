@@ -79,10 +79,7 @@ pub enum AppCommand {
         request: crate::protocol::AppRequest,
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
-    CdRequest {
-        cwd: String,
-        sender_pane_id: u64,
-    },
+    CdRequest { cwd: String, sender_pane_id: u64 },
     /// Deliver a JSON pipe message on a directed pipe (#286): the host routes
     /// it to the non-sender member of the recorded `(sender, target)` pair.
     /// A send on a pipe that was never opened directed is dropped — the legacy
@@ -322,10 +319,7 @@ pub trait App: Send {
     /// hidden windows and inactive contexts, so it must be cheap when idle.
     /// Apps arm their own watcher lazily with `wake`. Returns true when
     /// visible state changed.
-    fn service_external(
-        &mut self,
-        _wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
-    ) -> bool {
+    fn service_external(&mut self, _wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>) -> bool {
         false
     }
 

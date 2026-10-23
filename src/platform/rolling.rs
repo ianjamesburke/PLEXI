@@ -189,11 +189,7 @@ impl RollingFile {
             self.len = 0;
             return;
         }
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        {
+        match OpenOptions::new().create(true).append(true).open(&self.path) {
             Ok(file) => {
                 self.file = Some(file);
                 self.len = 0;
@@ -208,10 +204,7 @@ impl RollingFile {
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "[plexi::rolling] could not reopen {}: {e}",
-                    self.path.display()
-                );
+                eprintln!("[plexi::rolling] could not reopen {}: {e}", self.path.display());
                 self.file = None;
             }
         }
@@ -226,21 +219,14 @@ impl RollingFile {
         if !replaced {
             return;
         }
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        {
+        match OpenOptions::new().create(true).append(true).open(&self.path) {
             Ok(file) => {
                 self.len = file.metadata().map(|m| m.len()).unwrap_or(0);
                 self.segment_day = (self.today)();
                 self.file = Some(file);
             }
             Err(e) => {
-                eprintln!(
-                    "[plexi::rolling] could not reopen {}: {e}",
-                    self.path.display()
-                );
+                eprintln!("[plexi::rolling] could not reopen {}: {e}", self.path.display());
                 self.file = None;
             }
         }
@@ -305,8 +291,7 @@ mod tests {
     }
 
     fn fake_today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
-            + chrono::Duration::days(DAY_OFFSET.with(|d| d.get()))
+        NaiveDate::from_ymd_opt(2026, 3, 1).unwrap() + chrono::Duration::days(DAY_OFFSET.with(|d| d.get()))
     }
 
     fn names(dir: &Path) -> Vec<String> {
@@ -322,19 +307,10 @@ mod tests {
     #[test]
     fn archive_date_parses_plain_and_numbered_archives() {
         let day = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        assert_eq!(
-            archive_date("events-2026-03-01.jsonl", "events", "jsonl"),
-            Some(day)
-        );
-        assert_eq!(
-            archive_date("events-2026-03-01.2.jsonl", "events", "jsonl"),
-            Some(day)
-        );
+        assert_eq!(archive_date("events-2026-03-01.jsonl", "events", "jsonl"), Some(day));
+        assert_eq!(archive_date("events-2026-03-01.2.jsonl", "events", "jsonl"), Some(day));
         assert_eq!(archive_date("events.jsonl", "events", "jsonl"), None);
-        assert_eq!(
-            archive_date("effects-2026-03-01.jsonl", "events", "jsonl"),
-            None
-        );
+        assert_eq!(archive_date("effects-2026-03-01.jsonl", "events", "jsonl"), None);
     }
 
     #[test]

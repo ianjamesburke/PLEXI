@@ -31,32 +31,16 @@ pub enum ApplyOutcome {
 pub enum DawCommand {
     /// Set the project tempo. Non-finite is rejected; the value clamps to
     /// [`crate::TEMPO_MIN`]..=[`crate::TEMPO_MAX`].
-    SetTempo {
-        bpm: f64,
-    },
+    SetTempo { bpm: f64 },
 
-    AddTrack {
-        kind: TrackKind,
-        name: String,
-    },
-    RemoveTrack {
-        track: TrackId,
-    },
-    RenameTrack {
-        track: TrackId,
-        name: String,
-    },
+    AddTrack { kind: TrackKind, name: String },
+    RemoveTrack { track: TrackId },
+    RenameTrack { track: TrackId, name: String },
 
     /// Register a media source. `duration` is in ticks.
-    AddSource {
-        kind: TrackKind,
-        path: String,
-        duration: u64,
-    },
+    AddSource { kind: TrackKind, path: String, duration: u64 },
     /// Remove a source and every clip referencing it, in one undo group.
-    RemoveSource {
-        source: SourceId,
-    },
+    RemoveSource { source: SourceId },
 
     /// Place a clip on a track. The source kind must match the track kind;
     /// `source_offset + length` must fit inside the source. Clips may
@@ -68,53 +52,25 @@ pub enum DawCommand {
         length: u64,
         source_offset: u64,
     },
-    RemoveClip {
-        clip: ClipId,
-    },
+    RemoveClip { clip: ClipId },
     /// Move a clip, possibly to another track when the kinds match.
-    MoveClip {
-        clip: ClipId,
-        track: TrackId,
-        position: u64,
-    },
-    ResizeClip {
-        clip: ClipId,
-        length: u64,
-        source_offset: u64,
-    },
+    MoveClip { clip: ClipId, track: TrackId, position: u64 },
+    ResizeClip { clip: ClipId, length: u64, source_offset: u64 },
 
     /// Mixer sets validate finiteness up front and clamp on apply.
     /// Consecutive sets of the same variant on the same track coalesce into
     /// one undo group until any other command breaks it.
-    SetTrackVolume {
-        track: TrackId,
-        volume: f32,
-    },
-    SetTrackPan {
-        track: TrackId,
-        pan: f32,
-    },
-    SetTrackMute {
-        track: TrackId,
-        mute: bool,
-    },
-    SetTrackSolo {
-        track: TrackId,
-        solo: bool,
-    },
+    SetTrackVolume { track: TrackId, volume: f32 },
+    SetTrackPan { track: TrackId, pan: f32 },
+    SetTrackMute { track: TrackId, mute: bool },
+    SetTrackSolo { track: TrackId, solo: bool },
 
     Play,
     /// Stops playback only; the position is untouched (use `Seek`).
     Stop,
-    Seek {
-        position: u64,
-    },
+    Seek { position: u64 },
     /// `start < end` is required whenever `enabled` is true.
-    SetLoop {
-        enabled: bool,
-        start: u64,
-        end: u64,
-    },
+    SetLoop { enabled: bool, start: u64, end: u64 },
 
     Undo,
     Redo,

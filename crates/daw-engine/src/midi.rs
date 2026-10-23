@@ -113,16 +113,8 @@ fn parse_track(body: &[u8], tpqn: u64, notes: &mut Vec<Note>) -> Result<(), Stri
     let mut running_status: Option<u8> = None;
     let mut open: Vec<OpenNote> = Vec::new();
 
-    let close = |open: &mut Vec<OpenNote>,
-                 key: u8,
-                 channel: u8,
-                 end_ticks: u64,
-                 notes: &mut Vec<Note>|
-     -> Result<(), String> {
-        if let Some(i) = open
-            .iter()
-            .position(|n| n.key == key && n.channel == channel)
-        {
+    let close = |open: &mut Vec<OpenNote>, key: u8, channel: u8, end_ticks: u64, notes: &mut Vec<Note>| -> Result<(), String> {
+        if let Some(i) = open.iter().position(|n| n.key == key && n.channel == channel) {
             let n = open.remove(i);
             let start = rescale(n.start_ticks, tpqn)?;
             let end = rescale(end_ticks, tpqn)?;
@@ -154,8 +146,7 @@ fn parse_track(body: &[u8], tpqn: u64, notes: &mut Vec<Note>) -> Result<(), Stri
             }
             first
         } else {
-            running_status
-                .ok_or_else(|| format!("midi: data byte {first:#04x} with no running status"))?
+            running_status.ok_or_else(|| format!("midi: data byte {first:#04x} with no running status"))?
         };
         match status {
             0xFF => {
@@ -247,18 +238,8 @@ mod tests {
         assert_eq!(
             notes,
             vec![
-                Note {
-                    key: 60,
-                    velocity: 100,
-                    start_ticks: 0,
-                    length_ticks: 960
-                },
-                Note {
-                    key: 64,
-                    velocity: 80,
-                    start_ticks: 960,
-                    length_ticks: 480
-                },
+                Note { key: 60, velocity: 100, start_ticks: 0, length_ticks: 960 },
+                Note { key: 64, velocity: 80, start_ticks: 960, length_ticks: 480 },
             ]
         );
     }
@@ -270,12 +251,7 @@ mod tests {
         let notes = parse_smf(&bytes).unwrap();
         assert_eq!(
             notes,
-            vec![Note {
-                key: 72,
-                velocity: 90,
-                start_ticks: 0,
-                length_ticks: 960
-            }]
+            vec![Note { key: 72, velocity: 90, start_ticks: 0, length_ticks: 960 }]
         );
     }
 
@@ -285,12 +261,7 @@ mod tests {
         let notes = parse_smf(&bytes).unwrap();
         assert_eq!(
             notes,
-            vec![Note {
-                key: 60,
-                velocity: 64,
-                start_ticks: 0,
-                length_ticks: 480
-            }]
+            vec![Note { key: 60, velocity: 64, start_ticks: 0, length_ticks: 480 }]
         );
     }
 

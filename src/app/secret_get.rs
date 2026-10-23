@@ -96,10 +96,7 @@ impl PlexiApp {
         let reply_path = PathBuf::from(response_file);
         let rpc_dir = crate::config::config_dir().join("rpc");
         if reply_path.parent() != Some(rpc_dir.as_path()) {
-            log::warn!(
-                "secret_get: refused reply path outside {}",
-                rpc_dir.display()
-            );
+            log::warn!("secret_get: refused reply path outside {}", rpc_dir.display());
             return;
         }
         let monitor =
@@ -226,15 +223,13 @@ fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope,
     let Some(root) = workspace_root.filter(|_| !global) else {
         return Ok(SecretScope::Global);
     };
-    Ok(
-        match crate::workspace::secrets::WorkspaceConfig::load(root)? {
-            Some(cfg) => SecretScope::Workspace {
-                id: cfg.id,
-                root: crate::platform::path::canonical_or_self(root),
-            },
-            None => SecretScope::Global,
+    Ok(match crate::workspace::secrets::WorkspaceConfig::load(root)? {
+        Some(cfg) => SecretScope::Workspace {
+            id: cfg.id,
+            root: crate::platform::path::canonical_or_self(root),
         },
-    )
+        None => SecretScope::Global,
+    })
 }
 
 fn write_reply(path: &Path, body: serde_json::Value, holds_value: bool) {
@@ -254,17 +249,10 @@ mod list_tests {
     use crate::testing::HostHarness;
     use crate::workspace::secrets;
 
-    fn request(
-        h: &mut HostHarness,
-        context: &str,
-        claimed_pid: u32,
-        peer: &[u32],
-    ) -> serde_json::Value {
+    fn request(h: &mut HostHarness, context: &str, claimed_pid: u32, peer: &[u32]) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-list-test", "json");
         let request = crate::protocol::AppRequest::PaneSecretList {
-            context: context.into(),
-            peer_ancestry: vec![claimed_pid],
-            response_file: response_file.clone(),
+            context: context.into(), peer_ancestry: vec![claimed_pid], response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
         crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut Vec::new());
@@ -290,52 +278,23 @@ mod list_tests {
         let cfg = secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
         let name = format!("CONTEXT_{}", uuid::Uuid::new_v4().simple());
         let account = secrets::keychain_workspace_name(&cfg.id, &name);
-        secrets::system_store()
-            .set(&account, "not-for-output")
-            .unwrap();
+        secrets::system_store().set(&account, "not-for-output").unwrap();
         for target in [&context, "inventory-target", root.to_str().unwrap()] {
             let human = request(&mut h, target, pid, &[pid]);
-            assert!(human["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["name"] == name));
+            assert!(human["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
         }
         // The listener overwrites forged ancestry before dispatch, including while hidden.
-        assert_eq!(
-            request(&mut h, &context, pid, &[])["error_code"],
-            "permission_denied"
-        );
-        h.app.windows[0]
-            .panes
-            .get_mut(&pane)
-            .unwrap()
-            .as_terminal_mut()
-            .unwrap()
-            .agent_spawned = true;
+        assert_eq!(request(&mut h, &context, pid, &[])["error_code"], "permission_denied");
+        h.app.windows[0].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().agent_spawned = true;
         let denied = request(&mut h, &context, pid, &[pid]);
         let error = denied["error"].as_str().unwrap();
         assert!(error.contains("secret.list") && error.contains("Needs you"));
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let pending = monitor
-            .list_entries()
-            .into_iter()
-            .find(|row| row.tool == "secret.list")
-            .unwrap();
-        monitor
-            .approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once)
-            .unwrap();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let pending = monitor.list_entries().into_iter().find(|row| row.tool == "secret.list").unwrap();
+        monitor.approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once).unwrap();
         let allowed = request(&mut h, &context, pid, &[pid]);
-        assert!(allowed["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["name"] == name));
-        assert_eq!(
-            request(&mut h, &context, pid, &[pid])["error_code"],
-            "permission_denied"
-        );
+        assert!(allowed["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
+        assert_eq!(request(&mut h, &context, pid, &[pid])["error_code"], "permission_denied");
         secrets::system_store().delete(&account).unwrap();
     }
 
@@ -367,8 +326,11 @@ mod list_tests {
         crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut server_stream);
         drop(server_stream);
         h.hidden_frame();
-        let body = crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(2)))
-            .unwrap();
+        let body = crate::rpc::poll_string(
+            &response_file,
+            Some(std::time::Duration::from_secs(2)),
+        )
+        .unwrap();
         assert!(
             !std::path::Path::new(&response_file).exists(),
             "secret_get must never create a response file on disk"
@@ -563,8 +525,7 @@ mod list_tests {
     }
 
     #[test]
-    fn child_worker_inherits_parent_posture_restrictions_and_subcontext_reuse_keeps_grants_distinct(
-    ) {
+    fn child_worker_inherits_parent_posture_restrictions_and_subcontext_reuse_keeps_grants_distinct() {
         let mut h = HostHarness::new();
         let ws = h.workspace_root();
         let pane_pid = |h: &HostHarness, pane_id: u64| {
@@ -591,7 +552,11 @@ mod list_tests {
             "child-permissive",
             "[permissions]\ndefault_posture = \"allow\"\nallow = [\"secret.get\"]",
         );
-        write_agent_role(&ws, "peer-ask", "[permissions]\ndefault_posture = \"ask\"");
+        write_agent_role(
+            &ws,
+            "peer-ask",
+            "[permissions]\ndefault_posture = \"ask\"",
+        );
 
         let (parent_pane, _) = h
             .app

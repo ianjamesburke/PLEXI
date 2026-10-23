@@ -166,16 +166,18 @@ impl PlexiApp {
                         &self.windows,
                     )
                     .status;
-                    let effective_status =
-                        if matches!(status, crate::host::context_state::ContextStatus::Idle) {
-                            portal
-                                .context_state
-                                .as_ref()
-                                .map(|s| s.status.clone())
-                                .unwrap_or(status)
-                        } else {
-                            status
-                        };
+                    let effective_status = if matches!(
+                        status,
+                        crate::host::context_state::ContextStatus::Idle
+                    ) {
+                        portal
+                            .context_state
+                            .as_ref()
+                            .map(|s| s.status.clone())
+                            .unwrap_or(status)
+                    } else {
+                        status
+                    };
                     return match effective_status {
                         crate::host::context_state::ContextStatus::NeedsYou => {
                             Some(crate::protocol::AgentState::NeedsYou)
@@ -252,7 +254,8 @@ const _: () = assert!(
 /// panes.
 pub(crate) fn sidebar_width_bounds(window_width: f32) -> (f32, std::ops::RangeInclusive<f32>) {
     let min_w = crate::ui::style::SIDEBAR_MIN_W;
-    let max_for_content = (window_width - crate::ui::style::SIDEBAR_CONTENT_MIN_W).max(min_w);
+    let max_for_content =
+        (window_width - crate::ui::style::SIDEBAR_CONTENT_MIN_W).max(min_w);
     let max_w = max_for_content.min(crate::ui::style::SIDEBAR_MAX_W);
     let default_w = crate::ui::style::SIDEBAR_DEFAULT_W.clamp(min_w, max_w);
     (default_w, min_w..=max_w)
@@ -285,10 +288,7 @@ impl PlexiApp {
         let desired_w = ctx
             .data(|d| d.get_temp::<f32>(desired_id))
             .unwrap_or(crate::ui::style::SIDEBAR_DEFAULT_W)
-            .clamp(
-                crate::ui::style::SIDEBAR_MIN_W,
-                crate::ui::style::SIDEBAR_MAX_W,
-            );
+            .clamp(crate::ui::style::SIDEBAR_MIN_W, crate::ui::style::SIDEBAR_MAX_W);
         let was_clamped = ctx
             .data(|d| d.get_temp::<bool>(clamped_id))
             .unwrap_or(false);
@@ -323,7 +323,8 @@ impl PlexiApp {
 
         if let Some(state) = egui::containers::panel::PanelState::load(&ctx, panel_id) {
             let actual_w = state.rect.width();
-            let is_clamped = max_w < desired_w - f32::EPSILON && actual_w >= max_w - f32::EPSILON;
+            let is_clamped =
+                max_w < desired_w - f32::EPSILON && actual_w >= max_w - f32::EPSILON;
             ctx.data_mut(|d| {
                 d.insert_temp(clamped_id, is_clamped);
                 if !is_clamped {
@@ -374,10 +375,7 @@ impl PlexiApp {
                 .truncate()
                 .min_size(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H));
                 if ui
-                    .add_sized(
-                        Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H),
-                        button,
-                    )
+                    .add_sized(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H), button)
                     .on_hover_text("Review items that need your attention")
                     .clicked()
                 {

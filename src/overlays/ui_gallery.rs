@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    button::{choice_button, chrome_button, icon_button, toolbar_button, ButtonKind},
+    button::{ButtonKind, choice_button, chrome_button, icon_button, toolbar_button},
     code_viewer::ReadOnlyCodeViewer,
     hints::{HintBar, HintGroup},
     labels::chrome_section,
@@ -8,11 +8,11 @@ use crate::ui::{
     overlay::ModalShell,
     shortcuts::key_chip,
     surface::{
-        color_swatch, compact_copyable_command, copyable_command, empty_state_panel, status_chip,
-        trust_decision_panel, TrustTone,
+        TrustTone, color_swatch, compact_copyable_command, copyable_command, empty_state_panel,
+        status_chip, trust_decision_panel,
     },
     text_field::{TextArea, TextField},
-    toast::{toast_caption, ProgressDots},
+    toast::{ProgressDots, toast_caption},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

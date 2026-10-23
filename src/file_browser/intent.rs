@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::helpers::{default_direction_for, ColumnId, Entry, SortDirection};
+use super::helpers::{ColumnId, Entry, SortDirection, default_direction_for};
 
 /// Typed intent contract for the File Explorer `/` and `Cmd+K` action palette.
 ///
@@ -112,10 +112,7 @@ impl<'a> FileExplorerContext<'a> {
         if is_selection_pronoun(trimmed) {
             return self.primary_target_path();
         }
-        if matches!(
-            trimmed,
-            "." | "here" | "cwd" | "current directory" | "current folder"
-        ) {
+        if matches!(trimmed, "." | "here" | "cwd" | "current directory" | "current folder") {
             return Some(self.cwd.to_path_buf());
         }
         if let Some(entry) = self
@@ -510,10 +507,7 @@ fn parse_sort_clause(clause: &str) -> Option<FileExplorerIntent> {
     }
     let tokens: Vec<String> = cleaned
         .split_whitespace()
-        .map(|tok| {
-            tok.trim_matches(|c: char| c == ',' || c == ';')
-                .to_ascii_lowercase()
-        })
+        .map(|tok| tok.trim_matches(|c: char| c == ',' || c == ';').to_ascii_lowercase())
         .filter(|tok| !tok.is_empty())
         .collect();
     if tokens.is_empty() {
@@ -599,17 +593,7 @@ fn parse_create_folder_nl(text: &str) -> Option<FileExplorerIntent> {
 
     let mut cursor = text.trim();
     for prefix in [
-        "create",
-        "make",
-        "add",
-        "new",
-        "a",
-        "an",
-        "new",
-        "folder",
-        "directory",
-        "dir",
-        "called",
+        "create", "make", "add", "new", "a", "an", "new", "folder", "directory", "dir", "called",
         "named",
     ] {
         if let Some(after) = strip_word_prefix_case_insensitive(cursor, prefix) {
@@ -618,14 +602,7 @@ fn parse_create_folder_nl(text: &str) -> Option<FileExplorerIntent> {
     }
     // Second pass in case article/noun order was e.g. "make a new folder called assets".
     for prefix in [
-        "a",
-        "an",
-        "new",
-        "folder",
-        "directory",
-        "dir",
-        "called",
-        "named",
+        "a", "an", "new", "folder", "directory", "dir", "called", "named",
     ] {
         if let Some(after) = strip_word_prefix_case_insensitive(cursor, prefix) {
             cursor = after.trim();
@@ -1020,14 +997,16 @@ fn sort_candidate_syntax_and_subtitle(
         (ColumnId::Modified, SortDirection::Desc) => {
             ("/sort modified desc", "Newest modified first")
         }
-        (ColumnId::Modified, SortDirection::Asc) => ("/sort modified asc", "Oldest modified first"),
+        (ColumnId::Modified, SortDirection::Asc) => {
+            ("/sort modified asc", "Oldest modified first")
+        }
         (ColumnId::Size, SortDirection::Desc) => ("/sort size desc", "Largest files first"),
         (ColumnId::Size, SortDirection::Asc) => ("/sort size asc", "Smallest files first"),
         (ColumnId::Kind, SortDirection::Asc) => ("/sort kind asc", "Group by item kind"),
-        (ColumnId::Kind, SortDirection::Desc) => {
-            ("/sort kind desc", "Group by item kind (reverse)")
+        (ColumnId::Kind, SortDirection::Desc) => ("/sort kind desc", "Group by item kind (reverse)"),
+        (ColumnId::Extension, SortDirection::Asc) => {
+            ("/sort ext asc", "Group by file extension")
         }
-        (ColumnId::Extension, SortDirection::Asc) => ("/sort ext asc", "Group by file extension"),
         (ColumnId::Extension, SortDirection::Desc) => {
             ("/sort ext desc", "Group by file extension (reverse)")
         }
@@ -1382,10 +1361,7 @@ fn strip_word_prefix_case_insensitive<'a>(text: &'a str, word: &str) -> Option<&
     }
 }
 
-fn split_case_insensitive_delimiter<'a>(
-    text: &'a str,
-    delimiter: &str,
-) -> Option<(&'a str, &'a str)> {
+fn split_case_insensitive_delimiter<'a>(text: &'a str, delimiter: &str) -> Option<(&'a str, &'a str)> {
     let lower = text.to_ascii_lowercase();
     let delim_lower = delimiter.to_ascii_lowercase();
     let idx = lower.rfind(&delim_lower)?;

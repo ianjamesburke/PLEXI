@@ -6,13 +6,13 @@
 
 #[path = "cli/args.rs"]
 pub mod cli_args;
+#[path = "release/catalog.rs"]
+pub mod release_catalog;
 /// Shared Ferrite-derived editor core (stint 0317). Also compiled into the
 /// binary target (`mod editor` in main.rs), where the Notes pane consumes it
 /// (stint 0474).
 pub mod editor;
 pub mod protocol;
-#[path = "release/catalog.rs"]
-pub mod release_catalog;
 
 // Stub modules: only the types used by `protocol` via crate:: references.
 // The real implementations live in the binary target (src/main.rs).

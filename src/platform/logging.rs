@@ -284,16 +284,12 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             }
         }
         Err(e) => {
-            setup_errors.push(format!(
-                "could not open log file {log_file_path:?}: {e}; falling back to stderr only"
-            ));
+            setup_errors.push(format!("could not open log file {log_file_path:?}: {e}; falling back to stderr only"));
             if cli_mode {
-                dispatch.chain(
-                    fern::Dispatch::new()
-                        .level(log::LevelFilter::Warn)
-                        .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
-                        .chain(std::io::stderr()),
-                )
+                dispatch.chain(fern::Dispatch::new()
+                    .level(log::LevelFilter::Warn)
+                    .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
+                    .chain(std::io::stderr()))
             } else {
                 dispatch.chain(std::io::stderr())
             }
@@ -965,10 +961,7 @@ mod tests {
         // mtime is "now" == today, exactly as after a shutdown write.
         let msgs = rotate_and_prune(&log_path, dir.path(), today, 30);
         let expected = format!("plexi-{}.log", started.format("%Y-%m-%d"));
-        assert!(
-            dir.path().join(&expected).exists(),
-            "should rotate to {expected}"
-        );
+        assert!(dir.path().join(&expected).exists(), "should rotate to {expected}");
         assert!(!log_path.exists());
         assert!(msgs.iter().any(|m| m.contains("rotated")));
     }
@@ -1007,25 +1000,12 @@ mod tests {
             fs::write(path, b"{}\n").unwrap();
         }
         let long_ago = std::time::SystemTime::now() - Duration::from_secs(60 * 24 * 3600);
-        fs::File::options()
-            .write(true)
-            .open(&old)
-            .unwrap()
-            .set_modified(long_ago)
-            .unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&latest)
-            .unwrap()
-            .set_modified(long_ago)
-            .unwrap();
+        fs::File::options().write(true).open(&old).unwrap().set_modified(long_ago).unwrap();
+        fs::File::options().write(true).open(&latest).unwrap().set_modified(long_ago).unwrap();
         let pruned = prune_controlled_logs(dir.path(), today_plus(0), 30);
         assert_eq!(pruned, 1);
         assert!(!old.exists());
         assert!(fresh.exists());
-        assert!(
-            latest.exists(),
-            "latest.jsonl is a pointer, never pruned by age"
-        );
+        assert!(latest.exists(), "latest.jsonl is a pointer, never pruned by age");
     }
 }

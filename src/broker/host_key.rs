@@ -375,9 +375,7 @@ where
             remember_abandoned(handle);
             #[cfg(not(test))]
             drop(handle);
-            Err(key_unreadable(
-                "keychain call exceeded the startup deadline",
-            ))
+            Err(key_unreadable("keychain call exceeded the startup deadline"))
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
             Ok(()) => Err(key_unreadable("keychain call ended without a result")),
@@ -1058,10 +1056,7 @@ impl PrProfileBackend {
         }
         let path = host_dir.join("pr-host-seal.json");
         if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(format!(
-                "pr host seal store {} is a symlink",
-                path.display()
-            ));
+            return Err(format!("pr host seal store {} is a symlink", path.display()));
         }
         Ok(path)
     }
@@ -1375,12 +1370,12 @@ impl HostKeyBackend for UnsupportedBackend {
 mod linux {
     use super::plaintext_seal_refusal;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+    use zeroize::Zeroizing;
     use zbus::blocking::Connection;
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
-    use zeroize::Zeroizing;
 
     const SCHEMA: &str = "com.plexi.HostSeal";
     /// Bound for the session handshake and for Secret Service method calls.
@@ -1892,39 +1887,20 @@ mod mac {
                 search: core_foundation::base::CFTypeRef,
                 item: *mut security_framework_sys::base::SecKeychainItemRef,
             ) -> i32;
-            fn SecKeychainItemDelete(item: security_framework_sys::base::SecKeychainItemRef)
-                -> i32;
+            fn SecKeychainItemDelete(item: security_framework_sys::base::SecKeychainItemRef) -> i32;
         }
         let mut service = HOST_SERVICE.as_bytes().to_vec();
         let mut account_bytes = account.as_bytes().to_vec();
         let mut attrs = [
-            KcAttribute {
-                tag: four_cc(b"svce"),
-                length: service.len() as u32,
-                data: service.as_mut_ptr().cast(),
-            },
-            KcAttribute {
-                tag: four_cc(b"acct"),
-                length: account_bytes.len() as u32,
-                data: account_bytes.as_mut_ptr().cast(),
-            },
+            KcAttribute { tag: four_cc(b"svce"), length: service.len() as u32, data: service.as_mut_ptr().cast() },
+            KcAttribute { tag: four_cc(b"acct"), length: account_bytes.len() as u32, data: account_bytes.as_mut_ptr().cast() },
         ];
-        let list = KcAttributeList {
-            count: attrs.len() as u32,
-            attr: attrs.as_mut_ptr(),
-        };
+        let list = KcAttributeList { count: attrs.len() as u32, attr: attrs.as_mut_ptr() };
         let mut search = std::ptr::null();
         let status = unsafe {
-            SecKeychainSearchCreateFromAttributes(
-                chain.as_CFTypeRef(),
-                four_cc(b"genp"),
-                &list,
-                &mut search,
-            )
+            SecKeychainSearchCreateFromAttributes(chain.as_CFTypeRef(), four_cc(b"genp"), &list, &mut search)
         };
-        if status == ERR_SEC_ITEM_NOT_FOUND {
-            return Ok(());
-        }
+        if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
         if status != errSecSuccess {
             return Err(map_keychain_error(account, Error::from_code(status)));
         }
@@ -1932,9 +1908,7 @@ mod mac {
         loop {
             let mut item = std::ptr::null_mut();
             let status = unsafe { SecKeychainSearchCopyNext(search.as_CFTypeRef(), &mut item) };
-            if status == ERR_SEC_ITEM_NOT_FOUND {
-                return Ok(());
-            }
+            if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
             if status != errSecSuccess {
                 return Err(map_keychain_error(account, Error::from_code(status)));
             }
@@ -2172,7 +2146,10 @@ struct RestoreMacItem {
 #[cfg(test)]
 impl RestoreMacItem {
     fn take() -> Self {
-        let previous = get(MAC_ITEM).ok().flatten().map(|value| value.to_string());
+        let previous = get(MAC_ITEM)
+            .ok()
+            .flatten()
+            .map(|value| value.to_string());
         let _ = delete(MAC_ITEM);
         Self { previous }
     }
@@ -2291,11 +2268,7 @@ mod tests {
         let result = done_rx
             .recv_timeout(bound)
             .expect("the unlocked keychain call never returned");
-        assert_eq!(
-            result,
-            Ok(None),
-            "the unlocked caller observed another test's block"
-        );
+        assert_eq!(result, Ok(None), "the unlocked caller observed another test's block");
     }
 
     #[test]

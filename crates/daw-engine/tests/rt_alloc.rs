@@ -41,101 +41,25 @@ fn render_path_never_allocates() {
     let apply = |m: &mut DawModel, cmd: DawCommand| {
         assert!(matches!(m.apply(cmd), ApplyOutcome::Applied));
     };
-    apply(
-        &mut model,
-        DawCommand::AddTrack {
-            kind: TrackKind::Audio,
-            name: "a".into(),
-        },
-    );
-    apply(
-        &mut model,
-        DawCommand::AddSource {
-            kind: TrackKind::Audio,
-            path: "a.wav".into(),
-            duration: 2 * beat,
-        },
-    );
-    let pcm: Vec<f32> = (0..8_000)
-        .map(|i| ((i % 200) as f32 / 100.0) - 1.0)
-        .collect();
-    sources.insert(
-        SourceId(2),
-        SourceData::AudioPcm {
-            sample_rate: 16_000,
-            channels: 1,
-            samples: pcm,
-        },
-    );
-    apply(
-        &mut model,
-        DawCommand::AddClip {
-            track: plexi_daw_model::TrackId(1),
-            source: SourceId(2),
-            position: 0,
-            length: 2 * beat,
-            source_offset: 0,
-        },
-    );
+    apply(&mut model, DawCommand::AddTrack { kind: TrackKind::Audio, name: "a".into() });
+    apply(&mut model, DawCommand::AddSource { kind: TrackKind::Audio, path: "a.wav".into(), duration: 2 * beat });
+    let pcm: Vec<f32> = (0..8_000).map(|i| ((i % 200) as f32 / 100.0) - 1.0).collect();
+    sources.insert(SourceId(2), SourceData::AudioPcm { sample_rate: 16_000, channels: 1, samples: pcm });
+    apply(&mut model, DawCommand::AddClip { track: plexi_daw_model::TrackId(1), source: SourceId(2), position: 0, length: 2 * beat, source_offset: 0 });
 
-    apply(
-        &mut model,
-        DawCommand::AddTrack {
-            kind: TrackKind::Midi,
-            name: "m".into(),
-        },
-    );
-    apply(
-        &mut model,
-        DawCommand::AddSource {
-            kind: TrackKind::Midi,
-            path: "m.mid".into(),
-            duration: 2 * beat,
-        },
-    );
-    sources.insert(
-        SourceId(5),
-        SourceData::MidiNotes(vec![
-            Note {
-                key: 57,
-                velocity: 100,
-                start_ticks: 0,
-                length_ticks: beat,
-            },
-            Note {
-                key: 64,
-                velocity: 100,
-                start_ticks: beat / 2,
-                length_ticks: beat,
-            },
-        ]),
-    );
-    apply(
-        &mut model,
-        DawCommand::AddClip {
-            track: plexi_daw_model::TrackId(4),
-            source: SourceId(5),
-            position: 0,
-            length: 2 * beat,
-            source_offset: 0,
-        },
-    );
-    apply(
-        &mut model,
-        DawCommand::SetLoop {
-            enabled: true,
-            start: 0,
-            end: beat,
-        },
-    );
+    apply(&mut model, DawCommand::AddTrack { kind: TrackKind::Midi, name: "m".into() });
+    apply(&mut model, DawCommand::AddSource { kind: TrackKind::Midi, path: "m.mid".into(), duration: 2 * beat });
+    sources.insert(SourceId(5), SourceData::MidiNotes(vec![
+        Note { key: 57, velocity: 100, start_ticks: 0, length_ticks: beat },
+        Note { key: 64, velocity: 100, start_ticks: beat / 2, length_ticks: beat },
+    ]));
+    apply(&mut model, DawCommand::AddClip { track: plexi_daw_model::TrackId(4), source: SourceId(5), position: 0, length: 2 * beat, source_offset: 0 });
+    apply(&mut model, DawCommand::SetLoop { enabled: true, start: 0, end: beat });
     apply(&mut model, DawCommand::Play);
 
-    let config = EngineConfig {
-        sample_rate: 48_000,
-        channels: 2,
-    };
-    let mut engine =
-        Engine::prepare(model.project(), model.transport(), &sources, config).expect("prepare");
+    let config = EngineConfig { sample_rate: 48_000, channels: 2 };
+    let mut engine = Engine::prepare(model.project(), model.transport(), &sources, config)
+        .expect("prepare");
     // The RT callback's buffer is preallocated by the caller.
     let mut block = vec![0.0f32; 512 * config.channels as usize];
 

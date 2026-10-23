@@ -121,7 +121,10 @@ mod tests {
     fn environ_matches_only_the_same_host_socket() {
         let bytes = b"HOME=/tmp\0PLEXI_PANE_ID=4\0PLEXI_SOCKET=/tmp/plexi.sock\0";
         assert!(environ_is_pane_of_socket(bytes, "/tmp/plexi.sock"));
-        assert!(!environ_is_pane_of_socket(bytes, "/tmp/other-host.sock"));
+        assert!(!environ_is_pane_of_socket(
+            bytes,
+            "/tmp/other-host.sock"
+        ));
     }
 
     #[test]

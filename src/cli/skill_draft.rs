@@ -191,8 +191,7 @@ fn build_draft(
                     .to_string(),
             );
         }
-        let withheld =
-            status != Some(0) || command.contains("<redacted>") || command.contains("<text len=");
+        let withheld = status != Some(0) || command.contains("<redacted>") || command.contains("<text len=");
         if withheld {
             notes.push(format!(
                 "Review-only call (exit={}): {command}{repeat}",
@@ -419,18 +418,9 @@ mod tests {
             "argv":["plexi", "pane", "send", "19", "<text len=9 sha256=deadbeef>"]}),
         )
         .unwrap();
-        let draft = build_draft(
-            dir.path(),
-            "sess-content-redacted",
-            DraftOptions::default(),
-            "command",
-        )
-        .unwrap();
+        let draft = build_draft(dir.path(), "sess-content-redacted", DraftOptions::default(), "command").unwrap();
         let parsed: toml::Value = toml::from_str(&draft).unwrap();
-        assert!(parsed["commands"]["session_draft"]["steps"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(parsed["commands"]["session_draft"]["steps"].as_array().unwrap().is_empty());
         assert!(draft.contains("Review-only call"));
     }
 }

@@ -834,7 +834,9 @@ impl GrantStore {
             untrusted,
         };
         if rejected {
-            log::info!("grant_store: grants.toml was rejected; permissions.toml was not imported");
+            log::info!(
+                "grant_store: grants.toml was rejected; permissions.toml was not imported"
+            );
             return store;
         }
         store.import_and_retire_legacy(config_dir, loaded.trusted);
@@ -1062,10 +1064,7 @@ impl GrantStore {
     pub fn save(&self) {
         let label = self.file.label();
         if let Err(error) = self.try_save() {
-            log::error!(
-                "{label}: failed to save {}: {error}",
-                self.file.path.display()
-            );
+            log::error!("{label}: failed to save {}: {error}", self.file.path.display());
         }
     }
 
@@ -1121,8 +1120,7 @@ impl GrantStore {
         {
             Decision::Deny
         } else if has(Decision::Ask, true) // 5. managed ask
-            || has(Decision::Ask, false)
-        // 6. user/workspace/session ask
+            || has(Decision::Ask, false) // 6. user/workspace/session ask
         {
             Decision::Ask
         } else if has(Decision::Allow, true) || has(Decision::Allow, false) {
@@ -1581,10 +1579,7 @@ mod tests {
         });
         assert!(backup_exists);
         assert!(
-            store
-                .integrity_faults()
-                .iter()
-                .any(|fault| fault.file == "grants.toml"),
+            store.integrity_faults().iter().any(|fault| fault.file == "grants.toml"),
             "an unsigned grants file is an integrity fault"
         );
     }
@@ -1638,10 +1633,7 @@ mod tests {
             assert_eq!(r.workspace_root.as_deref(), Some(ws_canon.as_path()));
         }
 
-        assert!(store
-            .records()
-            .iter()
-            .all(|record| !record.grant_id.is_empty()));
+        assert!(store.records().iter().all(|record| !record.grant_id.is_empty()));
         assert!(
             !tmp.path().join("permissions.toml").exists(),
             "a successful import retires permissions.toml"
@@ -1697,17 +1689,19 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let monitor = gate::PermissionMonitor::open_profile(profile.path());
-        let declared =
-            std::collections::HashSet::from([Capability::Timer, Capability::PermissionsManage]);
-        let perms = monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
+        let declared = std::collections::HashSet::from([
+            Capability::Timer,
+            Capability::PermissionsManage,
+        ]);
+        let perms =
+            monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
         assert!(perms.capabilities.contains(&Capability::Timer));
         assert!(!perms.capabilities.contains(&Capability::PermissionsManage));
         let listed = monitor.list_entries();
         assert!(listed.iter().any(|entry| entry.id == "cap:sample:timer"));
-        assert!(listed
-            .iter()
-            .all(|entry| entry.id != "cap:sample:permissions.manage"));
-        let again = monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
+        assert!(listed.iter().all(|entry| entry.id != "cap:sample:permissions.manage"));
+        let again =
+            monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
         assert_eq!(again.capabilities, perms.capabilities);
         assert_eq!(
             monitor

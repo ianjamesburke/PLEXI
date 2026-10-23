@@ -19,10 +19,10 @@ mod workspace;
 pub(crate) use create::cli_open_placement;
 #[cfg(test)]
 pub(crate) use create::restore_app_pane;
+pub(crate) use create::{restore_app_pane_in_profile, RestoreTarget, RestoredAppPane};
 pub(crate) use create::restore_assistant_pane;
 pub(crate) use create::restore_builtin_app_pane;
 pub(crate) use create::restore_launch_failed_pane;
-pub(crate) use create::{restore_app_pane_in_profile, RestoreTarget, RestoredAppPane};
 pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;

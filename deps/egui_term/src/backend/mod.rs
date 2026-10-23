@@ -58,6 +58,7 @@ pub enum PtyEvent {
     Exit(PtyExitStatus),
 }
 
+
 fn terminal_config() -> term::Config {
     term::Config {
         kitty_keyboard: true,
@@ -363,19 +364,19 @@ impl TerminalBackend {
                                     .notify(formatter(color).into_bytes());
                             }
                             continue;
-                        },
+                        }
                         // Write responses directly back to the PTY so programs like fzf
                         // that query cursor position (ESC[6n) or text-area size don't hang.
                         Event::PtyWrite(text) => {
                             event_notifier.notify(text.into_bytes());
                             continue;
-                        },
+                        }
                         Event::TextAreaSizeRequest(formatter) => {
                             let size = *shared_size_clone.lock().unwrap();
                             event_notifier
                                 .notify(formatter(size.into()).into_bytes());
                             continue;
-                        },
+                        }
                         Event::ClipboardStore(_, _)
                         | Event::ClipboardLoad(_, _) => continue,
                         Event::ChildExit(code) => PtyEvent::ChildExit(code),
@@ -386,14 +387,14 @@ impl TerminalBackend {
                         Event::MouseCursorDirty => PtyEvent::MouseCursorDirty,
                         Event::CursorBlinkingChange => {
                             PtyEvent::CursorBlinkingChange
-                        },
+                        }
                         Event::Exit => {
                             let status = reaped_exit_status
                                 .lock()
                                 .unwrap()
                                 .unwrap_or(PtyExitStatus::Unknown);
                             PtyEvent::Exit(status)
-                        },
+                        }
                     };
                     let is_exit = matches!(pty_event, PtyEvent::Exit(_));
                     // If the receiver is gone (app shutting down) just exit.
@@ -672,10 +673,7 @@ impl TerminalBackend {
         }
 
         let snapshot = Self::capture_lines_from_grid(grid, total);
-        if is_alt_screen
-            && !state.grid_snapshot.is_empty()
-            && snapshot != state.grid_snapshot
-        {
+        if is_alt_screen && !state.grid_snapshot.is_empty() && snapshot != state.grid_snapshot {
             let changed: Vec<String> = snapshot
                 .iter()
                 .zip(&state.grid_snapshot)
@@ -684,8 +682,7 @@ impl TerminalBackend {
                 .collect();
             if !changed.is_empty() {
                 let stream_cursor = self.lines_written.load(Ordering::Relaxed);
-                let redraw_cursor =
-                    previous_cursor.saturating_add(changed.len() as u64);
+                let redraw_cursor = previous_cursor.saturating_add(changed.len() as u64);
                 let new_cursor = stream_cursor.max(redraw_cursor);
                 self.lines_written.store(new_cursor, Ordering::Relaxed);
                 state.redraw_delta =
@@ -1478,11 +1475,10 @@ impl GridSnapshot {
         self.display_offset = grid.display_offset();
         self.cursor.point = grid.cursor.point;
         self.cells.clear();
-        self.cells
-            .extend(grid.display_iter().map(|indexed| Indexed {
-                point: indexed.point,
-                cell: indexed.cell.clone(),
-            }));
+        self.cells.extend(grid.display_iter().map(|indexed| Indexed {
+            point: indexed.point,
+            cell: indexed.cell.clone(),
+        }));
     }
 }
 
@@ -1660,9 +1656,7 @@ fn peek_child_wait_status(pid: u32) -> Option<PtyExitStatus> {
         let status = info.si_status();
         match info.si_code {
             libc::CLD_EXITED => Some(PtyExitStatus::Code(status)),
-            libc::CLD_KILLED | libc::CLD_DUMPED => {
-                Some(PtyExitStatus::Signal(status))
-            },
+            libc::CLD_KILLED | libc::CLD_DUMPED => Some(PtyExitStatus::Signal(status)),
             _ => None,
         }
     }
@@ -1670,6 +1664,7 @@ fn peek_child_wait_status(pid: u32) -> Option<PtyExitStatus> {
 
 #[derive(Clone)]
 pub struct EventProxy(mpsc::Sender<Event>);
+
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
@@ -2111,3 +2106,4 @@ mod tests {
         );
     }
 }
+

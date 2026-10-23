@@ -218,7 +218,9 @@ fn pick_change_set(
     if best == 0 {
         return None;
     }
-    sets.iter().find(|set| rank(&set.status) == best).cloned()
+    sets.iter()
+        .find(|set| rank(&set.status) == best)
+        .cloned()
 }
 
 impl TextEditorApp {
@@ -232,9 +234,7 @@ impl TextEditorApp {
             if path.file_name().and_then(|n| n.to_str()) == Some("commands.toml")
                 && path != crate::cli::global_commands_path()
             {
-                path.parent()
-                    .and_then(|p| p.parent())
-                    .map(Path::to_path_buf)
+                path.parent().and_then(|p| p.parent()).map(Path::to_path_buf)
             } else {
                 None
             }
@@ -524,9 +524,7 @@ impl TextEditorApp {
     fn already_applied(&self, id: &str, status: &str) -> bool {
         self.applied_change
             .as_ref()
-            .is_some_and(|(applied_id, applied_status)| {
-                applied_id == id && applied_status == status
-            })
+            .is_some_and(|(applied_id, applied_status)| applied_id == id && applied_status == status)
     }
 
     fn set_change_view(&mut self, view: Option<ChangeView>) -> bool {
@@ -611,7 +609,11 @@ impl TextEditorApp {
                 self.replace_body(&set.proposed_text);
                 self.applied_change = Some((set.id.clone(), "committed".to_string()));
                 self.change_view = None;
-                log::info!("changes: editor accepted id={} path={}", set.id, set.path);
+                log::info!(
+                    "changes: editor accepted id={} path={}",
+                    set.id,
+                    set.path
+                );
             }
             Err(error) => {
                 log::info!("changes: editor accept refused id={id} error={error}");
@@ -857,9 +859,7 @@ impl TextEditorApp {
             return None;
         }
         let global_path = crate::cli::global_commands_path();
-        if self.path == global_path
-            || note_path_identity(&self.path) == note_path_identity(&global_path)
-        {
+        if self.path == global_path || note_path_identity(&self.path) == note_path_identity(&global_path) {
             Some(crate::cli::UserCommandScope::Global)
         } else {
             Some(crate::cli::UserCommandScope::Workspace)
@@ -879,9 +879,7 @@ impl TextEditorApp {
                     .or_else(crate::config::adopted_workspace_root)?;
                 let ws_path = root.join(crate::cli::commands_file());
                 let global_path = crate::cli::global_commands_path();
-                if ws_path == global_path
-                    || note_path_identity(&ws_path) == note_path_identity(&global_path)
-                {
+                if ws_path == global_path || note_path_identity(&ws_path) == note_path_identity(&global_path) {
                     None
                 } else {
                     Some((ws_path, crate::cli::UserCommandScope::Workspace))
@@ -956,8 +954,7 @@ impl TextEditorApp {
             return false;
         };
         let rev_before = self.doc.revision();
-        self.doc
-            .apply(EditorCommand::ToggleComment(token.to_string()));
+        self.doc.apply(EditorCommand::ToggleComment(token.to_string()));
         if self.doc.revision() != rev_before {
             self.last_edit = Some(Instant::now());
             let text = self.doc.text();
@@ -989,10 +986,7 @@ impl TextEditorApp {
             }
             (Prompt::Overwrite, Key::O) | (Prompt::Close { conflicted: true }, Key::O) => {
                 self.prompt = None;
-                log::info!(
-                    "notes_editor: overwriting external change path={:?}",
-                    self.path
-                );
+                log::info!("notes_editor: overwriting external change path={:?}", self.path);
                 self.write_buffer(Durability::Fsync);
                 if matches!(prompt, Prompt::Close { .. }) && self.last_edit.is_none() {
                     self.wants_close = true;
@@ -1006,10 +1000,7 @@ impl TextEditorApp {
                 }
             }
             (Prompt::Close { .. }, Key::D) => {
-                log::info!(
-                    "notes_editor: discarding unsaved edits on close path={:?}",
-                    self.path
-                );
+                log::info!("notes_editor: discarding unsaved edits on close path={:?}", self.path);
                 self.prompt = None;
                 self.last_edit = None;
                 self.wants_close = true;
@@ -1023,10 +1014,7 @@ impl TextEditorApp {
         match std::fs::read_to_string(&self.path) {
             Ok(raw) => {
                 let hash = fnv1a64(raw.as_bytes());
-                log::info!(
-                    "notes_editor: reload chosen over unsaved edits path={:?}",
-                    self.path
-                );
+                log::info!("notes_editor: reload chosen over unsaved edits path={:?}", self.path);
                 self.reload_from(raw, hash);
             }
             Err(e) => {
@@ -1044,27 +1032,15 @@ impl TextEditorApp {
         let (question, choices): (&str, &[(&str, egui::Key)]) = match prompt {
             Prompt::Overwrite => (
                 "File changed on disk. Your edits conflict.",
-                &[
-                    ("Reload from disk", egui::Key::R),
-                    ("Overwrite disk", egui::Key::O),
-                    ("Cancel (Esc)", egui::Key::Escape),
-                ],
+                &[("Reload from disk", egui::Key::R), ("Overwrite disk", egui::Key::O), ("Cancel (Esc)", egui::Key::Escape)],
             ),
             Prompt::Close { conflicted: false } => (
                 "Unsaved changes.",
-                &[
-                    ("Save", egui::Key::S),
-                    ("Discard edits", egui::Key::D),
-                    ("Cancel (Esc)", egui::Key::Escape),
-                ],
+                &[("Save", egui::Key::S), ("Discard edits", egui::Key::D), ("Cancel (Esc)", egui::Key::Escape)],
             ),
             Prompt::Close { conflicted: true } => (
                 "Unsaved changes, and the file changed on disk.",
-                &[
-                    ("Overwrite disk", egui::Key::O),
-                    ("Discard edits", egui::Key::D),
-                    ("Cancel (Esc)", egui::Key::Escape),
-                ],
+                &[("Overwrite disk", egui::Key::O), ("Discard edits", egui::Key::D), ("Cancel (Esc)", egui::Key::Escape)],
             ),
         };
         let mut chosen = None;
@@ -1122,17 +1098,11 @@ impl TextEditorApp {
     /// Cmd+S. A clean buffer is a no-op, a conflicted one asks first.
     fn explicit_save(&mut self) {
         if self.last_edit.is_none() {
-            log::info!(
-                "notes_editor: save on clean buffer is a no-op path={:?}",
-                self.path
-            );
+            log::info!("notes_editor: save on clean buffer is a no-op path={:?}", self.path);
             return;
         }
         if self.external == Some(ExternalChange::Modified) {
-            log::info!(
-                "notes_editor: save blocked by external change path={:?}",
-                self.path
-            );
+            log::info!("notes_editor: save blocked by external change path={:?}", self.path);
             self.prompt = Some(Prompt::Overwrite);
             return;
         }
@@ -1564,8 +1534,7 @@ impl TextEditorApp {
 /// ([`is_text_editable_ext`]).
 const CODE_EXTENSIONS: &[&str] = &[
     "rs", "py", "js", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml", "sh", "bash", "zsh", "c",
-    "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift", "sql",
-    "php",
+    "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift", "sql", "php",
 ];
 
 /// Plain-text/prose extensions the editor opens in Markdown or plain mode, in
@@ -1838,12 +1807,10 @@ impl TextEditorApp {
                 None,
             ),
         };
-        let commands_switch_label =
-            self.alternate_commands_target()
-                .map(|(_, scope)| match scope {
-                    crate::cli::UserCommandScope::Global => "Switch to global",
-                    crate::cli::UserCommandScope::Workspace => "Switch to workspace",
-                });
+        let commands_switch_label = self.alternate_commands_target().map(|(_, scope)| match scope {
+            crate::cli::UserCommandScope::Global => "Switch to global",
+            crate::cli::UserCommandScope::Workspace => "Switch to workspace",
+        });
         let title = self.note_title.trim();
         let title = (self.mode.is_markdown() && !title.is_empty()).then(|| title.to_string());
         EditorChrome {
@@ -2033,15 +2000,9 @@ impl App for TextEditorApp {
                 self.apply_prompt_key(egui::Key::Escape);
                 return KeyDisposition::Consumed;
             }
-            if input.events().iter().any(|event| {
-                matches!(
-                    event,
-                    egui::Event::Key { pressed: true, .. }
-                        | egui::Event::Text(_)
-                        | egui::Event::Paste(_)
-                        | egui::Event::Cut
-                )
-            }) {
+            if input.events().iter().any(|event| matches!(event,
+                egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)
+                | egui::Event::Paste(_) | egui::Event::Cut)) {
                 // A prompt may appear while the person is writing. Continuing
                 // to type cancels the question, never their buffer or input.
                 self.apply_prompt_key(egui::Key::Escape);
@@ -2090,7 +2051,9 @@ impl App for TextEditorApp {
         // Link commands (Markdown only). Ctrl-based: the host reserves most
         // Cmd single-letter combos (see src/host/keys.rs header).
         if self.mode.is_markdown() {
-            let ctrl = input.modifiers().matches_logically(egui::Modifiers::CTRL);
+            let ctrl = input
+                .modifiers()
+                .matches_logically(egui::Modifiers::CTRL);
             let ctrl_shift = input
                 .modifiers()
                 .matches_logically(egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
@@ -2151,7 +2114,8 @@ impl App for TextEditorApp {
         }
 
         if self.input_released {
-            let enter_pressed = input.key_pressed(egui::Key::Enter) && input.modifiers().is_none();
+            let enter_pressed =
+                input.key_pressed(egui::Key::Enter) && input.modifiers().is_none();
             let i_pressed = (input.key_pressed(egui::Key::I) && input.modifiers().is_none())
                 || input
                     .events()
@@ -2279,17 +2243,9 @@ impl App for TextEditorApp {
 
         if self.prompt.is_some() && owns_input {
             let escape = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-            let editing = ui.input(|i| {
-                i.events.iter().any(|event| {
-                    matches!(
-                        event,
-                        egui::Event::Key { pressed: true, .. }
-                            | egui::Event::Text(_)
-                            | egui::Event::Paste(_)
-                            | egui::Event::Cut
-                    )
-                })
-            });
+            let editing = ui.input(|i| i.events.iter().any(|event| matches!(event,
+                egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)
+                | egui::Event::Paste(_) | egui::Event::Cut)));
             if escape || editing {
                 self.apply_prompt_key(egui::Key::Escape);
             }
@@ -2394,8 +2350,9 @@ impl App for TextEditorApp {
         };
         let revision_before = self.doc.revision();
         // Same 4px horizontal text inset the old TextEdit margin provided.
-        let mut editor_ui = ui
-            .new_child(egui::UiBuilder::new().max_rect(editor_rect.shrink2(egui::vec2(4.0, 0.0))));
+        let mut editor_ui = ui.new_child(
+            egui::UiBuilder::new().max_rect(editor_rect.shrink2(egui::vec2(4.0, 0.0))),
+        );
         editor_ui.visuals_mut().override_text_color = Some(colors.text_primary);
         editor_ui.visuals_mut().selection.stroke.color = colors.accent;
         let mut widget = EditorWidget::new(&mut self.doc, &mut self.view)
@@ -2528,11 +2485,13 @@ impl App for TextEditorApp {
                     };
 
                     let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
-                    let response =
-                        crate::ui::text_field::TextField::singleline(find_input_id, "Find…")
-                            .desired_width(input_width)
-                            .log_name("text_editor_find")
-                            .show(ui, &mut bar.query, colors);
+                    let response = crate::ui::text_field::TextField::singleline(
+                        find_input_id,
+                        "Find…",
+                    )
+                    .desired_width(input_width)
+                    .log_name("text_editor_find")
+                    .show(ui, &mut bar.query, colors);
 
                     crate::ui::focus::register_text_surface(
                         ui.ctx(),
@@ -2619,10 +2578,7 @@ impl App for TextEditorApp {
         if !self.wants_close && self.is_note && !conflicted && self.last_edit.is_some() {
             self.flush();
             if self.last_edit.is_some() {
-                log::info!(
-                    "notes_editor: close vetoed after failed save path={:?}",
-                    self.path
-                );
+                log::info!("notes_editor: close vetoed after failed save path={:?}", self.path);
                 self.prompt = Some(Prompt::Close { conflicted: false });
                 return false;
             }
@@ -2631,10 +2587,7 @@ impl App for TextEditorApp {
         if self.wants_close || !needs_prompt {
             return true;
         }
-        log::info!(
-            "notes_editor: close asked about unsaved buffer path={:?}",
-            self.path
-        );
+        log::info!("notes_editor: close asked about unsaved buffer path={:?}", self.path);
         self.prompt = Some(Prompt::Close { conflicted });
         false
     }
@@ -2704,10 +2657,7 @@ impl App for TextEditorApp {
                 );
                 self.flush();
                 if self.last_edit.is_some() {
-                    log::info!(
-                        "notes_editor: document switch refused while unsaved path={:?}",
-                        self.path
-                    );
+                    log::info!("notes_editor: document switch refused while unsaved path={:?}", self.path);
                     if self.external == Some(ExternalChange::Modified) {
                         self.prompt = Some(Prompt::Overwrite);
                     }
@@ -2719,8 +2669,8 @@ impl App for TextEditorApp {
                     Err(e) => (String::new(), Some(e.to_string())),
                 };
                 self.is_note = crate::notes::tier_root_for_note(&new_path).is_some();
-                self.disk_hash =
-                    (load_error.is_none() && new_path.exists()).then(|| fnv1a64(raw.as_bytes()));
+                self.disk_hash = (load_error.is_none() && new_path.exists())
+                    .then(|| fnv1a64(raw.as_bytes()));
                 self.external = None;
                 self.prompt = None;
                 self.mode = detect_mode(&new_path, self.is_note);
@@ -3269,10 +3219,7 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         let app = TextEditorApp::new(path.clone());
         drop(app);
-        assert!(
-            path.exists(),
-            "opening and closing must not delete the file"
-        );
+        assert!(path.exists(), "opening and closing must not delete the file");
 
         let mut app = TextEditorApp::new(path.clone());
         app.doc.apply(EditorCommand::InsertText("x".into()));
@@ -3344,10 +3291,7 @@ mod tests {
         let quick = TextEditorApp::new_for_test_note(note_path);
         let quick_chrome = quick.editor_chrome();
         assert_eq!(quick_chrome.file_name, "note-20261008-175654.md");
-        assert_eq!(
-            quick_chrome.title, None,
-            "an empty frontmatter title is not a header title"
-        );
+        assert_eq!(quick_chrome.title, None, "an empty frontmatter title is not a header title");
         assert_eq!(quick_chrome.save_indicator, "Saved");
 
         let titled_path = dir.join("groceries.md");
@@ -4347,10 +4291,8 @@ mod tests {
         };
 
         // 1. Escape sets input_released = true
-        let esc_input = crate::app::input_router::PlexiInput::synthetic(
-            vec![key_ev(egui::Key::Escape)],
-            egui::Modifiers::NONE,
-        );
+        let esc_input =
+            crate::app::input_router::PlexiInput::synthetic(vec![key_ev(egui::Key::Escape)], egui::Modifiers::NONE);
         assert_eq!(
             crate::app::app_trait::App::handle_key(&mut app, &esc_input),
             KeyDisposition::Consumed
@@ -4358,10 +4300,8 @@ mod tests {
         assert!(app.input_released);
 
         // 2. Enter clears input_released, sets reclaim_editor_focus, and does not insert "\n"
-        let enter_input = crate::app::input_router::PlexiInput::synthetic(
-            vec![key_ev(egui::Key::Enter)],
-            egui::Modifiers::NONE,
-        );
+        let enter_input =
+            crate::app::input_router::PlexiInput::synthetic(vec![key_ev(egui::Key::Enter)], egui::Modifiers::NONE);
         assert_eq!(
             crate::app::app_trait::App::handle_key(&mut app, &enter_input),
             KeyDisposition::Consumed
@@ -4471,10 +4411,7 @@ mod data_safety_tests {
         let before = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(Duration::from_millis(20));
         app.explicit_save();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            before
-        );
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
     }
 
     #[test]
@@ -4485,10 +4422,7 @@ mod data_safety_tests {
         assert!(app.check_disk());
         assert_eq!(app.doc.text(), "hello brave new world");
         assert_eq!(app.caret_byte(), 5);
-        assert!(
-            app.doc.revision() > 0,
-            "a reload must not reuse revision 0 for new text"
-        );
+        assert!(app.doc.revision() > 0, "a reload must not reuse revision 0 for new text");
         assert!(app.last_edit.is_none());
         assert!(app.external.is_none());
     }
@@ -4511,11 +4445,7 @@ mod data_safety_tests {
         assert_eq!(app.external, Some(ExternalChange::Modified));
         assert_eq!(app.editor_chrome().save_indicator, "Changed on disk");
         assert_eq!(app.doc.text(), "seed mine", "buffer kept");
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "agent wrote this",
-            "disk kept"
-        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent wrote this", "disk kept");
 
         // Neither autosave nor an unprompted flush may pick a winner.
         app.flush();
@@ -4567,11 +4497,7 @@ mod data_safety_tests {
         assert_eq!(app.doc.text(), "seed");
         type_text(&mut app, "!");
         app.explicit_save();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "seed!",
-            "save recreates it"
-        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed!", "save recreates it");
         assert!(app.external.is_none());
     }
 
@@ -4648,16 +4574,12 @@ mod data_safety_tests {
             })
             .unwrap();
         if dirty {
-            harness
-                .text_editor_mut(pane_id)
-                .test_set_unsaved("my unsaved text");
+            harness.text_editor_mut(pane_id).test_set_unsaved("my unsaved text");
         }
         // Only the production logic pass may arm and drain the watcher. A
         // hidden pass also proves that paint and focus are not prerequisites.
         harness.hidden_frame();
-        std::thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            300,
-        )));
+        std::thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(300)));
         std::fs::write(&file, "agent text").unwrap();
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
         loop {
@@ -4694,9 +4616,7 @@ mod data_safety_tests {
         let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
         assert!(!app.service_external(&wake), "arming alone changes nothing");
-        std::thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            300,
-        )));
+        std::thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(300)));
         std::fs::write(&path, "from an agent").unwrap();
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
         while Instant::now() < deadline && app.doc.text() != "from an agent" {
@@ -4721,8 +4641,7 @@ mod data_safety_tests {
         assert!(
             app.commands_diagnostics
                 .iter()
-                .any(|d| d.to_string().contains("[keys] is ignored in")
-                    && d.to_string().contains("config.toml")),
+                .any(|d| d.to_string().contains("[keys] is ignored in") && d.to_string().contains("config.toml")),
             "commands.toml editor must surface misplaced [keys] diagnostic inline, got: {:?}",
             app.commands_diagnostics
         );

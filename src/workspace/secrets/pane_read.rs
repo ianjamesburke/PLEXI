@@ -102,9 +102,7 @@ mod tests {
     #[test]
     fn global_fallback_needs_the_same_click() {
         let store = InMemoryKeychain::new();
-        store
-            .set("plexi:user:SHARED_0788", "global-canary-0788")
-            .unwrap();
+        store.set("plexi:user:SHARED_0788", "global-canary-0788").unwrap();
         let monitor = PermissionMonitor::ephemeral();
         let actor = SecretActor {
             kind: crate::broker::ActorType::Agent,
@@ -115,19 +113,15 @@ mod tests {
             id: "ws-0788".to_string(),
             root: root.path().to_path_buf(),
         };
-        let first =
-            read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path()).unwrap();
+        let first = read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path())
+            .unwrap();
         let ReadResult::PermissionRequired { pending_id } = first else {
             panic!("expected a pending approval, got {first:?}");
         };
-        monitor
-            .approve_pending(&pending_id, ApprovalChoice::Once)
+        monitor.approve_pending(&pending_id, ApprovalChoice::Once).unwrap();
+        let read = read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path())
             .unwrap();
-        let read =
-            read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path()).unwrap();
-        assert!(
-            matches!(read, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788")
-        );
+        assert!(matches!(read, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788"));
     }
 
     #[test]
@@ -142,15 +136,7 @@ mod tests {
             id: "host".to_string(),
             root: PathBuf::from("/tmp"),
         };
-        assert!(read_pane_secret(
-            &monitor,
-            &store,
-            &actor,
-            "permission-mac",
-            &scope,
-            Path::new("/tmp")
-        )
-        .is_err());
+        assert!(read_pane_secret(&monitor, &store, &actor, "permission-mac", &scope, Path::new("/tmp")).is_err());
         assert!(monitor.list_pending().is_empty());
     }
 }

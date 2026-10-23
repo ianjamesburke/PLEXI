@@ -62,7 +62,10 @@ pub fn backend_label() -> String {
     {
         "windows-credential-manager".to_string()
     }
-    #[cfg(all(not(test), not(any(target_os = "linux", target_os = "macos", windows))))]
+    #[cfg(all(
+        not(test),
+        not(any(target_os = "linux", target_os = "macos", windows))
+    ))]
     {
         "unavailable".to_string()
     }
@@ -186,10 +189,11 @@ impl EncryptedFileStore {
 
     fn decrypt(&self, account: &str, encoded: &str) -> Result<Zeroizing<String>, SecretError> {
         let key = self.load_key()?;
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-            .map_err(|_| {
-                SecretError::Backend(format!("folder secret {account} is not valid ciphertext"))
-            })?;
+        let bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            encoded,
+        )
+        .map_err(|_| SecretError::Backend(format!("folder secret {account} is not valid ciphertext")))?;
         if bytes.len() < 12 + 16 {
             return Err(SecretError::Backend(format!(
                 "folder secret {account} ciphertext is truncated"
@@ -208,11 +212,10 @@ impl EncryptedFileStore {
                 ring::aead::Aad::from(account.as_bytes()),
                 &mut in_out,
             )
-            .map_err(|_| {
-                SecretError::Backend(format!("folder secret {account} failed to decrypt"))
-            })?;
-        let text = String::from_utf8(plain.to_vec())
-            .map_err(|_| SecretError::Backend(format!("folder secret {account} is not utf-8")))?;
+            .map_err(|_| SecretError::Backend(format!("folder secret {account} failed to decrypt")))?;
+        let text = String::from_utf8(plain.to_vec()).map_err(|_| {
+            SecretError::Backend(format!("folder secret {account} is not utf-8"))
+        })?;
         Ok(Zeroizing::new(text))
     }
 
@@ -500,9 +503,7 @@ fn secret_tool(args: &[&str], stdin: Option<&[u8]>) -> Result<std::process::Outp
     // A session bus can hang while activating a locked service. Bound every
     // call so secrets never hold host startup or a CLI invocation indefinitely.
     let mut cmd = std::process::Command::new("timeout");
-    cmd.arg("5s")
-        .arg("secret-tool")
-        .args(args)
+    cmd.arg("5s").arg("secret-tool").args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -544,7 +545,12 @@ fn service_get(account: &str) -> Option<Zeroizing<String>> {
 #[cfg(all(target_os = "linux", not(test)))]
 fn service_set(account: &str, value: &str) -> Result<(), SecretError> {
     let output = secret_tool(
-        &["store", "--label=plexi-folder-secret", "account", account],
+        &[
+            "store",
+            "--label=plexi-folder-secret",
+            "account",
+            account,
+        ],
         Some(value.as_bytes()),
     )?;
     if !output.status.success() {
@@ -676,9 +682,7 @@ mod tests {
             file_text.contains("encrypted-file fallback"),
             "fallback file is not labeled: {file_text}"
         );
-        assert!(!key
-            .windows(value.len())
-            .any(|window| window == value.as_bytes()));
+        assert!(!key.windows(value.len()).any(|window| window == value.as_bytes()));
         let got = store
             .get("plexi:folder:aabb:FOLDER_E2E_SECRET")
             .expect("get");

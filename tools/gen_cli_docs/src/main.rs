@@ -4,21 +4,14 @@
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use plexi::cli_args::Cli;
 
-mod parity;
 mod skill;
+mod parity;
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--parity") {
-        match parity::generate(
-            &Cli::command(),
-            include_str!("../../../src/host/keys.rs"),
-            include_str!("../../../docs/cli/parity.json"),
-        ) {
+        match parity::generate(&Cli::command(), include_str!("../../../src/host/keys.rs"), include_str!("../../../docs/cli/parity.json")) {
             Ok(output) => print!("{output}"),
-            Err(error) => {
-                eprintln!("parity: {error}");
-                std::process::exit(1);
-            }
+            Err(error) => { eprintln!("parity: {error}"); std::process::exit(1); }
         }
         return;
     }

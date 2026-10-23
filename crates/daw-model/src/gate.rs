@@ -145,10 +145,7 @@ fn pan(track: u64, value: f32) -> DawCommand {
 /// Steps shared by clip cases: one audio track (id 1) and one 4-beat audio
 /// source (id 2); the next allocated id is 3.
 fn setup_track_source() -> Vec<GateStep> {
-    vec![
-        a(audio_track("Audio 1")),
-        a(audio_source(4 * TICKS_PER_BEAT)),
-    ]
+    vec![a(audio_track("Audio 1")), a(audio_source(4 * TICKS_PER_BEAT))]
 }
 
 fn with_setup(extra: Vec<GateStep>) -> Vec<GateStep> {
@@ -560,9 +557,7 @@ pub fn gate_cases() -> Vec<GateCase> {
             steps: with_setup(vec![
                 a(clip(1, 2, 0, TICKS_PER_BEAT, 0)),
                 a(clip(1, 2, 2 * TICKS_PER_BEAT, TICKS_PER_BEAT, 0)),
-                a(DawCommand::RemoveSource {
-                    source: SourceId(2),
-                }),
+                a(DawCommand::RemoveSource { source: SourceId(2) }),
                 a(DawCommand::Undo),
             ]),
             check: |m| {
@@ -689,7 +684,11 @@ pub fn gate_cases() -> Vec<GateCase> {
         },
         GateCase {
             name: "redo_invalidated_by_new_edit",
-            steps: vec![a(audio_track("A")), a(DawCommand::Undo), a(midi_track("M"))],
+            steps: vec![
+                a(audio_track("A")),
+                a(DawCommand::Undo),
+                a(midi_track("M")),
+            ],
             check: |m| {
                 if m.can_redo() || m.project().tracks.len() != 1 {
                     return Err("new edit after undo must clear redo".to_string());
@@ -1107,7 +1106,8 @@ fn replay(commands: &[DawCommand]) -> Result<(), (usize, String)> {
         }
         prev_revision = model.revision();
     }
-    check_history_round_trip(&mut model).map_err(|e| (commands.len().saturating_sub(1), e))
+    check_history_round_trip(&mut model)
+        .map_err(|e| (commands.len().saturating_sub(1), e))
 }
 
 /// Greedy sequence minimization: repeatedly drop commands while the failure
@@ -1187,7 +1187,8 @@ pub fn run_random_seed(seed: u64, command_count: usize) -> Result<(), String> {
         };
         applied.push(command.clone());
         let outcome = model.apply(command);
-        if let (Some(before), ApplyOutcome::Rejected(_) | ApplyOutcome::NoOp) = (before, &outcome) {
+        if let (Some(before), ApplyOutcome::Rejected(_) | ApplyOutcome::NoOp) = (before, &outcome)
+        {
             match frozen_state(&model) {
                 Ok(after) if after != before => {
                     failure = Some(format!("{outcome:?} outcome mutated state"));
@@ -1493,11 +1494,7 @@ fn gate_serialization_round_trip() {
     }
     let json1 = model.project().to_json().expect("serialize");
     let restored = Project::from_json(&json1).expect("deserialize");
-    assert_eq!(
-        &restored,
-        model.project(),
-        "semantic equality after round trip"
-    );
+    assert_eq!(&restored, model.project(), "semantic equality after round trip");
     let json2 = restored.to_json().expect("re-serialize");
     assert_eq!(json1, json2, "round trip must be byte-identical");
 }
@@ -1529,11 +1526,7 @@ fn gate_restore_from_parts() {
     check_invariants(&restored, 0).expect("restored model must satisfy invariants");
     assert_eq!(restored.apply(midi_track("Keys")), ApplyOutcome::Applied);
     let new_track = restored.project().tracks.last().expect("new track");
-    assert_eq!(
-        new_track.id,
-        TrackId(4),
-        "id allocation resumes past restored ids"
-    );
+    assert_eq!(new_track.id, TrackId(4), "id allocation resumes past restored ids");
 }
 
 #[test]
@@ -1556,10 +1549,7 @@ fn gate_from_parts_rejects_invalid_state() {
         ..Transport::default()
     };
     match DawModel::from_parts(Project::default(), inverted) {
-        Err(ValidationError::LoopInverted {
-            start: 200,
-            end: 100,
-        }) => {}
+        Err(ValidationError::LoopInverted { start: 200, end: 100 }) => {}
         other => panic!("expected LoopInverted, got {other:?}"),
     }
 }

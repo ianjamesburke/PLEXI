@@ -259,7 +259,11 @@ pub(crate) fn key_combo_list_width(
     w
 }
 
-pub(crate) fn key_combo_owned_width(ui: &egui::Ui, keys: &[String], trailing: Option<&str>) -> f32 {
+pub(crate) fn key_combo_owned_width(
+    ui: &egui::Ui,
+    keys: &[String],
+    trailing: Option<&str>,
+) -> f32 {
     let measure = |text: &str, font: egui::FontId| {
         ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER))
             .size()
