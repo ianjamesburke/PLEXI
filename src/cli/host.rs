@@ -899,7 +899,7 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
                         serde_json::json!({"restarting": true, "coordinator_pid": coordinator_pid})
                     );
                 } else {
-                    println!("Restarting; this pane will close. The saved workspace will restore.");
+                    println!("Restarting; this pane will close. Your saved contexts will restore.");
                 }
                 return 0;
             }

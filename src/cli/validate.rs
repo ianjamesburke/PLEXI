@@ -246,7 +246,7 @@ mod validate_tests {
     }
 
     /// `plexi app validate <path>` must succeed from a bare directory with no
-    /// `.plexi/` workspace ancestor. This is the core invariant: workspace is
+    /// `.plexi/` folder ancestor. This is the core invariant: folder is
     /// irrelevant for stateless path operations.
     #[test]
     fn validate_passes_without_workspace() {
@@ -255,7 +255,7 @@ mod validate_tests {
         let path = dir.path().to_string_lossy().to_string();
         // The temp dir has no .plexi/ ancestor — must still return 0.
         let code = super::validate_cli(&path);
-        assert_eq!(code, 0, "validate_cli must succeed without a workspace");
+        assert_eq!(code, 0, "validate_cli must succeed without a folder");
     }
 
     #[test]

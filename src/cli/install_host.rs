@@ -969,19 +969,19 @@ pub fn apply_workspace_pack(
     let apps_toml = workspace_root.join(&channel_dir).join("apps.toml");
     if !apps_toml.exists() {
         return Err(
-            format!("no {channel_dir}/apps.toml found — run 'plexi workspace init' to initialize a workspace with a stub apps.toml"),
+            format!("no {channel_dir}/apps.toml found — run 'plexi folder init' to initialize a folder with a stub apps.toml"),
         );
     }
     let pack = Pack::from_path(&apps_toml)?;
     let workspace_apps = crate::app::registry::workspace_apps_dir(workspace_root);
     std::fs::create_dir_all(&workspace_apps).map_err(|e| {
         format!(
-            "create workspace apps dir {}: {e}",
+            "create folder apps dir {}: {e}",
             workspace_apps.display()
         )
     })?;
     log::info!(
-        "install: workspace pack {} → {} ({} apps)",
+        "install: folder pack {} → {} ({} apps)",
         apps_toml.display(),
         workspace_apps.display(),
         pack.apps.len()
@@ -1834,7 +1834,7 @@ mod workspace_pack_tests {
                 .join("my-tool")
                 .join("manifest.toml")
                 .exists(),
-            "app should be present in workspace apps dir at {}",
+            "app should be present in folder apps dir at {}",
             workspace_apps.display()
         );
     }

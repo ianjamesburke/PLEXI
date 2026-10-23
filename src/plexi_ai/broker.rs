@@ -398,7 +398,7 @@ fn resolve_openrouter_api_key_from_store(
             }
             (Err(e), _) => {
                 log::warn!(
-                    "ai_broker: failed to load workspace.toml for secret resolution at {}: {e}",
+                    "ai_broker: failed to load folder.toml for secret resolution at {}: {e}",
                     root.display()
                 );
                 return Err(format!(
@@ -1462,7 +1462,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let dir = ws.path().join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("workspace.toml"), "id = \"ws-no-fallback\"\n").unwrap();
+        std::fs::write(dir.join("folder.toml"), "id = \"ws-no-fallback\"\n").unwrap();
         std::fs::write(dir.join("secrets.toml"), "fallback = false\n").unwrap();
 
         let store = InMemoryKeychain::new();
@@ -1485,7 +1485,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let dir = ws.path().join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("workspace.toml"), "id = \"ws-route\"\n").unwrap();
+        std::fs::write(dir.join("folder.toml"), "id = \"ws-route\"\n").unwrap();
         std::fs::write(
             dir.join("secrets.toml"),
             "fallback = true\n\n[default]\nOPENROUTER_API_KEY = \"openrouter_team\"\n",
@@ -1516,7 +1516,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let dir = ws.path().join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("workspace.toml"), "id = \"ws-invalid\"\n").unwrap();
+        std::fs::write(dir.join("folder.toml"), "id = \"ws-invalid\"\n").unwrap();
         std::fs::write(
             dir.join("secrets.toml"),
             "[default]\nOPENROUTER_API_KEY = \"x\"\n",
@@ -1544,7 +1544,7 @@ mod tests {
         let dir = root.join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("workspace.toml"),
+            dir.join("folder.toml"),
             format!("id = \"{workspace_id}\"\n"),
         )
         .unwrap();

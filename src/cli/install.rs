@@ -173,7 +173,7 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
 
 /// `plexi install` with no args — detect `<channel_dir>/apps.toml` and apply it.
 ///
-/// Walks up from CWD looking for the channel dir (workspace marker), reads
+/// Walks up from CWD looking for the channel dir (folder marker), reads
 /// `apps.toml` from it, and installs declared apps into the workspace-scoped
 /// channel apps dir (`<workspace_root>/<channel_dir>/apps/`).
 pub fn install_workspace_pack_cli() -> i32 {
@@ -217,15 +217,15 @@ pub fn install_workspace_pack_cli() -> i32 {
         eprintln!(
             "Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>"
         );
-        eprintln!("  In a workspace (directory with {channel_dir}/), `plexi app install` applies the manifest.");
-        eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
+        eprintln!("  In a folder (directory with {channel_dir}/), `plexi app install` applies the manifest.");
+        eprintln!("  Run `plexi folder init` to initialize a folder here.");
         return 1;
     };
 
     let apps_toml = root.join(&channel_dir).join("apps.toml");
     if !apps_toml.exists() {
         eprintln!(
-            "no {channel_dir}/apps.toml found in workspace at {}",
+            "no {channel_dir}/apps.toml found in folder at {}",
             root.display()
         );
         eprintln!("  Declare app dependencies there, then re-run `plexi app install`.");
@@ -239,7 +239,7 @@ pub fn install_workspace_pack_cli() -> i32 {
         "install_workspace_pack:cli: applying {}",
         apps_toml.display()
     );
-    println!("Applying workspace manifest {}...", apps_toml.display());
+    println!("Applying folder manifest {}...", apps_toml.display());
 
     let cloner = crate::cli::install_host::GitCloner;
     let outcomes = match crate::cli::install_host::apply_workspace_pack(&root, &cloner) {
@@ -480,10 +480,10 @@ mod update_tests {
         std::fs::create_dir_all(&workspace_apps).unwrap();
 
         write_app(global.path(), "tool", "Global Tool");
-        let local_dir = write_app(&workspace_apps, "tool", "Workspace Tool");
+        let local_dir = write_app(&workspace_apps, "tool", "Folder Tool");
 
         let targets = resolve_update_targets(Some("tool"), workspace.path(), global.path())
-            .expect("workspace app should resolve");
+            .expect("folder app should resolve");
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id, "tool");

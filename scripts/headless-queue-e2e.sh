@@ -57,7 +57,7 @@ echo "binary: $BIN_PATH"
 echo "mock: $PLEXI_OPENROUTER_BASE_URL"
 echo "approvals: HUMAN_APPROVE (real pointer click; no CLI resolve)"
 
-"$BIN" workspace init
+"$BIN" folder init
 if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
   echo "FAIL: host start"
   exit 1

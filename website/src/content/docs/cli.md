@@ -262,7 +262,7 @@ Example: plexi run dev Example: plexi run play Example: plexi run --json
 | `<command>` | string | no | Command name to run (omit to list available commands) |
 | `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command as $1, $2, … and $@ positional params |
 
-## `plexi workspace`
+## `plexi folder`
 
 Set up a .plexi/ workspace in your project folder.
 
@@ -273,13 +273,13 @@ Run this once inside your project directory to enable workspace-scoped secrets a
 | `init` | Set up a .plexi/ workspace in the current directory |
 | `clean` | Remove pane slot files for panes that are no longer open |
 
-### `plexi workspace init`
+### `plexi folder init`
 
 Set up a .plexi/ workspace in the current directory.
 
-Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`, and `commands.toml` so that secrets, apps, and commands are scoped to this project.
+Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `folder.toml`, `secrets.toml`, `apps.toml`, and `commands.toml` so that secrets, apps, and commands are scoped to this project.
 
-### `plexi workspace clean`
+### `plexi folder clean`
 
 Remove pane slot files for panes that are no longer open
 

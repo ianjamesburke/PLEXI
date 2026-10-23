@@ -1196,7 +1196,7 @@ item_v1_01() {
   local ws="$EVID/v1-01-ws"
   mkdir -p "$ws"
   set +e
-  out="$(cd "$ws" && "$BIN" workspace init 2>&1)"
+  out="$(cd "$ws" && "$BIN" folder init 2>&1)"
   code=$?
   set +e
   printf '%s\n' "$out" >>"$log"

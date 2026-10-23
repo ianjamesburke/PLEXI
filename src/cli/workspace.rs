@@ -2,7 +2,7 @@ use super::open::read_secret_from_stdin;
 use super::print_tip;
 use std::io::{self, Write};
 
-pub fn workspace_init() -> i32 {
+pub fn folder_init() -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -29,7 +29,7 @@ pub fn workspace_init() -> i32 {
                 "workspace_init:cli: rejected — home/root/profile dir guard: {}",
                 cwd.display()
             );
-            eprintln!("error: cannot initialize a workspace in your home or root directory.");
+            eprintln!("error: cannot initialize a folder in your home or root directory.");
             eprintln!("  This would conflict with your Plexi profile (~/.plexi/).");
             eprintln!("  cd into a project directory first.");
             return 1;
@@ -44,8 +44,8 @@ pub fn workspace_init() -> i32 {
                 cwd.display(),
                 channel_dir
             );
-            println!("Initialized workspace at {}", cwd.display());
-            println!("  workspace id: {}", cfg.id);
+            println!("Initialized folder at {}", cwd.display());
+            println!("  folder id: {}", cfg.id);
             println!("  channel dir:  {channel_dir}/");
             println!("  router:       {channel_dir}/secrets.toml (fallback = true)");
             println!("  apps:         {channel_dir}/apps.toml (declare app dependencies here)");
@@ -55,13 +55,13 @@ pub fn workspace_init() -> i32 {
         }
         Err(e) => {
             log::warn!("workspace_init:cli: init_workspace failed: {e}");
-            eprintln!("error: workspace init failed: {e}");
+            eprintln!("error: folder init failed: {e}");
             1
         }
     }
 }
 
-pub fn workspace_clean_cli(dry_run: bool) -> i32 {
+pub fn folder_clean_cli(dry_run: bool) -> i32 {
     log::info!("workspace_clean:cli: dry_run={dry_run}");
     let content = match super::request(
         serde_json::json!({
@@ -69,7 +69,7 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
             "dry_run": dry_run,
         }),
         "workspace-clean-response",
-        "workspace clean",
+        "folder clean",
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -77,7 +77,7 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
     let value = match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(value) => value,
         Err(e) => {
-            eprintln!("error: invalid workspace clean response: {e}");
+            eprintln!("error: invalid folder clean response: {e}");
             return 1;
         }
     };
@@ -203,8 +203,8 @@ pub(crate) fn enforce_pane_context_scope(
     Ok(())
 }
 
-/// Resolve the current workspace and config. Errors out with a helpful
-/// message if the user has not run `plexi workspace init`.
+/// Resolve the current folder and config. Errors out with a helpful
+/// message if the user has not run `plexi folder init`.
 fn require_workspace() -> Result<
     (
         std::path::PathBuf,
@@ -220,20 +220,20 @@ fn require_workspace() -> Result<
         None => {
             return Err(format!(
                 "no {channel_dir}/ workspace found at or above {}.\n\
-                 Run `plexi workspace init` first.",
+                 Run `plexi folder init` first.",
                 cwd.display()
             ));
         }
     };
     enforce_pane_context_scope(&root, true, "secret.workspace")?;
     let cfg = match crate::workspace::secrets::WorkspaceConfig::load(&root)
-        .map_err(|e| format!("read {channel_dir}/workspace.toml: {e}"))?
+        .map_err(|e| format!("read {channel_dir}/folder.toml: {e}"))?
     {
         Some(c) => c,
         None => {
             return Err(format!(
-                "{channel_dir}/ exists at {} but workspace.toml is missing.\n\
-                 Run `plexi workspace init` to create it.",
+                "{channel_dir}/ exists at {} but folder.toml is missing.\n\
+                 Run `plexi folder init` to create it.",
                 root.display()
             ));
         }
@@ -249,7 +249,7 @@ fn require_workspace() -> Result<
 ///
 /// Scope:
 ///   --global     store under `plexi:user:<name>` (cross-workspace)
-///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
+///   default      walk up to nearest .plexi/ folder, store workspace-scoped
 pub fn workspace_secret_set(
     friendly: &str,
     from_env: bool,
@@ -330,8 +330,8 @@ pub fn workspace_secret_set(
             Ok(v) => v,
             Err(e) => {
                 log::warn!("secret_set:cli: no workspace found: {e}");
-                eprintln!("error: no .plexi/ workspace found in this directory tree.");
-                eprintln!("  → plexi workspace init        (initialize one here, then retry)");
+                eprintln!("error: no .plexi/ folder found in this directory tree.");
+                eprintln!("  → plexi folder init        (initialize one here, then retry)");
                 eprintln!("  → plexi secret set --global {friendly}   (set globally — requires explicit flag)");
                 return 1;
             }
@@ -355,7 +355,7 @@ pub fn workspace_secret_set(
         match store_workspace_secret(store, &root, &cfg.id, friendly, effective_friendly, &value) {
             Ok(injected) => {
                 eprintln!(
-                    "Stored '{friendly}' for workspace {} ({})",
+                    "Stored '{friendly}' for folder {} ({})",
                     root.display(),
                     cfg.id
                 );
@@ -364,7 +364,7 @@ pub fn workspace_secret_set(
                     "Route written to {channel_dir}/secrets.toml — use in {channel_dir}/commands.toml: [secrets] required = [\"{friendly}\"]"
                 ));
                 print_tip(&format!(
-                    "'{friendly}' is not added to terminal environments. Agent panes never receive workspace secrets; a pane reads it with plexi secret get after you click Allow."
+                    "'{friendly}' is not added to terminal environments. Agent panes never receive folder secrets; a pane reads it with plexi secret get after you click Allow."
                 ));
                 if !injected.is_empty() {
                     eprintln!(
@@ -388,7 +388,7 @@ pub fn workspace_secret_set(
     }
 }
 
-/// Store a workspace secret and its default route. Terminal injection is not
+/// Store a folder secret and its default route. Terminal injection is not
 /// turned on: a secret reaches a terminal environment only by an explicit
 /// toggle in the Secrets manager. Returns the names `secrets.toml` already
 /// injects, so the caller can show them.
@@ -445,8 +445,8 @@ pub(crate) fn reconcile_secrets_before_read(command: &str) {
     }
 }
 
-/// `plexi secret list` — list friendly names. Inside a workspace, includes
-/// workspace namespace plus user-scope. Outside a workspace, gracefully falls
+/// `plexi secret list` — list friendly names. Inside a folder, includes
+/// folder namespace plus user-scope. Outside a folder, gracefully falls
 /// back to user-scope. Names only, never values.
 pub fn workspace_secret_list(
     global: bool,
@@ -528,7 +528,7 @@ fn write_secret_inventory(
         let injected = crate::workspace::secrets::WorkspaceSecrets::load(root)?
             .map(|router| router.terminal.env.inject)
             .unwrap_or_default();
-        writeln!(output, "Workspace ({id}):").map_err(|e| e.to_string())?;
+        writeln!(output, "Folder ({id}):").map_err(|e| e.to_string())?;
         for entry in entries {
             if matches!(entry.target, SecretTarget::Workspace { .. }) {
                 let annotation = if injected.contains(&entry.name) {
@@ -576,7 +576,7 @@ fn write_secret_inventory(
                 pane_context_name,
                 ..
             } => {
-                writeln!(output, "Skipped workspace secrets for {}: this pane's authority is scoped to {} (context {:?}). Use --context <name|id|root>, --global, or cd into that context.", path.display(), pane_context_root.display(), pane_context_name.as_deref().unwrap_or("unknown")).map_err(|e| e.to_string())?;
+                writeln!(output, "Skipped folder secrets for {}: this pane's authority is scoped to {} (context {:?}). Use --context <name|id|root>, --global, or cd into that context.", path.display(), pane_context_root.display(), pane_context_name.as_deref().unwrap_or("unknown")).map_err(|e| e.to_string())?;
             }
             SkippedSecrets::ExperimentDisabled {
                 count, experiment, ..
@@ -665,10 +665,10 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
 /// `plexi secret get <friendly-name>` — print the resolved secret value to stdout.
 ///
 /// Resolution order (unless --global):
-///   1. Workspace-scoped Keychain entry (nearest .plexi/ workspace)
+///   1. Workspace-scoped Keychain entry (nearest .plexi/ folder)
 ///   2. Global user-scoped Keychain entry (fallback)
 ///
-/// `--global` skips the workspace lookup entirely.
+/// `--global` skips the folder lookup entirely.
 pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
     log::info!("secret_get:cli: friendly={friendly} global={global}");
     if super::pane_caller::caller_is_pane_agent() {
@@ -777,7 +777,7 @@ fn delete_existing_secret(
 /// `plexi secret delete <friendly-name>` — remove the Keychain entry.
 ///
 /// When `global` is true, deletes the user-scoped entry (`plexi:user:<name>`)
-/// without requiring a workspace. When false, requires a workspace and deletes
+/// without requiring a folder. When false, requires a folder and deletes
 /// the workspace-scoped entry.
 pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
     log::info!("secret_delete:cli: friendly={friendly} global={global}");
@@ -818,7 +818,7 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
                     "secret_delete:cli: deleted workspace_id={} account={account}",
                     cfg.id
                 );
-                println!("Deleted '{friendly}' from workspace {}", cfg.id);
+                println!("Deleted '{friendly}' from folder {}", cfg.id);
                 0
             }
             Err(error) => {
@@ -1354,17 +1354,17 @@ mod workspace_init_tests {
         let cwd = dir.path().to_path_buf();
 
         let channel_dir = crate::config::workspace_channel_dir();
-        // Run init_workspace (creates channel dir with workspace.toml + secrets.toml)
+        // Run init_workspace (creates channel dir with folder.toml + secrets.toml)
         crate::workspace::secrets::init_workspace(&cwd, &channel_dir)
             .expect("init_workspace should succeed in a temp dir");
 
         assert!(
             cwd.join(&channel_dir).is_dir(),
-            "{channel_dir}/ dir must exist after workspace init"
+            "{channel_dir}/ dir must exist after folder init"
         );
         assert!(
-            cwd.join(&channel_dir).join("workspace.toml").is_file(),
-            "{channel_dir}/workspace.toml must exist after init"
+            cwd.join(&channel_dir).join("folder.toml").is_file(),
+            "{channel_dir}/folder.toml must exist after init"
         );
         assert!(
             cwd.join(&channel_dir).join("secrets.toml").is_file(),
@@ -1372,7 +1372,7 @@ mod workspace_init_tests {
         );
     }
 
-    /// After init, resolve_workspace_root must still find the workspace.
+    /// After init, resolve_workspace_root must still find the folder.
     #[test]
     fn workspace_remains_resolvable_after_init() {
         let dir = tempfile::tempdir().unwrap();
@@ -1457,7 +1457,7 @@ mod secret_list_tests {
         assert_eq!(
             output.contains(&names[1]),
             !global,
-            "workspace visibility: {output}"
+            "folder visibility: {output}"
         );
         assert_eq!(
             output.contains(&names[2]),

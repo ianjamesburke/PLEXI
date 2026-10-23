@@ -112,7 +112,7 @@ PY
 
 rm -rf "$WS"
 mkdir -p "$WS"
-( cd "$WS" && "$BIN" workspace init >"$EVID/workspace-init.out" 2>"$EVID/workspace-init.err" || true )
+( cd "$WS" && "$BIN" folder init >"$EVID/workspace-init.out" 2>"$EVID/workspace-init.err" || true )
 
 note "starting host"
 set +e

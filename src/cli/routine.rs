@@ -54,16 +54,16 @@ impl std::fmt::Display for RoutineFileError {
     }
 }
 
-/// Resolve the workspace root that owns `routines.toml`, walking up from the
+/// Resolve the folder root that owns `routines.toml`, walking up from the
 /// current directory like every other workspace-scoped CLI resolution
-/// (stint 0574). `None` means no workspace was found.
+/// (stint 0574). `None` means no folder was found.
 fn workspace_root() -> Option<PathBuf> {
     crate::config::active_workspace_root()
 }
 
 fn print_no_workspace_error() {
-    eprintln!("error: no workspace found from the current directory");
-    eprintln!("Run `plexi workspace init` in your project root first.");
+    eprintln!("error: no folder found from the current directory");
+    eprintln!("Run `plexi folder init` in your project root first.");
 }
 
 /// Parse `routines.toml` at `path` into the scheduler-owned config type.
@@ -77,8 +77,8 @@ pub fn routine_list() -> i32 {
     log::info!("cli: routine list");
     let rf = routines_file();
     let Some(root) = workspace_root() else {
-        println!("No workspace found — routines live in {rf} at a workspace root.");
-        println!("Run `plexi workspace init` in your project root first.");
+        println!("No folder found — routines live in {rf} at a folder root.");
+        println!("Run `plexi folder init` in your project root first.");
         return 0;
     };
     let config_path = root.join(&rf);
@@ -94,7 +94,7 @@ pub fn routine_list() -> i32 {
             println!("No routines configured.");
             println!();
             println!(
-                "To set up routines, run `plexi routine add`, or create {} in workspace {}:",
+                "To set up routines, run `plexi routine add`, or create {} in folder {}:",
                 rf,
                 root.display()
             );
@@ -204,10 +204,10 @@ pub fn routine_add(
     let channel_dir = root.join(crate::config::workspace_channel_dir());
     if !channel_dir.is_dir() {
         eprintln!(
-            "error: workspace channel directory {} does not exist",
+            "error: folder channel directory {} does not exist",
             channel_dir.display()
         );
-        eprintln!("Run `plexi workspace init` in {} first.", root.display());
+        eprintln!("Run `plexi folder init` in {} first.", root.display());
         return 1;
     }
     let path = root.join(routines_file());
@@ -552,7 +552,7 @@ mod tests {
         let nested = root.join("a").join("b");
         std::fs::create_dir_all(&nested).expect("create nested dirs");
         let resolved = crate::app::registry::resolve_workspace_root(&nested)
-            .expect("nested subdirectory must resolve to the workspace root");
+            .expect("nested subdirectory must resolve to the folder root");
         assert_eq!(resolved, root);
     }
 }

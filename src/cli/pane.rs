@@ -1517,7 +1517,7 @@ pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&st
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
-/// passing the user's workspace root so app state is scoped correctly.
+/// passing the user's folder root so app state is scoped correctly.
 pub(super) fn open_github_ephemeral(
     source: &str,
     layout: Option<&str>,

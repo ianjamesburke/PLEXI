@@ -3,15 +3,15 @@ Plexi — the last app you'll ever need
 Usage: plexi [OPTIONS] [COMMAND]
 
 Arguments:
-  [WORKSPACE_PATH]       Open a workspace directory (plexi <path>)
+  [START_DIR]            Open a directory (plexi <path>)
 
 Options:
   -h, --help             Print help
   -V, --version          Print version
 
-Workspace:
+Work:
   run           Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
-  workspace     Set up a .plexi/ workspace in your project folder
+  folder        Add optional folder config (.plexi-<channel>/) to a project folder
   secret        Store and retrieve secrets (API keys, passwords, tokens)
   agent         Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
   context       Manage the active context (the folder and project scope tied to the current pane)

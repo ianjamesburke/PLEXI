@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
 /// Calls the shared `init_workspace` function which creates all workspace files
-/// (workspace.toml, secrets.toml, apps.toml, commands.toml) under the channel dir.
+/// (folder.toml, secrets.toml, apps.toml, commands.toml) under the channel dir.
 ///
-/// Idempotent — skips if the channel dir already has workspace.toml.
+/// Idempotent — skips if the channel dir already has folder.toml.
 /// Non-fatal — logs warn on failure but never prevents the root from being set.
 /// Ensure `<root>/.plexi/.gitignore` covers `app_states/` so a user can never
 /// accidentally commit their app state with a project (standing ruling: app
@@ -342,7 +342,7 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        // Check for anchor defaults from .plexi/workspace.toml [context] section.
+        // Check for anchor defaults from .plexi/folder.toml [context] section.
         let anchor = crate::host::anchor::Anchor::detect(&path);
         let (ctx_name, ctx_description) =
             match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
@@ -884,7 +884,7 @@ impl PlexiApp {
 
     /// Create a new context at a specific directory path. The terminal pane
     /// opens at `path` and the context root is set to it. Named after the
-    /// directory basename, unless the path has a `.plexi/workspace.toml` with
+    /// directory basename, unless the path has a `.plexi/folder.toml` with
     /// `[context]` defaults. Callers must call `mark_workspace_dirty()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
@@ -2357,7 +2357,7 @@ mod tests {
         let channel_dir = crate::config::workspace_channel_dir();
         let channel_path = root.path().join(channel_dir);
         std::fs::create_dir_all(&channel_path).expect("channel workspace");
-        std::fs::write(channel_path.join("workspace.toml"), "id = \"existing\"\n")
+        std::fs::write(channel_path.join("folder.toml"), "id = \"existing\"\n")
             .expect("workspace");
         let neutral_dir = root.path().join(".plexi");
         std::fs::create_dir_all(&neutral_dir).expect("neutral dir");

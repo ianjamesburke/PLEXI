@@ -116,7 +116,7 @@ assert_secret_file_hides_key() {
 assert_secret_get_refuses() {
   local ws="$WORK/ws-host"
   mkdir -p "$ws/.plexi-$PLEXI_CHANNEL"
-  printf 'id = "host"\n' >"$ws/.plexi-$PLEXI_CHANNEL/workspace.toml"
+  printf 'id = "host"\n' >"$ws/.plexi-$PLEXI_CHANNEL/folder.toml"
   local out="$WORK/secret-get.txt"
   if (cd "$ws" && "$BIN" secret get permission-mac >"$out" 2>&1); then
     echo "error: secret get printed a value from workspace id=host" >&2

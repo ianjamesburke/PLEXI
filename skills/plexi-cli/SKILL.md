@@ -262,9 +262,9 @@ pane count (`--json` is supported).
 - `plexi command-view allow`: Record an allow
 <!-- /experiment -->
 - `plexi run`: Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
-- `plexi workspace`: Set up a .plexi/ workspace in your project folder
-- `plexi workspace init`: Set up a .plexi/ workspace in the current directory
-- `plexi workspace clean`: Remove pane slot files for panes that are no longer open
+- `plexi folder`: Set up a .plexi/ workspace in your project folder
+- `plexi folder init`: Set up a .plexi/ workspace in the current directory
+- `plexi folder clean`: Remove pane slot files for panes that are no longer open
 <!-- experiment: change_sets -->
 - `plexi changes`: Preview and accept an agent's file edit before it is written
 <!-- /experiment -->

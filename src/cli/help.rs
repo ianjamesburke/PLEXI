@@ -5,8 +5,8 @@ use crate::release::{GatePath, ReleaseFeature};
 
 const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
-        "Workspace",
-        &["run", "workspace", "secret", "routine", "agent", "context"],
+        "Work",
+        &["run", "folder", "secret", "routine", "agent", "context"],
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
@@ -53,7 +53,7 @@ pub fn gated_command() -> clap::Command {
     let global_commands = crate::cli::global_commands_path();
     let global_scripts = crate::config::config_dir().join("scripts");
     let run_paths = format!(
-        "Active channel paths:\n  Workspace: <repo>/{ws_commands}\n  Global:    {}\n  Scripts:   {}",
+        "Active channel paths:\n  Folder: <repo>/{ws_commands}\n  Global:    {}\n  Scripts:   {}",
         global_commands.display(),
         global_scripts.display()
     );
@@ -266,7 +266,7 @@ fn closest_subcommand_suggestion<'a>(word: &str, cmd: &'a clap::Command) -> Opti
 }
 
 /// Diagnose command-shaped words before the workspace-path fallback consumes them.
-/// Existing directories and explicitly spelled paths retain workspace semantics.
+/// Existing directories and explicitly spelled paths retain folder semantics.
 pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<String> {
     let mut iter = args.iter().skip(1);
     let word = loop {
@@ -739,7 +739,7 @@ mod tests {
             "resolve_commands_workspace_root",
             "effective_commands_workspace_root",
             "run_user_command_by_name",
-            "workspace `commands.toml` > global `commands.toml` > global `scripts/`",
+            "folder `commands.toml` > global `commands.toml` > global `scripts/`",
             "no host restart is needed",
         ] {
             assert!(

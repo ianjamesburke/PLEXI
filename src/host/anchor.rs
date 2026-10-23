@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Optional context defaults read from `[context]` in `workspace.toml`.
+/// Optional context defaults read from `[context]` in `folder.toml`.
 /// These are suggestions, not mandates — user overrides always win.
 #[derive(Debug, Clone, Default)]
 pub struct ContextDefaults {
@@ -22,12 +22,12 @@ pub struct ContextDefaults {
 }
 
 /// A `.plexi/` directory anchor. Wraps the project root that contains the
-/// `.plexi/` dir, plus any defaults parsed from `workspace.toml`.
+/// `.plexi/` dir, plus any defaults parsed from `folder.toml`.
 #[derive(Debug, Clone)]
 pub struct Anchor {
     /// The project root directory (parent of `.plexi/`).
     pub root: PathBuf,
-    /// Context defaults from `[context]` in `workspace.toml`.
+    /// Context defaults from `[context]` in `folder.toml`.
     pub context_defaults: Option<ContextDefaults>,
 }
 
@@ -35,7 +35,7 @@ impl Anchor {
     /// Detect an anchor at `path`. Returns `Some` if `path/<channel_dir>/` exists
     /// and `path` is not a profile directory (`~/.plexi*`).
     ///
-    /// Reads `workspace.toml` for workspace_id and context defaults if present.
+    /// Reads `folder.toml` for workspace_id and context defaults if present.
     pub fn detect(path: &Path) -> Option<Self> {
         let channel_dir = crate::config::workspace_channel_dir();
         let channel_path = path.join(&channel_dir);
@@ -53,7 +53,7 @@ impl Anchor {
 
         log::info!("anchor::detect: found .plexi/ anchor at {}", path.display());
 
-        // Try to read workspace.toml for ID and context defaults.
+        // Try to read folder.toml for ID and context defaults.
         // Reuse WorkspaceConfig from workspace_secrets to avoid duplicate
         // parsing structs and dead-code warnings.
         let context_defaults = match crate::workspace::secrets::WorkspaceConfig::load(path) {
@@ -63,7 +63,7 @@ impl Anchor {
             }),
             Ok(None) => None,
             Err(e) => {
-                log::warn!("anchor: workspace.toml parse error: {e}");
+                log::warn!("anchor: folder.toml parse error: {e}");
                 None
             }
         };
@@ -130,7 +130,7 @@ mod tests {
         let dot_plexi = dir.path().join(&channel_dir);
         std::fs::create_dir(&dot_plexi).unwrap();
         std::fs::write(
-            dot_plexi.join("workspace.toml"),
+            dot_plexi.join("folder.toml"),
             "id = \"abc\"\n\n[context]\nname = \"My Project\"\ndescription = \"The main dev workspace\"\n",
         ).unwrap();
         let anchor = Anchor::detect(dir.path()).unwrap();
@@ -149,7 +149,7 @@ mod tests {
         let dot_plexi = dir.path().join(&channel_dir);
         std::fs::create_dir(&dot_plexi).unwrap();
         std::fs::write(
-            dot_plexi.join("workspace.toml"),
+            dot_plexi.join("folder.toml"),
             "id = \"abc\"\n\n[context]\nname = \"Just Name\"\n",
         )
         .unwrap();

@@ -183,7 +183,7 @@ impl PlexiApp {
     }
 }
 
-/// The workspace whose `workspace.toml` sits at `root`, else global only, the
+/// The workspace whose `folder.toml` sits at `root`, else global only, the
 /// same order `plexi secret get` uses outside a pane.
 fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope, String> {
     let Some(root) = workspace_root.filter(|_| !global) else {

@@ -201,7 +201,7 @@ fn main() -> eframe::Result {
     if let Some(root) = adopted_root.as_ref() {
         if let Err(e) = std::env::set_current_dir(root) {
             eprintln!(
-                "warning: failed to chdir into workspace {}: {e}",
+                "warning: failed to chdir into folder {}: {e}",
                 root.display()
             );
         }
@@ -285,9 +285,8 @@ fn main() -> eframe::Result {
         ChangesCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
         DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
         NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
-        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
+        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, FolderCmd,
     };
-    let args = cli::args::normalize_config_scope_aliases(args);
 
     // Parse through the gated tree so help and completions agree with the
     // execution backstop below; hidden commands still parse.
@@ -564,10 +563,10 @@ fn main() -> eframe::Result {
                         Some(cmd) => cli::trace::exit(cli::run_command(&cmd, &extra_args)),
                         None => cli::trace::exit(cli::run_list_commands(json)),
                     },
-                    Commands::Workspace { cmd } => match cmd {
-                        WorkspaceCmd::Init => cli::trace::exit(cli::workspace_init()),
-                        WorkspaceCmd::Clean { dry_run } => {
-                            cli::trace::exit(cli::workspace_clean_cli(dry_run))
+                    Commands::Folder { cmd } => match cmd {
+                        FolderCmd::Init => cli::trace::exit(cli::folder_init()),
+                        FolderCmd::Clean { dry_run } => {
+                            cli::trace::exit(cli::folder_clean_cli(dry_run))
                         }
                     },
                     Commands::Routine { cmd } => {
@@ -2148,7 +2147,7 @@ fn main() -> eframe::Result {
 ///
 /// Anything starting with `--` is skipped (flags) and so are values that
 /// follow a known value-bearing flag (`--profile`). Recognized CLI
-/// subcommands (`run`, `secret`, `app`, `workspace`, `notify`) are also
+/// subcommands (`run`, `secret`, `app`, `folder`, `notify`) are also
 /// skipped — those are dispatched separately later in `main`.
 fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
     let known = known_subcommands();
@@ -2172,13 +2171,13 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         let candidate = std::path::PathBuf::from(a);
         if !candidate.exists() {
             return Err(format!(
-                "workspace path does not exist: {}",
+                "folder path does not exist: {}",
                 candidate.display()
             ));
         }
         if !candidate.is_dir() {
             return Err(format!(
-                "workspace path is not a directory: {}",
+                "folder path is not a directory: {}",
                 candidate.display()
             ));
         }
@@ -2247,7 +2246,7 @@ fn strip_profile_args(raw_args: &[String]) -> Vec<String> {
 /// retention, keychain migration) never run for them.
 fn is_host_startup(raw_args: &[String]) -> bool {
     use clap::Parser;
-    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
+    let args = strip_profile_args(raw_args);
     matches!(
         cli::args::Cli::try_parse_from(&args),
         Ok(parsed) if parsed.command.is_none()
@@ -2361,7 +2360,7 @@ mod cli_tests {
 
         let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
             .expect("path arg should resolve")
-            .expect("workspace root should be Some");
+            .expect("folder root should be Some");
         assert_eq!(
             resolved.canonicalize().unwrap(),
             workspace.path().canonicalize().unwrap()
@@ -2377,7 +2376,7 @@ mod cli_tests {
             .expect("non-workspace dir should not error");
         assert!(
             resolved.is_none(),
-            "non-workspace dir should return None for workspace root"
+            "non-workspace dir should return None for folder root"
         );
         let ctx_path = crate::config::take_adopted_context_path();
         assert!(
@@ -2414,8 +2413,8 @@ mod cli_tests {
 
     #[test]
     fn plexi_path_arg_skips_known_subcommands() {
-        // `plexi workspace init` must NOT be interpreted as a path arg.
-        let resolved = parse_workspace_path_arg(&argv(&["workspace", "init"]))
+        // `plexi folder init` must NOT be interpreted as a path arg.
+        let resolved = parse_workspace_path_arg(&argv(&["folder", "init"]))
             .expect("subcommand path should resolve");
         assert!(resolved.is_none());
     }
@@ -2452,7 +2451,7 @@ mod cli_tests {
             "permission",
             "list",
         ]))
-        .expect("a --socket path is not a workspace");
+        .expect("a --socket path is not a folder");
         assert!(resolved.is_none());
         let _ = fs::remove_file(&sock);
     }

@@ -28,7 +28,7 @@
 //! - [`index`] — the `secrets-index.json` cache (compiled out under test).
 //! - [`reconcile`] — index ↔ keychain reconciliation and canonical spellings.
 //! - [`resolver`] — the workspace TOML model and the canonical-name resolver.
-//! - [`file`] — `workspace init` scaffolding and `secrets.toml` upserts.
+//! - [`file`] — `folder init` scaffolding and `secrets.toml` upserts.
 //! - [`pane_read`] — a pane's `plexi secret get`, admitted by the host gate.
 //!
 //! This file is the module's public surface: the keychain account naming

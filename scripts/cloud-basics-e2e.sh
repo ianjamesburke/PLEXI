@@ -93,7 +93,7 @@ retain_local_history = true
 EOF
 
 cd "$WORKDIR"
-"$BIN_PATH" workspace init >/tmp/cloud-e2e-init.out
+"$BIN_PATH" folder init >/tmp/cloud-e2e-init.out
 echo "workspace init:"
 cat /tmp/cloud-e2e-init.out
 

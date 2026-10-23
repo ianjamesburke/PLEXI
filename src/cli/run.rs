@@ -676,7 +676,7 @@ pub fn run_on_load_steps(steps: &[String], pane_id: Option<u64>) -> StepRunRepor
     execute_steps(steps, &extra_args, cwd.as_deref(), &env_vars)
 }
 
-/// Format the output of `plexi run` / `plexi run --json` for a given workspace root.
+/// Format the output of `plexi run` / `plexi run --json` for a given folder root.
 pub(crate) fn format_list_commands_for_root(
     workspace_root: Option<&std::path::Path>,
     json: bool,
@@ -706,7 +706,7 @@ pub(crate) fn format_list_commands_for_root(
         return Ok(format!(
             "No workspace commands configured ({commands_file}; global: {}).\n\n\
              To add project commands:\n\
-             \x20 plexi workspace init\n",
+             \x20 plexi folder init\n",
             global_path.display()
         ));
     }
@@ -728,7 +728,7 @@ pub(crate) fn format_list_commands_for_root(
     Ok(out)
 }
 
-/// Resolve a named command across workspace `commands.toml` → global `commands.toml` → global `scripts/`.
+/// Resolve a named command across folder `commands.toml` → global `commands.toml` → global `scripts/`.
 pub(crate) fn resolve_command_target(
     workspace_root: Option<&std::path::Path>,
     command_name: &str,
@@ -794,7 +794,7 @@ pub(crate) fn resolve_command_target(
     Ok(None)
 }
 
-/// `plexi run` with no command argument — list available workspace and global commands.
+/// `plexi run` with no command argument — list available folder and global commands.
 pub fn run_list_commands(json: bool) -> i32 {
     log::info!(
         "cli: run called with no command, listing available commands (json={json})"
@@ -946,7 +946,7 @@ pub fn run_command_for_root_from_pane(
             };
             let store = system_store();
             // Load workspace context once — fail early if secrets are required but workspace
-            // is not initialised (missing workspace.toml or secrets.toml).
+            // is not initialised (missing folder.toml or secrets.toml).
             let ws_root_for_secrets = crate::app::registry::resolve_workspace_root(cwd)
                 .or_else(|| ws_root.map(std::path::Path::to_path_buf));
             let ws_context: Option<(String, WorkspaceSecrets)> =
@@ -954,12 +954,12 @@ pub fn run_command_for_root_from_pane(
                     let cfg = match WorkspaceConfig::load(root) {
                         Ok(Some(c)) => c,
                         Ok(None) => {
-                            log::warn!("run_command: workspace.toml missing at {}", root.display());
+                            log::warn!("run_command: folder.toml missing at {}", root.display());
                             return None;
                         }
                         Err(e) => {
                             log::warn!(
-                                "run_command: failed to load workspace.toml at {}: {e}",
+                                "run_command: failed to load folder.toml at {}: {e}",
                                 root.display()
                             );
                             return None;
@@ -984,14 +984,14 @@ pub fn run_command_for_root_from_pane(
             match ws_context {
                 None => {
                     log::warn!(
-                        "run_command: secrets required but workspace context unavailable in {}",
+                        "run_command: secrets required but folder context unavailable in {}",
                         cwd.display()
                     );
                     let channel_dir = crate::config::workspace_channel_dir();
                     eprintln!(
-                        "error: command requires secrets but workspace is not fully initialized."
+                        "error: command requires secrets but folder is not fully initialized."
                     );
-                    eprintln!("  → plexi workspace init   (creates {channel_dir}/workspace.toml + {channel_dir}/secrets.toml)");
+                    eprintln!("  → plexi folder init   (creates {channel_dir}/folder.toml + {channel_dir}/secrets.toml)");
                     eprintln!("  → plexi secret set <NAME>  (then store the required secrets)");
                     return fail(1);
                 }
@@ -1194,8 +1194,8 @@ dev = { run = "npm run dev", description = "Start dev server" }
 required = ["SHARED_KEY"]
 
 [commands]
-bar = { run = "echo ws-bar", description = "Workspace bar", secrets = ["BAR_TOKEN"] }
-foo = { run = "echo ws-foo", description = "Workspace foo" }
+bar = { run = "echo ws-bar", description = "Folder bar", secrets = ["BAR_TOKEN"] }
+foo = { run = "echo ws-foo", description = "Folder foo" }
 "#,
         )
         .unwrap();
@@ -1229,7 +1229,7 @@ global_only = { run = "echo global-only", secrets = ["GLOBAL_SECRET"] }
         assert_eq!(arr.len(), 3);
         assert_eq!(arr[0]["name"], "bar");
         assert_eq!(arr[0]["scope"], "workspace");
-        assert_eq!(arr[0]["description"], "Workspace bar");
+        assert_eq!(arr[0]["description"], "Folder bar");
         assert_eq!(arr[0]["run"], "echo ws-bar");
         assert_eq!(arr[0]["secrets"], serde_json::json!(["SHARED_KEY", "BAR_TOKEN"]));
 

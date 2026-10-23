@@ -255,8 +255,8 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Open a workspace directory (plexi <path>)
-    pub workspace_path: Option<String>,
+    /// Open a directory (plexi <path>)
+    pub start_dir: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -324,25 +324,25 @@ pub enum Commands {
     /// `~/.plexi-beta/commands.toml` on beta, `~/.plexi/commands.toml` on stable) plus executable
     /// files in `config_dir()/scripts/` (`~/.plexi-<channel>/scripts/`, or `~/.plexi/scripts/` on stable).
     ///
-    /// (2) Workspace tier: `<workspace>/.plexi-<channel>/commands.toml` (`<workspace>/.plexi/commands.toml`
-    /// on stable), where `<workspace>` is the nearest ancestor of the starting `cwd` containing a
+    /// (2) Folder tier: `<folder>/.plexi-<channel>/commands.toml` (`<folder>/.plexi/commands.toml`
+    /// on stable), where `<folder>` is the nearest ancestor of the starting `cwd` containing a
     /// `.plexi-<channel>/` directory (`.plexi/` on stable) via `resolve_workspace_root_stopping_at`.
     /// The upward walk stops at `$HOME` and the passwd login home directory so `~` is never treated
-    /// as a workspace. Fallback (`resolve_commands_workspace_root`): `cwd` itself when
+    /// as a folder. Fallback (`resolve_commands_workspace_root`): `cwd` itself when
     /// `cwd/.plexi-<channel>/commands.toml` (or `cwd/.plexi/commands.toml` on stable) exists and is
     /// distinct from the global `commands.toml`.
     ///
     /// (3) Starting directory by surface: `plexi run` in a terminal uses the shell's `cwd`.
     /// The command palette (`Cmd+P`) uses the focused pane's `cwd`, then falls back to the active
-    /// context root (`effective_commands_workspace_root`); `Edit commands` opens that workspace's
+    /// context root (`effective_commands_workspace_root`); `Edit commands` opens that folder's
     /// `commands.toml` (creating it from template if absent), or the global `commands.toml` when
-    /// outside a workspace. `[keys]` `"<chord>" = "run:<name>"` bindings in
+    /// outside a folder. `[keys]` `"<chord>" = "run:<name>"` bindings in
     /// `~/.plexi-<channel>/config.toml` (or `<repo>/.plexi-<channel>/config.toml`; `~/.plexi/config.toml`
-    /// on stable) use the adopted/host workspace root, falling back to the active context root
+    /// on stable) use the adopted/host folder root, falling back to the active context root
     /// (`run_user_command_by_name`, validated by `plexi config check` against reserved shortcuts).
     ///
-    /// (4) Precedence: workspace `commands.toml` > global `commands.toml` > global `scripts/`,
-    /// merged by command name. `plexi run` with no arguments lists both scopes (`[workspace]` and
+    /// (4) Precedence: folder `commands.toml` > global `commands.toml` > global `scripts/`,
+    /// merged by command name. `plexi run` with no arguments lists both scopes (`[folder]` and
     /// `[global]`); `--json` prints `[{name, scope, description, run, steps, secrets}]` (secret
     /// names only, never values). Any secrets listed in a command definition are injected as
     /// environment variables automatically when the command runs.
@@ -357,7 +357,7 @@ pub enum Commands {
     /// Example: plexi run dev
     /// Example: plexi run play
     /// Example: plexi run --json
-    #[command(next_help_heading = "Workspace")]
+    #[command(next_help_heading = "Context")]
     Run {
         /// Command name to run (omit to list available commands)
         command: Option<String>,
@@ -365,12 +365,12 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
     },
-    /// Set up a .plexi/ workspace in your project folder.
+    /// Add optional folder config (.plexi-<channel>/) to a project folder.
     ///
-    /// Run this once inside your project directory to enable workspace-scoped secrets and commands.
-    Workspace {
+    /// Run this inside a project directory to enable folder-scoped secrets, commands and apps. Plexi works without it.
+    Folder {
         #[command(subcommand)]
-        cmd: WorkspaceCmd,
+        cmd: FolderCmd,
     },
     /// Preview and accept an agent's file edit before it is written.
     ///
@@ -385,7 +385,7 @@ pub enum Commands {
     /// Store and retrieve secrets (API keys, passwords, tokens).
     ///
     /// Secrets use macOS Keychain or, on Linux, Secret Service with a labeled
-    /// encrypted-file fallback. Global, workspace, and folder scopes share that
+    /// encrypted-file fallback. Global, folder-config, and per-directory scopes share that
     /// Linux backend. See https://plexiapp.com/docs/secrets/#linux-storage for
     /// backend selection and legacy plaintext migration.
     /// Folder secrets are an experiment, off by default in V1. Enable with
@@ -403,9 +403,9 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SecretCmd,
     },
-    /// Manage workspace routines — scheduled shell commands.
+    /// Manage routines declared in folder config — scheduled shell commands.
     ///
-    /// Routines are declared in `routines.toml` inside the workspace channel directory —
+    /// Routines are declared in `routines.toml` inside the folder config directory —
     /// `{workspace_channel_dir}/routines.toml`, e.g. `.plexi-alpha/routines.toml` on the
     /// alpha channel — and run automatically on schedule.
     /// **Requires Plexi to be running** — there is no background daemon. Routines only fire
@@ -421,8 +421,8 @@ pub enum Commands {
     /// An agent is a directory containing `AGENT.md` (persona / system prompt) and
     /// `settings.toml` (`[agent]` metadata + `[harness]` CLI worker config).
     ///
-    /// Two tiers exist, and workspace definitions shadow global ones with the same name:
-    ///   - Workspace: `<workspace>/.plexi/agents/<name>/`
+    /// Two tiers exist, and folder definitions shadow global ones with the same name:
+    ///   - Folder: `<folder>/.plexi/agents/<name>/`
     ///   - Global:    `~/.plexi-<channel>/agents/<name>/` (pass `--global` to `create`)
     ///
     /// End-to-end worker workflow:
@@ -1253,18 +1253,19 @@ pub enum EventsCmd {
     ///
     /// Emits a `mcpServers` JSON block pointing at this instance's host MCP
     /// server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a
-    /// Claude Code or Codex agent in this pane can call workspace app tools and
+    /// Claude Code or Codex agent in this pane can call this context's app tools and
     /// subscribe to app events natively over MCP. The emitted credential is
     /// valid only while the originating pane remains alive.
     McpConfig,
 }
 
 #[derive(Subcommand)]
-pub enum WorkspaceCmd {
-    /// Set up a .plexi/ workspace in the current directory.
+pub enum FolderCmd {
+    /// Create optional folder config in the current directory.
     ///
-    /// Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/`
-    /// (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`,
+    /// Never required: Plexi runs in any directory, and global or built-in definitions work without it.
+    /// Run this inside a project folder to add local settings. It creates `<repo>/.plexi-<channel>/`
+    /// (or `<repo>/.plexi/` on stable) with `folder.toml`, `secrets.toml`, `apps.toml`,
     /// and `commands.toml` so that secrets, apps, and commands are scoped to this project.
     Init,
     /// Remove pane slot files for panes that are no longer open.
@@ -1322,8 +1323,8 @@ pub enum SecretCmd {
     },
     /// Show stored secrets.
     ///
-    /// Inside a workspace, shows project secrets plus user-scope secrets.
-    /// Outside a workspace, falls back to user-scope secrets.
+    /// Inside a folder, shows project secrets plus user-scope secrets.
+    /// Outside a folder, falls back to user-scope secrets.
     /// Use --global to show only user-scope secrets from any directory.
     List {
         /// List names in an explicit owned context (id, name or root). Agents need approval.
@@ -1478,10 +1479,10 @@ pub enum AppCmd {
     /// Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store.
     /// Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub.
     /// Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack.
-    /// Workspace pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
+    /// Folder pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
     Install {
         /// Source to install: a local path, GitHub spec (github:owner/repo), or bare app id.
-        /// Omit to install from the workspace pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable).
+        /// Omit to install from the folder pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable).
         spec_or_path: Option<String>,
         /// Install from a pack file or 'core'
         #[arg(long)]
@@ -1616,8 +1617,8 @@ pub enum AppCmd {
     /// refresh `plexi.scaffold.toml` for a pre-existing app without creating or
     /// modifying any source files.
     ///
-    /// By default, a newly scaffolded app is placed in your workspace's app
-    /// directory. If no workspace is detected, pass --global to scaffold into
+    /// By default, a newly scaffolded app is placed in your folder's app
+    /// directory. If no folder is detected, pass --global to scaffold into
     /// the global registry.
     ///
     /// Use --open to launch it in a split-right pane after scaffolding.
@@ -1634,7 +1635,7 @@ pub enum AppCmd {
         /// App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component.
         #[arg(long, default_value = "python", value_parser = ["python"])]
         lang: String,
-        /// Scaffold into the global app registry instead of the workspace
+        /// Scaffold into the global app registry instead of the folder
         #[arg(long)]
         global: bool,
         /// Open the app in a split-right pane after scaffolding
@@ -1711,7 +1712,7 @@ pub enum AppCmd {
     /// Pull git-backed installed apps to their latest source revision.
     ///
     /// Canonical app update command. Resolves workspace-local apps when run
-    /// inside a workspace, and skips installed apps that are not git checkouts.
+    /// inside a folder, and skips installed apps that are not git checkouts.
     Update {
         /// App id to update (omit to update all installed apps visible here)
         id: Option<String>,
@@ -1784,7 +1785,7 @@ pub enum AppCmd {
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
 #[derive(Subcommand)]
 pub enum HostCmd {
-    /// Restart this channel, restoring the saved workspace.
+    /// Restart this channel, restoring your saved contexts.
     Restart {
         /// Confirm restarting the host containing this pane; this pane will close.
         #[arg(long)]
@@ -1807,8 +1808,8 @@ pub enum HostCmd {
         /// Seconds to wait for the host to confirm readiness (default 15)
         #[arg(long)]
         timeout_secs: Option<u64>,
-        /// Boot a hermetic session: skip workspace restore on start and skip
-        /// workspace save on shutdown. For automated runs (scene runners,
+        /// Boot a hermetic session: skip session restore on start and skip
+        /// session save on shutdown. For automated runs (scene runners,
         /// release gates) that must never see or clobber the channel's saved
         /// session.
         #[arg(long)]
@@ -2755,14 +2756,14 @@ pub enum ConfigCmd {
     Reload,
     /// Validate the selected config.toml and report any errors.
     ///
-    /// Reads the workspace config inside a workspace, otherwise the global config.
+    /// Reads the folder config inside a folder, otherwise the global config.
     Check {
         #[command(flatten)]
         scope: ConfigScopeArgs,
     },
     /// Open the selected config.toml in your $EDITOR.
     ///
-    /// Opens the workspace config inside a workspace, otherwise the global config.
+    /// Opens the folder config inside a folder, otherwise the global config.
     Edit {
         #[command(flatten)]
         scope: ConfigScopeArgs,
@@ -2770,7 +2771,7 @@ pub enum ConfigCmd {
     /// Print a config key from the selected config.toml to stdout.
     ///
     /// Supports dotted keys: agents.low, agents.medium, agents.high.
-    /// Reads the workspace config inside a workspace, otherwise the global config.
+    /// Reads the folder config inside a folder, otherwise the global config.
     Get {
         #[command(flatten)]
         scope: ConfigScopeArgs,
@@ -2779,7 +2780,7 @@ pub enum ConfigCmd {
     },
     /// Overwrite the selected config.toml with the built-in default template.
     ///
-    /// Writes the workspace config inside a workspace, otherwise the global config.
+    /// Writes the folder config inside a folder, otherwise the global config.
     /// Creates a backup at config.toml.bak before overwriting.
     Reset {
         #[command(flatten)]
@@ -2788,7 +2789,7 @@ pub enum ConfigCmd {
     /// Print all known config keys with type, current value, and description.
     ///
     /// Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output.
-    /// Reads the workspace config inside a workspace, otherwise the global config.
+    /// Reads the folder config inside a folder, otherwise the global config.
     List {
         #[command(flatten)]
         scope: ConfigScopeArgs,
@@ -2796,7 +2797,7 @@ pub enum ConfigCmd {
     /// Set one or more keys in the selected config.toml.
     ///
     /// Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14).
-    /// Writes the workspace config inside a workspace, otherwise the global config.
+    /// Writes the folder config inside a folder, otherwise the global config.
     /// Pass --global to read or write only the global config.
     Set {
         #[command(flatten)]
@@ -2810,19 +2811,19 @@ pub enum ConfigCmd {
 #[derive(Args, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConfigScopeArgs {
     /// Use the global channel config.toml only (`~/.plexi-<channel>/config.toml`, or `~/.plexi/config.toml` on stable).
-    #[arg(short = 'g', long = "global", conflicts_with = "workspace")]
+    #[arg(short = 'g', long = "global", conflicts_with = "folder")]
     pub global: bool,
-    /// Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable).
-    #[arg(short = 'w', long = "workspace", visible_alias = "ws")]
-    pub workspace: bool,
+    /// Use the active folder's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable).
+    #[arg(short = 'f', long = "folder")]
+    pub folder: bool,
 }
 
 impl ConfigScopeArgs {
     pub fn scope(self) -> ConfigScope {
         if self.global {
             ConfigScope::Global
-        } else if self.workspace {
-            ConfigScope::Workspace
+        } else if self.folder {
+            ConfigScope::Folder
         } else {
             ConfigScope::Effective
         }
@@ -2833,30 +2834,14 @@ impl ConfigScopeArgs {
 pub enum ConfigScope {
     Effective,
     Global,
-    Workspace,
-}
-
-pub fn normalize_config_scope_aliases(args: Vec<String>) -> Vec<String> {
-    let Some(config_idx) = args.iter().position(|arg| arg == "config") else {
-        return args;
-    };
-    args.into_iter()
-        .enumerate()
-        .map(|(idx, arg)| {
-            if idx > config_idx && arg == "-ws" {
-                "--workspace".to_string()
-            } else {
-                arg
-            }
-        })
-        .collect()
+    Folder,
 }
 
 #[derive(Subcommand)]
 pub enum RoutineCmd {
-    /// List routines defined in the workspace's routines.toml with their schedule and next fire time.
+    /// List routines defined in the folder's routines.toml with their schedule and next fire time.
     List,
-    /// Manually trigger a named routine from the workspace's routines.toml.
+    /// Manually trigger a named routine from the folder's routines.toml.
     ///
     /// The routine fires exactly like a scheduled run: into its configured context
     /// when one is named (erroring if that context does not exist), otherwise into
@@ -2868,7 +2853,7 @@ pub enum RoutineCmd {
         #[arg(long)]
         force: bool,
     },
-    /// Add a routine to the workspace's routines.toml.
+    /// Add a routine to the folder's routines.toml.
     ///
     /// The schedule is validated against the same parser the scheduler uses, so an
     /// accepted routine is guaranteed to fire. Hand-written comments elsewhere in
@@ -2889,7 +2874,7 @@ pub enum RoutineCmd {
         #[arg(long)]
         ephemeral: bool,
     },
-    /// Remove a routine from the workspace's routines.toml.
+    /// Remove a routine from the folder's routines.toml.
     Remove {
         /// Name of the routine to remove
         name: String,
@@ -2934,7 +2919,7 @@ pub enum NoteCmd {
 pub enum AgentCmd {
     /// Inspect or run a stored team of independent ranking agents.
     ///
-    /// Team v0 TOML is resolved from workspace channel teams/<name>.toml,
+    /// Team v0 TOML is resolved from folder-config teams/<name>.toml,
     /// then profile teams/<name>.toml, then built-in consult-experts.
     /// Fields: version = 0; options = ["Proceed", "Experiment", "Defer"].
     /// Each [[members]] has role, harness (pi/claude/codex/agy/script),
@@ -2965,9 +2950,9 @@ pub enum AgentCmd {
         #[arg(long, value_enum, default_value = "all")]
         filter: crate::protocol::FleetFilter,
     },
-    /// Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
+    /// Create a new agent definition (`AGENT.md` + `settings.toml`) in the folder or global tier.
     ///
-    /// Writes `<workspace>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)
+    /// Writes `<folder>/.plexi/agents/<name>/` (or `~/.plexi-<channel>/agents/<name>/` with `--global`)
     /// and validates the directory through `AgentDefinition::load_dir`. Refuses to overwrite an
     /// existing agent directory.
     ///
@@ -3024,19 +3009,19 @@ pub enum AgentCmd {
         /// Human-facing display name in `[agent]` (defaults to `<name>`)
         #[arg(long = "display-name")]
         display_name: Option<String>,
-        /// Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace
+        /// Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the folder
         #[arg(long)]
         global: bool,
-        /// Directory used to resolve the workspace root (defaults to current working directory)
+        /// Directory used to resolve the folder root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// List active agents from both workspace and global tiers.
+    /// List active agents from both folder and global tiers.
     ///
-    /// Prints each agent's name, tier (`workspace` or `global`), CLI + model (or `assistant`
+    /// Prints each agent's name, tier (`folder` or `global`), CLI + model (or `assistant`
     /// when no `[harness]` table is present), description, and whether it shadows a global agent.
     List {
-        /// Directory used to resolve the workspace root (defaults to current working directory)
+        /// Directory used to resolve the folder root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
     },
@@ -3044,7 +3029,7 @@ pub enum AgentCmd {
     Show {
         /// Agent name to inspect
         name: String,
-        /// Directory used to resolve the workspace root (defaults to current working directory)
+        /// Directory used to resolve the folder root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
     },
@@ -3075,17 +3060,17 @@ pub enum AgentCmd {
         #[arg(long)]
         task: String,
     },
-    /// Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
+    /// Spawn a CLI worker agent from the agent registry (`<folder>/.plexi/agents/<name>/` or global).
     ///
-    /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
+    /// Loads `<name>` through `AgentRegistry` (folder shadowing global), refuses agents without
     /// a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`,
     /// and launches the worker pane. Codex workers (including calls and team members) use
     /// `exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true`.
-    /// They can write in their workspace and use the network; Plexi adds no profile writable root.
+    /// They can write in their working directory and use the network; Plexi adds no profile writable root.
     ///
     /// Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
     Spawn {
-        /// Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
+        /// Agent name in `<folder>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
         name: String,
         /// Task brief passed to the spawned agent harness
         #[arg(long)]
@@ -3099,7 +3084,7 @@ pub enum AgentCmd {
         /// Parent/caller pane id or name (defaults to `$PLEXI_PANE_ID`)
         #[arg(long, value_name = "PANE_ID")]
         from: Option<PaneTarget>,
-        /// Working directory for workspace lookup and the spawned worker pane
+        /// Working directory for folder lookup and the spawned worker pane
         #[arg(long)]
         cwd: Option<String>,
     },
@@ -3227,7 +3212,7 @@ pub enum AgentCmd {
         #[command(subcommand)]
         cmd: AgentHeadCmd,
     },
-    /// Inspect hard and soft tool grants recorded for agent heads in the current workspace.
+    /// Inspect hard and soft tool grants recorded for agent heads in the current context.
     ///
     /// Example: plexi agent grants list --json
     Grants {
@@ -3301,13 +3286,13 @@ pub enum AgentCmd {
 
 #[derive(Subcommand)]
 pub enum AgentGrantsCmd {
-    /// List tool grants recorded for agent heads in the current workspace.
+    /// List tool grants recorded for agent heads in the current context.
     List,
 }
 
 #[derive(Subcommand)]
 pub enum AgentHeadCmd {
-    /// Create a head in the current workspace.
+    /// Create a head in the current context.
     Create {
         /// Head id (lowercase slug)
         name: String,
@@ -3321,7 +3306,7 @@ pub enum AgentHeadCmd {
         #[arg(long = "grant")]
         grant: Vec<String>,
     },
-    /// List heads in the current workspace.
+    /// List heads in the current context.
     List {
         /// Include temporary delegated children
         #[arg(long)]
@@ -3355,7 +3340,7 @@ pub enum AgentRunCmd {
         #[arg(long)]
         text: Option<String>,
     },
-    /// List runs in the current workspace.
+    /// List runs in the current context.
     List,
     /// Show one run.
     Show {
@@ -3406,7 +3391,7 @@ pub enum AgentTeamCmd {
         name: String,
         #[arg(long)]
         question: String,
-        /// Output directory (default: team-results/<run-id> in a workspace, or the channel profile's sessions/teams/ outside one).
+        /// Output directory (default: team-results/<run-id> in a folder with config, or the channel state directory's sessions/teams/ outside one).
         #[arg(long)]
         out: Option<std::path::PathBuf>,
         /// Replace the stored options; repeat for each option (at least two).
@@ -3451,7 +3436,7 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
+        AppCmd, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
         SecretCmd,
     };
     use clap::Parser;
@@ -3766,8 +3751,8 @@ mod tests {
     }
 
     #[test]
-    fn config_check_accepts_workspace_scope_alias() {
-        let cli = Cli::try_parse_from(["plexi", "config", "check", "--ws"]).unwrap();
+    fn config_check_accepts_folder_scope() {
+        let cli = Cli::try_parse_from(["plexi", "config", "check", "--folder"]).unwrap();
 
         let Some(Commands::Config { cmd }) = cli.command else {
             panic!("expected config command");
@@ -3775,26 +3760,7 @@ mod tests {
         let ConfigCmd::Check { scope } = cmd else {
             panic!("expected config check command");
         };
-        assert_eq!(scope.scope(), ConfigScope::Workspace);
-    }
-
-    #[test]
-    fn config_check_accepts_single_dash_ws_alias_after_normalization() {
-        let args = normalize_config_scope_aliases(
-            ["plexi", "config", "check", "-ws"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-        );
-        let cli = Cli::try_parse_from(args).unwrap();
-
-        let Some(Commands::Config { cmd }) = cli.command else {
-            panic!("expected config command");
-        };
-        let ConfigCmd::Check { scope } = cmd else {
-            panic!("expected config check command");
-        };
-        assert_eq!(scope.scope(), ConfigScope::Workspace);
+        assert_eq!(scope.scope(), ConfigScope::Folder);
     }
 
     #[test]
