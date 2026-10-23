@@ -1052,6 +1052,9 @@ if ! command -v plexi >/dev/null 2>&1 && command -v {cli} >/dev/null 2>&1; then
     plexi() {{ {cli} "$@"; }}
 fi
 
+if ! (( $+functions[compdef] )); then
+    autoload -Uz compinit && compinit -i -d "${{ZDOTDIR}}/.zcompdump-${{ZSH_VERSION}}" >/dev/null 2>&1
+fi
 if (( $+functions[compdef] )); then
     [[ -r "${{ZDOTDIR}}/completions/_{cli}" ]] && source "${{ZDOTDIR}}/completions/_{cli}"
     [[ -r "${{ZDOTDIR}}/completions/_plexi" ]] && source "${{ZDOTDIR}}/completions/_plexi"
@@ -1082,6 +1085,78 @@ precmd_functions+=(__plexi_precmd)
     std::fs::write(zsh_dir.join(".zshrc"), zshrc)?;
 
     Ok(zsh_dir)
+}
+
+pub(crate) fn ensure_bash_shell_integration() -> io::Result<PathBuf> {
+    let bash_dir = crate::config::config_dir()
+        .join("shell-integration")
+        .join("bash");
+    let completions_dir = bash_dir.join("completions");
+    std::fs::create_dir_all(&completions_dir)?;
+
+    let cli = crate::cli::setup::cli_name();
+    let stamp_path = completions_dir.join(".build_id");
+    let current_build = env!("PLEXI_BUILD_ID");
+    let main_comp_path = completions_dir.join(&cli);
+    let needs_regen = !main_comp_path.is_file()
+        || std::fs::read_to_string(&stamp_path).ok().as_deref() != Some(current_build);
+    if needs_regen {
+        if let Ok(bytes) = crate::cli::completions::render_completions("bash", &cli) {
+            let _ = std::fs::write(&main_comp_path, bytes);
+        }
+        if cli != "plexi" {
+            let bare_comp_path = completions_dir.join("plexi");
+            if let Ok(bytes) = crate::cli::completions::render_completions("bash", "plexi") {
+                let _ = std::fs::write(&bare_comp_path, bytes);
+            }
+        }
+        let _ = std::fs::write(&stamp_path, current_build);
+    }
+
+    let comp_dir_str = completions_dir.to_string_lossy();
+    let bashrc_path = bash_dir.join(".bashrc");
+    let bashrc = format!(
+        r#"# Plexi bash shell integration — automatically managed, do not edit
+if [ -f /etc/profile ]; then
+    . /etc/profile
+fi
+if [ -f "$HOME/.bash_profile" ]; then
+    . "$HOME/.bash_profile"
+elif [ -f "$HOME/.bash_login" ]; then
+    . "$HOME/.bash_login"
+elif [ -f "$HOME/.profile" ]; then
+    . "$HOME/.profile"
+elif [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+fi
+
+if [ -d "$HOME/.local/bin" ] && case ":$PATH:" in *":$HOME/.local/bin:"*) false ;; *) true ;; esac; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v plexi >/dev/null 2>&1 && command -v {cli} >/dev/null 2>&1; then
+    plexi() {{ {cli} "$@"; }}
+fi
+
+[ -r "{comp_dir_str}/{cli}" ] && . "{comp_dir_str}/{cli}"
+[ -r "{comp_dir_str}/plexi" ] && . "{comp_dir_str}/plexi"
+"#
+    );
+    std::fs::write(&bashrc_path, bashrc)?;
+    Ok(bashrc_path)
+}
+
+pub(crate) fn default_shell_args(shell: &str, agent_pane: bool) -> Vec<String> {
+    if !agent_pane && (shell.ends_with("/bash") || shell == "bash") {
+        if let Ok(bashrc) = ensure_bash_shell_integration() {
+            return vec![
+                "--rcfile".to_string(),
+                bashrc.to_string_lossy().into_owned(),
+                "-i".to_string(),
+            ];
+        }
+    }
+    vec!["-l".to_string()]
 }
 
 /// Join args into a single shell-safe string for passing to `sh -c` / `zsh -c`.

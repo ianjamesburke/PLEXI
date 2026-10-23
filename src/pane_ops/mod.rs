@@ -39,12 +39,20 @@ pub(super) fn apply_initial_cmd(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
+    let is_agent = settings.env.contains_key("PLEXI_AGENT_SPAWNED");
     let effective_cmd: String = if !close_on_exit {
         let shell_path = &settings.shell;
         let trimmed = cmd.trim().trim_end_matches([';', ' ']);
         let sep = if trimmed.is_empty() { "" } else { "; " };
         match shell_name {
             "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
+            "bash" if !is_agent => match crate::host::shell::ensure_bash_shell_integration() {
+                Ok(rcfile) => format!(
+                    "{trimmed}{sep}exec \"{shell_path}\" --rcfile \"{}\" -i",
+                    rcfile.to_string_lossy()
+                ),
+                Err(_) => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
+            },
             _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
         }
     } else {

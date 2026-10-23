@@ -3146,10 +3146,12 @@ impl PlexiApp {
             shell::withhold_terminal_secrets(&mut env, working_directory.as_deref());
         }
         crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
+        let shell_path = shell::detect_shell();
+        let args = shell::default_shell_args(&shell_path, agent_pane);
         (
             BackendSettings {
-                shell: shell::detect_shell(),
-                args: vec!["-l".to_string()],
+                shell: shell_path,
+                args,
                 env,
                 dynamic_colors: theme::terminal_dynamic_colors(colors),
                 working_directory,
