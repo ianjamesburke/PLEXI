@@ -422,9 +422,14 @@ mod tests {
         std::fs::write(&tmux, "#!/bin/sh\nexec sleep 600\n").unwrap();
         std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
         let marker = uuid::Uuid::new_v4().to_string();
+        let ready = dir.path().join("ready");
         let mut command = std::process::Command::new("/bin/sh");
         command
-            .args(["-c", "trap '' HUP TERM; while :; do sleep 600; done"])
+            .args([
+                "-c",
+                "trap '' HUP TERM; : > \"$READY\"; while :; do sleep 600; done",
+            ])
+            .env("READY", &ready)
             .env(SESSION_ENV, &marker);
         unsafe {
             command.pre_exec(|| {
@@ -436,6 +441,12 @@ mod tests {
             });
         }
         let mut child = FixtureChild(command.spawn().unwrap());
+        // Signals sent before the shell installs its trap would just kill it.
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(Instant::now() < ready_deadline, "fixture never became ready");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let registration = PaneProcessGroup::record_for(child.0.id(), &marker);
         let start = Instant::now();
         let report = stop_pane_processes_with_tmux(

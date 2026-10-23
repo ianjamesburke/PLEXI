@@ -1458,7 +1458,11 @@ mod tests {
         .unwrap();
         let mut command = std::process::Command::new("/bin/sh");
         command
-            .args(["-c", "trap '' HUP TERM; while :; do sleep 600; done"])
+            .args([
+                "-c",
+                "trap '' HUP TERM; : > \"$READY\"; while :; do sleep 600; done",
+            ])
+            .env("READY", profile.path().join("ready"))
             .env(crate::host::process_cleanup::SESSION_ENV, &marker);
         unsafe {
             command.pre_exec(|| {
@@ -1466,11 +1470,24 @@ mod tests {
             });
         }
         let mut child = command.spawn().unwrap();
+        // Signals sent before the shell installs its trap would just kill it.
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !profile.path().join("ready").exists() {
+            assert!(
+                std::time::Instant::now() < ready_deadline,
+                "fixture never became ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         super::clean_panes_after_socket_failure(profile.path(), std::process::id());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            if child.try_wait().unwrap().is_some() {
-                return;
+            // Cleanup reaps its pane roots, so ECHILD means it already exited.
+            match child.try_wait() {
+                Ok(None) => {}
+                Ok(Some(_)) => return,
+                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => return,
+                Err(error) => panic!("wait on marked group: {error}"),
             }
             if std::time::Instant::now() >= deadline {
                 unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
