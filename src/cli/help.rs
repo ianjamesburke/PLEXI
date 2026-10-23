@@ -634,7 +634,6 @@ mod tests {
                 ReleaseFeature::Assistant,
             ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
-            (&["plexi", "agent", "run", "list"], ReleaseFeature::Leads),
             (
                 &["plexi", "command-view", "--json"],
                 ReleaseFeature::CommandView,

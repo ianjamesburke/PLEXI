@@ -1620,7 +1620,7 @@ mod tests {
             .unwrap_err();
         assert!(refused.contains("reserved"), "{refused}");
         let outcome = timeline
-            .record_command_view(3, "head created", serde_json::json!({"heads": []}))
+            .record_command_view(3, "agent created", serde_json::json!({"agents": []}))
             .unwrap();
         assert!(outcome.event_id >= 1);
         assert!(timeline.has_stream(

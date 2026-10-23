@@ -33,10 +33,8 @@
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
 pub mod fleet;
-pub mod heads;
+pub mod runs;
 pub(crate) mod team;
-pub mod leads;
-pub mod queue;
 
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
@@ -951,10 +949,10 @@ impl AgentHost {
         }
         self.agents.clear();
         if let Some(dir) = &self.grants_dir {
-            // The profile monitor is the live grant store (`heads` records
+            // The profile monitor is the live grant store (`runs` records
             // scope allows here). Replacing it from disk drops an allow whose
             // seal save has not landed, and the next `agents.list` comes back
-            // as `permission_required` with no `heads` field. Keep that
+            // as `permission_required` with no `agents` field. Keep that
             // monitor. The subscription copy is still the file on disk.
             self.grant_store = GrantStore::load_or_default(dir);
             self.monitor = crate::broker::gate::PermissionMonitor::for_profile(dir);

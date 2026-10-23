@@ -2070,21 +2070,11 @@ impl PlexiApp {
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
-    /// Head bound to an Assistant or an active team worker.
-    /// Other terminal panes hold no head grants.
-    pub(crate) fn bound_head_for_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<String> {
-        if let Some(head) = self.team_head_for_pane(pane_id) { return Some(head); }
-        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
-        let pane = self.windows.get(win_idx)?.panes.get(&pane_id)?;
-        pane.as_app()
-            .and_then(|app| app.runtime.bound_head().map(str::to_string))
-    }
-
     /// True when `pane_id` is a live human-owned terminal pane with no bound
-    /// agent head. App panes, agent panes, head-bound panes, and panes spawned
-    /// by an agent (including via `plexi pane new`) return `false`.
+    /// team member. App panes, agent panes, and panes spawned by an agent
+    /// (including via `plexi pane new`) return `false`.
     pub(crate) fn is_human_owned_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> bool {
-        if self.bound_head_for_pane(pane_id).is_some() {
+        if self.team_member_for_pane(pane_id).is_some() {
             return false;
         }
         let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) else {
@@ -3648,26 +3638,6 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("agent_host.tick", || self.agent_host.tick());
         if self.agent_host.turns_in_flight() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
-        for (head, context_id) in crate::agent::leads::take_open_panes() {
-            log::info!("lead: opening assistant pane head={head} context={context_id}");
-            if let Err(error) = self.open_assistant_for_head(&head, Some(context_id)) {
-                log::error!("lead: open pane head={head} failed: {error}");
-            }
-        }
-        let mut queue_roots = Vec::new();
-        if let Some(root) = crate::config::active_workspace_root() {
-            queue_roots.push(root);
-        }
-        for window in &self.windows {
-            if let Some(root) = self.context_root_for(window.context_id) {
-                queue_roots.push(root);
-            }
-        }
-        queue_roots.sort();
-        queue_roots.dedup();
-        for root in queue_roots {
-            crate::agent::queue::pump(&root);
         }
 
         // App panes are external clients too: they answer assistant tool calls

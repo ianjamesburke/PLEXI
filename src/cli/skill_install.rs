@@ -28,7 +28,7 @@ fn agent_roots(agent: &str) -> Result<Vec<&'static str>, String> {
     }
 }
 
-/// The experiment keys a marker line names, e.g. `<!-- experiment: leads, assistant -->`.
+/// The experiment keys a marker line names, e.g. `<!-- experiment: ledger, assistant -->`.
 fn marker_features(line: &str) -> Result<Vec<ReleaseFeature>, String> {
     let keys = line
         .trim()
@@ -306,7 +306,6 @@ mod tests {
             "plexi relay",
             "command-view",
             "plexi ledger",
-            "agent head",
             "--folder",
             "mcp-config",
             "plexi account",
@@ -327,26 +326,30 @@ mod tests {
         let on = render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Ledger).unwrap();
         assert!(on.contains("plexi ledger"));
         assert!(!on.contains("plexi relay"));
-        let leads_only = render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Leads).unwrap();
-        assert!(leads_only.contains("agent head create"));
-        assert!(!leads_only.contains("assistant open --head"));
+        let assistant_only =
+            render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Assistant).unwrap();
+        assert!(assistant_only.contains("assistant send"));
+        assert!(!assistant_only.contains("command-view"));
         let both = render_skill(EMBEDDED_SKILL, |f| {
-            matches!(f, ReleaseFeature::Leads | ReleaseFeature::Assistant)
+            matches!(f, ReleaseFeature::CommandView | ReleaseFeature::Assistant)
         })
         .unwrap();
-        assert!(both.contains("plexi assistant open"));
-        assert!(both.contains("agent head create"));
+        assert!(both.contains("assistant send"));
+        assert!(both.contains("command-view"));
 
         // Combined markers remain supported even when the current catalog has
         // no overlapping command owners.
-        let fixture = "<!-- experiment: leads, assistant -->\ncombined\n<!-- /experiment -->\n";
-        assert!(render_skill(fixture, |f| f == ReleaseFeature::Leads)
-            .unwrap()
-            .is_empty());
+        let fixture =
+            "<!-- experiment: command_view, assistant -->\ncombined\n<!-- /experiment -->\n";
+        assert!(
+            render_skill(fixture, |f| f == ReleaseFeature::CommandView)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             render_skill(fixture, |f| matches!(
                 f,
-                ReleaseFeature::Leads | ReleaseFeature::Assistant
+                ReleaseFeature::CommandView | ReleaseFeature::Assistant
             ))
             .unwrap(),
             "combined\n"
@@ -359,7 +362,7 @@ mod tests {
         assert!(
             render_skill("<!-- experiment: nope -->\nx\n<!-- /experiment -->\n", none).is_err()
         );
-        assert!(render_skill("<!-- experiment: leads -->\nx\n", none).is_err());
+        assert!(render_skill("<!-- experiment: command_view -->\nx\n", none).is_err());
         assert!(render_skill("x\n<!-- /experiment -->\n", none).is_err());
     }
 }

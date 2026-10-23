@@ -990,7 +990,6 @@ fn host_assistant_turn(
             status_for,
             client: None,
             kind: None,
-            head: None,
         },
     ) {
         Ok(mut value) => {
@@ -1969,7 +1968,6 @@ mod tests {
                 status_for: None,
                 client: None,
                 kind: None,
-                head: None,
             },
         );
         assert_eq!(payload["type"], "submit_assistant_turn");

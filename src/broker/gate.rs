@@ -1071,6 +1071,7 @@ impl PermissionMonitor {
     }
 
     /// True when a desktop click already allowed this pending id.
+    #[cfg(test)]
     pub fn approval_granted(&self, pending_id: &str) -> bool {
         matches!(
             self.resolutions
@@ -1755,7 +1756,7 @@ impl PermissionMonitor {
                         .map(PathBuf::from);
                     if let Some(ws) = ws_path.as_deref() {
                         if !target_run.is_empty() {
-                            match crate::agent::heads::grant_tool_for_run(ws, &target_run, &tool) {
+                            match crate::agent::runs::grant_tool_for_run(ws, &target_run, &tool) {
                                 Ok(actor_id) => {
                                     minted_grant_id = self.record_run_only_grant(
                                         ws,
@@ -2546,7 +2547,7 @@ impl PermissionMonitor {
         }
         for (actor, grant_id, resource_id, workspace_root) in &expired {
             if let Some(ws) = workspace_root {
-                crate::agent::heads::expire_soft_grant_in_workspace(ws, actor, resource_id);
+                crate::agent::runs::expire_soft_grant_in_workspace(ws, actor, resource_id);
             }
             let _ = self.audit(&AuditFact {
                 kind: "expire".to_string(),

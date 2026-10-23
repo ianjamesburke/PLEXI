@@ -38,7 +38,7 @@ pub struct ToolGrant {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct HeadCard {
+struct AgentCard {
     id: String,
     display_name: String,
     description: String,
@@ -53,7 +53,8 @@ struct HeadCard {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RunRecord {
     id: String,
-    head_id: String,
+    #[serde(alias = "head_id")]
+    agent_id: String,
     actor_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_run: Option<String>,
@@ -124,8 +125,8 @@ fn remember_token(workspace: &Path, run_id: &str, actor_id: &str) -> String {
     token
 }
 
-fn actor_of(head_id: &str) -> String {
-    format!("agent:{head_id}")
+fn actor_of(agent_id: &str) -> String {
+    format!("agent:{agent_id}")
 }
 
 fn agents_root(workspace: &Path) -> PathBuf {
@@ -266,12 +267,12 @@ fn record_scope_allow(
     );
 }
 
-/// Sync `head.json` and any active run in `runs.jsonl` when a soft grant expires.
+/// Sync `agent.json` and any active run in `runs.jsonl` when a soft grant expires.
 pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &str) {
-    let head_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
-    let head_dir = agents_root(workspace).join(head_id);
-    if head_dir.join("head.json").is_file() {
-        if let Ok(mut card) = read_head(&head_dir) {
+    let agent_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
+    let agent_dir = agents_root(workspace).join(agent_id);
+    if agent_dir.join("agent.json").is_file() {
+        if let Ok(mut card) = read_agent(&agent_dir) {
             let mut changed = false;
             for grant in &mut card.grants {
                 if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
@@ -284,7 +285,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
             if changed {
                 if let Err(error) = write_definition(workspace, &card) {
                     log::error!(
-                        "agents_api: failed to update expired soft grant on head {}: {error}",
+                        "agents_api: failed to update expired soft grant on agent {}: {error}",
                         card.id
                     );
                 }
@@ -294,7 +295,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
     let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(runs) = load_runs(workspace) {
         for mut run in runs {
-            if !run.active || (run.actor_id != actor_id && run.head_id != head_id) {
+            if !run.active || (run.actor_id != actor_id && run.agent_id != agent_id) {
                 continue;
             }
             let mut changed = false;
@@ -313,7 +314,7 @@ pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &s
     }
 }
 
-/// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `head.json`.
+/// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `agent.json`.
 pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<String, String> {
     let workspace = canonical_workspace(workspace)?;
     let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -336,14 +337,14 @@ pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<
     let updated = run.clone();
     append_run_record(&workspace, &updated)?;
     log::info!(
-        "agents_api: granted tool={tool} on run={} actor={} (run-only, head.json unchanged)",
+        "agents_api: granted tool={tool} on run={} actor={} (run-only, agent.json unchanged)",
         updated.id,
         updated.actor_id
     );
     Ok(updated.actor_id)
 }
 
-fn write_definition(workspace: &Path, card: &HeadCard) -> Result<(), String> {
+fn write_definition(workspace: &Path, card: &AgentCard) -> Result<(), String> {
     let dir = agents_root(workspace).join(&card.id);
     fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     let prompt = format!(
@@ -379,17 +380,18 @@ fn write_definition(workspace: &Path, card: &HeadCard) -> Result<(), String> {
     fs::write(dir.join("settings.toml"), settings)
         .map_err(|error| format!("write settings.toml: {error}"))?;
     let body = serde_json::to_string_pretty(card).map_err(|error| error.to_string())?;
-    fs::write(dir.join("head.json"), body).map_err(|error| format!("write head.json: {error}"))?;
+    fs::write(dir.join("agent.json"), body)
+        .map_err(|error| format!("write agent.json: {error}"))?;
     Ok(())
 }
 
-fn read_head(dir: &Path) -> Result<HeadCard, String> {
-    let raw = fs::read_to_string(dir.join("head.json"))
+fn read_agent(dir: &Path) -> Result<AgentCard, String> {
+    let raw = fs::read_to_string(dir.join("agent.json"))
         .map_err(|error| format!("read {}: {error}", dir.display()))?;
-    serde_json::from_str(&raw).map_err(|error| format!("head.json in {}: {error}", dir.display()))
+    serde_json::from_str(&raw).map_err(|error| format!("agent.json in {}: {error}", dir.display()))
 }
 
-fn list_head_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<HeadCard>, String> {
+fn list_agent_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<AgentCard>, String> {
     let root = agents_root(workspace);
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -400,10 +402,10 @@ fn list_head_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<Head
     for entry in entries {
         let entry = entry.map_err(|error| format!("read agent entry: {error}"))?;
         let path = entry.path();
-        if !path.is_dir() || !path.join("head.json").is_file() {
+        if !path.is_dir() || !path.join("agent.json").is_file() {
             continue;
         }
-        let card = read_head(&path)?;
+        let card = read_agent(&path)?;
         if card.temporary && !include_temporary {
             continue;
         }
@@ -548,7 +550,7 @@ fn subset_denied(
     None
 }
 
-struct CreateHead<'a> {
+struct CreateAgent<'a> {
     workspace: &'a Path,
     name: &'a str,
     display_name: &'a str,
@@ -562,9 +564,9 @@ struct CreateHead<'a> {
     caller_pane: Option<u64>,
 }
 
-fn create_head(req: CreateHead<'_>) -> Value {
+fn create_agent(req: CreateAgent<'_>) -> Value {
     if !valid_name(req.name) {
-        return json!({"ok": false, "error_code": "invalid_name", "error": "head name must be a lowercase slug"});
+        return json!({"ok": false, "error_code": "invalid_name", "error": "agent name must be a lowercase slug"});
     }
     let gate = monitor();
     gate.expire_soft_grants();
@@ -581,8 +583,8 @@ fn create_head(req: CreateHead<'_>) -> Value {
         }
     }
     let dir = agents_root(req.workspace).join(req.name);
-    if dir.join("head.json").is_file() {
-        return json!({"ok": false, "error_code": "head_exists", "error": format!("head '{}' already exists", req.name)});
+    if dir.join("agent.json").is_file() {
+        return json!({"ok": false, "error_code": "agent_exists", "error": format!("agent '{}' already exists", req.name)});
     }
     let now = gate.now_secs();
     let soft_days = crate::config::PlexiConfig::load_with_workspace(Some(req.workspace))
@@ -604,7 +606,7 @@ fn create_head(req: CreateHead<'_>) -> Value {
             }
         })
         .collect();
-    let card = HeadCard {
+    let card = AgentCard {
         id: req.name.to_string(),
         display_name: if req.display_name.is_empty() {
             req.name.to_string()
@@ -617,7 +619,7 @@ fn create_head(req: CreateHead<'_>) -> Value {
         grants: resolved_grants,
     };
     if let Err(error) = write_definition(req.workspace, &card) {
-        log::error!("agents_api: create head {} failed: {error}", req.name);
+        log::error!("agents_api: create agent {} failed: {error}", req.name);
         return json!({"ok": false, "error_code": "io_error", "error": error});
     }
     let actor = actor_of(req.name);
@@ -633,42 +635,37 @@ fn create_head(req: CreateHead<'_>) -> Value {
         }
     }
     log::info!(
-        "agents_api: created head {} actor={actor} temporary={} grants={} workspace={}",
+        "agents_api: created agent {} actor={actor} temporary={} grants={} workspace={}",
         card.id,
         card.temporary,
         card.grants.len(),
         req.workspace.display(),
     );
-    json!({"ok": true, "head": card})
+    json!({"ok": true, "agent": card})
 }
 
 struct IssueRun<'a> {
     workspace: &'a Path,
-    head: &'a HeadCard,
+    agent: &'a AgentCard,
     parent_run: Option<&'a str>,
     admission_id: &'a str,
     client_ref: &'a str,
     kind: &'a str,
     input_tokens: u32,
     output_tokens: u32,
-    /// When set, the new run also executes this prompt. `None` only journals.
-    prompt: Option<&'a str>,
 }
 
 fn issue_run(req: IssueRun<'_>) -> Value {
     let IssueRun {
         workspace,
-        head,
+        agent,
         parent_run,
         admission_id,
         client_ref,
         kind,
         input_tokens,
         output_tokens,
-        prompt,
     } = req;
-    let prompt = prompt.map(str::to_string);
-    let head_id = head.id.clone();
     let workspace_buf = workspace.to_path_buf();
     if kind != "system" && kind != "output" {
         return json!({"ok": false, "error_code": "invalid_kind", "error": "kind must be system or output"});
@@ -680,14 +677,14 @@ fn issue_run(req: IssueRun<'_>) -> Value {
     };
     if let Some(existing) = runs
         .iter()
-        .find(|run| run.head_id == head.id && run.admission_id == admission_id)
+        .find(|run| run.agent_id == agent.id && run.admission_id == admission_id)
     {
         let token = remember_token(workspace, &existing.id, &existing.actor_id);
         log::info!(
-            "agents_api: admission {} returned existing run {} for head {}",
+            "agents_api: admission {} returned existing run {} for agent {}",
             admission_id,
             existing.id,
-            head.id,
+            agent.id,
         );
         return json!({
             "ok": true,
@@ -696,31 +693,31 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "idempotent": true,
         });
     }
-    if let Some(active) = runs.iter().find(|run| run.head_id == head.id && run.active) {
+    if let Some(active) = runs.iter().find(|run| run.agent_id == agent.id && run.active) {
         log::info!(
-            "agents_api: assignment_conflict head={} active_run={} admission={admission_id}",
-            head.id,
+            "agents_api: assignment_conflict agent={} active_run={} admission={admission_id}",
+            agent.id,
             active.id,
         );
         return json!({
             "ok": false,
             "error_code": "assignment_conflict",
-            "error": "head already has an active run",
+            "error": "agent already has an active run",
             "active_run": active.id,
             "admission_id": admission_id,
         });
     }
     let version = runs
         .iter()
-        .filter(|run| run.head_id == head.id)
+        .filter(|run| run.agent_id == agent.id)
         .map(|run| run.version)
         .max()
         .unwrap_or(0)
         + 1;
     let record = RunRecord {
         id: format!("run_{}", uuid::Uuid::new_v4()),
-        head_id: head.id.clone(),
-        actor_id: actor_of(&head.id),
+        agent_id: agent.id.clone(),
+        actor_id: actor_of(&agent.id),
         parent_run: parent_run.map(str::to_string),
         admission_id: admission_id.to_string(),
         version,
@@ -730,7 +727,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         kind: kind.to_string(),
         input_tokens,
         output_tokens,
-        grants: head.grants.clone(),
+        grants: agent.grants.clone(),
     };
     if let Err(error) = append_run_record(workspace, &record) {
         log::error!("agents_api: append run failed: {error}");
@@ -753,11 +750,10 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         return json!({"ok": false, "error_code": "ledger_error", "error": error, "run": record});
     }
     let token = remember_token(workspace, &record.id, &record.actor_id);
-    let run_id = record.id.clone();
     log::info!(
-        "agents_api: spawned run {} head={} client_ref={} kind={} tokens={}/{} version={}",
+        "agents_api: spawned run {} agent={} client_ref={} kind={} tokens={}/{} version={}",
         record.id,
-        record.head_id,
+        record.agent_id,
         record.client_ref,
         record.kind,
         record.input_tokens,
@@ -765,7 +761,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         record.version,
     );
     drop(guard);
-    let mut body = json!({
+    let body = json!({
         "ok": true,
         "run": record,
         "run_token": token,
@@ -780,33 +776,18 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "parent_run_id": row.parent_run_id,
         },
     });
-    if let Some(prompt) = prompt {
-        log::info!("agents_api: spawn model turn head={head_id} run={run_id}");
-        let turn = crate::agent::leads::run_prompt(&workspace_buf, &head_id, &prompt);
-        if let Some(obj) = body.as_object_mut() {
-            if let Some(state) = turn.get("state").cloned() {
-                obj.insert("state".to_string(), state);
-            }
-            if let Some(reply) = turn.get("reply").cloned() {
-                obj.insert("reply".to_string(), reply);
-            }
-            if let Some(error) = turn.get("error").filter(|value| !value.is_null()) {
-                obj.insert("model_error".to_string(), error.clone());
-            }
-        }
-    }
     crate::host::command_view::publish(&workspace_buf, "run updated");
     body
 }
 
-fn find_head(workspace: &Path, id: &str) -> Result<HeadCard, Value> {
+fn find_agent(workspace: &Path, id: &str) -> Result<AgentCard, Value> {
     let dir = agents_root(workspace).join(id);
-    if !dir.join("head.json").is_file() {
+    if !dir.join("agent.json").is_file() {
         return Err(
-            json!({"ok": false, "error_code": "head_not_found", "error": format!("no head '{id}'")}),
+            json!({"ok": false, "error_code": "agent_not_found", "error": format!("no agent '{id}'")}),
         );
     }
-    read_head(&dir).map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))
+    read_agent(&dir).map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))
 }
 
 fn find_run(workspace: &Path, id: &str) -> Result<RunRecord, Value> {
@@ -936,7 +917,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
     }
     log::info!("agents_api: op={op} workspace={}", workspace.display());
     match op {
-        "create_head" => {
+        "create_agent" => {
             let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let grants = match payload.get("grants").map(grants_from_value).transpose() {
                 Ok(Some(grants)) => grants,
@@ -945,8 +926,8 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     return json!({"ok": false, "error_code": "invalid_argument", "error": error})
                 }
             };
-            let caller_head = payload
-                .get("caller_head")
+            let caller_agent = payload
+                .get("caller_agent")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let caller_human_pane = payload
@@ -954,12 +935,12 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let (parent_owned, denial_owned) = if let Some(pane_id) = caller_pane {
-                if caller_head.is_empty() {
+                if caller_agent.is_empty() {
                     if caller_human_pane {
                         let ctx_root = caller_context_root.as_deref().unwrap_or(&workspace);
                         let user_grants = user_context_authority_grants(&workspace, ctx_root);
                         log::info!(
-                            "agents_api: create_head pane={caller_pane:?} human_owned=true context_root={} authority_grants={}",
+                            "agents_api: create_agent pane={caller_pane:?} human_owned=true context_root={} authority_grants={}",
                             ctx_root.display(),
                             user_grants.len()
                         );
@@ -968,21 +949,21 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                         let pane_grants = pane_session_grants(&workspace, pane_id);
                         if pane_grants.is_empty() {
                             log::info!(
-                                "agents_api: create_head pane={caller_pane:?} holds no grants"
+                                "agents_api: create_agent pane={caller_pane:?} holds no grants"
                             );
                         } else {
                             log::info!(
-                                "agents_api: create_head pane={caller_pane:?} session_grants={}",
+                                "agents_api: create_agent pane={caller_pane:?} session_grants={}",
                                 pane_grants.len()
                             );
                         }
                         (Some(pane_grants), "pane".to_string())
                     }
                 } else {
-                    match find_head(&workspace, caller_head) {
+                    match find_agent(&workspace, caller_agent) {
                         Ok(card) => {
                             log::info!(
-                                "agents_api: create_head pane={caller_pane:?} parent_head={}",
+                                "agents_api: create_agent pane={caller_pane:?} parent_agent={}",
                                 card.id
                             );
                             let actor = actor_of(&card.id);
@@ -994,7 +975,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             } else {
                 (None, "operator".to_string())
             };
-            let created = create_head(CreateHead {
+            let created = create_agent(CreateAgent {
                 workspace: &workspace,
                 name,
                 display_name: payload
@@ -1017,28 +998,31 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 caller_pane,
             });
             if created.get("ok").and_then(|value| value.as_bool()) == Some(true) {
-                crate::host::command_view::publish(&workspace, "head created");
+                crate::host::command_view::publish(&workspace, "agent created");
             }
             created
         }
-        "list_heads" => {
+        "list_agents" => {
             let include_temporary = payload
                 .get("all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            match list_head_cards(&workspace, include_temporary) {
-                Ok(heads) => {
-                    log::info!("agents_api: listed {} head(s)", heads.len());
-                    json!({"ok": true, "heads": heads})
+            match list_agent_cards(&workspace, include_temporary) {
+                Ok(agents) => {
+                    log::info!("agents_api: listed {} agent(s)", agents.len());
+                    json!({"ok": true, "agents": agents})
                 }
                 Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
             }
         }
         "list_grants" => list_grants(&workspace),
         "spawn_run" => {
-            let head_id = payload.get("head").and_then(|v| v.as_str()).unwrap_or("");
-            let head = match find_head(&workspace, head_id) {
-                Ok(head) => head,
+            let agent_id = payload
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let agent = match find_agent(&workspace, agent_id) {
+                Ok(agent) => agent,
                 Err(error) => return error,
             };
             let admission = payload
@@ -1046,25 +1030,9 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("adm_{}", uuid::Uuid::new_v4()));
-            let journal_only = payload
-                .get("journal_only")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let prompt_owned = if journal_only {
-                None
-            } else {
-                Some(
-                    payload
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .filter(|text| !text.is_empty())
-                        .unwrap_or("run")
-                        .to_string(),
-                )
-            };
             issue_run(IssueRun {
                 workspace: &workspace,
-                head: &head,
+                agent: &agent,
                 parent_run: None,
                 admission_id: &admission,
                 client_ref: payload
@@ -1083,7 +1051,6 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     .get("output_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32,
-                prompt: prompt_owned.as_deref(),
             })
         }
         "list_runs" => match load_runs(&workspace) {
@@ -1120,12 +1087,6 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             },
             caller_pane,
         ),
-        "read_conversation" => {
-            let head = payload.get("head").and_then(|v| v.as_str()).unwrap_or("");
-            let actor = payload.get("as_head").and_then(|v| v.as_str());
-            log::info!("agents_api: read_conversation head={head} as={actor:?}");
-            crate::agent::leads::read_conversation_as(&workspace, actor, head)
-        }
         "call" => invoke(
             &workspace,
             payload.get("run_id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -1158,11 +1119,11 @@ fn list_grants(workspace: &Path) -> Value {
                     || rec.workspace_root.is_none())
         })
         .map(|rec| {
-            let head = rec.actor_id.strip_prefix("agent:").unwrap_or(&rec.actor_id);
+            let agent = rec.actor_id.strip_prefix("agent:").unwrap_or(&rec.actor_id);
             json!({
                 "grant_id": rec.grant_id,
                 "actor_id": rec.actor_id,
-                "head": head,
+                "agent": agent,
                 "tool": rec.target_id,
                 "decision": rec.decision.as_str(),
                 "kind": rec.kind.as_str(),
@@ -1230,31 +1191,31 @@ fn delegate(
     ) {
         return refused;
     }
-    let parent_head = match find_head(workspace, &parent.head_id) {
-        Ok(head) => head,
+    let parent_agent = match find_agent(workspace, &parent.agent_id) {
+        Ok(agent) => agent,
         Err(error) => return error,
     };
-    let created = create_head(CreateHead {
+    let created = create_agent(CreateAgent {
         workspace,
         name,
         display_name: name,
         description: "Temporary child. reports_to is not authority.",
         grants: &grants,
         temporary: true,
-        reports_to: Some(&parent_head.id),
+        reports_to: Some(&parent_agent.id),
         parent_grants: Some(&parent.grants),
         denial_actor: &parent.actor_id,
         parent_run: Some(parent_run),
         caller_pane,
     });
     if created.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        if created.get("error_code").and_then(|v| v.as_str()) == Some("head_exists") {
-            let existing = match find_head(workspace, name) {
-                Ok(head) => head,
+        if created.get("error_code").and_then(|v| v.as_str()) == Some("agent_exists") {
+            let existing = match find_agent(workspace, name) {
+                Ok(agent) => agent,
                 Err(error) => return error,
             };
             if !same_grant_specs(&existing.grants, &grants)
-                || existing.reports_to.as_deref() != Some(parent_head.id.as_str())
+                || existing.reports_to.as_deref() != Some(parent_agent.id.as_str())
             {
                 return deny_with_request(RefusalContext {
                     workspace,
@@ -1270,21 +1231,20 @@ fn delegate(
             return created;
         }
     }
-    let child = match find_head(workspace, name) {
-        Ok(head) => head,
+    let child = match find_agent(workspace, name) {
+        Ok(agent) => agent,
         Err(error) => return error,
     };
     let admission = format!("delegate:{parent_run}:{name}");
     let spawned = issue_run(IssueRun {
         workspace,
-        head: &child,
+        agent: &child,
         parent_run: Some(parent_run),
         admission_id: &admission,
         client_ref: &parent.client_ref,
         kind: &parent.kind,
         input_tokens: 0,
         output_tokens: 0,
-        prompt: None,
     });
     if spawned.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         log::info!(
@@ -1451,8 +1411,8 @@ fn invoke(
 fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str) -> Value {
     let input: Value = serde_json::from_str(input_json).unwrap_or_else(|_| json!({}));
     match tool {
-        "agents.list" => match list_head_cards(workspace, false) {
-            Ok(heads) => json!({"ok": true, "heads": heads, "actor_id": run.actor_id}),
+        "agents.list" => match list_agent_cards(workspace, false) {
+            Ok(agents) => json!({"ok": true, "agents": agents, "actor_id": run.actor_id}),
             Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
         },
         "agents.create" => {
@@ -1464,7 +1424,7 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
                     return json!({"ok": false, "error_code": "invalid_argument", "error": error})
                 }
             };
-            create_head(CreateHead {
+            create_agent(CreateAgent {
                 workspace,
                 name,
                 display_name: input
@@ -1494,6 +1454,57 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
             json!({"ok": false, "error_code": "tool_not_found", "error": format!("no agents handler for {other}")})
         }
     }
+}
+
+pub fn projection(workspace: &Path) -> Value {
+    let workspace = crate::platform::path::canonical_or_self(workspace);
+    let agents = handle_request(
+        "list_agents",
+        &json!({"workspace": workspace, "all": true}),
+    );
+    let runs = handle_request("list_runs", &json!({"workspace": &workspace}));
+    let pending = serde_json::to_value(monitor().list_pending()).unwrap_or(json!([]));
+    json!({
+        "ok": true,
+        "agents": agents.get("agents").cloned().unwrap_or(json!([])),
+        "runs": runs.get("runs").cloned().unwrap_or(json!([])),
+        "needs_you": pending,
+    })
+}
+
+pub fn pane_lines(workspace: &Path) -> Vec<String> {
+    let body = projection(workspace);
+    let mut lines = Vec::new();
+    if let Some(pending) = body.get("needs_you").and_then(|v| v.as_array()) {
+        for item in pending {
+            let id = item
+                .get("pending_request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tool = item
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("approval");
+            lines.push(format!("waiting {id} {tool}"));
+        }
+    }
+    if let Some(runs) = body.get("runs").and_then(|value| value.as_array()) {
+        for run in runs {
+            if run.get("active").and_then(|value| value.as_bool()) != Some(true) {
+                continue;
+            }
+            let id = run.get("id").and_then(|value| value.as_str()).unwrap_or("");
+            let agent = run
+                .get("agent_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            lines.push(format!("run {id} {agent} running"));
+        }
+    }
+    if lines.is_empty() {
+        lines.push("no active runs".to_string());
+    }
+    lines
 }
 
 pub struct McpAuth {
@@ -1628,7 +1639,7 @@ mod tests {
             Self {
                 _profile: profile,
                 _guard: guard,
-                workspace: workspace,
+                workspace,
             }
         }
 
@@ -1645,7 +1656,7 @@ mod tests {
     }
 
     fn create(fix: &Fixture, name: &str, specs: &[&str]) -> Value {
-        create_head(CreateHead {
+        create_agent(CreateAgent {
             workspace: fix.ws(),
             name,
             display_name: name,
@@ -1661,26 +1672,26 @@ mod tests {
     }
 
     #[test]
-    fn head_lands_under_neutral_agents_dir_and_lists() {
+    fn agent_lands_under_neutral_agents_dir_and_lists() {
         let fix = Fixture::new();
-        let created = create(&fix, "lead", &["agents.ping=allow", "agents.review=ask"]);
+        let created = create(&fix, "worker", &["agents.ping=allow", "agents.review=ask"]);
         assert_eq!(created["ok"], true, "{created}");
-        let dir = fix.ws().join(".plexi").join("agents").join("lead");
+        let dir = fix.ws().join(".plexi").join("agents").join("worker");
         assert!(dir.join("AGENT.md").is_file());
         assert!(dir.join("settings.toml").is_file());
         assert!(!fix.ws().join(".plexi-alpha").join("agents").exists());
-        let listed = handle_request("list_heads", &json!({"workspace": fix.ws()}));
-        assert_eq!(listed["heads"][0]["id"], "lead");
-        assert_eq!(listed["heads"][0]["grants"][0]["tool"], "agents.ping");
+        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        assert_eq!(listed["agents"][0]["id"], "worker");
+        assert_eq!(listed["agents"][0]["grants"][0]["tool"], "agents.ping");
     }
 
     #[test]
     fn spawn_claims_once_and_writes_tagged_ledger_row() {
         let fix = Fixture::new();
-        create(&fix, "lead", &["agents.ping=allow"]);
+        create(&fix, "worker", &["agents.ping=allow"]);
         let payload = json!({
             "workspace": fix.ws(),
-            "head": "lead",
+            "agent": "worker",
             "admission": "adm-1",
             "client_ref": "acme",
             "kind": "output",
@@ -1700,7 +1711,7 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "agent": "worker",
                 "admission": "adm-2",
             }),
         );
@@ -1718,7 +1729,7 @@ mod tests {
         let fix = Fixture::new();
         create(
             &fix,
-            "lead",
+            "worker",
             &[
                 "agents.ping=allow",
                 "agents.review=ask",
@@ -1728,7 +1739,7 @@ mod tests {
         );
         let spawned = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "head": "lead", "admission": "adm-1"}),
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
         );
         let parent = spawned["run"]["id"].as_str().unwrap();
         let widened = handle_request(
@@ -1766,9 +1777,9 @@ mod tests {
         );
         assert_eq!(child["ok"], true, "{child}");
         let child_run = child["run"]["id"].as_str().unwrap();
-        let card = read_head(&fix.ws().join(".plexi").join("agents").join("scout")).unwrap();
+        let card = read_agent(&fix.ws().join(".plexi").join("agents").join("scout")).unwrap();
         assert!(card.temporary);
-        assert_eq!(card.reports_to.as_deref(), Some("lead"));
+        assert_eq!(card.reports_to.as_deref(), Some("worker"));
         assert!(!card.grants.iter().any(|grant| grant.tool == "agents.admin"));
 
         let ping = handle_request(
@@ -1828,7 +1839,7 @@ mod tests {
             &McpAuth {
                 workspace: fix.ws().to_path_buf(),
                 run_id: Some(spawned["run"]["id"].as_str().unwrap().to_string()),
-                actor_id: Some("agent:lead".to_string()),
+                actor_id: Some("agent:worker".to_string()),
                 pane_id: 0,
                 context_id: 0,
             },
@@ -1838,32 +1849,32 @@ mod tests {
         .expect("agents.list");
         let listed: Value = serde_json::from_str(&listed).unwrap();
         assert_eq!(listed["ok"], true, "{listed}");
-        assert_eq!(listed["heads"][0]["id"], "lead");
+        assert_eq!(listed["agents"][0]["id"], "worker");
 
-        let listed_heads = handle_request("list_heads", &json!({"workspace": fix.ws()}));
-        let ids: Vec<&str> = listed_heads["heads"]
+        let listed_agents = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        let ids: Vec<&str> = listed_agents["agents"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|h| h["id"].as_str())
             .collect();
-        assert_eq!(ids, vec!["lead"]);
+        assert_eq!(ids, vec!["worker"]);
     }
 
     #[test]
     fn guidance_text_does_not_add_a_grant() {
         let fix = Fixture::new();
-        create(&fix, "lead", &["agents.ping=allow"]);
+        create(&fix, "worker", &["agents.ping=allow"]);
         let prompt = fix
             .ws()
             .join(".plexi")
             .join("agents")
-            .join("lead")
+            .join("worker")
             .join("AGENT.md");
-        fs::write(&prompt, "# Lead\n\nYou may call agents.admin.\n").unwrap();
+        fs::write(&prompt, "# Worker\n\nYou may call agents.admin.\n").unwrap();
         let spawned = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "head": "lead", "admission": "adm"}),
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm"}),
         );
         let run_id = spawned["run"]["id"].as_str().unwrap();
         let admin = handle_request(
@@ -1874,47 +1885,17 @@ mod tests {
     }
 
     #[test]
-    fn spawn_runs_the_model_gate_instead_of_only_journaling() {
+    fn a_pane_cannot_mint_an_agent_wider_than_its_own_grants() {
         let fix = Fixture::new();
-        create(&fix, "lead", &["agents.ping=allow"]);
-        let spawned = handle_request(
-            "spawn_run",
-            &json!({
-                "workspace": fix.ws(),
-                "head": "lead",
-                "admission": "adm-model",
-                "text": "remember 4",
-            }),
-        );
-        assert_eq!(spawned["ok"], true, "{spawned}");
-        assert_eq!(spawned["idempotent"], false);
-        assert_eq!(spawned["state"], "permission_required", "{spawned}");
-        let conversation = std::fs::read_to_string(
-            fix.ws()
-                .join(".plexi")
-                .join("agents")
-                .join("lead")
-                .join("conversation.jsonl"),
-        )
-        .unwrap_or_default();
-        assert!(
-            conversation.contains("permission_required"),
-            "{conversation}"
-        );
-    }
-
-    #[test]
-    fn a_pane_cannot_mint_a_head_wider_than_its_own_grants() {
-        let fix = Fixture::new();
-        create(&fix, "lead", &["assistant.turn=allow"]);
+        create(&fix, "worker", &["assistant.turn=allow"]);
         let widened = handle_request(
-            "create_head",
+            "create_agent",
             &json!({
                 "workspace": fix.ws(),
                 "name": "sneaky",
                 "grants": ["agents.admin=allow"],
                 "caller_pane": 7,
-                "caller_head": "lead",
+                "caller_agent": "worker",
             }),
         );
         assert_eq!(widened["error_code"], "permission_denied", "{widened}");
@@ -1925,24 +1906,24 @@ mod tests {
             .join("sneaky")
             .exists());
         let narrowed = handle_request(
-            "create_head",
+            "create_agent",
             &json!({
                 "workspace": fix.ws(),
                 "name": "scout",
                 "grants": ["assistant.turn=allow"],
                 "caller_pane": 7,
-                "caller_head": "lead",
+                "caller_agent": "worker",
             }),
         );
         assert_eq!(narrowed["ok"], true, "{narrowed}");
         let empty = handle_request(
-            "create_head",
+            "create_agent",
             &json!({
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
                 "caller_pane": 9,
-                "caller_head": "",
+                "caller_agent": "",
             }),
         );
         assert_eq!(empty["error_code"], "permission_denied", "{empty}");
@@ -1951,13 +1932,13 @@ mod tests {
             .resolve_needs_you_from(ny_id, true, crate::broker::gate::ResolveSurface::Desktop)
             .expect("desktop approve mints pane grant");
         let retried = handle_request(
-            "create_head",
+            "create_agent",
             &json!({
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
                 "caller_pane": 9,
-                "caller_head": "",
+                "caller_agent": "",
             }),
         );
         assert_eq!(retried["ok"], true, "{retried}");
@@ -1968,20 +1949,18 @@ mod tests {
         use crate::broker::gate::ResolveSurface;
 
         let fix = Fixture::new();
-        create(&fix, "lead", &["agents.ping=allow"]);
+        create(&fix, "worker", &["agents.ping=allow"]);
         let spawned = handle_request(
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "agent": "worker",
                 "admission": "adm-run-1",
-                "journal_only": true,
             }),
         );
         assert_eq!(spawned["ok"], true, "{spawned}");
         let parent_run = spawned["run"]["id"].as_str().unwrap().to_string();
 
-        // `plexi agent delegate --parent-run <run> --name scout --grant agents.admin=allow --json`
         let refused = handle_request(
             "delegate",
             &json!({
@@ -2003,13 +1982,15 @@ mod tests {
         let audit_path = crate::config::config_dir().join("permission-audit.jsonl");
         let audit_raw = fs::read_to_string(&audit_path).expect("permission-audit.jsonl must exist");
         assert!(
-            audit_raw.contains("agents.admin") && audit_raw.contains("agent:lead"),
+            audit_raw.contains("agents.admin") && audit_raw.contains("agent:worker"),
             "expected deny audit row in permission-audit.jsonl, got:\n{audit_raw}"
         );
         let audit_rows = monitor().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
-                row.kind == "deny" && row.resource_id == "agents.admin" && row.actor == "agent:lead"
+                row.kind == "deny"
+                    && row.resource_id == "agents.admin"
+                    && row.actor == "agent:worker"
             }),
             "expected deny AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
@@ -2021,7 +2002,7 @@ mod tests {
             .find(|item| item.id == needs_you_id)
             .expect("refusal must appear in needs-you list");
         assert_eq!(entry.kind, NeedsYouKind::PermissionRequest);
-        assert_eq!(entry.actor, "agent:lead");
+        assert_eq!(entry.actor, "agent:worker");
         assert_eq!(entry.resource, "agents.admin");
         let entry_json = serde_json::to_value(entry).unwrap();
         assert_eq!(entry_json["kind"], "permission_request");
@@ -2035,15 +2016,16 @@ mod tests {
             .is_err());
 
         // 4. Resolving with Allow from Desktop grants `agents.admin` for `parent_run` only,
-        //    leaving `head.json` untouched.
+        //    leaving `agent.json` untouched.
         monitor()
             .resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
             .expect("desktop Allow must resolve PermissionRequest");
 
-        let lead_card = read_head(&fix.ws().join(".plexi").join("agents").join("lead")).unwrap();
+        let worker_card =
+            read_agent(&fix.ws().join(".plexi").join("agents").join("worker")).unwrap();
         assert!(
-            !lead_card.grants.iter().any(|g| g.tool == "agents.admin"),
-            "head.json must NOT be permanently widened: {lead_card:?}"
+            !worker_card.grants.iter().any(|g| g.tool == "agents.admin"),
+            "agent.json must NOT be permanently widened: {worker_card:?}"
         );
 
         // Now `parent_run` can call `agents.admin` and delegate `agents.admin=allow` during this run.
@@ -2070,7 +2052,7 @@ mod tests {
         );
         assert_eq!(delegated["ok"], true, "{delegated}");
 
-        // Finish `parent_run` and start a new run of `lead`: the new run must NOT hold `agents.admin`.
+        // Finish `parent_run` and start a new run of `worker`: the new run must NOT hold `agents.admin`.
         let finished = handle_request(
             "finish_run",
             &json!({
@@ -2084,9 +2066,8 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "agent": "worker",
                 "admission": "adm-run-2",
-                "journal_only": true,
             }),
         );
         assert_eq!(spawned_next["ok"], true, "{spawned_next}");
@@ -2120,10 +2101,10 @@ mod tests {
         monitor().set_now_for_test(t0);
 
         let created = handle_request(
-            "create_head",
+            "create_agent",
             &json!({
                 "workspace": fix.ws(),
-                "name": "lead",
+                "name": "worker",
                 "grants": ["agents.ping=allow:hard", "agents.review=allow:soft"],
             }),
         );
@@ -2151,9 +2132,8 @@ mod tests {
             "spawn_run",
             &json!({
                 "workspace": fix.ws(),
-                "head": "lead",
+                "agent": "worker",
                 "admission": "adm-soft",
-                "journal_only": true,
             }),
         );
         let run_id = spawned["run"]["id"].as_str().unwrap();
@@ -2218,7 +2198,7 @@ mod tests {
             "expected expire AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
 
-        // `list_grants` and `head.json` reflect the reverted `ask` decision.
+        // `list_grants` and `agent.json` reflect the reverted `ask` decision.
         let grants_after = handle_request("list_grants", &json!({"workspace": fix.ws()}));
         let soft_after = grants_after["grants"]
             .as_array()

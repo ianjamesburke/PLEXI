@@ -1,6 +1,6 @@
-//! Command view pane. It paints the agents API projection: one row per lead,
-//! that lead's latest transcript line, and pending permission requests.
-//! Steering stays on the CLI so a click here cannot skip the gate.
+//! Command view pane. It paints the agents API projection: active runs and
+//! pending permission requests. Steering stays on the CLI so a click here
+//! cannot skip the gate.
 
 use std::path::PathBuf;
 
@@ -37,7 +37,7 @@ impl App for CommandViewApp {
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
-        let lines = crate::agent::leads::pane_lines(&self.workspace);
+        let lines = crate::agent::runs::pane_lines(&self.workspace);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .id_salt("command-view")
@@ -60,6 +60,6 @@ impl App for CommandViewApp {
     }
 
     fn semantic_state(&self) -> Option<serde_json::Value> {
-        Some(crate::agent::leads::projection(&self.workspace))
+        Some(crate::agent::runs::projection(&self.workspace))
     }
 }
