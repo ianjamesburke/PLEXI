@@ -13507,3 +13507,220 @@ ask = ["pane.send"]
     assert_eq!(pending[0].actor_id, "pane:10");
     assert_eq!(pending[0].tool, "pane.send");
 }
+
+#[test]
+fn pane_send_allow_once_unblocks_parked_call_and_consumes_grant() {
+    let mut h = HostHarness::new();
+    let target_pane = h.add_focused_terminal();
+    let ws = h.workspace_root();
+    let agent_dir = ws.join(".plexi").join("agents").join("lead");
+    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+    std::fs::write(agent_dir.join("AGENT.md"), "You are lead.\n").expect("write AGENT.md");
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "lead"
+display_name = "Lead"
+default_tier = "medium"
+
+[harness]
+cli = "claude"
+
+[permissions]
+default_posture = "allow"
+allow = []
+ask = ["pane.send"]
+"#,
+    )
+    .expect("write settings.toml");
+
+    let (lead_pane, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "lead",
+            "claude",
+            "sleep 30",
+            "Coordinate",
+            None,
+            false,
+            None,
+            Some(ws.clone()),
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect("spawn lead");
+    let lead_pid = h.app.windows[0].panes[&lead_pane]
+        .as_terminal()
+        .expect("lead terminal")
+        .backend
+        .child_pid();
+
+    let reply_1 = temp_response(&ws, "send-parked-1");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "first message".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_1.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    assert!(
+        !std::path::Path::new(&reply_1).exists(),
+        "SendToPane must stay parked while awaiting approval decision"
+    );
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let pending = monitor.list_pending();
+    assert_eq!(pending.len(), 1);
+    let req_id = pending[0].pending_request_id.clone();
+
+    monitor
+        .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
+        .expect("approve once");
+    h.hidden_frame();
+
+    let json_1 = read_json_response(&reply_1);
+    assert_eq!(json_1["ok"], true, "parked SendToPane must proceed once approved: {json_1}");
+
+    // Second send must require a fresh approval because the Once grant was consumed.
+    let reply_2 = temp_response(&ws, "send-parked-2");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "second message".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_2.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&reply_2).exists(),
+        "second SendToPane after Once consumption must require a new approval"
+    );
+    assert_eq!(monitor.list_pending().len(), 1);
+}
+
+#[test]
+fn pane_send_allow_once_retry_consumes_grant_and_succeeds() {
+    let mut h = HostHarness::new();
+    let target_pane = h.add_focused_terminal();
+    let ws = h.workspace_root();
+    let agent_dir = ws.join(".plexi").join("agents").join("lead");
+    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+    std::fs::write(agent_dir.join("AGENT.md"), "You are lead.\n").expect("write AGENT.md");
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "lead"
+display_name = "Lead"
+default_tier = "medium"
+
+[harness]
+cli = "claude"
+
+[permissions]
+default_posture = "allow"
+allow = []
+ask = ["pane.send"]
+"#,
+    )
+    .expect("write settings.toml");
+
+    let (lead_pane, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "lead",
+            "claude",
+            "sleep 30",
+            "Coordinate",
+            None,
+            false,
+            None,
+            Some(ws.clone()),
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect("spawn lead");
+    let lead_pid = h.app.windows[0].panes[&lead_pane]
+        .as_terminal()
+        .expect("lead terminal")
+        .backend
+        .child_pid();
+
+    let reply_1 = temp_response(&ws, "send-retry-1");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "attempt 1".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_1.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    // Simulate wait expiry before the user clicks Allow once.
+    h.app.pending_send_approvals[0].expires_at =
+        std::time::Instant::now() - std::time::Duration::from_secs(1);
+    h.hidden_frame();
+
+    let json_1 = read_json_response(&reply_1);
+    assert!(
+        json_1["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("permission_denied")),
+        "expired wait must reply with permission_denied: {json_1}"
+    );
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let pending = monitor.list_pending();
+    assert_eq!(pending.len(), 1, "pending request must remain open for late approval");
+    let req_id = pending[0].pending_request_id.clone();
+
+    // User approves Allow once after the initial CLI call timed out.
+    monitor
+        .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
+        .expect("approve once");
+
+    // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
+    let reply_2 = temp_response(&ws, "send-retry-2");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "attempt 2".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_2.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+
+    let json_2 = read_json_response(&reply_2);
+    assert_eq!(
+        json_2["ok"], true,
+        "retry after Allow once must consume the Once grant and succeed: {json_2}"
+    );
+    assert!(
+        monitor.list_pending().is_empty(),
+        "retry must not file a new ask when an unconsumed Once grant exists"
+    );
+
+    // A third call after the retry consumed the Once grant must ask again.
+    let reply_3 = temp_response(&ws, "send-retry-3");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "attempt 3".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply_3.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    assert_eq!(
+        monitor.list_pending().len(),
+        1,
+        "subsequent call after Once grant was consumed must ask again"
+    );
+}

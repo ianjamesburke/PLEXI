@@ -183,6 +183,24 @@ pub(crate) struct PendingAgentBoot {
     pub expires_at: Instant,
 }
 
+/// How long a gated `plexi pane send` waits for a human approval decision
+/// before replying with `permission_denied` (leaving the approval banner open
+/// so a subsequent retry after approval still consumes the grant).
+pub(crate) const SEND_APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A parked `AppRequest::SendToPane` waiting on a permission broker approval.
+pub(crate) struct PendingSendApproval {
+    pub pending_request_id: String,
+    pub caller_pane_id: u64,
+    pub pane_id: u64,
+    pub text: String,
+    pub submit: bool,
+    pub paste: bool,
+    pub response_file: Option<String>,
+    pub peer_ancestry: Option<Vec<u32>>,
+    pub expires_at: Instant,
+}
+
 impl PlexiApp {
     pub(crate) fn pane_heartbeat_json(&self, pane_id: u64) -> serde_json::Value {
         self.pane_heartbeats
@@ -1497,5 +1515,98 @@ impl PlexiApp {
             Instant::now(),
             predicted_frame,
         ));
+    }
+
+    /// Service parked `SendToPane` requests waiting on a permission broker decision.
+    pub(crate) fn service_pending_send_approvals(&mut self, ctx: &egui::Context) {
+        if self.pending_send_approvals.is_empty() {
+            return;
+        }
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let now = Instant::now();
+        let items = std::mem::take(&mut self.pending_send_approvals);
+        let mut remaining_items = Vec::new();
+        let mut approved_to_dispatch = Vec::new();
+        for item in items {
+            match monitor.approval_resolution(&item.pending_request_id) {
+                Some(
+                    crate::broker::gate::ApprovalChoice::Once
+                    | crate::broker::gate::ApprovalChoice::Session
+                    | crate::broker::gate::ApprovalChoice::Always
+                    | crate::broker::gate::ApprovalChoice::AllowTool,
+                ) => {
+                    log::info!(
+                        "pane_send_approval: pending={} approved; dispatching send from pane {} to pane {}",
+                        item.pending_request_id,
+                        item.caller_pane_id,
+                        item.pane_id
+                    );
+                    approved_to_dispatch.push(item);
+                }
+                Some(
+                    crate::broker::gate::ApprovalChoice::Deny
+                    | crate::broker::gate::ApprovalChoice::DenyAlways,
+                ) => {
+                    log::info!(
+                        "pane_send_approval: pending={} denied for pane {} -> pane {}",
+                        item.pending_request_id,
+                        item.caller_pane_id,
+                        item.pane_id
+                    );
+                    if let Some(ref rf) = item.response_file {
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": "permission_denied: pane send denied",
+                            }),
+                        );
+                    }
+                }
+                None if now >= item.expires_at => {
+                    log::info!(
+                        "pane_send_approval: pending={} timed out waiting for decision (leaving ask open)",
+                        item.pending_request_id
+                    );
+                    if let Some(ref rf) = item.response_file {
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": "permission_denied: pane send requires approval",
+                                "pending_request_id": item.pending_request_id,
+                            }),
+                        );
+                    }
+                }
+                None => {
+                    remaining_items.push(item);
+                }
+            }
+        }
+        self.pending_send_approvals = remaining_items;
+        for item in approved_to_dispatch {
+            self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                pane_id: item.pane_id,
+                text: item.text,
+                submit: item.submit,
+                paste: item.paste,
+                response_file: item.response_file,
+                peer_ancestry: item.peer_ancestry,
+            });
+        }
+        if let Some(next_expiry) = self
+            .pending_send_approvals
+            .iter()
+            .map(|w| w.expires_at)
+            .min()
+        {
+            let predicted_frame =
+                std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+            ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+                next_expiry,
+                Instant::now(),
+                predicted_frame,
+            ));
+        }
     }
 }

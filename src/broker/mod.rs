@@ -1121,13 +1121,15 @@ impl GrantStore {
             Decision::Deny
         } else if has(Decision::Ask, true) // 5. managed ask
             || has(Decision::Ask, false) // 6. user/workspace/session ask
-            || posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))
-        // 7. actor ask
         {
             Decision::Ask
         } else if has(Decision::Allow, true) || has(Decision::Allow, false) {
-            // Persisted exact allows authorize. A posture allow-list does not.
+            // Persisted/session exact allows authorize, including over actor `ask` posture.
             Decision::Allow
+        } else if posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))
+        // 7. actor ask
+        {
+            Decision::Ask
         } else if posture.is_some_and(|p| p.default_posture == Decision::Deny)
             && !posture.is_some_and(|p| PermissionPosture::lists_contain(&p.allow, &req.target_id))
             && !posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))

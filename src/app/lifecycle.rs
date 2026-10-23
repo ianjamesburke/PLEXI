@@ -2210,37 +2210,104 @@ impl PlexiApp {
                         }
                     })
                 });
-                let admission = peer_ancestry.as_deref().and_then(|ancestry| {
-                    self.resolve_socket_peer_pane(ancestry).map(|(caller, _, _)| caller)
-                }).and_then(|caller| {
-                    self.pane_permission_posture(caller).map(|posture| (caller, posture))
-                }).map(|(caller, posture)| {
+                let caller_and_posture = peer_ancestry
+                    .as_deref()
+                    .and_then(|ancestry| {
+                        self.resolve_socket_peer_pane(ancestry)
+                            .map(|(caller, _, _)| caller)
+                    })
+                    .and_then(|caller| {
+                        self.pane_permission_posture(caller)
+                            .map(|posture| (caller, posture))
+                    });
+                if let Some((caller, _)) = &caller_and_posture {
+                    let old = std::mem::take(&mut self.pending_send_approvals);
+                    let mut kept = Vec::with_capacity(old.len());
+                    for item in old {
+                        if item.caller_pane_id == *caller
+                            && item.pane_id == *pane_id
+                            && item.response_file != *response_file
+                        {
+                            if let Some(ref rf) = item.response_file {
+                                write_json_response(
+                                    rf,
+                                    serde_json::json!({
+                                        "error": "permission_denied: pane send requires approval",
+                                        "pending_request_id": item.pending_request_id,
+                                    }),
+                                );
+                            }
+                        } else {
+                            kept.push(item);
+                        }
+                    }
+                    self.pending_send_approvals = kept;
+                }
+                let admission = caller_and_posture.map(|(caller, posture)| {
                     let monitor = crate::broker::gate::PermissionMonitor::for_profile(
                         &crate::config::config_dir(),
                     );
-                    let root = self.pane_context_authority_root(caller)
+                    let root = self
+                        .pane_context_authority_root(caller)
                         .unwrap_or_else(crate::config::config_dir);
                     let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste}).to_string();
                     let actor = format!("pane:{caller}");
-                    monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
-                        call_id: "pane-send",
-                        tool: "pane.send",
-                        input_json: &input,
-                        actor_type: crate::broker::ActorType::Agent,
-                        actor_id: &actor,
-                        actor_scope: crate::broker::ActorScope::Workspace,
-                        trust_origin: "host",
-                        workspace_root: &root,
-                        package_id: "",
-                        instance_id: 0,
-                        context_id: self.windows.iter().find(|window| window.panes.contains_key(&caller)).map(|window| window.context_id).unwrap_or_default(),
-                        target_type: crate::broker::TargetType::Capability,
-                    }, Some(&posture))
+                    let adm = monitor.admit_with_posture(
+                        crate::broker::gate::AdmitRequest {
+                            call_id: "pane-send",
+                            tool: "pane.send",
+                            input_json: &input,
+                            actor_type: crate::broker::ActorType::Agent,
+                            actor_id: &actor,
+                            actor_scope: crate::broker::ActorScope::Workspace,
+                            trust_origin: "host",
+                            workspace_root: &root,
+                            package_id: "",
+                            instance_id: 0,
+                            context_id: self
+                                .windows
+                                .iter()
+                                .find(|window| window.panes.contains_key(&caller))
+                                .map(|window| window.context_id)
+                                .unwrap_or_default(),
+                            target_type: crate::broker::TargetType::Capability,
+                        },
+                        Some(&posture),
+                    );
+                    (caller, adm)
                 });
                 let result = match admission {
-                    Some(crate::broker::gate::Admission::Denied { .. }) => Err("permission_denied: pane send denied by agent posture".to_string()),
-                    Some(crate::broker::gate::Admission::Required { .. }) => Err("permission_denied: pane send requires approval".to_string()),
-                    _ => match pane_kind {
+                    Some((_, crate::broker::gate::Admission::Denied { .. })) => {
+                        Err("permission_denied: pane send denied by agent posture".to_string())
+                    }
+                    Some((
+                        caller,
+                        crate::broker::gate::Admission::Required { pending_request_id },
+                    )) => {
+                        if response_file.is_some() {
+                            self.pending_send_approvals.push(
+                                crate::app::pane_wait::PendingSendApproval {
+                                    pending_request_id,
+                                    caller_pane_id: caller,
+                                    pane_id: *pane_id,
+                                    text: text.clone(),
+                                    submit: *submit,
+                                    paste: *paste,
+                                    response_file: response_file.clone(),
+                                    peer_ancestry: peer_ancestry.clone(),
+                                    expires_at: std::time::Instant::now()
+                                        + crate::app::pane_wait::SEND_APPROVAL_WAIT_TIMEOUT,
+                                },
+                            );
+                            deferred = true;
+                            self.ctx.request_repaint();
+                            Ok(())
+                        } else {
+                            Err("permission_denied: pane send requires approval".to_string())
+                        }
+                    }
+                    proceed_or_none => {
+                        let send_res = match pane_kind {
                     None => {
                         log::warn!(
                             "pane_ipc: send_to_pane: pane_id={pane_id} not found in any window"
@@ -2319,7 +2386,47 @@ impl PlexiApp {
                         }
                     }
                     Some(_) => Err(format!("pane {pane_id} does not accept text input")),
-                },
+                };
+                        if let Some((
+                            caller,
+                            crate::broker::gate::Admission::Proceed {
+                                grant_id,
+                                fingerprint,
+                                resource_id,
+                                ..
+                            },
+                        )) = proceed_or_none
+                        {
+                            let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                                &crate::config::config_dir(),
+                            );
+                            let actor = format!("pane:{caller}");
+                            let resource = resource_id.unwrap_or_default();
+                            let _ = monitor.note_use(
+                                &actor,
+                                "pane-send",
+                                &grant_id,
+                                &fingerprint,
+                                &resource,
+                                "",
+                            );
+                            let _ = monitor.note_outcome(
+                                &actor,
+                                "pane-send",
+                                &grant_id,
+                                &fingerprint,
+                                &resource,
+                                "",
+                                if send_res.is_ok() { "ok" } else { "failed" },
+                                "",
+                                "",
+                            );
+                            if send_res.is_ok() {
+                                monitor.consume_once(&grant_id, None);
+                            }
+                        }
+                        send_res
+                    }
                 };
                 if let Some(rf) = response_file.as_ref().filter(|_| !deferred) {
                     let json = match result {

@@ -255,6 +255,7 @@ pub struct PlexiApp {
     /// is owed once the host has settled, pressed Enter, and confirmed that the
     /// prompt left the pane's input line (stint 0583).
     pub(crate) pending_submits: Vec<crate::app::pane_wait::PendingSubmit>,
+    pub(crate) pending_send_approvals: Vec<crate::app::pane_wait::PendingSendApproval>,
     /// Host-owned recurring prompts, keyed by terminal pane id.
     pub(crate) pane_heartbeats: HashMap<PaneId, PaneHeartbeat>,
     /// Worktrees created by `plexi pane new --worktree <branch>`, keyed by the
@@ -1633,6 +1634,7 @@ impl PlexiApp {
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
+                    pending_send_approvals: Vec::new(),
                     pane_heartbeats: restored.pane_heartbeats,
                     pane_worktrees: HashMap::new(),
                     last_worktree_close_reports: HashMap::new(),
@@ -1904,6 +1906,7 @@ impl PlexiApp {
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
+            pending_send_approvals: Vec::new(),
             pane_heartbeats: HashMap::new(),
             pane_worktrees: HashMap::new(),
             last_worktree_close_reports: HashMap::new(),
@@ -2845,6 +2848,7 @@ impl PlexiApp {
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
+                pending_send_approvals: Vec::new(),
                 pane_heartbeats: HashMap::new(),
                 pane_worktrees: HashMap::new(),
                 last_worktree_close_reports: HashMap::new(),
@@ -3642,7 +3646,8 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Submits,
         );
         crate::platform::logging::time_drain("service_pending_submits", || {
-            self.service_pending_submits(ctx)
+            self.service_pending_submits(ctx);
+            self.service_pending_send_approvals(ctx);
         });
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
