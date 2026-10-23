@@ -1284,7 +1284,10 @@ impl AgentHost {
     /// here — `apply_context_transition_effects` runs at the end of every
     /// `PlexiApp` constructor and on every context change, and its
     /// `reload_workspace` call is the single owner of agent loading.
-    pub fn production(ai_config: Option<crate::config::AiConfig>) -> Self {
+    pub fn production(
+        ai_config: Option<crate::config::AiConfig>,
+        model_modes: crate::config::ResolvedModelModes,
+    ) -> Self {
         let config_dir = crate::config::config_dir();
         let grant_store = GrantStore::load_or_default(&config_dir);
         // The config dir is an inert root that matches no pane's workspace —
@@ -1292,7 +1295,10 @@ impl AgentHost {
         let mut host = Self::new(
             grant_store,
             crate::host::app_timeline::global(),
-            Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(ai_config)),
+            Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                ai_config,
+                model_modes,
+            )),
             config_dir.clone(),
         );
         host.monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);

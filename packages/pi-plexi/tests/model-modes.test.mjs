@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createPiPlexiExtension } from '../extensions/index.ts';
-import { DEFAULT_MODEL_MODES } from '../src/model-modes.ts';
+import { DEFAULT_MODEL_MODES, registerModelModes } from '../src/model-modes.ts';
 import { migrateSettings, backupProfile, migrateProfile, rollbackProfile, safePath } from '../src/migrate-model-modes.mjs';
 
 const settings = { defaultProvider: 'ian-router', defaultModel: 'auto', compaction: { enabled: true }, packages: ['npm:@alexlikevibe/pi-jev', '/local/pi-plexi'], custom: { retain: 1 } };
@@ -33,6 +33,17 @@ test('detached registration is lazy; exact targets and supported thinking are en
     target.reasoning = true; target.thinkingLevelMap = { [mode.thinking]: null };
     assert.throws(() => alias.route({}, ctx), /does not support thinking/);
   }
+});
+
+test('thinking off routes a non-reasoning target', () => {
+  const models = [];
+  const modes = registerModelModes({ registerVirtualModel: model => models.push(model), registerCommand() {} });
+  modes.setModes([
+    { id: 'fast', name: 'FAST', provider: 'test', model: 'plain', thinking: 'off' },
+    { ...DEFAULT_MODEL_MODES[1] },
+  ]);
+  const target = { provider: 'test', id: 'plain', reasoning: false };
+  assert.deepEqual(models[0].route({}, { modelRegistry: { find: () => target } }), { model: target, thinkingLevel: 'off' });
 });
 
 function commandHarness() {

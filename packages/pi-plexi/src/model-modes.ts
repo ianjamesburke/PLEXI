@@ -24,7 +24,7 @@ export function registerModelModes(pi: any) {
       const mode = current().find((candidate) => candidate.id === alias.id)!;
       const target = `${mode.provider}/${mode.model}`, model = ctx.modelRegistry.find(mode.provider, mode.model);
       if (!model) throw new Error(`Plexi ${mode.name}: missing target ${target} (thinking ${mode.thinking})`);
-      if (!model.reasoning || model.thinkingLevelMap?.[mode.thinking] === null) throw new Error(`Plexi ${mode.name}: ${target} does not support thinking ${mode.thinking}`);
+      if (mode.thinking !== "off" && (!model.reasoning || model.thinkingLevelMap?.[mode.thinking] === null)) throw new Error(`Plexi ${mode.name}: ${target} does not support thinking ${mode.thinking}`);
       console.info(`[pi-plexi] ${mode.name} -> ${target} thinking=${mode.thinking}`);
       return { model, thinkingLevel: mode.thinking };
     },

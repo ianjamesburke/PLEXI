@@ -1,16 +1,12 @@
 //! AI backend abstraction for the Plexi AI broker.
 //!
-//! Concrete backends: `OpenRouterBackend` (SSE streaming via OpenRouter),
-//! `OllamaBackend` (NDJSON streaming via local Ollama), and
-//! `LocalOpenAiBackend` (OpenAI-compatible SSE streaming against a
-//! configurable base URL). The host reads API keys from the environment at
-//! dispatch time; apps never see keys.
+//! Concrete backend: `OpenRouterBackend` (SSE streaming via OpenRouter). The
+//! host reads API keys from the environment at dispatch time; apps never see
+//! keys.
 //!
 //! Backends deliver events through an `mpsc::Sender<StreamEvent>` so the
 //! caller can drain a receiver each frame without blocking the UI.
 
-pub mod local;
-pub mod ollama;
 pub mod openrouter;
 
 use std::sync::{mpsc, Arc};
@@ -28,17 +24,23 @@ pub struct ConcreteModelRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
+    Off,
+    Minimal,
     Low,
     Medium,
     High,
+    Xhigh,
 }
 
 impl ReasoningEffort {
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw {
+            "off" => Ok(Self::Off),
+            "minimal" => Ok(Self::Minimal),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
             other => Err(format!(
                 "invalid effort '{other}' (expected low | medium | high)"
             )),
@@ -47,9 +49,12 @@ impl ReasoningEffort {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Xhigh => "xhigh",
         }
     }
 }

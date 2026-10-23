@@ -441,6 +441,7 @@ pub fn config_get(key: &str, scope: ConfigScope, json: bool) -> i32 {
     config_get_from_paths_with_json(key, &paths, json)
 }
 
+#[cfg(test)]
 fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
     config_get_from_paths_with_json(key, paths, false)
 }

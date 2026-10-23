@@ -189,10 +189,13 @@ pub struct LiveAiBroker {
 }
 
 impl LiveAiBroker {
-    /// Construct from the loaded `AiConfig` (may be `None` when `[ai]` is
-    /// absent from config.toml — errors are surfaced at dispatch time).
+    /// Test-only constructor with built-in model defaults.
+    #[cfg(test)]
     pub fn new(ai_config: Option<AiConfig>) -> Self {
-        Self::with_model_modes(ai_config, crate::config::PlexiConfig::default().resolved_model_modes())
+        Self::with_model_modes(
+            ai_config,
+            crate::config::PlexiConfig::default().resolved_model_modes(),
+        )
     }
 
     pub fn with_model_modes(ai_config: Option<AiConfig>, model_modes: ResolvedModelModes) -> Self {
@@ -253,7 +256,7 @@ fn dispatch_openrouter(
 ) -> AiBrokerResponse {
     let model_id = request.concrete_model.as_ref().map(|route| route.model.clone()).unwrap_or_else(|| configured.model.clone());
     if request.reasoning_effort.is_none() {
-        request.reasoning_effort = match configured.thinking.as_str() { "low" | "minimal" | "off" => Some(ReasoningEffort::Low), "medium" => Some(ReasoningEffort::Medium), "high" | "xhigh" => Some(ReasoningEffort::High), _ => None };
+        request.reasoning_effort = ReasoningEffort::parse(&configured.thinking).ok();
     }
     let api_key = match resolve_openrouter_api_key(request.workspace_root.as_deref()) {
         Ok(key) => key,
@@ -335,9 +338,10 @@ fn resolve_openrouter_api_key(workspace_root: Option<&std::path::Path>) -> Resul
         return Ok(k);
     }
 
-    Err(format!(
+    Err(
         "api_key_missing: OPENROUTER_API_KEY not set — export it in your shell profile or run `plexi secret set OPENROUTER_API_KEY --global`"
-    ))
+            .to_string(),
+    )
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1160,6 +1164,13 @@ mod tests {
         );
         assert_eq!(broker.model_modes.fast.model, "test/fast");
         assert_eq!(broker.model_modes.slow.model, "test/slow");
+    }
+
+    #[test]
+    fn configured_thinking_levels_keep_their_wire_meaning() {
+        assert_eq!(ReasoningEffort::parse("off").unwrap(), ReasoningEffort::Off);
+        assert_eq!(ReasoningEffort::parse("minimal").unwrap().label(), "minimal");
+        assert_eq!(ReasoningEffort::parse("xhigh").unwrap().label(), "xhigh");
     }
 
     #[test]

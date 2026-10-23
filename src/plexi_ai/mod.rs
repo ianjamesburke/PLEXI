@@ -1,7 +1,7 @@
 //! Plexi AI — agent runtime + brokered LLM capability.
 //!
 //! Public surface today (#284):
-//!   - `backend` — `AiBackend` trait + concrete `OpenRouterBackend` + `OllamaBackend`.
+//!   - `backend` — `AiBackend` trait + concrete `OpenRouterBackend`.
 //!   - `broker`  — `AiBroker` trait + `LiveAiBroker`. The host-side bridge
 //!     that fields `DrawCommand::AiQuery`, gates on the `ai.query`
 //!     capability, dispatches to a backend, and writes the ledger.

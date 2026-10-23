@@ -1406,6 +1406,7 @@ impl PlexiApp {
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
+        let model_modes = config.resolved_model_modes();
         let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
             config.keybindings.as_ref(),
             config.keys.as_ref(),
@@ -1698,7 +1699,10 @@ impl PlexiApp {
                     terminal_traversal_lock: None,
                     focus_journal_path: profile_dir.join("focus-journal.jsonl"),
                     overlay_held_cmds: Vec::new(),
-                    agent_host: crate::agent::AgentHost::production(config.ai),
+                    agent_host: crate::agent::AgentHost::production(
+                        config.ai,
+                        model_modes,
+                    ),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
@@ -1759,7 +1763,10 @@ impl PlexiApp {
         let default_registry_watchers =
             start_registry_watchers_for(&default_registries, &ui_wake);
 
-        let agent_host = crate::agent::AgentHost::production(config.ai.clone());
+        let agent_host = crate::agent::AgentHost::production(
+            config.ai.clone(),
+            config.resolved_model_modes(),
+        );
         // Standing ruling: a context root must gitignore its app_states dir
         // (personal local data, never committed). Guarded so constructing a
         // Context never creates directories as a side effect.

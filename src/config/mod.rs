@@ -413,8 +413,11 @@ fn legacy_ai_keys(ai: &toml::map::Map<String, toml::Value>) -> Vec<String> {
     if ai.contains_key("backend") {
         keys.push("ai.backend".to_string());
     }
-    for provider in ["openrouter", "ollama", "local"] {
-        if let Some(value) = ai.get(provider) {
+    for (provider, value) in ai {
+        if provider == "backend" {
+            continue;
+        }
+        if matches!(provider.as_str(), "openrouter" | "ollama" | "local") {
             if let Some(table) = value.as_table() {
                 for key in table.keys() {
                     keys.push(format!("ai.{provider}.{key}"));
@@ -422,6 +425,14 @@ fn legacy_ai_keys(ai: &toml::map::Map<String, toml::Value>) -> Vec<String> {
             } else {
                 keys.push(format!("ai.{provider}"));
             }
+        } else if value
+            .as_table()
+            .is_some_and(|table| table.contains_key("api_key_env"))
+        {
+            // Providers outside the retired built-in set can still carry the
+            // old credential field. Reject it here rather than letting TOML
+            // deserialization silently discard an unknown provider table.
+            keys.push(format!("ai.{provider}.api_key_env"));
         }
     }
     keys
@@ -1872,7 +1883,7 @@ impl PlexiConfig {
         };
         if let Some(error) = legacy_ai_error(&data) {
             log::warn!("Failed to validate config file {}: {error}", path.display());
-            return Some(Self::default());
+            return None;
         }
         match toml::from_str::<Self>(&data) {
             Ok(cfg) => Some(cfg),
@@ -2828,7 +2839,7 @@ mod legacy_ai_rejection_tests {
 
     #[test]
     fn removed_ai_keys_fail_check_and_load_in_global_and_workspace_config() {
-        for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url"] {
+        for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url", "anthropic.api_key_env"] {
             let (section, field) = key.split_once('.').map_or(("ai".to_string(), key.to_string()), |(section, field)| (format!("ai.{section}"), field.to_string()));
             let text = format!("[{section}]\n{field} = \"value\"\n");
             let temp = tempfile::tempdir().unwrap();
@@ -2844,6 +2855,11 @@ mod legacy_ai_rejection_tests {
                     Err(error) => assert_eq!(error, expected, "load must reject {}", path.display()),
                     Ok(_) => panic!("load must reject {}", path.display()),
                 }
+                assert!(
+                    PlexiConfig::load_from_path(path).is_none(),
+                    "host load must reject {}",
+                    path.display()
+                );
             }
         }
     }

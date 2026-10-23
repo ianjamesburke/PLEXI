@@ -708,7 +708,7 @@ mod tests {
         TraceAssertions {
             selection: Some(ExpectedSelection {
                 agent: "verifier".to_string(),
-                tier: "low".to_string(),
+                tier: "fast".to_string(),
                 provider: Some("openrouter".to_string()),
                 model: Some("test/cheap".to_string()),
             }),
