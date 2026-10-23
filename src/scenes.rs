@@ -2829,7 +2829,7 @@ impl HeadlessBackend {
                 for role in ["implementer", "tester"] {
                     let id = self.handles.resolve(role)?;
                     let response_file = self.h.workspace_root().join(format!("{role}-done.json")).to_string_lossy().into_owned();
-                    self.h.with_app_mut(|app| app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone {
+                    self.h.with_app_mut(|app| app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
                         pane_id: id, result: Some("{}".into()), summary: Some("Verified".into()), response_file,
                     }));
                 }

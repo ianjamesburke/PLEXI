@@ -458,11 +458,9 @@ pane count (`--json` is supported).
 - `plexi pane message`: Send and receive structured messages via a host-managed per-pane FIFO mailbox
 - `plexi pane message send`: Enqueue a message in a target pane's FIFO mailbox
 - `plexi pane message recv`: Drain all queued messages from a pane's mailbox as a JSON array
-- `plexi pane result`: Declare a result schema, write a schema-validated structured result once, or read a pane's validated result
+- `plexi pane result`: Read a pane's validated structured result
 - `plexi pane result read`: Read a pane's validated structured result as JSON
 - `plexi pane result wait`: Block host-side until a pane commits a valid structured result, then print it
-- `plexi pane result write`: Validate and commit a structured JSON object once for a pane
-- `plexi pane result schema`: Declare a JSON Schema (inline JSON object or path to a `.json` file) for a pane's result
 - `plexi events`: Subscribe to a Plexi app's event streams and receive brokered deliveries
 - `plexi events subscribe`: Subscribe to an app's event stream and print delivered events as NDJSON
 - `plexi events declare`: Declare an event stream so it can be emitted on and subscribed to

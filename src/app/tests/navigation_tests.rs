@@ -315,7 +315,7 @@ fn pane_info_and_list_include_agent_state() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState { peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Working,
         agent: "claude-code".to_string(),
@@ -371,7 +371,7 @@ fn get_agent_states_collects_state_from_panes() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState { peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),

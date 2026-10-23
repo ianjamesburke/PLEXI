@@ -567,7 +567,7 @@ mod tests {
         h.app.agent_attention.pending_os.clear();
 
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
             pane_id,
             result: Some("{\"answer\":\"42\"}".into()),
             summary: Some("Audit complete".into()),
@@ -697,7 +697,7 @@ mod tests {
             )
             .unwrap();
         let child_reply = root.join("child_done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
             pane_id: child,
             result: Some("{\"sub\":1}".into()),
             summary: Some("Child done".into()),

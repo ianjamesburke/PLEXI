@@ -3092,6 +3092,24 @@
         },
         {
           "additionalProperties": false,
+          "description": "Ask the host which pane (if any) the socket peer lives in and that pane's\nlive context authority root. The CLI uses this instead of the stale\n`PLEXI_CONTEXT_ROOT` / `PLEXI_PANE_ID` environment.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "caller_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "List items waiting on the human. The host expires due items first.",
           "properties": {
             "response_file": {

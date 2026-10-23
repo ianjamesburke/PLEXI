@@ -170,3 +170,162 @@ fn cli_secret_set_does_not_enable_terminal_injection() {
     assert_eq!(router.terminal.env.inject, vec!["ALREADY_0788".to_string()]);
     assert_eq!(injected, vec!["ALREADY_0788".to_string()], "existing injected names are surfaced");
 }
+
+fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {
+    let (_, tile) = h.app.find_pane_in_any_window(beside).unwrap();
+    h.app.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
+        win_idx: 0,
+        target_tile: tile,
+        vertical: true,
+        new_pane_first: false,
+        keep_focus: true,
+        options: crate::pane_ops::create::TerminalSpawnOptions {
+            initial_cmd: None,
+            close_on_exit: false,
+            cwd_override: None,
+            agent_pane: true,
+            inject_folder_secrets: false,
+        },
+    })
+}
+
+fn socket_request(
+    h: &mut HostHarness,
+    req: &AppRequest,
+    ancestry: &[u32],
+    token: &Path,
+) -> serde_json::Value {
+    let line = serde_json::to_string(req).unwrap();
+    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    let token = token.to_string_lossy().into_owned();
+    crate::rpc::register_client_stream(token.clone(), client_stream);
+    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(ancestry), &mut server_stream);
+    drop(server_stream);
+    h.run_frames(1);
+    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
+    serde_json::from_str(&body).unwrap()
+}
+
+#[test]
+fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
+    let mut h = HostHarness::new();
+    let attacker = h.add_focused_terminal();
+    let victim = spawn_second_terminal(&mut h, attacker);
+    let attacker_pid = h.terminal_backend(attacker).child_pid();
+    let root = h.workspace_root();
+
+    let done = AppRequest::AgentDone {
+        pane_id: victim,
+        result: Some("{\"forged\":true}".into()),
+        summary: Some("forged".into()),
+        peer_ancestry: None,
+        response_file: root.join("forged-done.json").to_string_lossy().into_owned(),
+    };
+    let reply = socket_request(&mut h, &done, &[attacker_pid], &root.join("forged-done.json"));
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error_code"], "permission_denied", "{reply}");
+    assert!(
+        h.app.pane_results.get(&victim).is_none_or(|r| r.committed.is_none()),
+        "a refused agent done must not commit a result for the victim"
+    );
+
+    let ask = AppRequest::AgentAsk {
+        pane_id: victim,
+        question: "forged question".into(),
+        peer_ancestry: None,
+        response_file: root.join("forged-ask.json").to_string_lossy().into_owned(),
+    };
+    let reply = socket_request(&mut h, &ask, &[attacker_pid], &root.join("forged-ask.json"));
+    assert_eq!(reply["error_code"], "permission_denied", "{reply}");
+    assert!(
+        h.app.agent_inputs().iter().all(|a| a.pane_id != victim),
+        "a refused agent ask must not mark the victim blocked"
+    );
+
+    // The same peer acting as itself is accepted.
+    let own = AppRequest::AgentDone {
+        pane_id: attacker,
+        result: Some("{\"ok\":1}".into()),
+        summary: Some("mine".into()),
+        peer_ancestry: None,
+        response_file: root.join("own-done.json").to_string_lossy().into_owned(),
+    };
+    let reply = socket_request(&mut h, &own, &[attacker_pid], &root.join("own-done.json"));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(h.app.pane_results.get(&attacker).is_some_and(|r| r.committed.is_some()));
+
+    // A caller outside every pane (the human at a plain terminal) keeps working.
+    let outside = AppRequest::AgentDone {
+        pane_id: victim,
+        result: Some("{\"by\":\"human\"}".into()),
+        summary: None,
+        peer_ancestry: None,
+        response_file: root.join("human-done.json").to_string_lossy().into_owned(),
+    };
+    let reply = socket_request(&mut h, &outside, &[999_999], &root.join("human-done.json"));
+    assert_eq!(reply["ok"], true, "{reply}");
+}
+
+#[test]
+fn set_agent_state_from_one_pane_cannot_change_another_pane() {
+    let mut h = HostHarness::new();
+    let attacker = h.add_focused_terminal();
+    let victim = spawn_second_terminal(&mut h, attacker);
+    let attacker_pid = h.terminal_backend(attacker).child_pid();
+    let report = |pane_id| AppRequest::SetAgentState {
+        pane_id,
+        state: crate::protocol::AgentState::Failed,
+        agent: "claude-code".into(),
+        detail: None,
+        session_id: None,
+        event: None,
+        blocked_reason: None,
+        peer_ancestry: None,
+    };
+    for req in [report(victim), report(attacker)] {
+        let line = serde_json::to_string(&req).unwrap();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[attacker_pid]), &mut ack);
+    }
+    h.run_frames(2);
+    let inputs = h.app.agent_inputs();
+    assert!(inputs.iter().all(|a| a.pane_id != victim), "victim state was forged");
+    assert!(inputs.iter().any(|a| a.pane_id == attacker), "own report must land");
+}
+
+#[test]
+fn permissions_caller_is_derived_from_the_peer_not_the_wire() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let pid = h.terminal_backend(pane).child_pid();
+    // A pane process that claims no pane (unset env) is still that pane's agent.
+    assert_eq!(h.app.permissions_caller_pane(Some(&[pid]), None), Some(pane));
+    // A wire claim of another pane cannot override the verified peer.
+    assert_eq!(h.app.permissions_caller_pane(Some(&[pid]), Some(pane + 100)), Some(pane));
+    // A caller outside every pane stays outside; its claim can only lower authority.
+    assert_eq!(h.app.permissions_caller_pane(Some(&[999_999]), None), None);
+    assert_eq!(h.app.permissions_caller_pane(Some(&[999_999]), Some(7)), Some(7));
+}
+
+#[test]
+fn caller_context_is_answered_from_the_verified_peer() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let pid = h.terminal_backend(pane).child_pid();
+    let root = h.workspace_root();
+    let ask = |h: &mut HostHarness, ancestry: &[u32], name: &str| {
+        let token = root.join(name);
+        let req = AppRequest::CallerContext {
+            peer_ancestry: None,
+            response_file: token.to_string_lossy().into_owned(),
+        };
+        socket_request(h, &req, ancestry, &token)
+    };
+    let inside = ask(&mut h, &[pid], "ctx-in.json");
+    assert_eq!(inside["ok"], true, "{inside}");
+    assert_eq!(inside["pane_id"], pane, "{inside}");
+    assert!(inside["context_root"].is_string(), "pane has a live context root: {inside}");
+    let outside = ask(&mut h, &[999_999], "ctx-out.json");
+    assert_eq!(outside["ok"], true, "{outside}");
+    assert!(outside["pane_id"].is_null() && outside["context_root"].is_null(), "{outside}");
+}

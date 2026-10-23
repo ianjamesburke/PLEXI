@@ -259,6 +259,56 @@ impl PlexiApp {
         }
     }
 
+    /// The pane the kernel-verified socket peer lives in, when that is a pane
+    /// other than `claimed`. A peer outside every pane (the human at a plain
+    /// terminal) or missing capture (in-process callers) yields `None`.
+    fn foreign_peer_pane(
+        &self,
+        peer_ancestry: Option<&[u32]>,
+        claimed: crate::spatial::tiling::PaneId,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        let (caller, _, _) = self.resolve_socket_peer_pane(peer_ancestry?)?;
+        (caller != claimed).then_some(caller)
+    }
+
+    /// The pane a `plexi permissions` call acts as. A socket peer inside any
+    /// pane is that pane's agent whatever the wire claims; a peer outside every
+    /// pane keeps the client's claim (which can only lower authority).
+    pub(crate) fn permissions_caller_pane(
+        &self,
+        peer_ancestry: Option<&[u32]>,
+        claimed: Option<crate::spatial::tiling::PaneId>,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        let peer_pane = peer_ancestry
+            .and_then(|pids| self.resolve_socket_peer_pane(pids))
+            .map(|(pane, _, _)| pane);
+        if peer_pane.is_some() && peer_pane != claimed {
+            log::info!(
+                "permissions:cli host-derived caller pane={peer_pane:?} overrides claimed {claimed:?}"
+            );
+        }
+        peer_pane.or(claimed)
+    }
+
+    fn refuse_cross_pane(
+        &self,
+        kind: &str,
+        caller: crate::spatial::tiling::PaneId,
+        claimed: crate::spatial::tiling::PaneId,
+        response_file: &str,
+    ) {
+        log::warn!("pane_ipc: kind={kind} refused: caller pane {caller} claimed pane {claimed}");
+        write_json_response(
+            response_file,
+            serde_json::json!({
+                "ok": false,
+                "pane_id": claimed,
+                "error_code": "permission_denied",
+                "error": format!("pane {caller} cannot act as pane {claimed}"),
+            }),
+        );
+    }
+
     /// Handle a single pane-IPC `AppRequest`. Shared by the socket drain above
     /// and the PGAP forwarding path (`AppCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated app requests take the identical host
@@ -360,14 +410,37 @@ impl PlexiApp {
                 id,
                 pane_id,
                 credential,
+                peer_ancestry,
                 response_file,
             } => {
+                // The kernel-verified peer decides who is calling. A process
+                // inside any pane is that pane's agent whatever the wire says;
+                // the client's own claim can only lower authority.
+                let claimed_pane = self.permissions_caller_pane(peer_ancestry.as_deref(), *pane_id);
                 self.permissions_cli_request(
                     op,
                     id.as_deref(),
-                    *pane_id,
+                    claimed_pane,
                     credential.as_deref(),
                     response_file,
+                );
+            }
+            crate::protocol::AppRequest::CallerContext {
+                peer_ancestry,
+                response_file,
+            } => {
+                let pane = peer_ancestry
+                    .as_deref()
+                    .and_then(|pids| self.resolve_socket_peer_pane(pids))
+                    .map(|(pane, _, _)| pane);
+                let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
+                write_json_response(
+                    response_file,
+                    serde_json::json!({
+                        "ok": true,
+                        "pane_id": pane,
+                        "context_root": root,
+                    }),
                 );
             }
             crate::protocol::AppRequest::ListNeedsYou { response_file } => {
@@ -3220,7 +3293,14 @@ impl PlexiApp {
                 session_id,
                 event,
                 blocked_reason,
+                peer_ancestry,
             } => {
+                if let Some(caller) = self.foreign_peer_pane(peer_ancestry.as_deref(), *pane_id) {
+                    log::warn!(
+                        "pane_ipc: kind=set_agent_state refused: caller pane {caller} is not pane {pane_id}"
+                    );
+                    return;
+                }
                 log::info!(
                     "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail_present={}",
                     detail.is_some()
@@ -4232,8 +4312,13 @@ impl PlexiApp {
                 pane_id,
                 result,
                 summary,
+                peer_ancestry,
                 response_file,
             } => {
+                if let Some(caller) = self.foreign_peer_pane(peer_ancestry.as_deref(), *pane_id) {
+                    self.refuse_cross_pane("agent_done", caller, *pane_id, response_file);
+                    return;
+                }
                 let raw_result = result.as_deref().unwrap_or("{}");
                 let summary_str = summary.as_deref().unwrap_or_default();
                 log::info!(
@@ -4534,8 +4619,13 @@ impl PlexiApp {
             crate::protocol::AppRequest::AgentAsk {
                 pane_id,
                 question,
+                peer_ancestry,
                 response_file,
             } => {
+                if let Some(caller) = self.foreign_peer_pane(peer_ancestry.as_deref(), *pane_id) {
+                    self.refuse_cross_pane("agent_ask", caller, *pane_id, response_file);
+                    return;
+                }
                 log::info!(
                     "pane_ipc: kind=agent_ask pane_id={pane_id} question_len={}",
                     question.len()

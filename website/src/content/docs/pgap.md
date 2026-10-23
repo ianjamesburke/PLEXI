@@ -896,6 +896,14 @@ Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `al
 | `pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 
+### `caller_context`
+
+Ask the host which pane (if any) the socket peer lives in and that pane's live context authority root. The CLI uses t...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
 ### `list_needs_you`
 
 List items waiting on the human. The host expires due items first.
