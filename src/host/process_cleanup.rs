@@ -697,7 +697,11 @@ mod tests {
             assert!(Instant::now() < deadline, "coordinator fixture did not start");
             std::thread::sleep(Duration::from_millis(10));
         };
-        let report = stop_marked_processes(&old_marker, Duration::from_millis(20));
+        let report = stop_marked_processes(
+            &old_marker,
+            Duration::from_millis(20),
+            Instant::now() + Duration::from_secs(1),
+        );
         assert!(report.groups >= 1, "marked parent was not selected: {report:?}");
         match parent.wait() {
             Ok(status) => assert!(!status.success()),
