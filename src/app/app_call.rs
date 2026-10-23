@@ -932,6 +932,11 @@ impl PlexiApp {
         // paint, so the sidebar's Needs-you buttons registered earlier in
         // this frame stay listed alongside the banner's.
         if pending.is_empty() {
+            let open = monitor.open_needs_you();
+            if let Some(item) = super::approval_keyboard::keyboard_actionable(&open) {
+                self.draw_needs_you_banner(ctx, &item);
+                return;
+            }
             if let Some(done_item) = monitor
                 .open_needs_you()
                 .into_iter()
@@ -1077,8 +1082,9 @@ impl PlexiApp {
                 let hint = if self.approval_keyboard.confirm_always {
                     "Always deny this tool? Enter confirm · Esc leave pending".to_string()
                 } else {
-                    format!("{} focus · a allow once · d deny · Esc leave pending · Shift+A always deny (confirm)",
-                        ctx.format_shortcut(&egui::KeyboardShortcut::new(self.key_bindings.focus_approval.0, self.key_bindings.focus_approval.1)))
+                    format!("{} focus · a allow once{} · d deny · Esc leave pending · Shift+A always deny (confirm)",
+                        ctx.format_shortcut(&egui::KeyboardShortcut::new(self.key_bindings.focus_approval.0, self.key_bindings.focus_approval.1)),
+                        if request.allow_tool { " · s allow for session" } else { "" })
                 };
                 ui.add_enabled(armed, egui::Label::new(hint));
                 ui.add_space(crate::ui::style::SPACE_MD);
@@ -1122,6 +1128,100 @@ impl PlexiApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Banner for the oldest permission request/change, question or blocked
+    /// run. Keys `a`/`d`/`1`-`9`/Enter are handled by `needs_you_key_at`; the
+    /// buttons register in `approval_buttons` so synthetic clicks are refused.
+    fn draw_needs_you_banner(
+        &mut self,
+        ctx: &egui::Context,
+        item: &crate::broker::gate::NeedsYouRecord,
+    ) {
+        use crate::broker::gate::NeedsYouKind as K;
+        if self.approval_keyboard.id.as_deref().is_some_and(|id| id != item.id) {
+            self.leave_approval();
+        }
+        let remaining = self.approval_keyboard.remaining(std::time::Instant::now());
+        if !remaining.is_zero() {
+            ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)));
+        }
+        let view = crate::overlays::attention::attention_view(item);
+        let is_question = matches!(item.kind, K::Question | K::BlockedRun);
+        let choices: Vec<String> = item
+            .details
+            .as_ref()
+            .map(|d| d.choices.clone())
+            .unwrap_or_default();
+        let shortcut = ctx.format_shortcut(&egui::KeyboardShortcut::new(
+            self.key_bindings.focus_approval.0,
+            self.key_bindings.focus_approval.1,
+        ));
+        let hint = if !is_question {
+            format!("{shortcut} focus · a allow · d dismiss · Esc leave pending")
+        } else if choices.is_empty() {
+            format!("{shortcut} focus · Enter go to the asking pane · d dismiss · Esc leave pending")
+        } else {
+            format!(
+                "{shortcut} focus · 1-{} answer · d dismiss · Esc leave pending",
+                choices.len().min(9)
+            )
+        };
+        // (label, approve, answer)
+        let mut actions: Vec<(String, bool, Option<String>)> = Vec::new();
+        if is_question {
+            for (i, choice) in choices.iter().enumerate().take(9) {
+                actions.push((format!("{} {choice}", i + 1), true, Some(choice.clone())));
+            }
+        } else {
+            actions.push(("Allow (a)".to_string(), true, None));
+        }
+        actions.push(("Dismiss (d)".to_string(), false, None));
+        let mut chosen: Option<(bool, Option<String>)> = None;
+        crate::ui::overlay::ModalShell::centered("approval_banner")
+            .title(view.kind_label)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
+            .scrim(false)
+            .click_away(false)
+            .show(ctx, &self.colors, |ui| {
+                crate::ui::typography::body_strong(ui, view.title.clone(), &self.colors);
+                crate::ui::typography::caption(ui, view.explanation.clone(), &self.colors);
+                let armed = self.approval_keyboard.armed(std::time::Instant::now());
+                ui.add_enabled(armed, egui::Label::new(hint));
+                ui.add_space(crate::ui::style::SPACE_MD);
+                ui.horizontal_wrapped(|ui| {
+                    for (idx, (label, approve, answer)) in actions.iter().enumerate() {
+                        let kind = if idx == 0 {
+                            crate::ui::button::ButtonKind::Accent
+                        } else if *approve {
+                            crate::ui::button::ButtonKind::Primary
+                        } else {
+                            crate::ui::button::ButtonKind::Secondary
+                        };
+                        let response = crate::ui::button::chrome_button(ui, label, kind, &self.colors, 0.0);
+                        let rect = response.rect;
+                        self.approval_buttons.push(ApprovalButton {
+                            label: label.clone(),
+                            bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                            pending_request_id: item.id.clone(),
+                        });
+                        if response.clicked_by(egui::PointerButton::Primary) {
+                            chosen = Some((*approve, answer.clone()));
+                        }
+                    }
+                });
+            });
+        if let Some((approve, answer)) = chosen {
+            match answer {
+                Some(answer) => {
+                    let _ = self.answer_from_desktop(&item.id, &answer, "needs-you banner");
+                }
+                None => {
+                    let _ = self.resolve_from_desktop(&item.id, approve, "needs-you banner");
+                }
+            }
+            self.leave_approval();
         }
     }
 
