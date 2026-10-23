@@ -314,9 +314,12 @@ pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: b
         std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".into()),
     );
 
-    // PATH: the process PATH is already resolved to the login-shell PATH at
-    // startup (see `install_login_shell_path`), so inheriting it here is
-    // enough — no per-shell augmentation needed.
+    // PATH: inherit the resolved login-shell PATH and ensure the Plexi CLI bin
+    // directory (~/.local/bin or managed receipt bin_dir) is prepended inside
+    // every Plexi pane, even when user dotfiles (.zshrc/.bashrc) were not edited.
+    if let Some(pane_path) = augmented_pane_path() {
+        env.insert("PATH".into(), pane_path);
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     if inject {
@@ -963,31 +966,104 @@ fn pid_cwd_backend_name() -> &'static str {
     "libproc"
 }
 
-fn ensure_shell_integration() -> io::Result<PathBuf> {
+pub(crate) fn augmented_pane_path() -> Option<String> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    let mut prepend: Vec<PathBuf> = Vec::new();
+    let mut push_unique = |dir: PathBuf| {
+        if !dir.as_os_str().is_empty()
+            && !existing.iter().any(|p| p == &dir)
+            && !prepend.iter().any(|p| p == &dir)
+        {
+            prepend.push(dir);
+        }
+    };
+    if let Ok(Some(receipt)) = crate::distribution::installed() {
+        push_unique(receipt.bin_dir);
+    }
+    #[cfg(not(windows))]
+    if let Some(home) = std::env::var_os("HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+    {
+        push_unique(home.join(".local/bin"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let cli = crate::cli::setup::cli_name();
+            if parent.join(&cli).is_file() {
+                push_unique(parent.to_path_buf());
+            }
+        }
+    }
+    prepend.extend(existing);
+    std::env::join_paths(prepend)
+        .ok()
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
+pub(crate) fn ensure_shell_integration() -> io::Result<PathBuf> {
     let zsh_dir = crate::config::config_dir()
         .join("shell-integration")
         .join("zsh");
+    let completions_dir = zsh_dir.join("completions");
 
-    std::fs::create_dir_all(&zsh_dir)?;
+    std::fs::create_dir_all(&completions_dir)?;
+
+    let cli = crate::cli::setup::cli_name();
+    let stamp_path = completions_dir.join(".build_id");
+    let current_build = env!("PLEXI_BUILD_ID");
+    let main_comp_path = completions_dir.join(format!("_{cli}"));
+    let needs_regen = !main_comp_path.is_file()
+        || std::fs::read_to_string(&stamp_path).ok().as_deref() != Some(current_build);
+    if needs_regen {
+        if let Ok(bytes) = crate::cli::completions::render_completions("zsh", &cli) {
+            let _ = std::fs::write(&main_comp_path, bytes);
+        }
+        if cli != "plexi" {
+            let bare_comp_path = completions_dir.join("_plexi");
+            if let Ok(bytes) = crate::cli::completions::render_completions("zsh", "plexi") {
+                let _ = std::fs::write(&bare_comp_path, bytes);
+            }
+        }
+        let _ = std::fs::write(&stamp_path, current_build);
+    }
 
     let zprofile = r#"# Plexi shell integration — automatically managed, do not edit
+fpath=("${ZDOTDIR}/completions" $fpath)
 __plexi_orig="${PLEXI_ORIG_ZDOTDIR:-$HOME}"
 [[ -f "$__plexi_orig/.zprofile" ]] && source "$__plexi_orig/.zprofile"
 unset __plexi_orig
 "#;
 
-    let zshrc = r#"# Plexi shell integration — automatically managed, do not edit
-__plexi_orig="${PLEXI_ORIG_ZDOTDIR:-$HOME}"
+    let zshrc = format!(
+        r#"# Plexi shell integration — automatically managed, do not edit
+fpath=("${{ZDOTDIR}}/completions" $fpath)
+__plexi_orig="${{PLEXI_ORIG_ZDOTDIR:-$HOME}}"
 [[ -f "$__plexi_orig/.zshrc" ]] && source "$__plexi_orig/.zshrc"
 unset __plexi_orig
 
+if [[ -d "$HOME/.local/bin" && ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v plexi >/dev/null 2>&1 && command -v {cli} >/dev/null 2>&1; then
+    plexi() {{ {cli} "$@"; }}
+fi
+
+if (( $+functions[compdef] )); then
+    [[ -r "${{ZDOTDIR}}/completions/_{cli}" ]] && source "${{ZDOTDIR}}/completions/_{cli}"
+    [[ -r "${{ZDOTDIR}}/completions/_plexi" ]] && source "${{ZDOTDIR}}/completions/_plexi"
+fi
+
 # Re-apply workspace terminal env after user startup files so workspace-scoped
 # secrets win over global exports in .zshrc/.zprofile.
-if [[ -n "${PLEXI_TERMINAL_ENV_NAMES:-}" ]]; then
-    for __plexi_env_name in ${(s.:.)PLEXI_TERMINAL_ENV_NAMES}; do
-        __plexi_value_var="PLEXI_TERMINAL_ENV_VALUE_${__plexi_env_name}"
-        if [[ -n "${(P)__plexi_value_var+x}" ]]; then
-            export "${__plexi_env_name}=${(P)__plexi_value_var}"
+if [[ -n "${{PLEXI_TERMINAL_ENV_NAMES:-}}" ]]; then
+    for __plexi_env_name in ${{(s.:.)PLEXI_TERMINAL_ENV_NAMES}}; do
+        __plexi_value_var="PLEXI_TERMINAL_ENV_VALUE_${{__plexi_env_name}}"
+        if [[ -n "${{(P)__plexi_value_var+x}}" ]]; then
+            export "${{__plexi_env_name}}=${{(P)__plexi_value_var}}"
             unset "$__plexi_value_var"
         fi
     done
@@ -995,11 +1071,12 @@ if [[ -n "${PLEXI_TERMINAL_ENV_NAMES:-}" ]]; then
 fi
 
 # Emit OSC 7 after each prompt so Plexi can track cwd for split inheritance
-__plexi_precmd() {
+__plexi_precmd() {{
     printf '\e]7;file://%s%s\a' "$HOST" "$PWD"
-}
+}}
 precmd_functions+=(__plexi_precmd)
-"#;
+"#
+    );
 
     std::fs::write(zsh_dir.join(".zprofile"), zprofile)?;
     std::fs::write(zsh_dir.join(".zshrc"), zshrc)?;

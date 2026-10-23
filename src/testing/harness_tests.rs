@@ -13292,3 +13292,53 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     assert_eq!(after_close_json["ok"], true);
     assert_eq!(after_close_json["results"].as_array().unwrap().len(), 3);
 }
+
+#[test]
+fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _profile_guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+    let mut h = HostHarness::new();
+    let human_shell_id = h.add_focused_terminal();
+
+    let spawn_reply = temp_response(dir.path(), "human-spawn-worker");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "helper".into(),
+        harness: "script".into(),
+        command: "sleep 30".into(),
+        task: None,
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell_id),
+        name: None,
+        cwd: Some(dir.path().to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: spawn_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let spawn_json = read_json_response(&spawn_reply);
+    let worker_id = spawn_json["pane_id"].as_u64().expect("worker pane_id");
+
+    let done_reply = temp_response(dir.path(), "worker-done");
+    h.inject_ipc(AppRequest::AgentDone {
+        pane_id: worker_id,
+        result: Some(serde_json::json!({"ok": true}).to_string()),
+        summary: Some("helper finished".into()),
+        response_file: done_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let done_json = read_json_response(&done_reply);
+    assert_eq!(done_json["ok"], true);
+
+    let human_term = h.app.windows[0].panes[&human_shell_id]
+        .as_terminal()
+        .expect("human shell terminal");
+    assert!(
+        human_term.pending_child_results.is_empty(),
+        "plain human shell must not accumulate pending_child_results that never drain"
+    );
+}

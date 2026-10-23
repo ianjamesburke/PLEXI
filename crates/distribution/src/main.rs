@@ -24,6 +24,10 @@ struct Args {
     applications_dir: Option<PathBuf>,
     #[arg(long)]
     install_only: bool,
+    #[arg(long, overrides_with = "no_modify_path")]
+    modify_path: bool,
+    #[arg(long, overrides_with = "modify_path")]
+    no_modify_path: bool,
     #[arg(long)]
     dry_run: bool,
     #[command(subcommand)]
@@ -135,6 +139,11 @@ fn run(args: Args) -> Result<i32> {
     }
     if let Some(path) = args.applications_dir {
         options.applications_dir = path;
+    }
+    if args.modify_path {
+        options.modify_path = true;
+    } else if args.no_modify_path {
+        options.modify_path = false;
     }
     let temp;
     let package_path = if let Some(path) = args.package {

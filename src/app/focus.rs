@@ -69,9 +69,6 @@ pub(crate) enum FocusKind {
     ContextDescription,
     /// Quick note compose modal (text input phase).
     QuickNote,
-    /// First-launch CLI setup prompt. No text input — intercepts keys so they
-    /// don't fall through to the active terminal while the modal is visible.
-    CliSetupPrompt,
     /// Shared text-input overlay (context root, future: context rename).
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
@@ -106,7 +103,6 @@ impl FocusKind {
             Self::ContextRename => "ContextRename",
             Self::ContextDescription => "ContextDescription",
             Self::QuickNote => "QuickNote",
-            Self::CliSetupPrompt => "CliSetupPrompt",
             Self::TextInput => "TextInput",
             Self::ContextCloseConfirm => "ContextCloseConfirm",
             Self::CapabilityModal => "CapabilityModal",
@@ -130,7 +126,6 @@ impl FocusKind {
             Self::ContextRename => &ContextRenameOwner,
             Self::ContextDescription => &ContextDescriptionOwner,
             Self::QuickNote => &QuickNoteOwner,
-            Self::CliSetupPrompt => &CliSetupPromptOwner,
             Self::TextInput => &TextInputOwner,
             Self::ContextCloseConfirm => &ContextCloseConfirmOwner,
             Self::CapabilityModal => &CapabilityModalOwner,
@@ -216,7 +211,6 @@ focus_owner_tokens! {
     ContextRename => ContextRenameOwner { key: context_rename_handle_key, draw: draw_rename_context_overlay },
     ContextDescription => ContextDescriptionOwner { key: context_description_handle_key, draw: draw_edit_description_overlay },
     QuickNote => QuickNoteOwner { key: quick_note_handle_key, draw: draw_quick_note_modal },
-    CliSetupPrompt => CliSetupPromptOwner { key: cli_setup_prompt_handle_key, draw: draw_cli_setup_modal },
     TextInput => TextInputOwner { key: text_input_handle_key, draw: draw_text_input_overlay },
     ContextCloseConfirm => ContextCloseConfirmOwner { key: context_close_confirm_handle_key, draw: draw_context_close_confirm },
     CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
@@ -1128,10 +1122,6 @@ impl PlexiApp {
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
         self.reconcile_focus_layer(FocusKind::NotificationModal, self.show_notification_modal);
-    }
-
-    pub(crate) fn sync_cli_setup_prompt_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::CliSetupPrompt, self.show_cli_setup_prompt);
     }
 
     /// Reconcile the command-palette focus layer with `show_command_palette`.

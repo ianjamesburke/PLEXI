@@ -281,7 +281,7 @@ fn main() -> eframe::Result {
     let args = strip_profile_args(&raw_args);
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
-        ChangesCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
+        ChangesCmd, CliSetupCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
         DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
         NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
         RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
@@ -1904,6 +1904,22 @@ fn main() -> eframe::Result {
                             .to_string();
                         cli::trace::exit(cli::completions_cli(s, &binary_name));
                     }
+                    Commands::Cli {
+                        cmd,
+                        modify_path,
+                        no_modify_path,
+                    } => {
+                        let (sub_modify, sub_no_modify) = match cmd {
+                            Some(CliSetupCmd::Setup {
+                                modify_path: m,
+                                no_modify_path: nm,
+                            }) => (m, nm),
+                            None => (false, false),
+                        };
+                        let _ = (modify_path, sub_modify);
+                        let effective_modify = !(no_modify_path || sub_no_modify);
+                        cli::trace::exit(cli::setup::run_cli_setup(effective_modify, json));
+                    }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
                         ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"reload_config"}), None)),
                         ConfigCmd::Check { scope } => {
@@ -2026,6 +2042,9 @@ fn main() -> eframe::Result {
     if let Err(error) = cli::agent::ensure_agent_state_script() {
         log::error!("host_startup: failed to restore shared agent hook: {error}");
         eprintln!("Could not restore Plexi's agent hook: {error}");
+    }
+    if let Err(error) = cli::setup::ensure_local_shim() {
+        log::warn!("host_startup: could not ensure local CLI shim: {error}");
     }
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))

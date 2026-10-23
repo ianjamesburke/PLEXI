@@ -586,7 +586,13 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
     let package = Package::load(&temp.path().join("package")).map_err(|e| e.to_string())?;
     if package.manifest.tag != tag_name { return Err("downloaded package tag differs from requested update".into()); }
     let options = match current {
-        Some(r) => transaction::InstallOptions { channel: r.channel, root: r.root, bin_dir: r.bin_dir, applications_dir: r.applications_dir },
+        Some(r) => transaction::InstallOptions {
+            modify_path: !r.path_edits.is_empty(),
+            channel: r.channel,
+            root: r.root,
+            bin_dir: r.bin_dir,
+            applications_dir: r.applications_dir,
+        },
         None => transaction::InstallOptions::for_channel(channel).map_err(|e| e.to_string())?,
     };
     let receipt = match expected_build {

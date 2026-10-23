@@ -100,11 +100,21 @@ pub fn default_root() -> Result<PathBuf> {
     #[cfg(windows)]
     let base = dirs::data_local_dir().map(|p| p.join("Plexi"));
     #[cfg(not(windows))]
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|p| p.join(".local/share")))
-        .map(|p| p.join("plexi"));
+    let base = xdg_data_dir().map(|p| p.join("plexi"));
     base.ok_or_else(|| Error::Invalid("cannot resolve user installation directory".into()))
+}
+
+#[cfg(not(windows))]
+pub fn xdg_data_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .or_else(dirs::home_dir)
+                .map(|p| p.join(".local/share"))
+        })
 }
 
 pub fn registry_path(channel: &str) -> Result<PathBuf> {
@@ -403,6 +413,7 @@ pub struct InstallOptions {
     pub root: PathBuf,
     pub bin_dir: PathBuf,
     pub applications_dir: PathBuf,
+    pub modify_path: bool,
 }
 impl InstallOptions {
     pub fn for_channel(channel: &str) -> Result<Self> {
@@ -414,6 +425,7 @@ impl InstallOptions {
                 root: receipt.root,
                 bin_dir: receipt.bin_dir,
                 applications_dir: receipt.applications_dir,
+                modify_path: !receipt.path_edits.is_empty(),
             });
         }
         let home = dirs::home_dir()
@@ -427,6 +439,7 @@ impl InstallOptions {
             root: default_root()?.join(channel),
             bin_dir,
             applications_dir: home.join("Applications"),
+            modify_path: false,
         })
     }
 }
@@ -542,7 +555,22 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
                         String::from_utf8_lossy(&output.stderr)
                     )));
                 }
-                files.push((completion_path(receipt, shell), output.stdout));
+                files.push((completion_path(receipt, shell), output.stdout.clone()));
+                for dropin in dropin_completion_paths(&name, shell) {
+                    let can_own = (!dropin.exists() && !dropin.is_symlink())
+                        || receipt
+                            .integrations
+                            .iter()
+                            .any(|p| p.path == dropin && p.matches().unwrap_or(false));
+                    if can_own {
+                        files.push((dropin, output.stdout.clone()));
+                    } else {
+                        log::info!(
+                            "distribution: skipping unowned completion drop-in {}",
+                            dropin.display()
+                        );
+                    }
+                }
             }
             log::info!("distribution: generated shell completions for {name}");
         }
@@ -808,7 +836,9 @@ fn install_checked(
         });
     }
     #[cfg(unix)]
-    prepare_path_registration(&mut receipt, &mut changes)?;
+    if options.modify_path || !receipt.path_edits.is_empty() {
+        prepare_path_registration(&mut receipt, &mut changes)?;
+    }
     let windows_path = prepare_windows_integration(&mut receipt, &mut changes)?;
     let journal = Journal {
         before,
@@ -939,6 +969,40 @@ fn completion_path(receipt: &Receipt, shell: &str) -> PathBuf {
         _ => name,
     };
     receipt.root.join("completions").join(shell).join(file)
+}
+
+#[cfg(unix)]
+pub fn dropin_completion_paths(name: &str, shell: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    match shell {
+        "fish" => {
+            if let Some(xdg) = xdg_data_dir() {
+                paths.push(
+                    xdg.join("fish/vendor_completions.d")
+                        .join(format!("{name}.fish")),
+                );
+            }
+        }
+        "bash" => {
+            if let Some(xdg) = xdg_data_dir() {
+                paths.push(xdg.join("bash-completion/completions").join(name));
+            }
+        }
+        "zsh" => {
+            if let Some(home) = std::env::var_os("HOME")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .or_else(dirs::home_dir)
+            {
+                let zfunc = home.join(".zfunc");
+                if zfunc.is_dir() {
+                    paths.push(zfunc.join(format!("_{name}")));
+                }
+            }
+        }
+        _ => {}
+    }
+    paths
 }
 
 /// Login interactive bash reads the first of these that exists.
@@ -1200,8 +1264,42 @@ pub fn rollback(root: &Path) -> Result<Receipt> {
             root: receipt.root,
             bin_dir: receipt.bin_dir,
             applications_dir: receipt.applications_dir,
+            modify_path: !receipt.path_edits.is_empty(),
         },
     )
+}
+
+#[cfg(unix)]
+pub fn register_path(root: &Path) -> Result<Receipt> {
+    let _lock = lock(root)?;
+    let _integration_lock = lock(&default_root()?.join("integration-lock"))?;
+    let root = root
+        .canonicalize()
+        .context("canonicalize installation root")?;
+    recover(&root)?;
+    let before =
+        read_receipt(&root)?.ok_or_else(|| Error::Invalid("no managed installation".into()))?;
+    let mut receipt = before.clone();
+    let mut changes = Vec::new();
+    prepare_path_registration(&mut receipt, &mut changes)?;
+    let journal = Journal {
+        before: Some(before),
+        after: receipt.clone(),
+        changes,
+        windows_path: None,
+    };
+    write_json(&root.join("transaction.json"), &journal)?;
+    let result = (|| {
+        apply_changes(&journal.changes)?;
+        write_json(&root.join(RECEIPT), &receipt)?;
+        remove_if_present(&root.join("transaction.json"))?;
+        sync_dir(&root)
+    })();
+    if let Err(error) = result {
+        recover(&root)?;
+        return Err(error);
+    }
+    Ok(receipt)
 }
 
 pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
