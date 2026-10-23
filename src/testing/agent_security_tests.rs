@@ -40,15 +40,14 @@ fn secret_get(h: &mut HostHarness, name: &str, root: &Path, ancestry: &[u32]) ->
         response_file: reply.to_string_lossy().into_owned(),
     };
     let line = serde_json::to_string(&request).unwrap();
-    let mut ack = Vec::new();
-    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(ancestry), &mut ack);
-    let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
-    while !reply.is_file() {
-        assert!(std::time::Instant::now() < deadline, "no secret_get reply");
-        h.run_frames(1);
-    }
-    let body = std::fs::read_to_string(&reply).unwrap();
-    let _ = std::fs::remove_file(&reply);
+    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    let token = reply.to_string_lossy().into_owned();
+    crate::rpc::register_client_stream(token.clone(), client_stream);
+    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(ancestry), &mut server_stream);
+    drop(server_stream);
+    h.run_frames(1);
+    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
+    assert!(!reply.exists(), "secret_get must not write a response file to disk");
     serde_json::from_str(&body).unwrap()
 }
 
