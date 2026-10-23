@@ -599,19 +599,23 @@ mod tests {
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
         h.run_steps(4);
         h.with_app(|app| {
-            assert_eq!(app.conjoined_parent(), Some(parent));
-            assert_eq!(app.visual_owner_pane(), Some(parent));
-            assert_eq!(app.fleet_focused_pane(), Some(parent));
-            let parent_rect = app.visible_pane_rect(parent).unwrap();
-            let child_rect = app.windows[app.active_window].tree.root.and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile)).unwrap();
-            let share = parent_rect.width() / (parent_rect.width() + child_rect.width());
-            assert!((share - 0.35).abs() < 0.01, "parent share: {share}");
+            let flap = app.open_flap.as_ref().expect("dive unfolds a flap");
+            assert_eq!(flap.source_pane, Some(parent));
+            let focused = flap.focused_pane.expect("dive focuses a child");
+            assert_eq!(app.visual_owner_pane(), Some(focused));
+            assert_eq!(app.fleet_focused_pane(), Some(focused));
+            assert!(app.conjoined_parent().is_none());
+            let child_rect = app.visible_pane_rect(focused).unwrap();
+            assert!(child_rect.width() > 100.0, "flap pane {child_rect:?}");
             assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
         });
         h.save_screenshot(&evidence_png!("_view")).unwrap();
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
         h.run_steps(2);
-        h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
+        h.with_app(|app| {
+            assert!(app.open_flap.is_none());
+            assert!(app.conjoined_parent().is_none());
+        });
     }
 
     fn wait_for_lineage_fixture(h: &mut PlexiUiHarness, panes: &[u64]) {
@@ -657,8 +661,167 @@ mod tests {
         for shape in &h.harness().output().shapes {
             gallery_text_shapes(&shape.shape, &mut texts);
         }
-        assert!(texts.iter().any(|(_, text)| text.contains("researcher") && text.contains("child of lead")), "{texts:?}");
+        assert!(texts.iter().any(|(_, text)| text.contains("researcher")), "{texts:?}");
+        assert!(texts.iter().any(|(_, text)| text.contains("lead")), "{texts:?}");
         assert!(!texts.iter().any(|(_, text)| text.starts_with("↳ lead")));
+        h.save_screenshot(&evidence_png!()).unwrap();
+    }
+
+    #[test]
+    fn screenshot_flap_unfolds_with_a_human_name() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let (parent, ctx) = h.with_app_mut(|app| {
+            let (parent, _) = app.spawn_agent_worker_pane(
+                "lead",
+                "pi",
+                "printf 'Lead: review the plan\\n'; sleep 120",
+                "Coordinate",
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            ).unwrap();
+            let team = "team-017f341796ab4976bee42030d6f5a6c0";
+            let (_front, ctx) = app.spawn_agent_worker_pane(
+                "coordinator",
+                "pi",
+                "printf 'Coordinator: planning the review\\n'; sleep 120",
+                "Plan the review",
+                Some(team),
+                false,
+                Some(parent),
+                None,
+                None,
+                None,
+                false,
+                None,
+            ).unwrap();
+            let (helper, _) = app.spawn_agent_worker_pane(
+                "researcher",
+                "pi",
+                "printf 'Researcher: reading sources\\n'; sleep 120",
+                "Read the sources",
+                Some(team),
+                false,
+                Some(parent),
+                None,
+                None,
+                None,
+                false,
+                None,
+            ).unwrap();
+            let (win, _) = app.find_pane_in_any_window(helper).unwrap();
+            app.windows[win].panes.get_mut(&helper).unwrap().set_agent(Some(
+                crate::protocol::PaneAgentState {
+                    pane_id: helper,
+                    state: crate::protocol::AgentState::NeedsYou,
+                    agent: "pi".into(),
+                    detail: Some("Need a decision".into()),
+                    session_id: None,
+                },
+            ));
+            (parent, ctx)
+        });
+        h.run_steps(4);
+        h.with_app(|app| {
+            let title = app.subcontext_title(ctx);
+            assert_eq!(title, "coordinator");
+            assert!(!title.contains("017f"));
+            let counts = app.flap_counts(ctx);
+            assert!(counts.contains("working"), "{counts}");
+            assert!(counts.contains("needs you"), "{counts}");
+            let source = app.visible_pane_rect(parent).expect("source pane");
+            let painted = app.flap_painted_rect.expect("flap rect");
+            assert!(painted.width() > 200.0, "{painted:?}");
+            if source.center().x >= painted.center().x {
+                assert!(painted.right() <= source.center().x + 1.0, "right source unfolds left: source={source:?} flap={painted:?}");
+            } else {
+                assert!(painted.left() >= source.center().x - 1.0, "left source unfolds right: source={source:?} flap={painted:?}");
+            }
+        });
+        let mut texts = Vec::new();
+        for shape in &h.harness().output().shapes {
+            gallery_text_shapes(&shape.shape, &mut texts);
+        }
+        assert!(texts.iter().any(|(_, text)| text.contains("coordinator")), "{texts:?}");
+        assert!(texts.iter().any(|(_, text)| text.contains("needs you")), "{texts:?}");
+        assert!(!texts.iter().any(|(_, text)| text.contains("017f341796ab")));
+        h.save_screenshot(&evidence_png!()).unwrap();
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.with_app(|app| assert!(app.open_flap.is_none(), "escape folds the flap"));
+    }
+
+    #[test]
+    fn screenshot_app_open_unfolds_beside_the_launcher() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.step();
+        let cwd = h.workspace.path().to_path_buf();
+        h.with_app_mut(|app| {
+            let (source, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: app open --cli git\\n'; sleep 120",
+                    "Open git",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let parent_ctx = app.router.active().context_id;
+            app.handle_pane_ipc_request(crate::protocol::AppRequest::SpawnPane {
+                type_id: "text-editor".into(),
+                layout: Some("split_h".into()),
+                args: Vec::new(),
+                from_pane_id: Some(source),
+                request_id: None,
+                response_file: None,
+                ephemeral: false,
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                no_focus: false,
+                path: None,
+                workspace_root: None,
+                target_context: None,
+                context_name: None,
+                name: Some("git".into()),
+                agent_cmd: None,
+                boot_timeout_secs: None,
+                worktree: None,
+                result_schema: None,
+                peer_ancestry: None,
+            });
+            let flap = app.open_flap.clone().expect("app open unfolds a flap");
+            assert_eq!(app.subcontext_title(flap.context_id), "git");
+            assert_eq!(app.router.active().context_id, parent_ctx);
+            assert_eq!(flap.source_pane, Some(source));
+        });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let source_id = app.open_flap.as_ref().and_then(|flap| flap.source_pane).expect("source");
+            let source_rect = app.visible_pane_rect(source_id).expect("launcher rect");
+            let painted = app.flap_painted_rect.expect("flap rect");
+            assert!(
+                source_rect.center().x < painted.center().x,
+                "launcher stays left of the execution flap: source={source_rect:?} flap={painted:?}"
+            );
+        });
+        let mut texts = Vec::new();
+        for shape in &h.harness().output().shapes {
+            gallery_text_shapes(&shape.shape, &mut texts);
+        }
+        assert!(texts.iter().any(|(_, text)| text.contains("git")), "{texts:?}");
+        assert!(texts.iter().any(|(_, text)| text.contains("lead")), "{texts:?}");
         h.save_screenshot(&evidence_png!()).unwrap();
     }
 

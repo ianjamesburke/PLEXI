@@ -12,8 +12,13 @@ key = { target = "host", value = "cmd+down" }
 [[steps]]
 shot = "agent-conjoined.png"
 
+# Dive unfolds a flap over the parent. The parent stays the active window
+# (one pane, no portal). The flap header is the proof the children opened.
 [[steps]]
-assert = { pane_count = 2, context_count = 2, portal_count = 0 }
+assert = { pane_count = 1, context_count = 2, portal_count = 0 }
+
+[[steps]]
+assert_label = { target = "host", label = "Back to lead" }
 
 [[steps]]
 agent_children = "complete"

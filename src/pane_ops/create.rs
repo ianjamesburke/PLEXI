@@ -1775,6 +1775,9 @@ impl PlexiApp {
         );
         self.refresh_portal_context_states();
         self.mark_workspace_dirty();
+        if target_ctx_id != parent_ctx_id {
+            self.unfold_flap(target_ctx_id, parent_pane_id, new_id, false);
+        }
         Ok((new_id, target_ctx_id))
     }
 

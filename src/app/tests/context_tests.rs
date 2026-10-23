@@ -507,12 +507,12 @@ fn create_child_context_auto_zooms() {
     assert_eq!(app.router.current_depth(), 1);
 }
 
-/// Issue #1833: new_child_context_from_keyboard creates a child of the active context
-/// and auto-zooms into it (push_depth + switch_workspace). In PTY-less test environments
-/// the terminal creation fails — verify the depth stack is unchanged and the active context
+/// Cmd+Shift+Option+N creates a child of the active context and unfolds it as a
+/// flap. The parent stays active. In PTY-less test environments the terminal
+/// creation fails — verify the depth stack is unchanged and the active context
 /// is unmodified in that case.
 #[test]
-fn new_child_context_from_keyboard_zooms_into_child() {
+fn new_child_context_from_keyboard_unfolds_a_flap() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -536,27 +536,29 @@ fn new_child_context_from_keyboard_zooms_into_child() {
             "active context must not change when child creation fails"
         );
     } else {
-        // Child was created and we zoomed in.
         assert_eq!(
             app.router.len(),
             initial_ctx_count + 1,
             "exactly one new context added"
         );
-        assert_ne!(
+        assert_eq!(
             app.router.active().context_id,
             parent_ctx_id,
-            "active context must switch to the new child"
-        );
-        assert_eq!(
-            app.router.active().parent_id,
-            Some(parent_ctx_id),
-            "child's parent_id must be the original context"
+            "the parent stays active while the flap is open"
         );
         assert_eq!(
             app.router.current_depth(),
-            initial_depth + 1,
-            "depth stack must grow by one after auto-zoom"
+            initial_depth,
+            "unfolding a flap does not push the depth stack"
         );
+        let flap = app.open_flap.as_ref().expect("child unfolds a flap");
+        let child = app
+            .router
+            .iter()
+            .find(|context| context.context_id == flap.context_id)
+            .expect("flap context");
+        assert_eq!(child.parent_id, Some(parent_ctx_id));
+        assert!(flap.focused_pane.is_some());
     }
 }
 
@@ -2424,14 +2426,29 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     let pane_b = h.add_test_pane();
     let root_id = h.app.router.active().context_id;
 
-    // Push pane_a from root -> child1(d1). Router: [root, child1]. Active: child1.
+    // Push pane_a from root -> child1(d1). Router: [root, child1].
+    // The parent stays active; the flap unfolds instead of switching.
     push_ipc(&mut h, pane_a);
-    let child1_id = h.app.router.active().context_id;
+    assert_eq!(h.app.router.active().context_id, root_id);
+    let child1_id = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(root_id))
+        .expect("child1")
+        .context_id;
 
     // Push pane_b from root's window (IPC targets pane_b explicitly) -> child2(d1).
     // With insert_after_subtree(root), child2 lands after child1: [root, child1, child2].
     push_ipc(&mut h, pane_b);
-    let child2_id = h.app.router.active().context_id;
+    assert_eq!(h.app.router.active().context_id, root_id);
+    let child2_id = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(root_id) && c.context_id != child1_id)
+        .expect("child2")
+        .context_id;
     assert_eq!(h.app.router.len(), 3, "root + child1 + child2 = 3 contexts");
     assert_ne!(child2_id, child1_id);
 

@@ -65,6 +65,16 @@ impl PlexiApp {
     }
 
     pub(crate) fn visible_pane_rect(&self, pane_id: u64) -> Option<egui::Rect> {
+        if let Some(flap) = &self.open_flap {
+            if let Some(rect) = self.flap_pane_rects.get(&pane_id).copied() {
+                let in_flap = self.windows.iter().any(|window| {
+                    window.context_id == flap.context_id && window.panes.contains_key(&pane_id)
+                });
+                if in_flap {
+                    return Some(rect);
+                }
+            }
+        }
         if self.conjoined_parent() == Some(pane_id) {
             if let Some((id, rect)) = self.conjoined_parent_rect {
                 if id == pane_id {
@@ -102,17 +112,17 @@ impl PlexiApp {
         }) else {
             return false;
         };
-        let Some(index) = self.router.position(|c| c.context_id == ctx_id) else {
+        let front = self
+            .windows
+            .iter()
+            .filter(|window| window.context_id == ctx_id)
+            .flat_map(|window| window.panes.keys().copied())
+            .min();
+        let Some(front) = front else {
             return false;
         };
-        if self.router.active().context_id != ctx_id {
-            let win = &self.windows[self.active_window];
-            self.router
-                .push_depth(win.context_id, win.window_id, win.focused_pane);
-            self.switch_workspace(index);
-        }
-        self.conjoined_parent_focus = Some(parent);
-        log::info!("agent_conjoined: dive parent={parent} context={ctx_id}");
+        self.unfold_flap(ctx_id, Some(parent), front, true);
+        log::info!("flap: dive parent={parent} context={ctx_id}");
         true
     }
 

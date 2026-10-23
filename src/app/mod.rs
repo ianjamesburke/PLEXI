@@ -43,6 +43,7 @@ pub(crate) mod ui_mailbox;
 mod fleet;
 mod agent_tools;
 mod conjoined;
+mod flap;
 mod team;
 pub(crate) mod agents_app;
 pub mod video_player_app;
@@ -238,13 +239,18 @@ pub struct PlexiApp {
     pub(crate) agent_attention: crate::app::fleet::AttentionState,
     pub(crate) fleet_history: std::cell::RefCell<Vec<crate::workspace::AgentHistoryRecord>>,
     pub(crate) pane_results: HashMap<PaneId, crate::host::pane_result::PaneResultState>,
-    /// `plexi pane result --wait` requests parked until a valid result is committed
-    /// or their caller-supplied deadline passes (stint 0666).
     pub(crate) conjoined_parent_rect: Option<(u64, egui::Rect)>,
     pub(crate) conjoined_parent_focus: Option<u64>,
     pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
+    /// The unfolded sub-context. Team runs, agent spawns, and pane-created
+    /// sub-contexts all use this one flap.
+    pub(crate) open_flap: Option<flap::OpenFlap>,
+    pub(crate) flap_pane_rects: HashMap<u64, egui::Rect>,
+    pub(crate) flap_painted_rect: Option<egui::Rect>,
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
     pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
+    /// `plexi pane result --wait` requests parked until a valid result is committed
+    /// or their caller-supplied deadline passes (stint 0666).
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
     pub(crate) team_runs: Vec<team::TeamRun>,
     /// `plexi pane new --agent` spawns whose response is withheld until the
@@ -1587,6 +1593,9 @@ impl PlexiApp {
                     conjoined_contexts: std::collections::HashMap::new(),
                     conjoined_parent_focus: None,
                     conjoined_parent_rect: None,
+                    open_flap: None,
+                    flap_pane_rects: HashMap::new(),
+                    flap_painted_rect: None,
                     team_runs: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1850,6 +1859,9 @@ impl PlexiApp {
                     conjoined_contexts: std::collections::HashMap::new(),
                     conjoined_parent_focus: None,
                     conjoined_parent_rect: None,
+                    open_flap: None,
+                    flap_pane_rects: HashMap::new(),
+                    flap_painted_rect: None,
                     team_runs: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2784,6 +2796,9 @@ impl PlexiApp {
                     conjoined_contexts: std::collections::HashMap::new(),
                     conjoined_parent_focus: None,
                     conjoined_parent_rect: None,
+                    open_flap: None,
+                    flap_pane_rects: HashMap::new(),
+                    flap_painted_rect: None,
                     team_runs: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir,
@@ -3868,6 +3883,14 @@ impl eframe::App for PlexiApp {
             // pane's own render pass (a focused `TextEdit`) still sees typed
             // text. Mirrors the overlay and `poll_actions` router pairs.
             let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+            // Esc folds a flap before a terminal or CloseApp can see it.
+            // Cmd+Escape is already claimed as ContextZoomOut by the poll above.
+            if self.open_flap.is_some()
+                && router_input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            {
+                log::info!("flap: fold key=escape");
+                self.fold_flap_from_key();
+            }
             self.dispatch_app_key_events(ctx, &mut router_input);
             router_input.give_back(ctx);
         }
@@ -4001,6 +4024,9 @@ impl eframe::App for PlexiApp {
                     self.mark_workspace_dirty();
                 }
                 Action::Navigate(dir) => {
+                    if self.navigate_flap(dir) {
+                        continue;
+                    }
                     let old_active_window = self.active_window;
                     let old_focus = self.windows[self.active_window].focused_pane;
                     let old_window_id = self.windows[self.active_window].window_id;
@@ -4376,10 +4402,10 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ContextZoomOut => {
                     log::info!(
-                        "ContextZoomOut: popping depth stack (depth={})",
+                        "ContextZoomOut: fold flap or pop depth (depth={})",
                         self.router.current_depth()
                     );
-                    self.zoom_out_of_context();
+                    self.fold_flap_from_key();
                 }
                 Action::RunUserCommand(ref name) => {
                     log::info!("keys: executing user command binding 'run:{name}'");

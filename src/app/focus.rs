@@ -1204,6 +1204,48 @@ impl PlexiApp {
             log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
             return false;
         };
+        // A sub-context pane unfolds its flap and takes focus there. The parent
+        // context stays active so the layout behind the flap does not change.
+        if self
+            .router
+            .iter()
+            .any(|context| context.context_id == ctx_id && context.parent_id.is_some())
+        {
+            if let Some(parent) = self.conjoined_parent_focus.take() {
+                log::info!("pane focus: leaving pinned parent={parent} for pane={pane_id}");
+            }
+            let source = self
+                .open_flap
+                .as_ref()
+                .filter(|flap| flap.context_id == ctx_id)
+                .and_then(|flap| flap.source_pane)
+                .or_else(|| self.conjoined_contexts.get(&ctx_id).copied())
+                .or_else(|| {
+                    self.windows.iter().flat_map(|window| window.panes.iter()).find_map(
+                        |(&id, pane)| (pane.portal_target() == Some(ctx_id)).then_some(id),
+                    )
+                });
+            let front = self
+                .open_flap
+                .as_ref()
+                .filter(|flap| flap.context_id == ctx_id)
+                .map(|flap| flap.front_pane)
+                .unwrap_or(pane_id);
+            self.unfold_flap(ctx_id, source, front, false);
+            if let Some(flap) = &mut self.open_flap {
+                if flap.context_id == ctx_id {
+                    flap.focused_pane = Some(pane_id);
+                }
+            }
+            if self.windows[idx].zoomed_pane.is_some() {
+                self.windows[idx].clear_zoom();
+            }
+            self.windows[idx].navigate_to(tile_id);
+            self.mark_agent_seen(pane_id);
+            log::info!("flap: attention pane={pane_id} context={ctx_id}");
+            self.ctx.request_repaint();
+            return true;
+        }
         // An explicit pane selection transfers input out of the pinned parent.
         // Otherwise host_input_owner keeps returning that parent even though
         // the destination window has selected its child tile.

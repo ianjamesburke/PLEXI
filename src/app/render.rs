@@ -409,9 +409,11 @@ impl PlexiApp {
                     let mut map = std::collections::HashMap::new();
                     for &(pane_id, child_ctx_id) in &portal_panes {
                         let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);
-                        let ctx_name = ctx_entry
-                            .map(|c| c.name.to_string())
-                            .unwrap_or_else(|| "(deleted)".to_string());
+                        let ctx_name = if ctx_entry.is_some() {
+                            self.subcontext_title(child_ctx_id)
+                        } else {
+                            "(deleted)".to_string()
+                        };
                         let ctx_description = ctx_entry
                             .and_then(|c| c.description.clone())
                             .unwrap_or_default();
@@ -899,6 +901,7 @@ impl PlexiApp {
                 let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
                 let child_agent_dive = behavior.child_agent_dive.take();
+                let flap_terminal_input = behavior.focused_terminal_input.take();
 
                 // Draw zoom overlay if a pane is zoomed
                 let mut zoomed_tab_action: Option<(
@@ -1241,15 +1244,18 @@ impl PlexiApp {
 
                 if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
 
-                // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
+                // Portal double-click unfolds the same flap as ToggleZoom.
                 if let Some(child_ctx_id) = portal_zoom {
-                    if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
-                        log::info!("portal double-click: zooming into context_id={child_ctx_id}");
-                        let current_ctx_id = self.router.active().context_id;
-                        let current_win_id = self.windows[self.active_window].window_id;
-                        let focused_tile = self.windows[self.active_window].focused_pane;
-                        self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
-                        self.switch_workspace(ctx_idx);
+                    let source = self
+                        .windows
+                        .iter()
+                        .flat_map(|window| window.panes.iter())
+                        .find_map(|(&id, pane)| {
+                            (pane.portal_target() == Some(child_ctx_id)).then_some(id)
+                        });
+                    if let Some(front) = self.front_pane_of(child_ctx_id) {
+                        log::info!("portal double-click: unfolding context_id={child_ctx_id}");
+                        self.unfold_flap(child_ctx_id, source, front, true);
                     }
                 }
 
@@ -1257,6 +1263,8 @@ impl PlexiApp {
                 if canvas_focus_changed {
                     self.push_focus_history(canvas_old_window_id, canvas_old_focus);
                 }
+
+                self.paint_flap(ui, flap_terminal_input);
             });
 
         // Shortcuts overlay

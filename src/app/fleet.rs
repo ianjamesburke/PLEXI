@@ -5,6 +5,9 @@ use crate::protocol::{AgentBlockedReason, AgentState};
 
 impl PlexiApp {
     pub(crate) fn fleet_focused_pane(&self) -> Option<u64> {
+        if let Some(pane) = self.flap_keyboard_pane() {
+            return Some(pane);
+        }
         if let Some(parent) = self.conjoined_parent() {
             if self.conjoined_parent_focus == Some(parent) { return Some(parent); }
         }
