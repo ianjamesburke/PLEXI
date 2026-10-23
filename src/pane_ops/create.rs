@@ -1583,7 +1583,7 @@ impl PlexiApp {
         let profile = crate::config::config_dir();
         let has_definition = profile.join("agents").join(role).is_dir()
             || workspace.as_ref().is_some_and(|root| crate::agent::workspace_agents_dir(root).join(role).is_dir());
-        let posture = if has_definition {
+        let own_posture = if has_definition {
             crate::cli::agent::resolve_agent_definition_in(role, &profile, workspace.as_deref())?.0.posture
         } else {
             // Ad-hoc team roles and resumed unconfigured harnesses still ask.
@@ -1592,6 +1592,12 @@ impl PlexiApp {
                 allow: vec![], ask: vec![], deny: vec![],
             }
         };
+        let posture = parent_pane_id
+            .and_then(|parent_id| self.windows[parent_win_idx].panes.get(&parent_id))
+            .and_then(|pane| pane.as_terminal())
+            .and_then(|pane| pane.agent_posture.as_ref())
+            .map(|parent_posture| own_posture.narrowed_by(parent_posture))
+            .unwrap_or(own_posture);
         let parent_depth = self
             .router
             .position(|c| c.context_id == parent_ctx_id)

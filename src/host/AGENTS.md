@@ -136,6 +136,8 @@ A worker pane owns a permission posture snapshot taken at spawn and persisted in
 `pane:<id>` against the monitor's copy of that snapshot; it never reloads agent
 settings during a run. Deny records a ledger row without creating a banner. Ask
 uses the existing pending-request flow; posture allow is not user authorization.
+When an agent spawns a child, the child snapshot is narrowed by the parent
+snapshot, so a child cannot broaden a parent deny.
 
 Harness-native tools are **outside Plexi's gate**. See the boundary and CLI
 coverage in [the permission gate spec](../../docs/specs/agents-api-and-permission-gate.md#harness-worker-boundary).

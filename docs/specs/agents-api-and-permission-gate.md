@@ -1338,6 +1338,8 @@ by the harness and operating system, not the agent's Plexi `[permissions]` table
 A posture does not sandbox a worker process.
 
 The snapshot contract lives in [the host contract](../../src/host/AGENTS.md#harness-worker-permissions).
+An agent child receives the intersection of its configured posture and its
+parent's spawn snapshot; a parent deny remains denied for every descendant.
 Socket-originated `pane send` (including submit and command aliases), `pane message
 send`, `pane key`, `pane heartbeat`, `pane click` (pixels or nodes), `pane drag`,
 `pane drop`, `pane slot write`, `app action`, and `agent message` use admission for agent callers.

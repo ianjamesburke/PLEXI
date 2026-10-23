@@ -403,6 +403,12 @@ impl GrantRecord {
                 && self.target_type == TargetType::Capability
                 && req.target_type == TargetType::Capability;
         }
+        if self.actor_scope != req.actor_scope || self.trust_origin != req.trust_origin {
+            return false;
+        }
+        if self.context_id != req.context_id {
+            return false;
+        }
         if self.tool_scoped {
             return match &self.resource_id {
                 Some(id) => req.resource_id.as_deref() == Some(id.as_str()),
@@ -417,12 +423,8 @@ impl GrantRecord {
         if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
             return false;
         }
-        if self.actor_scope != req.actor_scope || self.trust_origin != req.trust_origin {
-            return false;
-        }
         if self.package_id != req.package_id
             || self.instance_id != req.instance_id
-            || self.context_id != req.context_id
         {
             return false;
         }
@@ -717,6 +719,34 @@ impl PermissionPosture {
 
     fn lists_contain(list: &[String], target_id: &str) -> bool {
         list.iter().any(|t| t == target_id)
+    }
+
+    pub fn narrowed_by(&self, parent: &Self) -> Self {
+        use std::collections::BTreeSet;
+        let targets = self.allow.iter().chain(&self.ask).chain(&self.deny)
+            .chain(&parent.allow).chain(&parent.ask).chain(&parent.deny)
+            .cloned().collect::<BTreeSet<_>>();
+        let default_posture = if self.default_posture == Decision::Deny || parent.default_posture == Decision::Deny {
+            Decision::Deny
+        } else {
+            Decision::Ask
+        };
+        let mut narrowed = Self { default_posture, allow: Vec::new(), ask: Vec::new(), deny: Vec::new() };
+        for target in targets {
+            if !self.permits_approval_request(&target) || !parent.permits_approval_request(&target) {
+                narrowed.deny.push(target);
+            } else if default_posture == Decision::Deny {
+                narrowed.ask.push(target);
+            }
+        }
+        narrowed
+    }
+
+    fn permits_approval_request(&self, target_id: &str) -> bool {
+        !Self::lists_contain(&self.deny, target_id)
+            && (Self::lists_contain(&self.ask, target_id)
+                || Self::lists_contain(&self.allow, target_id)
+                || self.default_posture != Decision::Deny)
     }
 }
 
@@ -1360,6 +1390,33 @@ mod tests {
             Decision::Ask,
             "an Allow default is not authorization"
         );
+    }
+
+    #[test]
+    fn tool_scoped_grant_keeps_actor_context_and_trust_boundaries() {
+        let mut grant = agent_grant(Decision::Allow, GrantSource::User);
+        grant.tool_scoped = true;
+        let now = grant.created_at;
+        assert!(grant.matches(&agent_request(), now));
+        let mut request = agent_request();
+        request.actor_scope = ActorScope::User;
+        assert!(!grant.matches(&request, now));
+        let mut request = agent_request();
+        request.context_id = Some(99);
+        assert!(!grant.matches(&request, now));
+        let mut request = agent_request();
+        request.trust_origin = "managed".to_string();
+        assert!(!grant.matches(&request, now));
+    }
+
+    #[test]
+    fn child_posture_is_narrowed_by_parent_snapshot() {
+        let parent = PermissionPosture { default_posture: Decision::Deny, allow: vec!["pane.send".into()], ask: vec![], deny: vec!["secret.get".into()] };
+        let child = PermissionPosture { default_posture: Decision::Allow, allow: vec!["secret.get".into()], ask: vec!["pane.send".into()], deny: vec![] };
+        let narrowed = child.narrowed_by(&parent);
+        assert_eq!(narrowed.default_posture, Decision::Deny);
+        assert!(narrowed.deny.contains(&"secret.get".to_string()));
+        assert!(narrowed.ask.contains(&"pane.send".to_string()));
     }
 
     #[test]

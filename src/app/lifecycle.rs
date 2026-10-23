@@ -5863,4 +5863,25 @@ mod harness_posture_tests {
     fn harness_posture_envelope_cannot_be_supplied_by_socket_client() {
         assert!(serde_json::from_str::<AppRequest>(r#"{"type":"authenticated_pane_write","request":{"type":"send_to_pane","pane_id":1,"text":"x"},"peer_ancestry":[]}"#).is_err());
     }
+
+    #[test]
+    fn child_agent_spawn_snapshots_parent_narrowed_posture() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        for (role, permissions) in [
+            ("parent", "default_posture='deny'"),
+            ("child", "default_posture='ask'\nask=['pane.send']"),
+        ] {
+            let dir = crate::agent::workspace_agents_dir(&root).join(role);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), "Follow the task.").unwrap();
+            std::fs::write(dir.join("settings.toml"), format!("[agent]\nid='{role}'\ndisplay_name='{role}'\n[harness]\ncli='pi'\n[permissions]\n{permissions}\n")).unwrap();
+        }
+        let (parent, _) = h.app.spawn_agent_worker_pane("parent", "pi", "sleep 30", "parent", None, false, None, Some(root.clone()), None, None, false, None).unwrap();
+        let (child, _) = h.app.spawn_agent_worker_pane("child", "pi", "sleep 30", "child", None, false, Some(parent), Some(root), None, None, false, None).unwrap();
+        let posture = h.app.windows[0].panes[&child].as_terminal().unwrap().agent_posture.as_ref().unwrap();
+        assert_eq!(posture.default_posture, crate::broker::Decision::Deny);
+        assert!(posture.deny.contains(&"pane.send".to_string()));
+    }
 }
