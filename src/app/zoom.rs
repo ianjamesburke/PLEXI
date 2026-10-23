@@ -1327,7 +1327,7 @@ impl PlexiApp {
                     .iter()
                     .filter(|n| n.parent_id == Some(cur_ctx))
                     .collect();
-                children.sort_by(|a, b| a.order.cmp(&b.order));
+                children.sort_by_key(|a| a.order);
                 if children.is_empty() {
                     self.record_edge_bump(Direction::Right);
                     return false;
@@ -1347,7 +1347,7 @@ impl PlexiApp {
                 // `j` / `k`: Next / prev node at the SAME depth in tree (vertical y) order.
                 let mut same_depth: Vec<&AtlasNode> =
                     nodes.iter().filter(|n| n.depth == cur_node.depth).collect();
-                same_depth.sort_by(|a, b| a.order.cmp(&b.order));
+                same_depth.sort_by_key(|a| a.order);
                 let pos = same_depth
                     .iter()
                     .position(|n| n.context_id == cur_ctx)
@@ -1394,7 +1394,7 @@ impl PlexiApp {
             .iter()
             .filter(|n| n.parent_id == cur_node.parent_id)
             .collect();
-        siblings.sort_by(|a, b| a.order.cmp(&b.order));
+        siblings.sort_by_key(|a| a.order);
         if siblings.len() <= 1 {
             self.record_edge_bump(if forward {
                 Direction::Down
