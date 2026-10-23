@@ -1737,6 +1737,9 @@ mod mac {
     }
 
     pub(super) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        // Keychain interaction is process-wide. Do not disable an approved
+        // secret read's UI, or let a background seal read inherit its UI.
+        let _keychain = crate::workspace::secrets::keychain_call_lock();
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
         match chain.find_generic_password(HOST_SERVICE, account) {
@@ -1769,6 +1772,9 @@ mod mac {
     const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
 
     pub(super) fn add_new(account: &str, value: &str) -> Result<(), String> {
+        // Keychain interaction is process-wide. Do not disable an approved
+        // secret read's UI, or let a background seal read inherit its UI.
+        let _keychain = crate::workspace::secrets::keychain_call_lock();
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
         // The creating binary is the trusted application. `security` is not,
@@ -1781,6 +1787,9 @@ mod mac {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn set(account: &str, value: &str) -> Result<(), String> {
+        // Keychain interaction is process-wide. Do not disable an approved
+        // secret read's UI, or let a background seal read inherit its UI.
+        let _keychain = crate::workspace::secrets::keychain_call_lock();
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
         // Editing an existing item's ACL asks securityd for the keychain
@@ -1793,6 +1802,9 @@ mod mac {
     }
 
     pub(super) fn delete(account: &str) -> Result<(), String> {
+        // Keychain interaction is process-wide. Do not disable an approved
+        // secret read's UI, or let a background seal read inherit its UI.
+        let _keychain = crate::workspace::secrets::keychain_call_lock();
         let _prompts = PromptScope::enter();
         let chain = keychain()?;
         // Attribute delete does not read the secret. `find_generic_password`

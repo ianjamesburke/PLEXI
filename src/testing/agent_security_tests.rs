@@ -102,6 +102,7 @@ fn secret_get_without_a_host_stamped_pane_is_refused() {
 #[test]
 fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
     let h = HostHarness::new();
+    let _enabled = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
     let root = h.workspace_root();
     write_workspace(&root, "ws-0788-env", &["INJECTED_0788"]);
     crate::workspace::secrets::system_store()

@@ -288,6 +288,12 @@ fn fallback_path_with_homebrew() -> Option<String> {
 }
 
 pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
+    build_env_with_secrets(working_directory, true)
+}
+
+/// Decide injection before resolving any values: restored agent panes must
+/// not read Keychain secrets only to remove them immediately afterwards.
+pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: bool) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     env.insert("TERM".into(), "xterm-256color".into());
@@ -313,7 +319,7 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     // enough — no per-shell augmentation needed.
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
+    if inject {
         // An explicit spawn cwd is the only directory this environment is
         // about. Falling back to the process cwd (often the login home, which
         // holds `~/.plexi-<channel>` and is not a workspace) injects that
@@ -370,7 +376,7 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    if let Some(dir) = working_directory {
+    if let Some(dir) = working_directory.filter(|_| inject && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)) {
         match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store())
         {
             Ok(resolved) => {
@@ -469,19 +475,10 @@ pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Op
         let Some(dir) = cwd else {
             return;
         };
-        let resolved = match crate::workspace::secrets::env_for_cwd(
-            dir,
+        let dir = crate::platform::path::canonical_or_self(dir);
+        let resolved: Vec<_> = crate::workspace::secrets::list_folder_secrets(
             crate::workspace::secrets::folder_store(),
-        ) {
-            Ok(resolved) => resolved,
-            Err(err) => {
-                log::warn!(
-                    "shell::withhold_folder_secrets: skipped for {}: {err}",
-                    dir.display()
-                );
-                return;
-            }
-        };
+        ).into_iter().filter(|meta| dir.starts_with(&meta.folder)).collect();
         if resolved.is_empty() {
             return;
         }
@@ -499,7 +496,8 @@ pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Op
                     .collect()
             })
             .unwrap_or_default();
-        for (key, _) in resolved {
+        for meta in resolved {
+            let key = meta.name;
             names.retain(|name| name != &key);
             env.remove(&preserved_terminal_env_name(&key));
             env.remove(&key);

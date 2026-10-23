@@ -230,6 +230,11 @@ fn stop_marked_tmux_sessions(tmux: &str, marker: &str, deadline: Instant) {
 }
 
 #[cfg(unix)]
+fn signal_target_unavailable(code: Option<i32>) -> bool {
+    matches!(code, Some(libc::EPERM) | Some(libc::ESRCH))
+}
+
+#[cfg(unix)]
 fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant) -> KillReport {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let start = Instant::now();
@@ -309,9 +314,20 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         })
         .collect();
     let signal = |target: i32, signal: i32| {
+        // A group may have exited or ceased to be signalable since the
+        // snapshot. Do not escalate it, and keep these expected races quiet.
+        if unsafe { libc::kill(target, 0) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if signal_target_unavailable(error.raw_os_error()) {
+                log::debug!("quit: skipping signal={signal} target={target}: {error}");
+                return;
+            }
+        }
         if unsafe { libc::kill(target, signal) } != 0 {
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
+            if signal_target_unavailable(error.raw_os_error()) {
+                log::debug!("quit: skipping signal={signal} target={target}: {error}");
+            } else {
                 log::warn!("quit: signal={signal} target={target} failed: {error}");
             }
         }
@@ -403,6 +419,14 @@ fn stop_marked_processes(_marker: &str, _grace: Duration, _total_deadline: Insta
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+
+    #[test]
+    fn exited_or_unowned_signal_targets_are_expected() {
+        assert!(signal_target_unavailable(Some(libc::ESRCH)));
+        assert!(signal_target_unavailable(Some(libc::EPERM)));
+        assert!(!signal_target_unavailable(Some(libc::EINVAL)));
+        assert!(!signal_target_unavailable(None));
+    }
 
     #[test]
     fn unresponsive_quit_helper_is_killed_at_deadline() {

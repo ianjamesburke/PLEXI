@@ -163,11 +163,12 @@ pub(crate) fn enforce_pane_context_scope(
     } else if !target_canon.starts_with(&ctx_root) {
         true
     } else if target_canon != ctx_root {
-        let nested_ws = crate::app::registry::resolve_workspace_root(&target_canon)
+        let nested_ws = secret_workspace_root(&target_canon, Some(&ctx_root))
             .is_some_and(|ws| crate::platform::path::canonical_or_self(&ws) != ctx_root);
         let nested_agent_ws =
             crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
-                .is_some_and(|ws| crate::platform::path::canonical_or_self(&ws) != ctx_root);
+                .map(|ws| crate::platform::path::canonical_or_self(&ws))
+                .is_some_and(|ws| ws.starts_with(&ctx_root) && ws != ctx_root);
         let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
             crate::workspace::secrets::folder_store(),
         )
@@ -203,6 +204,30 @@ pub(crate) fn enforce_pane_context_scope(
     Ok(())
 }
 
+/// Keep secret lookup inside the pane's context while reusing the registry's
+/// channel and home-directory exclusions. Never reinterpret a parent profile
+/// as this pane's workspace (the H8 request walked from ~/temp into $HOME).
+fn secret_workspace_root(cwd: &std::path::Path, context: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let cwd = crate::platform::path::canonical_or_self(cwd);
+    let root = crate::app::registry::resolve_workspace_root(&cwd)?;
+    let root = crate::platform::path::canonical_or_self(&root);
+    if let Some(context) = context {
+        let context = crate::platform::path::canonical_or_self(context);
+        if !cwd.starts_with(&context) || !root.starts_with(&context) {
+            return None;
+        }
+    }
+    Some(root)
+}
+
+fn secret_not_set(name: &str) -> String {
+    let directory = crate::config::workspace_channel_dir();
+    let binary = directory.strip_prefix(".plexi-")
+        .map(|channel| format!("plexi-{channel}"))
+        .unwrap_or_else(|| "plexi".into());
+    format!("{name} not set; run `{binary} secret set {name}`")
+}
+
 /// Resolve the current workspace and config. Errors out with a helpful
 /// message if the user has not run `plexi workspace init`.
 fn require_workspace() -> Result<
@@ -215,7 +240,7 @@ fn require_workspace() -> Result<
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     enforce_pane_context_scope(&cwd, false, "secret.workspace")?;
     let channel_dir = crate::config::workspace_channel_dir();
-    let root = match crate::app::registry::resolve_workspace_root(&cwd) {
+    let root = match secret_workspace_root(&cwd, active_pane_context_root().as_deref()) {
         Some(r) => r,
         None => {
             return Err(format!(
@@ -614,7 +639,7 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
         "global": global,
         "workspace_root": workspace_root,
     });
-    let reply = match super::request(payload, "secret-get-response", "secret get") {
+    let reply = match super::request_with(payload, "secret-get-response", "secret get", std::time::Duration::from_secs(120)) {
         Ok(content) => content,
         Err(code) => {
             log::info!("secret_get:cli: host gate unreachable from a pane; refusing");
@@ -645,7 +670,7 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
             2
         }
         Some("not_found") => {
-            eprintln!("error: secret '{friendly}' not found");
+            eprintln!("error: {}", secret_not_set(friendly));
             1
         }
         Some("denied") => {
@@ -684,17 +709,18 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 
         if global {
             let account = keychain_user_name(friendly);
-            return match store.get(&account) {
-                Some(value) => {
+            return match store.get_interactive(&account) {
+                Ok(Some(value)) => {
                     log::info!("secret_get:cli: found globally account={account}");
                     println!("{}", value.as_str());
                     0
                 }
-                None => {
+                Ok(None) => {
                     log::warn!("secret_get:cli: not found friendly={friendly}");
-                    eprintln!("error: secret '{friendly}' not found");
+                    eprintln!("error: {}", secret_not_set(friendly));
                     1
                 }
+                Err(error) => { eprintln!("error: {error}"); 1 }
             };
         }
 
@@ -717,7 +743,11 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
                     return 1;
                 }
                 let account = keychain_workspace_name(&cfg.id, friendly);
-                if let Some(value) = store.get(&account) {
+                let value = match store.get_interactive(&account) {
+                    Ok(value) => value,
+                    Err(error) => { eprintln!("error: {error}"); return 1; }
+                };
+                if let Some(value) = value {
                     log::info!(
                         "secret_get:cli: found workspace_id={} account={account} root={}",
                         cfg.id,
@@ -737,17 +767,18 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 
         // Global fallback.
         let user_account = keychain_user_name(friendly);
-        match store.get(&user_account) {
-            Some(value) => {
+        match store.get_interactive(&user_account) {
+            Ok(Some(value)) => {
                 log::info!("secret_get:cli: found globally account={user_account}");
                 println!("{}", value.as_str());
                 0
             }
-            None => {
+            Ok(None) => {
                 log::warn!("secret_get:cli: not found friendly={friendly}");
-                eprintln!("error: secret '{friendly}' not found");
+                eprintln!("error: {}", secret_not_set(friendly));
                 1
             }
+            Err(error) => { eprintln!("error: {error}"); 1 }
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -1525,5 +1556,32 @@ mod secret_list_tests {
     #[test]
     fn json_folder_experiment_on_includes_folders() {
         check_listing(false, true, true);
+    }
+}
+
+#[cfg(test)]
+mod secret_root_tests {
+    use super::*;
+    #[test]
+    fn secret_workspace_walk_cannot_escape_pane_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = dir.path().join("context");
+        let cwd = context.join("child");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let channel = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(dir.path().join(&channel)).unwrap();
+        assert_eq!(secret_workspace_root(&cwd, Some(&context)), None);
+        let _pane = set_test_pane_context_root(&context);
+        assert!(enforce_pane_context_scope(&cwd, false, "secret.workspace").is_ok());
+        std::fs::create_dir_all(context.join(&channel)).unwrap();
+        assert_eq!(secret_workspace_root(&cwd, Some(&context)), Some(context.canonicalize().unwrap()));
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(secret_workspace_root(&home, Some(&home)), None);
+        }
+    }
+    #[test]
+    fn missing_secret_message_names_the_channel_binary_once() {
+        let _channel = crate::config::set_test_channel("alpha");
+        assert_eq!(secret_not_set("FOO"), "FOO not set; run `plexi-alpha secret set FOO`");
     }
 }

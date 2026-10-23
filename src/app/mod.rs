@@ -3073,7 +3073,7 @@ impl PlexiApp {
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
              agent_pane={agent_pane}"
         );
-        let mut env = shell::build_env(working_directory.as_deref());
+        let mut env = shell::build_env_with_secrets(working_directory.as_deref(), !agent_pane);
         env.remove("PLEXI_PARENT_PANE");
         env.remove("PLEXI_EPHEMERAL");
         env.remove("PLEXI_AGENT_HARNESS");
