@@ -296,6 +296,20 @@ impl PlexiApp {
                 }
                 paint_card(&painter, plan.rects[i][2], &layouts[i][2], &specs[i][2], &colors, colors.tile_bg, false);
             }
+            let painted_cards: Vec<(Rect, f32)> = plan
+                .rects
+                .iter()
+                .flat_map(|rs| {
+                    [
+                        (rs[0], f32::from(style::RADIUS_MOTORWAYS.nw)),
+                        (rs[1], f32::from(style::RADIUS_MOTORWAYS.nw)),
+                        (rs[2], f32::from(style::RADIUS_BAR.nw)),
+                    ]
+                })
+                .collect();
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new("card_gallery_painted_cards"), painted_cards);
+            });
         });
     }
 }
@@ -359,5 +373,95 @@ mod tests {
                 }
             }
         });
+    }
+
+    fn rounded_rect_sdf(p: Pos2, rect: Rect, r: f32) -> f32 {
+        let half = rect.size() * 0.5;
+        let q = (p - rect.center()).abs() - (half - Vec2::splat(r));
+        Vec2::new(q.x.max(0.0), q.y.max(0.0)).length() + q.x.max(q.y).min(0.0) - r
+    }
+
+    #[test]
+    fn card_gallery_markers_never_bleed_outside_rounded_card_masks() {
+        struct ForceGuard;
+        impl Drop for ForceGuard {
+            fn drop(&mut self) {
+                FORCE.with(|f| f.set(false));
+            }
+        }
+        FORCE.with(|f| f.set(true));
+        let _guard = ForceGuard;
+
+        let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1440.0, 900.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+        });
+        h.run_steps(2);
+
+        let (colors, cards): (crate::ui::theme::Colors, Vec<(Rect, f32)>) = h.with_app(|app| {
+            let cards = app
+                .ctx
+                .data(|d| d.get_temp(egui::Id::new("card_gallery_painted_cards")))
+                .unwrap_or_default();
+            (app.colors, cards)
+        });
+        assert!(!cards.is_empty(), "card gallery must record painted cards");
+
+        let img = h.render().expect("render card gallery");
+        let (img_w, img_h) = (img.width() as i32, img.height() as i32);
+        let marker_colors = [
+            colors.warning,
+            colors.accent,
+            colors.zoom_needs,
+            colors.success,
+            colors.zoom_failed,
+        ];
+        let matches_marker_color = |px: &image::Rgba<u8>| -> bool {
+            let [r, g, b, _] = px.0;
+            marker_colors.iter().any(|mc| {
+                let dr = (i32::from(r) - i32::from(mc.r())).abs();
+                let dg = (i32::from(g) - i32::from(mc.g())).abs();
+                let db = (i32::from(b) - i32::from(mc.b())).abs();
+                dr + dg + db <= 24
+            })
+        };
+
+        let mut inside_marker_pixels = 0usize;
+        for &(rect, radius) in &cards {
+            let x0 = (rect.min.x.floor() as i32 - 3).max(0);
+            let x1 = (rect.max.x.ceil() as i32 + 3).min(img_w - 1);
+            let y0 = (rect.min.y.floor() as i32 - 3).max(0);
+            let y1 = (rect.max.y.ceil() as i32 + 3).min(img_h - 1);
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let p = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
+                    let px = img.get_pixel(x as u32, y as u32);
+                    if !matches_marker_color(px) {
+                        continue;
+                    }
+                    let sdf = rounded_rect_sdf(p, rect, radius);
+                    if sdf <= -1.0 && p.x <= rect.min.x + 8.0 {
+                        inside_marker_pixels += 1;
+                    }
+                    // Check the left-edge strip and corner zone of this card:
+                    // any pixel outside the rounded-rect mask (sdf > 0.75) that
+                    // is not inside another card must never have a marker color.
+                    if p.x <= rect.min.x + 8.0 && sdf > 0.75 {
+                        let inside_other = cards
+                            .iter()
+                            .any(|&(other, orad)| rounded_rect_sdf(p, other, orad) <= 0.75);
+                        assert!(
+                            inside_other,
+                            "marker pixel {:?} at ({x}, {y}) bled outside rounded card {rect:?} (radius={radius}, sdf={sdf})",
+                            px.0
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            inside_marker_pixels > 0,
+            "expected state marker pixels inside rendered gallery cards"
+        );
     }
 }

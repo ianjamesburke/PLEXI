@@ -2947,7 +2947,9 @@ impl FileBrowserApp {
                         inner.center().y - cmd_galley.size().y * 0.5,
                     );
                     let cmd_w = cmd_galley.size().x;
-                    ui.painter().galley(cmd_pos, cmd_galley, cmd_color);
+                    ui.painter()
+                        .with_clip_rect(inner)
+                        .galley(cmd_pos, cmd_galley, cmd_color);
 
                     let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
                     let title_font = egui::FontId::proportional(style::TEXT_META);

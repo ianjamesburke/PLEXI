@@ -255,12 +255,49 @@ impl CardForm {
     }
 }
 
-/// Width of the state strip on the card's left edge.
+/// Width reserved for the state strip slot on the card's left edge.
 const STRIP_W: f32 = 4.0;
+/// Inset of the painted state marker from the card's outer edge (clears up to
+/// a 2pt Inside border stroke with 0.5pt to spare).
+pub(crate) const MARKER_STROKE_INSET: f32 = 2.5;
+/// Width of the painted pill state marker.
+pub(crate) const MARKER_W: f32 = 3.0;
 /// Room reserved for the state icon between the strip and the title.
 const ICON_W: f32 = 18.0;
 const LINE_GAP: f32 = 2.0;
 const SECTION_GAP: f32 = 4.0;
+
+/// Compute the pill-shaped left state-marker rect that lies strictly inside
+/// `card_rect` (shrunk past the border stroke) and vertically clear of the
+/// top-left and bottom-left corner arcs of `radius`.
+pub(crate) fn state_marker_rect(card_rect: Rect, radius: CornerRadius) -> Rect {
+    let top_inset = f32::from(radius.nw).max(MARKER_STROKE_INSET);
+    let bot_inset = f32::from(radius.sw).max(MARKER_STROKE_INSET);
+    let x0 = (card_rect.min.x + MARKER_STROKE_INSET).min(card_rect.max.x);
+    let x1 = (x0 + MARKER_W)
+        .min((card_rect.max.x - MARKER_STROKE_INSET).max(x0));
+    let y0 = card_rect.min.y + top_inset;
+    let y1 = (card_rect.max.y - bot_inset).max(y0);
+    Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
+}
+
+/// Draw a pill-ended vertical state marker inside `card_rect`, inset from the
+/// border stroke and vertically inset by `radius` so it never reaches the
+/// curved corners.
+pub(crate) fn paint_state_marker(
+    painter: &Painter,
+    card_rect: Rect,
+    radius: CornerRadius,
+    color: Color32,
+) {
+    if color == Color32::TRANSPARENT {
+        return;
+    }
+    let marker = state_marker_rect(card_rect, radius);
+    if marker.width() > 0.0 && marker.height() > 0.0 {
+        painter.rect_filled(marker, style::RADIUS_PILL, color);
+    }
+}
 
 /// Content of a card block.
 pub(crate) struct CardSpec<'a> {
@@ -396,22 +433,10 @@ pub(crate) fn paint_card(
     let clip = rect.shrink(1.0);
     let p = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
 
-    // State strip (left corners follow the card's rounding).
-    let r = radius.nw;
-    p.rect_filled(
-        Rect::from_min_size(rect.min, Vec2::new(STRIP_W, rect.height())),
-        CornerRadius {
-            nw: r,
-            sw: r,
-            ne: 0,
-            se: 0,
-        },
-        if spec.state == CardState::Idle {
-            Color32::TRANSPARENT
-        } else {
-            state_color
-        },
-    );
+    // State marker (pill drawn inside the card border, clear of corner arcs).
+    if spec.state != CardState::Idle {
+        paint_state_marker(&p, rect, radius, state_color);
+    }
 
     let time = painter.ctx().input(|i| i.time);
     let title_h = row_h(&m.title_font);
@@ -666,5 +691,40 @@ mod tests {
     fn newlines_start_new_lines() {
         let out = wrap_with_ellipsis("ab\ncd", 200.0, None, &m);
         assert_eq!(out, ["ab", "cd"]);
+    }
+
+    #[test]
+    fn state_marker_lies_inside_stroke_and_clear_of_corner_arcs() {
+        let card_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(240.0, 64.0));
+        // Max card border stroke is 2.0pt (Inside).
+        let shrunk_by_stroke = card_rect.shrink(2.0);
+        for radius in [
+            style::RADIUS_SMALL,
+            style::RADIUS_BAR,
+            style::RADIUS_MOTORWAYS,
+            style::RADIUS_LARGE,
+        ] {
+            let marker = state_marker_rect(card_rect, radius);
+            assert!(
+                marker.width() > 0.0 && marker.height() > 0.0,
+                "marker must have positive size for radius {radius:?}: {marker:?}"
+            );
+            assert!(
+                shrunk_by_stroke.contains_rect(marker),
+                "marker {marker:?} must lie strictly inside card_rect shrunk by border stroke {shrunk_by_stroke:?}"
+            );
+            let top_arc_end = card_rect.min.y + f32::from(radius.nw);
+            let bot_arc_start = card_rect.max.y - f32::from(radius.sw);
+            assert!(
+                marker.min.y >= top_arc_end,
+                "marker top {} must clear top-left corner arc end {top_arc_end}",
+                marker.min.y
+            );
+            assert!(
+                marker.max.y <= bot_arc_start,
+                "marker bottom {} must clear bottom-left corner arc start {bot_arc_start}",
+                marker.max.y
+            );
+        }
     }
 }

@@ -2,8 +2,9 @@ use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{PaneDots, SidebarAction, SidebarRow};
+use crate::ui::style;
 use crate::workspace::router::ContextMove;
-use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align, Layout, Rect, RichText, Stroke};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
@@ -451,17 +452,16 @@ impl PlexiApp {
                         });
                         let row_rect = scope.response.rect;
                         active_rects.push(row_rect);
+                        let row_card = SidebarRow::card_rect(row_rect);
                         ui.painter().set(
                             bg_idx,
-                            egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
+                            egui::Shape::rect_filled(row_card, style::RADIUS_SM, fill),
                         );
                         if is_active {
-                            ui.painter().rect_filled(
-                                Rect::from_min_size(
-                                    row_rect.min,
-                                    Vec2::new(3.0, row_rect.height()),
-                                ),
-                                CornerRadius::ZERO,
+                            crate::ui::paint_state_marker(
+                                ui.painter(),
+                                row_card,
+                                style::RADIUS_SM,
                                 self.colors.accent,
                             );
                         }
@@ -489,12 +489,10 @@ impl PlexiApp {
                     .show(ui, egui::Id::new(("ctx", i)), &self.colors);
 
                     if let Some(ind_col) = indicator_color {
-                        ui.painter().rect_filled(
-                            Rect::from_min_size(
-                                response.rect.min,
-                                Vec2::new(3.0, response.rect.height()),
-                            ),
-                            CornerRadius::ZERO,
+                        crate::ui::paint_state_marker(
+                            ui.painter(),
+                            SidebarRow::card_rect(response.rect),
+                            style::RADIUS_SM,
                             ind_col,
                         );
                     }
@@ -642,12 +640,10 @@ impl PlexiApp {
                             );
 
                             if let Some(ind_col) = indicator_color {
-                                ui.painter().rect_filled(
-                                    Rect::from_min_size(
-                                        response.rect.min,
-                                        Vec2::new(3.0, response.rect.height()),
-                                    ),
-                                    CornerRadius::ZERO,
+                                crate::ui::paint_state_marker(
+                                    ui.painter(),
+                                    SidebarRow::card_rect(response.rect),
+                                    style::RADIUS_SM,
                                     ind_col,
                                 );
                             }
