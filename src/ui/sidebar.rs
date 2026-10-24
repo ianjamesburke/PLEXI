@@ -212,6 +212,7 @@ impl PlexiApp {
     /// Rolled-up semantic indicator color for a sidebar context row when the
     /// context (or one of its sub-contexts) is in `NeedsYou` (coral),
     /// `Blocked` (amber), or `Error` (danger).
+    #[cfg(test)]
     pub(crate) fn sidebar_context_indicator_color(&self, ctx_id: u64) -> Option<egui::Color32> {
         let state = crate::host::context_state::ContextState::compute(
             ctx_id,
@@ -457,14 +458,6 @@ impl PlexiApp {
                             bg_idx,
                             egui::Shape::rect_filled(row_card, style::RADIUS_SM, fill),
                         );
-                        if is_active {
-                            crate::ui::paint_state_marker(
-                                ui.painter(),
-                                row_card,
-                                style::RADIUS_SM,
-                                self.colors.accent,
-                            );
-                        }
                         continue;
                     }
 
@@ -472,7 +465,6 @@ impl PlexiApp {
                     let ctx_name = self.router.get(i).name.to_string();
                     let badge_count = self.sidebar_context_badge_count(ctx_id);
                     let subtitle = Some(self.router.get(i).root.display().to_string());
-                    let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
                     let (action, response) = SidebarRow {
                         is_active,
@@ -487,15 +479,6 @@ impl PlexiApp {
                         draggable: true,
                     }
                     .show(ui, egui::Id::new(("ctx", i)), &self.colors);
-
-                    if let Some(ind_col) = indicator_color {
-                        crate::ui::paint_state_marker(
-                            ui.painter(),
-                            SidebarRow::card_rect(response.rect),
-                            style::RADIUS_SM,
-                            ind_col,
-                        );
-                    }
 
                     active_rects.push(response.rect);
 
@@ -619,7 +602,6 @@ impl PlexiApp {
                             let subtitle = Some(ctx.root.display().to_string());
 
                             let pane_dots = self.sidebar_pane_dots(ctx_id, false);
-                            let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
                             let (action, response) = SidebarRow {
                                 is_active: false,
@@ -638,15 +620,6 @@ impl PlexiApp {
                                 egui::Id::new(("parked_ctx", i)),
                                 &self.colors,
                             );
-
-                            if let Some(ind_col) = indicator_color {
-                                crate::ui::paint_state_marker(
-                                    ui.painter(),
-                                    SidebarRow::card_rect(response.rect),
-                                    style::RADIUS_SM,
-                                    ind_col,
-                                );
-                            }
 
                             parked_rects.push(response.rect);
 

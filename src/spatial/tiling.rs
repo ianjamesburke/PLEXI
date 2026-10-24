@@ -809,18 +809,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
         }
 
-        // A quiet inset guide indicates containment without competing with the
-        // shared outside focus outline or the portal's inside status border.
-        if self.pane_lineage.contains_key(pane_id) {
-            let guide = pane_rect.shrink(4.0);
-            if guide.is_positive() {
-                ui.painter().line_segment(
-                    [guide.left_top(), guide.left_bottom()],
-                    egui::Stroke::new(1.5_f32, self.colors.accent.gamma_multiply(0.45)),
-                );
-            }
-        }
-
         if self.ctrl_held {
             let c = self.colors.text_primary;
             crate::ui::snap::text_snapped(
@@ -1211,22 +1199,6 @@ pub(crate) fn paint_portal_minimap(
                     20,
                 );
                 painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
-
-                // Bottom-edge glow line
-                let glow_y = cell.max.y - 1.0;
-                let glow_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(),
-                    colors.accent.g(),
-                    colors.accent.b(),
-                    50,
-                );
-                painter.line_segment(
-                    [
-                        egui::pos2(cell.min.x, glow_y),
-                        egui::pos2(cell.max.x, glow_y),
-                    ],
-                    egui::Stroke::new(1.5_f32, glow_color),
-                );
 
                 // Focused border
                 let accent_border = egui::Color32::from_rgba_unmultiplied(

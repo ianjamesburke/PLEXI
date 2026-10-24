@@ -68,37 +68,51 @@ fn no_literal_corner_radii_outside_style() {
     );
 }
 
-/// True when `block` contains `Vec2::new(<width>, ... .height())` with width <= 4.0
-/// (or `STRIP_W`) paired with `CornerRadius::ZERO` or asymmetric zero right corners.
-fn is_adhoc_left_edge_marker(block: &str) -> bool {
-    if !block.contains(".height()") {
+/// True when `block` contains a `rect_filled(` of a rect built with
+/// `Rect::from_min_size(<something>.min, Vec2::new(<width <= 6.0 or STRIP/MARKER const>, <...>.height()))`.
+fn is_left_edge_bar_marker(block: &str) -> bool {
+    if !(block.contains("from_min_size(") && block.contains(".min") && block.contains(".height()"))
+    {
         return false;
     }
-    if !(block.contains("CornerRadius::ZERO") || block.contains("ne: 0")) {
-        return false;
-    }
-    let Some(vec_idx) = block.find("Vec2::new(") else {
+    let after = if let Some(idx) = block.find("Vec2::new(") {
+        &block[idx + "Vec2::new(".len()..]
+    } else if let Some(idx) = block.find("vec2(") {
+        &block[idx + "vec2(".len()..]
+    } else {
         return false;
     };
-    let after = &block[vec_idx + "Vec2::new(".len()..];
     let first_arg = after.split(',').next().unwrap_or("").trim();
-    if first_arg == "STRIP_W" {
+    if first_arg.contains("STRIP") || first_arg.contains("MARKER") {
         return true;
     }
     first_arg
         .trim_end_matches("_f32")
         .parse::<f32>()
-        .is_ok_and(|w| w > 0.0 && w <= 4.0)
+        .is_ok_and(|w| w > 0.0 && w <= 6.0)
 }
 
 #[test]
-fn no_adhoc_left_edge_state_markers_outside_helper() {
+fn no_left_edge_bar_markers_on_cards() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    for subdir in ["src/ui", "src/app", "src/spatial"] {
+    for subdir in [
+        "src/ui",
+        "src/app",
+        "src/spatial",
+        "src/overlays",
+        "src/file_browser",
+    ] {
         rs_files(&manifest.join(subdir), &mut files);
     }
     assert!(!files.is_empty(), "no sources found");
+    let banned_idents = [
+        "paint_state_marker",
+        "state_marker_rect",
+        "MARKER_W",
+        "MARKER_STROKE_INSET",
+        "STRIP_W",
+    ];
     let mut offenders = Vec::new();
     for path in files.iter().filter(|p| {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -111,6 +125,10 @@ fn no_adhoc_left_edge_state_markers_outside_helper() {
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let code = line.split("//").next().unwrap_or("");
+            if banned_idents.iter().any(|ident| code.contains(ident)) {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                continue;
+            }
             if !code.contains("rect_filled(") {
                 continue;
             }
@@ -125,14 +143,14 @@ fn no_adhoc_left_edge_state_markers_outside_helper() {
                 .map(|idx| &window[idx..])
                 .unwrap_or(&window);
             let call_block = call_slice.split(';').next().unwrap_or(call_slice);
-            if is_adhoc_left_edge_marker(call_block) {
+            if is_left_edge_bar_marker(call_block) {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "use ui::paint_state_marker instead of ad-hoc left-edge rect_filled markers:\n{}",
+        "left-edge bar markers are banned on cards and rows:\n{}",
         offenders.join("\n")
     );
 }

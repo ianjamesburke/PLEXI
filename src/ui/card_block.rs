@@ -1,7 +1,7 @@
 //! The card block shared by sibling cards, atlas nodes and attention-queue bars.
 //!
 //! One layout + paint path so a state reads the same on every surface: a
-//! colored strip and an animated icon say *what is happening*, the title and
+//! border, fill, and animated icon say *what is happening*, the title and
 //! detail say *to whom*. Text is wrapped on word boundaries against the real
 //! font, capped at a line budget with a single trailing ellipsis, and painted
 //! under a clip rect so nothing escapes the box.
@@ -13,7 +13,7 @@ use crate::ui::style;
 use crate::ui::text::ELLIPSIS;
 use crate::ui::theme::{self, Colors};
 use egui::{
-    Align2, Color32, Context, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2,
+    Align2, Color32, Context, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2,
 };
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
@@ -187,7 +187,7 @@ impl CardState {
         }
     }
 
-    fn fill(self, colors: &Colors, base: Color32) -> Color32 {
+    pub(crate) fn fill(self, colors: &Colors, base: Color32) -> Color32 {
         match self {
             CardState::NeedsYou => colors.needs_fill,
             CardState::Working => base.lerp_to_gamma(colors.accent, 0.24),
@@ -255,49 +255,10 @@ impl CardForm {
     }
 }
 
-/// Width reserved for the state strip slot on the card's left edge.
-const STRIP_W: f32 = 4.0;
-/// Inset of the painted state marker from the card's outer edge (clears up to
-/// a 2pt Inside border stroke with 0.5pt to spare).
-pub(crate) const MARKER_STROKE_INSET: f32 = 2.5;
-/// Width of the painted pill state marker.
-pub(crate) const MARKER_W: f32 = 3.0;
-/// Room reserved for the state icon between the strip and the title.
+/// Room reserved for the state icon before the title.
 const ICON_W: f32 = 18.0;
 const LINE_GAP: f32 = 2.0;
 const SECTION_GAP: f32 = 4.0;
-
-/// Compute the pill-shaped left state-marker rect that lies strictly inside
-/// `card_rect` (shrunk past the border stroke) and vertically clear of the
-/// top-left and bottom-left corner arcs of `radius`.
-pub(crate) fn state_marker_rect(card_rect: Rect, radius: CornerRadius) -> Rect {
-    let top_inset = f32::from(radius.nw).max(MARKER_STROKE_INSET);
-    let bot_inset = f32::from(radius.sw).max(MARKER_STROKE_INSET);
-    let x0 = (card_rect.min.x + MARKER_STROKE_INSET).min(card_rect.max.x);
-    let x1 = (x0 + MARKER_W)
-        .min((card_rect.max.x - MARKER_STROKE_INSET).max(x0));
-    let y0 = card_rect.min.y + top_inset;
-    let y1 = (card_rect.max.y - bot_inset).max(y0);
-    Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
-}
-
-/// Draw a pill-ended vertical state marker inside `card_rect`, inset from the
-/// border stroke and vertically inset by `radius` so it never reaches the
-/// curved corners.
-pub(crate) fn paint_state_marker(
-    painter: &Painter,
-    card_rect: Rect,
-    radius: CornerRadius,
-    color: Color32,
-) {
-    if color == Color32::TRANSPARENT {
-        return;
-    }
-    let marker = state_marker_rect(card_rect, radius);
-    if marker.width() > 0.0 && marker.height() > 0.0 {
-        painter.rect_filled(marker, style::RADIUS_PILL, color);
-    }
-}
 
 /// Content of a card block.
 pub(crate) struct CardSpec<'a> {
@@ -353,7 +314,7 @@ pub(crate) fn layout_card(
             measure_fn(ctx, badge_font)(&t) + 12.0 + glyph
         })
         .unwrap_or(0.0);
-    let text_x = m.pad_x + STRIP_W + ICON_W;
+    let text_x = m.pad_x + ICON_W;
     let inner_w = (width - text_x - m.pad_x).max(1.0);
     let title_w = (inner_w - badge_w).max(1.0);
 
@@ -433,15 +394,10 @@ pub(crate) fn paint_card(
     let clip = rect.shrink(1.0);
     let p = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
 
-    // State marker (pill drawn inside the card border, clear of corner arcs).
-    if spec.state != CardState::Idle {
-        paint_state_marker(&p, rect, radius, state_color);
-    }
-
     let time = painter.ctx().input(|i| i.time);
     let title_h = row_h(&m.title_font);
     let icon_c = Pos2::new(
-        rect.min.x + STRIP_W + m.pad_x * 0.5 + ICON_W * 0.5,
+        rect.min.x + m.pad_x + ICON_W * 0.5,
         rect.min.y + m.pad_y + title_h * 0.5,
     );
     paint_state_icon(&p, icon_c, spec.state, colors, time);
@@ -449,7 +405,7 @@ pub(crate) fn paint_card(
         painter.ctx().request_repaint_after(Duration::from_millis(50));
     }
 
-    let text_x = rect.min.x + m.pad_x + STRIP_W + ICON_W;
+    let text_x = rect.min.x + m.pad_x + ICON_W;
     let mut y = rect.min.y + m.pad_y;
     for line in &layout.title {
         p.text(
@@ -691,40 +647,5 @@ mod tests {
     fn newlines_start_new_lines() {
         let out = wrap_with_ellipsis("ab\ncd", 200.0, None, &m);
         assert_eq!(out, ["ab", "cd"]);
-    }
-
-    #[test]
-    fn state_marker_lies_inside_stroke_and_clear_of_corner_arcs() {
-        let card_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(240.0, 64.0));
-        // Max card border stroke is 2.0pt (Inside).
-        let shrunk_by_stroke = card_rect.shrink(2.0);
-        for radius in [
-            style::RADIUS_SMALL,
-            style::RADIUS_BAR,
-            style::RADIUS_MOTORWAYS,
-            style::RADIUS_LARGE,
-        ] {
-            let marker = state_marker_rect(card_rect, radius);
-            assert!(
-                marker.width() > 0.0 && marker.height() > 0.0,
-                "marker must have positive size for radius {radius:?}: {marker:?}"
-            );
-            assert!(
-                shrunk_by_stroke.contains_rect(marker),
-                "marker {marker:?} must lie strictly inside card_rect shrunk by border stroke {shrunk_by_stroke:?}"
-            );
-            let top_arc_end = card_rect.min.y + f32::from(radius.nw);
-            let bot_arc_start = card_rect.max.y - f32::from(radius.sw);
-            assert!(
-                marker.min.y >= top_arc_end,
-                "marker top {} must clear top-left corner arc end {top_arc_end}",
-                marker.min.y
-            );
-            assert!(
-                marker.max.y <= bot_arc_start,
-                "marker bottom {} must clear bottom-left corner arc start {bot_arc_start}",
-                marker.max.y
-            );
-        }
     }
 }
