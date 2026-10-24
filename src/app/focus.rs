@@ -53,9 +53,6 @@ impl FocusSegmentReason {
 /// `src/app/input_router.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FocusKind {
-    /// Needs attention review (list/detail of unresolved Needs-you items).
-    /// Routing rule: `src/overlays/attention.rs`.
-    AttentionOverlay,
     ApprovalBanner,
     ConfirmClose,
     CommandPalette,
@@ -93,7 +90,6 @@ impl FocusKind {
     /// Stable name for logging and test assertions.
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::AttentionOverlay => "AttentionOverlay",
             Self::ApprovalBanner => "ApprovalBanner",
             Self::ConfirmClose => "ConfirmClose",
             Self::CommandPalette => "CommandPalette",
@@ -115,7 +111,6 @@ impl FocusKind {
     /// frame's keyboard/render dispatch should call.
     pub(crate) fn owner(self) -> &'static dyn FocusOwner {
         match self {
-            Self::AttentionOverlay => &AttentionOverlayOwner,
             Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
             Self::CommandPalette => &CommandPaletteOwner,
@@ -201,7 +196,6 @@ macro_rules! focus_owner_tokens {
 
 focus_owner_tokens! {
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
-    AttentionOverlay => AttentionOverlayOwner { key: attention_handle_key, draw: draw_attention_overlay },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },

@@ -785,7 +785,7 @@ mod attention_tests {
         });
         h.hidden_frame();
 
-        let items = crate::overlays::attention::open_items();
+        let items = crate::app::attention_queue::open_needs_you_items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, crate::broker::gate::NeedsYouKind::Question);
         let question_id = items[0].id.clone();
@@ -805,7 +805,7 @@ mod attention_tests {
         h.hidden_frame();
 
         assert!(
-            crate::overlays::attention::open_items().is_empty(),
+            crate::app::attention_queue::open_needs_you_items().is_empty(),
             "attention card must be cleared when agent transitions to idle"
         );
         let monitor =
@@ -872,7 +872,7 @@ mod attention_tests {
             .unwrap()
             .0;
         h.hidden_frame();
-        assert_eq!(crate::overlays::attention::open_items().len(), 2);
+        assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 2);
 
         h.inject_ipc(AppRequest::SetAgentState {
             peer_ancestry: None,
@@ -886,7 +886,7 @@ mod attention_tests {
         });
         h.hidden_frame();
 
-        let remaining = crate::overlays::attention::open_items();
+        let remaining = crate::app::attention_queue::open_needs_you_items();
         assert_eq!(
             remaining.len(),
             1,
@@ -917,7 +917,7 @@ mod attention_tests {
             blocked_reason: None,
         });
         h.hidden_frame();
-        assert_eq!(crate::overlays::attention::open_items().len(), 1);
+        assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 1);
 
         h.inject_ipc(AppRequest::SetAgentState {
             peer_ancestry: None,
@@ -931,7 +931,7 @@ mod attention_tests {
         });
         h.hidden_frame();
         assert!(
-            crate::overlays::attention::open_items().is_empty(),
+            crate::app::attention_queue::open_needs_you_items().is_empty(),
             "completed state report must withdraw the agent's open needs-you item"
         );
     }
@@ -1136,7 +1136,6 @@ impl PlexiApp {
                 true,
                 crate::broker::gate::ResolveSurface::Desktop,
             );
-        self.attention.open = false;
         result_path
     }
 
@@ -1193,7 +1192,7 @@ impl PlexiApp {
             crate::platform::attention::reduce_motion(),
         );
         self.agent_attention.dock.sync(
-            crate::overlays::attention::open_items()
+            crate::app::attention_queue::open_needs_you_items()
                 .into_iter()
                 .map(|item| item.id)
                 .collect(),

@@ -3,7 +3,6 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Align, Align2, CornerRadius, Layout, RichText, Stroke, Vec2};
 
-pub(crate) mod attention;
 pub(crate) mod command_palette;
 pub(crate) mod confirmations;
 pub(crate) mod misc;

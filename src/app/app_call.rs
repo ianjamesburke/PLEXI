@@ -870,11 +870,6 @@ impl PlexiApp {
     /// approval: it reloads or rotates the host seal and never grants an app
     /// capability.
     pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
-        // The attention review offers the same recovery action; never stack
-        // two competing recovery overlays.
-        if self.attention.open {
-            return;
-        }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         let Some(item) = monitor

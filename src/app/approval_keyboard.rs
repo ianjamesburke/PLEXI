@@ -111,7 +111,9 @@ impl PlexiApp {
             self.push_focus_layer(FocusKind::ApprovalBanner);
             log::info!("approval: focused id={}", request.pending_request_id);
             self.ctx.request_repaint_after(ARM_DELAY);
-        } else if let Some(item) = keyboard_actionable(&crate::overlays::attention::open_items()) {
+        } else if let Some(item) =
+            keyboard_actionable(&crate::app::attention_queue::open_needs_you_items())
+        {
             self.approval_keyboard
                 .focus(item.id.clone(), Instant::now());
             self.focus_stack
@@ -123,7 +125,7 @@ impl PlexiApp {
                 item.kind.as_str()
             );
             self.ctx.request_repaint_after(ARM_DELAY);
-        } else if let Some(done_item) = crate::overlays::attention::open_items()
+        } else if let Some(done_item) = crate::app::attention_queue::open_needs_you_items()
             .into_iter()
             .find(|item| item.kind == crate::broker::gate::NeedsYouKind::AgentDone)
         {
@@ -873,80 +875,6 @@ mod tests {
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::SHIFT), now);
         assert!(is_open(&monitor, &req));
-    }
-
-    fn apply_pending(h: &mut HostHarness) {
-        let items = crate::overlays::attention::open_items();
-        let record = items.get(h.app.attention.selected).cloned();
-        let action = h
-            .app
-            .attention
-            .pending
-            .take()
-            .expect("key queued an action");
-        let ctx = h.app.ctx.clone();
-        h.app.apply_attention_action(&ctx, action, record.as_ref());
-    }
-
-    #[test]
-    fn attention_overlay_keys_decide_actionable_items_under_arm_guard() {
-        use crate::broker::gate::NeedsYouKind as K;
-        let mut h = HostHarness::new();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let req = file_item(&monitor, K::PermissionRequest, "run-o", &[]);
-        h.app.open_attention_overlay("test");
-        let now = h.app.attention.armed_at.unwrap();
-        h.app.attention.selected = 0;
-        h.app
-            .attention_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
-        assert!(
-            h.app.attention.pending.is_none(),
-            "arm guard holds the first second"
-        );
-        h.app.synthetic_input_frame = true;
-        h.app.attention_key_at(
-            &mut input(egui::Key::A, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        assert!(
-            h.app.attention.pending.is_none(),
-            "synthetic frames cannot approve"
-        );
-        h.app.synthetic_input_frame = false;
-        h.app.attention_key_at(
-            &mut input(egui::Key::A, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        assert_eq!(
-            h.app.attention.pending,
-            Some(crate::overlays::attention::AttentionAction::Resolve(true))
-        );
-        apply_pending(&mut h);
-        assert!(!is_open(&monitor, &req));
-
-        let q = file_item(&monitor, K::Question, "run-oq", &["Proceed", "Abort"]);
-        h.app.attention.selected = 0;
-        h.app.attention.armed_at = Some(now);
-        h.app.attention_key_at(
-            &mut input(egui::Key::Num1, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        apply_pending(&mut h);
-        assert!(!is_open(&monitor, &q));
-        assert_eq!(
-            monitor.get_needs_you(&q).unwrap().answer.as_deref(),
-            Some("Proceed")
-        );
-
-        let change = file_item(&monitor, K::PermissionChange, "run-od", &[]);
-        h.app.attention.selected = 0;
-        h.app.attention.armed_at = Some(now);
-        h.app.attention_key_at(
-            &mut input(egui::Key::D, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        apply_pending(&mut h);
-        assert!(!is_open(&monitor, &change));
     }
 
     #[test]

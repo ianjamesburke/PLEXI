@@ -327,8 +327,6 @@ pub struct PlexiApp {
     pub(crate) text_overlay_browse_rx: Option<mpsc::Receiver<Option<PathBuf>>>,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
-    /// Needs attention review state (`src/overlays/attention.rs`).
-    pub(crate) attention: crate::overlays::attention::AttentionState,
     /// ID of the notification the modal is currently showing. `None` means
     /// "modal is empty / closed" — at the next render, the next notification
     /// in the queue becomes current.
@@ -1715,7 +1713,6 @@ impl PlexiApp {
                     pending_notifications: load_pending_notifications_from(
                         &profile_dir.join("notifications.json"),
                     ),
-                    attention: Default::default(),
                     current_notify_id: None,
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
@@ -1980,7 +1977,6 @@ impl PlexiApp {
             pending_notifications: load_pending_notifications_from(
                 &crate::config::config_dir().join("notifications.json"),
             ),
-            attention: Default::default(),
             current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
@@ -2939,7 +2935,6 @@ impl PlexiApp {
                 views
             },
             pending_notifications: Vec::new(),
-            attention: Default::default(),
             current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),

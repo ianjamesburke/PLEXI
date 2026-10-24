@@ -213,7 +213,6 @@ impl PlexiApp {
             self.zoom.context_last_pane.insert(active_ctx_id, pid);
         }
         self.sync_attention_queue();
-        self.sync_attention_focus();
         self.sync_confirm_close_focus();
         self.sync_context_close_focus();
         self.sync_command_palette_focus();

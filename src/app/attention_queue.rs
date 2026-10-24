@@ -29,6 +29,15 @@ pub const OVERLAY_QUESTION: &str = "What would you do here?";
 pub const ESC_BACKOUT_HINT: &str = "Cmd+Esc backs out";
 pub const NO_ASKS_HINT: &str = "No open asks in queue";
 
+/// Unresolved Needs-you records from the loaded profile monitor, oldest first.
+pub(crate) fn open_needs_you_items() -> Vec<crate::broker::gate::NeedsYouRecord> {
+    let mut items = PermissionMonitor::loaded(&crate::config::config_dir())
+        .map(|monitor| monitor.open_needs_you())
+        .unwrap_or_default();
+    items.sort_by_key(|item| item.created_at);
+    items
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]

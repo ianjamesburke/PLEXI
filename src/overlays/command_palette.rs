@@ -198,7 +198,7 @@ enum PaletteCommand {
     EditCommands,
     /// Switch the focused `commands.toml` editor between workspace and global scope.
     SwitchCommandsScope,
-    /// Open the Needs attention review (`overlays::attention`).
+    /// Open the Attention Queue list (`app::attention_queue`).
     OpenAttention,
     /// Install the CLI launcher, completions, and PATH registration for external terminals.
     SetupCli,

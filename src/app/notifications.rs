@@ -968,6 +968,7 @@ impl PlexiApp {
     /// Used for per-context sidebar badges on inactive contexts. Global notifications
     /// are excluded — they already appear everywhere via notification_is_visible.
     /// Returns 0 for parked contexts — they produce no visual noise.
+    #[allow(dead_code)]
     pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
         let ctx = self.router.get(ctx_idx);
         if ctx.parked {
