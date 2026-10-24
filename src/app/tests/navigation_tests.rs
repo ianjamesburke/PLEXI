@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::host::context::Window;
+use crate::host::keys::Direction;
 use crate::testing::HostHarness;
 
 fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
@@ -235,6 +236,65 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
     assert_eq!(
         h.app.active_window, 0,
         "background close must not steal focus"
+    );
+}
+
+#[test]
+fn close_focused_pane_prefers_window_local_history_and_keeps_strip_visible() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let c = h.add_test_pane();
+    let d = h.add_test_pane();
+    let e = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app.set_context_columns(
+        context_id,
+        vec![vec![a], vec![b], vec![c, d], vec![e]],
+    );
+
+    // A second window in the same context must not become a close target.
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
+    let (other_tile, _other_pane) = h.app.add_app_pane_in_window(1, "other");
+    let main_window_id = h.app.windows[0].window_id;
+    let other_window_id = h.app.windows[1].window_id;
+
+    h.app.focus_pane_in_strip(a);
+    assert!(h.app.navigate_columns_strip(Direction::Right));
+    assert_eq!(h.app.active_focused_pane_id(), Some(b));
+    let b_tile = h.app.windows[0].tree.tiles.find_pane(&b).unwrap();
+    h.app.pane_focus_history.push((other_window_id, other_tile));
+    h.app.pane_focus_history.push((main_window_id, h.app.windows[0].tree.tiles.find_pane(&a).unwrap()));
+    h.app.close_pane_by_id(b);
+    assert_eq!(h.app.active_focused_pane_id(), Some(a));
+    assert_eq!(h.app.active_window, 0);
+    assert_eq!(h.app.windows[1].focused_pane, None);
+    assert!(h.app.windows[0].tree.tiles.get(b_tile).is_none());
+
+    // No history: close the bottom tile of a stack and choose the pane above.
+    h.app.pane_focus_history.clear();
+    h.app.focus_pane_in_strip(d);
+    h.app.close_pane_by_id(d);
+    assert_eq!(h.app.active_focused_pane_id(), Some(c));
+
+    // No history and no same-column sibling: prefer the left adjacent column.
+    h.app.pane_focus_history.clear();
+    h.app.focus_pane_in_strip(e);
+    h.app.close_pane_by_id(e);
+    assert_eq!(h.app.active_focused_pane_id(), Some(c));
+    let c_column = h
+        .app
+        .columns_for_context(context_id)
+        .into_iter()
+        .find(|column| column.panes.contains(&c))
+        .unwrap()
+        .index;
+    let offset = h.app.zoom.strip_offset_for(context_id);
+    assert!(
+        c_column >= offset && c_column < offset + 2,
+        "close target column must remain in the visible strip"
     );
 }
 

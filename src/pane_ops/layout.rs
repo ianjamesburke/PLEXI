@@ -854,10 +854,10 @@ impl PlexiApp {
         let is_zoomed = self.windows[ctx_idx].zoomed_pane == Some(tile_id);
         let is_background_window = ctx_idx != self.active_window;
 
-        // Phase 1: Read-only — determine sibling and container type
+        // Phase 1: Read-only — determine container type.
         let parent_info = self.windows[ctx_idx].find_logical_parent(tile_id);
 
-        let next = if let Some((parent_id, child_in_parent)) = parent_info {
+        if let Some((parent_id, child_in_parent)) = parent_info {
             let sibling_info = {
                 let ctx: &Window = &self.windows[ctx_idx];
                 if let Some(Tile::Container(container)) = ctx.tree.tiles.get(parent_id) {
@@ -911,25 +911,15 @@ impl PlexiApp {
                     }
                 }
 
-                // Only transfer focus when the closed tile was focused.
                 // tabs.set_active was already updated above so egui_tiles stays valid
                 // even when closing a background active tab; but that must not move
                 // focused_pane to the new active tab's pane.
-                if is_focused {
-                    self.windows[ctx_idx].find_first_pane_in(sibling)
-                } else {
-                    None
-                }
-            } else if is_focused {
-                self.windows[ctx_idx].find_next_focus(tile_id)
-            } else {
-                None
             }
-        } else if is_focused {
-            self.windows[ctx_idx].find_next_focus(tile_id)
-        } else {
-            None
-        };
+        }
+
+        // Only transfer focus when the closed tile was focused. The selection is
+        // deliberately window-local: closing a pane never switches windows.
+        let next = is_focused.then(|| self.choose_focus_after_close(ctx_idx, tile_id)).flatten();
 
         // Phase 3: Remove tile and extract pane — defer drop so background apps can be parked.
         let mut closed_pane_id = None;
@@ -1033,6 +1023,95 @@ impl PlexiApp {
             // their action buttons are hidden since the app can no longer respond.
             self.tombstone_pane_notifications(pane_id);
             // else: builtin app pane drops here
+        }
+
+        if let Some(new_focus) = next {
+            self.record_close_focus_column(ctx_idx, new_focus);
+        }
+    }
+
+    /// Choose focus after closing a focused tile without leaving its window.
+    ///
+    /// The newest live focus-history entry in this window wins. Otherwise prefer
+    /// the pane below then above in the same column, then the left and right
+    /// columns, using that column's remembered pane when it remains visible.
+    fn choose_focus_after_close(&self, ctx_idx: usize, closing_tile: TileId) -> Option<TileId> {
+        let window = self.windows.get(ctx_idx)?;
+        let is_visible_pane = |tile_id: TileId| {
+            tile_id != closing_tile
+                && window.tree.active_tiles().contains(&tile_id)
+                && matches!(window.tree.tiles.get(tile_id), Some(Tile::Pane(pane_id)) if window.panes.get(pane_id).is_some_and(|pane| !pane.is_hidden()))
+        };
+
+        for (window_id, tile_id) in self.pane_focus_history.iter().rev() {
+            if *window_id == window.window_id && is_visible_pane(*tile_id) {
+                return Some(*tile_id);
+            }
+        }
+
+        let closing_pane = match window.tree.tiles.get(closing_tile) {
+            Some(Tile::Pane(pane_id)) => *pane_id,
+            _ => return None,
+        };
+        let window_panes: std::collections::HashSet<PaneId> = window.panes.keys().copied().collect();
+        let columns: Vec<_> = self
+            .columns_for_context(window.context_id)
+            .into_iter()
+            .map(|column| crate::app::zoom::StripColumn {
+                panes: column
+                    .panes
+                    .into_iter()
+                    .filter(|pane_id| window_panes.contains(pane_id))
+                    .collect(),
+                ..column
+            })
+            .filter(|column| !column.panes.is_empty())
+            .collect();
+        let (column_pos, row_pos) = columns.iter().enumerate().find_map(|(column_pos, column)| {
+            column
+                .panes
+                .iter()
+                .position(|pane_id| *pane_id == closing_pane)
+                .map(|row_pos| (column_pos, row_pos))
+        })?;
+
+        let tile_for_pane = |pane_id| window.tree.tiles.find_pane(&pane_id).filter(|tile_id| is_visible_pane(*tile_id));
+        let same_column = &columns[column_pos].panes;
+        if let Some(tile_id) = same_column[row_pos + 1..]
+            .iter()
+            .find_map(|pane_id| tile_for_pane(*pane_id))
+            .or_else(|| same_column[..row_pos].iter().rev().find_map(|pane_id| tile_for_pane(*pane_id)))
+        {
+            return Some(tile_id);
+        }
+
+        for adjacent_pos in [column_pos.checked_sub(1), (column_pos + 1 < columns.len()).then_some(column_pos + 1)]
+            .into_iter()
+            .flatten()
+        {
+            let column = &columns[adjacent_pos];
+            let remembered = self.zoom.column_last_pane.get(&(window.context_id, column.index)).copied();
+            if let Some(tile_id) = remembered
+                .filter(|pane_id| column.panes.contains(pane_id))
+                .and_then(tile_for_pane)
+                .or_else(|| column.panes.iter().find_map(|pane_id| tile_for_pane(*pane_id)))
+            {
+                return Some(tile_id);
+            }
+        }
+        None
+    }
+
+    fn record_close_focus_column(&mut self, ctx_idx: usize, tile_id: TileId) {
+        let Some(window) = self.windows.get(ctx_idx) else { return };
+        let Some(Tile::Pane(pane_id)) = window.tree.tiles.get(tile_id) else { return };
+        let context_id = window.context_id;
+        let pane_id = *pane_id;
+        let columns = self.columns_for_context(context_id);
+        let Some(column) = columns.iter().find(|column| column.panes.contains(&pane_id)) else { return };
+        self.zoom.column_last_pane.insert((context_id, column.index), pane_id);
+        if self.zoom.level == crate::app::zoom::ZoomLevel::Columns {
+            self.ensure_column_visible(context_id, column.index, columns.len());
         }
     }
 
