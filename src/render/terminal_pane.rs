@@ -93,9 +93,10 @@ pub fn render(
             .as_ref()
             .is_some_and(|s| s.is_failure());
     let pane_agent_state = terminal
-        .agent
+        .reported_7501
         .as_ref()
         .map(|a| a.state.clone())
+        .or_else(|| terminal.agent.as_ref().map(|a| a.state.clone()))
         .or_else(|| terminal.observed_agent.as_ref().map(|a| a.state.clone()))
         .or_else(|| terminal.activity.clone())
         .or_else(|| {

@@ -1539,6 +1539,36 @@ impl PlexiApp {
         new_id
     }
 
+    /// OSC 7501 hierarchical id for an agent spawned under `parent_pane_id`:
+    /// ancestor agent labels (root lead first) then `role`. Ancestors stop at
+    /// the first pane that is not an agent.
+    fn agent_tree_id(&self, parent_pane_id: Option<u64>, role: &str) -> Option<String> {
+        let mut labels = vec![role.to_string()];
+        let mut next = parent_pane_id;
+        while let Some(pid) = next {
+            let Some(label) = self
+                .derive_spawned_by_for_parent(Some(pid))
+                .strip_prefix("agent:")
+                .map(str::to_owned)
+            else {
+                break;
+            };
+            labels.push(label);
+            if labels.len() > 8 {
+                break;
+            }
+            next = self
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(&pid))
+                .and_then(|p| p.as_terminal())
+                .and_then(|t| t.parent_pane_id);
+        }
+        labels.reverse();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        crate::program_status::emit::tree_id(&refs)
+    }
+
     /// Derive the unspoofable `spawned_by` provenance string for a parent pane ID.
     pub(crate) fn derive_spawned_by_for_parent(&self, parent_pane_id: Option<u64>) -> String {
         let Some(pid) = parent_pane_id else {
@@ -1818,6 +1848,9 @@ impl PlexiApp {
         settings
             .env
             .insert("PLEXI_AGENT_ROLE".into(), role.to_string());
+        if let Some(id) = self.agent_tree_id(parent_pane_id, role) {
+            settings.env.insert("PLEXI_AGENT_ID".into(), id);
+        }
         settings
             .env
             .insert("PLEXI_AGENT_TASK".into(), task.to_string());

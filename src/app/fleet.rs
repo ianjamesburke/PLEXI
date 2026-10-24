@@ -22,6 +22,10 @@ impl PlexiApp {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
             {
+                t.program_status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark_seen();
                 if !t.fleet_seen && (t.fleet_done_unseen || t.agent_completed) {
                     t.fleet_seen = true;
                     changed = true;
