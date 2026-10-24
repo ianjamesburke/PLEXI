@@ -399,16 +399,21 @@ mod tests {
         FORCE.with(|f| f.set(true));
         let _guard = ForceGuard;
 
-        let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1440.0, 1200.0);
+        let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1440.0, 1400.0);
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
         });
         h.run_steps(2);
 
-        let cards: Vec<(Rect, CardState, egui::Color32)> = h.with_app(|app| {
-            app.ctx
+        let (colors, cards): (
+            crate::ui::theme::Colors,
+            Vec<(Rect, CardState, egui::Color32)>,
+        ) = h.with_app(|app| {
+            let cards = app
+                .ctx
                 .data(|d| d.get_temp(egui::Id::new("card_gallery_painted_cards")))
-                .unwrap_or_default()
+                .unwrap_or_default();
+            (app.colors, cards)
         });
         assert_eq!(
             cards.len(),
@@ -429,6 +434,13 @@ mod tests {
             );
         }
 
+        let accent_colors = [
+            colors.warning,
+            colors.accent,
+            colors.zoom_needs,
+            colors.success,
+            colors.zoom_failed,
+        ];
         let img = h.render().expect("render card gallery");
         for &(rect, state, expected_fill) in &cards {
             let mid_y = rect.center().y.round() as u32;
@@ -438,19 +450,40 @@ mod tests {
                 img.height()
             );
             // Inside the 1–1.5pt card border stroke, the first 6px at mid-height
-            // must be pure card fill color (no accent/state strip).
+            // must be uniform card fill color (matching the padding sample at +6
+            // and never matching any state/accent bar color).
             let x_start = rect.min.x.ceil() as u32 + 2;
+            let [fill_r, fill_g, fill_b, _] = img.get_pixel(x_start + 6, mid_y).0;
             for dx in 0..6 {
                 let x = x_start + dx;
                 let [r, g, b, _] = img.get_pixel(x, mid_y).0;
-                let dr = (i32::from(r) - i32::from(expected_fill.r())).abs();
-                let dg = (i32::from(g) - i32::from(expected_fill.g())).abs();
-                let db = (i32::from(b) - i32::from(expected_fill.b())).abs();
+                let dr = (i32::from(r) - i32::from(fill_r)).abs();
+                let dg = (i32::from(g) - i32::from(fill_g)).abs();
+                let db = (i32::from(b) - i32::from(fill_b)).abs();
                 assert!(
-                    dr <= 6 && dg <= 6 && db <= 6,
-                    "pixel at ({x}, {mid_y}) inside left edge of {state:?} card {rect:?} was rgba({r}, {g}, {b}), expected card fill {:?}",
-                    expected_fill.to_array()
+                    dr <= 2 && dg <= 2 && db <= 2,
+                    "pixel at ({x}, {mid_y}) inside left edge of {state:?} card {rect:?} was rgba({r}, {g}, {b}), expected uniform card fill rgba({fill_r}, {fill_g}, {fill_b})"
                 );
+                if expected_fill.a() == 255 {
+                    let er = (i32::from(r) - i32::from(expected_fill.r())).abs();
+                    let eg = (i32::from(g) - i32::from(expected_fill.g())).abs();
+                    let eb = (i32::from(b) - i32::from(expected_fill.b())).abs();
+                    assert!(
+                        er <= 6 && eg <= 6 && eb <= 6,
+                        "pixel at ({x}, {mid_y}) in {state:?} card {rect:?} was rgba({r}, {g}, {b}), expected {:?}",
+                        expected_fill.to_array()
+                    );
+                }
+                for ac in accent_colors {
+                    let dist = (i32::from(r) - i32::from(ac.r())).abs()
+                        + (i32::from(g) - i32::from(ac.g())).abs()
+                        + (i32::from(b) - i32::from(ac.b())).abs();
+                    assert!(
+                        dist > 24,
+                        "pixel at ({x}, {mid_y}) inside left edge of {state:?} card {rect:?} matched accent color {:?}",
+                        ac.to_array()
+                    );
+                }
             }
         }
     }
