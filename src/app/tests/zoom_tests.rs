@@ -5,10 +5,12 @@
 use crate::app::attention_queue::{QueueCategory, QueueOption, OVERLAY_QUESTION};
 use crate::app::input_router::PlexiInput;
 use crate::app::zoom::{ColumnWidthPreset, ZoomLevel};
+use crate::host::context::Window;
 use crate::host::keys::Direction;
 use crate::testing::HostHarness;
 use crate::ui::style;
 use egui::{Color32, Event, Key, Modifiers, Pos2, Rect, Vec2};
+use std::collections::HashMap;
 
 fn send_key(h: &mut HostHarness, modifiers: Modifiers, key: Key) {
     let ev = Event::Key {
@@ -174,6 +176,98 @@ fn niri_columns_strip_navigation_memory_and_edge_bumps_r32() {
     assert_eq!(h.app.active_focused_pane_id(), Some(c0_bot));
     assert_eq!(h.app.zoom.strip_offset_for(ctx_id), 0);
     assert_eq!(h.app.active_strip_clipped_neighbors(), (false, true));
+}
+
+#[test]
+fn strip_edge_navigation_is_a_render_and_state_noop_across_windows() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let middle = h.add_test_pane();
+    let last = h.add_test_pane();
+    let context_id = h.app.router.active().context_id;
+    h.app
+        .set_context_columns(context_id, vec![vec![first], vec![middle], vec![last]]);
+    h.app.windows.push(Window {
+        name: "same context".into(),
+        path: crate::testing::scratch_context_root("strip-edge-second-window"),
+        tree: egui_tiles::Tree::empty("strip_edge_second_window"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 9_999,
+        context_id,
+    });
+
+    h.app.focus_pane_in_strip(first);
+    h.run_frames(2);
+    for direction in [Direction::Left, Direction::Left, Direction::Left] {
+        let focused = h.app.active_focused_pane_id();
+        let active_window = h.app.active_window;
+        let offset = h.app.zoom.strip_offset_for(context_id);
+        let signature = h.app.zoom.last_strip_sig.clone();
+        let jump = h.app.zoom.strip_layout_jump;
+        let transition = h.app.zoom.transition;
+        let rect = h.app.windows[0]
+            .tree
+            .tiles
+            .rect(h.app.windows[0].tree.tiles.find_pane(&first).unwrap());
+        assert!(!h.app.navigate_columns_strip(direction));
+        for _ in 0..6 {
+            h.run_frames(1);
+            assert_eq!(h.app.active_focused_pane_id(), focused);
+            assert_eq!(h.app.active_window, active_window);
+            assert_eq!(h.app.zoom.strip_offset_for(context_id), offset);
+            assert_eq!(h.app.zoom.last_strip_sig, signature);
+            assert_eq!(h.app.zoom.strip_layout_jump, jump);
+            assert_eq!(h.app.zoom.transition, transition);
+            assert!(h.app.pane_anims.is_empty());
+            assert!(h.app.edge_pulse.is_none());
+            assert_eq!(
+                h.app.windows[0]
+                    .tree
+                    .tiles
+                    .rect(h.app.windows[0].tree.tiles.find_pane(&first).unwrap()),
+                rect
+            );
+        }
+    }
+
+    assert!(h.app.navigate_columns_strip(Direction::Right));
+    assert!(h.app.navigate_columns_strip(Direction::Right));
+    h.run_frames(2);
+    for direction in [Direction::Right, Direction::Right, Direction::Right] {
+        let focused = h.app.active_focused_pane_id();
+        let active_window = h.app.active_window;
+        let offset = h.app.zoom.strip_offset_for(context_id);
+        let signature = h.app.zoom.last_strip_sig.clone();
+        let jump = h.app.zoom.strip_layout_jump;
+        let transition = h.app.zoom.transition;
+        let rect = h.app.windows[0]
+            .tree
+            .tiles
+            .rect(h.app.windows[0].tree.tiles.find_pane(&last).unwrap());
+        assert!(!h.app.navigate_columns_strip(direction));
+        for _ in 0..6 {
+            h.run_frames(1);
+            assert_eq!(h.app.active_focused_pane_id(), focused);
+            assert_eq!(h.app.active_window, active_window);
+            assert_eq!(h.app.zoom.strip_offset_for(context_id), offset);
+            assert_eq!(h.app.zoom.last_strip_sig, signature);
+            assert_eq!(h.app.zoom.strip_layout_jump, jump);
+            assert_eq!(h.app.zoom.transition, transition);
+            assert!(h.app.pane_anims.is_empty());
+            assert!(h.app.edge_pulse.is_none());
+            assert_eq!(
+                h.app.windows[0]
+                    .tree
+                    .tiles
+                    .rect(h.app.windows[0].tree.tiles.find_pane(&last).unwrap()),
+                rect
+            );
+        }
+    }
 }
 
 /// R33: Fixed column width presets (`35%` parent / `65%` child) and tile content tiers.

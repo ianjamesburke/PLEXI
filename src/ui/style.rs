@@ -105,8 +105,6 @@ pub const EDGE_NEEDS_W: f32 = 3.0;
 pub const DECISION_MODAL_W: f32 = 580.0;
 pub const QUEUE_PANEL_W: f32 = 640.0;
 pub const PEEK_CARD_W: f32 = 380.0;
-pub const EDGE_BUMP_OFFSET_PX: f32 = 6.0;
-pub const EDGE_BUMP_DURATION_MS: u64 = 75;
 pub const ZOOM_DURATION_MS: u64 = 160;
 #[allow(dead_code)]
 pub const CAMERA_EASE_MS: u64 = 120;

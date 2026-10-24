@@ -227,10 +227,8 @@ pub struct ZoomState {
     pub atlas_peek_open: bool,
     /// Directed context-to-context links (`(from_ctx, to_ctx)`) for `f`/`F` traversal in atlas.
     pub context_links: Vec<(u64, u64)>,
-    /// Monotonic counter of edge bumps (observable by tests for R31/R32).
+    /// Monotonic counter of edge attempts (observable by tests for R31/R32 only).
     pub edge_bump_count: u64,
-    /// Last edge bump direction and timestamp for rendering the 60–90ms focus ring bump.
-    pub last_edge_bump: Option<(Direction, Instant)>,
     /// Retargetable zoom transition state (`(from_progress, target_progress, started_at)`).
     pub transition: Option<(f32, f32, Instant)>,
     /// Buffered text/key events typed during a zoom-in flight to `Columns`.
@@ -271,29 +269,6 @@ impl ZoomState {
         from + (to - from) * eased
     }
 
-    /// Current pixel offset for an active 60–90ms edge bump.
-    pub fn active_edge_bump_offset(&self) -> Vec2 {
-        let Some((dir, started_at)) = self.last_edge_bump else {
-            return Vec2::ZERO;
-        };
-        let elapsed = started_at.elapsed().as_millis() as u64;
-        if elapsed >= style::EDGE_BUMP_DURATION_MS {
-            return Vec2::ZERO;
-        }
-        let phase = (elapsed as f32) / (style::EDGE_BUMP_DURATION_MS as f32);
-        // Triangle pulse: out then back within 75ms.
-        let amp = if phase < 0.5 {
-            phase * 2.0
-        } else {
-            (1.0 - phase) * 2.0
-        } * style::EDGE_BUMP_OFFSET_PX;
-        match dir {
-            Direction::Left => Vec2::new(-amp, 0.0),
-            Direction::Right => Vec2::new(amp, 0.0),
-            Direction::Up => Vec2::new(0.0, -amp),
-            Direction::Down => Vec2::new(0.0, amp),
-        }
-    }
 }
 
 /// Collect visible non-portal leaf `PaneId`s under `tile_id` in top-to-bottom / left-to-right order.
@@ -332,10 +307,9 @@ pub(crate) fn collect_leaf_panes_in_tile(
 }
 
 impl PlexiApp {
-    /// Record an edge bump in `dir` (increments `self.zoom.edge_bump_count` and triggers visual pulse).
+    /// Record an edge attempt in `dir` without changing layout or starting an animation.
     pub fn record_edge_bump(&mut self, dir: Direction) {
         self.zoom.edge_bump_count += 1;
-        self.zoom.last_edge_bump = Some((dir, Instant::now()));
         log::info!(
             "zoom: edge_bump dir={dir:?} count={} level={}",
             self.zoom.edge_bump_count,
@@ -716,7 +690,7 @@ impl PlexiApp {
     }
 
     /// Move focus between columns (`Left`/`Right`) or stacked panes (`Up`/`Down`)
-    /// at `ZoomLevel::Columns`. Stops at edges with an edge bump; never wraps (`SPEC.md` R32).
+    /// at `ZoomLevel::Columns`. Stops at edges without wrapping (`SPEC.md` R32).
     pub fn navigate_columns_strip(&mut self, dir: Direction) -> bool {
         let ctx_id = self.router.active().context_id;
         let cols = self.columns_for_context(ctx_id);
@@ -2160,7 +2134,6 @@ impl PlexiApp {
             .cards_focused_context
             .unwrap_or_else(|| self.router.active().context_id);
         let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
-        let bump = self.zoom.active_edge_bump_offset();
 
         let total_w = (siblings.len() as f32) * style::CARD_W
             + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP;
@@ -2172,7 +2145,6 @@ impl PlexiApp {
         for (idx, &cid) in siblings.iter().enumerate() {
             let is_focused = cid == focused_ctx;
             let is_ghost = Some(cid) == ghost_ctx;
-            let offset = if is_focused { bump } else { Vec2::ZERO };
             let depth = self
                 .router
                 .as_slice()
@@ -2203,8 +2175,8 @@ impl PlexiApp {
             let header_h = layout.height;
             let card_h = style::CARD_H.max(header_h + SIBLING_BODY_MIN_H);
             let card_min = Pos2::new(
-                start_x + (idx as f32) * (style::CARD_W + style::CARD_GAP) + offset.x,
-                center_y - card_h * 0.5 + offset.y,
+                start_x + (idx as f32) * (style::CARD_W + style::CARD_GAP),
+                center_y - card_h * 0.5,
             );
             let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, card_h));
             paint_card(
@@ -2316,7 +2288,6 @@ impl PlexiApp {
             .zoom
             .atlas_focused_context
             .unwrap_or_else(|| self.router.active().context_id);
-        let bump = self.zoom.active_edge_bump_offset();
 
         // 1. Draw Motorways road edges (casing + road stroke, elbow paths for tree edges).
         for edge in &edges {
@@ -2385,11 +2356,7 @@ impl PlexiApp {
                 continue; // Viewport culling for 50+ nodes (`SPEC.md` Q7).
             }
             let is_focused = node.context_id == focused_ctx;
-            let nrect = if is_focused {
-                node.rect.translate(bump)
-            } else {
-                node.rect
-            };
+            let nrect = node.rect;
 
             let state = if node.direct_asks > 0 || node.ask_rollup > 0 {
                 CardState::NeedsYou

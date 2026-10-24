@@ -672,7 +672,6 @@ impl PlexiApp {
                 }
                 let focus_painter = ui.painter().clone();
                 let (has_left_neighbor, has_right_neighbor) = self.active_strip_clipped_neighbors();
-                let edge_bump_offset = self.zoom.active_edge_bump_offset();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
                 let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
@@ -893,8 +892,7 @@ impl PlexiApp {
                     if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
                             let gap = behavior.pane_gap;
-                            let bumped = rect.translate(edge_bump_offset);
-                            focused_frame_outer = Some(bumped.expand(gap));
+                            focused_frame_outer = Some(rect.expand(gap));
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -913,7 +911,7 @@ impl PlexiApp {
                             };
                             let stroke = egui::Stroke::new(gap, stroke_color);
                             focus_painter.rect_stroke(
-                                bumped,
+                                rect,
                                 crate::ui::style::RADIUS_MOTORWAYS,
                                 stroke,
                                 egui::StrokeKind::Outside,
