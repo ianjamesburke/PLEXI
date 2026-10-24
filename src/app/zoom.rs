@@ -803,18 +803,23 @@ impl PlexiApp {
                 false
             }
             ZoomLevel::SiblingCards => {
-                self.restore_ghost_or_active_columns();
-                log::info!("zoom: SiblingCards -> Columns");
+                let selected = self.zoom.cards_focused_context;
+                let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
+                if selected.is_none() || selected == ghost_ctx {
+                    self.restore_ghost_or_active_columns();
+                } else {
+                    // Selection moved off the origin: same path as bare Enter.
+                    self.enter_focused_sibling_card();
+                }
+                log::info!("zoom: SiblingCards -> Columns (selected={selected:?})");
                 true
             }
             ZoomLevel::TreeAtlas => {
                 self.zoom.atlas_peek_open = false;
                 let target_ctx = self
                     .zoom
-                    .ghost
-                    .as_ref()
-                    .map(|g| g.context_id)
-                    .or(self.zoom.atlas_focused_context)
+                    .atlas_focused_context
+                    .or_else(|| self.zoom.ghost.as_ref().map(|g| g.context_id))
                     .unwrap_or_else(|| self.router.active().context_id);
                 if let Some(r_idx) = self
                     .router

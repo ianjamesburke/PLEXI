@@ -819,3 +819,36 @@ fn cmd_esc_still_zooms_out_when_nothing_open() {
     h.press_key(Key::Escape, Modifiers::COMMAND);
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 }
+
+/// Cmd+Enter in SiblingCards must dive into the highlighted card, exactly like bare Enter,
+/// even after the selection moved off the context that was focused when zooming out.
+#[test]
+fn cmd_enter_zooms_into_selected_card_like_enter() {
+    let mut h = HostHarness::new();
+    let ctx0_p = h.add_test_pane();
+    let ctx0_id = h.app.router.active().context_id;
+    h.app.set_context_columns(ctx0_id, vec![vec![ctx0_p]]);
+    let ctx1_id = h.app.create_context_without_pty("ctx-1", None);
+    let ctx1_p = h.add_test_pane();
+    h.app.set_context_columns(ctx1_id, vec![vec![ctx1_p]]);
+    let ctx2_id = h.app.create_context_without_pty("ctx-2", None);
+    let ctx2_p = h.add_test_pane();
+    h.app.set_context_columns(ctx2_id, vec![vec![ctx2_p]]);
+
+    for chord in [Modifiers::NONE, Modifiers::COMMAND] {
+        h.app.switch_to_context_restoring_last_pane(ctx0_id);
+        h.app.set_zoom_level_with_transition(ZoomLevel::Columns);
+        h.app.zoom_out_or_close_surface();
+        assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
+        send_key(&mut h, Modifiers::NONE, Key::L);
+        send_key(&mut h, Modifiers::NONE, Key::L);
+        assert_eq!(h.app.zoom.cards_focused_context, Some(ctx2_id));
+        if chord == Modifiers::NONE {
+            send_key(&mut h, chord, Key::Enter);
+        } else {
+            assert!(h.app.zoom_in_level());
+        }
+        assert_eq!(h.app.zoom.level, ZoomLevel::Columns, "chord {chord:?}");
+        assert_eq!(h.app.router.active().context_id, ctx2_id, "chord {chord:?}");
+    }
+}
