@@ -523,7 +523,7 @@ impl PlexiApp {
                                                     ui.add_space(style::SPACE_XS);
                                                 }
                                             }
-                
+
                                             let is_selected = row == selected;
                                             let secondary = if entry.preview == entry.title {
                                                 String::new()
