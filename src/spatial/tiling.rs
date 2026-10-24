@@ -291,33 +291,23 @@ pub(crate) fn paint_tab_bar(
     }
 
     if overtake_hint {
-        let hint_font = egui::FontId::monospace(font_size - 1.0);
-        let hint_text = "Esc";
-        let hint_galley = painter.layout_no_wrap(hint_text.to_string(), hint_font, colors.text_dim);
-        let chip_pad = 4.0;
-        let chip_w = hint_galley.size().x + chip_pad * 2.0;
-        let chip_h = (TAB_BAR_HEIGHT - 6.0).max(10.0);
-        let chip_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                bar_rect.right() - chip_w - 4.0,
-                bar_rect.center().y - chip_h / 2.0,
-            ),
-            egui::vec2(chip_w, chip_h),
-        );
-        painter.rect_filled(chip_rect, crate::ui::style::RADIUS_SMALL, colors.bg_active);
-        painter.rect_stroke(
-            chip_rect,
-            crate::ui::style::RADIUS_SMALL,
-            egui::Stroke::new(1.0_f32, colors.border),
-            egui::StrokeKind::Inside,
-        );
-        crate::ui::snap::text_snapped(
+        let label = crate::ui::shortcuts::display_tokens(&["Esc"]).join("");
+        let chip_w = crate::ui::shortcuts::chip_size(
+            painter
+                .layout_no_wrap(
+                    label.clone(),
+                    egui::FontId::monospace(style::TEXT_CAPTION),
+                    colors.text_dim,
+                )
+                .size(),
+        )
+        .x;
+        crate::ui::shortcuts::paint_key_chip(
             painter,
-            chip_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            hint_text,
-            egui::FontId::monospace(font_size - 1.0),
-            colors.text_dim,
+            bar_rect.right() - chip_w - style::SPACE_XS,
+            bar_rect.center().y,
+            &label,
+            colors,
         );
     }
 
@@ -514,7 +504,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
                     let button = ui.interact(response.rect, ui.id().with(("child-agent", child.pane_id)), egui::Sense::click());
                     button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text));
-                    if button.on_hover_text("Open child agents (Cmd+Down)").clicked() {
+                    if button.on_hover_text(format!("Open child agents ({})", crate::ui::shortcuts::key_text(&["cmd", "down"]))).clicked() {
                         self.child_agent_dive = Some(*pane_id);
                     }
                 }

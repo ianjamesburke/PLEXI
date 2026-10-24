@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, CornerRadius, Pos2, Response, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, Pos2, Response, Stroke, StrokeKind, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;

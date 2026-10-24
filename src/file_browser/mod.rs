@@ -18,7 +18,7 @@ use crate::ui::overlay::ModalShell;
 use crate::ui::style;
 use crate::ui::text_field::TextField;
 use crate::ui::theme::Colors;
-use egui::{Color32, CornerRadius, Stroke, StrokeKind};
+use egui::{Color32, Stroke, StrokeKind};
 use image::imageops::FilterType;
 use std::collections::BTreeSet;
 use std::fs;

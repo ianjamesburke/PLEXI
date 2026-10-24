@@ -18,6 +18,7 @@ use crate::app::input_router::PlexiInput;
 use crate::app::PlexiApp;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor, ResolveSurface};
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
+use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::style;
 use egui::{
     Align2, CornerRadius, FontFamily, FontId, Key, Order, Pos2, Rect, RichText, Sense, Stroke, Vec2,
@@ -1665,18 +1666,14 @@ impl PlexiApp {
                                         colors.text_dim
                                     }),
                             );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            "j/k move · Enter jump · x dismiss · Esc closes",
-                                        )
-                                        .size(style::TEXT_HINT)
-                                        .color(colors.text_dim),
-                                    );
-                                },
-                            );
+                            HintBar::new(&[
+                                HintGroup::alternatives(&[&["j"], &["k"]], "move"),
+                                HintGroup::new(&["Enter"], "jump"),
+                                HintGroup::new(&["x"], "dismiss"),
+                                HintGroup::new(&["Esc"], "close"),
+                            ])
+                            .inline_status_bar()
+                            .show(ui, &colors);
                         });
                         ui.add_space(style::SPACE_SM);
 
@@ -1709,7 +1706,13 @@ impl PlexiApp {
                                 subtitle: &subtitle,
                                 detail: &bar.summary,
                                 badge: Some(if is_ask {
-                                    ("Enter ▸ Decide".to_string(), colors.zoom_needs)
+                                    (
+                                        format!(
+                                            "{} ▸ Decide",
+                                            crate::ui::shortcuts::key_text(&["Enter"])
+                                        ),
+                                        colors.zoom_needs,
+                                    )
                                 } else {
                                     ("✕".to_string(), colors.text_dim)
                                 }),
@@ -1901,27 +1904,22 @@ impl PlexiApp {
                         }
 
                         ui.add_space(style::SPACE_SM);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("1–9 or j/k + Enter to pick · Esc closes")
-                                    .size(style::TEXT_HINT)
-                                    .color(colors.text_dim),
-                            );
-                            if let Some((ref hint_text, at)) = overlay.hint {
-                                if at.elapsed() < Duration::from_secs(3) {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                RichText::new(hint_text)
-                                                    .size(style::TEXT_HINT)
-                                                    .color(colors.zoom_needs),
-                                            );
-                                        },
-                                    );
-                                }
+                        if let Some((ref hint_text, at)) = overlay.hint {
+                            if at.elapsed() < Duration::from_secs(3) {
+                                ui.label(
+                                    RichText::new(hint_text)
+                                        .size(style::TEXT_HINT)
+                                        .color(colors.zoom_needs),
+                                );
                             }
-                        });
+                        }
+                        HintBar::new(&[
+                            HintGroup::new(&["1\u{2013}9"], "pick"),
+                            HintGroup::alternatives(&[&["j"], &["k"]], "move"),
+                            HintGroup::new(&["Enter"], "confirm"),
+                            HintGroup::new(&["Esc"], "close"),
+                        ])
+                        .show(ui, &colors);
                             });
                     });
             });

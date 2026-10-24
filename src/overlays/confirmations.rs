@@ -19,7 +19,11 @@ impl PlexiApp {
                 ui.horizontal(|ui| {
                     crate::ui::toast::toast_caption(
                         ui,
-                        format!("\u{2318}Q pressed {} of 3 — press again to quit", count),
+                        format!(
+                            "{} pressed {} of 3 — press again to quit",
+                            crate::ui::shortcuts::key_text(&["cmd", "Q"]),
+                            count
+                        ),
                         &self.colors,
                     );
                     crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);

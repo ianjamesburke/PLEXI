@@ -3,7 +3,7 @@
 use super::{ClickFlash, PlexiApp};
 use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
-use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Stroke, StrokeKind, Vec2};
 use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
 
