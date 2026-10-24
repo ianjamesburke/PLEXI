@@ -52,6 +52,8 @@ pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
 pub const RADIUS_MOTORWAYS: CornerRadius = CornerRadius::same(14);
 /// Bar / option row / code block radius (10px).
 pub const RADIUS_BAR: CornerRadius = CornerRadius::same(10);
+/// Edge of the square pane-header provenance icon (who spawned the pane).
+pub const PROVENANCE_ICON_SIZE: f32 = 14.0;
 /// Capsule pill radius (99px).
 pub const RADIUS_PILL: CornerRadius = CornerRadius::same(99);
 // Badge-specific radius. At TEXT_HINT size the pill height is ~17 px;

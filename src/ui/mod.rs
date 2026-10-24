@@ -12,6 +12,7 @@ pub mod labels;
 pub mod list;
 pub mod markdown;
 pub mod overlay;
+pub mod provenance;
 pub mod row;
 pub mod search_bar;
 pub mod shortcuts;
