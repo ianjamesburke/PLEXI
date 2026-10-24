@@ -1658,7 +1658,7 @@ impl PlexiApp {
                             let asks = self.attention_queue.ask_count();
                             let total = self.attention_queue.total_count();
                             ui.label(
-                                RichText::new(format!("◆{asks} · {total} items"))
+                                RichText::new(format_attention_queue_header_count(asks, total))
                                     .size(style::TEXT_CAPTION)
                                     .color(if asks > 0 {
                                         colors.zoom_needs
@@ -1954,6 +1954,37 @@ impl PlexiApp {
         if let Some(idx) = picked_option {
             self.pick_decision_overlay_option(idx);
         }
+    }
+}
+
+/// Format the count summary in the Attention Queue header so the same number
+/// is never printed twice (`asks == total` collapses to `◆N items`, `asks == 0`
+/// omits `◆0`, and `0 < asks < total` shows `◆asks · total items`).
+pub(crate) fn format_attention_queue_header_count(asks: usize, total: usize) -> String {
+    let noun = if total == 1 { "item" } else { "items" };
+    if total == 0 {
+        "0 items".to_string()
+    } else if asks == 0 {
+        format!("{total} {noun}")
+    } else if asks >= total {
+        let ask_noun = if asks == 1 { "item" } else { "items" };
+        format!("◆{asks} {ask_noun}")
+    } else {
+        format!("◆{asks} · {total} {noun}")
+    }
+}
+
+/// Format the compact count prefix for the top-bar Attention Queue pill
+/// without repeating the count when `asks == total`.
+pub(crate) fn format_attention_pill_counts(asks: usize, total: usize) -> String {
+    if total == 0 {
+        "Queue calm".to_string()
+    } else if asks == 0 {
+        format!("{total}")
+    } else if asks >= total {
+        format!("◆{asks}")
+    } else {
+        format!("◆{asks} · {total}")
     }
 }
 
@@ -2265,5 +2296,39 @@ mod tests {
         let with = option_row_heights(true);
         let without = option_row_heights(false);
         assert!((with[0] - without[0]).abs() < 0.5, "tag must not inflate the row");
+    }
+
+    #[test]
+    fn attention_queue_header_and_pill_never_duplicate_counts() {
+        // total == 0
+        let h_zero = format_attention_queue_header_count(0, 0);
+        assert_eq!(h_zero, "0 items");
+        assert_eq!(format_attention_pill_counts(0, 0), "Queue calm");
+
+        // asks == 0, total > 0
+        let h_no_asks = format_attention_queue_header_count(0, 3);
+        assert_eq!(h_no_asks, "3 items");
+        assert!(!h_no_asks.contains('0'), "asks==0 must not print ◆0: {h_no_asks}");
+        assert_eq!(format_attention_pill_counts(0, 3), "3");
+
+        // asks == total (must show the number 3 only once!)
+        let h_all_asks = format_attention_queue_header_count(3, 3);
+        assert_eq!(h_all_asks, "◆3 items");
+        assert_eq!(
+            h_all_asks.matches('3').count(),
+            1,
+            "asks==total must print the count once: {h_all_asks}"
+        );
+        let p_all_asks = format_attention_pill_counts(3, 3);
+        assert_eq!(p_all_asks, "◆3");
+        assert_eq!(p_all_asks.matches('3').count(), 1);
+
+        // singular asks == total == 1
+        assert_eq!(format_attention_queue_header_count(1, 1), "◆1 item");
+
+        // 0 < asks < total
+        let h_mixed = format_attention_queue_header_count(2, 5);
+        assert_eq!(h_mixed, "◆2 · 5 items");
+        assert_eq!(format_attention_pill_counts(2, 5), "◆2 · 5");
     }
 }

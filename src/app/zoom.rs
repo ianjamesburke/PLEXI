@@ -1986,14 +1986,13 @@ impl PlexiApp {
                     } else {
                         (colors.border, colors.code_bg, colors.text_dim)
                     };
+                    let counts =
+                        crate::app::attention_queue::format_attention_pill_counts(asks, total);
                     let pill_text = if let Some(top) = self.attention_queue.items.first() {
                         let lock_prefix = if top.locked { "🔒 " } else { "" };
-                        format!(
-                            "{lock_prefix}◆{asks} · {total}  {} {}",
-                            top.pane_name, top.summary
-                        )
+                        format!("{lock_prefix}{counts}  {} {}", top.pane_name, top.summary)
                     } else {
-                        "◆0 · Queue calm".to_string()
+                        counts
                     };
                     let font = FontId::proportional(style::TEXT_HINT);
                     let pad_x = style::ATTENTION_CHIP_PAD_X;
