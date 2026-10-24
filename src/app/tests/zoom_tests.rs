@@ -286,21 +286,35 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(root_ctx_id));
 
-    // Verify left-to-right tree layout: root.x < child.x and root rollup includes child_b's ask.
-    let (nodes, edges) = h
-        .app
-        .compute_atlas_graph(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0)));
+    // Verify top-down tree layout: single root at top-center, children on row below, and root rollup includes child_b's ask.
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let (nodes, edges) = h.app.compute_atlas_graph(viewport);
     let root_node = nodes.iter().find(|n| n.context_id == root_ctx_id).unwrap();
     let child_a_node = nodes.iter().find(|n| n.context_id == child_a_id).unwrap();
     let child_b_node = nodes.iter().find(|n| n.context_id == child_b_id).unwrap();
-    // Radial layout: the root sits at the viewport center, children around it.
-    assert_eq!(root_node.rect.center(), Pos2::new(720.0, 450.0));
+    assert!(
+        (root_node.rect.center().x - viewport.center().x).abs() < 1.0,
+        "single root must sit horizontally centered at top-center"
+    );
+    assert!(
+        root_node.rect.max.y < child_a_node.rect.min.y,
+        "single root must sit above its children"
+    );
+    assert!(
+        (child_a_node.rect.center().y - child_b_node.rect.center().y).abs() < 1.0,
+        "children at same depth must sit on the same row"
+    );
+    assert!(child_a_node.rect.center().x < child_b_node.rect.center().x);
     assert!(!root_node.rect.intersects(child_a_node.rect));
     assert!(!root_node.rect.intersects(child_b_node.rect));
     assert!(!child_a_node.rect.intersects(child_b_node.rect));
     assert!(edges
         .iter()
         .any(|e| e.from_context_id == root_ctx_id && e.to_context_id == child_a_id));
+    assert!(
+        !edges.iter().any(|e| e.from_context_id == 0),
+        "single root must not have virtual hub edges"
+    );
     assert_eq!(root_node.ask_rollup, 1);
     assert_eq!(child_b_node.direct_asks, 1);
     assert!(!edges.is_empty());
@@ -350,6 +364,69 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
         .expect("DecisionOverlay opened on dive into asking node");
     assert_eq!(ov.ask_id, "ask-child-b");
     assert_eq!(ov.pane_id, child_b_p2);
+}
+
+#[test]
+fn tree_atlas_layout_multi_root_hub_top_down() {
+    let mut h = HostHarness::new();
+    let root1_pane = h.add_test_pane();
+    let root1_id = h.app.router.active().context_id;
+    h.app.set_context_columns(root1_id, vec![vec![root1_pane]]);
+
+    let child1_id = h.app.create_context_without_pty("child-1", Some(root1_id));
+    let child1_pane = h.add_test_pane();
+    h.app
+        .set_context_columns(child1_id, vec![vec![child1_pane]]);
+
+    let root2_id = h.app.create_context_without_pty("root-2", None);
+    let root2_pane = h.add_test_pane();
+    h.app.set_context_columns(root2_id, vec![vec![root2_pane]]);
+
+    h.app.switch_to_context_restoring_last_pane(root1_id);
+    h.app.zoom_out_or_close_surface();
+    h.app.zoom_out_or_close_surface();
+    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
+
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let hub_rect = crate::app::PlexiApp::atlas_hub_rect(viewport);
+    let (nodes, edges) = h.app.compute_atlas_graph(viewport);
+
+    let r1 = nodes.iter().find(|n| n.context_id == root1_id).unwrap();
+    let r2 = nodes.iter().find(|n| n.context_id == root2_id).unwrap();
+    let c1 = nodes.iter().find(|n| n.context_id == child1_id).unwrap();
+
+    // Hub pill sits at top-center above row 1 roots.
+    assert!((hub_rect.center().x - viewport.center().x).abs() < 1.0);
+    assert!(hub_rect.max.y < r1.rect.min.y);
+    assert!(hub_rect.max.y < r2.rect.min.y);
+
+    // Roots sit on row 1 side-by-side; child sits on row 2 below root 1.
+    assert!((r1.rect.center().y - r2.rect.center().y).abs() < 1.0);
+    assert!(r1.rect.center().x < r2.rect.center().x);
+    assert!(r1.rect.max.y < c1.rect.min.y);
+
+    // Hub edges connect hub bottom-center to each root's top-center.
+    let hub_bottom = Pos2::new(hub_rect.center().x, hub_rect.max.y);
+    for root in [r1, r2] {
+        let edge = edges
+            .iter()
+            .find(|e| e.from_context_id == 0 && e.to_context_id == root.context_id)
+            .expect("hub edge to root");
+        assert_eq!(edge.from_pos, hub_bottom);
+        assert_eq!(
+            edge.to_pos,
+            Pos2::new(root.rect.center().x, root.rect.min.y)
+        );
+    }
+
+    // Keyboard nav works across roots (j/k at depth 0) and down to child (l).
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root2_id));
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(child1_id));
 }
 
 /// R37 & R38: Attention queue category ordering (`Ask -> Failed -> Result -> Done`, oldest first)

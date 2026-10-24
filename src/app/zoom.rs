@@ -961,6 +961,15 @@ impl PlexiApp {
         true
     }
 
+    /// Bounding rect of the top-center virtual hub pill shown when `ZoomLevel::TreeAtlas`
+    /// has multiple root contexts.
+    pub fn atlas_hub_rect(viewport: Rect) -> Rect {
+        Rect::from_center_size(
+            Pos2::new(viewport.center().x, viewport.min.y + 44.0),
+            Vec2::new(136.0, 28.0),
+        )
+    }
+
     /// Build the ordered tree of contexts and their positions for `ZoomLevel::TreeAtlas`.
     pub fn compute_atlas_graph(&self, viewport: Rect) -> (Vec<AtlasNode>, Vec<AtlasEdge>) {
         let contexts: Vec<&crate::host::context::Context> = self
@@ -978,11 +987,12 @@ impl PlexiApp {
             .map(|c| c.context_id)
             .collect();
 
-        // Radial tree: the root sits at the viewport center and descendants
-        // fan out on concentric rings, each node owning an angular wedge sized
-        // by its leaf count. Several roots hang off a virtual hub at the center.
-        let center = viewport.center();
+        // Top-down tree layout:
+        // - Single root: root sits at top-center, children on rows below.
+        // - Multiple roots: visible hub pill sits at top-center (`atlas_hub_rect`),
+        //   roots sit on row 1 below the hub, and children sit on rows below their parent.
         let hub = roots.len() > 1;
+        let hub_rect = Self::atlas_hub_rect(viewport);
         let children_of = |ctx_id: u64| -> Vec<u64> {
             contexts
                 .iter()
@@ -1010,61 +1020,59 @@ impl PlexiApp {
             .map(|&r| max_depth(r, &children_of))
             .max()
             .unwrap_or(0);
-        let max_ring = deepest + usize::from(hub);
-        let (rx_step, ry_step) = if max_ring == 0 {
-            (0.0, 0.0)
+        let root_row_y = if hub {
+            hub_rect.max.y + 48.0 + style::ATLAS_NODE_H * 0.5
         } else {
-            let fit_x = ((viewport.width() - style::ATLAS_NODE_W) * 0.5 - 16.0) / max_ring as f32;
-            let fit_y = ((viewport.height() - style::ATLAS_NODE_H) * 0.5 - 16.0) / max_ring as f32;
-            (
-                fit_x.max(style::ATLAS_NODE_W * 0.75),
-                fit_y.max(style::ATLAS_NODE_H * 1.1),
-            )
+            viewport.min.y + 48.0 + style::ATLAS_NODE_H * 0.5
+        };
+        let row_step_y = if deepest == 0 {
+            style::ATLAS_NODE_H + 56.0
+        } else {
+            let avail_h =
+                (viewport.max.y - 64.0 - root_row_y - style::ATLAS_NODE_H * 0.5).max(style::ATLAS_NODE_H);
+            (avail_h / deepest as f32).clamp(style::ATLAS_NODE_H + 36.0, style::ATLAS_NODE_H * 1.85)
         };
 
+        let total_leaves: usize = roots
+            .iter()
+            .map(|&r| leaves(r, &children_of))
+            .sum::<usize>()
+            .max(1);
+        let slot_w = style::ATLAS_NODE_W + 48.0;
+        let band_w = (total_leaves as f32 * slot_w)
+            .min((viewport.width() - 48.0).max(style::ATLAS_NODE_W));
+        let band_x0 = viewport.center().x - band_w * 0.5;
+
         let mut nodes_out: Vec<AtlasNode> = Vec::new();
-        // (context_id, depth, ring, wedge_start, wedge_end)
         struct Placement {
             ctx_id: u64,
             depth: usize,
-            ring: usize,
-            a0: f32,
-            a1: f32,
+            x0: f32,
+            x1: f32,
         }
-        let tau = std::f32::consts::TAU;
-        let down = std::f32::consts::FRAC_PI_2;
         let mut stack: Vec<Placement> = Vec::new();
         {
-            // Root wedges: the whole circle (starting so a lone child lands below).
-            let total: usize = roots.iter().map(|&r| leaves(r, &children_of)).sum::<usize>().max(1);
-            let mut a = down - tau * 0.5;
+            let mut x = band_x0;
             let mut placements = Vec::new();
             for &r in &roots {
-                let span = tau * leaves(r, &children_of) as f32 / total as f32;
+                let span = band_w * leaves(r, &children_of) as f32 / total_leaves as f32;
                 placements.push(Placement {
                     ctx_id: r,
                     depth: 0,
-                    ring: usize::from(hub),
-                    a0: a,
-                    a1: a + span,
+                    x0: x,
+                    x1: x + span,
                 });
-                a += span;
+                x += span;
             }
             placements.reverse();
             stack.extend(placements);
         }
         while let Some(pl) = stack.pop() {
             let ctx_id = pl.ctx_id;
-            let mid = (pl.a0 + pl.a1) * 0.5;
-            let ring = pl.ring as f32;
-            let node_center = if pl.ring == 0 {
-                center
-            } else {
-                Pos2::new(
-                    center.x + mid.cos() * rx_step * ring,
-                    center.y + mid.sin() * ry_step * ring,
-                )
-            };
+            let node_center = Pos2::new(
+                (pl.x0 + pl.x1) * 0.5,
+                root_row_y + (pl.depth as f32) * row_step_y,
+            );
             let rect = Rect::from_center_size(
                 node_center,
                 Vec2::new(style::ATLAS_NODE_W, style::ATLAS_NODE_H),
@@ -1121,25 +1129,24 @@ impl PlexiApp {
 
             let kids = children_of(ctx_id);
             let total: usize = kids.iter().map(|&k| leaves(k, &children_of)).sum::<usize>().max(1);
-            let mut a = pl.a0;
+            let mut x = pl.x0;
             let mut kid_placements = Vec::new();
             for &k in &kids {
-                let span = (pl.a1 - pl.a0) * leaves(k, &children_of) as f32 / total as f32;
+                let span = (pl.x1 - pl.x0) * leaves(k, &children_of) as f32 / total as f32;
                 kid_placements.push(Placement {
                     ctx_id: k,
                     depth: pl.depth + 1,
-                    ring: pl.ring + 1,
-                    a0: a,
-                    a1: a + span,
+                    x0: x,
+                    x1: x + span,
                 });
-                a += span;
+                x += span;
             }
             kid_placements.reverse();
             stack.extend(kid_placements);
         }
 
         let mut edges_out: Vec<AtlasEdge> = Vec::new();
-        // Parent/child context relationships.
+        // Parent/child context relationships (top-down: parent bottom-center -> child top-center).
         for node in &nodes_out {
             if let Some(pid) = node.parent_id {
                 if let Some(parent_node) = nodes_out.iter().find(|n| n.context_id == pid) {
@@ -1153,21 +1160,22 @@ impl PlexiApp {
                     edges_out.push(AtlasEdge {
                         from_context_id: pid,
                         to_context_id: node.context_id,
-                        from_pos: parent_node.rect.center(),
-                        to_pos: node.rect.center(),
+                        from_pos: Pos2::new(parent_node.rect.center().x, parent_node.rect.max.y),
+                        to_pos: Pos2::new(node.rect.center().x, node.rect.min.y),
                         kind,
                     });
                 }
             }
         }
-        // Virtual hub: with several roots, each hangs off the center point.
+        // Virtual hub: with several roots, each root hangs below the top-center hub pill.
         if hub {
+            let hub_bottom = Pos2::new(hub_rect.center().x, hub_rect.max.y);
             for node in nodes_out.iter().filter(|n| n.parent_id.is_none()) {
                 edges_out.push(AtlasEdge {
                     from_context_id: 0,
                     to_context_id: node.context_id,
-                    from_pos: center,
-                    to_pos: node.rect.center(),
+                    from_pos: hub_bottom,
+                    to_pos: Pos2::new(node.rect.center().x, node.rect.min.y),
                     kind: AtlasEdgeKind::TreeRoad,
                 });
             }
@@ -2113,7 +2121,7 @@ impl PlexiApp {
             .unwrap_or_else(|| self.router.active().context_id);
         let bump = self.zoom.active_edge_bump_offset();
 
-        // 1. Draw Motorways road edges (casing + road stroke).
+        // 1. Draw Motorways road edges (casing + road stroke, elbow paths for tree edges).
         for edge in &edges {
             let stroke = match edge.kind {
                 AtlasEdgeKind::NeedsRollup => Stroke::new(style::EDGE_NEEDS_W, colors.zoom_needs),
@@ -2123,8 +2131,53 @@ impl PlexiApp {
                 AtlasEdgeKind::TreeRoad => Stroke::new(style::EDGE_ROAD_W, colors.border),
             };
             let casing = Stroke::new(stroke.width + 3.0_f32, colors.shadow_flat);
-            painter.line_segment([edge.from_pos, edge.to_pos], casing);
-            painter.line_segment([edge.from_pos, edge.to_pos], stroke);
+            let is_tree_edge = matches!(
+                edge.kind,
+                AtlasEdgeKind::TreeRoad | AtlasEdgeKind::NeedsRollup | AtlasEdgeKind::Failed
+            );
+            if is_tree_edge
+                && (edge.from_pos.x - edge.to_pos.x).abs() > 1.0
+                && (edge.to_pos.y - edge.from_pos.y).abs() > 4.0
+            {
+                let mid_y = (edge.from_pos.y + edge.to_pos.y) * 0.5;
+                let p1 = Pos2::new(edge.from_pos.x, mid_y);
+                let p2 = Pos2::new(edge.to_pos.x, mid_y);
+                for seg in [
+                    [edge.from_pos, p1],
+                    [p1, p2],
+                    [p2, edge.to_pos],
+                ] {
+                    painter.line_segment(seg, casing);
+                    painter.line_segment(seg, stroke);
+                }
+            } else {
+                painter.line_segment([edge.from_pos, edge.to_pos], casing);
+                painter.line_segment([edge.from_pos, edge.to_pos], stroke);
+            }
+        }
+
+        // 1b. Draw visible top-center hub pill when multiple roots exist.
+        if edges.iter().any(|e| e.from_context_id == 0) {
+            let hub_rect = Self::atlas_hub_rect(rect);
+            painter.rect_filled(
+                hub_rect.translate(Vec2::new(2.0, 2.0)),
+                style::RADIUS_PILL,
+                colors.shadow_flat,
+            );
+            painter.rect_filled(hub_rect, style::RADIUS_PILL, colors.tile_bg);
+            painter.rect_stroke(
+                hub_rect,
+                style::RADIUS_PILL,
+                Stroke::new(1.5_f32, colors.border),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                hub_rect.center(),
+                Align2::CENTER_CENTER,
+                "contexts",
+                crate::ui::theme::font_medium(style::TEXT_CAPTION),
+                colors.text_dim,
+            );
         }
 
         let mut clicked_node: Option<u64> = None;
