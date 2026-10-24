@@ -1871,7 +1871,8 @@ impl PlexiApp {
                             let stroke = if is_sel {
                                 Stroke::new(1.5_f32, colors.accent)
                             } else {
-                                Stroke::new(1.0_f32, colors.border)
+                                // Same width as the selected stroke so selection never resizes the row.
+                                Stroke::new(1.5_f32, colors.border)
                             };
                             let resp = egui::Frame::NONE
                                 .fill(fill)
@@ -1880,39 +1881,7 @@ impl PlexiApp {
                                 .inner_margin(egui::Margin::symmetric(12, 9))
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
-                                    ui.horizontal_top(|ui| {
-                                        ui.label(
-                                            RichText::new(format!("{}", idx + 1))
-                                                .font(FontId::new(
-                                                    style::TEXT_CAPTION,
-                                                    FontFamily::Monospace,
-                                                ))
-                                                .color(colors.accent),
-                                        );
-                                        ui.add_space(style::SPACE_XS);
-                                        let label_w = (ui.available_width()
-                                            - if opt.recommended { 120.0 } else { 8.0 })
-                                        .max(40.0);
-                                        wrapped_label(
-                                            ui,
-                                            &opt.label,
-                                            crate::ui::theme::font_medium(style::TEXT_BODY),
-                                            colors.text_primary,
-                                            label_w,
-                                        );
-                                        if opt.recommended {
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    ui.label(
-                                                        RichText::new("★ Recommended")
-                                                            .size(style::TEXT_HINT)
-                                                            .color(colors.zoom_needs),
-                                                    );
-                                                },
-                                            );
-                                        }
-                                    });
+                                    paint_option_row(ui, idx + 1, opt, &colors);
                                 })
                                 .response
                                 .interact(Sense::click());
@@ -1961,6 +1930,57 @@ impl PlexiApp {
             self.pick_decision_overlay_option(idx);
         }
     }
+}
+
+/// One decision-overlay option row body: index, label, and (when recommended)
+/// an inline right-aligned tag. Every row is exactly one body-text line tall;
+/// the label ellipsizes to the width the tag leaves, so the tag never grows
+/// the row.
+fn paint_option_row(
+    ui: &mut egui::Ui,
+    number: usize,
+    opt: &QueueOption,
+    colors: &crate::ui::theme::Colors,
+) {
+    let body_font = crate::ui::theme::font_medium(style::TEXT_BODY);
+    let num_font = FontId::new(style::TEXT_CAPTION, FontFamily::Monospace);
+    let tag_font = FontId::proportional(style::TEXT_HINT);
+    let row_h = ui.fonts_mut(|f| f.row_height(&body_font));
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    let num = ui.fonts_mut(|f| f.layout_no_wrap(number.to_string(), num_font, colors.accent));
+    painter.galley(
+        egui::pos2(rect.min.x, rect.center().y - num.size().y / 2.0),
+        num.clone(),
+        colors.accent,
+    );
+    let mut right = rect.max.x;
+    if opt.recommended {
+        let tag = ui.fonts_mut(|f| {
+            f.layout_no_wrap("★ Recommended".to_string(), tag_font, colors.zoom_needs)
+        });
+        right -= tag.size().x;
+        painter.galley(
+            egui::pos2(right, rect.center().y - tag.size().y / 2.0),
+            tag,
+            colors.zoom_needs,
+        );
+        right -= style::SPACE_SM;
+    }
+    let label_left = rect.min.x + num.size().x + style::SPACE_XS;
+    let label = crate::ui::text::elided_galley(
+        ui,
+        &opt.label,
+        body_font,
+        (right - label_left).max(0.0),
+        crate::ui::text::Side::Trailing,
+    );
+    painter.galley(
+        egui::pos2(label_left, rect.center().y - label.size().y / 2.0),
+        label,
+        colors.text_primary,
+    );
 }
 
 /// Label wrapped to `max_w` by [`wrap_text`] with no line cap: every line of
@@ -2184,5 +2204,41 @@ mod tests {
             auto_record.resolution,
             Some(crate::broker::gate::NeedsYouResolution::Acknowledged)
         );
+    }
+
+    fn option_row_heights(recommend_first: bool) -> Vec<f32> {
+        let mut h = HostHarness::new();
+        let id = "ask-rows";
+        let pane = h.add_test_pane();
+        h.app.enqueue_ask(id, pane, "cargo test", 1_000, Vec::new());
+        assert!(h.app.open_decision_overlay_for_ask(id));
+        let overlay = h.app.attention_queue.decision_overlay.as_mut().unwrap();
+        overlay.options = default_ask_options();
+        overlay.options[0].recommended = recommend_first;
+        overlay.options[1].label =
+            "A very long option label that cannot possibly fit on a single line of the card, \
+             and keeps going well past the modal width"
+                .to_string();
+        h.run_frames(3);
+        h.app
+            .approval_buttons
+            .iter()
+            .map(|b| b.bounds[3] - b.bounds[1])
+            .collect()
+    }
+
+    #[test]
+    fn decision_overlay_option_rows_have_equal_height() {
+        for recommend_first in [true, false] {
+            let heights = option_row_heights(recommend_first);
+            assert_eq!(heights.len(), 3, "three option rows");
+            assert!(
+                heights.iter().all(|h| (h - heights[0]).abs() < 0.5),
+                "rows differ (recommended={recommend_first}): {heights:?}"
+            );
+        }
+        let with = option_row_heights(true);
+        let without = option_row_heights(false);
+        assert!((with[0] - without[0]).abs() < 0.5, "tag must not inflate the row");
     }
 }
