@@ -135,112 +135,128 @@ const SAMPLES: &[Sample] = &[
 ];
 
 const NODE_W: f32 = style::ATLAS_NODE_W;
-const BAR_W: f32 = 520.0;
-const NOTE_W: f32 = 150.0;
-const GAP: f32 = 18.0;
+/// Sibling-card width in the gallery (narrower than the real `CARD_W` so two
+/// sample columns plus the bar column fit a ~1490px canvas).
+const SIB_W: f32 = 300.0;
+const MIN_BAR_W: f32 = 240.0;
+const GAP: f32 = 10.0;
+const CAPTION_H: f32 = 13.0;
 
 impl PlexiApp {
     pub(crate) fn draw_card_gallery(&mut self, ui: &mut egui::Ui) {
         let colors = self.colors;
         let ctx = ui.ctx().clone();
-        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let avail_w = ui.available_width();
             let origin = ui.available_rect_before_wrap().min;
-            let mut y = origin.y + GAP;
-            let total_w = GAP + NOTE_W + style::CARD_W + GAP + NODE_W + GAP + BAR_W + GAP;
             let header_font = crate::ui::theme::font_medium(style::TEXT_BODY);
             let note_font = FontId::new(style::TEXT_HINT, FontFamily::Proportional);
+            // Two sample columns of [sibling | atlas], then the bar column
+            // taking whatever width is left.
+            let col_w = SIB_W + GAP + NODE_W;
+            let bar_w = (avail_w - GAP * 4.0 - col_w * 2.0 - GAP).max(MIN_BAR_W);
 
-            // Measure first so the scroll area knows its full extent.
-            let mut rows = Vec::new();
-            let mut total_h = GAP + 30.0;
+            let mut cells = Vec::new();
             for sample in SAMPLES {
                 let badge = sample
                     .badge
                     .map(|t| (t.to_string(), colors_for(&colors, sample.state)));
                 let spec = |form: CardForm| {
-                    let (badge, subtitle) = match form {
-                        CardForm::Bar => (
-                            Some(match sample.state {
-                                CardState::NeedsYou => {
-                                    ("Enter ▸ Decide".to_string(), colors.zoom_needs)
-                                }
-                                _ => ("✕".to_string(), colors.text_dim),
-                            }),
-                            sample.subtitle,
-                        ),
-                        _ => (badge.clone(), sample.subtitle),
+                    let badge = match form {
+                        CardForm::Bar => Some(match sample.state {
+                            CardState::NeedsYou => ("Enter ▸ Decide".to_string(), colors.zoom_needs),
+                            _ => ("✕".to_string(), colors.text_dim),
+                        }),
+                        _ => badge.clone(),
                     };
                     CardSpec {
                         state: sample.state,
                         title: sample.title,
-                        subtitle,
+                        subtitle: sample.subtitle,
                         detail: sample.detail,
                         badge,
                     }
                 };
-                let specs = [
-                    spec(CardForm::Sibling),
-                    spec(CardForm::Atlas),
-                    spec(CardForm::Bar),
-                ];
+                let specs = [spec(CardForm::Sibling), spec(CardForm::Atlas), spec(CardForm::Bar)];
                 let layouts = [
-                    layout_card(&ctx, CardForm::Sibling, &specs[0], style::CARD_W),
+                    layout_card(&ctx, CardForm::Sibling, &specs[0], SIB_W),
                     layout_card(&ctx, CardForm::Atlas, &specs[1], NODE_W),
-                    layout_card(&ctx, CardForm::Bar, &specs[2], BAR_W),
+                    layout_card(&ctx, CardForm::Bar, &specs[2], bar_w),
                 ];
-                let h = layouts.iter().map(|l| l.height).fold(0.0_f32, f32::max);
-                total_h += h + GAP;
-                rows.push((specs, layouts, h));
+                cells.push((specs, layouts));
             }
 
-            let (area, _) = ui.allocate_exact_size(
-                Vec2::new(total_w.max(ui.available_width()), total_h),
-                Sense::hover(),
-            );
+            let header_h = 24.0;
+            let rows = SAMPLES.len().div_ceil(2);
+            let row_hs: Vec<f32> = (0..rows)
+                .map(|r| {
+                    cells[r * 2..(r * 2 + 2).min(cells.len())]
+                        .iter()
+                        .map(|(_, l)| l[0].height.max(l[1].height))
+                        .fold(0.0_f32, f32::max)
+                        + CAPTION_H
+                        + GAP
+                })
+                .collect();
+            let grid_h: f32 = row_hs.iter().sum();
+            let bars_h: f32 = cells.iter().map(|(_, l)| l[2].height + CAPTION_H + 4.0).sum();
+            let total_h = header_h + GAP + grid_h.max(bars_h) + GAP;
+
+            let (area, _) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), Sense::hover());
             let painter = ui.painter_at(area);
             painter.rect_filled(area, 0.0, colors.bg_darkest);
             painter.text(
-                Pos2::new(origin.x + GAP, y),
+                Pos2::new(origin.x + GAP, origin.y + 4.0),
                 Align2::LEFT_TOP,
-                "Card gallery — sibling card · atlas node · queue bar (PLEXI_DEBUG_CARD_GALLERY=1)",
+                "Card gallery — sibling · atlas node | queue bars (PLEXI_DEBUG_CARD_GALLERY=1)",
                 header_font,
                 colors.text_primary,
             );
-            y += 30.0;
+            let top = origin.y + header_h + GAP;
+            let caption = |sample: &Sample| {
+                format!("{} ({})", sample.note, sample.state.label())
+            };
+            let bar_x = origin.x + GAP + (col_w + GAP) * 2.0;
 
-            for (sample, (specs, layouts, h)) in SAMPLES.iter().zip(rows.iter()) {
-                let note = wrap_text(
-                    &ctx,
-                    &format!("{} ({})", sample.note, sample.state.label()),
-                    note_font.clone(),
-                    NOTE_W - GAP,
-                    Some(4),
-                );
+            let mut ys = vec![top];
+            for h in &row_hs {
+                ys.push(ys.last().copied().unwrap_or(top) + h);
+            }
+            for (i, (sample, (specs, layouts))) in SAMPLES.iter().zip(cells.iter()).enumerate() {
+                let (row, col) = (i / 2, i % 2);
+                let x0 = origin.x + GAP + col as f32 * (col_w + GAP);
+                let y = ys[row];
+                let note = wrap_text(&ctx, &caption(sample), note_font.clone(), col_w, Some(1));
                 painter.text(
-                    Pos2::new(origin.x + GAP, y + 4.0),
+                    Pos2::new(x0, y),
                     Align2::LEFT_TOP,
-                    note.join("\n"),
+                    note.join(""),
                     note_font.clone(),
                     colors.text_dim,
                 );
-                let mut x = origin.x + GAP + NOTE_W;
-                for (i, (form, w)) in [
-                    (CardForm::Sibling, style::CARD_W),
-                    (CardForm::Atlas, NODE_W),
-                    (CardForm::Bar, BAR_W),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, layouts[i].height));
-                    let fill = match form {
-                        CardForm::Bar => colors.tile_bg,
-                        _ => colors.depth_tint(1),
-                    };
-                    paint_card(&painter, rect, &layouts[i], &specs[i], &colors, fill, false);
-                    x += w + GAP;
+                for (k, x, w) in [(0, x0, SIB_W), (1, x0 + SIB_W + GAP, NODE_W)] {
+                    let rect = Rect::from_min_size(
+                        Pos2::new(x, y + CAPTION_H),
+                        Vec2::new(w, layouts[k].height),
+                    );
+                    paint_card(&painter, rect, &layouts[k], &specs[k], &colors, colors.depth_tint(1), false);
                 }
-                y += h + GAP;
+            }
+            let mut y = top;
+            for (sample, (specs, layouts)) in SAMPLES.iter().zip(cells.iter()) {
+                painter.text(
+                    Pos2::new(bar_x, y),
+                    Align2::LEFT_TOP,
+                    sample.state.label(),
+                    note_font.clone(),
+                    colors.text_dim,
+                );
+                let rect = Rect::from_min_size(
+                    Pos2::new(bar_x, y + CAPTION_H),
+                    Vec2::new(bar_w, layouts[2].height),
+                );
+                paint_card(&painter, rect, &layouts[2], &specs[2], &colors, colors.tile_bg, false);
+                y += layouts[2].height + CAPTION_H + 4.0;
             }
         });
     }

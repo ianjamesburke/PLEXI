@@ -28,6 +28,20 @@ fn split_fit<'a>(word: &'a str, max_w: f32, measure: &dyn Fn(&str) -> f32) -> (&
         }
         end = next;
     }
+    // Prefer a soft break (`-`, `/`, `_`, `.`) inside the fitting prefix over
+    // splitting mid-segment, unless that would leave a sliver.
+    if end < word.len() {
+        let soft = word[..end]
+            .char_indices()
+            .filter(|(_, c)| matches!(c, '-' | '/' | '_' | '.'))
+            .map(|(i, c)| i + c.len_utf8())
+            .last();
+        if let Some(cut) = soft {
+            if cut >= 3 {
+                return word.split_at(cut);
+            }
+        }
+    }
     word.split_at(end)
 }
 
@@ -164,8 +178,8 @@ impl CardState {
 
     fn color(self, colors: &Colors) -> Color32 {
         match self {
-            CardState::CommandWaiting => colors.accent,
-            CardState::Working => colors.state_working,
+            CardState::CommandWaiting => colors.warning,
+            CardState::Working => colors.accent,
             CardState::NeedsYou => colors.zoom_needs,
             CardState::Done => colors.success,
             CardState::Failed => colors.zoom_failed,
@@ -176,7 +190,7 @@ impl CardState {
     fn fill(self, colors: &Colors, base: Color32) -> Color32 {
         match self {
             CardState::NeedsYou => colors.needs_fill,
-            CardState::Failed => colors.failed_fill,
+            CardState::Working => base.lerp_to_gamma(colors.accent, 0.12),
             _ => base,
         }
     }
@@ -270,6 +284,18 @@ pub(crate) struct CardLayout {
     badge_w: f32,
 }
 
+/// Room for the play glyph drawn before a command-waiting "run" label.
+const RUN_GLYPH_W: f32 = 10.0;
+
+/// Badge text: the spec's own, or "run" for a command waiting to execute.
+fn badge_text(spec: &CardSpec) -> Option<String> {
+    match (&spec.badge, spec.state) {
+        (Some((t, _)), _) => Some(t.clone()),
+        (None, CardState::CommandWaiting) => Some("run".to_string()),
+        _ => None,
+    }
+}
+
 fn row_h(font: &FontId) -> f32 {
     font.size * 1.25
 }
@@ -284,10 +310,11 @@ pub(crate) fn layout_card(
 ) -> CardLayout {
     let m = form.metrics();
     let badge_font = theme::font_medium(style::TEXT_CAPTION);
-    let badge_w = spec
-        .badge
-        .as_ref()
-        .map(|(t, _)| measure_fn(ctx, badge_font)(t) + 8.0)
+    let badge_w = badge_text(spec)
+        .map(|t| {
+            let glyph = if spec.badge.is_none() { RUN_GLYPH_W } else { 0.0 };
+            measure_fn(ctx, badge_font)(&t) + 12.0 + glyph
+        })
         .unwrap_or(0.0);
     let text_x = m.pad_x + STRIP_W + ICON_W;
     let inner_w = (width - text_x - m.pad_x).max(1.0);
@@ -347,7 +374,7 @@ pub(crate) fn paint_card(
     };
     let stroke = if selected {
         Stroke::new(2.0_f32, colors.accent)
-    } else if matches!(spec.state, CardState::NeedsYou | CardState::Failed) {
+    } else if spec.state == CardState::NeedsYou {
         Stroke::new(1.5_f32, state_color)
     } else {
         Stroke::new(1.0_f32, colors.border)
@@ -376,7 +403,11 @@ pub(crate) fn paint_card(
             ne: 0,
             se: 0,
         },
-        state_color,
+        if spec.state == CardState::Idle {
+            Color32::TRANSPARENT
+        } else {
+            state_color
+        },
     );
 
     let time = painter.ctx().input(|i| i.time);
@@ -398,7 +429,11 @@ pub(crate) fn paint_card(
             Align2::LEFT_TOP,
             line,
             m.title_font.clone(),
-            colors.text_primary,
+            if spec.state == CardState::Idle {
+                colors.text_dim
+            } else {
+                colors.text_primary
+            },
         );
         y += title_h;
     }
@@ -444,12 +479,16 @@ pub(crate) fn paint_card(
 
     if !layout.detail.is_empty() {
         y += SECTION_GAP;
-        let color = if spec.state == CardState::Failed {
-            colors.zoom_failed
+        let color = if spec.state == CardState::Idle {
+            colors.text_dim.gamma_multiply(0.7)
         } else {
             colors.text_dim
         };
         for line in &layout.detail {
+            // Never draw a partial line: it must fit above the bottom padding.
+            if y + row_h(&m.detail_font) > rect.max.y - m.pad_y * 0.5 {
+                break;
+            }
             p.text(
                 Pos2::new(text_x, y),
                 Align2::LEFT_TOP,
@@ -465,14 +504,29 @@ pub(crate) fn paint_card(
         Pos2::new(rect.max.x - m.pad_x - layout.badge_w, rect.min.y + m.pad_y),
         Vec2::new(layout.badge_w, title_h),
     );
-    if let Some((text, color)) = &spec.badge {
-        p.text(
-            Pos2::new(rect.max.x - m.pad_x, rect.min.y + m.pad_y + title_h * 0.5),
+    if let Some(text) = badge_text(spec) {
+        let color = spec.badge.as_ref().map(|(_, c)| *c).unwrap_or(state_color);
+        let cy = rect.min.y + m.pad_y + title_h * 0.5;
+        let galley = p.text(
+            Pos2::new(rect.max.x - m.pad_x, cy),
             Align2::RIGHT_CENTER,
             text,
             theme::font_medium(style::TEXT_CAPTION),
-            *color,
+            color,
         );
+        if spec.badge.is_none() {
+            // Play triangle before "run".
+            let x = galley.min.x - 4.0;
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(x - 6.0, cy - 4.0),
+                    Pos2::new(x, cy),
+                    Pos2::new(x - 6.0, cy + 4.0),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
     }
     badge_rect
 }
