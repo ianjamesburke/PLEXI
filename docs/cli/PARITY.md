@@ -26,8 +26,9 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `ToggleZoom` | `plexi pane zoom 42` |  |
 | `ToggleCommandPalette` | ui-only: Displays a human command chooser; agents invoke the selected command directly. |  |
 | `RenamePane` | `plexi pane name 42 name` |  |
-| `IncreasePaneFontSize` | ui-only: Per-pane visual text size preference. |  |
-| `DecreasePaneFontSize` | ui-only: Per-pane visual text size preference. |  |
+| `UiScaleUp` | ui-only: App-wide interface scale; persisted as `ui_scale` in config (`plexi config set ui_scale=1.2`). |  |
+| `UiScaleDown` | ui-only: App-wide interface scale; persisted as `ui_scale` in config (`plexi config set ui_scale=1.2`). |  |
+| `UiScaleReset` | ui-only: App-wide interface scale; persisted as `ui_scale` in config (`plexi config set ui_scale=1.2`). |  |
 | `ScrollUp` | ui-only: Moves the visible viewport; agents read pane capture output. |  |
 | `ScrollDown` | ui-only: Moves the visible viewport; agents read pane capture output. |  |
 | `CloseApp` | `plexi pane close 42` |  |
@@ -40,7 +41,8 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `OpenSecretsManager` | `plexi app open secrets_manager` |  |
 | `OpenAssistant` | `plexi app open assistant` |  |
 | `RenameContext` | `plexi context rename name --context-id 42` |  |
-| `ToggleNotificationModal` | ui-only: Opens the desktop notification viewer; agents inspect needs-you and notification records. |  |
+| `ToggleAttentionQueue` | ui-only: Toggles the desktop attention queue list; agents inspect needs-you and notification records. |  |
+| `ZoomIn` | `plexi context zoom 42` | CLI targets an explicit context id; the shortcut steps in one level toward the ghost on the zoom ladder. |
 | `ForceReloadApp` | ui-only: Developer recovery gesture for a focused app; normal source edits reload through the file watcher. |  |
 | `NewPageRight` | `plexi pane new --window` |  |
 | `NewContext` | `plexi context new name` |  |

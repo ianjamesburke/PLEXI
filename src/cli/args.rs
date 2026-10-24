@@ -954,6 +954,9 @@ pub enum NeedsYouCmd {
         /// Allow free-text answers in addition to `--choice` options.
         #[arg(long)]
         allow_free_text: bool,
+        /// Mark one `--choice` as recommended (shown starred in the decision overlay).
+        #[arg(long)]
+        recommend: Option<String>,
         /// Preview references (e.g. clip/frame/path references).
         #[arg(long = "preview-ref")]
         preview_refs: Vec<String>,

@@ -1515,6 +1515,15 @@ pub fn agent_done_cli(result: &str, summary: Option<&str>, pane_id_flag: Option<
             return if err_code == "invalid_result" { 2 } else { 1 };
         }
     }
+    crate::program_status::emit::emit_agent_report(
+        if crate::program_status::emit::done_is_failure(result) {
+            crate::program_status::State::Error
+        } else {
+            crate::program_status::State::Done
+        },
+        None,
+        summary.and_then(non_empty_string),
+    );
     println!("{content}");
     0
 }
@@ -1546,6 +1555,11 @@ pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
     if let Err(code) = super::check_reply_error(&content) {
         return code;
     }
+    crate::program_status::emit::emit_agent_report(
+        crate::program_status::State::Blocked,
+        Some("question"),
+        Some(q),
+    );
     println!("{content}");
     0
 }
@@ -1630,7 +1644,32 @@ pub fn agent_report_cli(
     if let Some(reason) = blocked_reason {
         payload["blocked_reason"] = serde_json::json!(reason);
     }
-    super::send_to_socket(payload)
+    let code = super::send_to_socket(payload);
+    if code == 0 {
+        use crate::program_status::State;
+        let (state, kind) = match normalized {
+            "working" => (Some(State::Working), None),
+            "blocked" | "needs_you" => (
+                Some(State::Blocked),
+                Some(match blocked_reason {
+                    Some(crate::protocol::AgentBlockedReason::PermissionPrompt) => "permission",
+                    _ => "question",
+                }),
+            ),
+            "idle" => (Some(State::Idle), None),
+            "completed" => (Some(State::Done), None),
+            "failed" | "interrupted" | "exited_unreported" => (Some(State::Error), None),
+            _ => (None, None),
+        };
+        if let Some(state) = state {
+            crate::program_status::emit::emit_agent_report(
+                state,
+                kind,
+                detail.and_then(non_empty_string),
+            );
+        }
+    }
+    code
 }
 
 /// `plexi agent status` — query agent states for all panes.

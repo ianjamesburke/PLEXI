@@ -7,7 +7,7 @@ use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{
     Behavior, ResizeState, SimplificationOptions, TabState, TileId, Tiles, UiResponse,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 pub type PaneId = u64;
@@ -286,38 +286,28 @@ pub(crate) fn paint_tab_bar(
                 egui::pos2(x, bar_rect.center().y),
                 egui::vec2(3.0, TAB_BAR_HEIGHT - 3.0),
             );
-            painter.rect_filled(marker_rect, 1.5, colors.accent);
+            painter.rect_filled(marker_rect, crate::ui::style::radius_fit(marker_rect), colors.accent);
         }
     }
 
     if overtake_hint {
-        let hint_font = egui::FontId::monospace(font_size - 1.0);
-        let hint_text = "Esc";
-        let hint_galley = painter.layout_no_wrap(hint_text.to_string(), hint_font, colors.text_dim);
-        let chip_pad = 4.0;
-        let chip_w = hint_galley.size().x + chip_pad * 2.0;
-        let chip_h = (TAB_BAR_HEIGHT - 6.0).max(10.0);
-        let chip_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                bar_rect.right() - chip_w - 4.0,
-                bar_rect.center().y - chip_h / 2.0,
-            ),
-            egui::vec2(chip_w, chip_h),
-        );
-        painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
-        painter.rect_stroke(
-            chip_rect,
-            egui::CornerRadius::same(3),
-            egui::Stroke::new(1.0_f32, colors.border),
-            egui::StrokeKind::Inside,
-        );
-        crate::ui::snap::text_snapped(
+        let label = crate::ui::shortcuts::display_tokens(&["Esc"]).join("");
+        let chip_w = crate::ui::shortcuts::chip_size(
+            painter
+                .layout_no_wrap(
+                    label.clone(),
+                    egui::FontId::monospace(style::TEXT_CAPTION),
+                    colors.text_dim,
+                )
+                .size(),
+        )
+        .x;
+        crate::ui::shortcuts::paint_key_chip(
             painter,
-            chip_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            hint_text,
-            egui::FontId::monospace(font_size - 1.0),
-            colors.text_dim,
+            bar_rect.right() - chip_w - style::SPACE_XS,
+            bar_rect.center().y,
+            &label,
+            colors,
         );
     }
 
@@ -449,6 +439,13 @@ pub struct PlexiBehavior<'a> {
     /// Consumed (via `remove`) by whichever pane actually renders this frame —
     /// see `crate::host::pane::PendingPaneClick`.
     pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
+    /// Panes in columns clipped off the Niri strip. Their tiles are slivers
+    /// under the peek strip, so they paint a placeholder only: a live view would
+    /// resize the PTY to the sliver and reflow its scrollback.
+    pub off_strip_panes: HashSet<PaneId>,
+    /// True on a frame the strip layout jumped: terminals commit their new grid
+    /// at once instead of debouncing it like a drag.
+    pub strip_layout_jump: bool,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -461,6 +458,16 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let pane_rect = ui.available_rect_before_wrap();
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            return UiResponse::None;
+        }
+
+        if self.off_strip_panes.contains(pane_id) {
+            let pane_rect = ui.available_rect_before_wrap();
+            let fill = match self.panes.get(pane_id) {
+                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
+                _ => self.colors.bg_darkest,
+            };
+            ui.painter().rect_filled(pane_rect, 0.0, fill);
             return UiResponse::None;
         }
 
@@ -514,7 +521,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
                     let button = ui.interact(response.rect, ui.id().with(("child-agent", child.pane_id)), egui::Sense::click());
                     button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text));
-                    if button.on_hover_text("Open child agents (Cmd+Down)").clicked() {
+                    if button.on_hover_text(format!("Open child agents ({})", crate::ui::shortcuts::key_text(&["cmd", "down"]))).clicked() {
                         self.child_agent_dive = Some(*pane_id);
                     }
                 }
@@ -625,6 +632,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     self.workspace_root.as_deref(),
                     self.pane_title_font_size,
                     terminal_input,
+                    self.strip_layout_jump,
                 )
             });
             if close_exited {
@@ -670,7 +678,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     ui.painter().rect_filled(wash_rect, 0.0, wash_col);
                 }
                 let padding = style::SPACE_MD;
-                let inner = pane_rect.shrink(padding);
+                // A column narrower than twice the padding would shrink to a
+                // negative rect, which egui's placer rejects.
+                let inner = egui::Rect::from_min_size(
+                    pane_rect.min + egui::vec2(padding, padding),
+                    egui::vec2(
+                        (pane_rect.width() - 2.0 * padding).max(0.0),
+                        (pane_rect.height() - 2.0 * padding).max(0.0),
+                    ),
+                );
                 let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.horizontal(|ui| {
@@ -790,18 +806,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 {
                     self.portal_zoom_request = Some(target_ctx_id);
                 }
-            }
-        }
-
-        // A quiet inset guide indicates containment without competing with the
-        // shared outside focus outline or the portal's inside status border.
-        if self.pane_lineage.contains_key(pane_id) {
-            let guide = pane_rect.shrink(4.0);
-            if guide.is_positive() {
-                ui.painter().line_segment(
-                    [guide.left_top(), guide.left_bottom()],
-                    egui::Stroke::new(1.5_f32, self.colors.accent.gamma_multiply(0.45)),
-                );
             }
         }
 
@@ -1145,12 +1149,12 @@ pub(crate) fn paint_portal_minimap(
             }
 
             // Pane background — solid screen color
-            painter.rect_filled(cell, 2.0, colors.bg_darkest);
+            painter.rect_filled(cell, crate::ui::style::radius_fit(cell), colors.bg_darkest);
 
             // Inactive (exited) panes get a dim overlay
             if !pane.active {
                 let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
-                painter.rect_filled(cell, 2.0, dim_overlay);
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), dim_overlay);
             }
 
             let is_error_cell = !pane.active
@@ -1174,7 +1178,7 @@ pub(crate) fn paint_portal_minimap(
                     esc_col.b(),
                     24,
                 );
-                painter.rect_filled(cell, 2.0, tint);
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
                 let border_col = egui::Color32::from_rgba_unmultiplied(
                     esc_col.r(),
                     esc_col.g(),
@@ -1183,7 +1187,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.25_f32, border_col),
                     egui::StrokeKind::Middle,
                 );
@@ -1194,23 +1198,7 @@ pub(crate) fn paint_portal_minimap(
                     colors.accent.b(),
                     20,
                 );
-                painter.rect_filled(cell, 2.0, tint);
-
-                // Bottom-edge glow line
-                let glow_y = cell.max.y - 1.0;
-                let glow_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(),
-                    colors.accent.g(),
-                    colors.accent.b(),
-                    50,
-                );
-                painter.line_segment(
-                    [
-                        egui::pos2(cell.min.x, glow_y),
-                        egui::pos2(cell.max.x, glow_y),
-                    ],
-                    egui::Stroke::new(1.5_f32, glow_color),
-                );
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
 
                 // Focused border
                 let accent_border = egui::Color32::from_rgba_unmultiplied(
@@ -1221,7 +1209,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.0_f32, accent_border),
                     egui::StrokeKind::Middle,
                 );
@@ -1234,7 +1222,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.0_f32, dim_border),
                     egui::StrokeKind::Middle,
                 );
@@ -1348,7 +1336,7 @@ pub(crate) fn paint_portal_minimap(
                             };
                             painter.rect_filled(
                                 egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq)),
-                                1.0,
+                                crate::ui::style::radius_fit(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq))),
                                 fill,
                             );
                         }
@@ -1465,11 +1453,11 @@ pub(crate) fn paint_portal_minimap(
                                 egui::vec2(mini_w, mini_h),
                             );
                             if r == 1 && c == 1 {
-                                painter.rect_filled(rect, 2.0, accent_fill);
+                                painter.rect_filled(rect, crate::ui::style::radius_fit(rect), accent_fill);
                             } else {
                                 painter.rect_stroke(
                                     rect,
-                                    2.0,
+                                    crate::ui::style::radius_fit(rect),
                                     egui::Stroke::new(1.0_f32, outline_color),
                                     egui::StrokeKind::Inside,
                                 );

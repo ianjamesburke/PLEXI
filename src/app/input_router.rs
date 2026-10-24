@@ -127,6 +127,12 @@ impl PlexiInput {
         self.events.is_empty()
     }
 
+    /// Swallow all remaining input-intent events in this frame's buffer so
+    /// nothing leaks to underlying panes or widgets.
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+    }
+
     /// Consume the whole buffer into its owned events + modifiers. Used by the
     /// focused-terminal handoff, which hands every remaining event straight to
     /// `egui_term` (the sole intended keyboard consumer for its frame) and
@@ -146,6 +152,29 @@ impl PlexiInput {
                 e,
                 egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
                     if *k == key && m.matches_logically(modifiers)
+            )
+        }) {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Like [`Self::consume_key`], but Shift/Alt must match the pattern
+    /// exactly so a more specific chord (Cmd+Shift+0) is not swallowed by a
+    /// less specific one (Cmd+0).
+    pub(crate) fn consume_key_exact(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+        if let Some(pos) = self.events.iter().position(|e| {
+            matches!(
+                e,
+                egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
+                    if *k == key
+                        && crate::host::keys::modifiers_match_exact_for_os(
+                            m,
+                            &modifiers,
+                            cfg!(target_os = "macos"),
+                        )
             )
         }) {
             self.events.remove(pos);

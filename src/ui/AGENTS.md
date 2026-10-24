@@ -15,13 +15,14 @@ Host overlays should use these instead of raw egui layout wherever a primitive e
 
 ## Design Tokens (`src/ui/style.rs`)
 
-Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITLE_XL`), corner radii (`RADIUS_MD/LG`), modal widths, button heights, overlay chrome. Use these everywhere. Never hard-code magic numbers.
+Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITLE_XL`), corner radii (one scale: `RADIUS_SMALL/MEDIUM/LARGE/PILL`; literal radii outside `style.rs` fail `radius_guard_tests`), modal widths, button heights, overlay chrome. Use these everywhere. Never hard-code magic numbers.
 
 ## Reusable Widgets (`src/ui/shortcuts.rs`)
 
 - `key_chip(ui, label, colors)` — single keyboard key as a styled rounded-rect chip.
 - `key_combo(ui, keys, colors)` — sequence of `key_chip`s with `INTRA_COMBO_GAP`.
 - `key_combo_list(ui, combos, trailing, colors)` — multiple combos inline with trailing description. **Use this for any shortcut hint row.** Do not render shortcuts as plain `Label` text.
+- `display_tokens` / `chord_tokens(keys, mac)` / `key_text` — the one key-spelling convention (order Cmd/Ctrl, Alt, Shift, key; Mac glyphs, Ctrl/Alt words elsewhere). Every combo function routes through it, so pass raw tokens (`"cmd"`, `"Esc"`, `"Enter"`); use `key_text` for tooltips/badges that cannot draw chips. Never hand-type `⌘`/`Cmd+` in a hint.
 - `chip_size(text_size)` — the one chip geometry. Every measure and paint site, headless included, sizes a chip through it; do not re-derive it from the padding tokens.
 
 ## Overlay Layout Primitives

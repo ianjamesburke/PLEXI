@@ -3,7 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::host::command::{HostAction, Placement};
-use crate::host::context::{Window, replace_child};
+use crate::host::context::{replace_child, Window};
 use crate::host::effect::HostEffect;
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
@@ -135,9 +135,7 @@ pub(crate) fn build_squad_tree(
     } else {
         match layout {
             crate::protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
-            crate::protocol::SubContextLayout::Columns => {
-                tiles.insert_horizontal_tile(pane_tiles)
-            }
+            crate::protocol::SubContextLayout::Columns => tiles.insert_horizontal_tile(pane_tiles),
         }
     };
     (egui_tiles::Tree::new("plexi", root, tiles), first_tile)
@@ -165,7 +163,7 @@ pub(crate) fn insert_split_tile(
     let new_tile = tree.tiles.insert_pane(new_pane_id);
 
     // Empty tree or no split target → new pane becomes the root.
-    let Some(target) = split_target.or(tree.root) else {
+    let Some(raw_target) = split_target.or(tree.root) else {
         tree.root = Some(new_tile);
         return new_tile;
     };
@@ -176,6 +174,24 @@ pub(crate) fn insert_split_tile(
         LinearDir::Horizontal
     } else {
         LinearDir::Vertical
+    };
+    let target = if vertical {
+        // When splitting horizontally (adding a new column), if `raw_target` is inside
+        // a vertical stack (column), promote `target` to the column container so the
+        // hierarchy inside a context stays Columns (Horizontal) -> Stacked Panes (Vertical).
+        match tree.tiles.parent_of(raw_target) {
+            Some(parent_id)
+                if matches!(
+                    tree.tiles.get(parent_id),
+                    Some(Tile::Container(Container::Linear(lin))) if lin.dir == LinearDir::Vertical
+                ) =>
+            {
+                parent_id
+            }
+            _ => raw_target,
+        }
+    } else {
+        raw_target
     };
     let parent = tree.tiles.parent_of(target);
 
@@ -263,6 +279,22 @@ impl PlexiApp {
 
         if !keep_focus {
             ctx.navigate_to(new_tile);
+            let ctx_id = ctx.context_id;
+            self.zoom.context_last_pane.insert(ctx_id, new_pane_id);
+            let cols = self.columns_for_context(ctx_id);
+            if let Some(col) = cols.iter().find(|c| c.panes.contains(&new_pane_id)) {
+                self.zoom
+                    .column_last_pane
+                    .insert((ctx_id, col.index), new_pane_id);
+                let offset = self.zoom.strip_offset_for(ctx_id);
+                if col.index < offset {
+                    self.zoom.strip_offsets.insert(ctx_id, col.index);
+                } else if col.index >= offset + 2 {
+                    self.zoom
+                        .strip_offsets
+                        .insert(ctx_id, col.index.saturating_sub(1));
+                }
+            }
         }
         Some(new_tile)
     }
@@ -404,13 +436,8 @@ impl PlexiApp {
             .map(|w| w.context_id)
             .unwrap_or(0);
         let context_env = self.pane_context_env_for_context(ctx_id);
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            &context_env,
-            false,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -592,13 +619,8 @@ impl PlexiApp {
             "new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={:?}",
             context_env.root
         );
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            &context_env,
-            agent_pane,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, agent_pane);
         if let Some(cmd) = initial_cmd {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -751,7 +773,10 @@ impl PlexiApp {
     }
 
     pub(crate) fn close_focused(&mut self) {
-        if let Some(parent) = self.conjoined_parent().filter(|id| self.conjoined_parent_focus == Some(*id)) {
+        if let Some(parent) = self
+            .conjoined_parent()
+            .filter(|id| self.conjoined_parent_focus == Some(*id))
+        {
             self.zoom_out_of_context();
             self.close_pane_by_id(parent);
             return;
@@ -1040,6 +1065,7 @@ impl PlexiApp {
     /// Laid-out windows use their spatially leftmost active pane. Before the
     /// first render there are no rects yet, so retain structural tree order as
     /// a stable fallback rather than leaving a non-empty window focusless.
+    #[allow(dead_code)]
     pub(crate) fn leftmost_pane_in_window(&self, window_idx: usize) -> Option<TileId> {
         let dest = self.windows.get(window_idx)?;
         let active_panes: Vec<TileId> = dest
@@ -1072,6 +1098,7 @@ impl PlexiApp {
     }
 
     /// Move focus or active page in `dir`, returning whether navigation succeeded.
+    #[allow(dead_code)]
     pub(crate) fn navigate(&mut self, dir: Direction) -> bool {
         let effects = self.submit(HostAction::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
@@ -1678,6 +1705,7 @@ impl PlexiApp {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
         let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {
@@ -1782,7 +1810,10 @@ impl PlexiApp {
         // An emptied subcontext collapses entirely — delete it and zoom back
         // out to the parent, as if Cmd+Escape had been pressed.
         self.collapse_subcontext_if_empty(ctx_id);
-        log::info!("pane close: host remains running window={}", self.windows[self.active_window].window_id);
+        log::info!(
+            "pane close: host remains running window={}",
+            self.windows[self.active_window].window_id
+        );
     }
 }
 

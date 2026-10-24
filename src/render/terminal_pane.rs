@@ -85,6 +85,7 @@ pub fn render(
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
     input: TerminalInput,
+    resize_immediately: bool,
 ) -> (bool, Option<(TileId, TabBarAction)>) {
     let pane_rect = ui.max_rect();
     let is_error = terminal.exited
@@ -93,9 +94,10 @@ pub fn render(
             .as_ref()
             .is_some_and(|s| s.is_failure());
     let pane_agent_state = terminal
-        .agent
+        .reported_7501
         .as_ref()
         .map(|a| a.state.clone())
+        .or_else(|| terminal.agent.as_ref().map(|a| a.state.clone()))
         .or_else(|| terminal.observed_agent.as_ref().map(|a| a.state.clone()))
         .or_else(|| terminal.activity.clone())
         .or_else(|| {
@@ -293,6 +295,7 @@ pub fn render(
         .set_font(theme::terminal_font(font_size))
         .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, 0.0))
         .set_size(Vec2::new(ui.available_width(), ui.available_height()))
+        .resize_immediately(resize_immediately)
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
@@ -446,18 +449,10 @@ fn render_name_bar_and_tabs(
         } else {
             None
         };
-        let spawned_badge_x = if let Some(lbl) = spawned_by_badge {
-            let col = colors.text_secondary(colors.bg_toolbar);
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
-            let size = crate::ui::badge::badge_size(galley.size());
-            let x = right_edge - size.x - crate::ui::style::SPACE_XS;
-            right_edge = x;
-            Some((lbl, col))
-        } else {
-            None
-        };
+        let spawned_badge = spawned_by_badge;
+        if spawned_badge.is_some() {
+            right_edge -= crate::ui::style::PROVENANCE_ICON_SIZE + crate::ui::style::SPACE_XS;
+        }
 
         let tabs_right = if right_edge < bar_rect.right() {
             (right_edge - crate::ui::style::SPACE_XS).max(bar_rect.left())
@@ -539,8 +534,8 @@ fn render_name_bar_and_tabs(
         if let Some((lbl, col)) = waiting_badge_x {
             paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
         }
-        if let Some((lbl, col)) = spawned_badge_x {
-            paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
+        if let Some(lbl) = spawned_badge {
+            paint_provenance(ui, bar_rect, paint_right, lbl, colors, *pane_id);
         }
 
         ui.ctx().data_mut(|d| {
@@ -613,13 +608,7 @@ fn render_name_bar_and_tabs(
             right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, colors.accent);
         }
         if let Some(lbl) = spawned_by_badge {
-            right_edge = paint_status_badge(
-                ui.painter(),
-                bar_rect,
-                right_edge,
-                lbl,
-                colors.text_secondary(colors.bg_toolbar),
-            );
+            right_edge = paint_provenance(ui, bar_rect, right_edge, lbl, colors, *pane_id);
         }
 
         let title_text = if has_name {
@@ -703,6 +692,37 @@ fn paint_activity_dot(
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
     crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(state), color, false);
+}
+
+/// Paint the provenance icon (with hover tooltip) ending at `right_edge`;
+/// returns the new right edge. Same reserved width in every header layout.
+fn paint_provenance(
+    ui: &mut egui::Ui,
+    bar_rect: egui::Rect,
+    right_edge: f32,
+    badge: &str,
+    colors: &Colors,
+    pane_id: PaneId,
+) -> f32 {
+    let rect = crate::ui::provenance::provenance_icon_rect(
+        bar_rect,
+        right_edge - crate::ui::style::SPACE_XS,
+    );
+    crate::ui::provenance::paint_provenance_icon(
+        ui.painter(),
+        rect,
+        crate::ui::provenance::provenance_kind(badge),
+        colors.text_secondary(colors.bg_toolbar),
+    );
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane_id)), rect));
+    ui.interact(
+        rect,
+        egui::Id::new(("provenance_icon", pane_id)),
+        egui::Sense::hover(),
+    )
+    .on_hover_text(crate::ui::provenance::provenance_tooltip(badge));
+    rect.left()
 }
 
 fn paint_status_badge(

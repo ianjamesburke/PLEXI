@@ -1,4 +1,5 @@
 //! Bounded, redacted host-log export for the Needs attention review.
+#![allow(dead_code)]
 //!
 //! The export reads only this channel's `plexi.log` (`logging::log_path`). It
 //! never touches agent transcripts, never uploads, and always says how much of

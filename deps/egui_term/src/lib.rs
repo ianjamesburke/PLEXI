@@ -18,6 +18,7 @@ mod types;
 mod view;
 
 pub use backend::settings::BackendSettings;
+pub use backend::tap::{ByteTapHandle, PtyByteTap, TapReader};
 pub use backend::{
     BackendCommand, PtyEvent, PtyExitStatus, ResizeOutcome, TerminalBackend,
     TerminalMode,

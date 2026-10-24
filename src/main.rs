@@ -32,6 +32,7 @@ mod overlays;
 mod pane_ops;
 mod platform;
 mod plexi_ai;
+mod program_status;
 mod protocol;
 mod release;
 mod render;
@@ -369,6 +370,7 @@ fn main() -> eframe::Result {
                             resource,
                             choices,
                             allow_free_text,
+                            recommend,
                             preview_refs,
                             correlation_id,
                             operation_id,
@@ -394,6 +396,7 @@ fn main() -> eframe::Result {
                                     "resource": resource,
                                     "choices": choices,
                                     "allow_free_text": allow_free_text,
+                                    "recommend": recommend,
                                     "preview_refs": preview_refs,
                                     "correlation_id": correlation_id,
                                     "operation_id": operation_id,

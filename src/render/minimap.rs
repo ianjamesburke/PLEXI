@@ -32,7 +32,6 @@ const CELL_H: f32 = 26.0;
 const CELL_GAP: f32 = 4.0;
 const INSET_RIGHT: f32 = 18.0;
 const INSET_TOP: f32 = 54.0;
-const CORNER_RADIUS: f32 = 6.0;
 const NAME_FONT_SIZE: f32 = 12.0;
 
 /// Compute the panel rect for the minimap overlay without needing a `Ui`.
@@ -179,12 +178,12 @@ pub fn render_minimap(
 
     ui.painter().rect_filled(
         panel_rect,
-        egui::CornerRadius::same(CORNER_RADIUS as u8),
+        crate::ui::style::RADIUS_SMALL,
         colors.bg_sidebar,
     );
     ui.painter().rect_stroke(
         panel_rect,
-        egui::CornerRadius::same(CORNER_RADIUS as u8),
+        crate::ui::style::RADIUS_SMALL,
         egui::Stroke::new(1.0_f32, colors.border),
         egui::StrokeKind::Inside,
     );
@@ -252,7 +251,7 @@ pub fn render_minimap(
 
         ui.painter().rect(
             cell_rect,
-            egui::CornerRadius::same(3),
+            crate::ui::style::RADIUS_SMALL,
             fill,
             egui::Stroke::new(1.0_f32, border_color),
             egui::StrokeKind::Inside,

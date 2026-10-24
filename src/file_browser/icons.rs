@@ -1,6 +1,6 @@
 use super::helpers::Entry;
 use crate::ui::theme::Colors;
-use egui::{Color32, CornerRadius, Stroke, StrokeKind};
+use egui::{Color32, Stroke, StrokeKind};
 
 pub(crate) enum FileIconKind {
     Image,
@@ -79,12 +79,12 @@ pub(crate) fn paint_entry_icon(
         );
         painter.rect_filled(
             tab,
-            CornerRadius::same(2),
+            crate::ui::style::radius_fit(tab),
             colors.accent.gamma_multiply(0.7),
         );
         painter.rect_filled(
             body,
-            CornerRadius::same(2),
+            crate::ui::style::radius_fit(body),
             colors.accent.gamma_multiply(0.9),
         );
         return;
@@ -96,12 +96,12 @@ pub(crate) fn paint_entry_icon(
 
     painter.rect_filled(
         sheet,
-        CornerRadius::same(2),
+        crate::ui::style::radius_fit(sheet),
         colors.text_dim.gamma_multiply(0.34),
     );
     painter.rect_stroke(
         sheet,
-        CornerRadius::same(2),
+        crate::ui::style::radius_fit(sheet),
         Stroke::new(1.0_f32, colors.border),
         StrokeKind::Inside,
     );
@@ -229,7 +229,7 @@ pub(crate) fn paint_entry_icon(
                 egui::pos2(x(0.16), y(0.20)),
                 egui::vec2(sheet.width() * 0.68, sheet.height() * 0.20),
             );
-            painter.rect_filled(band, CornerRadius::same(2), c.gamma_multiply(0.95));
+            painter.rect_filled(band, crate::ui::style::radius_fit(band), c.gamma_multiply(0.95));
             painter.text(
                 band.center(),
                 egui::Align2::CENTER_CENTER,
@@ -245,7 +245,7 @@ pub(crate) fn paint_entry_icon(
             );
             painter.rect_stroke(
                 box_rect,
-                CornerRadius::same(2),
+                crate::ui::style::radius_fit(box_rect),
                 Stroke::new(stroke_w, c),
                 StrokeKind::Inside,
             );

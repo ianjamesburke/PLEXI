@@ -48,7 +48,14 @@ fn cli_parity_hide_reveal_and_zoom_use_keyboard_handlers() {
         serde_json::json!({"type":"pane_zoom", "pane_id":pane}),
     );
     assert!(h.app.windows[0].zoomed_pane.is_none());
-    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.press_key(
+        egui::Key::Enter,
+        egui::Modifiers {
+            command: true,
+            shift: true,
+            ..Default::default()
+        },
+    );
     assert!(h.app.windows[0].zoomed_pane.is_some());
     request(
         &mut h,

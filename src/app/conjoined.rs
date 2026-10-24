@@ -176,6 +176,7 @@ impl PlexiApp {
                             Some(&root),
                             self.config.pane_title_font_size.unwrap_or(12.0),
                             pane_input,
+                            false,
                         );
                     } else if let Some(app) = pane.as_app_mut() {
                         crate::render::app_pane::render(ui, app, &self.colors, false, None, &root);
