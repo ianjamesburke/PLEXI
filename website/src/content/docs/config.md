@@ -34,6 +34,7 @@ plexi config reset
 |---|---|---|---|
 | `config_version` | integer | — | — |
 | `font_size` | float | — | — |
+| `ui_scale` | float | 1.0 | App-wide UI scale (browser-style zoom). Default 1.0; clamped on use. |
 | `pane_gap` | float | 4.0 | Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0]. |
 | `pane_title_font_size` | float | 11.0 | Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0]. |
 | `osc_pane_title` | bool | true | Apply OSC 0/1/2 title sequences from terminal processes as pane names. Defaults to true; set false to keep terminal pane names manual-only. |
@@ -218,7 +219,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `decrease_font_size` | Deprecated alias for `ui_scale_down`. |
 | `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+=). |
 | `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+-). |
-| `ui_scale_reset` | Reset UI scale (default Cmd+Shift+0). |
+| `ui_scale_reset` | Reset app-wide UI scale (default Cmd+Shift+0). |
 | `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
 | `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
 | `focus_approval` | Focus the oldest permission banner (default cmd+alt+p). |
@@ -229,7 +230,8 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `open_secrets_manager` | open secrets manager |
 | `open_assistant` | open assistant (beta-gated; not part of stable v1) |
 | `force_reload_app` | force reload app |
-| `toggle_notification_modal` | toggle notification modal |
+| `toggle_attention_queue` | toggle attention queue |
+| `zoom_in` | zoom in |
 | `open_scratchpad` | open scratchpad |
 | `push_to_subcontext` | push to subcontext |
 | `new_child_context` | new child context |
@@ -311,7 +313,7 @@ state_preset = "okabe-ito" # default | okabe-ito | high-contrast | mono
 # state_needs_you = "#d55e00"
 # state_interrupted = "#009e73"
 # state_error = "#f0e442"
-preset = "catppuccin-mocha"
+preset = "tokyo-night"
 # Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-day
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"

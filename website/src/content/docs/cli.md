@@ -2061,6 +2061,7 @@ File a creative or blocking question for the human and return its id + continuat
 | `--resource` | string | no | Target resource identifier (e.g. clip id or file path) Default: `workspace`. |
 | `--choice` | string (repeatable) | no | Allowed answer choices (repeat `--choice` for multiple options) |
 | `--allow-free-text` | flag | no | Allow free-text answers in addition to `--choice` options |
+| `--recommend` | string | no | Mark one `--choice` as recommended (shown starred in the decision overlay) |
 | `--preview-ref` | string (repeatable) | no | Preview references (e.g. clip/frame/path references) |
 | `--correlation-id` | string | no | Correlation id joining the question to an operation or continuation |
 | `--operation-id` | string | no | Operation id for idempotent resume |

@@ -26,9 +26,9 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `ToggleZoom` | `plexi pane zoom 42` |  |
 | `ToggleCommandPalette` | ui-only: Displays a human command chooser; agents invoke the selected command directly. |  |
 | `RenamePane` | `plexi pane name 42 name` |  |
-| `UiScaleUp` | ui-only: App-wide interface scale; persisted as `ui_scale` in config (`plexi config set ui_scale=1.2`). |  |
-| `UiScaleDown` | ui-only: App-wide interface scale; persisted as `ui_scale` in config (`plexi config set ui_scale=1.2`). |  |
-| `UiScaleReset` | ui-only: App-wide interface scale; persisted as `ui_scale` in config (`plexi config set ui_scale=1.2`). |  |
+| `UiScaleUp` | ui-only: Steps the app-wide UI scale up; the persistent equivalent is the `ui_scale` config key. |  |
+| `UiScaleDown` | ui-only: Steps the app-wide UI scale down; the persistent equivalent is the `ui_scale` config key. |  |
+| `UiScaleReset` | ui-only: Resets the app-wide UI scale to 1.0; the persistent equivalent is the `ui_scale` config key. |  |
 | `ScrollUp` | ui-only: Moves the visible viewport; agents read pane capture output. |  |
 | `ScrollDown` | ui-only: Moves the visible viewport; agents read pane capture output. |  |
 | `CloseApp` | `plexi pane close 42` |  |
