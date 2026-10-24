@@ -78,6 +78,17 @@ pub struct GhostMarker {
     pub strip_offset: usize,
 }
 
+/// The active window's column strip in window-local indices (`App::active_window_strip`).
+#[derive(Debug, Clone)]
+pub(crate) struct WindowStrip {
+    /// Root `Linear` children, left to right.
+    pub children: Vec<TileId>,
+    /// Width preset of each child's global column, when it has live panes.
+    pub presets: Vec<Option<ColumnWidthPreset>>,
+    /// First of the two visible columns (always 0 when there are two or fewer).
+    pub lo: usize,
+}
+
 /// A positioned context node in the Tree Atlas.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1672,15 +1683,82 @@ impl PlexiApp {
         }
     }
 
+    /// Strip view of the ACTIVE window's tree, in the window's own column indices.
+    ///
+    /// A context can hold several windows (pages), each with its own tree, while
+    /// `columns_for_context` and `strip_offset_for` count columns across ALL of them.
+    /// Painting shares or clip indicators straight from those global indices starves
+    /// the columns of whichever window is active (the first window after a move back
+    /// from a later one rendered as 6% slivers next to one oversized pane). This is the
+    /// single place that maps global columns onto the active window's root children.
+    pub(crate) fn active_window_strip(&self) -> Option<WindowStrip> {
+        let ctx_id = self.router.active().context_id;
+        let cols = self.columns_for_context(ctx_id);
+        let offset = self.zoom.strip_offset_for(ctx_id);
+        let win = self.windows.get(self.active_window)?;
+        let root_id = win.tree.root()?;
+        let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get(root_id) else {
+            return None;
+        };
+        if lin.dir != LinearDir::Horizontal || lin.children.len() < 2 {
+            return None;
+        }
+        let focused = self.active_focused_pane_id();
+        let mut children = Vec::with_capacity(lin.children.len());
+        let mut global = Vec::with_capacity(lin.children.len());
+        let mut focused_local = None;
+        for (idx, &child) in lin.children.iter().enumerate() {
+            let mut leaves = Vec::new();
+            collect_leaf_panes_in_tile(&win.tree, &win.panes, child, &mut leaves);
+            if focused.is_some_and(|f| leaves.contains(&f)) {
+                focused_local = Some(idx);
+            }
+            global.push(
+                cols.iter()
+                    .position(|c| leaves.iter().any(|p| c.panes.contains(p))),
+            );
+            children.push(child);
+        }
+        let n = children.len();
+        let last_lo = n.saturating_sub(2);
+        let mut lo = global
+            .iter()
+            .position(|g| g.is_some_and(|g| g >= offset))
+            .unwrap_or(last_lo)
+            .min(last_lo);
+        if let Some(f) = focused_local {
+            if f < lo {
+                lo = f;
+            } else if f >= lo + 2 {
+                lo = f - 1;
+            }
+            lo = lo.min(last_lo);
+        }
+        if n <= 2 {
+            lo = 0;
+        }
+        let presets = global
+            .iter()
+            .map(|g| g.and_then(|g| cols.get(g)).map(|c| c.preset))
+            .collect();
+        Some(WindowStrip {
+            children,
+            presets,
+            lo,
+        })
+    }
+
     /// Synchronize the active window's horizontal root `Linear` container shares
-    /// with the Niri column strip presets (`35%` parent / `65%` child) and scroll offset.
+    /// with the Niri column strip presets (`35%` parent / `65%` child) and scroll offset,
+    /// using only the active window's own columns (see [`Self::active_window_strip`]).
     pub(crate) fn sync_strip_tree_shares(&mut self) {
         if self.zoom.level != ZoomLevel::Columns {
             return;
         }
-        let ctx_id = self.router.active().context_id;
-        let cols = self.columns_for_context(ctx_id);
-        let offset = self.zoom.strip_offset_for(ctx_id);
+        let Some(strip) = self.active_window_strip() else {
+            return;
+        };
+        let n = strip.children.len();
         let Some(win) = self.windows.get_mut(self.active_window) else {
             return;
         };
@@ -1688,52 +1766,38 @@ impl PlexiApp {
             return;
         };
         if let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get_mut(root_id) {
-            if lin.dir == LinearDir::Horizontal && lin.children.len() >= 2 {
-                let n = lin.children.len();
-                let children = lin.children.clone();
-                for (idx, child_id) in children.into_iter().enumerate() {
-                    let ratio = cols
-                        .get(idx)
-                        .map(|c| c.preset.ratio())
-                        .unwrap_or(if idx == 0 {
-                            style::COLUMN_WIDTH_PARENT
-                        } else {
-                            style::COLUMN_WIDTH_CHILD
-                        });
-                    let share = if n <= 2 {
-                        ratio * 2.0
-                    } else if idx >= offset && idx < offset + 2 {
-                        let slot_ratio = if idx == offset {
-                            cols.get(idx)
-                                .map(|c| c.preset.ratio())
-                                .unwrap_or(style::COLUMN_WIDTH_PARENT)
-                        } else {
-                            cols.get(idx)
-                                .map(|c| c.preset.ratio())
-                                .unwrap_or(style::COLUMN_WIDTH_CHILD)
-                        };
-                        slot_ratio * (n as f32)
-                    } else {
-                        0.06
-                    };
-                    lin.shares.set_share(child_id, share);
-                }
+            for (idx, child_id) in strip.children.iter().copied().enumerate() {
+                let slot_default = if idx == strip.lo {
+                    style::COLUMN_WIDTH_PARENT
+                } else {
+                    style::COLUMN_WIDTH_CHILD
+                };
+                let ratio = strip.presets[idx]
+                    .map(|p| p.ratio())
+                    .unwrap_or(if idx == 0 { style::COLUMN_WIDTH_PARENT } else { slot_default });
+                let share = if n <= 2 {
+                    ratio * 2.0
+                } else if idx >= strip.lo && idx < strip.lo + 2 {
+                    ratio * (n as f32)
+                } else {
+                    0.06
+                };
+                lin.shares.set_share(child_id, share);
             }
         }
     }
 
-    /// Returns `(has_left_clipped, has_right_clipped)` for the active context's column strip.
+    /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip.
     pub(crate) fn active_strip_clipped_neighbors(&self) -> (bool, bool) {
         if self.zoom.level != ZoomLevel::Columns {
             return (false, false);
         }
-        let ctx_id = self.router.active().context_id;
-        let cols = self.columns_for_context(ctx_id);
-        if cols.len() <= 2 {
-            return (false, false);
+        match self.active_window_strip() {
+            Some(strip) if strip.children.len() > 2 => {
+                (strip.lo > 0, strip.lo + 2 < strip.children.len())
+            }
+            _ => (false, false),
         }
-        let offset = self.zoom.strip_offset_for(ctx_id);
-        (offset > 0, offset + 2 < cols.len())
     }
 
     /// Paint the `28px` clipped neighbor indicator strips at the left/right edges

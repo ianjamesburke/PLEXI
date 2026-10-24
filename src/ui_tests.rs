@@ -6639,6 +6639,106 @@ mod tests {
             .expect("render 3-pane squad columns");
     }
 
+    /// Item 4 regression: a context with several windows must lay out the ACTIVE
+    /// window's columns from its own indices. Moving left/right across the window
+    /// boundary used to feed the context-wide scroll offset into the window's tree and
+    /// painted 6% slivers beside one oversized column (and overflowed the viewport).
+    #[test]
+    fn cross_window_navigation_keeps_every_pane_inside_viewport() {
+        use crate::host::keys::Direction;
+        const MIN_COLUMN_WIDTH: f32 = 80.0;
+        let mut h = PlexiUiHarness::new_sized(1100.0, 700.0);
+        let (ctx_id, first_window_panes, second_pane) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let ctx_id = app.router.active().context_id;
+            let p1 = app.add_test_pane().1;
+            let p2 = app.add_test_pane().1;
+            let p3 = app.add_test_pane().1;
+            app.set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
+            let win_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: std::path::PathBuf::from("/tmp"),
+                tree: egui_tiles::Tree::empty("plexi-second"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: win_id,
+                context_id: ctx_id,
+            });
+            let second_idx = app.windows.len() - 1;
+            let (tile, p4) = app.add_app_pane_in_window(second_idx, "test");
+            app.windows[second_idx].focused_pane = Some(tile);
+            app.active_window = second_idx;
+            app.context_active_window.insert(ctx_id, win_id);
+            (ctx_id, vec![p1, p2, p3], p4)
+        });
+        h.run_steps(3);
+
+        let check = |h: &mut PlexiUiHarness, step: &str| {
+            h.run_steps(3);
+            h.with_app(|app| {
+                let viewport = app.ctx.content_rect();
+                let window = &app.windows[app.active_window];
+                let mut narrow = 0usize;
+                let mut columns = 0usize;
+                if let Some(root) = window.tree.root() {
+                    let children = match window.tree.tiles.get(root) {
+                        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+                        _ => vec![root],
+                    };
+                    columns = children.len();
+                    for child in children {
+                        let rect = window.tree.tiles.rect(child).expect("painted column rect");
+                        assert!(
+                            viewport.expand(1.0).contains_rect(rect),
+                            "{step}: column rect {rect:?} escapes the viewport {viewport:?}"
+                        );
+                        if rect.width() < MIN_COLUMN_WIDTH {
+                            narrow += 1;
+                        }
+                    }
+                }
+                // Only the clipped neighbours of the strip may be narrow: with 3 columns
+                // exactly one is clipped, never two.
+                assert!(
+                    narrow <= columns.saturating_sub(2),
+                    "{step}: {narrow} of {columns} columns are narrower than {MIN_COLUMN_WIDTH}px"
+                );
+                let focused = app.active_focused_pane_id().expect("focused pane");
+                let tile = window.tree.tiles.find_pane(&focused).expect("focused tile");
+                let rect = window.tree.tiles.rect(tile).expect("focused rect");
+                assert!(
+                    rect.width() >= 200.0 && rect.height() >= 200.0,
+                    "{step}: focused pane squeezed to {rect:?}"
+                );
+            });
+        };
+
+        check(&mut h, "start on second window");
+        for (i, dir) in [
+            Direction::Left,
+            Direction::Left,
+            Direction::Left,
+            Direction::Right,
+            Direction::Right,
+            Direction::Right,
+            Direction::Left,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            h.with_app_mut(|app| {
+                app.navigate(dir);
+            });
+            check(&mut h, &format!("move {i} {dir:?}"));
+        }
+        let _ = (ctx_id, first_window_panes, second_pane);
+    }
+
     #[test]
     fn file_browser_responsive_table_and_font_scaling_screenshots() {
         let tmp = tempfile::tempdir().expect("tempdir");
