@@ -214,8 +214,11 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `toggle_minimap` | toggle minimap |
 | `scroll_up` | scroll up |
 | `scroll_down` | scroll down |
-| `increase_font_size` | increase font size |
-| `decrease_font_size` | decrease font size |
+| `increase_font_size` | Deprecated alias for `ui_scale_up`. |
+| `decrease_font_size` | Deprecated alias for `ui_scale_down`. |
+| `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+=). |
+| `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+-). |
+| `ui_scale_reset` | Reset UI scale (default Cmd+Shift+0). |
 | `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
 | `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
 | `focus_approval` | Focus the oldest permission banner (default cmd+alt+p). |
@@ -288,6 +291,7 @@ This is the built-in template Plexi writes when it creates or resets the active 
 config_version = 1
 
 font_size = 14.0
+# ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
 # pane_title_font_size = 12    # pane title bar font size (6-32)
 

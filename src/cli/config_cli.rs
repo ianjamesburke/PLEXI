@@ -9,6 +9,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "Config schema version (managed automatically)",
     ),
     ("font_size", "float", "UI font size in points"),
+    ("ui_scale", "float", "App-wide UI scale, 0.6-2.0 (default 1.0)"),
     (
         "pane_gap",
         "float",

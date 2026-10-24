@@ -78,8 +78,10 @@ pub enum Action {
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,
-    IncreasePaneFontSize,
-    DecreasePaneFontSize,
+    /// App-wide UI scale (browser-style zoom): terminal text, UI text, spacing.
+    UiScaleUp,
+    UiScaleDown,
+    UiScaleReset,
     ScrollUp,
     ScrollDown,
     /// Dismiss the active app surface and return to full terminal.
@@ -198,8 +200,9 @@ pub struct KeyBindings {
     pub toggle_minimap: (egui::Modifiers, egui::Key),
     pub scroll_up: (egui::Modifiers, egui::Key),
     pub scroll_down: (egui::Modifiers, egui::Key),
-    pub increase_font_size: (egui::Modifiers, egui::Key),
-    pub decrease_font_size: (egui::Modifiers, egui::Key),
+    pub ui_scale_up: (egui::Modifiers, egui::Key),
+    pub ui_scale_down: (egui::Modifiers, egui::Key),
+    pub ui_scale_reset: (egui::Modifiers, egui::Key),
     pub next_blocked_agent: (egui::Modifiers, egui::Key),
     pub focus_approval: (egui::Modifiers, egui::Key),
     pub open_agents: (egui::Modifiers, egui::Key),
@@ -308,8 +311,9 @@ impl Default for KeyBindings {
             toggle_minimap: (cmd_shift(), egui::Key::M),
             scroll_up: (cmd_shift(), egui::Key::ArrowUp),
             scroll_down: (cmd_shift(), egui::Key::ArrowDown),
-            increase_font_size: (cmd(), egui::Key::Equals),
-            decrease_font_size: (cmd(), egui::Key::Minus),
+            ui_scale_up: (cmd(), egui::Key::Equals),
+            ui_scale_down: (cmd(), egui::Key::Minus),
+            ui_scale_reset: (cmd_shift(), egui::Key::Num0),
             next_blocked_agent: (cmd_alt(), egui::Key::B),
             focus_approval: (cmd_alt(), egui::Key::P),
             open_agents: (cmd_alt(), egui::Key::A),
@@ -497,8 +501,38 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(toggle_minimap, "toggle_minimap");
     apply_override!(scroll_up, "scroll_up");
     apply_override!(scroll_down, "scroll_down");
-    apply_override!(increase_font_size, "increase_font_size");
-    apply_override!(decrease_font_size, "decrease_font_size");
+    apply_override!(ui_scale_up, "ui_scale_up");
+    apply_override!(ui_scale_down, "ui_scale_down");
+    apply_override!(ui_scale_reset, "ui_scale_reset");
+    // Deprecated aliases: `increase_font_size` / `decrease_font_size` now mean
+    // `ui_scale_up` / `ui_scale_down` unless the new key is also set.
+    for (alias, new_set, field, name) in [
+        (
+            &cfg.increase_font_size,
+            cfg.ui_scale_up.is_some(),
+            &mut bindings.ui_scale_up,
+            "increase_font_size",
+        ),
+        (
+            &cfg.decrease_font_size,
+            cfg.ui_scale_down.is_some(),
+            &mut bindings.ui_scale_down,
+            "decrease_font_size",
+        ),
+    ] {
+        let Some(s) = alias else { continue };
+        if new_set {
+            continue;
+        }
+        match parse_key_combo(s) {
+            Some(combo) => {
+                *field = combo;
+                override_count += 1;
+                log::warn!("keybindings: '{name}' is deprecated; use ui_scale_up/ui_scale_down");
+            }
+            None => log::warn!("keybindings: invalid combo '{s}' for '{name}' — keeping default"),
+        }
+    }
     apply_override!(next_blocked_agent, "next_blocked_agent");
     apply_override!(focus_approval, "focus_approval");
     apply_override!(open_agents, "open_agents");
@@ -560,8 +594,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("toggle_minimap", bindings.toggle_minimap),
         ("scroll_up", bindings.scroll_up),
         ("scroll_down", bindings.scroll_down),
-        ("increase_font_size", bindings.increase_font_size),
-        ("decrease_font_size", bindings.decrease_font_size),
+        ("ui_scale_up", bindings.ui_scale_up),
+        ("ui_scale_down", bindings.ui_scale_down),
+        ("ui_scale_reset", bindings.ui_scale_reset),
         ("next_blocked_agent", bindings.next_blocked_agent),
         ("focus_approval", bindings.focus_approval),
         ("open_agents", bindings.open_agents),
@@ -651,8 +686,9 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("toggle_minimap", b.toggle_minimap),
             ("scroll_up", b.scroll_up),
             ("scroll_down", b.scroll_down),
-            ("increase_font_size", b.increase_font_size),
-            ("decrease_font_size", b.decrease_font_size),
+            ("ui_scale_up", b.ui_scale_up),
+            ("ui_scale_down", b.ui_scale_down),
+            ("ui_scale_reset", b.ui_scale_reset),
             ("next_blocked_agent", b.next_blocked_agent),
             ("focus_approval", b.focus_approval),
             ("open_agents", b.open_agents),
@@ -1257,20 +1293,28 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             action: Action::ScrollDown,
         },
         BindingEntry {
-            modifiers: b.increase_font_size.0,
-            key: b.increase_font_size.1,
+            modifiers: b.ui_scale_up.0,
+            key: b.ui_scale_up.1,
             exact: false,
             no_repeat: false,
             context: BindingContext::Normal,
-            action: Action::IncreasePaneFontSize,
+            action: Action::UiScaleUp,
         },
         BindingEntry {
-            modifiers: b.decrease_font_size.0,
-            key: b.decrease_font_size.1,
+            modifiers: b.ui_scale_down.0,
+            key: b.ui_scale_down.1,
             exact: false,
             no_repeat: false,
             context: BindingContext::Normal,
-            action: Action::DecreasePaneFontSize,
+            action: Action::UiScaleDown,
+        },
+        BindingEntry {
+            modifiers: b.ui_scale_reset.0,
+            key: b.ui_scale_reset.1,
+            exact: true,
+            no_repeat: false,
+            context: BindingContext::Normal,
+            action: Action::UiScaleReset,
         },
         BindingEntry {
             modifiers: b.open_file_browser.0,
@@ -1505,6 +1549,52 @@ pub fn poll_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_scale_defaults_are_unique() {
+        let b = KeyBindings::default();
+        assert_eq!(b.ui_scale_up, (cmd(), egui::Key::Equals));
+        assert_eq!(b.ui_scale_down, (cmd(), egui::Key::Minus));
+        assert_eq!(b.ui_scale_reset, (cmd_shift(), egui::Key::Num0));
+        let table = build_binding_table(&b);
+        for (chord, action) in [
+            (b.ui_scale_up, Action::UiScaleUp),
+            (b.ui_scale_down, Action::UiScaleDown),
+            (b.ui_scale_reset, Action::UiScaleReset),
+        ] {
+            let same: Vec<_> = table
+                .iter()
+                .filter(|e| e.modifiers == chord.0 && e.key == chord.1)
+                .collect();
+            assert_eq!(same.len(), 1, "{action:?} chord collides: {}", same.len());
+            assert_eq!(same[0].action, action);
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (name, (m, k)) in [
+            ("ui_scale_up", b.ui_scale_up),
+            ("ui_scale_down", b.ui_scale_down),
+            ("ui_scale_reset", b.ui_scale_reset),
+            ("open_quick_note", b.open_quick_note),
+        ] {
+            assert!(seen.insert(binding_id(m, k)), "{name} shares a chord");
+        }
+    }
+
+    #[test]
+    fn ui_scale_reset_is_not_swallowed_by_quick_note() {
+        let b = KeyBindings::default();
+        let table = build_binding_table(&b);
+        let reset = table
+            .iter()
+            .position(|e| e.action == Action::UiScaleReset)
+            .unwrap();
+        let quick = table
+            .iter()
+            .position(|e| e.action == Action::OpenQuickNote)
+            .unwrap();
+        assert!(table[reset].exact);
+        assert!(reset < quick, "exact reset must sort before subset quick note");
+    }
 
     #[test]
     fn attention_keys_preserve_notifications_and_use_free_binding() {

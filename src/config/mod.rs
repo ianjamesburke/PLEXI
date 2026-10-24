@@ -97,6 +97,7 @@ impl std::fmt::Display for ConfigDiagnostic {
 const KNOWN_TOP_LEVEL: &[&str] = &[
     "config_version",
     "font_size",
+    "ui_scale",
     "theme_preset",
     "theme",
     "attention",
@@ -236,6 +237,9 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "scroll_down",
     "increase_font_size",
     "decrease_font_size",
+    "ui_scale_up",
+    "ui_scale_down",
+    "ui_scale_reset",
     "open_agents",
     "next_blocked_agent",
     "focus_approval",
@@ -637,8 +641,16 @@ pub struct KeybindingsConfig {
     pub toggle_minimap: Option<String>,
     pub scroll_up: Option<String>,
     pub scroll_down: Option<String>,
+    /// Deprecated alias for `ui_scale_up`.
     pub increase_font_size: Option<String>,
+    /// Deprecated alias for `ui_scale_down`.
     pub decrease_font_size: Option<String>,
+    /// Scale the whole UI up, terminal text included (default Cmd+=).
+    pub ui_scale_up: Option<String>,
+    /// Scale the whole UI down, terminal text included (default Cmd+-).
+    pub ui_scale_down: Option<String>,
+    /// Reset app-wide UI scale (default Cmd+Shift+0).
+    pub ui_scale_reset: Option<String>,
     /// Open the Agents pane (default Cmd+Alt+A).
     pub open_agents: Option<String>,
     /// Next agent needing attention (default cmd+alt+b).
@@ -713,6 +725,9 @@ impl KeybindingsConfig {
         overlay_field!(scroll_down);
         overlay_field!(increase_font_size);
         overlay_field!(decrease_font_size);
+        overlay_field!(ui_scale_up);
+        overlay_field!(ui_scale_down);
+        overlay_field!(ui_scale_reset);
         overlay_field!(open_agents);
         overlay_field!(next_blocked_agent);
         overlay_field!(focus_approval);
@@ -740,6 +755,8 @@ impl KeybindingsConfig {
 pub struct PlexiConfig {
     pub config_version: Option<u32>,
     pub font_size: Option<f32>,
+    /// App-wide UI scale (browser-style zoom). Default 1.0; clamped on use.
+    pub ui_scale: Option<f32>,
     /// Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0].
     pub pane_gap: Option<f32>,
     /// Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0].
@@ -2092,6 +2109,9 @@ impl PlexiConfig {
         if other.font_size.is_some() {
             self.font_size = other.font_size;
         }
+        if other.ui_scale.is_some() {
+            self.ui_scale = other.ui_scale;
+        }
         if other.theme_preset.is_some() {
             self.theme_preset = other.theme_preset;
         }
@@ -2608,6 +2628,36 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn ui_scale_round_trips_and_is_a_known_key() {
+        let cfg: PlexiConfig = toml::from_str("ui_scale = 1.3\n").unwrap();
+        assert_eq!(cfg.ui_scale, Some(1.3));
+        let none: PlexiConfig = toml::from_str("font_size = 14.0\n").unwrap();
+        assert_eq!(none.ui_scale, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "ui_scale = 1.3\n").unwrap();
+        assert!(validate_from_path(&path).is_empty());
+    }
+
+    #[test]
+    fn ui_scale_out_of_range_clamps_on_use() {
+        use crate::app::ui_scale::clamp_scale;
+        for (raw, want) in [(9.0_f32, 2.0_f32), (0.01, 0.6), (-3.0, 0.6), (1.25, 1.25)] {
+            let cfg: PlexiConfig = toml::from_str(&format!("ui_scale = {raw}\n")).unwrap();
+            assert_eq!(cfg.ui_scale.map(clamp_scale), Some(want));
+        }
+    }
+
+    #[test]
+    fn ui_scale_overlay_prefers_project_value() {
+        let mut global: PlexiConfig = toml::from_str("ui_scale = 1.1\n").unwrap();
+        let project: PlexiConfig = toml::from_str("ui_scale = 1.5\n").unwrap();
+        global.overlay(project);
+        assert_eq!(global.ui_scale, Some(1.5));
     }
 
     #[test]

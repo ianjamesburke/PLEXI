@@ -933,6 +933,8 @@ impl PlexiApp {
             }
         }
 
+        self.adopt_config_ui_scale(fresh.ui_scale);
+
         // Notifications
         self.notifications_enabled = fresh
             .notifications

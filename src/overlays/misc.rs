@@ -234,7 +234,15 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    shortcut_description(ui, "Font size +/−", colors);
+                                    shortcut_description(ui, "Scale everything +/−", colors);
+                                    ui.end_row();
+
+                                    crate::ui::shortcuts::key_combo(
+                                        ui,
+                                        &["\u{2318}", "\u{21E7}", "0"],
+                                        colors,
+                                    );
+                                    shortcut_description(ui, "Reset UI scale", colors);
                                     ui.end_row();
                                 });
 

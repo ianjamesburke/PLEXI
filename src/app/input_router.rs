@@ -161,6 +161,29 @@ impl PlexiInput {
         }
     }
 
+    /// Like [`Self::consume_key`], but Shift/Alt must match the pattern
+    /// exactly so a more specific chord (Cmd+Shift+0) is not swallowed by a
+    /// less specific one (Cmd+0).
+    pub(crate) fn consume_key_exact(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+        if let Some(pos) = self.events.iter().position(|e| {
+            matches!(
+                e,
+                egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
+                    if *k == key
+                        && crate::host::keys::modifiers_match_exact_for_os(
+                            m,
+                            &modifiers,
+                            cfg!(target_os = "macos"),
+                        )
+            )
+        }) {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Consume a key press only if it isn't a synthetic OS auto-repeat.
     /// Mirrors `keys::consume_key_no_repeat`'s intent for callers holding a
     /// `PlexiInput` instead of a raw `InputState`.
