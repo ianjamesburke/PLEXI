@@ -126,6 +126,12 @@ impl<'a> ModalShell<'a> {
         let available_content_width =
             (screen.width() - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_H))).max(0.0);
         let content_width = self.width.min(available_content_width);
+        // Frame padding, optional title row and edge clearance come off the
+        // screen height; never collapse below a usable minimum.
+        let max_body_height = (screen.height()
+            - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_V))
+            - 40.0)
+            .max(120.0);
         if self.scrim_strength > 0.0 {
             let alpha = (self.scrim_strength * 255.0).round() as u8;
             // Scrim sits one layer below the modal so an elevated modal
@@ -181,7 +187,18 @@ impl<'a> ModalShell<'a> {
                             crate::ui::typography::modal_title(ui, title, colors);
                             ui.add_space(style::SPACE_MD);
                         }
-                        add_body(ui)
+                        if self.width > 0.0 {
+                            // At high UI scale the logical screen shrinks; a
+                            // tall body scrolls instead of leaving the window.
+                            egui::ScrollArea::vertical()
+                                .id_salt("modal_body")
+                                .max_height(max_body_height)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| add_body(ui))
+                                .inner
+                        } else {
+                            add_body(ui)
+                        }
                     })
                     .inner
             });

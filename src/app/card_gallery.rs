@@ -311,6 +311,33 @@ fn colors_for(colors: &crate::ui::theme::Colors, state: CardState) -> egui::Colo
 mod tests {
     use super::*;
 
+    /// A 1440x900 physical window at UI scale `s` has a `1440/s x 900/s`
+    /// logical canvas; every gallery rect must stay inside it.
+    #[test]
+    fn card_gallery_items_fit_scaled_canvas() {
+        let ctx = egui::Context::default();
+        let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+        crate::ui::theme::setup_fonts(&ctx);
+        let _ = ctx.run(Default::default(), |_| {});
+        for scale in [0.6_f32, 1.0, 2.0] {
+            ctx.set_zoom_factor(scale);
+            let _ = ctx.run(Default::default(), |ctx| {
+                let (w, h) = (1440.0 / scale, 900.0 / scale);
+                let canvas = Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h));
+                let (_, layouts) = measure_all(ctx, &colors, w);
+                let plan = plan(canvas, &layouts);
+                for rs in &plan.rects {
+                    for r in rs {
+                        assert!(
+                            r.min.x >= canvas.min.x - 0.5 && r.max.x <= canvas.max.x + 0.5,
+                            "rect {r:?} outside {w}-wide canvas at scale {scale}"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     #[test]
     fn card_gallery_items_fit_canvas() {
         let ctx = egui::Context::default();
