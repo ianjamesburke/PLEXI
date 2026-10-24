@@ -352,6 +352,24 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "quick note capture inbox memo",
     },
     PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::UiScaleUp),
+        name: "Increase UI scale",
+        description: "Make the whole interface larger",
+        search_text: "ui scale zoom larger bigger increase interface",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::UiScaleDown),
+        name: "Decrease UI scale",
+        description: "Make the whole interface smaller",
+        search_text: "ui scale zoom smaller decrease interface",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::UiScaleReset),
+        name: "Reset UI scale",
+        description: "Restore the interface to 100%",
+        search_text: "ui scale zoom reset default actual size",
+    },
+    PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad),
         name: "Scratch Pad",
         description: "Open a fresh scratch note editor",
@@ -923,6 +941,9 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
         PaletteCommand::Host(Action::NavBackApp) => bindings.nav_back,
         PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
+        PaletteCommand::Host(Action::UiScaleUp) => bindings.ui_scale_up,
+        PaletteCommand::Host(Action::UiScaleDown) => bindings.ui_scale_down,
+        PaletteCommand::Host(Action::UiScaleReset) => bindings.ui_scale_reset,
         PaletteCommand::OpenWorkspaceConfig
         | PaletteCommand::EditCommands
         | PaletteCommand::SwitchCommandsScope
@@ -1425,6 +1446,7 @@ impl PlexiApp {
         // the whole screen height read as massive.
         let palette_max_list_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
         let modal_response = ModalShell::centered("command_palette")
+            .own_scroll()
             .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)
             .show(ctx, &colors, |ui| {

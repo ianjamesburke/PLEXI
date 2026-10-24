@@ -48,6 +48,7 @@ mod sync;
 mod team;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
+pub(crate) mod ui_scale;
 pub mod video_player_app;
 pub mod zoom;
 
@@ -179,6 +180,10 @@ pub struct PlexiApp {
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
+    /// App-wide UI scale applied via `ctx.set_zoom_factor`.
+    pub(crate) ui_scale: f32,
+    /// Deadline for the debounced `ui_scale` write to config.toml.
+    pub(crate) ui_scale_persist_at: Option<std::time::Instant>,
     pub(crate) ctx: egui::Context,
     pub(crate) router: crate::workspace::router::WorkspaceRouter,
     pub(crate) windows: Vec<Window>,
@@ -1629,6 +1634,8 @@ impl PlexiApp {
                     theme: theme::terminal_theme(&theme_cfg),
                     colors,
                     default_font_size,
+                    ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
+                    ui_scale_persist_at: None,
                     ctx: cc.egui_ctx.clone(),
                     router: restored.router,
                     windows: restored.windows,
@@ -1871,6 +1878,8 @@ impl PlexiApp {
             theme: theme::terminal_theme(&theme_cfg),
             colors,
             default_font_size,
+            ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
+            ui_scale_persist_at: None,
             ctx: cc.egui_ctx.clone(),
             router: crate::workspace::router::WorkspaceRouter::new(
                 vec![crate::host::context::Context {
@@ -2826,6 +2835,8 @@ impl PlexiApp {
             theme: theme::terminal_theme(&theme_cfg),
             colors,
             default_font_size: config.font_size.unwrap_or(theme::FONT_SIZE),
+            ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
+            ui_scale_persist_at: None,
             ctx,
             router: crate::workspace::router::WorkspaceRouter::new(
                 vec![crate::host::context::Context {
@@ -3497,6 +3508,8 @@ impl eframe::App for PlexiApp {
         // logic-only passes ran, and queued commands sat until the window was
         // next uncovered (stint 0505 fix round 3).
         self.update_preamble(ctx);
+        self.apply_ui_scale(ctx);
+        self.flush_ui_scale_persist();
         if self.present_relay_pairing_sheet() {
             ctx.request_repaint();
         }
@@ -3855,7 +3868,7 @@ impl eframe::App for PlexiApp {
             // modal and open QuickNote. Critical modals (ConfirmClose, CapabilityModal,
             // ContextCloseConfirm) are not preemptable and fall through to handle_key.
             let qn_binding = self.key_bindings.open_quick_note;
-            let qn_pressed = router_input.consume_key(qn_binding.0, qn_binding.1);
+            let qn_pressed = router_input.consume_key_exact(qn_binding.0, qn_binding.1);
             if qn_pressed && self.is_quick_note_preemptable() {
                 self.dismiss_preemptable_modal();
                 self.open_quick_note_modal();
@@ -4393,12 +4406,9 @@ impl eframe::App for PlexiApp {
                         self.mark_workspace_dirty();
                     }
                 }
-                Action::IncreasePaneFontSize => {
-                    self.adjust_focused_pane_font_size(1.0);
-                }
-                Action::DecreasePaneFontSize => {
-                    self.adjust_focused_pane_font_size(-1.0);
-                }
+                Action::UiScaleUp => self.set_ui_scale(ui_scale::step_up(self.ui_scale)),
+                Action::UiScaleDown => self.set_ui_scale(ui_scale::step_down(self.ui_scale)),
+                Action::UiScaleReset => self.set_ui_scale(ui_scale::reset()),
                 Action::ScrollUp => {
                     self.scroll_focused_pane(3);
                 }

@@ -341,7 +341,9 @@ pub trait App: Send {
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 
     /// Adjust the app's internal font size by `delta` points (positive = larger).
+    /// Test-only since per-pane font chords were folded into the global UI scale.
     /// Only implemented by apps with their own font size, e.g. TextEditorApp.
+    #[cfg(test)]
     fn adjust_font_size(&mut self, _delta: f32) {}
 
     /// Seed text for the rename-pane overlay. `None` falls back to the pane's

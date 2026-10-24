@@ -15,6 +15,8 @@ pub(crate) struct ModalShell<'a> {
     /// detection); 1.0 = pure black. Default maps `style::SCRIM_ALPHA`.
     scrim_strength: f32,
     order: egui::Order,
+    /// Wrap the body in a height-capped scroll area (see `own_scroll`).
+    fit_height: bool,
 }
 
 impl<'a> ModalShell<'a> {
@@ -29,7 +31,15 @@ impl<'a> ModalShell<'a> {
             escape: false,
             scrim_strength: f32::from(style::SCRIM_ALPHA) / 255.0,
             order: egui::Order::Foreground,
+            fit_height: true,
         }
+    }
+
+    /// The body manages its own scrolling and height cap (launcher lists), so
+    /// the shell must not add a scroll area that would re-key its state.
+    pub(crate) fn own_scroll(mut self) -> Self {
+        self.fit_height = false;
+        self
     }
 
     /// Render the modal above other Foreground overlays (e.g. notifications
@@ -126,6 +136,12 @@ impl<'a> ModalShell<'a> {
         let available_content_width =
             (screen.width() - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_H))).max(0.0);
         let content_width = self.width.min(available_content_width);
+        // Frame padding, optional title row and edge clearance come off the
+        // screen height; never collapse below a usable minimum.
+        let max_body_height = (screen.height()
+            - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_V))
+            - 40.0)
+            .max(120.0);
         if self.scrim_strength > 0.0 {
             let alpha = (self.scrim_strength * 255.0).round() as u8;
             // Scrim sits one layer below the modal so an elevated modal
@@ -181,7 +197,18 @@ impl<'a> ModalShell<'a> {
                             crate::ui::typography::modal_title(ui, title, colors);
                             ui.add_space(style::SPACE_MD);
                         }
-                        add_body(ui)
+                        if self.width > 0.0 && self.fit_height {
+                            // At high UI scale the logical screen shrinks; a
+                            // tall body scrolls instead of leaving the window.
+                            egui::ScrollArea::vertical()
+                                .id_salt("modal_body")
+                                .max_height(max_body_height)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| add_body(ui))
+                                .inner
+                        } else {
+                            add_body(ui)
+                        }
                     })
                     .inner
             });

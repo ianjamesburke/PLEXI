@@ -54,7 +54,7 @@ duplicate an editor or picker merely to claim coverage.
 | Launch an installed app | Search registry apps and select an app result. Arguments and unusual placement are not part of this row. | Palette `App`/`Builtin` results and `launch_palette_app`; CLI `AppCmd::Open`. | Present. |
 | Run or edit a named workspace/global command | Search the named command and run it through the existing user-command path; `Edit commands` opens the effective workspace or global `commands.toml` in a `text-editor` split (creating it from a commented template if absent). Arguments are a stretch flow. | Palette `UserCommand` result and `run_user_command`; `PaletteCommand::EditCommands` and `ensure_commands_file`; CLI `Commands::Run`. | Present without arguments. |
 
-`ToggleSidebar`, `ToggleShortcuts`, `ToggleMinimap`, pane font changes, directional
+`ToggleSidebar`, `ToggleShortcuts`, `ToggleMinimap`, directional
 navigation, pane swapping/sending, `NewPageRight`, `OpenFileBrowser`, and
 `ForceReloadApp` are existing `Action` entries. They are not necessary to meet
 the everyday V1 promise. They remain shortcuts or later palette candidates,

@@ -3185,6 +3185,7 @@ impl App for FileBrowserApp {
             .unwrap_or_else(|| "/".to_string())
     }
 
+    #[cfg(test)]
     fn adjust_font_size(&mut self, delta: f32) {
         self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
         log::info!("file_browser: font_size -> {}", self.font_size);

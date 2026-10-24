@@ -1705,6 +1705,7 @@ impl PlexiApp {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
         let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {

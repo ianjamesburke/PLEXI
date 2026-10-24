@@ -173,6 +173,19 @@ impl PlexiUiHarness {
         }
     }
 
+    /// Harness for a `phys_w` x `phys_h` PHYSICAL-pixel window at UI scale
+    /// `scale`: the logical surface ends up `phys / scale` points and egui's
+    /// zoom factor is `scale`.
+    pub fn new_sized_scaled(phys_w: f32, phys_h: f32, scale: f32) -> Self {
+        // Start at zoom 1.0 with the physical size; egui rescales the screen
+        // rect to `phys / scale` on the pass that changes the zoom factor,
+        // exactly as it does for a real window.
+        let mut h = Self::new_sized_ppp(phys_w, phys_h, 1.0);
+        h.with_app_mut(|app| app.ui_scale = scale);
+        h.run_steps(3);
+        h
+    }
+
     /// Advance one frame. Uses `step()` — PlexiApp continuously requests
     /// repaints (animations), which would cause `run()` to exceed its 4-step
     /// stability limit.
@@ -585,6 +598,287 @@ mod tests {
         crate::app::card_gallery::FORCE.with(|f| f.set(true));
         let mut h = PlexiUiHarness::new_sized(1440.0, 1400.0);
         h.run_steps(4);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    /// Scale for the `screenshot_ui_scale_*` tests (run at 0.6 / 1.0 / 2.0).
+    fn ui_scale_shot() -> f32 {
+        crate::app::ui_scale::clamp_scale(
+            std::env::var("PLEXI_UI_SCALE_SHOT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+        )
+    }
+
+    fn assert_inside(what: &str, scale: f32, rect: egui::Rect, screen: egui::Rect) {
+        let tol = 0.75;
+        assert!(
+            rect.min.x >= screen.min.x - tol
+                && rect.min.y >= screen.min.y - tol
+                && rect.max.x <= screen.max.x + tol
+                && rect.max.y <= screen.max.y + tol,
+            "{what} {rect:?} leaves logical screen {screen:?} at scale {scale}"
+        );
+    }
+
+    fn ui_scale_area_rect(h: &PlexiUiHarness, id: &str) -> egui::Rect {
+        h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.area_rect(egui::Id::new(id).with("overlay")))
+                .unwrap_or_else(|| panic!("modal area {id} not shown"))
+        })
+    }
+
+    fn seed_note_picker(h: &mut PlexiUiHarness) {
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            let mk = |title: &str, label: Option<&str>| crate::notes::NotePickerEntry {
+                path: std::env::temp_dir().join(format!("plexi-ui-scale-{title}.md")),
+                title: title.to_string(),
+                preview: format!("{title} preview text for the picker row"),
+                search_text: title.to_lowercase(),
+                tier_label: label.map(|s| s.to_string()),
+            };
+            app.notes_picker_entries = (0..12)
+                .map(|i| mk(&format!("note number {i}"), (i % 2 == 0).then_some("global")))
+                .collect();
+            app.notes_picker_selected = 0;
+        });
+    }
+
+    /// At every UI scale, a 1440x900 physical window has a logical surface of
+    /// `1440/scale x 900/scale`; the card gallery, atlas and the modals must
+    /// all stay inside it.
+    #[test]
+    fn ui_scale_gallery_and_modals_fit_window() {
+        for scale in [0.6_f32, 1.0, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.run_steps(3);
+            let screen = h.with_app(|app| {
+                assert!((app.ctx.zoom_factor() - scale).abs() < 1e-3, "zoom at {scale}");
+                app.ctx.content_rect()
+            });
+            assert!(
+                (screen.width() - 1440.0 / scale).abs() < 1.0
+                    && (screen.height() - 900.0 / scale).abs() < 1.0,
+                "logical screen {screen:?} at scale {scale}"
+            );
+
+            // Modals: open one at a time, assert its area, then dismiss.
+            seed_note_picker(&mut h);
+            h.run_steps(3);
+            assert_inside("notes picker", scale, ui_scale_area_rect(&h, "notes_picker"), screen);
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+
+            h.with_app_mut(|app| app.show_command_palette = true);
+            h.run_steps(3);
+            assert_inside(
+                "command palette",
+                scale,
+                ui_scale_area_rect(&h, "command_palette"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+            h.with_app_mut(|app| app.show_command_palette = false);
+
+            h.with_app_mut(|app| app.open_quick_note_modal());
+            h.run_steps(3);
+            assert_inside(
+                "quick note",
+                scale,
+                ui_scale_area_rect(&h, "quick_note_modal"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(3);
+            assert_inside("shortcuts", scale, ui_scale_area_rect(&h, "shortcuts"), screen);
+            h.with_app_mut(|app| app.show_shortcuts = false);
+
+            // Atlas: every node and the hub pill lie inside the logical screen.
+            h.with_app_mut(|app| {
+                let root = app.create_context_without_pty("alpha", None);
+                app.create_context_without_pty("beta", Some(root));
+                app.create_context_without_pty("gamma", Some(root));
+                app.create_context_without_pty("delta", None);
+                let (nodes, _) = app.compute_atlas_graph(screen);
+                assert!(!nodes.is_empty());
+                for n in &nodes {
+                    assert_inside(&format!("atlas node {}", n.name), scale, n.rect, screen);
+                }
+                for (i, a) in nodes.iter().enumerate() {
+                    for b in &nodes[i + 1..] {
+                        assert!(
+                            !a.rect.intersects(b.rect),
+                            "atlas nodes {} and {} overlap at scale {scale}",
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
+                assert_inside(
+                    "atlas hub",
+                    scale,
+                    crate::app::PlexiApp::atlas_hub_rect(screen),
+                    screen,
+                );
+            });
+        }
+    }
+
+    /// Cmd+= steps the one global scale: egui's zoom factor follows, and a
+    /// terminal pane's effective pixel font size grows with it.
+    #[test]
+    fn ui_scale_up_key_scales_zoom_factor_and_terminal_pixels() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let pane_id = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+            id
+        });
+        h.run_steps(3);
+        let pixel_font = |h: &PlexiUiHarness| {
+            h.with_app(|app| {
+                let pane = app.windows[app.active_window].panes.get(&pane_id).unwrap();
+                let Pane::Terminal(t) = pane else { panic!("terminal pane") };
+                t.font_size * app.ctx.zoom_factor()
+            })
+        };
+        let before = pixel_font(&h);
+        assert!((h.with_app(|a| a.ctx.zoom_factor()) - 1.0).abs() < 1e-4);
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!((app.ui_scale - 1.1).abs() < 1e-4, "ui_scale {}", app.ui_scale);
+            assert!(
+                (app.ctx.zoom_factor() - 1.1).abs() < 1e-4,
+                "zoom {}",
+                app.ctx.zoom_factor()
+            );
+        });
+        assert!(pixel_font(&h) > before, "terminal pixel font must grow");
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+        h.run_steps(3);
+        h.with_app(|app| assert!((app.ui_scale - 0.9).abs() < 1e-4, "{}", app.ui_scale));
+        assert!(pixel_font(&h) < before, "terminal pixel font must shrink");
+
+        // Cmd+Shift+0 resets (and is not swallowed by Quick Note on Cmd+0).
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Num0,
+        );
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!((app.ui_scale - 1.0).abs() < 1e-4);
+            assert!(
+                !app.focus_stack
+                    .contains(&crate::app::FocusKind::QuickNote),
+                "reset chord must not open Quick Note"
+            );
+        });
+    }
+
+    #[test]
+    fn screenshot_ui_scale_cards() {
+        let scale = ui_scale_shot();
+        crate::app::card_gallery::FORCE.with(|f| f.set(true));
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 1400.0, scale);
+        h.run_steps(4);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_atlas() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let root = app.create_context_without_pty("alpha", None);
+            app.create_context_without_pty("beta", Some(root));
+            app.create_context_without_pty("gamma", Some(root));
+            app.create_context_without_pty("delta", None);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+        });
+        h.run_steps(6);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_note_picker() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        add_focused_pane(&mut h);
+        seed_note_picker(&mut h);
+        h.run_steps(3);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_terminal() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+        });
+        h.run_steps(6);
         let path = evidence_png!();
         h.save_screenshot(&path).unwrap();
         assert!(std::path::Path::new(&path).exists());

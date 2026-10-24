@@ -294,6 +294,7 @@ impl PlexiApp {
         let list_max_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
 
         let modal_response = ModalShell::centered("notes_picker")
+            .own_scroll()
             .title("Notes")
             .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)

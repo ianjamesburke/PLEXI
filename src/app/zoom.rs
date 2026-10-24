@@ -1042,6 +1042,9 @@ impl PlexiApp {
         let band_w = (total_leaves as f32 * slot_w)
             .min((viewport.width() - 48.0).max(style::ATLAS_NODE_W));
         let band_x0 = viewport.center().x - band_w * 0.5;
+        // Narrow logical viewports (high UI scale) shrink nodes to their slot
+        // rather than letting siblings overlap.
+        let node_w = (band_w / total_leaves as f32 - 12.0).clamp(96.0, style::ATLAS_NODE_W);
 
         let mut nodes_out: Vec<AtlasNode> = Vec::new();
         struct Placement {
@@ -1075,7 +1078,7 @@ impl PlexiApp {
             );
             let rect = Rect::from_center_size(
                 node_center,
-                Vec2::new(style::ATLAS_NODE_W, style::ATLAS_NODE_H),
+                Vec2::new(node_w, style::ATLAS_NODE_H),
             );
             let name = contexts
                 .iter()
