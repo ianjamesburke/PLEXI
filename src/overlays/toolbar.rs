@@ -52,9 +52,9 @@ impl PlexiApp {
                     );
                 }
 
-                if button::icon_button(ui, "?", "Keyboard shortcuts (\u{2318}/)", &self.colors)
-                    .clicked()
-                {
+                let help = button::icon_button(ui, "?", "Keyboard shortcuts (\u{2318}/)", &self.colors);
+                record_toolbar_rect(ui, "help", help.rect);
+                if help.clicked() {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
@@ -72,7 +72,9 @@ impl PlexiApp {
                 } else {
                     "Changelog"
                 };
-                if button::toolbar_button(ui, version_label, hover_text).clicked() {
+                let version = button::toolbar_button(ui, version_label, hover_text);
+                record_toolbar_rect(ui, "version", version.rect);
+                if version.clicked() {
                     self.show_changelog = !self.show_changelog;
                 }
 
@@ -98,6 +100,12 @@ impl PlexiApp {
             });
         });
     }
+}
+
+/// Publish a toolbar control's rect so layout tests can check chrome for overlap.
+fn record_toolbar_rect(ui: &egui::Ui, name: &'static str, rect: egui::Rect) {
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(("toolbar_ctl_rect", name)), rect));
 }
 
 fn host_ui_gallery_available() -> bool {

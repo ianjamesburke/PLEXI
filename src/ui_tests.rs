@@ -1000,6 +1000,82 @@ mod tests {
         });
     }
 
+    /// The attention chip in the path bar keeps its own slot: at every UI
+    /// scale and window width it stays inside the viewport and never
+    /// intersects the toolbar controls, version label, or the pane header's
+    /// provenance icon, however long the pending ask is.
+    #[test]
+    fn attention_chip_never_overlaps_chrome_at_any_scale_or_width() {
+        for scale in [0.6_f32, 1.0, 2.0] {
+            for width in [700.0_f32, 1400.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                h.step();
+                let pane_id = h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    let workspace_root = app.router.active().root.clone();
+                    let id = app.host.alloc_pane_id();
+                    let mut terminal = crate::host::pane::TerminalPane::new(
+                        id,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            working_directory: Some(workspace_root),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .expect("spawn terminal pane");
+                    terminal.spawned_by = Some("agent:researcher".to_string());
+                    let win = &mut app.windows[app.active_window];
+                    win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+                    let tile = win.tree.tiles.insert_pane(id);
+                    win.tree.root = Some(tile);
+                    win.focused_pane = Some(tile);
+                    app.enqueue_ask(
+                        "ask-chip",
+                        id,
+                        "permission: Allow flash: cargo test --workspace --all-features -- --nocapture --test-threads=1",
+                        1_000,
+                        Vec::new(),
+                    );
+                    id
+                });
+                h.run_steps(4);
+                let (screen, chip, siblings) = h.with_app(|app| {
+                    let get = |id: egui::Id| app.ctx.data(|d| d.get_temp::<egui::Rect>(id));
+                    let chip = get(egui::Id::new("attention_chip_rect")).expect("chip rect");
+                    let mut siblings = Vec::new();
+                    for name in ["help", "version"] {
+                        siblings.push((
+                            name,
+                            get(egui::Id::new(("toolbar_ctl_rect", name))).expect("toolbar rect"),
+                        ));
+                    }
+                    siblings.push((
+                        "provenance",
+                        get(egui::Id::new(("provenance_icon_rect", pane_id)))
+                            .expect("provenance icon rect"),
+                    ));
+                    (app.ctx.content_rect(), chip, siblings)
+                });
+                let what = format!("scale {scale} width {width}");
+                assert_inside("attention chip", scale, chip, screen);
+                for (name, rect) in &siblings {
+                    assert!(
+                        !chip.intersects(*rect),
+                        "{what}: chip {chip:?} overlaps {name} {rect:?}"
+                    );
+                }
+                for (i, (an, a)) in siblings.iter().enumerate() {
+                    for (bn, b) in &siblings[i + 1..] {
+                        assert!(!a.intersects(*b), "{what}: {an} {a:?} overlaps {bn} {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         let active_window = h.with_app(|app| app.active_window);
         add_focused_pane_to_window(h, active_window)

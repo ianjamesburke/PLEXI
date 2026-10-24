@@ -712,6 +712,8 @@ fn paint_provenance(
         crate::ui::provenance::provenance_kind(badge),
         colors.text_secondary(colors.bg_toolbar),
     );
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane_id)), rect));
     ui.interact(
         rect,
         egui::Id::new(("provenance_icon", pane_id)),
