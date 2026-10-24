@@ -26,7 +26,6 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub const OVERLAY_QUESTION: &str = "What would you do here?";
-pub const ESC_BACKOUT_HINT: &str = "Cmd+Esc backs out";
 pub const NO_ASKS_HINT: &str = "No open asks in queue";
 
 /// Unresolved Needs-you records from the loaded profile monitor, oldest first.
@@ -1319,7 +1318,7 @@ impl PlexiApp {
     }
 
     /// Handle keyboard input when the Decision Overlay is open.
-    /// Consumes all bare keys and `Cmd+Esc` / `Cmd+Alt+B`; swallows plain `Esc` with a hint.
+    /// Consumes all bare keys and `Esc` / `Cmd+Esc` / `Cmd+Alt+B`.
     pub(crate) fn handle_decision_overlay_input(
         &mut self,
         input: &mut PlexiInput,
@@ -1328,12 +1327,14 @@ impl PlexiApp {
             return KeyDisposition::Passthrough;
         }
 
-        // Cmd+Esc closes the overlay leaving the ask queued.
-        if input.consume_key(egui::Modifiers::COMMAND, Key::Escape)
+        // Plain Esc (and Cmd+Esc / Ctrl+Esc alias) closes the overlay leaving the ask queued.
+        if input.consume_key(egui::Modifiers::NONE, Key::Escape)
+            || input.consume_key(egui::Modifiers::COMMAND, Key::Escape)
             || input.consume_key(egui::Modifiers::CTRL, Key::Escape)
         {
-            log::info!("decision_overlay: closed via Cmd+Esc (ask remains queued)");
+            log::info!("decision_overlay: closed via Esc (ask remains queued)");
             self.attention_queue.decision_overlay = None;
+            self.sync_attention_queue();
             input.clear();
             return KeyDisposition::Consumed;
         }
@@ -1343,18 +1344,6 @@ impl PlexiApp {
         let ctrl_alt = egui::Modifiers::CTRL | egui::Modifiers::ALT;
         if input.consume_key(cmd_alt, Key::B) || input.consume_key(ctrl_alt, Key::B) {
             self.summon_decision_overlay();
-            input.clear();
-            return KeyDisposition::Consumed;
-        }
-
-        // Plain Esc is swallowed with a hint ("Cmd+Esc backs out").
-        if input.consume_key(egui::Modifiers::NONE, Key::Escape) {
-            if let Some(ref mut ov) = self.attention_queue.decision_overlay {
-                ov.hint = Some((ESC_BACKOUT_HINT.to_string(), Instant::now()));
-            }
-            self.attention_queue.transient_hint =
-                Some((ESC_BACKOUT_HINT.to_string(), Instant::now()));
-            log::info!("decision_overlay: plain Esc swallowed with backout hint");
             input.clear();
             return KeyDisposition::Consumed;
         }
@@ -1474,12 +1463,15 @@ impl PlexiApp {
         }
         self.sync_attention_queue();
 
-        if input.consume_key(egui::Modifiers::COMMAND, Key::Escape)
+        if input.consume_key(egui::Modifiers::NONE, Key::Escape)
+            || input.consume_key(egui::Modifiers::COMMAND, Key::Escape)
             || input.consume_key(egui::Modifiers::CTRL, Key::Escape)
             || input.consume_key(egui::Modifiers::COMMAND, Key::I)
             || input.consume_key(egui::Modifiers::CTRL, Key::I)
         {
             self.attention_queue.open = false;
+            self.sync_attention_queue();
+            log::info!("attention_queue: closed list");
             input.clear();
             return KeyDisposition::Consumed;
         }
@@ -1565,7 +1557,7 @@ impl PlexiApp {
             }
         }
 
-        // Unbound bare keys (including `a`, `d`, `1-9`, `Esc`) are swallowed and never answer or leak.
+        // Unbound bare keys (including `a`, `d`, `1-9`) are swallowed and never answer or leak.
         input.clear();
         KeyDisposition::Consumed
     }
@@ -1678,7 +1670,7 @@ impl PlexiApp {
                                 |ui| {
                                     ui.label(
                                         RichText::new(
-                                            "j/k move · Enter jump · x dismiss · Cmd+I close",
+                                            "j/k move · Enter jump · x dismiss · Esc closes",
                                         )
                                         .size(style::TEXT_HINT)
                                         .color(colors.text_dim),
@@ -1942,7 +1934,7 @@ impl PlexiApp {
                         ui.add_space(style::SPACE_SM);
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new("1–9 or j/k + Enter to pick · Cmd+Esc backs out")
+                                RichText::new("1–9 or j/k + Enter to pick · Esc closes")
                                     .size(style::TEXT_HINT)
                                     .color(colors.text_dim),
                             );

@@ -2,7 +2,7 @@
 //! Attention Queue Focus-Lock Rule, Decision Overlay, Context Restore, and Strict Input Ownership
 //! (`SPEC.md` R31–R42).
 
-use crate::app::attention_queue::{QueueCategory, QueueOption, ESC_BACKOUT_HINT, OVERLAY_QUESTION};
+use crate::app::attention_queue::{QueueCategory, QueueOption, OVERLAY_QUESTION};
 use crate::app::input_router::PlexiInput;
 use crate::app::zoom::{ColumnWidthPreset, ZoomLevel};
 use crate::host::keys::Direction;
@@ -506,8 +506,8 @@ fn attention_queue_ordering_and_focus_lock_rule_r37_r38() {
 /// R39: Decision Overlay interaction:
 /// - `Cmd+Alt+B` opens focused pane's ask (or oldest ask).
 /// - Question is `"What would you do here?"`, recommended option is pre-selected.
-/// - Plain `Esc` is swallowed and shows `"Cmd+Esc backs out"` hint without closing or deciding.
-/// - `Cmd+Esc` closes the overlay leaving the ask queued.
+/// - Plain `Esc` closes the overlay leaving the ask queued without sending a verdict.
+/// - `Cmd+Esc` also closes the overlay leaving the ask queued.
 /// - `1–9` or `Enter` picks an option, sends exactly one verdict, and removes the ask from the queue.
 #[test]
 fn decision_overlay_verdict_and_esc_handling_r39() {
@@ -557,21 +557,14 @@ fn decision_overlay_verdict_and_esc_handling_r39() {
         "recommended option must be pre-selected"
     );
 
-    // Plain Esc is swallowed with hint; overlay stays open and ask stays queued.
+    // Plain Esc closes the overlay leaving the ask queued without sending a verdict.
     send_key(&mut h, Modifiers::NONE, Key::Escape);
-    let ov = h
-        .app
-        .attention_queue
-        .decision_overlay
-        .as_ref()
-        .expect("overlay still open after plain Esc");
-    assert_eq!(
-        ov.hint.as_ref().map(|(s, _)| s.as_str()),
-        Some(ESC_BACKOUT_HINT)
-    );
+    assert!(h.app.attention_queue.decision_overlay.is_none());
+    assert_eq!(h.app.attention_queue.ask_count(), 1);
     assert!(h.app.attention_queue.verdicts.is_empty());
 
-    // Cmd+Esc closes the overlay leaving the ask queued.
+    // Re-open via Cmd+Alt+B; Cmd+Esc alias also closes the overlay leaving the ask queued.
+    h.app.summon_decision_overlay();
     send_key(&mut h, Modifiers::COMMAND, Key::Escape);
     assert!(h.app.attention_queue.decision_overlay.is_none());
     assert_eq!(h.app.attention_queue.ask_count(), 1);
@@ -698,4 +691,131 @@ fn integrity_notice_sorts_below_asks_dedupes_and_acknowledges() {
         .open_needs_you()
         .iter()
         .all(|r| r.kind != crate::broker::gate::NeedsYouKind::Integrity));
+}
+
+#[test]
+fn esc_closes_queue_list() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.app
+        .enqueue_ask("ask-q-1", pane, "cargo check", 1_000, Vec::new());
+
+    // Cmd+I toggles the queue list open.
+    h.app.toggle_attention_queue_list();
+    assert!(h.app.attention_queue.open);
+
+    // Plain Esc closes the queue list.
+    send_key(&mut h, Modifiers::NONE, Key::Escape);
+    assert!(!h.app.attention_queue.open);
+    assert_eq!(h.app.attention_queue.ask_count(), 1);
+
+    // Cmd+I still toggles it open and closed.
+    h.app.toggle_attention_queue_list();
+    assert!(h.app.attention_queue.open);
+    send_key(&mut h, Modifiers::COMMAND, Key::I);
+    assert!(!h.app.attention_queue.open);
+}
+
+#[test]
+fn esc_closes_decision_overlay_without_verdict() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let ctx_id = h.app.router.active().context_id;
+    h.app.set_context_columns(ctx_id, vec![vec![pane]]);
+    h.app.focus_pane_in_strip(pane);
+
+    h.app
+        .enqueue_ask("ask-ov-esc", pane, "rm -rf /tmp/build", 1_000, Vec::new());
+    h.app.summon_decision_overlay();
+    assert!(h.app.attention_queue.decision_overlay.is_some());
+
+    send_key(&mut h, Modifiers::NONE, Key::Escape);
+    assert!(h.app.attention_queue.decision_overlay.is_none());
+    assert_eq!(h.app.attention_queue.ask_count(), 1);
+    assert!(h.app.attention_queue.verdicts.is_empty());
+}
+
+#[test]
+fn esc_swallowed_when_overlay_open() {
+    use crate::app::app_trait::KeyDisposition;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let ctx_id = h.app.router.active().context_id;
+    h.app.set_context_columns(ctx_id, vec![vec![pane]]);
+    h.app.focus_pane_in_strip(pane);
+
+    h.app.enqueue_ask(
+        "ask-swallow-esc",
+        pane,
+        "git push --force",
+        1_000,
+        Vec::new(),
+    );
+    h.app.summon_decision_overlay();
+    assert!(h.app.attention_queue.decision_overlay.is_some());
+
+    let mut input = PlexiInput::synthetic(
+        vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        Modifiers::NONE,
+    );
+    let disp = h.app.handle_decision_overlay_input(&mut input);
+    assert_eq!(disp, KeyDisposition::Consumed);
+    assert!(
+        input.is_empty(),
+        "Esc must be cleared from PlexiInput so it is never forwarded to the pane underneath"
+    );
+    assert!(h.app.attention_queue.decision_overlay.is_none());
+    assert_eq!(h.app.attention_queue.ask_count(), 1);
+    assert!(h.app.attention_queue.verdicts.is_empty());
+
+    // Also verify via full frame (press_key) that the underlying builtin app pane is NOT closed by Esc.
+    h.app.summon_decision_overlay();
+    assert!(h.app.attention_queue.decision_overlay.is_some());
+    let panes_before = h.state().open_panes.len();
+    h.press_key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.attention_queue.decision_overlay.is_none());
+    assert_eq!(
+        h.state().open_panes.len(),
+        panes_before,
+        "Esc closing decision overlay must not close or reach the underlying app pane"
+    );
+}
+
+#[test]
+fn cmd_esc_still_zooms_out_when_nothing_open() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let ctx_id = h.app.router.active().context_id;
+    h.app.set_context_columns(ctx_id, vec![vec![pane]]);
+    h.app.focus_pane_in_strip(pane);
+
+    assert!(!h.app.attention_queue.open);
+    assert!(h.app.attention_queue.decision_overlay.is_none());
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+
+    // Cmd+Esc zooms out from Columns -> SiblingCards -> TreeAtlas when neither queue nor overlay is open.
+    h.press_key(Key::Escape, Modifiers::COMMAND);
+    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
+
+    // Release Escape so the next press is not treated by egui as key-repeat.
+    h.frame(egui::RawInput {
+        events: vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+
+    h.press_key(Key::Escape, Modifiers::COMMAND);
+    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 }
