@@ -167,9 +167,51 @@ impl PlexiApp {
         }
     }
 
+    /// Whether the open text-editor pane for `path` (if any) has unsaved edits.
+    pub(crate) fn open_text_editor_pane_is_dirty(&self, path: &std::path::Path) -> bool {
+        let Some(pane_id) = self.find_open_text_editor_pane_any_window(path) else {
+            return false;
+        };
+        self.windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane_id))
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.runtime.editor_buffer())
+            .is_some_and(|b| b.dirty)
+    }
+
+    fn notes_picker_refuse_if_dirty(
+        &mut self,
+        path: &std::path::Path,
+        title: &str,
+        cut: bool,
+    ) -> bool {
+        if !self.open_text_editor_pane_is_dirty(path) {
+            return false;
+        }
+        let verb = if cut { "cut" } else { "delete" };
+        let msg = format!(
+            "Can't {verb} \u{201c}{title}\u{201d}: its pane has unsaved edits. Save or close it first."
+        );
+        log::info!(
+            "notes_picker: refusing {verb} of {path:?} — open editor pane has unsaved edits"
+        );
+        self.notes_picker_status = Some(msg);
+        true
+    }
+
     /// Cmd+X: copy now (at press time, so a cancelled cut still leaves the text
-    /// on the clipboard), then ask for delete confirmation.
+    /// on the clipboard), then ask for delete confirmation. Refuses before
+    /// copying if the note's open editor pane has unsaved edits.
     fn notes_picker_cut_selected(&mut self) {
+        let Some(entry_idx) = self.notes_picker_selected_entry() else {
+            return;
+        };
+        let path = self.notes_picker_entries[entry_idx].path.clone();
+        let title = self.notes_picker_entries[entry_idx].title.clone();
+        if self.notes_picker_refuse_if_dirty(&path, &title, true) {
+            return;
+        }
         if let Some(path) = self.notes_picker_copy_selected() {
             log::info!("notes_picker: cut — awaiting delete confirm for {path:?}");
             self.notes_picker_pending_delete = Some(PendingDelete { path, cut: true });
@@ -179,6 +221,10 @@ impl PlexiApp {
     fn notes_picker_request_delete(&mut self) {
         if let Some(entry_idx) = self.notes_picker_selected_entry() {
             let path = self.notes_picker_entries[entry_idx].path.clone();
+            let title = self.notes_picker_entries[entry_idx].title.clone();
+            if self.notes_picker_refuse_if_dirty(&path, &title, false) {
+                return;
+            }
             log::info!("notes_picker: delete requested — awaiting confirm for {path:?}");
             self.notes_picker_pending_delete = Some(PendingDelete { path, cut: false });
         }
@@ -195,6 +241,10 @@ impl PlexiApp {
         else {
             return;
         };
+        let title = self.notes_picker_entries[entry_idx].title.clone();
+        if self.notes_picker_refuse_if_dirty(&pending.path, &title, pending.cut) {
+            return;
+        }
         log::info!(
             "notes_picker: confirmed delete (cut={}) of {:?}",
             pending.cut,
@@ -250,6 +300,19 @@ impl PlexiApp {
         input: &mut crate::app::input_router::PlexiInput,
     ) {
         let visible = self.notes_picker_filtered().len();
+
+        if input.events().iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key { pressed: true, .. }
+                    | egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Copy
+                    | egui::Event::Cut
+            )
+        }) {
+            self.notes_picker_status = None;
+        }
 
         // A pending confirm owns the keyboard: Esc cancels it (never closes the
         // picker), Enter/y confirm, everything else is ignored.
@@ -314,6 +377,7 @@ impl PlexiApp {
         match action {
             Some(PickerKey::Escape) => {
                 if self.notes_picker_query.is_empty() {
+                    self.notes_picker_status = None;
                     self.pop_focus_layer(&FocusKind::NotesPicker);
                 } else {
                     self.notes_picker_query.clear();
@@ -340,6 +404,7 @@ impl PlexiApp {
     }
 
     fn notes_picker_open_selected(&mut self) {
+        self.notes_picker_status = None;
         let Some(entry_idx) = self.notes_picker_selected_entry() else {
             return;
         };
@@ -389,6 +454,7 @@ impl PlexiApp {
     }
 
     fn notes_picker_open_in_new(&mut self) {
+        self.notes_picker_status = None;
         let Some(entry_idx) = self.notes_picker_selected_entry() else {
             return;
         };
@@ -410,6 +476,12 @@ impl PlexiApp {
         let filtered = self.notes_picker_filtered();
         let selected = self.notes_picker_selected;
         let selection_changed = self.notes_picker_last_drawn_selected != Some(selected);
+        if self
+            .notes_picker_last_drawn_selected
+            .is_some_and(|prev| prev != selected)
+        {
+            self.notes_picker_status = None;
+        }
         let total = self.notes_picker_entries.len();
         let preview = self.notes_picker_preview_text();
         let pending_delete = self.notes_picker_pending_delete.clone();
@@ -426,6 +498,7 @@ impl PlexiApp {
                     .is_some(),
             )
         });
+        let status = self.notes_picker_status.clone();
         if std::mem::take(&mut self.notes_picker_copy_unsent) {
             if let Some(text) = &self.notes_picker_last_copied {
                 ctx.copy_text(text.clone());
@@ -584,22 +657,48 @@ impl PlexiApp {
                 });
 
                 ui.add_space(style::SPACE_SM);
-                if let Some((title, open_in_pane)) = &pending_title {
+                let status_message = if let Some((title, open_in_pane)) = &pending_title {
                     let cut = pending_delete.as_ref().is_some_and(|p| p.cut);
                     let verb = if cut { "Cut" } else { "Delete" };
-                    let tail = if *open_in_pane { " and close its pane" } else { "" };
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{verb} \u{201c}{title}\u{201d}{tail}? \u{21b5}/y confirm \u{b7} esc/n cancel"
-                            ))
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.danger),
-                        )
-                        .wrap(),
+                    let tail = if *open_in_pane {
+                        " and close its pane"
+                    } else {
+                        ""
+                    };
+                    Some(format!(
+                        "{verb} \u{201c}{title}\u{201d}{tail}? \u{21b5}/y confirm \u{b7} esc/n cancel"
+                    ))
+                } else {
+                    status.clone()
+                };
+                let (status_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), style::NOTES_PICKER_STATUS_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                if let Some(msg) = status_message {
+                    let mut status_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(status_rect)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
                     );
-                    ui.add_space(style::SPACE_XS);
+                    status_ui.set_clip_rect(status_rect.intersect(ui.clip_rect()));
+                    let mut job = egui::text::LayoutJob::single_section(
+                        msg,
+                        egui::TextFormat {
+                            font_id: egui::FontId::proportional(style::TEXT_CAPTION),
+                            color: colors.danger,
+                            ..Default::default()
+                        },
+                    );
+                    job.wrap = egui::text::TextWrapping {
+                        max_width: status_rect.width(),
+                        max_rows: 2,
+                        break_anywhere: false,
+                        overflow_character: Some('\u{2026}'),
+                    };
+                    status_ui.add(egui::Label::new(job));
                 }
+                ui.add_space(style::SPACE_XS);
                 HintBar::new(&[
                     HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
                     HintGroup::new(&["\u{21b5}"], "open"),
@@ -615,10 +714,12 @@ impl PlexiApp {
         if query != self.notes_picker_query && self.notes_picker_pending_delete.is_none() {
             self.notes_picker_query = query;
             self.notes_picker_selected = 0;
+            self.notes_picker_status = None;
         }
 
         if let Some(row) = open_cell.get() {
             self.notes_picker_selected = row;
+            self.notes_picker_status = None;
             self.notes_picker_open_selected();
         }
 
@@ -627,6 +728,8 @@ impl PlexiApp {
         // Dismiss on click outside the modal (processed after picker Area so it
         // doesn't fire when clicking inside the modal itself).
         if modal_response.dismissed {
+            self.notes_picker_pending_delete = None;
+            self.notes_picker_status = None;
             self.pop_focus_layer(&FocusKind::NotesPicker);
         }
     }
@@ -1178,10 +1281,7 @@ mod tests {
     fn notes_picker_preview_strips_frontmatter_but_copy_keeps_it() {
         let full = "---\ntitle: Hello\n---\nthe body";
         let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full]);
-        assert_eq!(
-            app.notes_picker_preview_text().as_deref(),
-            Some("the body")
-        );
+        assert_eq!(app.notes_picker_preview_text().as_deref(), Some("the body"));
         press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
         for p in paths {
@@ -1324,5 +1424,177 @@ mod tests {
 
         app.notes_picker_query.clear();
         assert_eq!(app.notes_picker_filtered(), vec![0, 1, 2]);
+    }
+
+    fn set_editor_pane_unsaved(app: &mut PlexiApp, pane_id: u64, text: &str) {
+        let runtime = &mut app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("editor pane")
+            .as_app_mut()
+            .expect("app pane")
+            .runtime;
+        let AppRuntime::Builtin(editor) = runtime else {
+            panic!("expected builtin editor");
+        };
+        editor
+            .as_any_mut()
+            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+            .expect("text editor")
+            .test_set_unsaved(text);
+    }
+
+    #[test]
+    fn notes_picker_modal_rect_identical_across_status_states() {
+        let (mut app, ctx, paths) = picker_with_notes("rect-states", &["first note", "second"]);
+        let area_id = egui::Id::new("notes_picker").with("overlay");
+        let measure = |app: &mut PlexiApp, ctx: &egui::Context| -> egui::Rect {
+            draw_picker_frame(app, ctx);
+            draw_picker_frame(app, ctx);
+            ctx.memory(|m| m.area_rect(area_id))
+                .expect("notes_picker overlay area_rect")
+        };
+
+        let rect_none = measure(&mut app, &ctx);
+
+        app.notes_picker_pending_delete = Some(PendingDelete {
+            path: paths[0].clone(),
+            cut: false,
+        });
+        app.notes_picker_status = None;
+        let rect_confirm = measure(&mut app, &ctx);
+
+        app.notes_picker_pending_delete = None;
+        app.notes_picker_status = Some(
+            "Can't delete \u{201c}first note\u{201d}: its pane has unsaved edits.".to_string(),
+        );
+        let rect_short_err = measure(&mut app, &ctx);
+
+        let long_msg = format!(
+            "Can't delete \u{201c}first note\u{201d}: {}",
+            "its open editor pane has unsaved edits that would be lost if closed now; ".repeat(10)
+        );
+        assert!(long_msg.len() > 400);
+        app.notes_picker_status = Some(long_msg);
+        let rect_long_err = measure(&mut app, &ctx);
+
+        assert_eq!(rect_confirm.min, rect_none.min);
+        assert_eq!(rect_confirm.size(), rect_none.size());
+        assert_eq!(rect_confirm, rect_none);
+        assert_eq!(rect_short_err.min, rect_none.min);
+        assert_eq!(rect_short_err.size(), rect_none.size());
+        assert_eq!(rect_short_err, rect_none);
+        assert_eq!(rect_long_err.min, rect_none.min);
+        assert_eq!(rect_long_err.size(), rect_none.size());
+        assert_eq!(rect_long_err, rect_none);
+
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn notes_picker_refuses_delete_and_cut_when_open_editor_pane_is_dirty() {
+        let (mut app, ctx, paths) = picker_with_notes("dirty-pane", &["dirty note", "other note"]);
+        let (_tile, pane_id) = app.add_test_pane();
+        replace_with_text_editor(&mut app, pane_id, paths[0].clone());
+        set_editor_pane_unsaved(&mut app, pane_id, "unsaved draft");
+
+        press_picker_chord(
+            &mut app,
+            &ctx,
+            egui::Modifiers::COMMAND,
+            egui::Key::Backspace,
+        );
+        assert!(paths[0].exists(), "dirty note file must remain on disk");
+        assert!(
+            app.windows[0].panes.contains_key(&pane_id),
+            "dirty editor pane must remain open"
+        );
+        assert!(
+            app.notes_picker_pending_delete.is_none(),
+            "dirty delete must not enter pending confirm"
+        );
+        let delete_err = app
+            .notes_picker_status
+            .as_deref()
+            .expect("status error set on refused delete");
+        assert!(delete_err.contains("delete"));
+        assert!(delete_err.contains("unsaved edits"));
+
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
+        assert!(paths[0].exists(), "dirty note file must remain on disk");
+        assert!(app.windows[0].panes.contains_key(&pane_id));
+        assert!(app.notes_picker_pending_delete.is_none());
+        assert!(
+            app.notes_picker_last_copied.is_none(),
+            "refused cut must not copy to clipboard"
+        );
+        let cut_err = app
+            .notes_picker_status
+            .as_deref()
+            .expect("status error set on refused cut");
+        assert!(cut_err.contains("cut"));
+        assert!(cut_err.contains("unsaved edits"));
+
+        // Moving selection clears the status error.
+        press_picker_key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert!(app.notes_picker_status.is_none());
+        press_picker_key(&mut app, &ctx, egui::Key::ArrowUp);
+
+        // Re-check at confirm time if the pane was dirtied while confirm was pending.
+        app.notes_picker_pending_delete = Some(PendingDelete {
+            path: paths[0].clone(),
+            cut: false,
+        });
+        press_picker_key(&mut app, &ctx, egui::Key::Enter);
+        assert!(paths[0].exists());
+        assert!(app.windows[0].panes.contains_key(&pane_id));
+        assert!(app.notes_picker_pending_delete.is_none());
+        assert!(app
+            .notes_picker_status
+            .as_deref()
+            .is_some_and(|s| s.contains("unsaved edits")));
+
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn notes_picker_handles_egui_copy_and_cut_events_without_key_events() {
+        let full = "---\ntitle: Event Copy\n---\nfull body content";
+        let (mut app, ctx, paths) = picker_with_notes("copy-cut-events", &[full]);
+
+        let mut copy_input = picker_frame_input();
+        copy_input.events.push(egui::Event::Copy);
+        let _ = ctx.run_ui(copy_input, |ui| {
+            let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+            app.notes_picker_handle_key(&mut input);
+        });
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
+        assert!(app.notes_picker_pending_delete.is_none());
+        assert!(paths[0].exists());
+
+        app.notes_picker_last_copied = None;
+        let mut cut_input = picker_frame_input();
+        cut_input.events.push(egui::Event::Cut);
+        let _ = ctx.run_ui(cut_input, |ui| {
+            let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+            app.notes_picker_handle_key(&mut input);
+        });
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
+        assert!(app
+            .notes_picker_pending_delete
+            .as_ref()
+            .is_some_and(|p| p.cut && p.path == paths[0]));
+        assert!(
+            paths[0].exists(),
+            "cut must wait for confirm before deleting"
+        );
+
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }

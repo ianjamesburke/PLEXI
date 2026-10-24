@@ -387,6 +387,8 @@ pub struct PlexiApp {
     pub(crate) notes_picker_preview: Option<(std::path::PathBuf, std::sync::Arc<str>)>,
     /// Notes picker: a delete (or cut) awaiting Enter/y confirmation.
     pub(crate) notes_picker_pending_delete: Option<crate::overlays::notes_picker::PendingDelete>,
+    /// Notes picker: inline status/error message shown in the fixed status slot.
+    pub(crate) notes_picker_status: Option<String>,
     /// Notes picker: last text sent to the clipboard (Cmd+C / Cmd+X).
     pub(crate) notes_picker_last_copied: Option<String>,
     /// Notes picker: `notes_picker_last_copied` still has to be handed to egui.
@@ -1700,6 +1702,7 @@ impl PlexiApp {
                     notes_picker_query: String::new(),
                     notes_picker_preview: None,
                     notes_picker_pending_delete: None,
+                    notes_picker_status: None,
                     notes_picker_last_copied: None,
                     notes_picker_copy_unsent: false,
                     notes_index: crate::notes::NotesIndexCache::default(),
@@ -1976,6 +1979,7 @@ impl PlexiApp {
             notes_picker_query: String::new(),
             notes_picker_preview: None,
             notes_picker_pending_delete: None,
+            notes_picker_status: None,
             notes_picker_last_copied: None,
             notes_picker_copy_unsent: false,
             notes_index: crate::notes::NotesIndexCache::default(),
@@ -2943,6 +2947,7 @@ impl PlexiApp {
                 notes_picker_query: String::new(),
                 notes_picker_preview: None,
                 notes_picker_pending_delete: None,
+                notes_picker_status: None,
                 notes_picker_last_copied: None,
                 notes_picker_copy_unsent: false,
                 notes_index: crate::notes::NotesIndexCache::default(),
@@ -4855,6 +4860,8 @@ impl PlexiApp {
         if reset_query {
             self.notes_picker_selected = 0;
             self.notes_picker_query.clear();
+            self.notes_picker_pending_delete = None;
+            self.notes_picker_status = None;
             return;
         }
         let filtered = self.notes_picker_filtered();

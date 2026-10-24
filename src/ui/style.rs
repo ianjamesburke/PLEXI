@@ -40,9 +40,9 @@ pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
 pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
-// `theme::font_medium` for weight contrast.
+                                  // `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
-// user reads first.
+                                     // user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
 pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.
@@ -63,6 +63,9 @@ pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTES_PICKER: f32 = 1040.0; // Notes picker — list left, wrapped preview right.
 pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.4; // Share of the notes picker given to the list half.
+/// Fixed two-line caption slot between the notes picker's body and its hint bar
+/// so confirm prompts and errors never resize or shift the modal.
+pub const NOTES_PICKER_STATUS_HEIGHT: f32 = (TEXT_CAPTION + SPACE_XS) * 2.0;
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
