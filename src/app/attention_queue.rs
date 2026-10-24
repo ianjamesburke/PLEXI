@@ -131,7 +131,11 @@ pub struct DecisionOverlayState {
 impl DecisionOverlayState {
     pub fn from_bar(bar: &QueueBar) -> Self {
         let options = if bar.options.is_empty() {
-            default_ask_options()
+            if bar.category == QueueCategory::Notice {
+                acknowledge_options()
+            } else {
+                default_ask_options()
+            }
         } else {
             bar.options.clone()
         };
@@ -351,8 +355,12 @@ impl PlexiApp {
         {
             return;
         }
-        if bar.options.is_empty() && bar.category == QueueCategory::Ask {
-            bar.options = default_ask_options();
+        if bar.options.is_empty() {
+            if bar.category == QueueCategory::Ask {
+                bar.options = default_ask_options();
+            } else if bar.category == QueueCategory::Notice {
+                bar.options = acknowledge_options();
+            }
         }
         bar.locked = false;
         self.attention_queue.synthetic_items.push(bar);
@@ -412,6 +420,8 @@ impl PlexiApp {
             command_text: summary,
             options: if category == QueueCategory::Ask {
                 default_ask_options()
+            } else if category == QueueCategory::Notice {
+                acknowledge_options()
             } else {
                 Vec::new()
             },
@@ -1093,6 +1103,7 @@ impl PlexiApp {
                 self.attention_queue.ask_count()
             );
         } else {
+            self.sync_attention_queue();
             log::info!("attention_queue: closed list");
         }
     }
@@ -1120,8 +1131,8 @@ impl PlexiApp {
         if bar.category != QueueCategory::Notice {
             self.jump_to_pane_at_columns(bar.pane_id);
         }
-        self.attention_queue.open = false;
         self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
+        self.attention_queue.open = false;
         self.sync_attention_queue();
         log::info!(
             "decision_overlay: opened ask_id={} pane_id={}",
@@ -1271,7 +1282,11 @@ impl PlexiApp {
                     }
                 }
             }
-            QueueSource::ChildResult { .. } | QueueSource::Synthetic { .. } => {}
+            QueueSource::ChildResult { .. } | QueueSource::Synthetic { .. } => {
+                if option.key == "acknowledge" {
+                    self.acknowledge_notice(&overlay.ask_id);
+                }
+            }
         }
 
         let verdict = DecisionVerdict {
@@ -1493,10 +1508,10 @@ impl PlexiApp {
                 .get(self.attention_queue.selected_idx)
                 .cloned()
             {
-                self.attention_queue.open = false;
-                if bar.category == QueueCategory::Ask {
+                if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
                     let _ = self.open_decision_overlay_for_ask(&bar.id);
                 } else {
+                    self.attention_queue.open = false;
                     self.jump_to_pane_at_columns(bar.pane_id);
                 }
             } else {
@@ -1736,10 +1751,10 @@ impl PlexiApp {
         } else if let Some(idx) = clicked_idx {
             self.attention_queue.selected_idx = idx;
             if let Some(bar) = self.attention_queue.items.get(idx).cloned() {
-                self.attention_queue.open = false;
-                if bar.category == QueueCategory::Ask {
+                if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
                     let _ = self.open_decision_overlay_for_ask(&bar.id);
                 } else {
+                    self.attention_queue.open = false;
                     self.jump_to_pane_at_columns(bar.pane_id);
                 }
             }
@@ -2059,5 +2074,114 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn enter_on_notice_opens_decision_overlay_and_records_acknowledged_resolution() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+
+        let notice_id = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::Integrity,
+                actor: "app-update".to_string(),
+                resource: format!("pane:{pane_id}"),
+                summary: "Plexi updated in the background".to_string(),
+                expires_at: None,
+                run_tag: Some(format!("pane:{pane_id}")),
+            })
+            .unwrap();
+
+        h.app.toggle_attention_queue_list();
+        assert!(h.app.attention_queue.open);
+        let notice_idx = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .position(|b| b.id == notice_id && b.category == QueueCategory::Notice)
+            .expect("notice item in attention queue");
+        h.app.attention_queue.selected_idx = notice_idx;
+
+        let mut enter_input = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        let disp = h.app.handle_attention_queue_list_input(&mut enter_input);
+        assert!(matches!(disp, KeyDisposition::Consumed));
+
+        // Enter on Notice must open Decision Overlay with acknowledge_options() (Acknowledge starred)
+        // and NOT immediately acknowledge the notice in the store.
+        let overlay = h
+            .app
+            .attention_queue
+            .decision_overlay
+            .as_ref()
+            .expect("Enter on Notice must open decision overlay");
+        assert_eq!(overlay.ask_id, notice_id);
+        assert_eq!(overlay.options, acknowledge_options());
+        assert!(overlay.options[0].recommended);
+        assert_eq!(overlay.options[0].label, "Acknowledge");
+        assert!(
+            monitor.open_needs_you().iter().any(|r| r.id == notice_id),
+            "notice must remain open while Decision Overlay is displayed"
+        );
+
+        // Picking Acknowledge in the overlay resolves the notice with resolution=acknowledged.
+        let mut pick_input = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        let disp = h.app.handle_decision_overlay_input(&mut pick_input);
+        assert!(matches!(disp, KeyDisposition::Consumed));
+        assert!(h.app.attention_queue.decision_overlay.is_none());
+
+        let record = monitor
+            .get_needs_you(&notice_id)
+            .expect("resolved notice record");
+        assert_eq!(
+            record.resolution,
+            Some(crate::broker::gate::NeedsYouResolution::Acknowledged)
+        );
+        assert_eq!(
+            record.resolution.map(|r| r.as_str()),
+            Some("acknowledged")
+        );
+
+        // Verify auto-clear-once-seen still works when opening & closing the list without Enter.
+        let auto_notice_id = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::Integrity,
+                actor: "app-update".to_string(),
+                resource: "auto-clear-resource".to_string(),
+                summary: "Background maintenance completed".to_string(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+        h.app.toggle_attention_queue_list();
+        assert!(h.app.attention_queue.open);
+        h.app.toggle_attention_queue_list();
+        assert!(!h.app.attention_queue.open);
+        let auto_record = monitor
+            .get_needs_you(&auto_notice_id)
+            .expect("auto-cleared notice record");
+        assert_eq!(
+            auto_record.resolution,
+            Some(crate::broker::gate::NeedsYouResolution::Acknowledged)
+        );
     }
 }

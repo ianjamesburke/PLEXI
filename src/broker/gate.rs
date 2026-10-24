@@ -154,6 +154,7 @@ pub enum NeedsYouResolveError {
 pub enum NeedsYouResolution {
     Approved,
     Denied,
+    Acknowledged,
 }
 
 impl NeedsYouResolution {
@@ -161,6 +162,7 @@ impl NeedsYouResolution {
         match self {
             Self::Approved => "approved",
             Self::Denied => "denied",
+            Self::Acknowledged => "acknowledged",
         }
     }
 }
@@ -1704,6 +1706,8 @@ impl PermissionMonitor {
         let mut outcome = self.run_outcome_for(id);
         let final_resolution = if approve {
             NeedsYouResolution::Approved
+        } else if row.kind == NeedsYouKind::Integrity {
+            NeedsYouResolution::Acknowledged
         } else {
             NeedsYouResolution::Denied
         };
@@ -1830,7 +1834,7 @@ impl PermissionMonitor {
             | NeedsYouKind::Integrity
             | NeedsYouKind::AgentDone => {
                 let resolution = final_resolution;
-                let decision = if approve { "approved" } else { "denied" };
+                let decision = resolution.as_str();
                 if !self.close_needs_you(id, resolution, decision, "") {
                     if let Some(existing) = self.resolved_receipt(id, true) {
                         return Ok(existing);
