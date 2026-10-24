@@ -129,14 +129,17 @@ impl ProgramStatusStore {
         self.records.retain(|_, r| !r.seen);
     }
 
+    #[cfg(test)]
     pub fn get(&self, id: &str) -> Option<&Record> {
         self.records.get(id)
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.records.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
