@@ -1446,6 +1446,7 @@ impl PlexiApp {
         // the whole screen height read as massive.
         let palette_max_list_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
         let modal_response = ModalShell::centered("command_palette")
+            .own_scroll()
             .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)
             .show(ctx, &colors, |ui| {

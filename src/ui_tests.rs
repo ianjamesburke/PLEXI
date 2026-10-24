@@ -714,6 +714,16 @@ mod tests {
                 for n in &nodes {
                     assert_inside(&format!("atlas node {}", n.name), scale, n.rect, screen);
                 }
+                for (i, a) in nodes.iter().enumerate() {
+                    for b in &nodes[i + 1..] {
+                        assert!(
+                            !a.rect.intersects(b.rect),
+                            "atlas nodes {} and {} overlap at scale {scale}",
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
                 assert_inside(
                     "atlas hub",
                     scale,

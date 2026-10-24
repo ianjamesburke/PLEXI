@@ -15,6 +15,8 @@ pub(crate) struct ModalShell<'a> {
     /// detection); 1.0 = pure black. Default maps `style::SCRIM_ALPHA`.
     scrim_strength: f32,
     order: egui::Order,
+    /// Wrap the body in a height-capped scroll area (see `own_scroll`).
+    fit_height: bool,
 }
 
 impl<'a> ModalShell<'a> {
@@ -29,7 +31,15 @@ impl<'a> ModalShell<'a> {
             escape: false,
             scrim_strength: f32::from(style::SCRIM_ALPHA) / 255.0,
             order: egui::Order::Foreground,
+            fit_height: true,
         }
+    }
+
+    /// The body manages its own scrolling and height cap (launcher lists), so
+    /// the shell must not add a scroll area that would re-key its state.
+    pub(crate) fn own_scroll(mut self) -> Self {
+        self.fit_height = false;
+        self
     }
 
     /// Render the modal above other Foreground overlays (e.g. notifications
@@ -187,7 +197,7 @@ impl<'a> ModalShell<'a> {
                             crate::ui::typography::modal_title(ui, title, colors);
                             ui.add_space(style::SPACE_MD);
                         }
-                        if self.width > 0.0 {
+                        if self.width > 0.0 && self.fit_height {
                             // At high UI scale the logical screen shrinks; a
                             // tall body scrolls instead of leaving the window.
                             egui::ScrollArea::vertical()

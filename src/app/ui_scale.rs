@@ -73,7 +73,11 @@ impl PlexiApp {
         }
         let scale = configured.map_or(UI_SCALE_DEFAULT, clamp_scale);
         if (scale - self.ui_scale).abs() > 1e-4 {
-            log::info!("ui_scale: config reload {:.2} -> {:.2}", self.ui_scale, scale);
+            log::info!(
+                "ui_scale: config reload {:.2} -> {:.2}",
+                self.ui_scale,
+                scale
+            );
             self.ui_scale = scale;
         }
     }
@@ -131,7 +135,9 @@ mod tests {
             s = step_up(s);
             assert_eq!(s, want);
         }
-        let down = [1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6, 0.6];
+        let down = [
+            1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6, 0.6,
+        ];
         for want in down {
             s = step_down(s);
             assert_eq!(s, want);
