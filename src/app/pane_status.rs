@@ -72,6 +72,26 @@ pub(crate) fn composite_status(
     })
 }
 
+/// Overlay OSC 7501 records onto a composite status: the program said its own
+/// state, so the screen-text verdict is replaced and confidence is high.
+/// No-op when the pane has no records.
+pub(crate) fn apply_program_status(
+    status: &mut serde_json::Value,
+    store: &crate::program_status::ProgramStatusStore,
+) {
+    let Some(best) = crate::program_status::root_or_best_agent_state(store, 0) else {
+        return;
+    };
+    let verdict = match best.state {
+        AgentState::NeedsYou | AgentState::Blocked => "blocked",
+        other => other.as_str(),
+    };
+    status["verdict"] = verdict.into();
+    status["confidence"] = "high".into();
+    status["source"] = "osc7501".into();
+    status["program_status"] = crate::program_status::records_json(store);
+}
+
 fn is_status_bar(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.contains("esc to interrupt")
@@ -132,6 +152,47 @@ mod tests {
             detail: detail.map(str::to_owned),
             session_id: None,
         }
+    }
+
+    fn store_with(reports: &[&str]) -> crate::program_status::ProgramStatusStore {
+        let mut store = crate::program_status::ProgramStatusStore::default();
+        for r in reports {
+            store.apply(crate::program_status::parse_report(r.as_bytes()).expect("report"));
+        }
+        store
+    }
+
+    #[test]
+    fn ps7501_status_json_uses_records_when_present() {
+        let mut status = composite_status(None, &["$ ".to_string()]);
+        let store = store_with(&[
+            "state=working:app=claude",
+            "state=blocked:kind=permission:id=sub:msg=cnVuIHJt",
+        ]);
+        apply_program_status(&mut status, &store);
+        assert_eq!(status["verdict"], "blocked");
+        assert_eq!(status["confidence"], "high");
+        assert_eq!(status["source"], "osc7501");
+        let ps = &status["program_status"];
+        assert_eq!(ps["source"], "osc7501");
+        let records = ps["records"].as_array().expect("records");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["id"], "");
+        assert_eq!(records[0]["state"], "working");
+        assert_eq!(records[1]["id"], "sub");
+        assert_eq!(records[1]["kind"], "permission");
+        assert_eq!(records[1]["msg"], "run rm");
+        assert_eq!(records[1]["app"], "claude");
+    }
+
+    #[test]
+    fn ps7501_status_json_unchanged_without_records() {
+        let mut status = composite_status(None, &["$ ".to_string()]);
+        let before = status.clone();
+        apply_program_status(&mut status, &Default::default());
+        assert_eq!(status, before);
+        assert!(status.get("program_status").is_none());
+        assert!(status.get("source").is_none());
     }
 
     #[test]

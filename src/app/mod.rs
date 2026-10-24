@@ -3150,6 +3150,7 @@ impl PlexiApp {
         env.remove("PLEXI_EPHEMERAL");
         env.remove("PLEXI_AGENT_HARNESS");
         env.remove("PLEXI_AGENT_ROLE");
+        env.remove("PLEXI_AGENT_ID");
         env.remove("PLEXI_AGENT_SPAWNED");
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
@@ -3200,6 +3201,8 @@ impl PlexiApp {
                 env,
                 dynamic_colors: theme::terminal_dynamic_colors(colors),
                 working_directory,
+                // `TerminalPane::new` installs the program-status tap.
+                byte_tap: None,
             },
             host_mcp::PendingPaneCredential::new(pane_id),
         )

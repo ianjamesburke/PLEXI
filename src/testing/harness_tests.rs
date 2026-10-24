@@ -14311,3 +14311,74 @@ mod restore_followups_0983b {
         );
     }
 }
+
+/// OSC 7501 program status (stint 0984 stage B): records in the pane's store
+/// drive `Pane::agent()` with no screen text involved.
+mod program_status_agent {
+    use super::*;
+
+    fn apply(h: &mut HostHarness, pane: u64, payload: &str) {
+        let report = crate::program_status::parse_report(payload.as_bytes()).expect("report");
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal")
+            .program_status
+            .lock()
+            .unwrap()
+            .apply(report);
+        // Force the throttled detector tick that refreshes the mapped state.
+        h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        h.run_frames(1);
+    }
+
+    fn state_of(h: &HostHarness, pane: u64) -> Option<(crate::protocol::AgentState, Option<String>)> {
+        h.app.windows[0]
+            .panes
+            .get(&pane)
+            .and_then(|p| p.agent())
+            .map(|a| (a.state.clone(), a.detail.clone()))
+    }
+
+    #[test]
+    fn ps7501_pane_agent_follows_reports_without_screen_text() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        apply(&mut h, pane, "state=working:app=claude");
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
+        // "cGVybWlzc2lvbiB0byBydW4=" = "permission to run"
+        apply(&mut h, pane, "state=blocked:kind=permission:msg=cGVybWlzc2lvbiB0byBydW4=");
+        let (state, detail) = state_of(&h, pane).unwrap();
+        assert_eq!(state, crate::protocol::AgentState::NeedsYou);
+        assert_eq!(detail.as_deref(), Some("permission: permission to run"));
+        apply(&mut h, pane, "state=working");
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
+        apply(&mut h, pane, "state=done");
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Completed);
+    }
+
+    #[test]
+    fn ps7501_empty_store_leaves_hook_state_unchanged() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal")
+            .agent = Some(crate::protocol::PaneAgentState {
+            pane_id: pane,
+            state: crate::protocol::AgentState::Working,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        });
+        apply(&mut h, pane, "state=blocked:kind=auth");
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::NeedsYou);
+        apply(&mut h, pane, "state=clear");
+        let terminal = h.app.windows[0].panes[&pane].as_terminal().unwrap();
+        assert!(terminal.reported_7501.is_none());
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
+    }
+}
