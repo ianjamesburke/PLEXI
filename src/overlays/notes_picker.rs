@@ -137,7 +137,8 @@ impl PlexiApp {
             }
         }
         let text: std::sync::Arc<str> = match std::fs::read_to_string(&path) {
-            Ok(text) => text.into(),
+            // Preview shows the body only; copy/cut keep the full file content.
+            Ok(text) => crate::notes::parse_note(&text).1.into(),
             Err(e) => {
                 log::warn!("notes_picker: preview read failed for {path:?}: {e}");
                 format!("Could not read note: {e}").into()
@@ -435,7 +436,9 @@ impl PlexiApp {
 
         let mut query = self.notes_picker_query.clone();
 
-        let list_max_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
+        // Reserve room for the modal chrome: title, search field, confirm row
+        // and hint bar, so the whole modal stays inside the window.
+        let list_max_h = ((ctx.content_rect().height() - 80.0 - 220.0) * 0.8).max(120.0);
 
         // Never wider than the window; below the compact modal width the
         // preview half is dropped and the list takes the whole modal.
@@ -488,6 +491,9 @@ impl PlexiApp {
                     .id_salt("notes_picker_halves")
                     .layout(egui::Layout::left_to_right(egui::Align::Min));
                 ui.scope_builder(halves, |ui| {
+                    // A modal Area offers unbounded height; without this cap the
+                    // vertical separator and preview stretch past the window.
+                    ui.set_max_height(list_max_h);
                     ui.spacing_mut().item_spacing.x = style::SPACE_SM;
                     let list_half = egui::UiBuilder::new()
                         .id_salt("notes_picker_list_half")
@@ -1163,6 +1169,21 @@ mod tests {
             app.notes_picker_preview_text().as_deref(),
             Some("beta body")
         );
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn notes_picker_preview_strips_frontmatter_but_copy_keeps_it() {
+        let full = "---\ntitle: Hello\n---\nthe body";
+        let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full]);
+        assert_eq!(
+            app.notes_picker_preview_text().as_deref(),
+            Some("the body")
+        );
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
         for p in paths {
             let _ = std::fs::remove_file(p);
         }
