@@ -2,6 +2,8 @@
 //!
 //! The tap only observes. The terminal parser still sees every byte exactly
 //! as before; the only bytes written back are the feature-query reply.
+mod agent_state;
+pub mod emit;
 mod parser;
 mod records;
 #[cfg(test)]
@@ -10,8 +12,9 @@ mod tests;
 use egui_term::PtyByteTap;
 use std::sync::{Arc, Mutex};
 
+pub use agent_state::{records_json, reported_agent_state, root_or_best_agent_state};
 pub use parser::{parse_report, Osc7501Scanner, ScanEvent, FEATURE_REPLY};
-pub use records::ProgramStatusStore;
+pub use records::{ProgramStatusStore, State};
 
 /// Store shared between the PTY reader thread (tap) and the pane.
 pub type SharedProgramStatus = Arc<Mutex<ProgramStatusStore>>;

@@ -446,11 +446,15 @@ pub enum Pane {
 pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn select_terminal_agent<'a>(
+    reported: Option<&'a crate::protocol::PaneAgentState>,
     hook: Option<&'a crate::protocol::PaneAgentState>,
     hook_reported_at: Option<std::time::Instant>,
     observed: Option<&'a crate::protocol::PaneAgentState>,
     now: std::time::Instant,
 ) -> Option<&'a crate::protocol::PaneAgentState> {
+    if reported.is_some() {
+        return reported;
+    }
     let Some(hook) = hook else {
         return observed;
     };
@@ -559,6 +563,7 @@ impl Pane {
     pub fn agent(&self) -> Option<&crate::protocol::PaneAgentState> {
         match self {
             Pane::Terminal(t) => select_terminal_agent(
+                t.reported_7501.as_ref(),
                 t.agent.as_ref(),
                 t.agent_reported_at,
                 t.observed_agent.as_ref(),
@@ -810,6 +815,10 @@ pub struct TerminalPane {
     /// output settle (`last_pty_output_at`). Covers both the pre-hook boot
     /// window and stale hook-Idle gaps.
     pub observed_agent: Option<crate::protocol::PaneAgentState>,
+    /// Agent state mapped from OSC 7501 program-status records, refreshed in
+    /// `tick_terminal_activity`. Highest-priority signal: when set it wins over
+    /// hook and observed state; `None` leaves the old selection untouched.
+    pub reported_7501: Option<crate::protocol::PaneAgentState>,
     /// Host-observed terminal activity (foreground process running, exited),
     /// polled via `tcgetpgrp` in `tick_terminal_activity`. Separate from
     /// `agent`, which is hook-reported; `agent` wins when both are present.
@@ -918,6 +927,7 @@ impl TerminalPane {
             agent: None,
             agent_reported_at: None,
             observed_agent: None,
+            reported_7501: None,
             activity: None,
             slots: HashMap::new(),
             last_pty_output_at: None,
@@ -1094,11 +1104,19 @@ impl TerminalPane {
         }
     }
 
+    pub(crate) fn set_reported_7501(&mut self, reported: Option<crate::protocol::PaneAgentState>) {
+        let now = std::time::Instant::now();
+        let before = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        self.reported_7501 = reported;
+        let after = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        self.update_fleet_transition(before.as_ref(), after.as_ref());
+    }
+
     pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let before = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
         self.observed_agent = observed;
-        let after = select_terminal_agent(self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let after = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
@@ -1171,6 +1189,7 @@ impl TerminalPane {
             .clone()
             .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.clone()));
         let active_agent = select_terminal_agent(
+            self.reported_7501.as_ref(),
             self.agent.as_ref(),
             self.agent_reported_at,
             self.observed_agent.as_ref(),
@@ -1389,6 +1408,7 @@ mod agent_source_tests {
         let hook = state(AgentState::Idle);
         let observed = state(AgentState::Working);
         let selected = select_terminal_agent(
+            None,
             Some(&hook),
             Some(now - Duration::from_millis(100)),
             Some(&observed),
@@ -1407,12 +1427,42 @@ mod agent_source_tests {
         let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
 
         let selected =
-            select_terminal_agent(Some(&hook), Some(stale_at), Some(&working), now).expect("agent");
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now).expect("agent");
         assert_eq!(selected.state, AgentState::Working);
 
         let selected =
-            select_terminal_agent(Some(&hook), Some(stale_at), Some(&idle), now).expect("agent");
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now).expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn ps7501_reported_state_beats_hook_and_observed() {
+        let now = Instant::now();
+        let reported = state(AgentState::NeedsYou);
+        let hook = state(AgentState::Working);
+        let observed = state(AgentState::Idle);
+        let selected = select_terminal_agent(
+            Some(&reported),
+            Some(&hook),
+            Some(now),
+            Some(&observed),
+            now,
+        )
+        .expect("agent");
+        assert_eq!(selected.state, AgentState::NeedsYou);
+    }
+
+    #[test]
+    fn ps7501_no_record_leaves_old_selection() {
+        let now = Instant::now();
+        let hook = state(AgentState::Working);
+        let observed = state(AgentState::Idle);
+        let selected =
+            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now).expect("agent");
+        assert_eq!(selected.state, AgentState::Working);
+        let selected = select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
+        assert_eq!(selected.state, AgentState::Idle);
+        assert!(select_terminal_agent(None, None, None, None, now).is_none());
     }
 
     #[test]
@@ -1421,6 +1471,7 @@ mod agent_source_tests {
         let hook = state(AgentState::Working);
         let observed = state(AgentState::Idle);
         let selected = select_terminal_agent(
+            None,
             Some(&hook),
             Some(now - HOOK_AGENT_FRESHNESS - Duration::from_secs(1)),
             Some(&observed),

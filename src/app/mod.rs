@@ -3150,6 +3150,7 @@ impl PlexiApp {
         env.remove("PLEXI_EPHEMERAL");
         env.remove("PLEXI_AGENT_HARNESS");
         env.remove("PLEXI_AGENT_ROLE");
+        env.remove("PLEXI_AGENT_ID");
         env.remove("PLEXI_AGENT_SPAWNED");
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());

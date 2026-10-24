@@ -447,3 +447,137 @@ fn ps7501_tap_reader_without_tap_is_passthrough() {
     reader.read_to_string(&mut s).unwrap();
     assert_eq!(s, "abc");
 }
+
+fn store_of(reports: &[&str]) -> ProgramStatusStore {
+    let mut store = ProgramStatusStore::default();
+    for r in reports {
+        store.apply(parse_report(r.as_bytes()).expect("report"));
+    }
+    store
+}
+
+fn mapped(reports: &[&str]) -> Option<crate::protocol::PaneAgentState> {
+    super::root_or_best_agent_state(&store_of(reports), 9)
+}
+
+#[test]
+fn ps7501_mapping_states_and_empty() {
+    use crate::protocol::AgentState as A;
+    assert!(mapped(&[]).is_none());
+    for (payload, want) in [
+        ("state=working", A::Working),
+        ("state=blocked:kind=permission", A::NeedsYou),
+        ("state=blocked:kind=question", A::NeedsYou),
+        ("state=blocked:kind=auth", A::NeedsYou),
+        ("state=blocked", A::NeedsYou),
+        ("state=idle", A::Idle),
+        ("state=done", A::Completed),
+        ("state=error", A::Failed),
+    ] {
+        let got = mapped(&[payload]).unwrap();
+        assert_eq!(got.state, want, "{payload}");
+        assert_eq!(got.pane_id, 9);
+        assert_eq!(got.agent, "program");
+    }
+}
+
+#[test]
+fn ps7501_mapping_detail_text() {
+    // msg = "run rm"
+    let m = "msg=cnVuIHJt";
+    let d = |p: &str| mapped(&[p]).unwrap().detail;
+    assert_eq!(d(&format!("state=blocked:kind=permission:{m}")).as_deref(), Some("permission: run rm"));
+    assert_eq!(d(&format!("state=blocked:{m}")).as_deref(), Some("run rm"));
+    assert_eq!(d("state=blocked:kind=auth").as_deref(), Some("auth"));
+    assert_eq!(d("state=blocked"), None);
+    assert_eq!(d(&format!("state=working:{m}")).as_deref(), Some("run rm"));
+}
+
+#[test]
+fn ps7501_mapping_priority_and_app_inheritance() {
+    use crate::protocol::AgentState as A;
+    // A blocked child beats a working root and inherits the root's app.
+    let got = mapped(&["state=working:app=claude", "state=blocked:kind=question:id=sub"]).unwrap();
+    assert_eq!(got.state, A::NeedsYou);
+    assert_eq!(got.agent, "claude");
+    // blocked > error > working > done > idle
+    let order = ["idle", "done", "working", "error", "blocked"];
+    for i in 1..order.len() {
+        let got = mapped(&[
+            &format!("state={}", order[i]),
+            &format!("state={}:id=a", order[i - 1]),
+        ])
+        .unwrap();
+        let want = mapped(&[&format!("state={}", order[i])]).unwrap();
+        assert_eq!(got.state, want.state, "{} over {}", order[i], order[i - 1]);
+    }
+    // Tie goes to the most recently updated record.
+    let got = mapped(&["state=working:app=old", "state=working:id=b:app=new"]).unwrap();
+    assert_eq!(got.agent, "new");
+    // An app on the record itself beats the ancestor's.
+    let got = mapped(&["state=idle:app=root", "state=working:id=a:app=own"]).unwrap();
+    assert_eq!(got.agent, "own");
+}
+
+#[test]
+fn ps7501_encode_report_round_trips_tree_ids() {
+    use super::emit::{encode_report, tree_id, APP};
+    for names in [
+        vec!["lead"],
+        vec!["lead", "helper-1"],
+        vec!["lead", "helper-1", "scout-2"],
+    ] {
+        let id = tree_id(&names).unwrap();
+        assert_eq!(id, names.join("/"));
+        let bytes = encode_report(
+            Some(&id),
+            State::Blocked,
+            Some("question"),
+            APP,
+            Some("Helper One ünï"),
+            Some("which branch?\nplease"),
+        );
+        assert!(bytes.starts_with(b"\x1b]7501;") && bytes.ends_with(b"\x1b\\"));
+        // Through the scanner and tap, exactly as the host sees it.
+        let (mut t, s) = tap();
+        feed(&mut t, &bytes);
+        let r = rec(&s, &id).expect("record under tree id");
+        assert_eq!(r.state, State::Blocked);
+        assert_eq!(r.kind, Some(Kind::Question));
+        assert_eq!(r.app.as_deref(), Some("plexi-agent"));
+        assert_eq!(r.title.as_deref(), Some("Helper One ünï"));
+        assert_eq!(r.msg.as_deref(), Some("which branch? please"));
+        // And through the parser directly.
+        let payload = &bytes[b"\x1b]7501;".len()..bytes.len() - 2];
+        match parse_report(payload) {
+            Some(Report::Set { id: got, record }) => {
+                assert_eq!(got, id);
+                assert_eq!(record.state, State::Blocked);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn ps7501_tree_id_sanitizes_and_limits() {
+    use super::emit::tree_id;
+    assert_eq!(tree_id(&["my agent:1", "ok"]).as_deref(), Some("my-agent-1/ok"));
+    assert_eq!(tree_id(&["", "  "]), None);
+    let long = "x".repeat(80);
+    assert_eq!(tree_id(&[&long]).unwrap().len(), 32);
+    let names: Vec<String> = (0..10).map(|i| format!("a{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let id = tree_id(&refs).unwrap();
+    assert_eq!(id.split('/').count(), 8);
+    assert!(id.ends_with("a9"));
+}
+
+#[test]
+fn ps7501_done_failure_detection() {
+    use super::emit::done_is_failure;
+    assert!(done_is_failure(r#"{"status":"failed"}"#));
+    assert!(done_is_failure(r#"{"ok":false}"#));
+    assert!(!done_is_failure(r#"{"status":"pass"}"#));
+    assert!(!done_is_failure("not json"));
+}
