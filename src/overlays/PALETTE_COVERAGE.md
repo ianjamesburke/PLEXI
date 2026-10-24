@@ -49,12 +49,12 @@ duplicate an editor or picker merely to claim coverage.
 | Browse notes or make a quick note | `Browse notes` opens the picker; Quick Note and Scratch Pad stay searchable. | `Action::OpenNotesPicker` / `PlexiApp::open_notes_picker`; `Action::{OpenQuickNote,OpenScratchpad}`. | Quick Note and Scratch Pad present; picker entry is PAL-04. |
 | Open or reload the applicable configuration | `Open config` identifies effective scope; `Reload configuration` executes host reload. Raw key editing is not required. | `Action::{OpenConfig,ReloadConfig}`, `PlexiApp::reload_config`; CLI `ConfigCmd::{Edit,Check,Get,List,Set,Reset}`. | Open config present but scope is implicit; PAL-04. |
 | Review pending notifications | `Review notifications` opens the existing notification UI. Posting/dismissing a producer notification remains CLI-only. | `Action::ToggleNotificationModal`; `PlexiApp::show_notification_modal`. | PAL-04. |
-| Review issues needing attention | `Review issues needing attention` opens the Needs attention review (routing rule: `src/overlays/attention.rs`). Resolution stays in the existing guarded handlers. | `PaletteCommand::OpenAttention`; `AttentionState::open`. | PAL-04. |
+| Review issues needing attention | `Review issues needing attention` opens the Attention Queue list (`src/app/attention_queue.rs`). Resolution stays in the Decision Overlay / guarded handlers. | `PaletteCommand::OpenAttention`; `AttentionQueueState::open`. | PAL-04. |
 | Find an agent and focus its pane | Search agent name, title, state, and active tool; select its stable pane target. | Palette `Agent` result and `jump_to_context`; CLI `AgentCmd::Status`. | Present navigation; PAL-05 owns richer matching. |
 | Launch an installed app | Search registry apps and select an app result. Arguments and unusual placement are not part of this row. | Palette `App`/`Builtin` results and `launch_palette_app`; CLI `AppCmd::Open`. | Present. |
 | Run or edit a named workspace/global command | Search the named command and run it through the existing user-command path; `Edit commands` opens the effective workspace or global `commands.toml` in a `text-editor` split (creating it from a commented template if absent). Arguments are a stretch flow. | Palette `UserCommand` result and `run_user_command`; `PaletteCommand::EditCommands` and `ensure_commands_file`; CLI `Commands::Run`. | Present without arguments. |
 
-`ToggleSidebar`, `ToggleShortcuts`, `ToggleMinimap`, pane font changes, directional
+`ToggleSidebar`, `ToggleShortcuts`, `ToggleMinimap`, directional
 navigation, pane swapping/sending, `NewPageRight`, `OpenFileBrowser`, and
 `ForceReloadApp` are existing `Action` entries. They are not necessary to meet
 the everyday V1 promise. They remain shortcuts or later palette candidates,

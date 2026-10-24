@@ -124,9 +124,12 @@ impl PlexiApp {
                     {
                         // Hint
                         ui.label(
-                            RichText::new(
-                                "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard",
-                            )
+                            RichText::new(format!(
+                                "{} to save  ·  {} for new line  ·  {} to discard",
+                                crate::ui::shortcuts::key_text(&["Enter"]),
+                                crate::ui::shortcuts::key_text(&["Shift", "Enter"]),
+                                crate::ui::shortcuts::key_text(&["Esc"]),
+                            ))
                             .color(self.colors.text_dim.linear_multiply(0.5))
                             .font(font.clone()),
                         );

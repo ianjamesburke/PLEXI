@@ -62,6 +62,8 @@ pub struct Colors {
     pub bg_sidebar: Color32,
     pub bg_toolbar: Color32,
     pub terminal_bg: Color32,
+    pub tile_bg: Color32,
+    pub code_bg: Color32,
     pub bg_hover: Color32,
     pub bg_elevated: Color32,
     pub bg_sidebar_hover: Color32,
@@ -83,6 +85,18 @@ pub struct Colors {
     pub state_needs_you: Color32,
     pub state_interrupted: Color32,
     pub state_error: Color32,
+    // Motorways / Zoom / Attention Queue tokens (Tokyo Night palette)
+    pub zoom_needs: Color32,
+    pub zoom_failed: Color32,
+    pub depth_tints: [Color32; 5],
+    pub shadow_flat: Color32,
+    pub scrim_decision: Color32,
+    pub scrim_queue: Color32,
+    pub needs_fill: Color32,
+    pub needs_badge_fill: Color32,
+    pub failed_fill: Color32,
+    pub focus_fill: Color32,
+    pub focus_glow: Color32,
     // Opacity multiplier for unfocused pips (default 0.72)
     pub pip_dim: f32,
     // Terminal fg/bg as bytes for dynamic colors
@@ -155,9 +169,16 @@ impl Colors {
         )
     }
 
+    /// Surface depth tint for tree depth 0..4 (clamped at 4).
+    pub fn depth_tint(&self, depth: usize) -> Color32 {
+        self.depth_tints[depth.min(4)]
+    }
+
     pub fn from_config(cfg: &ThemeConfig) -> Self {
-        let bg_hover = parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c));
+        let bg_hover = parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x20, 0x23, 0x32));
         let states = state_palette(cfg);
+        let zoom_needs = Color32::from_rgb(0xe0, 0xaf, 0x68);
+        let zoom_failed = Color32::from_rgb(0xf7, 0x76, 0x8e);
         Self {
             state_working: parse_hex_or(
                 &cfg.state_working
@@ -178,29 +199,47 @@ impl Colors {
             state_needs_you: parse_hex_or(&cfg.state_needs_you, states[3]),
             state_interrupted: parse_hex_or(&cfg.state_interrupted, states[4]),
             state_error: parse_hex_or(&cfg.state_error, states[5]),
-            bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
-            bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x18, 0x18, 0x25)),
-            bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x18, 0x18, 0x25)),
-            terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x29, 0x2a, 0x44)),
+            bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x1a, 0x1b, 0x26)),
+            tile_bg: Color32::from_rgb(0x20, 0x23, 0x32),
+            code_bg: Color32::from_rgb(0x13, 0x14, 0x1c),
             bg_hover,
             bg_elevated: bg_hover,
             bg_sidebar_hover: parse_hex_or(
                 &cfg.bg_sidebar_hover,
-                Color32::from_rgb(0x2e, 0x2e, 0x48),
+                Color32::from_rgb(0x26, 0x2a, 0x3d),
             ),
-            bg_active: parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x31, 0x31, 0x44)),
-            text_primary: parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xcd, 0xd6, 0xf4)),
-            text_dim: parse_hex_or(&cfg.text_dim, Color32::from_rgb(0x6c, 0x70, 0x86)),
-            text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x58, 0x5b, 0x70)),
-            accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x89, 0xb4, 0xfa)),
-            border: parse_hex_or(&cfg.border, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
-            // Derive from the theme's ANSI red; fallback matches the Dracula red used in event_log.rs.
-            danger: parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
-            success: parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
-            warning: parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
+            bg_active: parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x29, 0x2e, 0x42)),
+            text_primary: parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xc0, 0xca, 0xf5)),
+            text_dim: parse_hex_or(&cfg.text_dim, Color32::from_rgb(0x73, 0x7a, 0xa2)),
+            text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x56, 0x5f, 0x89)),
+            accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x7a, 0xa2, 0xf7)),
+            border: parse_hex_or(&cfg.border, Color32::from_rgb(0x3b, 0x42, 0x61)),
+            danger: parse_hex_or(&cfg.red, zoom_failed),
+            success: parse_hex_or(&cfg.green, Color32::from_rgb(0x9e, 0xce, 0x6a)),
+            warning: parse_hex_or(&cfg.yellow, zoom_needs),
+            zoom_needs,
+            zoom_failed,
+            depth_tints: [
+                Color32::from_rgb(0x1a, 0x1b, 0x26),
+                Color32::from_rgb(0x20, 0x24, 0x36),
+                Color32::from_rgb(0x29, 0x2e, 0x42),
+                Color32::from_rgb(0x31, 0x3c, 0x58),
+                Color32::from_rgb(0x39, 0x4b, 0x70),
+            ],
+            shadow_flat: Color32::from_rgb(0x0c, 0x0e, 0x14),
+            scrim_decision: Color32::from_rgba_unmultiplied(12, 14, 20, 204),
+            scrim_queue: Color32::from_rgba_unmultiplied(12, 14, 20, 140),
+            needs_fill: Color32::from_rgba_unmultiplied(224, 175, 104, 31),
+            needs_badge_fill: Color32::from_rgba_unmultiplied(224, 175, 104, 36),
+            failed_fill: Color32::from_rgba_unmultiplied(247, 118, 142, 26),
+            focus_fill: Color32::from_rgba_unmultiplied(122, 162, 247, 36),
+            focus_glow: Color32::from_rgba_unmultiplied(122, 162, 247, 38),
             pip_dim: cfg.pip_dim.unwrap_or(0.72),
-            terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
-            terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
+            terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xc0, 0xca, 0xf5]),
+            terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x1a, 0x1b, 0x26]),
         }
     }
 
@@ -260,8 +299,15 @@ fn state_palette(cfg: &ThemeConfig) -> [Color32; 6] {
     // Light themes need separated lightness levels, not uniform darkening:
     // otherwise orange, vermillion and yellow converge under red/green CVD.
     if light && preset != "mono" {
-        return [[26,54,70], [104,72,0], [173,103,142], [64,28,0], [0,95,69], [132,125,36]]
-            .map(|[r,g,b]| Color32::from_rgb(r,g,b));
+        return [
+            [26, 54, 70],
+            [104, 72, 0],
+            [173, 103, 142],
+            [64, 28, 0],
+            [0, 95, 69],
+            [132, 125, 36],
+        ]
+        .map(|[r, g, b]| Color32::from_rgb(r, g, b));
     }
     let rgb = match preset {
         "mono" => return [mono; 6],
@@ -473,19 +519,19 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         "tokyo-night" => Some(ThemeConfig {
             preset: None,
 
-            bg_darkest: s("#13131d"),
+            bg_darkest: s("#16161e"),
             bg_sidebar: s("#16161e"),
             bg_toolbar: s("#16161e"),
             terminal_bg: s("#1a1b26"),
-            bg_hover: s("#232433"),
+            bg_hover: s("#202332"),
             bg_sidebar_hover: s("#262a3d"),
             bg_active: s("#292e42"),
-            text_primary: s("#a9b1d6"),
-            text_dim: s("#565f89"),
-            text_section: s("#444b6a"),
+            text_primary: s("#c0caf5"),
+            text_dim: s("#737aa2"),
+            text_section: s("#565f89"),
             accent: s("#7aa2f7"),
-            border: s("#292e42"),
-            foreground: s("#a9b1d6"),
+            border: s("#3b4261"),
+            foreground: s("#c0caf5"),
             background: s("#1a1b26"),
             black: s("#16161e"),
             red: s("#f7768e"),
@@ -1512,7 +1558,10 @@ mod state_palette_tests {
                     }
                 }
                 if *preset != "mono" {
-                    assert!((lab(states[0])[0] - lab(states[1])[0]).abs() >= 8.0, "{theme}/{preset}: working/waiting lightness separation");
+                    assert!(
+                        (lab(states[0])[0] - lab(states[1])[0]).abs() >= 8.0,
+                        "{theme}/{preset}: working/waiting lightness separation"
+                    );
                 }
                 if *preset == "mono" {
                     assert!(states.iter().all(|c| *c == states[0]));

@@ -1,4 +1,5 @@
 pub mod settings;
+pub mod tap;
 
 use crate::types::Size;
 use alacritty_terminal::event::{
@@ -292,6 +293,7 @@ impl TerminalBackend {
         settings: BackendSettings,
     ) -> Result<Self> {
         let dynamic_colors = settings.dynamic_colors.clone();
+        let byte_tap = settings.byte_tap.clone();
         let pty_config = tty::Options {
             shell: Some(tty::Shell::new(settings.shell, settings.args)),
             working_directory: settings.working_directory,
@@ -330,8 +332,28 @@ impl TerminalBackend {
         let term = Arc::new(FairMutex::new(term));
         let reaped_exit_status: Arc<Mutex<Option<PtyExitStatus>>> =
             Arc::new(Mutex::new(None));
+        // The PTY master is both reader and writer on Unix; the tap reads
+        // through a dup of the fd (same open file description, same
+        // non-blocking mode) so it can own its reader.
+        #[cfg(unix)]
+        let reader = tap::TapReader::new(
+            pty.file().try_clone()?,
+            byte_tap,
+            {
+                let proxy = event_proxy.clone();
+                Box::new(move |bytes: Vec<u8>| {
+                    proxy.send_event(Event::PtyWrite(
+                        String::from_utf8_lossy(&bytes).into_owned(),
+                    ));
+                })
+            },
+        );
+        #[cfg(not(unix))]
+        let _ = byte_tap;
         let pty = ReapingPty {
             inner: pty,
+            #[cfg(unix)]
+            reader,
             #[cfg(unix)]
             child_pid,
             exit_status: reaped_exit_status.clone(),
@@ -1062,10 +1084,16 @@ impl TerminalBackend {
     /// geometry — the trailing edge of the drag. A `Deferred` outcome obliges
     /// the caller to schedule another frame, otherwise a drag that ends between
     /// frames would strand the last size.
+    ///
+    /// `immediate` opts a frame out of the debounce for a *discrete* layout
+    /// jump (a column scrolling into view, a tile swapped in): the new
+    /// geometry is already final, so deferring it only paints one frame of the
+    /// stale grid inside the new rect.
     pub fn request_resize(
         &mut self,
         layout_size: Size,
         font_size: Size,
+        immediate: bool,
     ) -> ResizeOutcome {
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
@@ -1088,7 +1116,7 @@ impl TerminalBackend {
         let deferred_frames =
             held.map_or(0, |pending| pending.deferred_frames) + 1;
 
-        if !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
+        if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
             self.pending_resize = Some(PendingResize {
                 geometry,
                 deferred_frames,
@@ -1102,7 +1130,9 @@ impl TerminalBackend {
             geometry.cols,
             geometry.lines,
             deferred_frames - 1,
-            if settled {
+            if immediate {
+                "immediate"
+            } else if settled {
                 "layout settled"
             } else {
                 "defer cap reached"
@@ -1143,6 +1173,11 @@ impl TerminalBackend {
     /// has committed. Monotonic for the life of the backend.
     pub fn resize_commits(&self) -> u64 {
         self.resize_commits
+    }
+
+    /// Width in pixels of one cell of the committed grid.
+    pub fn committed_cell_width(&self) -> u16 {
+        self.size.cell_width
     }
 
     /// The grid geometry the PTY was last told about, as `(cols, lines)`.
@@ -1564,12 +1599,18 @@ fn reap_child(pid: u32) {
 /// via `ExitStatus::code()`.
 struct ReapingPty {
     inner: tty::Pty,
+    // Windows readers are not clonable, so the tap is Unix-only.
+    #[cfg(unix)]
+    reader: tap::TapReader<std::fs::File>,
     #[cfg(unix)]
     child_pid: u32,
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
 }
 
 impl tty::EventedReadWrite for ReapingPty {
+    #[cfg(unix)]
+    type Reader = tap::TapReader<std::fs::File>;
+    #[cfg(not(unix))]
     type Reader = <tty::Pty as tty::EventedReadWrite>::Reader;
     type Writer = <tty::Pty as tty::EventedReadWrite>::Writer;
 
@@ -1596,7 +1637,14 @@ impl tty::EventedReadWrite for ReapingPty {
     }
 
     fn reader(&mut self) -> &mut Self::Reader {
-        self.inner.reader()
+        #[cfg(unix)]
+        {
+            &mut self.reader
+        }
+        #[cfg(not(unix))]
+        {
+            self.inner.reader()
+        }
     }
 
     fn writer(&mut self) -> &mut Self::Writer {

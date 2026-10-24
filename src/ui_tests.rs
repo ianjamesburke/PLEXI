@@ -173,6 +173,19 @@ impl PlexiUiHarness {
         }
     }
 
+    /// Harness for a `phys_w` x `phys_h` PHYSICAL-pixel window at UI scale
+    /// `scale`: the logical surface ends up `phys / scale` points and egui's
+    /// zoom factor is `scale`.
+    pub fn new_sized_scaled(phys_w: f32, phys_h: f32, scale: f32) -> Self {
+        // Start at zoom 1.0 with the physical size; egui rescales the screen
+        // rect to `phys / scale` on the pass that changes the zoom factor,
+        // exactly as it does for a real window.
+        let mut h = Self::new_sized_ppp(phys_w, phys_h, 1.0);
+        h.with_app_mut(|app| app.ui_scale = scale);
+        h.run_steps(3);
+        h
+    }
+
     /// Advance one frame. Uses `step()` — PlexiApp continuously requests
     /// repaints (animations), which would cause `run()` to exceed its 4-step
     /// stability limit.
@@ -581,6 +594,297 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn screenshot_card_gallery_all_states_and_surfaces() {
+        crate::app::card_gallery::FORCE.with(|f| f.set(true));
+        let mut h = PlexiUiHarness::new_sized(1440.0, 1400.0);
+        h.run_steps(4);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    /// Scale for the `screenshot_ui_scale_*` tests (run at 0.6 / 1.0 / 2.0).
+    fn ui_scale_shot() -> f32 {
+        crate::app::ui_scale::clamp_scale(
+            std::env::var("PLEXI_UI_SCALE_SHOT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+        )
+    }
+
+    fn assert_inside(what: &str, scale: f32, rect: egui::Rect, screen: egui::Rect) {
+        let tol = 0.75;
+        assert!(
+            rect.min.x >= screen.min.x - tol
+                && rect.min.y >= screen.min.y - tol
+                && rect.max.x <= screen.max.x + tol
+                && rect.max.y <= screen.max.y + tol,
+            "{what} {rect:?} leaves logical screen {screen:?} at scale {scale}"
+        );
+    }
+
+    fn ui_scale_area_rect(h: &PlexiUiHarness, id: &str) -> egui::Rect {
+        h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.area_rect(egui::Id::new(id).with("overlay")))
+                .unwrap_or_else(|| panic!("modal area {id} not shown"))
+        })
+    }
+
+    fn seed_note_picker(h: &mut PlexiUiHarness) {
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            let mk = |title: &str, label: Option<&str>| crate::notes::NotePickerEntry {
+                path: std::env::temp_dir().join(format!("plexi-ui-scale-{title}.md")),
+                title: title.to_string(),
+                preview: format!("{title} preview text for the picker row"),
+                search_text: title.to_lowercase(),
+                tier_label: label.map(|s| s.to_string()),
+            };
+            app.notes_picker_entries = (0..12)
+                .map(|i| mk(&format!("note number {i}"), (i % 2 == 0).then_some("global")))
+                .collect();
+            app.notes_picker_selected = 0;
+        });
+    }
+
+    /// At every UI scale, a 1440x900 physical window has a logical surface of
+    /// `1440/scale x 900/scale`; the card gallery, atlas and the modals must
+    /// all stay inside it.
+    #[test]
+    fn ui_scale_gallery_and_modals_fit_window() {
+        for scale in [0.6_f32, 1.0, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.run_steps(3);
+            let screen = h.with_app(|app| {
+                assert!((app.ctx.zoom_factor() - scale).abs() < 1e-3, "zoom at {scale}");
+                app.ctx.content_rect()
+            });
+            assert!(
+                (screen.width() - 1440.0 / scale).abs() < 1.0
+                    && (screen.height() - 900.0 / scale).abs() < 1.0,
+                "logical screen {screen:?} at scale {scale}"
+            );
+
+            // Modals: open one at a time, assert its area, then dismiss.
+            seed_note_picker(&mut h);
+            h.run_steps(3);
+            assert_inside("notes picker", scale, ui_scale_area_rect(&h, "notes_picker"), screen);
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+
+            h.with_app_mut(|app| app.show_command_palette = true);
+            h.run_steps(3);
+            assert_inside(
+                "command palette",
+                scale,
+                ui_scale_area_rect(&h, "command_palette"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+            h.with_app_mut(|app| app.show_command_palette = false);
+
+            h.with_app_mut(|app| app.open_quick_note_modal());
+            h.run_steps(3);
+            assert_inside(
+                "quick note",
+                scale,
+                ui_scale_area_rect(&h, "quick_note_modal"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(3);
+            assert_inside("shortcuts", scale, ui_scale_area_rect(&h, "shortcuts"), screen);
+            h.with_app_mut(|app| app.show_shortcuts = false);
+
+            // Atlas: every node and the hub pill lie inside the logical screen.
+            h.with_app_mut(|app| {
+                let root = app.create_context_without_pty("alpha", None);
+                app.create_context_without_pty("beta", Some(root));
+                app.create_context_without_pty("gamma", Some(root));
+                app.create_context_without_pty("delta", None);
+                let (nodes, _) = app.compute_atlas_graph(screen);
+                assert!(!nodes.is_empty());
+                for n in &nodes {
+                    assert_inside(&format!("atlas node {}", n.name), scale, n.rect, screen);
+                }
+                for (i, a) in nodes.iter().enumerate() {
+                    for b in &nodes[i + 1..] {
+                        assert!(
+                            !a.rect.intersects(b.rect),
+                            "atlas nodes {} and {} overlap at scale {scale}",
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
+                assert_inside(
+                    "atlas hub",
+                    scale,
+                    crate::app::PlexiApp::atlas_hub_rect(screen),
+                    screen,
+                );
+            });
+        }
+    }
+
+    /// Cmd+= steps the one global scale: egui's zoom factor follows, and a
+    /// terminal pane's effective pixel font size grows with it.
+    #[test]
+    fn ui_scale_up_key_scales_zoom_factor_and_terminal_pixels() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let pane_id = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+            id
+        });
+        h.run_steps(3);
+        let pixel_font = |h: &PlexiUiHarness| {
+            h.with_app(|app| {
+                let pane = app.windows[app.active_window].panes.get(&pane_id).unwrap();
+                let Pane::Terminal(t) = pane else { panic!("terminal pane") };
+                t.font_size * app.ctx.zoom_factor()
+            })
+        };
+        let before = pixel_font(&h);
+        assert!((h.with_app(|a| a.ctx.zoom_factor()) - 1.0).abs() < 1e-4);
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!((app.ui_scale - 1.1).abs() < 1e-4, "ui_scale {}", app.ui_scale);
+            assert!(
+                (app.ctx.zoom_factor() - 1.1).abs() < 1e-4,
+                "zoom {}",
+                app.ctx.zoom_factor()
+            );
+        });
+        assert!(pixel_font(&h) > before, "terminal pixel font must grow");
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+        h.run_steps(3);
+        h.with_app(|app| assert!((app.ui_scale - 0.9).abs() < 1e-4, "{}", app.ui_scale));
+        assert!(pixel_font(&h) < before, "terminal pixel font must shrink");
+
+        // Cmd+Shift+0 resets (and is not swallowed by Quick Note on Cmd+0).
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Num0,
+        );
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!((app.ui_scale - 1.0).abs() < 1e-4);
+            assert!(
+                !app.focus_stack
+                    .contains(&crate::app::FocusKind::QuickNote),
+                "reset chord must not open Quick Note"
+            );
+        });
+    }
+
+    #[test]
+    fn screenshot_ui_scale_cards() {
+        let scale = ui_scale_shot();
+        crate::app::card_gallery::FORCE.with(|f| f.set(true));
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 1400.0, scale);
+        h.run_steps(4);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_atlas() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let root = app.create_context_without_pty("alpha", None);
+            app.create_context_without_pty("beta", Some(root));
+            app.create_context_without_pty("gamma", Some(root));
+            app.create_context_without_pty("delta", None);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+        });
+        h.run_steps(6);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_note_picker() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        add_focused_pane(&mut h);
+        seed_note_picker(&mut h);
+        h.run_steps(3);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_terminal() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+        });
+        h.run_steps(6);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
     fn screenshot_agent_conjoined_strip_and_parent_pin() {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
@@ -611,7 +915,9 @@ mod tests {
         h.save_screenshot(&evidence_png!("_view")).unwrap();
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
         h.run_steps(2);
-        h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
+        // Cmd+Esc is the zoom-out ladder now: it leaves the column strip for
+        // the sibling cards rather than popping the conjoined view.
+        h.with_app(|app| assert_eq!(app.zoom.level, crate::app::zoom::ZoomLevel::SiblingCards));
     }
 
     fn wait_for_lineage_fixture(h: &mut PlexiUiHarness, panes: &[u64]) {
@@ -692,6 +998,158 @@ mod tests {
             app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap().name = None;
             assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
         });
+    }
+
+    /// The attention chip in the path bar keeps its own slot: at every UI
+    /// scale and window width it stays inside the viewport and never
+    /// intersects the toolbar controls, version label, or the pane header's
+    /// provenance icon, however long the pending ask is.
+    #[test]
+    fn attention_chip_never_overlaps_chrome_at_any_scale_or_width() {
+        for scale in [0.6_f32, 1.0, 2.0] {
+            for width in [700.0_f32, 1400.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                h.step();
+                let pane_id = h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    let workspace_root = app.router.active().root.clone();
+                    let id = app.host.alloc_pane_id();
+                    let mut terminal = crate::host::pane::TerminalPane::new(
+                        id,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            working_directory: Some(workspace_root),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .expect("spawn terminal pane");
+                    terminal.spawned_by = Some("agent:researcher".to_string());
+                    let win = &mut app.windows[app.active_window];
+                    win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+                    let tile = win.tree.tiles.insert_pane(id);
+                    win.tree.root = Some(tile);
+                    win.focused_pane = Some(tile);
+                    app.enqueue_ask(
+                        "ask-chip",
+                        id,
+                        "permission: Allow flash: cargo test --workspace --all-features -- --nocapture --test-threads=1",
+                        1_000,
+                        Vec::new(),
+                    );
+                    id
+                });
+                h.run_steps(4);
+                let (screen, chip, siblings) = h.with_app(|app| {
+                    let get = |id: egui::Id| app.ctx.data(|d| d.get_temp::<egui::Rect>(id));
+                    let chip = get(egui::Id::new("attention_chip_rect")).expect("chip rect");
+                    let mut siblings = Vec::new();
+                    for name in ["help", "version"] {
+                        siblings.push((
+                            name,
+                            get(egui::Id::new(("toolbar_ctl_rect", name))).expect("toolbar rect"),
+                        ));
+                    }
+                    siblings.push((
+                        "provenance",
+                        get(egui::Id::new(("provenance_icon_rect", pane_id)))
+                            .expect("provenance icon rect"),
+                    ));
+                    (app.ctx.content_rect(), chip, siblings)
+                });
+                let what = format!("scale {scale} width {width}");
+                assert_inside("attention chip", scale, chip, screen);
+                for (name, rect) in &siblings {
+                    assert!(
+                        !chip.intersects(*rect),
+                        "{what}: chip {chip:?} overlaps {name} {rect:?}"
+                    );
+                }
+                for (i, (an, a)) in siblings.iter().enumerate() {
+                    for (bn, b) in &siblings[i + 1..] {
+                        assert!(!a.intersects(*b), "{what}: {an} {a:?} overlaps {bn} {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decision_overlay_shows_no_scrollbar_or_scroll_state_when_content_fits() {
+        for scale in [1.0_f32, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                app.enqueue_ask(
+                    "ask-no-scroll",
+                    pane_id,
+                    "cargo test --bin plexi -- --test-threads=4",
+                    1_000,
+                    Vec::new(),
+                );
+                assert!(app.open_decision_overlay_for_ask("ask-no-scroll"));
+            });
+            h.run_steps(4);
+
+            let (content_size, avail_size, card_inner_size, scroll_id, has_scroll_state, button_widths, modal_w) =
+                h.with_app_mut(|app| {
+                    let (content_size, avail_size, card_inner_size, scroll_id): (
+                        egui::Vec2,
+                        egui::Vec2,
+                        egui::Vec2,
+                        egui::Id,
+                    ) = app
+                        .ctx
+                        .data(|d| d.get_temp(egui::Id::new("decision_overlay_scroll_metrics")))
+                        .expect("decision overlay scroll metrics");
+                    let has_scroll_state =
+                        egui::scroll_area::State::load(&app.ctx, scroll_id).is_some();
+                    let button_widths: Vec<f32> = app
+                        .approval_buttons
+                        .iter()
+                        .map(|b| b.bounds[2] - b.bounds[0])
+                        .collect();
+                    let screen = app.ctx.content_rect();
+                    let modal_w = crate::ui::style::DECISION_MODAL_W
+                        .min(screen.width() - 32.0)
+                        .max(300.0);
+                    (
+                        content_size,
+                        avail_size,
+                        card_inner_size,
+                        scroll_id,
+                        has_scroll_state,
+                        button_widths,
+                        modal_w,
+                    )
+                });
+
+            assert_eq!(button_widths.len(), 3, "scale {scale}: expected 3 options");
+            assert!(
+                content_size.y <= avail_size.y,
+                "scale {scale}: content height {} must fit within available {}",
+                content_size.y,
+                avail_size.y
+            );
+            assert!(
+                (content_size.y - card_inner_size.y).abs() <= 1.0,
+                "scale {scale}: card inner height {} must shrink to content height {}",
+                card_inner_size.y,
+                content_size.y
+            );
+            assert!(
+                !has_scroll_state,
+                "scale {scale}: no ScrollArea offset state ({scroll_id:?}) should persist when content fits"
+            );
+            for (idx, w) in button_widths.iter().enumerate() {
+                assert!(
+                    (w - modal_w).abs() <= 1.0,
+                    "scale {scale}: option {idx} width {w} must equal modal_w {modal_w} (no scrollbar gutter)"
+                );
+            }
+        }
     }
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
@@ -908,9 +1366,13 @@ mod tests {
         });
         h.run_steps(3);
         assert!(h.harness().query_by_label("Host UI Gallery").is_some());
+        let quit_toast = format!(
+            "{} pressed 1 of 3 — press again to quit",
+            crate::ui::shortcuts::key_text(&["cmd", "Q"])
+        );
         assert!(
             h.harness()
-                .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
+                .query_by_label(&quit_toast)
                 .is_some()
         );
         h.save_screenshot(&evidence_png!())
@@ -1111,24 +1573,30 @@ mod tests {
 
         let mut h = PlexiUiHarness::new_sized(1100.0, 300.0);
         h.run_steps(2);
-        h.harness().get_by_label("Terminal pane 4 wants to use secret.get");
-        let caption = format!(
-            "Resource: OPENAI_API_KEY@{}",
-            root.path().display()
+        // The old approval banner is gone: the ask is an attention-queue item
+        // that names the secret and its workspace.
+        h.with_app_mut(|app| app.sync_attention_queue());
+        let (summary, command_text) = h.with_app(|app| {
+            let ask = app
+                .attention_queue
+                .items
+                .iter()
+                .find(|b| b.category == crate::app::attention_queue::QueueCategory::Ask)
+                .expect("secret.get ask is queued");
+            (ask.summary.clone(), ask.command_text.clone())
+        });
+        assert!(summary.contains("wants to use secret.get"), "summary: {summary}");
+        assert!(command_text.contains("OPENAI_API_KEY"), "command: {command_text}");
+        assert!(
+            command_text.contains(&root.path().display().to_string()),
+            "command: {command_text}"
         );
-        h.harness().get_by_label(&caption);
         // Arrival alone never captures keys or grants consent.
         h.harness().key_down_modifiers(egui::Modifiers::NONE, egui::Key::A);
         h.step();
         h.harness().key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
         h.step();
         assert_eq!(monitor.list_pending().len(), 1);
-        let chord = egui::Modifiers { command: true, alt: true, ..Default::default() };
-        h.harness().key_down_modifiers(chord, egui::Key::P);
-        h.step();
-        h.harness().key_up_modifiers(chord, egui::Key::P);
-        h.step();
-        h.with_app_mut(|app| assert_eq!(app.focus_stack.last(), Some(&crate::app::FocusKind::ApprovalBanner)));
         h.save_screenshot(&evidence_png!()).expect("render banner");
     }
 
@@ -1159,355 +1627,6 @@ mod tests {
         h.harness().get_by_label("Not now");
         h.save_screenshot(&evidence_png!())
             .expect("render keychain recovery");
-    }
-
-    const LONG_INTEGRITY: &str = "Needs you queue failed its integrity check (seal mismatch for host/needs-you.journal; record ny_0f3a resource needs-you). Stored entries in that file were not loaded. END-OF-DIAGNOSTIC";
-
-    fn seed_attention_items(monitor: &crate::broker::gate::PermissionMonitor) {
-        monitor.file_integrity_memory_only("seal mismatch for host/needs-you.journal");
-        let file = |kind, actor: &str, resource: &str, summary: &str| {
-            monitor
-                .file_needs_you(crate::broker::gate::NeedsYouFile {
-                    kind,
-                    actor: actor.to_string(),
-                    resource: resource.to_string(),
-                    summary: summary.to_string(),
-                    expires_at: None,
-                    run_tag: None,
-                })
-                .expect("file needs-you item");
-        };
-        use crate::broker::gate::NeedsYouKind as K;
-        file(K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY);
-        file(K::PermissionChange, "agent:claude", "secret.get OPENAI_API_KEY", "Agent wants to read OPENAI_API_KEY");
-        file(K::Question, "agent:codex", "run-7", "Should I overwrite the existing migration?");
-    }
-
-    /// Stint 0801: diagnostic length cannot expand the context-navigation
-    /// header; the sidebar shows one compact labelled entry instead.
-    #[test]
-    fn attention_long_diagnostic_cannot_expand_sidebar_header() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        monitor
-            .file_needs_you(crate::broker::gate::NeedsYouFile {
-                kind: crate::broker::gate::NeedsYouKind::Integrity,
-                actor: "host".to_string(),
-                resource: "needs-you".to_string(),
-                summary: LONG_INTEGRITY.to_string(),
-                expires_at: None,
-                run_tag: None,
-            })
-            .expect("file");
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        assert!(
-            h.harness().query_by_label_contains("END-OF-DIAGNOSTIC").is_none(),
-            "diagnostic text must not be painted in the sidebar"
-        );
-        let entry = h.harness().get_by_label_contains("Needs attention");
-        let height = entry.rect().height();
-        assert!(
-            height <= crate::ui::style::BUTTON_H_MD,
-            "entry height {height} must stay bounded"
-        );
-    }
-
-    /// Stint 0801: keyboard open/select/close, focus restoration, and that
-    /// closing never resolves a record.
-    #[test]
-    fn attention_overlay_keyboard_flow_does_not_resolve_records() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        seed_attention_items(&monitor);
-        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
-        h.run_steps(2);
-        assert!(!h.with_app(|a| a.attention.open), "must not auto-open");
-        let before = h.with_app(|a| a.focus_stack.clone());
-        h.with_app_mut(|a| a.open_attention_overlay("test"));
-        h.run_steps(3);
-        assert!(h.with_app(|a| a.focus_stack.contains(&crate::app::FocusKind::AttentionOverlay)));
-        h.harness().get_by_label("Needs attention");
-        h.harness().key_press(egui::Key::ArrowDown);
-        h.run_steps(2);
-        assert_eq!(h.with_app(|a| a.attention.selected), 1);
-        h.harness().key_press(egui::Key::D);
-        h.run_steps(2);
-        assert!(h.with_app(|a| a.attention.show_technical));
-        h.harness().key_press(egui::Key::Escape);
-        h.run_steps(3);
-        assert!(!h.with_app(|a| a.attention.open));
-        assert_eq!(h.with_app(|a| a.focus_stack.clone()), before, "focus restored");
-        assert_eq!(monitor.open_needs_you().len(), 4, "closing resolves nothing");
-    }
-
-    /// Stint 0801: an issue arriving while the window is hidden stays
-    /// discoverable and never pops an overlay.
-    #[test]
-    fn attention_item_arriving_while_hidden_is_discoverable() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        seed_attention_items(&monitor);
-        h.run_steps(2);
-        assert!(!h.with_app(|a| a.attention.open));
-        assert_eq!(crate::overlays::attention::open_items().len(), 4);
-        h.harness().get_by_label_contains("Needs attention");
-    }
-
-    fn attention_screenshot(width: f32, height: f32, suffix: &str) {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        seed_attention_items(&monitor);
-        let mut h = PlexiUiHarness::new_sized(width, height);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        h.with_app_mut(|a| a.open_attention_overlay("test"));
-        h.run_steps(3);
-        h.harness().key_press(egui::Key::T);
-        h.run_steps(2);
-        h.save_screenshot(&evidence_png!(suffix)).expect("render attention");
-    }
-
-    #[test]
-    fn screenshot_attention_overlay_normal_width() {
-        attention_screenshot(1100.0, 640.0, "_normal");
-    }
-
-    #[test]
-    fn screenshot_attention_overlay_narrow() {
-        attention_screenshot(520.0, 480.0, "_narrow");
-    }
-
-    /// Stint 0788 Part 2a: a real click on the sidebar Approve for a Keychain
-    /// item runs the Keychain recovery path (`reload_after_keychain_prompt`):
-    /// the key is read with interaction allowed and saved grants load again.
-    #[test]
-    fn sidebar_approve_on_keychain_item_reloads_saved_permissions() {
-        use crate::broker::gate::{NeedsYouKind, PermissionMonitor};
-        use crate::broker::{Decision, GrantRecord, PermissionRequest};
-        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let ws = tempfile::tempdir().expect("workspace");
-        {
-            let sealer = PermissionMonitor::open_profile(profile.path());
-            let mut store = sealer.store();
-            store.record(GrantRecord::app_capability(
-                "my-app",
-                ws.path(),
-                crate::app::permissions::Capability::NetHttp,
-                Decision::Allow,
-            ));
-            store.try_save().expect("seal profile grant");
-        }
-        crate::broker::integrity::mark_clean_shutdown(profile.path());
-        let denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let open = monitor.open_needs_you();
-        assert_eq!(open.len(), 1, "{open:?}");
-        assert_eq!(open[0].kind, NeedsYouKind::Keychain);
-        let request = PermissionRequest::app_capability(
-            "my-app",
-            ws.path(),
-            crate::app::permissions::Capability::NetHttp,
-        );
-        assert_ne!(monitor.store().evaluate(&request, None), Decision::Allow);
-
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        assert_eq!(denied.interactive_reads(), 0, "painting must not prompt");
-        h.harness().get_by_label("Approve").click();
-        h.run_steps(2);
-        assert_eq!(
-            denied.interactive_reads(),
-            1,
-            "the click reads the key with interaction allowed"
-        );
-        assert!(
-            monitor
-                .open_needs_you()
-                .iter()
-                .all(|row| row.kind != NeedsYouKind::Keychain),
-            "{:?}",
-            monitor.open_needs_you()
-        );
-        assert_eq!(
-            monitor.store().evaluate(&request, None),
-            Decision::Allow,
-            "saved permissions are loaded again"
-        );
-    }
-
-    /// Stint 0788 Part 2a: the sidebar buttons act on the oldest item that is
-    /// not an approval click, and their bounds are registered so a synthetic
-    /// `pane click` on them is refused before injection.
-    #[test]
-    fn sidebar_needs_you_buttons_are_registered_against_synthetic_clicks() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        seed_attention_items(&monitor);
-        let oldest = monitor.open_needs_you()[0].clone();
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        for label in ["Approve", "Dismiss"] {
-            let rect = h.harness().get_by_label(label).rect();
-            let target = h.with_app(|a| {
-                a.approval_buttons
-                    .iter()
-                    .find(|button| button.label == label)
-                    .map(|button| button.pending_request_id.clone())
-            });
-            assert_eq!(target.as_deref(), Some(oldest.id.as_str()), "{label}");
-            let refused =
-                h.with_app(|a| a.synthetic_approval_target(0, None, Some(rect.center())));
-            assert_eq!(refused.as_deref(), Some(oldest.id.as_str()), "{label}");
-        }
-        assert_eq!(monitor.open_needs_you().len(), 4, "painting resolves nothing");
-        h.harness().get_by_label("Dismiss").click();
-        h.run_steps(2);
-        assert!(
-            monitor.open_needs_you().iter().all(|row| row.id != oldest.id),
-            "a real Dismiss click settles the oldest item"
-        );
-    }
-
-    /// Visual review for the sidebar Needs-you row with Integrity, Keychain,
-    /// Question and BlockedRun items seeded.
-    #[test]
-    fn screenshot_sidebar_needs_you_actions() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        use crate::broker::gate::NeedsYouKind as K;
-        for (kind, actor, resource, summary) in [
-            (K::Integrity, "host", "grants.toml", LONG_INTEGRITY),
-            (K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY),
-            (K::Question, "agent:codex", "pane:3", "Should I overwrite the existing migration?"),
-            (K::BlockedRun, "agent:claude", "pane:4", "CI runner stopped waiting for input"),
-        ] {
-            monitor
-                .file_needs_you(crate::broker::gate::NeedsYouFile {
-                    kind,
-                    actor: actor.to_string(),
-                    resource: resource.to_string(),
-                    summary: summary.to_string(),
-                    expires_at: None,
-                    run_tag: None,
-                })
-                .expect("file needs-you item");
-        }
-        let mut h = PlexiUiHarness::new_sized(900.0, 420.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(3);
-        h.harness().get_by_label("Approve");
-        h.harness().get_by_label("Dismiss");
-        h.save_screenshot(&evidence_png!()).expect("render sidebar needs-you");
-    }
-
-    fn seed_structured_clip_question(
-        monitor: &crate::broker::gate::PermissionMonitor,
-    ) -> String {
-        let details = crate::broker::gate::NeedsYouDetails {
-            choices: vec!["16:9".to_string(), "9:16".to_string(), "1:1".to_string()],
-            allow_free_text: false,
-            preview_refs: vec!["clip:intro@0..3000ms".to_string()],
-            correlation_id: Some("corr-crop-intro".to_string()),
-            session_id: Some("sess-pi-ui".to_string()),
-            context_id: Some(1),
-            pane_id: Some(1),
-            expected_revision: Some("rev-1".to_string()),
-            ..Default::default()
-        };
-        let (qid, _token) = monitor
-            .file_needs_you_with_details(
-                crate::broker::gate::NeedsYouFile {
-                    kind: crate::broker::gate::NeedsYouKind::Question,
-                    actor: "pane:1".to_string(),
-                    resource: "intro".to_string(),
-                    summary: "Which crop preset should we apply to Intro Slate?".to_string(),
-                    expires_at: None,
-                    run_tag: Some("op-crop-intro".to_string()),
-                },
-                Some(details),
-            )
-            .expect("file structured question");
-        qid
-    }
-
-    #[test]
-    fn sidebar_and_attention_structured_question_choice_settles_without_minting_grant() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let grants_before = monitor.store().records().len();
-        let qid = seed_structured_clip_question(&monitor);
-
-        let mut h = PlexiUiHarness::new_sized(980.0, 520.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(3);
-
-        // Verify choice buttons are rendered on the sidebar and registered against synthetic clicks
-        let choice_rect = h.harness().get_by_label("9:16").rect();
-        let synthetic_target =
-            h.with_app(|a| a.synthetic_approval_target(0, None, Some(choice_rect.center())));
-        assert_eq!(synthetic_target.as_deref(), Some(qid.as_str()));
-
-        // Real desktop click on "9:16" answers the question, updates the continuation, and writes zero grants
-        h.harness().get_by_label("9:16").click();
-        h.run_steps(2);
-
-        let item = monitor.get_needs_you(&qid).expect("question record");
-        assert_eq!(
-            item.resolution,
-            Some(crate::broker::gate::NeedsYouResolution::Approved)
-        );
-        assert_eq!(item.answer.as_deref(), Some("9:16"));
-        let cont = monitor
-            .get_continuation("corr-crop-intro")
-            .expect("continuation record");
-        assert_eq!(cont.answer.as_deref(), Some("9:16"));
-        assert_eq!(cont.state, crate::broker::gate::ContinuationState::Running);
-        assert_eq!(
-            monitor.store().records().len(),
-            grants_before,
-            "answering a creative question must never write a GrantRecord"
-        );
-    }
-
-    #[test]
-    fn screenshot_structured_question_wide_and_narrow() {
-        for (width, height, suffix) in [(1100.0, 620.0, "_wide"), (560.0, 520.0, "_narrow")] {
-            let profile = tempfile::tempdir().expect("profile");
-            let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-            let monitor =
-                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-            seed_structured_clip_question(&monitor);
-            let mut h = PlexiUiHarness::new_sized(width, height);
-            h.with_app_mut(|a| a.sidebar_visible = true);
-            h.run_steps(2);
-            h.with_app_mut(|a| a.open_attention_overlay("test"));
-            h.run_steps(3);
-            h.save_screenshot(&evidence_png!(suffix))
-                .expect("render structured question screenshot");
-        }
     }
 
     /// Render the initial empty state and save a screenshot for visual inspection.
@@ -2316,7 +2435,8 @@ mod tests {
         });
         h.run_steps(2);
         h.harness().get_by_label("Unsaved");
-        h.harness().get_by_label("\u{25CF}");
+        // The zoom path bar's column pips also render "●", so only require the dirty dot.
+        assert!(h.harness().get_all_by_label("\u{25CF}").count() >= 1);
         h.save_screenshot(&evidence_png!("_dirty")).expect("render dirty");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
 
@@ -3484,7 +3604,18 @@ mod tests {
             terminals.len() >= 2,
             "need several real terminals for the drag to be meaningful"
         );
-        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        let visible_terminals: Vec<_> = h.with_app(|app| {
+            terminals
+                .iter()
+                .copied()
+                .filter(|id| !app.zoom.off_strip_panes.contains(id))
+                .collect()
+        });
+        assert!(
+            !visible_terminals.is_empty(),
+            "need a visible terminal for the drag to be meaningful"
+        );
+        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
         seed_wrapping_text(&mut h, &terminals);
 
         // Drag the window edge in: one frame per intermediate width, exactly
@@ -3496,7 +3627,7 @@ mod tests {
         }
         h.run_steps(4);
 
-        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
         assert!(
             widest_after < widest_before,
             "the trailing-edge commit was stranded: terminals still {widest_before} cols \
@@ -4797,43 +4928,6 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_agent_attention_toast_over_working_fleet() {
-        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
-        let root = h.workspace_root().to_path_buf();
-        let id = add_focused_pane(&mut h);
-        h.with_app_mut(|app| {
-            let mut term = crate::host::pane::TerminalPane::new(
-                id, app.ctx.clone(), app.pty_event_tx.clone(),
-                egui_term::BackendSettings {
-                    shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()],
-                    working_directory: Some(root.clone()), ..Default::default()
-                }, 14.0).unwrap();
-            term.agent_role = Some("Implementer".into());
-            term.agent_harness = Some("pi".into());
-            term.agent = Some(crate::protocol::PaneAgentState {
-                pane_id: id, state: crate::protocol::AgentState::Working, agent: "pi".into(),
-                detail: Some("Validating notification delivery".into()), session_id: None,
-            });
-            term.tail_preview = Some("Running focused tests for attention navigation.".into());
-            app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
-            app.sidebar_visible = false;
-        });
-        let agents = h.open_builtin_by_id("agents", &root, &[]).unwrap();
-        h.with_app_mut(|app| {
-            let win = &mut app.windows[app.active_window];
-            win.zoomed_pane = win.tree.tiles.find_pane(&agents);
-        });
-        h.run_steps(3);
-        h.harness().key_press_modifiers(
-            egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() },
-            egui::Key::B,
-        );
-        h.run_steps(2);
-        h.harness().get_by_label("No agents need attention.");
-        h.save_screenshot(&evidence_png!()).unwrap();
-    }
-
-    #[test]
     fn screenshot_agents_pane_states_and_keys() {
         use crate::protocol::AgentState;
         let mut h = PlexiUiHarness::new_sized(1200.0, 850.0);
@@ -6062,7 +6156,15 @@ mod tests {
         h.run_steps(3);
 
         // Hover a sidebar row so the trailing close glyph is visible in the PNG.
-        let active_title = h.harness().get_by_label("PLEXI Workspace").rect().center();
+        // The zoom path bar repeats the active context name; the sidebar row is
+        // the leftmost match.
+        let active_title = h
+            .harness()
+            .get_all_by_label("PLEXI Workspace")
+            .map(|n| n.rect())
+            .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+            .expect("sidebar row")
+            .center();
         h.harness()
             .get_by_label("Narrator Video Production Workspace");
         h.harness()
@@ -6669,11 +6771,9 @@ mod tests {
                 "pane {i} must span the same full vertical band as pane 0 (got {rect:?} vs {:?})",
                 rects[0]
             );
-            assert!(
-                (rect.width() - rects[0].width()).abs() < 4.0,
-                "pane {i} must have equal column width (got {rect:?} vs {:?})",
-                rects[0]
-            );
+            // Column widths follow the zoom strip presets (35% leading, 65%
+            // following), so only a non-empty width is required here.
+            assert!(rect.width() > 1.0, "pane {i} must have a painted width: {rect:?}");
         }
         assert!(
             rects[0].max.x <= rects[1].min.x + 2.0 && rects[1].max.x <= rects[2].min.x + 2.0,
@@ -6704,6 +6804,106 @@ mod tests {
 
         h.save_screenshot(&evidence_png!())
             .expect("render 3-pane squad columns");
+    }
+
+    /// Item 4 regression: a context with several windows must lay out the ACTIVE
+    /// window's columns from its own indices. Moving left/right across the window
+    /// boundary used to feed the context-wide scroll offset into the window's tree and
+    /// painted 6% slivers beside one oversized column (and overflowed the viewport).
+    #[test]
+    fn cross_window_navigation_keeps_every_pane_inside_viewport() {
+        use crate::host::keys::Direction;
+        const MIN_COLUMN_WIDTH: f32 = 80.0;
+        let mut h = PlexiUiHarness::new_sized(1100.0, 700.0);
+        let (ctx_id, first_window_panes, second_pane) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let ctx_id = app.router.active().context_id;
+            let p1 = app.add_test_pane().1;
+            let p2 = app.add_test_pane().1;
+            let p3 = app.add_test_pane().1;
+            app.set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
+            let win_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: std::path::PathBuf::from("/tmp"),
+                tree: egui_tiles::Tree::empty("plexi-second"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: win_id,
+                context_id: ctx_id,
+            });
+            let second_idx = app.windows.len() - 1;
+            let (tile, p4) = app.add_app_pane_in_window(second_idx, "test");
+            app.windows[second_idx].focused_pane = Some(tile);
+            app.active_window = second_idx;
+            app.context_active_window.insert(ctx_id, win_id);
+            (ctx_id, vec![p1, p2, p3], p4)
+        });
+        h.run_steps(3);
+
+        let check = |h: &mut PlexiUiHarness, step: &str| {
+            h.run_steps(3);
+            h.with_app(|app| {
+                let viewport = app.ctx.content_rect();
+                let window = &app.windows[app.active_window];
+                let mut narrow = 0usize;
+                let mut columns = 0usize;
+                if let Some(root) = window.tree.root() {
+                    let children = match window.tree.tiles.get(root) {
+                        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+                        _ => vec![root],
+                    };
+                    columns = children.len();
+                    for child in children {
+                        let rect = window.tree.tiles.rect(child).expect("painted column rect");
+                        assert!(
+                            viewport.expand(1.0).contains_rect(rect),
+                            "{step}: column rect {rect:?} escapes the viewport {viewport:?}"
+                        );
+                        if rect.width() < MIN_COLUMN_WIDTH {
+                            narrow += 1;
+                        }
+                    }
+                }
+                // Only the clipped neighbours of the strip may be narrow: with 3 columns
+                // exactly one is clipped, never two.
+                assert!(
+                    narrow <= columns.saturating_sub(2),
+                    "{step}: {narrow} of {columns} columns are narrower than {MIN_COLUMN_WIDTH}px"
+                );
+                let focused = app.active_focused_pane_id().expect("focused pane");
+                let tile = window.tree.tiles.find_pane(&focused).expect("focused tile");
+                let rect = window.tree.tiles.rect(tile).expect("focused rect");
+                assert!(
+                    rect.width() >= 200.0 && rect.height() >= 200.0,
+                    "{step}: focused pane squeezed to {rect:?}"
+                );
+            });
+        };
+
+        check(&mut h, "start on second window");
+        for (i, dir) in [
+            Direction::Left,
+            Direction::Left,
+            Direction::Left,
+            Direction::Right,
+            Direction::Right,
+            Direction::Right,
+            Direction::Left,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            h.with_app_mut(|app| {
+                app.navigate(dir);
+            });
+            check(&mut h, &format!("move {i} {dir:?}"));
+        }
+        let _ = (ctx_id, first_window_panes, second_pane);
     }
 
     #[test]

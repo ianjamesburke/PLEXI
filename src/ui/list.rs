@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, CornerRadius, Pos2, Response, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, Pos2, Response, Stroke, StrokeKind, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -697,7 +697,7 @@ fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32)
     let size = chip_size(ui, label);
     let rect = egui::Rect::from_min_size(Pos2::new(x, center_y - size.y / 2.0), size);
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(4), colors.bg_active);
+        .rect_filled(rect, crate::ui::style::RADIUS_SMALL, colors.bg_active);
     crate::ui::snap::galley_snapped(
         ui.painter(),
         Pos2::new(

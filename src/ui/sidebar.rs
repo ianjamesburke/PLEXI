@@ -2,8 +2,9 @@ use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{PaneDots, SidebarAction, SidebarRow};
+use crate::ui::style;
 use crate::workspace::router::ContextMove;
-use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align, Layout, Rect, RichText, Stroke};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
@@ -211,6 +212,7 @@ impl PlexiApp {
     /// Rolled-up semantic indicator color for a sidebar context row when the
     /// context (or one of its sub-contexts) is in `NeedsYou` (coral),
     /// `Blocked` (amber), or `Error` (danger).
+    #[cfg(test)]
     pub(crate) fn sidebar_context_indicator_color(&self, ctx_id: u64) -> Option<egui::Color32> {
         let state = crate::host::context_state::ContextState::compute(
             ctx_id,
@@ -355,40 +357,6 @@ impl PlexiApp {
                 }
             });
         });
-        // One fixed-height entry, however long a diagnostic is. The full text
-        // lives in the attention review, never in the navigation header.
-        let waiting = crate::overlays::attention::open_items();
-        if !waiting.is_empty() {
-            let label = crate::overlays::attention::sidebar_label(waiting.len());
-            let mut open_attention = false;
-            let attention_col = crate::ui::activity::needs_you_color(&self.colors);
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                let width = (ui.available_width() - 12.0).max(0.0);
-                let button = egui::Button::new(
-                    RichText::new(label)
-                        .size(crate::ui::style::TEXT_CAPTION)
-                        .color(attention_col),
-                )
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(Stroke::new(1.0_f32, attention_col))
-                .truncate()
-                .min_size(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H));
-                if ui
-                    .add_sized(Vec2::new(width, crate::ui::style::SIDEBAR_ATTENTION_H), button)
-                    .on_hover_text("Review items that need your attention")
-                    .clicked()
-                {
-                    open_attention = true;
-                }
-            });
-            if open_attention {
-                self.open_attention_overlay("sidebar");
-            }
-            if let Some(item) = crate::overlays::attention::oldest_actionable(&waiting).cloned() {
-                self.draw_sidebar_needs_you_actions(ui, &item);
-            }
-        }
         ui.add_space(4.0);
 
         let num_contexts = self.router.len();
@@ -406,6 +374,8 @@ impl PlexiApp {
             .get(self.active_window)
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
+
+        self.sync_attention_queue();
 
         // Build display order: top-level contexts only. Subcontexts never appear
         // in the sidebar — they are reached from inside their parent via its
@@ -483,32 +453,18 @@ impl PlexiApp {
                         });
                         let row_rect = scope.response.rect;
                         active_rects.push(row_rect);
+                        let row_card = SidebarRow::card_rect(row_rect);
                         ui.painter().set(
                             bg_idx,
-                            egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
+                            egui::Shape::rect_filled(row_card, style::RADIUS_SM, fill),
                         );
-                        if is_active {
-                            ui.painter().rect_filled(
-                                Rect::from_min_size(
-                                    row_rect.min,
-                                    Vec2::new(3.0, row_rect.height()),
-                                ),
-                                CornerRadius::ZERO,
-                                self.colors.accent,
-                            );
-                        }
                         continue;
                     }
 
                     // --- Normal row via SidebarRow ---
                     let ctx_name = self.router.get(i).name.to_string();
-                    let badge_count = if is_active {
-                        self.visible_notification_count()
-                    } else {
-                        self.context_notification_count(i)
-                    };
+                    let badge_count = self.sidebar_context_badge_count(ctx_id);
                     let subtitle = Some(self.router.get(i).root.display().to_string());
-                    let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
                     let (action, response) = SidebarRow {
                         is_active,
@@ -523,17 +479,6 @@ impl PlexiApp {
                         draggable: true,
                     }
                     .show(ui, egui::Id::new(("ctx", i)), &self.colors);
-
-                    if let Some(ind_col) = indicator_color {
-                        ui.painter().rect_filled(
-                            Rect::from_min_size(
-                                response.rect.min,
-                                Vec2::new(3.0, response.rect.height()),
-                            ),
-                            CornerRadius::ZERO,
-                            ind_col,
-                        );
-                    }
 
                     active_rects.push(response.rect);
 
@@ -657,7 +602,6 @@ impl PlexiApp {
                             let subtitle = Some(ctx.root.display().to_string());
 
                             let pane_dots = self.sidebar_pane_dots(ctx_id, false);
-                            let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
                             let (action, response) = SidebarRow {
                                 is_active: false,
@@ -676,17 +620,6 @@ impl PlexiApp {
                                 egui::Id::new(("parked_ctx", i)),
                                 &self.colors,
                             );
-
-                            if let Some(ind_col) = indicator_color {
-                                ui.painter().rect_filled(
-                                    Rect::from_min_size(
-                                        response.rect.min,
-                                        Vec2::new(3.0, response.rect.height()),
-                                    ),
-                                    CornerRadius::ZERO,
-                                    ind_col,
-                                );
-                            }
 
                             parked_rects.push(response.rect);
 
@@ -916,6 +849,10 @@ impl PlexiApp {
         if add_clicked {
             self.new_context();
         }
+    }
+
+    pub(crate) fn sidebar_context_badge_count(&self, ctx_id: u64) -> usize {
+        self.attention_queue.ask_count_for_context(ctx_id)
     }
 }
 

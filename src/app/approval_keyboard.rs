@@ -23,7 +23,11 @@ pub(super) struct ApprovalKeyboard {
 
 impl ApprovalKeyboard {
     fn focus(&mut self, id: String, now: Instant) {
-        if self.last_error.as_ref().is_some_and(|(err_id, _)| err_id != &id) {
+        if self
+            .last_error
+            .as_ref()
+            .is_some_and(|(err_id, _)| err_id != &id)
+        {
             self.last_error = None;
         }
         self.id = Some(id);
@@ -36,6 +40,7 @@ impl ApprovalKeyboard {
         self.since = None;
         self.confirm_always = false;
     }
+    #[allow(dead_code)]
     pub fn remaining(&self, now: Instant) -> Duration {
         self.since
             .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))
@@ -66,7 +71,11 @@ pub(crate) fn keyboard_actionable(
     items
         .iter()
         .filter(|item| is_keyboard_actionable(item.kind))
-        .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+        .min_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
         .cloned()
 }
 
@@ -102,9 +111,11 @@ impl PlexiApp {
             self.push_focus_layer(FocusKind::ApprovalBanner);
             log::info!("approval: focused id={}", request.pending_request_id);
             self.ctx.request_repaint_after(ARM_DELAY);
-        } else if let Some(item) = keyboard_actionable(&crate::overlays::attention::open_items())
+        } else if let Some(item) =
+            keyboard_actionable(&crate::app::attention_queue::open_needs_you_items())
         {
-            self.approval_keyboard.focus(item.id.clone(), Instant::now());
+            self.approval_keyboard
+                .focus(item.id.clone(), Instant::now());
             self.focus_stack
                 .retain(|kind| *kind != FocusKind::ApprovalBanner);
             self.push_focus_layer(FocusKind::ApprovalBanner);
@@ -114,7 +125,7 @@ impl PlexiApp {
                 item.kind.as_str()
             );
             self.ctx.request_repaint_after(ARM_DELAY);
-        } else if let Some(done_item) = crate::overlays::attention::open_items()
+        } else if let Some(done_item) = crate::app::attention_queue::open_needs_you_items()
             .into_iter()
             .find(|item| item.kind == crate::broker::gate::NeedsYouKind::AgentDone)
         {
@@ -326,11 +337,12 @@ impl PlexiApp {
             }
             egui::Key::D => self.resolve_from_desktop(id, false, "approval keyboard"),
             egui::Key::Enter if is_question && choices.is_empty() => {
-                let pane = record
-                    .details
-                    .as_ref()
-                    .and_then(|d| d.pane_id)
-                    .or_else(|| record.actor.strip_prefix("pane:").and_then(|s| s.parse().ok()));
+                let pane = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
+                    record
+                        .actor
+                        .strip_prefix("pane:")
+                        .and_then(|s| s.parse().ok())
+                });
                 if let Some((win, tile)) = pane.and_then(|p| self.find_pane_in_any_window(p)) {
                     self.active_window = win;
                     self.set_window_focused_pane(win, tile);
@@ -340,10 +352,12 @@ impl PlexiApp {
                 self.leave_approval();
                 return;
             }
-            other if is_question => match choice_index_for_key(other).and_then(|i| choices.get(i)) {
-                Some(answer) => self.answer_from_desktop(id, answer, "approval keyboard"),
-                None => return,
-            },
+            other if is_question => {
+                match choice_index_for_key(other).and_then(|i| choices.get(i)) {
+                    Some(answer) => self.answer_from_desktop(id, answer, "approval keyboard"),
+                    None => return,
+                }
+            }
             _ => return,
         };
         let decided = outcome.is_ok();
@@ -579,7 +593,9 @@ mod tests {
             )
             .unwrap();
         if let Some((wi, _)) = h.app.find_pane_in_any_window(pane_id) {
-            if let Some(crate::host::pane::Pane::Terminal(t)) = h.app.windows[wi].panes.get_mut(&pane_id) {
+            if let Some(crate::host::pane::Pane::Terminal(t)) =
+                h.app.windows[wi].panes.get_mut(&pane_id)
+            {
                 t.spawned_by = Some("human".to_string());
                 t.agent_session_id = Some("sess-0962".to_string());
                 t.initial_cwd = Some(root.clone());
@@ -588,7 +604,8 @@ mod tests {
         h.app.agent_attention.pending_os.clear();
 
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            peer_ancestry: None,
             pane_id,
             result: Some("{\"answer\":\"42\"}".into()),
             summary: Some("Audit complete".into()),
@@ -603,11 +620,9 @@ mod tests {
         let json_path = std::path::PathBuf::from(reply["json_path"].as_str().unwrap());
         assert!(md_path.exists(), "RESULT.md must be persisted on disk");
         assert!(json_path.exists(), "result.json must be persisted on disk");
-        assert!(
-            std::fs::read_to_string(&md_path)
-                .unwrap()
-                .contains("Audit complete")
-        );
+        assert!(std::fs::read_to_string(&md_path)
+            .unwrap()
+            .contains("Audit complete"));
 
         // OS notification queued for human-started completed agent.
         h.app.agent_attention.reports.remove(&pane_id);
@@ -617,9 +632,13 @@ mod tests {
             Some("Audit complete"),
         );
         assert!(
-            h.app.agent_attention.pending_os.iter().any(|(id, state, _)| {
-                *id == pane_id && *state == crate::protocol::AgentState::Completed
-            }),
+            h.app
+                .agent_attention
+                .pending_os
+                .iter()
+                .any(|(id, state, _)| {
+                    *id == pane_id && *state == crate::protocol::AgentState::Completed
+                }),
             "human-started agent done must queue an OS notification"
         );
 
@@ -718,7 +737,8 @@ mod tests {
             )
             .unwrap();
         let child_reply = root.join("child_done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
+        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+            peer_ancestry: None,
             pane_id: child,
             result: Some("{\"sub\":1}".into()),
             summary: Some("Child done".into()),
@@ -778,7 +798,10 @@ mod tests {
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY - Duration::from_millis(1),
         );
-        assert!(is_open(&monitor, &req), "must not decide before the arm guard");
+        assert!(
+            is_open(&monitor, &req),
+            "must not decide before the arm guard"
+        );
         h.app.approval_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY,
@@ -818,7 +841,10 @@ mod tests {
         h.app
             .approval_key_at(&mut input(egui::Key::Num2, egui::Modifiers::NONE), now);
         assert!(!is_open(&monitor, &q));
-        assert_eq!(monitor.get_needs_you(&q).unwrap().answer.as_deref(), Some("Abort"));
+        assert_eq!(
+            monitor.get_needs_you(&q).unwrap().answer.as_deref(),
+            Some("Abort")
+        );
 
         let blocked = file_item(&monitor, K::BlockedRun, "run-blocked", &["Retry"]);
         h.app.focus_approval();
@@ -849,66 +875,6 @@ mod tests {
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::SHIFT), now);
         assert!(is_open(&monitor, &req));
-    }
-
-    fn apply_pending(h: &mut HostHarness) {
-        let items = crate::overlays::attention::open_items();
-        let record = items.get(h.app.attention.selected).cloned();
-        let action = h.app.attention.pending.take().expect("key queued an action");
-        let ctx = h.app.ctx.clone();
-        h.app.apply_attention_action(&ctx, action, record.as_ref());
-    }
-
-    #[test]
-    fn attention_overlay_keys_decide_actionable_items_under_arm_guard() {
-        use crate::broker::gate::NeedsYouKind as K;
-        let mut h = HostHarness::new();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let req = file_item(&monitor, K::PermissionRequest, "run-o", &[]);
-        h.app.open_attention_overlay("test");
-        let now = h.app.attention.armed_at.unwrap();
-        h.app.attention.selected = 0;
-        h.app
-            .attention_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
-        assert!(h.app.attention.pending.is_none(), "arm guard holds the first second");
-        h.app.synthetic_input_frame = true;
-        h.app.attention_key_at(
-            &mut input(egui::Key::A, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        assert!(h.app.attention.pending.is_none(), "synthetic frames cannot approve");
-        h.app.synthetic_input_frame = false;
-        h.app.attention_key_at(
-            &mut input(egui::Key::A, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        assert_eq!(
-            h.app.attention.pending,
-            Some(crate::overlays::attention::AttentionAction::Resolve(true))
-        );
-        apply_pending(&mut h);
-        assert!(!is_open(&monitor, &req));
-
-        let q = file_item(&monitor, K::Question, "run-oq", &["Proceed", "Abort"]);
-        h.app.attention.selected = 0;
-        h.app.attention.armed_at = Some(now);
-        h.app.attention_key_at(
-            &mut input(egui::Key::Num1, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        apply_pending(&mut h);
-        assert!(!is_open(&monitor, &q));
-        assert_eq!(monitor.get_needs_you(&q).unwrap().answer.as_deref(), Some("Proceed"));
-
-        let change = file_item(&monitor, K::PermissionChange, "run-od", &[]);
-        h.app.attention.selected = 0;
-        h.app.attention.armed_at = Some(now);
-        h.app.attention_key_at(
-            &mut input(egui::Key::D, egui::Modifiers::NONE),
-            now + ARM_DELAY,
-        );
-        apply_pending(&mut h);
-        assert!(!is_open(&monitor, &change));
     }
 
     #[test]

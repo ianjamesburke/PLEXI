@@ -327,7 +327,14 @@ fn write_sealed_with_dir(path: &Path, dir: &Path, body: &[u8]) -> Result<(), Str
 /// Append one fact. Verifies the chain first. A bad chain is quarantined and
 /// the tip is cleared before this returns [`SealError::Untrusted`].
 pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError> {
-    if let Err(reason) = verify_audit(path) {
+    // The append writes the log line and then the authenticated tip. A
+    // concurrent verifier (or appender) between those two writes would see a
+    // tip that trails the log and quarantine a healthy chain.
+    let audit_lock = audit_lock_for(path);
+    let _audit_guard = audit_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Err(reason) = verify_audit_unlocked(path) {
         if super::host_key::is_key_unreadable(&reason) {
             return Err(SealError::Io(reason));
         }
@@ -372,6 +379,28 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(path: &Path) -> Result<(), String> {
+    let audit_lock = audit_lock_for(path);
+    let _audit_guard = audit_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    verify_audit_unlocked(path)
+}
+
+/// One lock per audit log, so appends and verifications of the same log are
+/// serialized within this process without a stalled keychain read for one
+/// profile blocking every other profile.
+fn audit_lock_for(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.entry(path.to_path_buf()).or_default().clone()
+}
+
+fn verify_audit_unlocked(path: &Path) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
     let tip = match tip_lookup(path) {
         Ok(value) => value,
@@ -1302,6 +1331,32 @@ mod tests {
         scrub_pane_env(&mut human, false);
         assert!(human.contains_key("PLEXI_SOCKET"));
         assert!(!human.contains_key("LEAK"));
+    }
+
+    #[test]
+    fn concurrent_audit_appends_and_verifies_never_see_a_stale_tip() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let path = profile.join("permission-audit.jsonl");
+        append_audit(&path, &serde_json::json!({"kind": "seed"})).unwrap();
+
+        std::thread::scope(|scope| {
+            for worker in 0..4 {
+                let path = path.clone();
+                scope.spawn(move || {
+                    for n in 0..15 {
+                        append_audit(&path, &serde_json::json!({"worker": worker, "n": n}))
+                            .expect("append must not race the tip");
+                        verify_audit(&path).expect("log and tip must stay in step");
+                    }
+                });
+            }
+        });
+        verify_audit(&path).unwrap();
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 61);
     }
 
     #[test]

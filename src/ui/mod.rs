@@ -2,6 +2,7 @@ pub mod activity;
 pub mod app_chrome;
 pub mod badge;
 pub mod button;
+pub mod card_block;
 pub mod code_viewer;
 pub mod dialog;
 pub mod embedded_bar;
@@ -11,6 +12,9 @@ pub mod labels;
 pub mod list;
 pub mod markdown;
 pub mod overlay;
+pub mod provenance;
+#[cfg(test)]
+mod radius_guard_tests;
 pub mod row;
 pub mod search_bar;
 pub mod shortcuts;

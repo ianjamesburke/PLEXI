@@ -146,6 +146,8 @@ pub struct TerminalView<'a> {
     /// keyboard events (it never falls back to reading `ctx` for keys — that
     /// silent fallback is exactly the Cmd+A-steal bug this design removes).
     supplied_input: Option<SuppliedInput>,
+    /// Commit a geometry change this frame instead of debouncing it.
+    resize_immediately: bool,
 }
 
 impl Widget for TerminalView<'_> {
@@ -190,6 +192,7 @@ impl<'a> TerminalView<'a> {
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
             supplied_input: None,
+            resize_immediately: false,
         }
     }
 
@@ -234,6 +237,14 @@ impl<'a> TerminalView<'a> {
         self
     }
 
+    /// Skip the resize debounce for this frame (a discrete layout jump, not a
+    /// drag): the backend commits the new grid before `show` paints.
+    #[inline]
+    pub fn resize_immediately(mut self, immediately: bool) -> Self {
+        self.resize_immediately = immediately;
+        self
+    }
+
     #[inline]
     pub fn set_padding(mut self, padding: Vec2) -> Self {
         self.padding = Vec2::new(padding.x.max(0.0), padding.y.max(0.0));
@@ -259,6 +270,7 @@ impl<'a> TerminalView<'a> {
         let outcome = self.backend.request_resize(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
+            self.resize_immediately,
         );
         if let Some(start) = start {
             crate::diag::span_note(

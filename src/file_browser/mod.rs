@@ -18,7 +18,7 @@ use crate::ui::overlay::ModalShell;
 use crate::ui::style;
 use crate::ui::text_field::TextField;
 use crate::ui::theme::Colors;
-use egui::{Color32, CornerRadius, Stroke, StrokeKind};
+use egui::{Color32, Stroke, StrokeKind};
 use image::imageops::FilterType;
 use std::collections::BTreeSet;
 use std::fs;
@@ -2024,7 +2024,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2092,7 +2092,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2136,7 +2136,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2161,7 +2161,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2947,7 +2947,9 @@ impl FileBrowserApp {
                         inner.center().y - cmd_galley.size().y * 0.5,
                     );
                     let cmd_w = cmd_galley.size().x;
-                    ui.painter().galley(cmd_pos, cmd_galley, cmd_color);
+                    ui.painter()
+                        .with_clip_rect(inner)
+                        .galley(cmd_pos, cmd_galley, cmd_color);
 
                     let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
                     let title_font = egui::FontId::proportional(style::TEXT_META);
@@ -3185,6 +3187,7 @@ impl App for FileBrowserApp {
             .unwrap_or_else(|| "/".to_string())
     }
 
+    #[cfg(test)]
     fn adjust_font_size(&mut self, delta: f32) {
         self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
         log::info!("file_browser: font_size -> {}", self.font_size);

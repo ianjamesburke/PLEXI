@@ -1,15 +1,12 @@
-use crate::app::app_trait::AppCommand;
 use crate::spatial::tiling::PaneId;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Align, Align2, CornerRadius, Layout, RichText, Stroke, Vec2};
 
-pub(crate) mod attention;
 pub(crate) mod command_palette;
 pub(crate) mod confirmations;
 pub(crate) mod misc;
 pub(crate) mod notes_picker;
-pub(crate) mod notification_modal;
 pub(crate) mod quick_note;
 pub(crate) mod setup;
 pub(crate) mod toolbar;
@@ -18,7 +15,7 @@ pub(crate) mod ui_gallery;
 use crate::app::PlexiApp;
 
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
-pub(crate) const R6: CornerRadius = CornerRadius::same(6);
+pub(crate) const R6: CornerRadius = crate::ui::style::RADIUS_SMALL;
 
 /// Show a native folder picker through the shared `PickerService` seam.
 /// Blocks the calling (background) thread; must NOT be called on the main thread.

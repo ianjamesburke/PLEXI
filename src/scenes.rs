@@ -242,6 +242,11 @@ pub struct Scene {
     /// Use for scenes that spawn real app processes or need wall-clock time.
     #[serde(default = "default_true")]
     pub suite: bool,
+    /// When true, `scene_suite` runs this scene only on macOS. Use for chords
+    /// that rely on Cmd and Ctrl being distinct modifiers: egui folds Cmd into
+    /// Ctrl elsewhere, so e.g. Ctrl+L collides with the Cmd+L host binding.
+    #[serde(default)]
+    pub macos_only: bool,
     /// Scripted file-picker outcomes (stint 0508), consumed in order by
     /// `OpenFilePicker` requests from apps this scene opens. Each entry is
     /// `{ paths = ["..."] }` or `{ cancel = true }`; a literal `{out}` prefix
@@ -478,6 +483,17 @@ pub struct DropFileSpec {
 pub struct AssertLabelSpec {
     pub target: String,
     pub label: String,
+    pub macos_label: Option<String>,
+}
+
+impl AssertLabelSpec {
+    fn expected_label(&self) -> &str {
+        if cfg!(target_os = "macos") {
+            self.macos_label.as_deref().unwrap_or(&self.label)
+        } else {
+            &self.label
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -903,9 +919,8 @@ fn expand_scene_tmp(raw: String) -> Result<(String, Option<tempfile::TempDir>), 
     if !raw.contains("{tmp}") {
         return Ok((raw, None));
     }
-    let dir = tempfile::tempdir().map_err(|error| {
-        SceneError::new("scene_tmp", format!("create scene temp dir: {error}"))
-    })?;
+    let dir = tempfile::tempdir()
+        .map_err(|error| SceneError::new("scene_tmp", format!("create scene temp dir: {error}")))?;
     let expanded = raw.replace("{tmp}", &dir.path().display().to_string());
     Ok((expanded, Some(dir)))
 }
@@ -1735,9 +1750,9 @@ impl LiveBackend {
                         .is_some_and(|nodes| {
                             nodes.iter().any(|node| {
                                 node.get("label").and_then(serde_json::Value::as_str)
-                                    == Some(assert_label.label.as_str())
+                                    == Some(assert_label.expected_label())
                                     || node.get("value").and_then(serde_json::Value::as_str)
-                                        == Some(assert_label.label.as_str())
+                                        == Some(assert_label.expected_label())
                             })
                         });
                     if matched {
@@ -1755,7 +1770,7 @@ impl LiveBackend {
                             "label_not_found",
                             format!(
                                 "assert_label: {:?} not found in live pane {}",
-                                assert_label.label, pane_id
+                                assert_label.expected_label(), pane_id
                             ),
                         )
                     } else {
@@ -1766,7 +1781,10 @@ impl LiveBackend {
             Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
             Step::Expect { expect } => self.expect(expect),
             Step::Shot { shot } => self.capture_shot(shot, shots),
-            Step::AgentChildren { .. } => Err(SceneError::new("unsupported_live_verb", "agent_children is a headless fixture")),
+            Step::AgentChildren { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "agent_children is a headless fixture",
+            )),
             Step::ChessApproval { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
                 "chess_approval is a headless scene verb",
@@ -2353,7 +2371,7 @@ fn step_label(step: &Step) -> String {
         Step::AssertLabel { assert_label } => {
             format!(
                 "assert_label {} {:?}",
-                assert_label.target, assert_label.label
+                assert_label.target, assert_label.expected_label()
             )
         }
         Step::Shot { shot } => format!("shot {shot}"),
@@ -2710,10 +2728,11 @@ impl HeadlessBackend {
                             deliver_after: None,
                             origin_in_view: false,
                         });
-                    app.show_notification_modal = true;
                     if app.current_notify_id.is_none() {
                         app.current_notify_id = Some(id.clone());
                     }
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
                     id
                 });
                 self.h.run_steps(2);
@@ -2756,23 +2775,24 @@ impl HeadlessBackend {
             Step::AssertLabel { assert_label } => {
                 let target = self.handles.resolve_input(&assert_label.target)?;
                 let pane_id = self.focus_target(target)?;
+                let label = assert_label.expected_label();
                 let matched = match pane_id {
-                    Some(pane_id) => self.h.pane_has_label(pane_id, &assert_label.label),
-                    None => self.h.host_has_label(&assert_label.label),
+                    Some(pane_id) => self.h.pane_has_label(pane_id, label),
+                    None => self.h.host_has_label(label),
                 };
                 if !matched {
                     return Err(SceneError::new(
                         "label_not_found",
                         format!(
                             "assert_label: {:?} not found after focusing target '{}'",
-                            assert_label.label, assert_label.target
+                            label, assert_label.target
                         ),
                     ));
                 }
                 Ok(Some(StepDetail::LabelMatched {
                     target: assert_label.target.clone(),
                     pane_id,
-                    label: assert_label.label.clone(),
+                    label: label.to_string(),
                 }))
             }
             Step::Shot { shot } => {
@@ -2811,30 +2831,79 @@ impl HeadlessBackend {
     fn agent_children(&mut self, phase: &str) -> Result<Option<StepDetail>, SceneError> {
         match phase {
             "seed" => {
-                let result = self.h.with_app_mut(|app| -> Result<Vec<(&str, u64)>, String> {
-                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "sleep 120", "Coordinate", None, false, None, None, None, None, false, None)?;
-                    let (_, tile) = app.find_pane_in_any_window(parent).ok_or("missing parent")?;
-                    app.windows[app.active_window].focused_pane = Some(tile);
-                    let mut members = vec![("lead", parent)];
-                    for role in ["implementer", "tester"] {
-                        let (child, _) = app.spawn_agent_worker_pane(role, "pi", "sleep 120", "Verify", Some("agent-tools-scene"), true, Some(parent), None, None, None, true, None)?;
-                        app.agent_tool_children.insert(child, Some(parent));
-                        members.push((role, child));
-                    }
-                    Ok(members)
-                }).map_err(|e| SceneError::new("agent_fixture", e))?;
-                for (name, id) in result { self.handles.bind(name, id)?; }
+                let result = self
+                    .h
+                    .with_app_mut(|app| -> Result<Vec<(&str, u64)>, String> {
+                        let (parent, _) = app.spawn_agent_worker_pane(
+                            "lead",
+                            "pi",
+                            "sleep 120",
+                            "Coordinate",
+                            None,
+                            false,
+                            None,
+                            None,
+                            None,
+                            None,
+                            false,
+                            None,
+                        )?;
+                        let (_, tile) = app
+                            .find_pane_in_any_window(parent)
+                            .ok_or("missing parent")?;
+                        app.windows[app.active_window].focused_pane = Some(tile);
+                        let mut members = vec![("lead", parent)];
+                        for role in ["implementer", "tester"] {
+                            let (child, _) = app.spawn_agent_worker_pane(
+                                role,
+                                "pi",
+                                "sleep 120",
+                                "Verify",
+                                Some("agent-tools-scene"),
+                                true,
+                                Some(parent),
+                                None,
+                                None,
+                                None,
+                                true,
+                                None,
+                            )?;
+                            app.agent_tool_children.insert(child, Some(parent));
+                            members.push((role, child));
+                        }
+                        Ok(members)
+                    })
+                    .map_err(|e| SceneError::new("agent_fixture", e))?;
+                for (name, id) in result {
+                    self.handles.bind(name, id)?;
+                }
             }
             "complete" => {
                 for role in ["implementer", "tester"] {
                     let id = self.handles.resolve(role)?;
-                    let response_file = self.h.workspace_root().join(format!("{role}-done.json")).to_string_lossy().into_owned();
-                    self.h.with_app_mut(|app| app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone { peer_ancestry: None,
-                        pane_id: id, result: Some("{}".into()), summary: Some("Verified".into()), response_file,
-                    }));
+                    let response_file = self
+                        .h
+                        .workspace_root()
+                        .join(format!("{role}-done.json"))
+                        .to_string_lossy()
+                        .into_owned();
+                    self.h.with_app_mut(|app| {
+                        app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone {
+                            peer_ancestry: None,
+                            pane_id: id,
+                            result: Some("{}".into()),
+                            summary: Some("Verified".into()),
+                            response_file,
+                        })
+                    });
                 }
             }
-            _ => return Err(SceneError::new("agent_fixture", "expected seed or complete")),
+            _ => {
+                return Err(SceneError::new(
+                    "agent_fixture",
+                    "expected seed or complete",
+                ))
+            }
         }
         self.h.run_steps(2);
         Ok(None)
@@ -2869,13 +2938,17 @@ impl HeadlessBackend {
         match spec.phase.as_str() {
             "host_pending" => {
                 let workspace = self.h.workspace_root().to_path_buf();
-                let context_id = self.h.with_app(|app| app.windows[app.active_window].context_id);
+                let context_id = self
+                    .h
+                    .with_app(|app| app.windows[app.active_window].context_id);
                 let input = serde_json::json!({
                     "game_id": "game-1",
                     "move": spec.move_uci.as_deref().unwrap_or("e2e4"),
                     "expected_revision": spec.revision.unwrap_or(0),
                 });
-                let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                );
                 let admission = monitor.admit(crate::broker::gate::AdmitRequest {
                     call_id: "scene-host-permission",
                     tool: "chess.play",
@@ -2891,10 +2964,15 @@ impl HeadlessBackend {
                     target_type: crate::broker::TargetType::AppConnector,
                 });
                 if !matches!(admission, crate::broker::gate::Admission::Required { .. }) {
-                    return Err(SceneError::new("permission_not_pending", "host permission fixture must ask"));
+                    return Err(SceneError::new(
+                        "permission_not_pending",
+                        "host permission fixture must ask",
+                    ));
                 }
                 self.h.run_steps(3);
-                Ok(Some(StepDetail::Message { message: "host permission pending".into() }))
+                Ok(Some(StepDetail::Message {
+                    message: "host permission pending".into(),
+                }))
             }
             "pending" => {
                 let workspace = self.h.workspace_root().to_path_buf();
@@ -2953,18 +3031,19 @@ impl HeadlessBackend {
                         .downcast_mut::<crate::assistant::AssistantApp>()
                         .expect("assistant app");
                     assistant_app.queue_scripted_tool("chess.play", &input.to_string());
-                    assistant_app.submit_external_turn(
-                        format!("play {mv}"),
-                        format!("scene-{revision}-{mv}"),
-                        reply.display().to_string(),
-                        crate::app::app_trait::ExternalTurnOpts {
-                            conversation_id: None,
-                            join_desktop: true,
-                            status_for: None,
-                            client: None,
-                            kind: None,
-                        },
-                    )
+                    assistant_app
+                        .submit_external_turn(
+                            format!("play {mv}"),
+                            format!("scene-{revision}-{mv}"),
+                            reply.display().to_string(),
+                            crate::app::app_trait::ExternalTurnOpts {
+                                conversation_id: None,
+                                join_desktop: true,
+                                status_for: None,
+                                client: None,
+                                kind: None,
+                            },
+                        )
                         .expect("assistant accepts the scripted turn");
                 });
                 let started = Instant::now();
@@ -3387,6 +3466,13 @@ mod tests {
                 println!("scene_suite: skipping {} (suite = false)", path.display());
                 continue;
             }
+            if scene.macos_only && !cfg!(target_os = "macos") {
+                println!(
+                    "scene_suite: skipping {} (macos_only = true)",
+                    path.display()
+                );
+                continue;
+            }
             let report = run_scene(&path, &out, false);
             println!(
                 "scene_suite: {} — {}",
@@ -3606,15 +3692,21 @@ mod tests {
         // A stopped channel in attach mode is a hard error — never a silent
         // owned replacement (a crashed gate host must fail the gate).
         assert_eq!(
-            live_start_action(HostStatusClass::Stopped, true).unwrap_err().0,
+            live_start_action(HostStatusClass::Stopped, true)
+                .unwrap_err()
+                .0,
             "live_attach_host_missing"
         );
         assert_eq!(
-            live_start_action(HostStatusClass::Running, false).unwrap_err().0,
+            live_start_action(HostStatusClass::Running, false)
+                .unwrap_err()
+                .0,
             "live_host_already_running"
         );
         assert_eq!(
-            live_start_action(HostStatusClass::Unknown, true).unwrap_err().0,
+            live_start_action(HostStatusClass::Unknown, true)
+                .unwrap_err()
+                .0,
             "live_status_invalid"
         );
     }

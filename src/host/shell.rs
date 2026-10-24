@@ -336,6 +336,36 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     build_env_with_secrets(working_directory, true)
 }
 
+/// Resolve the user's startup-file directory without accepting Plexi's own
+/// shell integration directory as a source. A nested host can inherit another
+/// channel's `ZDOTDIR`; sourcing that directory would recurse into its managed
+/// `.zprofile` and `.zshrc`.
+pub(crate) fn resolve_orig_zdotdir(
+    plexi_orig: Option<&str>,
+    zdotdir: Option<&str>,
+    home: &str,
+) -> String {
+    plexi_orig
+        .into_iter()
+        .chain(zdotdir)
+        .find(|candidate| !is_plexi_zsh_integration_dir(candidate))
+        .unwrap_or(home)
+        .to_string()
+}
+
+fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
+    let trimmed = candidate.trim_end_matches('/');
+    if trimmed.ends_with("shell-integration/zsh") {
+        return true;
+    }
+    let components: Vec<_> = trimmed.split('/').collect();
+    components.windows(3).any(|parts| {
+        parts[0].starts_with(".plexi")
+            && parts[1] == "shell-integration"
+            && parts[2] == "zsh"
+    })
+}
+
 /// Decide injection before resolving any values: restored agent panes must
 /// not read Keychain secrets only to remove them immediately afterwards.
 pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: bool) -> HashMap<String, String> {
@@ -473,9 +503,12 @@ pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: b
     if shell.ends_with("/zsh") || shell.ends_with("/zsh-5") {
         match ensure_shell_integration() {
             Ok(zdotdir) => {
-                let orig = std::env::var("PLEXI_ORIG_ZDOTDIR")
-                    .or_else(|_| std::env::var("ZDOTDIR"))
-                    .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_default());
+                let home = std::env::var("HOME").unwrap_or_default();
+                let orig = resolve_orig_zdotdir(
+                    std::env::var("PLEXI_ORIG_ZDOTDIR").ok().as_deref(),
+                    std::env::var("ZDOTDIR").ok().as_deref(),
+                    &home,
+                );
                 env.insert("PLEXI_ORIG_ZDOTDIR".into(), orig);
                 env.insert("ZDOTDIR".into(), zdotdir.to_string_lossy().into());
             }
@@ -1078,16 +1111,22 @@ pub(crate) fn ensure_shell_integration() -> io::Result<PathBuf> {
     let zprofile = r#"# Plexi shell integration — automatically managed, do not edit
 fpath=("${ZDOTDIR}/completions" $fpath)
 __plexi_orig="${PLEXI_ORIG_ZDOTDIR:-$HOME}"
-[[ -f "$__plexi_orig/.zprofile" ]] && source "$__plexi_orig/.zprofile"
-unset __plexi_orig
+__plexi_orig_trimmed="${__plexi_orig%/}"
+if [[ "$__plexi_orig_trimmed" != "${ZDOTDIR%/}" && "$__plexi_orig_trimmed" != */shell-integration/zsh ]]; then
+    [[ -f "$__plexi_orig_trimmed/.zprofile" ]] && source "$__plexi_orig_trimmed/.zprofile"
+fi
+unset __plexi_orig __plexi_orig_trimmed
 "#;
 
     let zshrc = format!(
         r#"# Plexi shell integration — automatically managed, do not edit
 fpath=("${{ZDOTDIR}}/completions" $fpath)
 __plexi_orig="${{PLEXI_ORIG_ZDOTDIR:-$HOME}}"
-[[ -f "$__plexi_orig/.zshrc" ]] && source "$__plexi_orig/.zshrc"
-unset __plexi_orig
+__plexi_orig_trimmed="${{__plexi_orig%/}}"
+if [[ "$__plexi_orig_trimmed" != "${{ZDOTDIR%/}}" && "$__plexi_orig_trimmed" != */shell-integration/zsh ]]; then
+    [[ -f "$__plexi_orig_trimmed/.zshrc" ]] && source "$__plexi_orig_trimmed/.zshrc"
+fi
+unset __plexi_orig __plexi_orig_trimmed
 
 if [[ -d "$HOME/.local/bin" && ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     export PATH="$HOME/.local/bin:$PATH"
@@ -1562,5 +1601,43 @@ mod tests {
             .expect("spawn sleep");
         let _ = child.wait();
         assert_eq!(get_pid_name(child.id()), None);
+    }
+
+    #[test]
+    fn resolve_orig_zdotdir_rejects_plexi_integration_directories() {
+        let home = "/Users/tester";
+        assert_eq!(resolve_orig_zdotdir(None, None, home), home);
+        assert_eq!(
+            resolve_orig_zdotdir(Some("/Users/tester/.config/zsh"), None, home),
+            "/Users/tester/.config/zsh"
+        );
+        assert_eq!(
+            resolve_orig_zdotdir(Some("/Users/tester/.plexi-alpha/shell-integration/zsh"), None, home),
+            home
+        );
+        assert_eq!(
+            resolve_orig_zdotdir(None, Some("/Users/tester/.plexi-beta/shell-integration/zsh/"), home),
+            home
+        );
+        assert_eq!(
+            resolve_orig_zdotdir(
+                Some("/Users/tester/.plexi-pr-42/shell-integration/zsh"),
+                Some("/Users/tester/.config/zsh"),
+                home,
+            ),
+            "/Users/tester/.config/zsh"
+        );
+    }
+
+    #[test]
+    fn zsh_integration_scripts_guard_against_self_sourcing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _profile_guard = crate::config::set_test_profile_dir(tmp.path().join("profile"));
+        let zsh_dir = ensure_shell_integration().expect("shell integration");
+        for script in [".zprofile", ".zshrc"] {
+            let text = std::fs::read_to_string(zsh_dir.join(script)).expect("generated script");
+            assert!(text.contains("!= \"${ZDOTDIR%/}\""));
+            assert!(text.contains("!= */shell-integration/zsh"));
+        }
     }
 }

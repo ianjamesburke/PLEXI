@@ -3176,6 +3176,13 @@ impl PlexiApp {
                             .capture_lines(crate::app::pane_status::capture_depth());
                         let mut status =
                             crate::app::pane_status::composite_status(pane.agent(), &captured);
+                        crate::app::pane_status::apply_program_status(
+                            &mut status,
+                            &terminal
+                                .program_status
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()),
+                        );
                         status["heartbeat"] = self.pane_heartbeat_json(*pane_id);
                         Ok(status)
                     });
@@ -5364,6 +5371,29 @@ impl PlexiApp {
                     t.activity = new;
                 }
 
+                let reported =
+                    crate::program_status::reported_agent_state(*pane_id, &t.program_status);
+                let reported_changed = match (&t.reported_7501, &reported) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => {
+                        a.agent != b.agent || a.state != b.state || a.detail != b.detail
+                    }
+                    _ => true,
+                };
+                if reported_changed {
+                    log::info!(
+                        "program_status: pane {} agent {:?} -> {:?}",
+                        pane_id,
+                        t.reported_7501.as_ref().map(|a| (&a.agent, &a.state, &a.detail)),
+                        reported.as_ref().map(|a| (&a.agent, &a.state, &a.detail)),
+                    );
+                    if let Some(agent) = &reported {
+                        transitions.push((*pane_id, agent.clone()));
+                    }
+                    t.set_reported_7501(reported);
+                    observed_dirty = true;
+                }
+
                 let observed = if t.exited {
                     None
                 } else {
@@ -5823,6 +5853,10 @@ impl PlexiApp {
                                 newly_exited = !t.exited;
                                 t.exited = true;
                                 t.exit_status = Some(status);
+                                t.program_status
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .on_process_exit();
                                 let is_agent_or_subcontext = is_subcontext
                                     || t.parent_pane_id.is_some()
                                     || t.agent_harness.is_some()

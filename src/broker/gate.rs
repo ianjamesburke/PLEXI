@@ -154,6 +154,7 @@ pub enum NeedsYouResolveError {
 pub enum NeedsYouResolution {
     Approved,
     Denied,
+    Acknowledged,
 }
 
 impl NeedsYouResolution {
@@ -161,6 +162,7 @@ impl NeedsYouResolution {
         match self {
             Self::Approved => "approved",
             Self::Denied => "denied",
+            Self::Acknowledged => "acknowledged",
         }
     }
 }
@@ -172,6 +174,9 @@ pub struct NeedsYouDetails {
     pub choices: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_free_text: bool,
+    /// The choice the filer recommends; always one of `choices`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommend: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1701,6 +1706,8 @@ impl PermissionMonitor {
         let mut outcome = self.run_outcome_for(id);
         let final_resolution = if approve {
             NeedsYouResolution::Approved
+        } else if row.kind == NeedsYouKind::Integrity {
+            NeedsYouResolution::Acknowledged
         } else {
             NeedsYouResolution::Denied
         };
@@ -1827,7 +1834,7 @@ impl PermissionMonitor {
             | NeedsYouKind::Integrity
             | NeedsYouKind::AgentDone => {
                 let resolution = final_resolution;
-                let decision = if approve { "approved" } else { "denied" };
+                let decision = resolution.as_str();
                 if !self.close_needs_you(id, resolution, decision, "") {
                     if let Some(existing) = self.resolved_receipt(id, true) {
                         return Ok(existing);
@@ -2419,6 +2426,21 @@ impl PermissionMonitor {
     }
 
     pub(crate) fn file_integrity_memory_only(&self, reason: &str) {
+        // One open queue-integrity notice at a time, however many restarts.
+        if self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .any(|row| {
+                row.resolution.is_none()
+                    && row.kind == NeedsYouKind::Integrity
+                    && row.resource == "needs-you"
+            })
+        {
+            log::info!("needs_you: queue-integrity notice already open, not re-filing");
+            return;
+        }
         let id = format!("ny_{}", uuid::Uuid::new_v4());
         let summary = format!(
             "Needs you queue failed its integrity check ({reason}). Stored entries in that file were not loaded."

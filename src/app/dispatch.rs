@@ -764,9 +764,15 @@ impl PlexiApp {
                             self.dismiss_fleet_agent(Some(id), false);
                         }
                         crate::app::agents_app::FleetAction::ReviewAttention { pane_id } => {
-                            self.open_attention_overlay("agents");
-                            if let Some(index) = crate::overlays::attention::open_items().iter().position(|r| r.resource == format!("pane:{pane_id}") || r.actor == format!("pane:{pane_id}")) {
-                                self.attention.selected = index;
+                            self.sync_attention_queue();
+                            if let Some(ask_id) = self
+                                .attention_queue
+                                .first_ask_for_pane(pane_id)
+                                .map(|b| b.id.clone())
+                            {
+                                let _ = self.open_decision_overlay_for_ask(&ask_id);
+                            } else if !self.attention_queue.open {
+                                self.toggle_attention_queue_list();
                             }
                         },
                         crate::app::agents_app::FleetAction::Reply { pane_id, from_pane_id, text } => {

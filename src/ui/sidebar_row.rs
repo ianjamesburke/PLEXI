@@ -64,7 +64,7 @@ const PANE_DOT_MAX: usize = 8;
 const WINDOW_GROUP_PAD_X: f32 = 7.0;
 const WINDOW_GROUP_PAD_Y: f32 = 6.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
-const WINDOW_GROUP_RADIUS: CornerRadius = CornerRadius::same(4);
+const WINDOW_GROUP_RADIUS: CornerRadius = crate::ui::style::RADIUS_SMALL;
 /// Width reserved for the "+N" label when the pane count exceeds the cap.
 const PIP_OVERFLOW_W: f32 = 20.0;
 const GROUP_STROKE_W: f32 = 1.0;
@@ -538,6 +538,15 @@ fn paint_pips(
 }
 
 impl SidebarRow {
+    /// The inset rounded-card rect inside an allocated `row_rect` where the
+    /// row's selection fill and hover fill live.
+    pub(crate) fn card_rect(row_rect: Rect) -> Rect {
+        selection_inset(Rect::from_min_max(
+            Pos2::new(row_rect.min.x + style::SPACE_XS, row_rect.min.y),
+            Pos2::new(row_rect.max.x - style::SPACE_XS, row_rect.max.y),
+        ))
+    }
+
     pub fn show(
         self,
         ui: &mut egui::Ui,
@@ -579,10 +588,10 @@ impl SidebarRow {
         );
         if self.is_active {
             if row_alpha < 1.0 {
-                // Dragging: a dim solid fill, no outline.
+                // Dragging: a dim solid fill inside the rounded card, no outline.
                 ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::ZERO,
+                    selection_inset(card),
+                    style::RADIUS_SM,
                     with_alpha(colors.bg_active, row_alpha),
                 );
             } else {
