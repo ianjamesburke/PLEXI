@@ -1366,9 +1366,13 @@ mod tests {
         });
         h.run_steps(3);
         assert!(h.harness().query_by_label("Host UI Gallery").is_some());
+        let quit_toast = format!(
+            "{} pressed 1 of 3 — press again to quit",
+            crate::ui::shortcuts::key_text(&["cmd", "Q"])
+        );
         assert!(
             h.harness()
-                .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
+                .query_by_label(&quit_toast)
                 .is_some()
         );
         h.save_screenshot(&evidence_png!())
@@ -3600,7 +3604,18 @@ mod tests {
             terminals.len() >= 2,
             "need several real terminals for the drag to be meaningful"
         );
-        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        let visible_terminals: Vec<_> = h.with_app(|app| {
+            terminals
+                .iter()
+                .copied()
+                .filter(|id| !app.zoom.off_strip_panes.contains(id))
+                .collect()
+        });
+        assert!(
+            !visible_terminals.is_empty(),
+            "need a visible terminal for the drag to be meaningful"
+        );
+        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
         seed_wrapping_text(&mut h, &terminals);
 
         // Drag the window edge in: one frame per intermediate width, exactly
@@ -3612,7 +3627,7 @@ mod tests {
         }
         h.run_steps(4);
 
-        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
         assert!(
             widest_after < widest_before,
             "the trailing-edge commit was stranded: terminals still {widest_before} cols \

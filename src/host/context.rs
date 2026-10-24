@@ -261,9 +261,12 @@ impl Window {
 
     /// Navigate to a tile: sets focused_pane and activates ALL ancestor Tabs containers
     /// (walking up through nested tab layouts). This is the canonical way to change
-    /// focused_pane — call instead of assigning directly. Does NOT touch zoomed_pane;
-    /// callers own zoom transitions.
+    /// focused_pane. Moving focus away from a zoomed pane exits zoom before the
+    /// new focus is visible, preserving the focus invariant during the frame.
     pub(crate) fn navigate_to(&mut self, tile_id: TileId) {
+        if self.zoomed_pane.is_some_and(|zoomed| zoomed != tile_id) {
+            self.clear_zoom();
+        }
         self.focused_pane = Some(tile_id);
         let mut current = tile_id;
         while let Some((tabs_id, child_id)) = self.find_ancestor_tabs(current) {

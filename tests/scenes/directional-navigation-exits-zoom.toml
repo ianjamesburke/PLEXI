@@ -28,7 +28,7 @@ focus = "files"
 key = { target = "files", value = "cmd+enter" }
 
 [[steps]]
-key = { target = "files", value = "cmd+j" }
+key = { target = "files", value = "cmd+k" }
 
 [[steps]]
 assert = { target = "assistant", focused = true, pane_count = 2 }

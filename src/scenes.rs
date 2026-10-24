@@ -478,6 +478,17 @@ pub struct DropFileSpec {
 pub struct AssertLabelSpec {
     pub target: String,
     pub label: String,
+    pub macos_label: Option<String>,
+}
+
+impl AssertLabelSpec {
+    fn expected_label(&self) -> &str {
+        if cfg!(target_os = "macos") {
+            self.macos_label.as_deref().unwrap_or(&self.label)
+        } else {
+            &self.label
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -1734,9 +1745,9 @@ impl LiveBackend {
                         .is_some_and(|nodes| {
                             nodes.iter().any(|node| {
                                 node.get("label").and_then(serde_json::Value::as_str)
-                                    == Some(assert_label.label.as_str())
+                                    == Some(assert_label.expected_label())
                                     || node.get("value").and_then(serde_json::Value::as_str)
-                                        == Some(assert_label.label.as_str())
+                                        == Some(assert_label.expected_label())
                             })
                         });
                     if matched {
@@ -1754,7 +1765,7 @@ impl LiveBackend {
                             "label_not_found",
                             format!(
                                 "assert_label: {:?} not found in live pane {}",
-                                assert_label.label, pane_id
+                                assert_label.expected_label(), pane_id
                             ),
                         )
                     } else {
@@ -2355,7 +2366,7 @@ fn step_label(step: &Step) -> String {
         Step::AssertLabel { assert_label } => {
             format!(
                 "assert_label {} {:?}",
-                assert_label.target, assert_label.label
+                assert_label.target, assert_label.expected_label()
             )
         }
         Step::Shot { shot } => format!("shot {shot}"),
@@ -2759,23 +2770,24 @@ impl HeadlessBackend {
             Step::AssertLabel { assert_label } => {
                 let target = self.handles.resolve_input(&assert_label.target)?;
                 let pane_id = self.focus_target(target)?;
+                let label = assert_label.expected_label();
                 let matched = match pane_id {
-                    Some(pane_id) => self.h.pane_has_label(pane_id, &assert_label.label),
-                    None => self.h.host_has_label(&assert_label.label),
+                    Some(pane_id) => self.h.pane_has_label(pane_id, label),
+                    None => self.h.host_has_label(label),
                 };
                 if !matched {
                     return Err(SceneError::new(
                         "label_not_found",
                         format!(
                             "assert_label: {:?} not found after focusing target '{}'",
-                            assert_label.label, assert_label.target
+                            label, assert_label.target
                         ),
                     ));
                 }
                 Ok(Some(StepDetail::LabelMatched {
                     target: assert_label.target.clone(),
                     pane_id,
-                    label: assert_label.label.clone(),
+                    label: label.to_string(),
                 }))
             }
             Step::Shot { shot } => {

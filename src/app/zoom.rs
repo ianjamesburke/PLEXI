@@ -623,6 +623,15 @@ impl PlexiApp {
         let Some((win_idx, tile_id)) = self.find_pane_in_any_window(pane_id) else {
             return false;
         };
+        // A focus move must clear zoom before navigate_to changes focused_pane.
+        // Otherwise the render pass can observe a zoomed tile that is no longer
+        // focused between this helper and its caller's cleanup.
+        if self.active_focused_pane_id() != Some(pane_id) {
+            self.windows[self.active_window].clear_zoom();
+        }
+        if self.windows[win_idx].zoomed_pane != Some(tile_id) {
+            self.windows[win_idx].clear_zoom();
+        }
         self.conjoined_parent_focus = None;
         let ctx_id = self.windows[win_idx].context_id;
         if let Some(router_idx) = self

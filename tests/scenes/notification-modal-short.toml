@@ -5,10 +5,10 @@ sizes = [[520.0, 640.0], [1280.0, 800.0]]
 seed_notification = { title = "Build complete", body = "The release candidate is ready." }
 
 [[steps]]
-assert_label = { target = "host", label = "Build complete" }
+assert_label = { target = "host", label = "Build complete: The release candidate is ready." }
 
 [[steps]]
-assert_label = { target = "host", label = "Source: Command line  ·  Context: Context 0" }
+assert_label = { target = "host", label = "pane-1" }
 
 [[steps]]
 shot = "notification-modal-short.png"

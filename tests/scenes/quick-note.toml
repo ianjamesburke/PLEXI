@@ -15,7 +15,7 @@ text = { target = "host", value = "Follow up with the design team about the imag
 run_steps = 2
 
 [[steps]]
-assert_label = { target = "host", label = "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard" }
+assert_label = { target = "host", label = "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard", macos_label = "↵ to save  ·  ⇧↵ for new line  ·  Esc to discard" }
 
 [[steps]]
 shot = "quick-note.png"

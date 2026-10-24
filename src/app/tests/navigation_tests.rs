@@ -606,12 +606,19 @@ fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
         .find_pane(&third)
         .expect("third pane must have a tile");
 
+    // The vertical split re-parents `second`, so look its tile up again.
+    let second_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&second)
+        .expect("second pane must keep a tile after the split");
     h.press_key(egui::Key::Enter, toggle_zoom_mods);
     assert_eq!(h.app.windows[0].zoomed_pane, Some(second_tile));
     h.press_key(egui::Key::J, egui::Modifiers::COMMAND);
     assert_eq!(h.app.windows[0].focused_pane, Some(third_tile));
     assert!(h.app.windows[0].zoomed_pane.is_none());
 
+    h.run_frames(3);
     h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
     assert_eq!(h.app.windows[0].focused_pane, Some(second_tile));
     assert!(
