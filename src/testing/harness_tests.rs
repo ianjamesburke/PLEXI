@@ -14258,3 +14258,266 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         format!("Terminal pane {human_shell}")
     );
 }
+
+mod restore_followups_0983b {
+    use super::*;
+    use crate::host::context::{Context, ContextName};
+    use crate::protocol::{AgentState, AppRequest};
+    use crate::workspace::{
+        SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
+    };
+    use std::collections::HashMap;
+
+    #[test]
+    fn restore_skips_completed_script_pane() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut tiles = egui_tiles::Tiles::default();
+        let t30 = tiles.insert_pane(30);
+        let tree = egui_tiles::Tree::new("script_tree", t30, tiles);
+        let ws = WorkspaceFile {
+            version: 2,
+            active_context: 0,
+            sidebar_visible: true,
+            next_pane_id: 50,
+            contexts: vec![Context {
+                name: ContextName::custom("script-ctx"),
+                root: tmp.path().to_path_buf(),
+                description: None,
+                context_id: 1,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            }],
+            windows: vec![SavedWindow {
+                name: "main".to_string(),
+                path: tmp.path().to_path_buf(),
+                tree,
+                panes: vec![SavedPane {
+                    id: 30,
+                    kind: SavedPaneKind::Terminal,
+                    cwd: tmp.path().to_path_buf(),
+                    name: Some("finished-script".to_string()),
+                    app_id: None,
+                    app_state: None,
+                    hidden: false,
+                    heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
+                    slots: HashMap::new(),
+                    agent_session: Some(SavedAgentSession {
+                        fleet_result: None,
+                        fleet_seen: false,
+                        fleet_dismissed: false,
+                        fleet_done_unseen: false,
+                        fleet_since: 0,
+                        harness: "script".to_string(),
+                        config_name: None,
+                        permission_posture: None,
+                        session_id: None,
+                        last_state: AgentState::Completed,
+                        last_blocked_reason: None,
+                        last_detail: None,
+                        parent_pane_id: None,
+                        spawned_by: None,
+                        pending_child_results: Vec::new(),
+                        ephemeral: false,
+                        tail_preview: None,
+                        standby_scrollback_tail: Some(vec!["final output line".to_string()]),
+                    }),
+                }],
+                focused_pane: Some(t30),
+                grid_x: 0,
+                grid_y: 0,
+                window_id: 1,
+                context_id: 1,
+            }],
+            context_active_window: HashMap::from([(1, 1)]),
+        };
+        ws.save_to(profile_dir.path()).expect("save workspace");
+        let mut h = HostHarness::from_profile_dir(profile_dir.path());
+
+        let (win_idx, _) = h.app.find_pane_in_any_window(30).expect("pane 30");
+        let term = h.app.windows[win_idx].panes[&30]
+            .as_terminal()
+            .expect("pane 30");
+        assert!(term.is_standby(), "finished script keeps its final output");
+        assert_eq!(term.standby_resume_command, None);
+        assert!(term.agent_completed);
+        assert_eq!(term.last_resumed_command, None);
+        let banner = term.standby_banner().expect("banner");
+        assert!(!banner.contains("Enter"), "banner offered resume: {banner}");
+
+        let send_resp = temp_response(tmp.path(), "wake-30");
+        h.inject_ipc(AppRequest::SendToPane {
+            pane_id: 30,
+            text: "\n".to_string(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp),
+            peer_ancestry: None,
+        });
+        h.hidden_frame();
+        let term = h.app.windows[win_idx].panes[&30]
+            .as_terminal()
+            .expect("pane 30");
+        assert!(term.is_standby(), "Enter must not resume a finished script");
+        assert_eq!(term.last_resumed_command, None);
+    }
+
+    #[test]
+    fn oneshot_chip_seen_after_result_delivered() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|p| p.as_terminal_mut())
+                .expect("terminal");
+            t.agent_harness = Some("script".to_string());
+            t.agent_completed = true;
+            t.fleet_done_unseen = true;
+            t.fleet_seen = false;
+        }
+        h.app.mark_child_result_delivered(pane_id);
+        let t = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.as_terminal())
+            .expect("terminal");
+        assert!(
+            t.fleet_seen,
+            "delivered child result must mark the chip seen"
+        );
+        assert!(
+            t.build_saved_agent_session().is_some_and(|s| s.fleet_seen),
+            "seen flag must persist across restart"
+        );
+    }
+
+    #[test]
+    fn agent_wait_marks_unfocused_child_seen_and_persists() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+        let ws_dir = tempfile::tempdir().expect("ws_dir");
+
+        let oneshot_pane = {
+            let mut h = HostHarness::from_profile_dir(profile_dir.path());
+            h.app.set_context_root(ws_dir.path().to_path_buf(), None);
+            let human_shell = h.add_focused_terminal();
+            if let Some(pane) = h.app.windows[0].panes.get_mut(&human_shell) {
+                if let Some(t) = pane.as_terminal_mut() {
+                    t.name = Some("human-shell".to_string());
+                    t.name_locked = true;
+                    t.spawned_by = Some("human".to_string());
+                    t.initial_cwd = Some(ws_dir.path().to_path_buf());
+                }
+            }
+
+            let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot-wait");
+            h.inject_ipc(AppRequest::AgentSpawn {
+                role: "oneshot".into(),
+                harness: "script".into(),
+                command: "sleep 30".into(),
+                task: None,
+                subcontext: None,
+                ephemeral: false,
+                parent_pane_id: Some(human_shell),
+                name: None,
+                cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+                worktree: None,
+                result_schema: None,
+                initial_slots: vec![],
+                no_focus: true,
+                response_file: spawn_reply.clone(),
+                peer_ancestry: None,
+            });
+            h.hidden_frame();
+            let child_id = read_json_response(&spawn_reply)["pane_id"]
+                .as_u64()
+                .expect("oneshot pane_id");
+
+            let wait_reply = temp_response(ws_dir.path(), "wait-oneshot");
+            h.inject_ipc(AppRequest::AgentWait {
+                pane_ids: vec![child_id],
+                timeout_secs: 30.0,
+                response_file: wait_reply.clone(),
+                peer_ancestry: None,
+            });
+
+            let done_reply = temp_response(ws_dir.path(), "oneshot-done-wait");
+            h.inject_ipc(AppRequest::AgentDone {
+                pane_id: child_id,
+                result: Some("{\"answer\":42}".to_string()),
+                summary: Some("oneshot-ok".to_string()),
+                response_file: done_reply,
+                peer_ancestry: None,
+            });
+
+            h.inject_ipc(AppRequest::SetAgentState {
+                pane_id: child_id,
+                state: AgentState::Completed,
+                agent: "script".to_string(),
+                detail: Some("harness_exit_after_done".to_string()),
+                session_id: None,
+                event: None,
+                blocked_reason: None,
+                peer_ancestry: None,
+            });
+            h.hidden_frame();
+
+            assert_ne!(
+                h.app.fleet_focused_pane(),
+                Some(child_id),
+                "child pane must not be focused"
+            );
+            let wait_json = read_json_response(&wait_reply);
+            assert_eq!(wait_json["ok"], true, "wait_json: {wait_json}");
+
+            let term = h.app.windows[0]
+                .panes
+                .get(&child_id)
+                .and_then(|p| p.as_terminal())
+                .expect("child terminal");
+            assert!(
+                term.fleet_seen,
+                "agent wait delivery must mark unfocused child fleet_seen=true even after SetAgentState Completed"
+            );
+            assert!(
+                term.build_saved_agent_session()
+                    .expect("saved session")
+                    .fleet_seen,
+                "saved agent session must record fleet_seen=true"
+            );
+
+            h.app.save_workspace_now();
+            child_id
+        };
+
+        let h = HostHarness::from_profile_dir(profile_dir.path());
+        let (win_idx, _) = h
+            .app
+            .find_pane_in_any_window(oneshot_pane)
+            .expect("restored child pane");
+        let restored_term = h.app.windows[win_idx].panes[&oneshot_pane]
+            .as_terminal()
+            .expect("restored child terminal");
+        assert!(
+            restored_term.fleet_seen,
+            "restored child pane must preserve fleet_seen=true"
+        );
+        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let row = view
+            .tasks
+            .iter()
+            .flat_map(|t| &t.rows)
+            .find(|r| r.pane_id == oneshot_pane)
+            .expect("restored child fleet row");
+        assert_ne!(
+            row.display_state,
+            crate::agent::fleet::DisplayState::DoneUnseen,
+            "restored child pane must not be DoneUnseen in fleet view"
+        );
+    }
+}

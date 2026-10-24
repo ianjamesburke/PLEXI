@@ -3479,6 +3479,11 @@ impl PlexiApp {
                             break;
                         }
                     }
+                    if self.fleet_focused_pane() == Some(*pane_id)
+                        || self.pulled_child_results.contains(pane_id)
+                    {
+                        self.mark_agent_seen(*pane_id);
+                    }
                     self.refresh_portal_context_states();
                     self.mark_workspace_dirty();
                     if ephemeral {
@@ -3632,7 +3637,11 @@ impl PlexiApp {
                         break;
                     }
                 }
-                if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
+                if self.fleet_focused_pane() == Some(*pane_id)
+                    || self.pulled_child_results.contains(pane_id)
+                {
+                    self.mark_agent_seen(*pane_id);
+                }
                 if dirty {
                     self.mark_workspace_dirty();
                 }

@@ -363,7 +363,7 @@ impl PlexiApp {
                 seen: record.fleet_seen,
                 dismissed: record.fleet_dismissed,
                 previous_session: true,
-                done_unseen: record.last_state == AgentState::Completed,
+                done_unseen: record.last_state == AgentState::Completed && !record.fleet_seen,
                 blocked_on: None,
                 failure_detail: record
                     .last_detail

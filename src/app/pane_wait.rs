@@ -1054,6 +1054,7 @@ impl PlexiApp {
     /// queued in any parent pane's `pending_child_results`.
     pub(crate) fn mark_child_result_delivered(&mut self, child_id: u64) {
         self.pulled_child_results.insert(child_id);
+        self.mark_agent_seen(child_id);
         let mut changed = false;
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
@@ -1336,6 +1337,9 @@ impl PlexiApp {
         if drained.is_empty() {
             return false;
         }
+        for item in &drained {
+            self.mark_agent_seen(item.child_pane_id);
+        }
         let batch_text = Self::format_batched_child_results(&drained);
         if let Some(term) = self
             .windows
@@ -1457,6 +1461,7 @@ impl PlexiApp {
                         }
                     }
                 }
+                self.mark_agent_seen(cid);
             }
             let results: Vec<serde_json::Value> = wait
                 .pane_ids

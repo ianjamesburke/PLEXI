@@ -62,6 +62,16 @@ pub(crate) use notification_image::NotificationImageState;
 pub(crate) use notifications::save_pending_notifications_to;
 pub(crate) use notifications::{load_pending_notifications_from, PendingNotification};
 
+/// A oneshot script pane that already finished must not be respawned as a
+/// live `/bin/sh` on restore; it comes back as completed.
+pub(crate) fn is_finished_script_session(session: &crate::workspace::SavedAgentSession) -> bool {
+    crate::cli::AgentHarness::parse(&session.harness) == Some(crate::cli::AgentHarness::Script)
+        && matches!(
+            session.last_state,
+            crate::protocol::AgentState::Completed | crate::protocol::AgentState::ExitedUnreported
+        )
+}
+
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
 /// A single arg is used as-is (it's already a shell expression — CLI path).
 /// Multiple args are joined with shell quoting so word-splitting is preserved.
@@ -374,6 +384,17 @@ pub struct PlexiApp {
     pub(crate) notes_picker_last_drawn_selected: Option<usize>,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
+    /// Notes picker: file content shown in the preview half, keyed by path so
+    /// it is read once per selection rather than every frame.
+    pub(crate) notes_picker_preview: Option<(std::path::PathBuf, std::sync::Arc<str>)>,
+    /// Notes picker: a delete (or cut) awaiting Enter/y confirmation.
+    pub(crate) notes_picker_pending_delete: Option<crate::overlays::notes_picker::PendingDelete>,
+    /// Notes picker: inline status/error message shown in the fixed status slot.
+    pub(crate) notes_picker_status: Option<String>,
+    /// Notes picker: last text sent to the clipboard (Cmd+C / Cmd+X).
+    pub(crate) notes_picker_last_copied: Option<String>,
+    /// Notes picker: `notes_picker_last_copied` still has to be handed to egui.
+    pub(crate) notes_picker_copy_unsent: bool,
     /// In-memory notes index. Cmd+O paints this and does not walk.
     pub(crate) notes_index: crate::notes::NotesIndexCache,
     /// Background refresh of `notes_index`. Drained from `App::logic`.
@@ -1732,6 +1753,11 @@ impl PlexiApp {
                     notes_picker_selected: 0,
                     notes_picker_last_drawn_selected: None,
                     notes_picker_query: String::new(),
+                    notes_picker_preview: None,
+                    notes_picker_pending_delete: None,
+                    notes_picker_status: None,
+                    notes_picker_last_copied: None,
+                    notes_picker_copy_unsent: false,
                     notes_index: crate::notes::NotesIndexCache::default(),
                     notes_index_rx: None,
                     notes_index_inflight_anchor: None,
@@ -1998,6 +2024,11 @@ impl PlexiApp {
             notes_picker_selected: 0,
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
+            notes_picker_preview: None,
+            notes_picker_pending_delete: None,
+            notes_picker_status: None,
+            notes_picker_last_copied: None,
+            notes_picker_copy_unsent: false,
             notes_index: crate::notes::NotesIndexCache::default(),
             notes_index_rx: None,
             notes_index_inflight_anchor: None,
@@ -2958,6 +2989,11 @@ impl PlexiApp {
             notes_picker_selected: 0,
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
+            notes_picker_preview: None,
+            notes_picker_pending_delete: None,
+            notes_picker_status: None,
+            notes_picker_last_copied: None,
+            notes_picker_copy_unsent: false,
             notes_index: crate::notes::NotesIndexCache::default(),
             notes_index_rx: None,
             notes_index_inflight_anchor: None,
@@ -4887,6 +4923,8 @@ impl PlexiApp {
         if reset_query {
             self.notes_picker_selected = 0;
             self.notes_picker_query.clear();
+            self.notes_picker_pending_delete = None;
+            self.notes_picker_status = None;
             return;
         }
         let filtered = self.notes_picker_filtered();
@@ -5509,10 +5547,13 @@ pub(crate) fn restore_workspace(
                         });
                     let is_active_top_context =
                         saved_win.context_id == initial_active_ctx_id && ctx_depth == 0;
-                    let should_auto_resume =
-                        matches!(restore_mode, config::AgentRestoreMode::Eager)
+                    let finished_script = effective_session
+                        .as_ref()
+                        .is_some_and(is_finished_script_session);
+                    let should_auto_resume = !finished_script
+                        && (matches!(restore_mode, config::AgentRestoreMode::Eager)
                             || (matches!(restore_mode, config::AgentRestoreMode::Lazy)
-                                && is_active_top_context);
+                                && is_active_top_context));
 
                     let context_env = crate::pane_ops::create::PaneContextEnv {
                         context_id: saved_win.context_id,
@@ -5605,7 +5646,7 @@ pub(crate) fn restore_workspace(
                             }
                         }
                     }
-                    let standby_resume_command = (!should_auto_resume)
+                    let standby_resume_command = (!should_auto_resume && !finished_script)
                         .then(|| {
                             effective_session.as_ref().and_then(|session| {
                                 crate::cli::AgentHarness::parse(&session.harness).map(|harness| {
