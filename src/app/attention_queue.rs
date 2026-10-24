@@ -421,30 +421,84 @@ impl PlexiApp {
         });
     }
 
-    pub(crate) fn describe_pane_for_queue(&self, pane_id: u64) -> (u64, String, String) {
-        if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
-            let win = &self.windows[win_idx];
-            let ctx_id = win.context_id;
-            let pane_name = win
-                .panes
-                .get(&pane_id)
-                .and_then(|p| {
-                    p.as_terminal()
-                        .and_then(|t| t.name.as_deref())
-                        .or_else(|| p.as_app().map(|a| a.name.as_str()))
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| format!("pane-{pane_id}"));
+    pub(crate) fn focused_or_first_pane_in_context(&self, context_id: u64) -> Option<u64> {
+        let win = self.windows.iter().find(|w| w.context_id == context_id)?;
+        if let Some(tile) = win.focused_pane {
+            let pane_tile = match win.tree.tiles.get(tile) {
+                Some(egui_tiles::Tile::Pane(_)) => Some(tile),
+                Some(egui_tiles::Tile::Container(_)) => win.find_first_pane_in(tile),
+                None => None,
+            };
+            if let Some(pt) = pane_tile {
+                if let Some(egui_tiles::Tile::Pane(pid)) = win.tree.tiles.get(pt) {
+                    return Some(*pid);
+                }
+            }
+        }
+        win.panes.keys().min().copied()
+    }
+
+    /// Resolve `(context_id, pane_id, pane_name, context_path)` for a queue item
+    /// from its optional pane and context bindings, without drifting with the
+    /// currently focused window when either binding is known.
+    pub(crate) fn resolve_queue_item_origin(
+        &self,
+        explicit_pane_id: Option<u64>,
+        explicit_context_id: Option<u64>,
+    ) -> (u64, u64, String, String) {
+        let valid_ctx = explicit_context_id.filter(|&cid| {
+            cid != 0 && self.router.as_slice().iter().any(|c| c.context_id == cid)
+        });
+        let valid_pane = explicit_pane_id.filter(|&pid| pid != 0);
+
+        if let Some(pid) = valid_pane {
+            if let Some((win_idx, _)) = self.find_pane_in_any_window(pid) {
+                let win = &self.windows[win_idx];
+                let ctx_id = win.context_id;
+                let pane_name = win
+                    .panes
+                    .get(&pid)
+                    .and_then(|p| {
+                        p.as_terminal()
+                            .and_then(|t| t.name.as_deref())
+                            .or_else(|| p.as_app().map(|a| a.name.as_str()))
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| format!("pane-{pid}"));
+                let ctx_path = self.context_breadcrumb_string(ctx_id);
+                return (ctx_id, pid, pane_name, ctx_path);
+            }
+            let ctx_id = valid_ctx.unwrap_or_else(|| self.router.active().context_id);
             let ctx_path = self.context_breadcrumb_string(ctx_id);
-            (ctx_id, pane_name, ctx_path)
+            return (ctx_id, pid, format!("pane-{pid}"), ctx_path);
+        }
+
+        if let Some(ctx_id) = valid_ctx {
+            if let Some(pid) = self.focused_or_first_pane_in_context(ctx_id) {
+                let (_, _, pane_name, _) = self.resolve_queue_item_origin(Some(pid), Some(ctx_id));
+                let ctx_path = self.context_breadcrumb_string(ctx_id);
+                return (ctx_id, pid, pane_name, ctx_path);
+            }
+            let ctx_path = self.context_breadcrumb_string(ctx_id);
+            return (ctx_id, 1, "pane-1".to_string(), ctx_path);
+        }
+
+        let fallback_pane = self.active_focused_pane_id().unwrap_or(1);
+        if let Some((win_idx, _)) = self.find_pane_in_any_window(fallback_pane) {
+            let ctx_id = self.windows[win_idx].context_id;
+            let (_, _, pane_name, ctx_path) =
+                self.resolve_queue_item_origin(Some(fallback_pane), Some(ctx_id));
+            (ctx_id, fallback_pane, pane_name, ctx_path)
         } else {
             let ctx_id = self.router.active().context_id;
-            (
-                ctx_id,
-                format!("pane-{pane_id}"),
-                self.context_breadcrumb_string(ctx_id),
-            )
+            let ctx_path = self.context_breadcrumb_string(ctx_id);
+            (ctx_id, fallback_pane, format!("pane-{fallback_pane}"), ctx_path)
         }
+    }
+
+    pub(crate) fn describe_pane_for_queue(&self, pane_id: u64) -> (u64, String, String) {
+        let (ctx_id, _, pane_name, ctx_path) = self.resolve_queue_item_origin(Some(pane_id), None);
+        (ctx_id, pane_name, ctx_path)
     }
 
     pub fn context_breadcrumb_string(&self, context_id: u64) -> String {
@@ -499,6 +553,16 @@ impl PlexiApp {
                 continue;
             }
             let mut b = item.clone();
+            if b.context_id == 0 || !live_context_ids.contains(&b.context_id) {
+                let (ctx_id, pane_id, pane_name, _) =
+                    self.resolve_queue_item_origin((b.pane_id != 0).then_some(b.pane_id), None);
+                b.context_id = ctx_id;
+                b.pane_id = pane_id;
+                if b.pane_name.is_empty() {
+                    b.pane_name = pane_name;
+                }
+            }
+            b.context_path = self.context_breadcrumb_string(b.context_id);
             b.locked = false;
             seen_ids.insert(b.id.clone());
             bars.push(b);
@@ -512,14 +576,30 @@ impl PlexiApp {
             {
                 continue;
             }
-            let pane_id = pending
+            let explicit_ctx = pending
+                .context_id
+                .filter(|&id| id != 0 && live_context_ids.contains(&id));
+            let explicit_pane = pending
                 .actor_id
                 .strip_prefix("pane:")
                 .and_then(|s| s.parse::<u64>().ok())
-                .or(pending.instance_id)
-                .or_else(|| self.active_focused_pane_id())
-                .unwrap_or(1);
-            let (context_id, pane_name, context_path) = self.describe_pane_for_queue(pane_id);
+                .or_else(|| {
+                    pending
+                        .resource_id
+                        .as_deref()
+                        .and_then(|s| s.strip_prefix("pane:"))
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+                .or_else(|| {
+                    pending.instance_id.filter(|&pid| {
+                        pid != 0
+                            && self.find_pane_in_any_window(pid).is_some_and(|(wi, _)| {
+                                explicit_ctx.is_none_or(|cid| self.windows[wi].context_id == cid)
+                            })
+                    })
+                });
+            let (context_id, pane_id, pane_name, context_path) =
+                self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let created_ms = 500_000 + p_idx as u64;
             let cmd_text = if pending.input_summary.is_empty() || pending.input_summary == "{}" {
                 pending.tool.clone()
@@ -532,7 +612,7 @@ impl PlexiApp {
                 category: QueueCategory::Ask,
                 pane_id,
                 pane_name,
-                context_id: pending.context_id.unwrap_or(context_id),
+                context_id,
                 context_path,
                 summary: format!(
                     "{} wants to use {}",
@@ -554,18 +634,34 @@ impl PlexiApp {
             {
                 continue;
             }
-            let pane_id = item
+            let explicit_pane = item
                 .details
                 .as_ref()
                 .and_then(|d| d.pane_id)
+                .filter(|&id| id != 0)
                 .or_else(|| {
                     item.actor
                         .strip_prefix("pane:")
                         .and_then(|s| s.parse::<u64>().ok())
                 })
-                .or_else(|| self.active_focused_pane_id())
-                .unwrap_or(1);
-            let (context_id, pane_name, context_path) = self.describe_pane_for_queue(pane_id);
+                .or_else(|| {
+                    item.resource
+                        .strip_prefix("pane:")
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+                .or_else(|| {
+                    item.run_tag
+                        .as_deref()
+                        .and_then(|s| s.strip_prefix("pane:"))
+                        .and_then(|s| s.parse::<u64>().ok())
+                });
+            let explicit_ctx = item
+                .details
+                .as_ref()
+                .and_then(|d| d.context_id)
+                .filter(|&id| id != 0);
+            let (context_id, pane_id, pane_name, context_path) =
+                self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let category = if item.kind == NeedsYouKind::AgentDone {
                 QueueCategory::Done
             } else if item.kind == NeedsYouKind::Integrity {
@@ -647,21 +743,10 @@ impl PlexiApp {
                 continue;
             }
             let src_pane = notif.agent_source_pane();
-            let pane_id = if src_pane != 0 {
-                src_pane
-            } else {
-                self.active_focused_pane_id().unwrap_or(1)
-            };
-            let (context_id, pane_name, context_path) = if notif.source_context_id != 0 {
-                let (_, pname, _) = self.describe_pane_for_queue(pane_id);
-                (
-                    notif.source_context_id,
-                    pname,
-                    self.context_breadcrumb_string(notif.source_context_id),
-                )
-            } else {
-                self.describe_pane_for_queue(pane_id)
-            };
+            let explicit_pane = (src_pane != 0).then_some(src_pane);
+            let explicit_ctx = (notif.source_context_id != 0).then_some(notif.source_context_id);
+            let (context_id, pane_id, pane_name, context_path) =
+                self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let is_ask = notif.required
                 || !notif.options.is_empty()
                 || notif.input_prompt.is_some()
@@ -1891,5 +1976,88 @@ trait InputViewportRect {
 impl InputViewportRect for egui::InputState {
     fn Viewport_rect(&self) -> Rect {
         self.content_rect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
+    use crate::testing::HostHarness;
+
+    #[test]
+    fn per_context_ask_count_matches_queue_labels_and_sidebar_badge() {
+        let mut h = HostHarness::new();
+        let ctx_alpha = h.app.router.active().context_id;
+        h.app.rename_context(0, "ctx-alpha");
+        let a1 = h.add_test_pane();
+        let a2 = h.add_test_pane();
+        let a3 = h.add_test_pane();
+        if let Some(p) = h.app.windows[0].panes.get_mut(&a1).and_then(|p| p.as_terminal_mut()) {
+            p.name = Some("a1".to_string());
+        }
+        if let Some(p) = h.app.windows[0].panes.get_mut(&a2).and_then(|p| p.as_terminal_mut()) {
+            p.name = Some("a2".to_string());
+        }
+        if let Some(p) = h.app.windows[0].panes.get_mut(&a3).and_then(|p| p.as_terminal_mut()) {
+            p.name = Some("a3".to_string());
+        }
+
+        let ctx_beta = h.app.create_context_without_pty("ctx-beta", None);
+        let beta_idx = h.app.router.active_idx();
+        let pane_5 = h.add_test_pane();
+        h.app.set_context_columns(ctx_beta, vec![vec![pane_5]]);
+
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::Question,
+                actor: "claude-code".to_string(),
+                resource: format!("pane:{a3}"),
+                summary: "claude-code is blocked".to_string(),
+                expires_at: None,
+                run_tag: Some(format!("pane:{a3}")),
+            })
+            .unwrap();
+        monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::Question,
+                actor: "codex".to_string(),
+                resource: format!("pane:{pane_5}"),
+                summary: "codex is blocked".to_string(),
+                expires_at: None,
+                run_tag: Some(format!("pane:{pane_5}")),
+            })
+            .unwrap();
+
+        h.app.enqueue_ask("ask-a2", a2, "cargo test", 1_000, Vec::new());
+        h.app
+            .enqueue_ask("ask-pane5-2", pane_5, "git push", 2_000, Vec::new());
+
+        for focus_idx in [beta_idx, 0] {
+            h.app.switch_workspace(focus_idx);
+            h.app.sync_attention_queue();
+
+            for (cid, label) in [(ctx_alpha, "ctx-alpha"), (ctx_beta, "ctx-beta")] {
+                let count = h.app.attention_queue.ask_count_for_context(cid);
+                let label_count = h
+                    .app
+                    .attention_queue
+                    .items
+                    .iter()
+                    .filter(|b| b.category == QueueCategory::Ask && b.context_path == label)
+                    .count();
+                assert_eq!(count, 2, "expected 2 asks in {label}");
+                assert_eq!(
+                    count, label_count,
+                    "ask_count_for_context({label}) must equal ask bars labeled {label}"
+                );
+                assert_eq!(
+                    h.app.sidebar_context_badge_count(cid),
+                    count,
+                    "sidebar badge for {label} must use ask_count_for_context"
+                );
+            }
+        }
     }
 }

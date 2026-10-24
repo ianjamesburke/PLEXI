@@ -373,6 +373,8 @@ impl PlexiApp {
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
+        self.sync_attention_queue();
+
         // Build display order: top-level contexts only. Subcontexts never appear
         // in the sidebar — they are reached from inside their parent via its
         // Portal tile — so they are never enumerated, numbered, or rendered.
@@ -468,11 +470,7 @@ impl PlexiApp {
 
                     // --- Normal row via SidebarRow ---
                     let ctx_name = self.router.get(i).name.to_string();
-                    let badge_count = if is_active {
-                        self.visible_notification_count()
-                    } else {
-                        self.context_notification_count(i)
-                    };
+                    let badge_count = self.sidebar_context_badge_count(ctx_id);
                     let subtitle = Some(self.router.get(i).root.display().to_string());
                     let indicator_color = self.sidebar_context_indicator_color(ctx_id);
 
@@ -882,6 +880,10 @@ impl PlexiApp {
         if add_clicked {
             self.new_context();
         }
+    }
+
+    pub(crate) fn sidebar_context_badge_count(&self, ctx_id: u64) -> usize {
+        self.attention_queue.ask_count_for_context(ctx_id)
     }
 }
 
