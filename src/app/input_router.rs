@@ -121,23 +121,6 @@ impl PlexiInput {
         })
     }
 
-    /// Whether a pressed key event carries the requested modifiers. Prefer
-    /// this for app shortcuts because the frame modifier snapshot can lag a
-    /// quick key chord by one frame.
-    pub(crate) fn key_pressed_with_modifiers(
-        &self,
-        modifiers: egui::Modifiers,
-        key: egui::Key,
-    ) -> bool {
-        self.events.iter().any(|event| {
-            matches!(
-                event,
-                egui::Event::Key { key: event_key, pressed: true, modifiers: event_modifiers, .. }
-                    if *event_key == key && event_modifiers.matches_logically(modifiers)
-            )
-        })
-    }
-
     /// True when the buffer holds no more input-intent events (everything was
     /// claimed by a consumer this frame, or none arrived).
     pub(crate) fn is_empty(&self) -> bool {

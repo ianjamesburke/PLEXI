@@ -2051,25 +2051,28 @@ impl App for TextEditorApp {
         // Link commands (Markdown only). Ctrl-based: the host reserves most
         // Cmd single-letter combos (see src/host/keys.rs header).
         if self.mode.is_markdown() {
+            let ctrl = input
+                .modifiers()
+                .matches_logically(egui::Modifiers::CTRL);
+            let ctrl_shift = input
+                .modifiers()
+                .matches_logically(egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
             // Ctrl+K: create link around selection / edit link at caret.
-            if input.key_pressed_with_modifiers(egui::Modifiers::CTRL, egui::Key::K) {
+            if input.key_pressed(egui::Key::K) && ctrl {
                 self.create_or_edit_link();
                 return KeyDisposition::Consumed;
             }
             // Ctrl+L / Ctrl+Shift+L: focus next / previous link.
-            if input.key_pressed_with_modifiers(
-                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
-                egui::Key::L,
-            ) {
+            if input.key_pressed(egui::Key::L) && ctrl_shift {
                 self.focus_visible_link(false);
                 return KeyDisposition::Consumed;
             }
-            if input.key_pressed_with_modifiers(egui::Modifiers::CTRL, egui::Key::L) {
+            if input.key_pressed(egui::Key::L) && ctrl {
                 self.focus_visible_link(true);
                 return KeyDisposition::Consumed;
             }
             // Ctrl+Enter: activate the link at the caret.
-            if input.key_pressed_with_modifiers(egui::Modifiers::CTRL, egui::Key::Enter) {
+            if input.key_pressed(egui::Key::Enter) && ctrl {
                 self.activate_link_at_caret();
                 return KeyDisposition::Consumed;
             }
