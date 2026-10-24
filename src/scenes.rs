@@ -242,6 +242,11 @@ pub struct Scene {
     /// Use for scenes that spawn real app processes or need wall-clock time.
     #[serde(default = "default_true")]
     pub suite: bool,
+    /// When true, `scene_suite` runs this scene only on macOS. Use for chords
+    /// that rely on Cmd and Ctrl being distinct modifiers: egui folds Cmd into
+    /// Ctrl elsewhere, so e.g. Ctrl+L collides with the Cmd+L host binding.
+    #[serde(default)]
+    pub macos_only: bool,
     /// Scripted file-picker outcomes (stint 0508), consumed in order by
     /// `OpenFilePicker` requests from apps this scene opens. Each entry is
     /// `{ paths = ["..."] }` or `{ cancel = true }`; a literal `{out}` prefix
@@ -3459,6 +3464,13 @@ mod tests {
                 toml::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             if !scene.suite {
                 println!("scene_suite: skipping {} (suite = false)", path.display());
+                continue;
+            }
+            if scene.macos_only && !cfg!(target_os = "macos") {
+                println!(
+                    "scene_suite: skipping {} (macos_only = true)",
+                    path.display()
+                );
                 continue;
             }
             let report = run_scene(&path, &out, false);

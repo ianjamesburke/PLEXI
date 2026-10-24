@@ -560,70 +560,91 @@ fn navigate_left_at_horizontal_boundary_still_page_navigates() {
 
 #[test]
 fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
+    // Tile ids are regenerated whenever the host layout is reconciled, so this
+    // scenario tracks panes by PaneId rather than by TileId.
+    fn zoomed_pane_id(h: &HostHarness) -> Option<PaneId> {
+        let win = &h.app.windows[0];
+        let tile = win.zoomed_pane?;
+        match win.tree.tiles.get(tile) {
+            Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+            _ => None,
+        }
+    }
+
     let mut h = HostHarness::new();
     let first = h.add_test_pane();
     h.focus_pane(first).run_frames(1);
+    // The navigation source panes are terminals: app panes such as the file
+    // browser own some Cmd+<letter> chords themselves before the host sees them.
     let second = h
         .app
+        .split_focused(true, None, false, false, None)
+        .expect("side-by-side split must create a neighboring column");
+    h.run_frames(2).focus_pane(second);
+    let third = h
+        .app
         .split_focused(false, None, false, false, None)
-        .expect("split must create a neighboring pane");
-    h.run_frames(2).focus_pane(first);
+        .expect("stacked split must create a pane below in the column");
+    h.run_frames(2);
+    let ctx = h.app.router.active().context_id;
+    h.app
+        .set_context_columns(ctx, vec![vec![first], vec![second, third]]);
+    h.run_frames(2).focus_pane(second);
 
-    let first_tile = h.app.windows[0]
-        .tree
-        .tiles
-        .find_pane(&first)
-        .expect("first pane must have a tile");
-    let second_tile = h.app.windows[0]
-        .tree
-        .tiles
-        .find_pane(&second)
-        .expect("second pane must have a tile");
+    // On non-macOS egui folds Cmd into Ctrl, so the default Cmd+H/J/K/L
+    // navigation chords are identical to the Cmd+Ctrl+H/J/K/L pane-swap chords
+    // and the earlier swap entries claim them. Drop the swap entries so this
+    // test exercises navigation on every platform.
+    h.app
+        .binding_table
+        .retain(|b| !matches!(b.action, crate::host::keys::Action::SwapPane(_)));
 
     let toggle_zoom_mods = egui::Modifiers {
         command: true,
         shift: true,
         ..Default::default()
     };
-    h.press_key(egui::Key::Enter, toggle_zoom_mods);
-    assert_eq!(h.app.windows[0].zoomed_pane, Some(first_tile));
 
-    h.press_key(egui::Key::L, egui::Modifiers::COMMAND);
-    assert_eq!(h.app.windows[0].focused_pane, Some(second_tile));
+    // Down inside the column succeeds: focus moves and zoom exits.
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(second));
+    h.press_key(egui::Key::J, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(third));
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
-        "moving within a page must exit zoom"
+        "moving within a column must exit zoom"
     );
 
-    let third = h
-        .app
-        .split_focused(true, None, false, false, None)
-        .expect("vertical split must create a stacked pane in column");
-    h.run_frames(2).focus_pane(second);
-    let third_tile = h.app.windows[0]
-        .tree
-        .tiles
-        .find_pane(&third)
-        .expect("third pane must have a tile");
-
-    // The vertical split re-parents `second`, so look its tile up again.
-    let second_tile = h.app.windows[0]
-        .tree
-        .tiles
-        .find_pane(&second)
-        .expect("second pane must keep a tile after the split");
+    // Up from the lower pane succeeds and must not restore a stale zoom.
     h.press_key(egui::Key::Enter, toggle_zoom_mods);
-    assert_eq!(h.app.windows[0].zoomed_pane, Some(second_tile));
-    h.press_key(egui::Key::J, egui::Modifiers::COMMAND);
-    assert_eq!(h.app.windows[0].focused_pane, Some(third_tile));
-    assert!(h.app.windows[0].zoomed_pane.is_none());
-
-    h.run_frames(3);
+    assert_eq!(zoomed_pane_id(&h), Some(third));
     h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
-    assert_eq!(h.app.windows[0].focused_pane, Some(second_tile));
+    assert_eq!(h.app.active_focused_pane_id(), Some(second));
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
         "returning to the upper pane must not restore stale zoom"
+    );
+
+    // Left across columns succeeds and exits zoom.
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(second));
+    h.press_key(egui::Key::H, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(first));
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "moving to another column must exit zoom"
+    );
+
+    // Up at the top of the column is a boundary no-op that preserves zoom.
+    h.focus_pane(second);
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(second));
+    h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(second));
+    assert_eq!(
+        zoomed_pane_id(&h),
+        Some(second),
+        "a failed directional move must keep zoom"
     );
 
     let mut boundary = HostHarness::new();

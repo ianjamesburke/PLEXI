@@ -1,6 +1,8 @@
 # Markdown + wiki links in the notes editor (stint 0477): link targets are
 # reported through semantic state, Ctrl+L / Ctrl+Shift+L walk the visible
 # links (selecting each span), and ordinary editing never activates links.
+# macOS only: Ctrl+L is distinct from the Cmd+L host binding only on macOS.
+macos_only = true
 size = [1000.0, 700.0]
 
 [[steps]]
