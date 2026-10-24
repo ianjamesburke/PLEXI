@@ -134,6 +134,33 @@ pub(crate) fn strip_shares(ratios: &[f32], lo: usize, gap: f32, canvas_width: f3
         .collect()
 }
 
+/// Geometry of the left and right `STRIP_PEEK_W` clipped-neighbor strips at
+/// `ZoomLevel::Columns`. Matches the top and bottom `y` of `frame_outer` (the
+/// focused pane's outer focus-frame rect, falling back to `canvas_rect` when
+/// absent) and clamps horizontally to `canvas_rect` so the strips never leave
+/// the tree canvas.
+pub(crate) fn peek_strip_rects(
+    canvas_rect: Rect,
+    frame_outer: Option<Rect>,
+    has_left: bool,
+    has_right: bool,
+) -> (Option<Rect>, Option<Rect>) {
+    let (top, bottom) = match frame_outer {
+        Some(frame) => (frame.min.y, frame.max.y),
+        None => (canvas_rect.min.y, canvas_rect.max.y),
+    };
+    let clamp_x = |min_x: f32, max_x: f32| -> Rect {
+        let x0 = min_x.clamp(canvas_rect.min.x, canvas_rect.max.x);
+        let x1 = max_x.clamp(x0, canvas_rect.max.x);
+        Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x1, bottom))
+    };
+    let left =
+        has_left.then(|| clamp_x(canvas_rect.min.x, canvas_rect.min.x + style::STRIP_PEEK_W));
+    let right =
+        has_right.then(|| clamp_x(canvas_rect.max.x - style::STRIP_PEEK_W, canvas_rect.max.x));
+    (left, right)
+}
+
 /// A positioned context node in the Tree Atlas.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1902,46 +1929,25 @@ impl PlexiApp {
     pub(crate) fn paint_clipped_neighbor_edges(
         painter: &egui::Painter,
         canvas_rect: Rect,
+        frame_outer: Option<Rect>,
         has_left: bool,
         has_right: bool,
         colors: crate::ui::theme::Colors,
     ) {
-        if has_left {
-            let left_strip = Rect::from_min_size(
-                canvas_rect.min,
-                Vec2::new(style::STRIP_PEEK_W, canvas_rect.height()),
-            );
-            painter.rect_filled(left_strip, style::RADIUS_SM, colors.depth_tint(1));
+        let (left, right) = peek_strip_rects(canvas_rect, frame_outer, has_left, has_right);
+        for (strip, glyph) in [(left, "‹"), (right, "›")] {
+            let Some(strip) = strip else { continue };
+            painter.rect_filled(strip, style::RADIUS_MOTORWAYS, colors.depth_tint(1));
             painter.rect_stroke(
-                left_strip,
-                style::RADIUS_SM,
+                strip,
+                style::RADIUS_MOTORWAYS,
                 Stroke::new(1.0_f32, colors.border),
                 egui::StrokeKind::Inside,
             );
             painter.text(
-                left_strip.center(),
+                strip.center(),
                 Align2::CENTER_CENTER,
-                "‹",
-                FontId::new(style::TEXT_BODY, FontFamily::Proportional),
-                colors.text_dim,
-            );
-        }
-        if has_right {
-            let right_strip = Rect::from_min_size(
-                Pos2::new(canvas_rect.max.x - style::STRIP_PEEK_W, canvas_rect.min.y),
-                Vec2::new(style::STRIP_PEEK_W, canvas_rect.height()),
-            );
-            painter.rect_filled(right_strip, style::RADIUS_SM, colors.depth_tint(1));
-            painter.rect_stroke(
-                right_strip,
-                style::RADIUS_SM,
-                Stroke::new(1.0_f32, colors.border),
-                egui::StrokeKind::Inside,
-            );
-            painter.text(
-                right_strip.center(),
-                Align2::CENTER_CENTER,
-                "›",
+                glyph,
                 FontId::new(style::TEXT_BODY, FontFamily::Proportional),
                 colors.text_dim,
             );
@@ -2509,5 +2515,54 @@ impl PlexiApp {
             self.zoom.atlas_focused_context = Some(cid);
             self.dive_from_tree_atlas();
         }
+    }
+}
+
+#[cfg(test)]
+mod peek_strip_rect_tests {
+    use super::*;
+
+    #[test]
+    fn peek_strip_rects_align_with_focused_frame_outer_and_stay_clear_of_visible_pane() {
+        let gap = 4.0;
+        let canvas = Rect::from_min_max(Pos2::new(240.0, 42.0), Pos2::new(1240.0, 796.0));
+        let visible_pane = Rect::from_min_max(
+            Pos2::new(canvas.min.x + style::STRIP_PEEK_W + gap, 68.0),
+            Pos2::new(canvas.max.x - style::STRIP_PEEK_W - gap, 796.0),
+        );
+        let frame_outer = visible_pane.expand(gap);
+
+        let (left, right) = peek_strip_rects(canvas, Some(frame_outer), true, true);
+        let left = left.expect("left strip");
+        let right = right.expect("right strip");
+
+        for strip in [left, right] {
+            assert_eq!(strip.min.y, frame_outer.min.y);
+            assert_eq!(strip.max.y, frame_outer.max.y);
+            assert!(strip.min.x >= canvas.min.x && strip.max.x <= canvas.max.x);
+            assert_eq!(strip.width(), style::STRIP_PEEK_W);
+            assert!(!strip.intersects(visible_pane));
+        }
+        assert_eq!(left.min.x, canvas.min.x);
+        assert_eq!(right.max.x, canvas.max.x);
+    }
+
+    #[test]
+    fn peek_strip_rects_fall_back_to_canvas_and_clamp_horizontally() {
+        let canvas = Rect::from_min_max(Pos2::new(100.0, 38.0), Pos2::new(900.0, 760.0));
+        let (left, right) = peek_strip_rects(canvas, None, true, false);
+        let left = left.expect("left fallback strip");
+        assert!(right.is_none());
+        assert_eq!(left.min.y, canvas.min.y);
+        assert_eq!(left.max.y, canvas.max.y);
+        assert_eq!(left.min.x, canvas.min.x);
+        assert_eq!(left.max.x, canvas.min.x + style::STRIP_PEEK_W);
+
+        let narrow = Rect::from_min_max(Pos2::new(50.0, 10.0), Pos2::new(62.0, 90.0));
+        let (n_left, n_right) = peek_strip_rects(narrow, None, true, true);
+        let n_left = n_left.expect("narrow left");
+        let n_right = n_right.expect("narrow right");
+        assert!(n_left.min.x >= narrow.min.x && n_left.max.x <= narrow.max.x);
+        assert!(n_right.min.x >= narrow.min.x && n_right.max.x <= narrow.max.x);
     }
 }

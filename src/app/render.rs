@@ -671,7 +671,6 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let canvas_full_rect = ui.available_rect_before_wrap();
                 let (has_left_neighbor, has_right_neighbor) = self.active_strip_clipped_neighbors();
                 let edge_bump_offset = self.zoom.active_edge_bump_offset();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
@@ -682,6 +681,7 @@ impl PlexiApp {
                     child_ui.set_clip_rect(rect);
                     &mut child_ui
                 } else { ui };
+                let canvas_full_rect = ui.available_rect_before_wrap();
                 // After the conjoined parent has claimed its side, so the shares
                 // are sized against the width the tree actually gets.
                 self.sync_strip_tree_shares(Some(ui.available_width()));
@@ -889,9 +889,12 @@ impl PlexiApp {
                 // has the full window clip rect. paint_on_top_of_tile cannot do this —
                 // its painter is clipped to the tile rect, making Outside strokes invisible.
                 if zoomed_pane.is_none() {
+                    let mut focused_frame_outer = None;
                     if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
                             let gap = behavior.pane_gap;
+                            let bumped = rect.translate(edge_bump_offset);
+                            focused_frame_outer = Some(bumped.expand(gap));
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -910,18 +913,17 @@ impl PlexiApp {
                             };
                             let stroke = egui::Stroke::new(gap, stroke_color);
                             focus_painter.rect_stroke(
-                                rect.translate(edge_bump_offset),
+                                bumped,
                                 crate::ui::style::RADIUS_MOTORWAYS,
                                 stroke,
                                 egui::StrokeKind::Outside,
                             );
                         }
                     }
-                }
-                if zoomed_pane.is_none() {
                     crate::app::PlexiApp::paint_clipped_neighbor_edges(
                         &focus_painter,
                         canvas_full_rect,
+                        focused_frame_outer,
                         has_left_neighbor,
                         has_right_neighbor,
                         self.colors,
