@@ -1045,7 +1045,7 @@ fn render_node(
                         let bar_idx = ui.painter().add(egui::Shape::Noop);
                         let inner_resp = egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(8, 6))
-                            .corner_radius(4.0)
+                            .corner_radius(style::RADIUS_SMALL)
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
                                 if selected {
@@ -1063,7 +1063,7 @@ fn render_node(
                                 bg_idx,
                                 egui::Shape::rect_filled(
                                     row_rect,
-                                    4.0,
+                                    crate::ui::style::radius_fit(row_rect),
                                     colors.accent.gamma_multiply(0.18),
                                 ),
                             );
@@ -1073,12 +1073,12 @@ fn render_node(
                             );
                             ui.painter().set(
                                 bar_idx,
-                                egui::Shape::rect_filled(bar_rect, 1.5, colors.accent),
+                                egui::Shape::rect_filled(bar_rect, crate::ui::style::radius_fit(bar_rect), colors.accent),
                             );
                         } else if resp.hovered() && has_on_select {
                             ui.painter().set(
                                 bg_idx,
-                                egui::Shape::rect_filled(row_rect, 4.0, colors.bg_hover),
+                                egui::Shape::rect_filled(row_rect, crate::ui::style::radius_fit(row_rect), colors.bg_hover),
                             );
                         }
                         let list_clicked = i == 0 && node_click_matches(pending_click, id);

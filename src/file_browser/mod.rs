@@ -2024,7 +2024,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2092,7 +2092,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2136,7 +2136,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -2161,7 +2161,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(

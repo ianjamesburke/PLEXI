@@ -566,9 +566,9 @@ fn paint_state_icon(p: &Painter, c: Pos2, state: CardState, colors: &Colors, tim
             let on = (time * 1.6).fract() < 0.6;
             let r = Rect::from_center_size(c, Vec2::new(6.0, 10.0));
             if on {
-                p.rect_filled(r, 1.0, col);
+                p.rect_filled(r, crate::ui::style::radius_fit(r), col);
             } else {
-                p.rect_stroke(r, 1.0, Stroke::new(1.0_f32, col), egui::StrokeKind::Inside);
+                p.rect_stroke(r, crate::ui::style::radius_fit(r), Stroke::new(1.0_f32, col), egui::StrokeKind::Inside);
             }
         }
         CardState::Done => {

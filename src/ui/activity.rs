@@ -318,7 +318,7 @@ pub fn paint_attention_chrome(
     schedule_attention(painter.ctx(), visual);
     painter.rect_stroke(
         rect.shrink(1.0),
-        2.0,
+        crate::ui::style::radius_fit(rect.shrink(1.0)),
         egui::Stroke::new(visual.stroke, color.gamma_multiply(visual.alpha)),
         egui::StrokeKind::Inside,
     );

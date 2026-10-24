@@ -1627,7 +1627,7 @@ impl<'a> EditorWidget<'a> {
                             );
                             painter.rect_stroke(
                                 strip_rect,
-                                2.0,
+                                egui::CornerRadius::same((strip_rect.width().min(strip_rect.height()) * 0.25).round() as u8),
                                 egui::Stroke::new(1.0_f32, weak),
                                 egui::StrokeKind::Inside,
                             );

@@ -97,7 +97,7 @@ impl PlexiApp {
                             let cell = egui::vec2(10.0 * scale, 10.0 * scale);
                             let s1 = 5.0 * scale;
                             let s2 = 17.0 * scale;
-                            let rx = egui::CornerRadius::same((1.5 * scale).round() as u8);
+                            let rx = crate::ui::style::radius_frac(scale, 1.5);
                             let outline =
                                 Stroke::new(0.9 * scale, egui::Color32::from_rgb(0xe4, 0xe4, 0xe7));
                             let purple = egui::Color32::from_rgb(0x3b, 0x07, 0x64);

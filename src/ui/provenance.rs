@@ -88,7 +88,7 @@ pub(crate) fn paint_provenance_icon(
             );
             painter.rect_stroke(
                 head,
-                CornerRadius::same((s * 0.2) as u8),
+                crate::ui::style::radius_frac(s, 0.2),
                 stroke,
                 egui::StrokeKind::Inside,
             );
@@ -103,7 +103,7 @@ pub(crate) fn paint_provenance_icon(
         ProvenanceKind::System => {
             painter.rect_stroke(
                 rect.shrink(s * 0.12),
-                CornerRadius::same((s * 0.15) as u8),
+                crate::ui::style::radius_frac(s, 0.15),
                 stroke,
                 egui::StrokeKind::Inside,
             );

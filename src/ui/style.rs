@@ -45,25 +45,44 @@ pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
                                      // user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
-pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.
-pub const RADIUS_MD: CornerRadius = CornerRadius::same(8);
-pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
-/// Motorways flat style corner radius (14px) for panes, cards, atlas nodes, and overlays.
-pub const RADIUS_MOTORWAYS: CornerRadius = CornerRadius::same(14);
-/// Bar / option row / code block radius (10px).
-pub const RADIUS_BAR: CornerRadius = CornerRadius::same(10);
+// ONE scale: small / medium / large / pill. No literal corner radii outside
+// this file (guarded by `radius_guard_tests`). Pick the step by element size.
+/// Chips, badges, key chips, inline widgets, inputs, small buttons.
+pub const RADIUS_SMALL: CornerRadius = CornerRadius::same(6);
+/// Option rows, bars, code blocks, cards inside panels.
+pub const RADIUS_MEDIUM: CornerRadius = CornerRadius::same(10);
+/// Pane frames, cards, atlas nodes, modals, overlays.
+pub const RADIUS_LARGE: CornerRadius = CornerRadius::same(14);
+/// Capsules and pills.
+pub const RADIUS_PILL: CornerRadius = CornerRadius::same(99);
+// Aliases kept for existing call sites; each maps onto one of the four steps.
+pub const RADIUS_SM: CornerRadius = RADIUS_SMALL;
+pub const RADIUS_MD: CornerRadius = RADIUS_MEDIUM;
+pub const RADIUS_LG: CornerRadius = RADIUS_LARGE;
+pub const RADIUS_MOTORWAYS: CornerRadius = RADIUS_LARGE;
+pub const RADIUS_BAR: CornerRadius = RADIUS_MEDIUM;
+/// Badge radius as f32 (`Frame::corner_radius` / `rect_filled` accept it).
+/// Keep in sync with RADIUS_BADGE in plexi_sdk/ui.py.
+pub const RADIUS_BADGE: f32 = 6.0;
+
+/// Radius that is a fraction of a shape's own size (glyph-like geometry such
+/// as icons and logos, where a fixed step would overwhelm the shape).
+pub fn radius_frac(size: f32, frac: f32) -> CornerRadius {
+    CornerRadius::same((size * frac).round().clamp(0.0, 255.0) as u8)
+}
+
+/// The small step, capped to a quarter of the rect's shorter side so tiny
+/// shapes (icon bands, minimap items) stay proportionate.
+pub fn radius_fit(rect: egui::Rect) -> CornerRadius {
+    let cap = (rect.width().min(rect.height()) * 0.25).round().max(0.0);
+    CornerRadius::same(cap.min(RADIUS_SMALL.nw as f32) as u8)
+}
+
 /// Edge of the square pane-header provenance icon (who spawned the pane).
 pub const PROVENANCE_ICON_SIZE: f32 = 14.0;
 /// Attention chip (path bar, right edge): minimum slot width and horizontal text padding.
 pub const ATTENTION_CHIP_MIN_W: f32 = 64.0;
 pub const ATTENTION_CHIP_PAD_X: f32 = 10.0;
-/// Capsule pill radius (99px).
-pub const RADIUS_PILL: CornerRadius = CornerRadius::same(99);
-// Badge-specific radius. At TEXT_HINT size the pill height is ~17 px;
-// RADIUS_MD (8) is 94% of max-oval — a cliché perfect stadium. 6 gives
-// visible corners while staying clearly rounded. Keep in sync with
-// RADIUS_BADGE in plexi_sdk/ui.py.
-pub const RADIUS_BADGE: f32 = 6.0;
 
 // ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
 pub const PATH_BAR_H: f32 = 34.0;

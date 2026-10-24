@@ -318,7 +318,7 @@ impl PlexiApp {
                                                 .color(self.colors.text_on(self.colors.accent)),
                                         )
                                         .fill(self.colors.accent)
-                                        .corner_radius(egui::CornerRadius::same(4));
+                                        .corner_radius(crate::ui::style::RADIUS_SMALL);
                                         if ui.add(confirm_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                             self.update_quit_pending = true;
@@ -330,7 +330,7 @@ impl PlexiApp {
                                         )
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(Stroke::new(1.0_f32, self.colors.border))
-                                        .corner_radius(egui::CornerRadius::same(4));
+                                        .corner_radius(crate::ui::style::RADIUS_SMALL);
                                         if ui.add(cancel_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                         }
@@ -352,7 +352,7 @@ impl PlexiApp {
                                                     .color(self.colors.text_on(self.colors.accent)),
                                             )
                                             .fill(self.colors.accent)
-                                            .corner_radius(egui::CornerRadius::same(4));
+                                            .corner_radius(crate::ui::style::RADIUS_SMALL);
                                             if ui.add(btn).clicked() {
                                                 self.update_confirm_prompt = true;
                                             }

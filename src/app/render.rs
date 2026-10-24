@@ -982,7 +982,7 @@ impl PlexiApp {
                         // Thicker accent border (2px)
                         ui.painter().rect_stroke(
                             zoom_rect,
-                            CornerRadius::same(4),
+                            crate::ui::style::RADIUS_SMALL,
                             Stroke::new(2.0_f32, self.colors.accent),
                             StrokeKind::Inside,
                         );
@@ -1215,7 +1215,7 @@ impl PlexiApp {
                         };
                         ui.painter().rect_filled(
                             animated_rect,
-                            egui::CornerRadius::same(4),
+                            crate::ui::style::RADIUS_SMALL,
                             self.colors.accent.gamma_multiply(0.25),
                         );
                         crate::platform::frame_diag::note(

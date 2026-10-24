@@ -64,7 +64,7 @@ const PANE_DOT_MAX: usize = 8;
 const WINDOW_GROUP_PAD_X: f32 = 7.0;
 const WINDOW_GROUP_PAD_Y: f32 = 6.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
-const WINDOW_GROUP_RADIUS: CornerRadius = CornerRadius::same(4);
+const WINDOW_GROUP_RADIUS: CornerRadius = crate::ui::style::RADIUS_SMALL;
 /// Width reserved for the "+N" label when the pane count exceeds the cap.
 const PIP_OVERFLOW_W: f32 = 20.0;
 const GROUP_STROKE_W: f32 = 1.0;

@@ -56,7 +56,7 @@ pub(crate) fn key_chip(
     let size = chip_size(text_size);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
+    painter.rect_filled(rect, crate::ui::style::RADIUS_SMALL, colors.bg_active);
     let text_pos = Pos2::new(
         rect.center().x - text_size.x / 2.0,
         rect.center().y - text_size.y / 2.0,
@@ -195,7 +195,7 @@ pub(crate) fn key_chip_painted(
     let size = chip_size(galley.size());
     let rect = egui::Rect::from_min_size(Pos2::new(left, center_y - size.y / 2.0), size);
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
+    painter.rect_filled(rect, crate::ui::style::RADIUS_SMALL, colors.bg_active);
     let text_pos = Pos2::new(
         rect.center().x - text_w / 2.0,
         rect.min.y + style::KEYCHIP_PAD_V,

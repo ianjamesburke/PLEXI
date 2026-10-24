@@ -15,7 +15,7 @@ pub(crate) mod ui_gallery;
 use crate::app::PlexiApp;
 
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
-pub(crate) const R6: CornerRadius = CornerRadius::same(6);
+pub(crate) const R6: CornerRadius = crate::ui::style::RADIUS_SMALL;
 
 /// Show a native folder picker through the shared `PickerService` seam.
 /// Blocks the calling (background) thread; must NOT be called on the main thread.

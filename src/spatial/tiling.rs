@@ -286,7 +286,7 @@ pub(crate) fn paint_tab_bar(
                 egui::pos2(x, bar_rect.center().y),
                 egui::vec2(3.0, TAB_BAR_HEIGHT - 3.0),
             );
-            painter.rect_filled(marker_rect, 1.5, colors.accent);
+            painter.rect_filled(marker_rect, crate::ui::style::radius_fit(marker_rect), colors.accent);
         }
     }
 
@@ -304,10 +304,10 @@ pub(crate) fn paint_tab_bar(
             ),
             egui::vec2(chip_w, chip_h),
         );
-        painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
+        painter.rect_filled(chip_rect, crate::ui::style::RADIUS_SMALL, colors.bg_active);
         painter.rect_stroke(
             chip_rect,
-            egui::CornerRadius::same(3),
+            crate::ui::style::RADIUS_SMALL,
             egui::Stroke::new(1.0_f32, colors.border),
             egui::StrokeKind::Inside,
         );
@@ -1153,12 +1153,12 @@ pub(crate) fn paint_portal_minimap(
             }
 
             // Pane background — solid screen color
-            painter.rect_filled(cell, 2.0, colors.bg_darkest);
+            painter.rect_filled(cell, crate::ui::style::radius_fit(cell), colors.bg_darkest);
 
             // Inactive (exited) panes get a dim overlay
             if !pane.active {
                 let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
-                painter.rect_filled(cell, 2.0, dim_overlay);
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), dim_overlay);
             }
 
             let is_error_cell = !pane.active
@@ -1182,7 +1182,7 @@ pub(crate) fn paint_portal_minimap(
                     esc_col.b(),
                     24,
                 );
-                painter.rect_filled(cell, 2.0, tint);
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
                 let border_col = egui::Color32::from_rgba_unmultiplied(
                     esc_col.r(),
                     esc_col.g(),
@@ -1191,7 +1191,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.25_f32, border_col),
                     egui::StrokeKind::Middle,
                 );
@@ -1202,7 +1202,7 @@ pub(crate) fn paint_portal_minimap(
                     colors.accent.b(),
                     20,
                 );
-                painter.rect_filled(cell, 2.0, tint);
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
 
                 // Bottom-edge glow line
                 let glow_y = cell.max.y - 1.0;
@@ -1229,7 +1229,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.0_f32, accent_border),
                     egui::StrokeKind::Middle,
                 );
@@ -1242,7 +1242,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.0_f32, dim_border),
                     egui::StrokeKind::Middle,
                 );
@@ -1356,7 +1356,7 @@ pub(crate) fn paint_portal_minimap(
                             };
                             painter.rect_filled(
                                 egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq)),
-                                1.0,
+                                crate::ui::style::radius_fit(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq))),
                                 fill,
                             );
                         }
@@ -1473,11 +1473,11 @@ pub(crate) fn paint_portal_minimap(
                                 egui::vec2(mini_w, mini_h),
                             );
                             if r == 1 && c == 1 {
-                                painter.rect_filled(rect, 2.0, accent_fill);
+                                painter.rect_filled(rect, crate::ui::style::radius_fit(rect), accent_fill);
                             } else {
                                 painter.rect_stroke(
                                     rect,
-                                    2.0,
+                                    crate::ui::style::radius_fit(rect),
                                     egui::Stroke::new(1.0_f32, outline_color),
                                     egui::StrokeKind::Inside,
                                 );
