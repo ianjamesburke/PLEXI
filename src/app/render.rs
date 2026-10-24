@@ -672,7 +672,6 @@ impl PlexiApp {
                 }
                 let focus_painter = ui.painter().clone();
                 let canvas_full_rect = ui.available_rect_before_wrap();
-                self.sync_strip_tree_shares();
                 let (has_left_neighbor, has_right_neighbor) = self.active_strip_clipped_neighbors();
                 let edge_bump_offset = self.zoom.active_edge_bump_offset();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
@@ -683,6 +682,9 @@ impl PlexiApp {
                     child_ui.set_clip_rect(rect);
                     &mut child_ui
                 } else { ui };
+                // After the conjoined parent has claimed its side, so the shares
+                // are sized against the width the tree actually gets.
+                self.sync_strip_tree_shares(Some(ui.available_width()));
                 let off_strip_panes = self.zoom.off_strip_panes.clone();
                 let ctx = &mut self.windows[self.active_window];
 

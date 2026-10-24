@@ -89,6 +89,51 @@ pub(crate) struct WindowStrip {
     pub lo: usize,
 }
 
+/// Root `Linear` shares, in pixels, for a strip of `ratios.len()` columns whose
+/// visible pair starts at `lo` (`egui_tiles` normalizes shares by their sum, so
+/// pixel shares reproduce exactly these widths when `canvas_width` is the tree's
+/// width).
+///
+/// With more than two columns, each clipped group (left of `lo`, right of
+/// `lo + 2`) spans `STRIP_PEEK_W` plus the gap to its visible neighbour, slivers
+/// and inter-sliver gaps included, so the peek strip painted over the canvas
+/// edge covers the slivers exactly and the visible pair keeps the rest at preset
+/// ratio. A group of many columns holds a per-sliver floor instead, spilling
+/// past the strip but never into a visible pane.
+pub(crate) fn strip_shares(ratios: &[f32], lo: usize, gap: f32, canvas_width: f32) -> Vec<f32> {
+    let n = ratios.len();
+    if n <= 2 {
+        return ratios.iter().map(|r| r * 2.0).collect();
+    }
+    let left = lo;
+    let right = n - lo - 2;
+    let group_total = |count: usize| -> f32 {
+        if count == 0 {
+            0.0
+        } else {
+            (style::STRIP_PEEK_W + gap - count as f32 * gap)
+                .max(count as f32 * style::STRIP_MIN_SLIVER_W)
+        }
+    };
+    let (left_total, right_total) = (group_total(left), group_total(right));
+    let available = (canvas_width - gap * (n - 1) as f32).max(0.0);
+    let visible_total = (available - left_total - right_total).max(2.0);
+    let ratio_sum = (ratios[lo] + ratios[lo + 1]).max(f32::EPSILON);
+    ratios
+        .iter()
+        .enumerate()
+        .map(|(idx, ratio)| {
+            if idx < lo {
+                left_total / left as f32
+            } else if idx >= lo + 2 {
+                right_total / right as f32
+            } else {
+                (visible_total * ratio / ratio_sum).max(1.0)
+            }
+        })
+        .collect()
+}
+
 /// A positioned context node in the Tree Atlas.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1759,7 +1804,11 @@ impl PlexiApp {
     /// Synchronize the active window's horizontal root `Linear` container shares
     /// with the Niri column strip presets (`35%` parent / `65%` child) and scroll offset,
     /// using only the active window's own columns (see [`Self::active_window_strip`]).
-    pub(crate) fn sync_strip_tree_shares(&mut self) {
+    ///
+    /// Shares are written in pixels of `canvas_width` (the tree's available width)
+    /// so the clipped groups come out exactly `STRIP_PEEK_W` wide. Also records
+    /// which panes are off-strip.
+    pub(crate) fn sync_strip_tree_shares(&mut self, canvas_width: Option<f32>) {
         self.zoom.off_strip_panes.clear();
         if self.zoom.level != ZoomLevel::Columns {
             return;
@@ -1768,9 +1817,15 @@ impl PlexiApp {
             return;
         };
         let n = strip.children.len();
-        let Some(win) = self.windows.get_mut(self.active_window) else {
+        let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
+        let canvas_width = canvas_width
+            .filter(|w| w.is_finite() && *w > 0.0)
+            .unwrap_or(style::STRIP_FALLBACK_CANVAS_W);
+        let Some(win) = self.windows.get(self.active_window) else {
             return;
         };
+
+        let mut off_strip = HashSet::new();
         if n > 2 {
             let mut leaves = Vec::new();
             for (idx, &child) in strip.children.iter().enumerate() {
@@ -1778,28 +1833,32 @@ impl PlexiApp {
                     collect_leaf_panes_in_tile(&win.tree, &win.panes, child, &mut leaves);
                 }
             }
-            self.zoom.off_strip_panes.extend(leaves);
+            off_strip.extend(leaves);
         }
+        self.zoom.off_strip_panes = off_strip;
+
+        let ratios: Vec<f32> = strip
+            .presets
+            .iter()
+            .enumerate()
+            .map(|(idx, preset)| {
+                preset.map(|p| p.ratio()).unwrap_or(if idx == 0 || idx == strip.lo {
+                    style::COLUMN_WIDTH_PARENT
+                } else {
+                    style::COLUMN_WIDTH_CHILD
+                })
+            })
+            .collect();
+        let shares = strip_shares(&ratios, strip.lo, gap, canvas_width);
+
+        let Some(win) = self.windows.get_mut(self.active_window) else {
+            return;
+        };
         let Some(root_id) = win.tree.root() else {
             return;
         };
         if let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get_mut(root_id) {
-            for (idx, child_id) in strip.children.iter().copied().enumerate() {
-                let slot_default = if idx == strip.lo {
-                    style::COLUMN_WIDTH_PARENT
-                } else {
-                    style::COLUMN_WIDTH_CHILD
-                };
-                let ratio = strip.presets[idx]
-                    .map(|p| p.ratio())
-                    .unwrap_or(if idx == 0 { style::COLUMN_WIDTH_PARENT } else { slot_default });
-                let share = if n <= 2 {
-                    ratio * 2.0
-                } else if idx >= strip.lo && idx < strip.lo + 2 {
-                    ratio * (n as f32)
-                } else {
-                    0.06
-                };
+            for (child_id, share) in strip.children.iter().copied().zip(shares) {
                 lin.shares.set_share(child_id, share);
             }
         }
