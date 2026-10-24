@@ -443,6 +443,9 @@ pub struct PlexiBehavior<'a> {
     /// under the peek strip, so they paint a placeholder only: a live view would
     /// resize the PTY to the sliver and reflow its scrollback.
     pub off_strip_panes: HashSet<PaneId>,
+    /// True on a frame the strip layout jumped: terminals commit their new grid
+    /// at once instead of debouncing it like a drag.
+    pub strip_layout_jump: bool,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -629,6 +632,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     self.workspace_root.as_deref(),
                     self.pane_title_font_size,
                     terminal_input,
+                    self.strip_layout_jump,
                 )
             });
             if close_exited {

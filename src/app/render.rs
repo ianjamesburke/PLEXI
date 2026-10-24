@@ -686,6 +686,7 @@ impl PlexiApp {
                 // are sized against the width the tree actually gets.
                 self.sync_strip_tree_shares(Some(ui.available_width()));
                 let off_strip_panes = self.zoom.off_strip_panes.clone();
+                let strip_layout_jump = self.zoom.strip_layout_jump;
                 let ctx = &mut self.windows[self.active_window];
 
                 ctx.reconcile_stale_tiles();
@@ -867,6 +868,7 @@ impl PlexiApp {
                     frame_modifiers: ui.input(|i| i.modifiers),
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes,
+                    strip_layout_jump,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {

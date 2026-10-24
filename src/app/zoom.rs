@@ -208,6 +208,13 @@ pub struct ZoomState {
     pub transition: Option<(f32, f32, Instant)>,
     /// Buffered text/key events typed during a zoom-in flight to `Columns`.
     pub flight_key_buffer: Vec<egui::Event>,
+    /// `(window_id, lo, root children)` of the strip painted last frame; a change
+    /// is a discrete layout jump (see `strip_layout_jump`).
+    pub last_strip_sig: Option<(u64, usize, Vec<TileId>)>,
+    /// True on the frame the active window's strip signature changed. The tiles
+    /// jump to their new rects at once, so terminals commit the new grid
+    /// immediately instead of debouncing it like a divider drag.
+    pub strip_layout_jump: bool,
     /// Panes of the columns outside the two visible ones: clipped slivers that
     /// paint a placeholder and never resize their terminal.
     pub off_strip_panes: HashSet<PaneId>,
@@ -1807,13 +1814,15 @@ impl PlexiApp {
     ///
     /// Shares are written in pixels of `canvas_width` (the tree's available width)
     /// so the clipped groups come out exactly `STRIP_PEEK_W` wide. Also records
-    /// which panes are off-strip.
+    /// which panes are off-strip and whether the strip layout jumped this frame.
     pub(crate) fn sync_strip_tree_shares(&mut self, canvas_width: Option<f32>) {
+        self.zoom.strip_layout_jump = false;
         self.zoom.off_strip_panes.clear();
         if self.zoom.level != ZoomLevel::Columns {
             return;
         }
         let Some(strip) = self.active_window_strip() else {
+            self.zoom.last_strip_sig = None;
             return;
         };
         let n = strip.children.len();
@@ -1824,6 +1833,17 @@ impl PlexiApp {
         let Some(win) = self.windows.get(self.active_window) else {
             return;
         };
+        let sig = (win.window_id, strip.lo, strip.children.clone());
+        let jump = self.zoom.last_strip_sig.as_ref() != Some(&sig);
+        if jump {
+            log::info!(
+                "strip layout jump: window={} lo={} columns={n}",
+                sig.0,
+                strip.lo
+            );
+        }
+        self.zoom.strip_layout_jump = jump;
+        self.zoom.last_strip_sig = Some(sig);
 
         let mut off_strip = HashSet::new();
         if n > 2 {

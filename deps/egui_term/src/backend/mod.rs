@@ -1084,10 +1084,16 @@ impl TerminalBackend {
     /// geometry — the trailing edge of the drag. A `Deferred` outcome obliges
     /// the caller to schedule another frame, otherwise a drag that ends between
     /// frames would strand the last size.
+    ///
+    /// `immediate` opts a frame out of the debounce for a *discrete* layout
+    /// jump (a column scrolling into view, a tile swapped in): the new
+    /// geometry is already final, so deferring it only paints one frame of the
+    /// stale grid inside the new rect.
     pub fn request_resize(
         &mut self,
         layout_size: Size,
         font_size: Size,
+        immediate: bool,
     ) -> ResizeOutcome {
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
@@ -1110,7 +1116,7 @@ impl TerminalBackend {
         let deferred_frames =
             held.map_or(0, |pending| pending.deferred_frames) + 1;
 
-        if !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
+        if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
             self.pending_resize = Some(PendingResize {
                 geometry,
                 deferred_frames,
@@ -1124,7 +1130,9 @@ impl TerminalBackend {
             geometry.cols,
             geometry.lines,
             deferred_frames - 1,
-            if settled {
+            if immediate {
+                "immediate"
+            } else if settled {
                 "layout settled"
             } else {
                 "defer cap reached"

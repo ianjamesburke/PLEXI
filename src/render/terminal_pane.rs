@@ -85,6 +85,7 @@ pub fn render(
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
     input: TerminalInput,
+    resize_immediately: bool,
 ) -> (bool, Option<(TileId, TabBarAction)>) {
     let pane_rect = ui.max_rect();
     let is_error = terminal.exited
@@ -294,6 +295,7 @@ pub fn render(
         .set_font(theme::terminal_font(font_size))
         .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, 0.0))
         .set_size(Vec2::new(ui.available_width(), ui.available_height()))
+        .resize_immediately(resize_immediately)
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
