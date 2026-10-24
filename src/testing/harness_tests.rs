@@ -14185,4 +14185,129 @@ mod restore_followups_0983b {
             "seen flag must persist across restart"
         );
     }
+
+    #[test]
+    fn agent_wait_marks_unfocused_child_seen_and_persists() {
+        let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+        let ws_dir = tempfile::tempdir().expect("ws_dir");
+
+        let oneshot_pane = {
+            let mut h = HostHarness::from_profile_dir(profile_dir.path());
+            h.app.set_context_root(ws_dir.path().to_path_buf(), None);
+            let human_shell = h.add_focused_terminal();
+            if let Some(pane) = h.app.windows[0].panes.get_mut(&human_shell) {
+                if let Some(t) = pane.as_terminal_mut() {
+                    t.name = Some("human-shell".to_string());
+                    t.name_locked = true;
+                    t.spawned_by = Some("human".to_string());
+                    t.initial_cwd = Some(ws_dir.path().to_path_buf());
+                }
+            }
+
+            let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot-wait");
+            h.inject_ipc(AppRequest::AgentSpawn {
+                role: "oneshot".into(),
+                harness: "script".into(),
+                command: "sleep 30".into(),
+                task: None,
+                subcontext: None,
+                ephemeral: false,
+                parent_pane_id: Some(human_shell),
+                name: None,
+                cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
+                worktree: None,
+                result_schema: None,
+                initial_slots: vec![],
+                no_focus: true,
+                response_file: spawn_reply.clone(),
+                peer_ancestry: None,
+            });
+            h.hidden_frame();
+            let child_id = read_json_response(&spawn_reply)["pane_id"]
+                .as_u64()
+                .expect("oneshot pane_id");
+
+            let wait_reply = temp_response(ws_dir.path(), "wait-oneshot");
+            h.inject_ipc(AppRequest::AgentWait {
+                pane_ids: vec![child_id],
+                timeout_secs: 30.0,
+                response_file: wait_reply.clone(),
+                peer_ancestry: None,
+            });
+
+            let done_reply = temp_response(ws_dir.path(), "oneshot-done-wait");
+            h.inject_ipc(AppRequest::AgentDone {
+                pane_id: child_id,
+                result: Some("{\"answer\":42}".to_string()),
+                summary: Some("oneshot-ok".to_string()),
+                response_file: done_reply,
+                peer_ancestry: None,
+            });
+
+            h.inject_ipc(AppRequest::SetAgentState {
+                pane_id: child_id,
+                state: AgentState::Completed,
+                agent: "script".to_string(),
+                detail: Some("harness_exit_after_done".to_string()),
+                session_id: None,
+                event: None,
+                blocked_reason: None,
+                peer_ancestry: None,
+            });
+            h.hidden_frame();
+
+            assert_ne!(
+                h.app.fleet_focused_pane(),
+                Some(child_id),
+                "child pane must not be focused"
+            );
+            let wait_json = read_json_response(&wait_reply);
+            assert_eq!(wait_json["ok"], true, "wait_json: {wait_json}");
+
+            let term = h.app.windows[0]
+                .panes
+                .get(&child_id)
+                .and_then(|p| p.as_terminal())
+                .expect("child terminal");
+            assert!(
+                term.fleet_seen,
+                "agent wait delivery must mark unfocused child fleet_seen=true even after SetAgentState Completed"
+            );
+            assert!(
+                term.build_saved_agent_session()
+                    .expect("saved session")
+                    .fleet_seen,
+                "saved agent session must record fleet_seen=true"
+            );
+
+            h.app.save_workspace_now();
+            child_id
+        };
+
+        let h = HostHarness::from_profile_dir(profile_dir.path());
+        let (win_idx, _) = h
+            .app
+            .find_pane_in_any_window(oneshot_pane)
+            .expect("restored child pane");
+        let restored_term = h.app.windows[win_idx].panes[&oneshot_pane]
+            .as_terminal()
+            .expect("restored child terminal");
+        assert!(
+            restored_term.fleet_seen,
+            "restored child pane must preserve fleet_seen=true"
+        );
+        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let row = view
+            .tasks
+            .iter()
+            .flat_map(|t| &t.rows)
+            .find(|r| r.pane_id == oneshot_pane)
+            .expect("restored child fleet row");
+        assert_ne!(
+            row.display_state,
+            crate::agent::fleet::DisplayState::DoneUnseen,
+            "restored child pane must not be DoneUnseen in fleet view"
+        );
+    }
 }
