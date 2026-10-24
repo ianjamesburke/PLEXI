@@ -14592,3 +14592,240 @@ mod program_status_agent {
         assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
     }
 }
+
+/// Cmd+H / Cmd+L along the Niri column strip: the newly visible column must be
+/// laid out and its terminal grid committed on the very frame of the jump. The
+/// off-strip columns are clipped slivers, so a live terminal there used to be
+/// resized to the sliver (PTY `SIGWINCH` plus scrollback reflow), and the
+/// debounce then painted that stale narrow grid inside the full-size rect for
+/// one frame when the column scrolled back.
+#[cfg(test)]
+mod strip_navigation_frame_tests {
+    use super::*;
+    use crate::host::keys::Direction;
+    use crate::spatial::tiling::PaneId;
+    use crate::ui::style;
+
+    const COLUMNS: usize = 5;
+    const SETTLE_FRAMES: u32 = 3;
+    /// Narrower than any real column; a sliver-sized grid is a handful of cells.
+    const MIN_COMMITTED_COLS: u16 = 20;
+
+    /// `COLUMNS` terminals side by side in one window, focus on the last.
+    fn five_terminal_columns(h: &mut HostHarness) -> Vec<PaneId> {
+        let mut terminals = vec![h.add_focused_terminal()];
+        for _ in 1..COLUMNS {
+            terminals.push(
+                h.app
+                    .split_focused(false, None, false, false, None)
+                    .expect("split must create another terminal column"),
+            );
+        }
+        let ctx_id = h.app.router.active().context_id;
+        h.app.set_context_columns(
+            ctx_id,
+            terminals.iter().map(|t| vec![*t]).collect(),
+        );
+        h.app.focus_pane_in_strip(*terminals.last().expect("terminals"));
+        h.run_frames(6);
+        terminals
+    }
+
+    struct StripFrame {
+        canvas: egui::Rect,
+        lo: usize,
+        children: Vec<egui::Rect>,
+        gap: f32,
+    }
+
+    fn strip_frame(h: &HostHarness) -> StripFrame {
+        let strip = h.app.active_window_strip().expect("a strip of columns");
+        let tiles = &h.app.windows[0].tree.tiles;
+        let root = h.app.windows[0].tree.root().expect("root");
+        StripFrame {
+            canvas: tiles.rect(root).expect("root rect"),
+            lo: strip.lo,
+            children: strip
+                .children
+                .iter()
+                .map(|c| tiles.rect(*c).expect("child rect"))
+                .collect(),
+            gap: h.app.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
+        }
+    }
+
+    fn pane_rect(h: &HostHarness, pane: PaneId) -> Option<egui::Rect> {
+        let tiles = &h.app.windows[0].tree.tiles;
+        tiles.find_pane(&pane).and_then(|t| tiles.rect(t))
+    }
+
+    fn committed_cols(h: &mut HostHarness, pane: PaneId) -> u16 {
+        h.terminal_backend(pane).committed_grid().0
+    }
+
+    /// Layout invariants of one frame.
+    fn assert_layout(h: &HostHarness, label: &str) {
+        let f = strip_frame(h);
+        let n = f.children.len();
+        assert_eq!(n, COLUMNS, "{label}: strip lost a column");
+        let left_peek = egui::Rect::from_min_size(
+            f.canvas.min,
+            egui::vec2(style::STRIP_PEEK_W, f.canvas.height()),
+        );
+        let right_peek = egui::Rect::from_min_size(
+            egui::pos2(f.canvas.max.x - style::STRIP_PEEK_W, f.canvas.min.y),
+            egui::vec2(style::STRIP_PEEK_W, f.canvas.height()),
+        );
+        for idx in f.lo..f.lo + 2 {
+            let r = f.children[idx];
+            assert!(
+                r.width() >= 0.2 * f.canvas.width(),
+                "{label}: visible column {idx} is {}px of a {}px canvas",
+                r.width(),
+                f.canvas.width()
+            );
+            for (name, peek, has) in [
+                ("left", left_peek, f.lo > 0),
+                ("right", right_peek, f.lo + 2 < n),
+            ] {
+                assert!(
+                    !has || !r.intersects(peek),
+                    "{label}: visible column {idx} {r:?} intersects the {name} peek strip {peek:?}"
+                );
+            }
+        }
+        // Each clipped group, slivers and their gaps up to the visible pair, is
+        // exactly the peek strip plus the one gap that separates it from the pair.
+        let left_span = f.children[f.lo].min.x - f.canvas.min.x;
+        let right_span = f.canvas.max.x - f.children[f.lo + 1].max.x;
+        let (want_left, want_right) = (
+            if f.lo > 0 { style::STRIP_PEEK_W + f.gap } else { 0.0 },
+            if f.lo + 2 < n { style::STRIP_PEEK_W + f.gap } else { 0.0 },
+        );
+        assert!(
+            (left_span - want_left).abs() <= 1.0,
+            "{label}: left clipped group spans {left_span}px, want {want_left}px (lo={})",
+            f.lo
+        );
+        assert!(
+            (right_span - want_right).abs() <= 1.0,
+            "{label}: right clipped group spans {right_span}px, want {want_right}px (lo={})",
+            f.lo
+        );
+        for (idx, r) in f.children.iter().enumerate() {
+            if idx < f.lo || idx >= f.lo + 2 {
+                assert!(
+                    r.width() >= 1.0 && r.width() <= style::STRIP_PEEK_W + 1.0,
+                    "{label}: off-strip column {idx} is {}px wide",
+                    r.width()
+                );
+            }
+        }
+    }
+
+    /// Every visible terminal's committed grid matches its rect, on this very frame.
+    fn assert_visible_grids(h: &mut HostHarness, terminals: &[PaneId], label: &str) {
+        let f = strip_frame(h);
+        for &t in terminals {
+            let Some(rect) = pane_rect(h, t) else { continue };
+            let visible = (f.lo..f.lo + 2).any(|i| {
+                let c = f.children[i];
+                c.contains(rect.center())
+            });
+            if !visible {
+                continue;
+            }
+            let cell_w = f32::from(h.terminal_backend(t).committed_cell_width());
+            let want = (rect.width() / cell_w).floor() as i32;
+            let got = i32::from(committed_cols(h, t));
+            assert!(
+                (got - want).abs() <= 1,
+                "{label}: terminal {t} committed {got} cols for a {}px rect ({want} expected)",
+                rect.width()
+            );
+        }
+    }
+
+    fn assert_no_sliver_grids(h: &mut HostHarness, terminals: &[PaneId], label: &str) {
+        for &t in terminals {
+            let cols = committed_cols(h, t);
+            assert!(
+                cols >= MIN_COMMITTED_COLS,
+                "{label}: terminal {t} committed a {cols}-col sliver grid"
+            );
+        }
+    }
+
+    /// One navigation, then frames one at a time. The grid is asserted after
+    /// exactly one frame, not after the layout has had time to settle.
+    fn navigate_and_check(h: &mut HostHarness, terminals: &[PaneId], dir: Direction, step: usize) {
+        assert!(h.app.navigate_columns_strip(dir), "step {step}: {dir:?} must move");
+        for frame in 0..=SETTLE_FRAMES {
+            h.run_frames(1);
+            let label = format!("step {step} {dir:?} frame {frame}");
+            assert_layout(h, &label);
+            assert_visible_grids(h, terminals, &label);
+            assert_no_sliver_grids(h, terminals, &label);
+        }
+    }
+
+    #[test]
+    fn strip_navigation_keeps_every_column_at_width_frame_by_frame() {
+        let mut h = HostHarness::new();
+        let terminals = five_terminal_columns(&mut h);
+        assert_layout(&h, "initial");
+        assert_visible_grids(&mut h, &terminals, "initial");
+
+        let mut step = 0;
+        for _ in 0..COLUMNS - 1 {
+            step += 1;
+            navigate_and_check(&mut h, &terminals, Direction::Left, step);
+        }
+        assert_eq!(strip_frame(&h).lo, 0, "walked to the first column");
+        for _ in 0..COLUMNS - 1 {
+            step += 1;
+            navigate_and_check(&mut h, &terminals, Direction::Right, step);
+        }
+        assert_eq!(strip_frame(&h).lo, COLUMNS - 2, "walked back to the last column");
+    }
+
+    /// A column scrolled off the strip keeps the grid it last had on screen:
+    /// the PTY never sees the sliver width, so nothing reflows its scrollback.
+    #[test]
+    fn off_strip_terminals_never_commit_a_sliver_grid() {
+        let mut h = HostHarness::new();
+        let terminals = five_terminal_columns(&mut h);
+        assert_no_sliver_grids(&mut h, &terminals, "initial");
+
+        for step in 1..=COLUMNS - 1 {
+            // Terminals already clipped before this step: they must not be
+            // resized while they stay clipped.
+            let clipped: Vec<(PaneId, u64)> = h
+                .app
+                .zoom
+                .off_strip_panes
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| (t, h.terminal_backend(t).resize_commits()))
+                .collect();
+            assert!(h.app.navigate_columns_strip(Direction::Left));
+            h.run_frames(1 + SETTLE_FRAMES);
+            assert_no_sliver_grids(&mut h, &terminals, &format!("left step {step}"));
+            for (t, commits) in clipped {
+                if h.app.zoom.off_strip_panes.contains(&t) {
+                    assert_eq!(
+                        h.terminal_backend(t).resize_commits(),
+                        commits,
+                        "left step {step}: clipped terminal {t} was resized while clipped"
+                    );
+                }
+            }
+        }
+        assert!(
+            !h.app.zoom.off_strip_panes.is_empty(),
+            "scrolled strip must have clipped columns"
+        );
+    }
+}

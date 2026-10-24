@@ -1175,6 +1175,11 @@ impl TerminalBackend {
         self.resize_commits
     }
 
+    /// Width in pixels of one cell of the committed grid.
+    pub fn committed_cell_width(&self) -> u16 {
+        self.size.cell_width
+    }
+
     /// The grid geometry the PTY was last told about, as `(cols, lines)`.
     pub fn committed_grid(&self) -> (u16, u16) {
         (self.size.num_cols, self.size.num_lines)
