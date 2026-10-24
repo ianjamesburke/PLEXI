@@ -382,6 +382,15 @@ pub struct PlexiApp {
     pub(crate) notes_picker_last_drawn_selected: Option<usize>,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
+    /// Notes picker: file content shown in the preview half, keyed by path so
+    /// it is read once per selection rather than every frame.
+    pub(crate) notes_picker_preview: Option<(std::path::PathBuf, std::sync::Arc<str>)>,
+    /// Notes picker: a delete (or cut) awaiting Enter/y confirmation.
+    pub(crate) notes_picker_pending_delete: Option<crate::overlays::notes_picker::PendingDelete>,
+    /// Notes picker: last text sent to the clipboard (Cmd+C / Cmd+X).
+    pub(crate) notes_picker_last_copied: Option<String>,
+    /// Notes picker: `notes_picker_last_copied` still has to be handed to egui.
+    pub(crate) notes_picker_copy_unsent: bool,
     /// In-memory notes index. Cmd+O paints this and does not walk.
     pub(crate) notes_index: crate::notes::NotesIndexCache,
     /// Background refresh of `notes_index`. Drained from `App::logic`.
@@ -1689,6 +1698,10 @@ impl PlexiApp {
                     notes_picker_selected: 0,
                     notes_picker_last_drawn_selected: None,
                     notes_picker_query: String::new(),
+                    notes_picker_preview: None,
+                    notes_picker_pending_delete: None,
+                    notes_picker_last_copied: None,
+                    notes_picker_copy_unsent: false,
                     notes_index: crate::notes::NotesIndexCache::default(),
                     notes_index_rx: None,
                     notes_index_inflight_anchor: None,
@@ -1961,6 +1974,10 @@ impl PlexiApp {
             notes_picker_selected: 0,
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
+            notes_picker_preview: None,
+            notes_picker_pending_delete: None,
+            notes_picker_last_copied: None,
+            notes_picker_copy_unsent: false,
             notes_index: crate::notes::NotesIndexCache::default(),
             notes_index_rx: None,
             notes_index_inflight_anchor: None,
@@ -2924,6 +2941,10 @@ impl PlexiApp {
                 notes_picker_selected: 0,
                 notes_picker_last_drawn_selected: None,
                 notes_picker_query: String::new(),
+                notes_picker_preview: None,
+                notes_picker_pending_delete: None,
+                notes_picker_last_copied: None,
+                notes_picker_copy_unsent: false,
                 notes_index: crate::notes::NotesIndexCache::default(),
                 notes_index_rx: None,
                 notes_index_inflight_anchor: None,

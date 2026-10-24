@@ -61,6 +61,8 @@ pub const GALLERY_NARROW_W: f32 = 320.0;
 
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
+pub const MODAL_WIDTH_NOTES_PICKER: f32 = 1040.0; // Notes picker — list left, wrapped preview right.
+pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.4; // Share of the notes picker given to the list half.
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
