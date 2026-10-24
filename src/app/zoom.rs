@@ -13,7 +13,7 @@ use egui::{
     Align2, CornerRadius, FontFamily, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 use egui_tiles::{Container, LinearDir, Tile, TileId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// Minimum height under a sibling card's header block for the mini column tiles.
@@ -163,6 +163,9 @@ pub struct ZoomState {
     pub transition: Option<(f32, f32, Instant)>,
     /// Buffered text/key events typed during a zoom-in flight to `Columns`.
     pub flight_key_buffer: Vec<egui::Event>,
+    /// Panes of the columns outside the two visible ones: clipped slivers that
+    /// paint a placeholder and never resize their terminal.
+    pub off_strip_panes: HashSet<PaneId>,
 }
 
 impl ZoomState {
@@ -1757,6 +1760,7 @@ impl PlexiApp {
     /// with the Niri column strip presets (`35%` parent / `65%` child) and scroll offset,
     /// using only the active window's own columns (see [`Self::active_window_strip`]).
     pub(crate) fn sync_strip_tree_shares(&mut self) {
+        self.zoom.off_strip_panes.clear();
         if self.zoom.level != ZoomLevel::Columns {
             return;
         }
@@ -1767,6 +1771,15 @@ impl PlexiApp {
         let Some(win) = self.windows.get_mut(self.active_window) else {
             return;
         };
+        if n > 2 {
+            let mut leaves = Vec::new();
+            for (idx, &child) in strip.children.iter().enumerate() {
+                if idx < strip.lo || idx >= strip.lo + 2 {
+                    collect_leaf_panes_in_tile(&win.tree, &win.panes, child, &mut leaves);
+                }
+            }
+            self.zoom.off_strip_panes.extend(leaves);
+        }
         let Some(root_id) = win.tree.root() else {
             return;
         };

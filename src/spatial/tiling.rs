@@ -7,7 +7,7 @@ use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{
     Behavior, ResizeState, SimplificationOptions, TabState, TileId, Tiles, UiResponse,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 pub type PaneId = u64;
@@ -439,6 +439,10 @@ pub struct PlexiBehavior<'a> {
     /// Consumed (via `remove`) by whichever pane actually renders this frame —
     /// see `crate::host::pane::PendingPaneClick`.
     pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
+    /// Panes in columns clipped off the Niri strip. Their tiles are slivers
+    /// under the peek strip, so they paint a placeholder only: a live view would
+    /// resize the PTY to the sliver and reflow its scrollback.
+    pub off_strip_panes: HashSet<PaneId>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -451,6 +455,16 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let pane_rect = ui.available_rect_before_wrap();
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            return UiResponse::None;
+        }
+
+        if self.off_strip_panes.contains(pane_id) {
+            let pane_rect = ui.available_rect_before_wrap();
+            let fill = match self.panes.get(pane_id) {
+                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
+                _ => self.colors.bg_darkest,
+            };
+            ui.painter().rect_filled(pane_rect, 0.0, fill);
             return UiResponse::None;
         }
 
