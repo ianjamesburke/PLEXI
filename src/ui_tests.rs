@@ -1076,6 +1076,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decision_overlay_shows_no_scrollbar_or_scroll_state_when_content_fits() {
+        for scale in [1.0_f32, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                app.enqueue_ask(
+                    "ask-no-scroll",
+                    pane_id,
+                    "cargo test --bin plexi -- --test-threads=4",
+                    1_000,
+                    Vec::new(),
+                );
+                assert!(app.open_decision_overlay_for_ask("ask-no-scroll"));
+            });
+            h.run_steps(4);
+
+            let (content_size, avail_size, card_inner_size, scroll_id, has_scroll_state, button_widths, modal_w) =
+                h.with_app_mut(|app| {
+                    let (content_size, avail_size, card_inner_size, scroll_id): (
+                        egui::Vec2,
+                        egui::Vec2,
+                        egui::Vec2,
+                        egui::Id,
+                    ) = app
+                        .ctx
+                        .data(|d| d.get_temp(egui::Id::new("decision_overlay_scroll_metrics")))
+                        .expect("decision overlay scroll metrics");
+                    let has_scroll_state =
+                        egui::scroll_area::State::load(&app.ctx, scroll_id).is_some();
+                    let button_widths: Vec<f32> = app
+                        .approval_buttons
+                        .iter()
+                        .map(|b| b.bounds[2] - b.bounds[0])
+                        .collect();
+                    let screen = app.ctx.content_rect();
+                    let modal_w = crate::ui::style::DECISION_MODAL_W
+                        .min(screen.width() - 32.0)
+                        .max(300.0);
+                    (
+                        content_size,
+                        avail_size,
+                        card_inner_size,
+                        scroll_id,
+                        has_scroll_state,
+                        button_widths,
+                        modal_w,
+                    )
+                });
+
+            assert_eq!(button_widths.len(), 3, "scale {scale}: expected 3 options");
+            assert!(
+                content_size.y <= avail_size.y,
+                "scale {scale}: content height {} must fit within available {}",
+                content_size.y,
+                avail_size.y
+            );
+            assert!(
+                (content_size.y - card_inner_size.y).abs() <= 1.0,
+                "scale {scale}: card inner height {} must shrink to content height {}",
+                card_inner_size.y,
+                content_size.y
+            );
+            assert!(
+                !has_scroll_state,
+                "scale {scale}: no ScrollArea offset state ({scroll_id:?}) should persist when content fits"
+            );
+            for (idx, w) in button_widths.iter().enumerate() {
+                assert!(
+                    (w - modal_w).abs() <= 1.0,
+                    "scale {scale}: option {idx} width {w} must equal modal_w {modal_w} (no scrollbar gutter)"
+                );
+            }
+        }
+    }
+
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         let active_window = h.with_app(|app| app.active_window);
         add_focused_pane_to_window(h, active_window)

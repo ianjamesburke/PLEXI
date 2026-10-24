@@ -1786,22 +1786,32 @@ impl PlexiApp {
             .max(300.0);
         let mut picked_option: Option<usize> = None;
 
+        let v_margin = 18_i8;
+        let max_h = (screen.height() - 2.0 * (style::SPACE_MD + f32::from(v_margin))).max(160.0);
+
         egui::Area::new(egui::Id::new("decision_overlay_card"))
             .order(Order::Tooltip)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fade_in(false)
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(colors.terminal_bg)
                     .stroke(Stroke::new(2.0_f32, colors.zoom_needs))
                     .corner_radius(style::RADIUS_MOTORWAYS)
                     .shadow(style::motorways_shadow(colors.shadow_flat))
-                    .inner_margin(egui::Margin::symmetric(20, 18))
+                    .inner_margin(egui::Margin::symmetric(20, v_margin))
                     .show(ui, |ui| {
                         ui.set_width(modal_w);
-                        egui::ScrollArea::vertical()
-                            .max_height((screen.height() - 120.0).max(160.0))
+                        let scroll_out = egui::ScrollArea::vertical()
+                            .id_salt("decision_overlay_scroll")
+                            .max_height(max_h)
+                            .min_scrolled_height(max_h)
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            )
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
+                                ui.set_width(modal_w);
 
                         if let QueueSource::BrokerPending { request_id } = &overlay.source {
                             if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
@@ -1840,7 +1850,7 @@ impl PlexiApp {
                             &overlay.question,
                             question_font,
                             colors.text_primary,
-                            modal_w - 12.0,
+                            modal_w,
                         );
                         ui.add_space(style::SPACE_SM);
 
@@ -1852,7 +1862,7 @@ impl PlexiApp {
                             .inner_margin(egui::Margin::symmetric(12, 10))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                let code_w = ui.available_width() - 12.0;
+                                let code_w = ui.available_width();
                                 wrapped_label(
                                     ui,
                                     &overlay.command_text,
@@ -1921,6 +1931,23 @@ impl PlexiApp {
                         ])
                         .show(ui, &colors);
                             });
+                        if scroll_out.content_size.y <= scroll_out.inner_rect.height() + 0.5 {
+                            ui.ctx().data_mut(|d| {
+                                d.remove::<egui::scroll_area::State>(scroll_out.id);
+                            });
+                        }
+                        let card_inner_size = ui.min_rect().size();
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(
+                                egui::Id::new("decision_overlay_scroll_metrics"),
+                                (
+                                    scroll_out.content_size,
+                                    scroll_out.inner_rect.size(),
+                                    card_inner_size,
+                                    scroll_out.id,
+                                ),
+                            );
+                        });
                     });
             });
 
