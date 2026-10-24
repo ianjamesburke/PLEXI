@@ -190,7 +190,7 @@ impl CardState {
     fn fill(self, colors: &Colors, base: Color32) -> Color32 {
         match self {
             CardState::NeedsYou => colors.needs_fill,
-            CardState::Working => base.lerp_to_gamma(colors.accent, 0.12),
+            CardState::Working => base.lerp_to_gamma(colors.accent, 0.24),
             _ => base,
         }
     }
@@ -344,9 +344,12 @@ pub(crate) fn layout_card(
     if !detail.is_empty() {
         h += SECTION_GAP + (row_h(&m.detail_font) + LINE_GAP) * detail.len() as f32 - LINE_GAP;
     }
+    // A title-only card shrinks to its content; the form minimum is for cards
+    // that carry a path or detail line.
+    let title_only = spec.subtitle.is_empty() && detail.is_empty();
     CardLayout {
         form,
-        height: h.max(m.min_h),
+        height: if title_only { h } else { h.max(m.min_h) },
         title,
         subtitle: spec.subtitle.to_string(),
         detail,
@@ -430,7 +433,7 @@ pub(crate) fn paint_card(
             line,
             m.title_font.clone(),
             if spec.state == CardState::Idle {
-                colors.text_dim
+                colors.text_dim.gamma_multiply(0.75)
             } else {
                 colors.text_primary
             },

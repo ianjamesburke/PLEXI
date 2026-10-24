@@ -138,9 +138,112 @@ const NODE_W: f32 = style::ATLAS_NODE_W;
 /// Sibling-card width in the gallery (narrower than the real `CARD_W` so two
 /// sample columns plus the bar column fit a ~1490px canvas).
 const SIB_W: f32 = 300.0;
-const MIN_BAR_W: f32 = 240.0;
 const GAP: f32 = 10.0;
 const CAPTION_H: f32 = 13.0;
+
+/// Where every gallery item sits, relative to the canvas rect it was planned for.
+struct Plan {
+    /// Per sample: [sibling, atlas, bar] card rects.
+    rects: Vec<[Rect; 3]>,
+    /// Caption origin for the grid and bar sections, per sample.
+    captions: Vec<[Pos2; 2]>,
+    bars_label: Pos2,
+    col_w: f32,
+    total_h: f32,
+}
+
+/// Lay the gallery out inside `canvas`: a sibling|atlas grid (two columns when
+/// they fit, else one) followed by a band of queue bars. Every rect stays
+/// inside `canvas` horizontally.
+fn plan(canvas: Rect, layouts: &[[crate::ui::card_block::CardLayout; 3]]) -> Plan {
+    let origin = canvas.min;
+    let col_w = SIB_W + GAP + NODE_W;
+    let ncols = if canvas.width() >= col_w * 2.0 + GAP * 3.0 { 2 } else { 1 };
+    let bar_w = ((canvas.width() - GAP * (ncols as f32 + 1.0)) / ncols as f32).max(1.0);
+    let header_h = 24.0;
+    let mut y = origin.y + header_h + GAP;
+    let mut rects = vec![[Rect::NOTHING; 3]; layouts.len()];
+    let mut captions = vec![[Pos2::ZERO; 2]; layouts.len()];
+    let sib_w = SIB_W.min((canvas.width() - GAP * 3.0) * SIB_W / col_w);
+    let node_w = NODE_W.min((canvas.width() - GAP * 3.0) * NODE_W / col_w);
+    for chunk in (0..layouts.len()).collect::<Vec<_>>().chunks(ncols) {
+        let row_h = chunk
+            .iter()
+            .map(|&i| layouts[i][0].height.max(layouts[i][1].height))
+            .fold(0.0_f32, f32::max);
+        for (c, &i) in chunk.iter().enumerate() {
+            let x0 = origin.x + GAP + c as f32 * (col_w + GAP);
+            captions[i][0] = Pos2::new(x0, y);
+            rects[i][0] = Rect::from_min_size(Pos2::new(x0, y + CAPTION_H), Vec2::new(sib_w, layouts[i][0].height));
+            rects[i][1] = Rect::from_min_size(
+                Pos2::new(x0 + sib_w + GAP, y + CAPTION_H),
+                Vec2::new(node_w, layouts[i][1].height),
+            );
+        }
+        y += row_h + CAPTION_H + GAP;
+    }
+    let bars_label = Pos2::new(origin.x + GAP, y);
+    y += CAPTION_H + GAP;
+    for chunk in (0..layouts.len()).collect::<Vec<_>>().chunks(ncols) {
+        let row_h = chunk.iter().map(|&i| layouts[i][2].height).fold(0.0_f32, f32::max);
+        for (c, &i) in chunk.iter().enumerate() {
+            let x0 = origin.x + GAP + c as f32 * (bar_w + GAP);
+            captions[i][1] = Pos2::new(x0, y);
+            rects[i][2] = Rect::from_min_size(Pos2::new(x0, y + CAPTION_H), Vec2::new(bar_w, layouts[i][2].height));
+        }
+        y += row_h + CAPTION_H + 4.0;
+    }
+    Plan { rects, captions, bars_label, col_w, total_h: y - origin.y + GAP }
+}
+
+fn specs_for(
+    colors: &crate::ui::theme::Colors,
+    sample: &Sample,
+) -> [CardSpec<'static>; 3] {
+    let badge = sample.badge.map(|t| (t.to_string(), colors_for(colors, sample.state)));
+    let spec = |form: CardForm| {
+        let badge = match form {
+            CardForm::Bar => Some(match sample.state {
+                CardState::NeedsYou => ("Enter ▸ Decide".to_string(), colors.zoom_needs),
+                _ => ("✕".to_string(), colors.text_dim),
+            }),
+            _ => badge.clone(),
+        };
+        CardSpec {
+            state: sample.state,
+            title: sample.title,
+            subtitle: sample.subtitle,
+            detail: sample.detail,
+            badge,
+        }
+    };
+    [spec(CardForm::Sibling), spec(CardForm::Atlas), spec(CardForm::Bar)]
+}
+
+/// Measure every sample at the widths `plan` will give it.
+fn measure_all(
+    ctx: &egui::Context,
+    colors: &crate::ui::theme::Colors,
+    canvas_w: f32,
+) -> (Vec<[CardSpec<'static>; 3]>, Vec<[crate::ui::card_block::CardLayout; 3]>) {
+    let col_w = SIB_W + GAP + NODE_W;
+    let ncols = if canvas_w >= col_w * 2.0 + GAP * 3.0 { 2.0 } else { 1.0 };
+    let bar_w = ((canvas_w - GAP * (ncols + 1.0)) / ncols).max(1.0);
+    let sib_w = SIB_W.min((canvas_w - GAP * 3.0) * SIB_W / col_w);
+    let node_w = NODE_W.min((canvas_w - GAP * 3.0) * NODE_W / col_w);
+    let specs: Vec<_> = SAMPLES.iter().map(|s| specs_for(colors, s)).collect();
+    let layouts = specs
+        .iter()
+        .map(|sp| {
+            [
+                layout_card(ctx, CardForm::Sibling, &sp[0], sib_w),
+                layout_card(ctx, CardForm::Atlas, &sp[1], node_w),
+                layout_card(ctx, CardForm::Bar, &sp[2], bar_w),
+            ]
+        })
+        .collect();
+    (specs, layouts)
+}
 
 impl PlexiApp {
     pub(crate) fn draw_card_gallery(&mut self, ui: &mut egui::Ui) {
@@ -149,60 +252,13 @@ impl PlexiApp {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let avail_w = ui.available_width();
             let origin = ui.available_rect_before_wrap().min;
+            let canvas = Rect::from_min_size(origin, Vec2::new(avail_w, 0.0));
             let header_font = crate::ui::theme::font_medium(style::TEXT_BODY);
             let note_font = FontId::new(style::TEXT_HINT, FontFamily::Proportional);
-            // Two sample columns of [sibling | atlas], then the bar column
-            // taking whatever width is left.
-            let col_w = SIB_W + GAP + NODE_W;
-            let bar_w = (avail_w - GAP * 4.0 - col_w * 2.0 - GAP).max(MIN_BAR_W);
+            let (specs, layouts) = measure_all(&ctx, &colors, avail_w);
+            let plan = plan(canvas, &layouts);
 
-            let mut cells = Vec::new();
-            for sample in SAMPLES {
-                let badge = sample
-                    .badge
-                    .map(|t| (t.to_string(), colors_for(&colors, sample.state)));
-                let spec = |form: CardForm| {
-                    let badge = match form {
-                        CardForm::Bar => Some(match sample.state {
-                            CardState::NeedsYou => ("Enter ▸ Decide".to_string(), colors.zoom_needs),
-                            _ => ("✕".to_string(), colors.text_dim),
-                        }),
-                        _ => badge.clone(),
-                    };
-                    CardSpec {
-                        state: sample.state,
-                        title: sample.title,
-                        subtitle: sample.subtitle,
-                        detail: sample.detail,
-                        badge,
-                    }
-                };
-                let specs = [spec(CardForm::Sibling), spec(CardForm::Atlas), spec(CardForm::Bar)];
-                let layouts = [
-                    layout_card(&ctx, CardForm::Sibling, &specs[0], SIB_W),
-                    layout_card(&ctx, CardForm::Atlas, &specs[1], NODE_W),
-                    layout_card(&ctx, CardForm::Bar, &specs[2], bar_w),
-                ];
-                cells.push((specs, layouts));
-            }
-
-            let header_h = 24.0;
-            let rows = SAMPLES.len().div_ceil(2);
-            let row_hs: Vec<f32> = (0..rows)
-                .map(|r| {
-                    cells[r * 2..(r * 2 + 2).min(cells.len())]
-                        .iter()
-                        .map(|(_, l)| l[0].height.max(l[1].height))
-                        .fold(0.0_f32, f32::max)
-                        + CAPTION_H
-                        + GAP
-                })
-                .collect();
-            let grid_h: f32 = row_hs.iter().sum();
-            let bars_h: f32 = cells.iter().map(|(_, l)| l[2].height + CAPTION_H + 4.0).sum();
-            let total_h = header_h + GAP + grid_h.max(bars_h) + GAP;
-
-            let (area, _) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), Sense::hover());
+            let (area, _) = ui.allocate_exact_size(Vec2::new(avail_w, plan.total_h), Sense::hover());
             let painter = ui.painter_at(area);
             painter.rect_filled(area, 0.0, colors.bg_darkest);
             painter.text(
@@ -212,51 +268,33 @@ impl PlexiApp {
                 header_font,
                 colors.text_primary,
             );
-            let top = origin.y + header_h + GAP;
-            let caption = |sample: &Sample| {
-                format!("{} ({})", sample.note, sample.state.label())
-            };
-            let bar_x = origin.x + GAP + (col_w + GAP) * 2.0;
-
-            let mut ys = vec![top];
-            for h in &row_hs {
-                ys.push(ys.last().copied().unwrap_or(top) + h);
-            }
-            for (i, (sample, (specs, layouts))) in SAMPLES.iter().zip(cells.iter()).enumerate() {
-                let (row, col) = (i / 2, i % 2);
-                let x0 = origin.x + GAP + col as f32 * (col_w + GAP);
-                let y = ys[row];
-                let note = wrap_text(&ctx, &caption(sample), note_font.clone(), col_w, Some(1));
-                painter.text(
-                    Pos2::new(x0, y),
-                    Align2::LEFT_TOP,
-                    note.join(""),
+            painter.text(
+                plan.bars_label,
+                Align2::LEFT_TOP,
+                "Queue bars",
+                note_font.clone(),
+                colors.text_primary,
+            );
+            for (i, sample) in SAMPLES.iter().enumerate() {
+                let note = wrap_text(
+                    &ctx,
+                    &format!("{} ({})", sample.note, sample.state.label()),
                     note_font.clone(),
-                    colors.text_dim,
+                    plan.col_w,
+                    Some(1),
                 );
-                for (k, x, w) in [(0, x0, SIB_W), (1, x0 + SIB_W + GAP, NODE_W)] {
-                    let rect = Rect::from_min_size(
-                        Pos2::new(x, y + CAPTION_H),
-                        Vec2::new(w, layouts[k].height),
-                    );
-                    paint_card(&painter, rect, &layouts[k], &specs[k], &colors, colors.depth_tint(1), false);
-                }
-            }
-            let mut y = top;
-            for (sample, (specs, layouts)) in SAMPLES.iter().zip(cells.iter()) {
+                painter.text(plan.captions[i][0], Align2::LEFT_TOP, note.join(""), note_font.clone(), colors.text_dim);
                 painter.text(
-                    Pos2::new(bar_x, y),
+                    plan.captions[i][1],
                     Align2::LEFT_TOP,
                     sample.state.label(),
                     note_font.clone(),
                     colors.text_dim,
                 );
-                let rect = Rect::from_min_size(
-                    Pos2::new(bar_x, y + CAPTION_H),
-                    Vec2::new(bar_w, layouts[2].height),
-                );
-                paint_card(&painter, rect, &layouts[2], &specs[2], &colors, colors.tile_bg, false);
-                y += layouts[2].height + CAPTION_H + 4.0;
+                for k in 0..2 {
+                    paint_card(&painter, plan.rects[i][k], &layouts[i][k], &specs[i][k], &colors, colors.depth_tint(1), false);
+                }
+                paint_card(&painter, plan.rects[i][2], &layouts[i][2], &specs[i][2], &colors, colors.tile_bg, false);
             }
         });
     }
@@ -266,5 +304,33 @@ fn colors_for(colors: &crate::ui::theme::Colors, state: CardState) -> egui::Colo
     match state {
         CardState::Failed => colors.zoom_failed,
         _ => colors.zoom_needs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_gallery_items_fit_canvas() {
+        let ctx = egui::Context::default();
+        let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+        crate::ui::theme::setup_fonts(&ctx);
+        let _ = ctx.run(Default::default(), |_| {});
+        let _ = ctx.run(Default::default(), |ctx| {
+            for (w, h) in [(1370.0, 930.0), (1000.0, 700.0)] {
+                let canvas = Rect::from_min_size(Pos2::new(40.0, 20.0), Vec2::new(w, h));
+                let (_, layouts) = measure_all(ctx, &colors, w);
+                let plan = plan(canvas, &layouts);
+                for (i, rs) in plan.rects.iter().enumerate() {
+                    for r in rs {
+                        assert!(
+                            r.min.x >= canvas.min.x && r.max.x <= canvas.max.x,
+                            "sample {i} rect {r:?} outside canvas x-range at {w}"
+                        );
+                    }
+                }
+            }
+        });
     }
 }
