@@ -14333,7 +14333,7 @@ mod program_status_agent {
         h.run_frames(1);
     }
 
-    fn state_of(h: &HostHarness, pane: u64) -> Option<(AgentState, Option<String>)> {
+    fn state_of(h: &HostHarness, pane: u64) -> Option<(crate::protocol::AgentState, Option<String>)> {
         h.app.windows[0]
             .panes
             .get(&pane)
@@ -14346,16 +14346,16 @@ mod program_status_agent {
         let mut h = HostHarness::new();
         let pane = h.add_focused_terminal();
         apply(&mut h, pane, "state=working:app=claude");
-        assert_eq!(state_of(&h, pane).unwrap().0, AgentState::Working);
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
         // "cGVybWlzc2lvbiB0byBydW4=" = "permission to run"
         apply(&mut h, pane, "state=blocked:kind=permission:msg=cGVybWlzc2lvbiB0byBydW4=");
         let (state, detail) = state_of(&h, pane).unwrap();
-        assert_eq!(state, AgentState::NeedsYou);
+        assert_eq!(state, crate::protocol::AgentState::NeedsYou);
         assert_eq!(detail.as_deref(), Some("permission: permission to run"));
         apply(&mut h, pane, "state=working");
-        assert_eq!(state_of(&h, pane).unwrap().0, AgentState::Working);
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
         apply(&mut h, pane, "state=done");
-        assert_eq!(state_of(&h, pane).unwrap().0, AgentState::Completed);
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Completed);
     }
 
     #[test]
@@ -14369,16 +14369,16 @@ mod program_status_agent {
             .expect("terminal")
             .agent = Some(crate::protocol::PaneAgentState {
             pane_id: pane,
-            state: AgentState::Working,
+            state: crate::protocol::AgentState::Working,
             agent: "codex".to_string(),
             detail: None,
             session_id: None,
         });
         apply(&mut h, pane, "state=blocked:kind=auth");
-        assert_eq!(state_of(&h, pane).unwrap().0, AgentState::NeedsYou);
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::NeedsYou);
         apply(&mut h, pane, "state=clear");
         let terminal = h.app.windows[0].panes[&pane].as_terminal().unwrap();
         assert!(terminal.reported_7501.is_none());
-        assert_eq!(state_of(&h, pane).unwrap().0, AgentState::Working);
+        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
     }
 }
