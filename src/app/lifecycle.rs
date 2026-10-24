@@ -5823,6 +5823,10 @@ impl PlexiApp {
                                 newly_exited = !t.exited;
                                 t.exited = true;
                                 t.exit_status = Some(status);
+                                t.program_status
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .on_process_exit();
                                 let is_agent_or_subcontext = is_subcontext
                                     || t.parent_pane_id.is_some()
                                     || t.agent_harness.is_some()

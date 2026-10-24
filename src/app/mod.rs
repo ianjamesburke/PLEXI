@@ -3200,6 +3200,8 @@ impl PlexiApp {
                 env,
                 dynamic_colors: theme::terminal_dynamic_colors(colors),
                 working_directory,
+                // `TerminalPane::new` installs the program-status tap.
+                byte_tap: None,
             },
             host_mcp::PendingPaneCredential::new(pane_id),
         )

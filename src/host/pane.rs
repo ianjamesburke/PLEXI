@@ -822,6 +822,8 @@ pub struct TerminalPane {
     /// redraw (Claude Code, Codex) never advances that counter, so it would
     /// report a busy pane as idle.
     pub last_pty_output_at: Option<std::time::Instant>,
+    /// OSC 7501 program-status records, fed by the PTY byte tap.
+    pub program_status: crate::program_status::SharedProgramStatus,
     /// Test-only copy of the environment handed to the PTY constructor.
     #[cfg(test)]
     pub spawn_env: HashMap<String, String>,
@@ -865,6 +867,10 @@ impl TerminalPane {
         let initial_cwd = settings.working_directory.clone();
         #[cfg(test)]
         let spawn_env = settings.env.clone();
+        let program_status = crate::program_status::SharedProgramStatus::default();
+        settings.byte_tap = Some(egui_term::ByteTapHandle::new(
+            crate::program_status::ProgramStatusTap::new(id, program_status.clone()),
+        ));
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
             Ok(b) => b,
             Err(e) => {
@@ -915,6 +921,7 @@ impl TerminalPane {
             activity: None,
             slots: HashMap::new(),
             last_pty_output_at: None,
+            program_status,
             #[cfg(test)]
             spawn_env,
         })
