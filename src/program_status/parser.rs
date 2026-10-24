@@ -189,11 +189,9 @@ impl Osc7501Scanner {
                     self.buf.push(b);
                 }
             }
-            Mode::Osc133 => {
-                if self.p133_len < 2 {
-                    self.p133[self.p133_len] = Some(b);
-                    self.p133_len += 1;
-                }
+            Mode::Osc133 if self.p133_len < 2 => {
+                self.p133[self.p133_len] = Some(b);
+                self.p133_len += 1;
             }
             _ => {}
         }
