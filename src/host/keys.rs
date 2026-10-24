@@ -1500,11 +1500,15 @@ pub fn poll_actions(
             }
         }
 
-        if entry.exact && !modifiers_match_exact(&input.modifiers(), &entry.modifiers) {
+        // Exact chords match on the key event's own modifiers, not the frame
+        // snapshot: a quick tap (or xdotool) delivers the modifier and the key
+        // in one frame, so the snapshot can read NONE and the chord would fall
+        // through to a subset binding (Cmd+Shift+0 opening Quick Note).
+        let triggered = if entry.exact && !entry.no_repeat {
+            input.consume_key_exact(entry.modifiers, entry.key)
+        } else if entry.exact && !modifiers_match_exact(&input.modifiers(), &entry.modifiers) {
             continue;
-        }
-
-        let triggered = if entry.no_repeat {
+        } else if entry.no_repeat {
             input.consume_key_no_repeat(entry.modifiers, entry.key)
         } else {
             input.consume_key(entry.modifiers, entry.key)
