@@ -35,7 +35,7 @@ fn split_fit<'a>(word: &'a str, max_w: f32, measure: &dyn Fn(&str) -> f32) -> (&
             .char_indices()
             .filter(|(_, c)| matches!(c, '-' | '/' | '_' | '.'))
             .map(|(i, c)| i + c.len_utf8())
-            .last();
+            .next_back();
         if let Some(cut) = soft {
             if cut >= 3 {
                 return word.split_at(cut);
