@@ -303,6 +303,10 @@ pub fn parse_report(payload: &[u8]) -> Option<Report> {
         };
         let key = pair[..eq].trim_ascii();
         let val = pair[eq + 1..].trim_ascii();
+        // A bad id must ignore the whole report, never fall back to the root record.
+        if key == b"id" && !value_ok(val) {
+            return None;
+        }
         if key.is_empty() || !key.iter().all(u8::is_ascii_lowercase) || !value_ok(val) {
             continue;
         }
