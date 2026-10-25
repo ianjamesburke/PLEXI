@@ -610,6 +610,7 @@ fn main() -> eframe::Result {
                             display_name,
                             global,
                             cwd,
+                            flags,
                         } => cli::trace::exit(cli::agent_create_cli(
                             &name,
                             &harness_cli,
@@ -623,7 +624,11 @@ fn main() -> eframe::Result {
                             display_name.as_deref(),
                             global,
                             cwd.as_deref(),
+                            &flags,
                         )),
+                        AgentCmd::Flags { target, cwd } => {
+                            cli::trace::exit(cli::agent_flags_cli(target.as_deref(), cwd.as_deref(), json))
+                        }
                         AgentCmd::List { cwd } => {
                             cli::trace::exit(cli::agent_list_cli(cwd.as_deref(), json))
                         }
