@@ -91,11 +91,6 @@ impl AgentHarness {
             .expect("all AgentHarness variants exist in HARNESS_ADAPTERS")
     }
 
-    pub fn resume_command(self, session_id: &str) -> String {
-        self.adapter().resume_command(session_id)
-    }
-
-    #[allow(dead_code)]
     pub fn resume_command_with_flags(self, session_id: &str, flags: &[String]) -> String {
         self.adapter().resume_command_with_flags(session_id, flags)
     }
@@ -104,7 +99,6 @@ impl AgentHarness {
         self.adapter().restore_command(session_id)
     }
 
-    #[allow(dead_code)]
     pub fn restore_command_with_flags(self, session_id: Option<&str>, flags: &[String]) -> String {
         self.adapter().restore_command_with_flags(session_id, flags)
     }
@@ -431,7 +425,19 @@ pub fn redact_harness_flags(flags: &[String]) -> Vec<String> {
                 continue;
             }
             let v_lower = v.to_ascii_lowercase();
+            let nested_key_is_sensitive = v
+                .split_once('=')
+                .map(|(nested_key, _)| {
+                    let nested_key = nested_key.to_ascii_lowercase();
+                    nested_key.contains("token")
+                        || nested_key.contains("secret")
+                        || nested_key.contains("key")
+                        || nested_key.contains("password")
+                        || nested_key.contains("auth")
+                })
+                .unwrap_or(false);
             if v_lower.contains("bearer")
+                || nested_key_is_sensitive
                 || v.starts_with("ghp_")
                 || v.starts_with("sk-")
                 || v.starts_with("sec_")
@@ -496,7 +502,9 @@ pub fn validate_custom_harness_flags(
             None => (raw.as_str(), None),
         };
 
-        // Reserved security overrides
+        // Reserved security overrides. Plexi owns sandbox and approval authority,
+        // so value-taking controls are rejected as a class rather than allowing a
+        // future permissive value to slip through this settings surface.
         let is_sec_override = adapter.security_overrides.contains(&flag_key)
             || matches!(
                 flag_key,
@@ -508,11 +516,25 @@ pub fn validate_custom_harness_flags(
                     | "--full-auto"
                     | "--no-sandbox"
                     | "--disable-sandbox"
+                    | "--sandbox"
+                    | "--ask-for-approval"
             );
         if is_sec_override {
             return Err(format!(
                 "flag '{raw}' is a reserved security override and cannot be configured"
             ));
+        }
+
+        if adapter.harness == AgentHarness::Claude && flag_key == "--permission-mode" {
+            let permission_mode = inline_val.or_else(|| flags.get(i + 1).map(String::as_str));
+            if permission_mode.is_some_and(|mode| {
+                let mode = mode.to_ascii_lowercase();
+                mode.contains("bypass") || mode == "dontask"
+            }) {
+                return Err(format!(
+                    "permission mode in flag '{raw}' is a reserved security override and cannot be configured"
+                ));
+            }
         }
 
         // Reserved lifecycle overrides
@@ -540,7 +562,10 @@ pub fn validate_custom_harness_flags(
                     "configuration key '{cfg_key}' in flag '{raw}' is reserved for Plexi persona authority"
                 ));
             }
-            if cfg_key.starts_with("sandbox") {
+            if cfg_key.starts_with("sandbox")
+                || cfg_key.starts_with("approval_policy")
+                || cfg_key.starts_with("ask_for_approval")
+            {
                 return Err(format!(
                     "configuration key '{cfg_key}' in flag '{raw}' is reserved for Plexi sandbox authority"
                 ));
@@ -1122,6 +1147,39 @@ pub fn build_agent_start_command(
     ))
 }
 
+/// Resolve the already-validated custom flags for a persisted agent session.
+///
+/// A saved session keeps its configured role and harness, while the definition
+/// remains the source of truth for its argv array. If the definition disappeared
+/// or now resolves to a different adapter, resume safely falls back to no custom
+/// flags instead of applying flags for another harness.
+pub fn resolved_session_harness_flags_in(
+    role: Option<&str>,
+    harness: AgentHarness,
+    profile_dir: &Path,
+    cwd: Option<&Path>,
+) -> Vec<String> {
+    let Some(role) = role.and_then(non_empty_string) else {
+        return Vec::new();
+    };
+    let workspace_root = cwd.and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
+    let Ok((definition, _)) = resolve_agent_definition_in(role, profile_dir, workspace_root.as_deref())
+    else {
+        return Vec::new();
+    };
+    let Some(config) = definition.harness else {
+        return Vec::new();
+    };
+    let configured_for_harness = harness_adapter(&config.cli)
+        .is_some_and(|adapter| adapter.harness == harness)
+        || config
+            .fallback
+            .as_deref()
+            .and_then(harness_adapter)
+            .is_some_and(|adapter| adapter.harness == harness);
+    configured_for_harness.then_some(config.flags).unwrap_or_default()
+}
+
 fn tier_display_label(source: crate::agent::AgentSource) -> &'static str {
     match source {
         crate::agent::AgentSource::Workspace => "workspace",
@@ -1628,7 +1686,11 @@ pub fn agent_show_in(
     let spawn_command = match &def.harness {
         Some(h) => {
             let adapter = resolve_harness_adapter(h)?;
-            Some(build_agent_spawn_command(&def, adapter, "<TASK>")?)
+            let mut display_def = def.clone();
+            if let Some(display_harness) = display_def.harness.as_mut() {
+                display_harness.flags = redact_harness_flags(&display_harness.flags);
+            }
+            Some(build_agent_spawn_command(&display_def, adapter, "<TASK>")?)
         }
         None => None,
     };
@@ -3840,7 +3902,10 @@ mod agent_tests {
         );
 
         let codex = super::harness_adapter("codex").expect("codex adapter");
-        assert_eq!(codex.resume_command("thread-99"), "codex resume thread-99");
+        assert_eq!(
+            codex.resume_command("thread-99"),
+            "codex resume thread-99"
+        );
         assert_eq!(
             codex.spawn_command("run tests", None, None),
             "codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true 'run tests'"
@@ -3851,7 +3916,10 @@ mod agent_tests {
         );
 
         let pi = super::harness_adapter("pi").expect("pi adapter");
-        assert_eq!(pi.resume_command("pi-sess-7"), "pi --session pi-sess-7");
+        assert_eq!(
+            pi.resume_command("pi-sess-7"),
+            "pi --session pi-sess-7"
+        );
         assert_eq!(
             pi.spawn_command("audit module", None, None),
             "pi --no-extensions --no-mcp 'audit module'"
@@ -3862,7 +3930,10 @@ mod agent_tests {
         );
 
         let agy = super::harness_adapter("agy").expect("agy adapter");
-        assert_eq!(agy.resume_command("conv-123"), "agy --resume conv-123");
+        assert_eq!(
+            agy.resume_command("conv-123"),
+            "agy --resume conv-123"
+        );
         assert_eq!(
             agy.spawn_command("implement stint", None, None),
             "agy --prompt-interactive 'implement stint'"
@@ -4235,6 +4306,40 @@ mod agent_tests {
         assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
         assert!(!spawn_cmd.contains(" -p"));
         assert!(spawn_cmd.contains("<TASK>"));
+    }
+
+    #[test]
+    fn agent_show_redacts_secret_flags_in_every_inspection_field() {
+        let profile = tempfile::tempdir().unwrap();
+        let secret = "Authorization: Bearer abc123SECRET";
+        let flags = ["--header".to_string(), secret.to_string()];
+        super::agent_create_in(
+            &super::AgentCreateOptions {
+                name: "redacted-show",
+                cli: "claude",
+                model: None,
+                fallback: None,
+                description: None,
+                persona: Some("Keep secrets private."),
+                persona_file: None,
+                result_schema: None,
+                ephemeral: false,
+                display_name: None,
+                global: true,
+                cwd: None,
+                flags: &flags,
+            },
+            profile.path(),
+        )
+        .unwrap();
+
+        let text = super::agent_show_in("redacted-show", profile.path(), None, false).unwrap();
+        assert!(!text.contains(secret), "text leaked secret: {text}");
+        assert!(text.contains("[REDACTED]"), "text did not redact: {text}");
+
+        let json = super::agent_show_in("redacted-show", profile.path(), None, true).unwrap();
+        assert!(!json.contains(secret), "json leaked secret: {json}");
+        assert!(json.contains("[REDACTED]"), "json did not redact: {json}");
     }
 
     #[test]
@@ -4650,6 +4755,29 @@ mod agent_tests {
     }
 
     #[test]
+    fn test_custom_harness_flags_reject_security_override_values() {
+        for flags in [
+            vec!["--permission-mode".to_string(), "bypassPermissions".to_string()],
+            vec!["--permission-mode=dontAsk".to_string()],
+            vec!["--sandbox".to_string(), "danger-full-access".to_string()],
+            vec!["--ask-for-approval=never".to_string()],
+            vec!["--config=approval_policy=never".to_string()],
+            vec!["-c".to_string(), "ask_for_approval=on-failure".to_string()],
+        ] {
+            let adapter = if flags[0].starts_with("--permission") {
+                super::AgentHarness::Claude.adapter()
+            } else {
+                super::AgentHarness::Codex.adapter()
+            };
+            let error = super::validate_custom_harness_flags(adapter, &flags, None).unwrap_err();
+            assert!(
+                error.contains("reserved security override") || error.contains("reserved for Plexi sandbox authority"),
+                "expected authority rejection for {flags:?}, got: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn test_custom_harness_flags_reserved_lifecycle_overrides_rejected() {
         let lifecycle_overrides = [
             "--append-system-prompt",
@@ -4876,6 +5004,14 @@ mod agent_tests {
             "secret must be redacted: {:?}",
             redacted[3]
         );
+
+        let inline = vec![
+            "--config=openai_api_key=ZZSECRET2ZZ".to_string(),
+            "-c=openai_api_key=ZZSECRET3ZZ".to_string(),
+            "--header=Authorization: Bearer abc123SECRET".to_string(),
+        ];
+        let redacted = super::redact_harness_flags(&inline);
+        assert_eq!(redacted, vec!["--config=[REDACTED]", "-c=[REDACTED]", "--header=[REDACTED]"]);
     }
 
     #[test]
