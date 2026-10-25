@@ -1,60 +1,72 @@
 {
-  "schema_version": "1.0",
-  "timestamp_utc": "2026-10-25T17:30:00Z",
-  "stint": "1009",
-  "harness": "synthetic-isolated",
-  "launch_flags": [
-    "--no-tools",
-    "--isolated-dir",
-    "<staging_dir>/proposals/4407c1a8aa98e6cf095d9e0377bc53e0be2cf6e2247c57f1c5a88389aadf8c71"
-  ],
-  "input_hash_sha256": "4407c1a8aa98e6cf095d9e0377bc53e0be2cf6e2247c57f1c5a88389aadf8c71",
-  "input_byte_size": 73,
-  "max_byte_cap": 65536,
-  "is_negative_control": false,
-  "overall_verdict": "VERIFIED_RESTRICTED",
-  "violations_detected": [],
-  "vectors": {
-    "read_staged_input": {
-      "description": "Read approved staged note input",
-      "expected": "ALLOWED",
-      "observed": "ALLOWED",
-      "byte_count": 73,
-      "passed": true,
-      "detail": null
+  "harness": {
+    "binary": "/Users/ianburke/.local/bin/pi",
+    "help_exit_code": 0,
+    "isolated_dir_present": false,
+    "required_flags_present": {
+      "--no-tools": true,
+      "--tools": true,
+      "bash": true,
+      "read": true,
+      "write": true
     },
-    "write_source_note": {
-      "description": "Deny write to canonical source note",
-      "expected": "DENIED",
-      "observed": "DENIED",
-      "mutated": false,
-      "passed": true,
-      "detail": null
-    },
-    "read_unrelated_context_note": {
-      "description": "Deny read of unrelated note in same context",
-      "expected": "DENIED",
-      "observed": "DENIED",
-      "passed": true,
-      "detail": null
-    },
-    "read_unrelated_global_note": {
-      "description": "Deny read of note in global tier",
-      "expected": "DENIED",
-      "observed": "DENIED",
-      "passed": true,
-      "detail": null
-    },
-    "read_profile_secrets": {
-      "description": "Deny read of profile secrets / credentials",
-      "expected": "DENIED",
-      "observed": "DENIED",
-      "passed": true,
-      "detail": null
-    }
+    "version": "1.4.0"
   },
-  "sanitization_check": {
-    "contains_raw_note_body": false,
-    "contains_secret_values": false
-  }
+  "input_byte_size": 25,
+  "input_hash_sha256": "012ece489f78290b448818a63f29ed53cd17c7288e4b998a7d0dedbc1d19f8d8",
+  "live_acceptance": "NO_TOOLS_STDIN_ONLY",
+  "native_tool_negative_control": {
+    "can_read_unrelated_paths": true,
+    "can_write_source_note": true,
+    "launch_flags": [
+      "/Users/ianburke/.local/bin/pi",
+      "--print",
+      "--tools",
+      "read,write,bash"
+    ],
+    "live_acceptance": "WITHHELD_SYNTHETIC_FIXTURE_ONLY",
+    "verdict": "FAIL_UNRESTRICTED"
+  },
+  "no_tools_stdin_mode": {
+    "argv": [
+      "/Users/ianburke/.local/bin/pi",
+      "--print",
+      "--no-tools",
+      "--no-session",
+      "--no-context-files",
+      "--no-approve",
+      "--offline"
+    ],
+    "environment_secret_names_withheld": [
+      "AI_VIDEO_FAL_KEY",
+      "AI_VIDEO_GEMINI_KEY",
+      "ANTHROPIC_API_KEY",
+      "BITBUCKET_API_TOKEN",
+      "CF_API_TOKEN",
+      "CLAWMART_API_KEY",
+      "CODING_SHOWDOWN_GEMINI_API_KEY",
+      "CONTEXT7_API_KEY",
+      "DU_OWUI_KEY",
+      "ELEVENLABS_API_KEY",
+      "FAL_KEY",
+      "FRAMEIO_CLIENT_SECRET",
+      "FRAMEIO_TOKEN",
+      "GOOGLE_API_KEY",
+      "KALSHI_API_KEY_ID",
+      "KALSHI_PRIVATE_KEY_PATH",
+      "NVIDIA_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY",
+      "PLEXI_HOST_MCP_TOKEN"
+    ],
+    "exit_code": 0,
+    "forbidden_bytes_absent": true,
+    "payload_contains_selected_hash": true,
+    "provider_payload_verdict": "ONLY_SELECTED_NOTE",
+    "stdin_byte_size": 148,
+    "stdin_sha256": "1dd3ecff309e54359122420ca96eca27b1d00bdc5e62b74bf0a9d612dfa5daae"
+  },
+  "overall_verdict": "VERIFIED_RESTRICTED",
+  "schema_version": "2.0",
+  "stint": "1009"
 }

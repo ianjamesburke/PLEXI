@@ -10,7 +10,82 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+
+/// Maximum saved-note payload admitted by the one-note proposal contract.
+pub const MAX_PROPOSAL_NOTE_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OneNoteInputError {
+    NotFound,
+    PathOutsideTier,
+    Oversized { bytes: usize },
+    InvalidEncoding,
+    Io(String),
+    StaleSourceHash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OneNoteProposalInput {
+    pub canonical_path: PathBuf,
+    pub source_hash: String,
+    pub byte_size: usize,
+    pub source_content: String,
+    pub payload: String,
+}
+
+/// Read and stage exactly one saved note for a proposal worker.
+///
+/// The returned payload is deliberately self-contained: callers must pass it
+/// to a worker over stdin and must not give the worker a note directory or a
+/// filesystem tool. Attachments and neighboring notes are never read here.
+pub fn prepare_one_note_proposal_input(
+    path: &Path,
+) -> Result<OneNoteProposalInput, OneNoteInputError> {
+    let canonical_path = std::fs::canonicalize(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            OneNoteInputError::NotFound
+        } else {
+            OneNoteInputError::Io(error.to_string())
+        }
+    })?;
+    if tier_root_for_note(&canonical_path).is_none() {
+        return Err(OneNoteInputError::PathOutsideTier);
+    }
+    let bytes = std::fs::read(&canonical_path)
+        .map_err(|error| OneNoteInputError::Io(error.to_string()))?;
+    if bytes.len() > MAX_PROPOSAL_NOTE_BYTES {
+        return Err(OneNoteInputError::Oversized { bytes: bytes.len() });
+    }
+    let content = std::str::from_utf8(&bytes).map_err(|_| OneNoteInputError::InvalidEncoding)?;
+    if content.contains('\0') {
+        return Err(OneNoteInputError::InvalidEncoding);
+    }
+    let source_hash = format!("{:x}", Sha256::digest(&bytes));
+    let payload = format!(
+        "PLEXI_ONE_NOTE_PROPOSAL_V1\nsource_hash: {source_hash}\nbyte_size: {}\n---\n{content}",
+        bytes.len()
+    );
+    Ok(OneNoteProposalInput {
+        canonical_path,
+        source_hash,
+        byte_size: bytes.len(),
+        source_content: content.to_string(),
+        payload,
+    })
+}
+
+/// Confirm that the saved source still has the hash captured at intake.
+pub fn verify_one_note_source_unchanged(
+    input: &OneNoteProposalInput,
+) -> Result<(), OneNoteInputError> {
+    let current = prepare_one_note_proposal_input(&input.canonical_path)?;
+    if current.source_hash != input.source_hash {
+        return Err(OneNoteInputError::StaleSourceHash);
+    }
+    Ok(())
+}
 
 // ─── Frontmatter ─────────────────────────────────────────────────────────────
 
@@ -1481,48 +1556,48 @@ mod tests {
         );
     }
 
-    /// Stint 1009: Bounded one-note intake invariant qualification.
-    ///
-    /// Verifies:
-    /// 1. `tier_root_for_note` admits only genuine notes in context and global tiers.
-    /// 2. Attachments under `assets/` and files outside note tiers are rejected.
-    /// 3. Canonical SHA-256 hash calculation over saved note bytes.
-    /// 4. Any byte modification to the saved note produces a different hash,
-    ///    ensuring stale proposals are detected and invalidated.
     #[test]
     fn one_note_review_intake_boundary_and_hash_qualification() {
-        use sha2::{Digest, Sha256};
-
         let env = tier_env("one-note-intake");
         let ctx_tier = context_notes_dir(&env.root);
         let note_path = ctx_tier.join("scratch.md");
         let initial_bytes = b"---\ntitle: Scratch\n---\nInitial review target.\n";
         seed(&note_path, std::str::from_utf8(initial_bytes).unwrap());
 
-        // 1. Genuine note is admitted by tier predicate.
-        assert_eq!(
-            tier_root_for_note(&note_path).as_deref(),
-            Some(ctx_tier.as_path())
-        );
+        let intake = prepare_one_note_proposal_input(&note_path).unwrap();
+        assert_eq!(intake.canonical_path, std::fs::canonicalize(&note_path).unwrap());
+        assert_eq!(intake.byte_size, initial_bytes.len());
+        assert_eq!(intake.source_hash.len(), 64);
+        assert!(intake.payload.contains(std::str::from_utf8(initial_bytes).unwrap()));
+        assert!(intake.payload.contains(&intake.source_hash));
 
-        // 2. Attachments and outside files are rejected.
+        // Attachments and outside files are rejected before their bytes enter a payload.
         let asset_path = ctx_tier.join("assets").join("diagram.png");
         std::fs::create_dir_all(asset_path.parent().unwrap()).unwrap();
         std::fs::write(&asset_path, b"fake png").unwrap();
-        assert!(tier_root_for_note(&asset_path).is_none());
+        assert_eq!(
+            prepare_one_note_proposal_input(&asset_path),
+            Err(OneNoteInputError::PathOutsideTier)
+        );
 
         let outside_path = env.root.join("config.toml");
         std::fs::write(&outside_path, b"key = 'val'").unwrap();
-        assert!(tier_root_for_note(&outside_path).is_none());
+        assert_eq!(
+            prepare_one_note_proposal_input(&outside_path),
+            Err(OneNoteInputError::PathOutsideTier)
+        );
 
-        // 3. Hash computation.
-        let hash_1 = format!("{:x}", Sha256::digest(initial_bytes));
-        assert_eq!(hash_1.len(), 64);
+        std::fs::write(&note_path, b"changed after intake\n").unwrap();
+        assert_eq!(
+            verify_one_note_source_unchanged(&intake),
+            Err(OneNoteInputError::StaleSourceHash)
+        );
 
-        // 4. Stale invalidation: modified content yields distinct hash.
-        let modified_bytes = b"---\ntitle: Scratch\n---\nModified text while review in-flight.\n";
-        let hash_2 = format!("{:x}", Sha256::digest(modified_bytes));
-        assert_ne!(hash_1, hash_2, "content modification must invalidate source hash");
+        std::fs::write(&note_path, b"a\0b\n").unwrap();
+        assert_eq!(
+            prepare_one_note_proposal_input(&note_path),
+            Err(OneNoteInputError::InvalidEncoding)
+        );
     }
 
     /// The CLI resolves its tier this way. Nearest anchored ancestor wins, so a

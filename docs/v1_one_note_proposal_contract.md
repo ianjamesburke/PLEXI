@@ -7,6 +7,8 @@ Status: active
 
 This contract defines the smallest safe specification for a manually invoked, one-selected-note proposal exemplar in Plexi V1. It resolves the exact CLI/host/package seam, input/output schemas, provider disclosure, user decision handoff, and the authority boundary between Plexi's host broker and harness-native tools.
 
+This is a **proposal contract for downstream implementation stints**, not a claim that the complete workflow is already wired. Today, `plexi note list`, the note tier predicate in `src/notes.rs`, and its validation helpers exist. The `plexi note review <note-id-or-path>` subcommand, `review:*` slots, staging lifecycle, and UI disclosure modal described below are proposed seams for stints 0796, 1014, and 1015.
+
 ### 1.1 Architectural Invariants
 - **Manual Invocation Only:** V1 supports only explicit human triggering of a single selected note review. Automated routines, background daemons, and scheduled loops are deferred to downstream work (stint 1015).
 - **Single Canonical Note Selection:** The review workflow operates on exactly one note in an existing context or global tier. Bulk crawling, multi-note scanning, and cross-project aggregation are strictly excluded.
@@ -251,8 +253,15 @@ Plexi's Permission Monitor (`src/broker/gate.rs`) intercepts host-brokered capab
 However, **harness-native tools** (e.g. bash execution, file read/write tools built into `pi`, `claude -p`, `codex`, `agy`) execute inside the child harness process on the host OS, completely bypassing Plexi's host broker gate. A system prompt saying "You are read-only" provides zero security enforcement against a compromised or hallucinating model.
 
 ### 8.2 Supported Harness Configuration
-To safely run the review exemplar:
-- Supported harness: `pi` (`packages/pi-plexi`), invoked with flags disabling native file writing and tool execution (`--no-tools` or constrained to host overview tools), or executed in an isolated working directory rooted at the staged input folder.
+The qualified installed harness is `pi 1.4.0`. The only live V1 configuration is:
+
+```text
+pi --print --no-tools --no-session --no-context-files --no-approve --offline
+```
+
+The host validates and hashes the one saved note, builds the bounded proposal payload, and sends it to the worker's stdin. `--no-tools` disables `read`, `bash`, `edit`, `write`, and all other worker tools; it does not make a staged file selectively readable. There is no `--isolated-dir` flag in this Pi version. The probe verifies `pi --version`, `pi --help`, the real launch argv, the captured stdin digest/size, and that the outbound capture contains no unselected note, attachment, directory-listing, or secret bytes.
+
+The native tool-bearing negative control uses `pi --print --tools read,write,bash`. Pi's native tools retain the OS user's filesystem authority and cannot enforce a single-note boundary. Its result is `FAIL_UNRESTRICTED` and `WITHHELD_SYNTHETIC_FIXTURE_ONLY`; it is not live V1 acceptance. Prompt wording, a working-directory convention, and an invented isolation flag are not security boundaries.
 
 ### 8.3 Release Decision Gate
 If the selected harness cannot enforce the path boundary (i.e. cannot demonstrably deny writes to the source note and reads of unrelated files), **live V1 acceptance of the exemplar MUST BE WITHHELD**.
@@ -266,19 +275,16 @@ In that event, the exemplar is restricted to a **synthetic-fixture-only demonstr
 The contract includes an automated, fixture-backed authority probe (`scripts/probe-one-note-authority.py`) and test suite (`scripts/test_probe_one_note_authority.py`).
 
 ### 9.1 Qualification Vectors
-1. **Vector 1 (`read_staged_input`):** Worker reads `<staging>/proposals/<hash>/input.md`. Result: `ALLOWED`.
-2. **Vector 2 (`write_source_note`):** Worker attempts to modify the canonical source note. Result: `DENIED`.
-3. **Vector 3 (`read_unrelated_context_note`):** Worker attempts to read another note in the same context. Result: `DENIED`.
-4. **Vector 4 (`read_unrelated_global_note`):** Worker attempts to read a note in the global tier. Result: `DENIED`.
-5. **Vector 5 (`read_profile_secrets`):** Worker attempts to read profile credentials. Result: `DENIED`.
+1. `pi --no-tools` is verified against the installed binary and help output; the worker has zero file/bash tools.
+2. The exact argv and stdin payload are captured; only the selected note's bounded content and schema framing are present.
+3. The fixture includes an unselected sibling, global note, attachment, directory-listing candidate, and secret environment value; byte-for-byte inspection proves they are absent.
+4. The native `--tools read,write,bash` mode is a negative control: because it can reach unrelated paths and write the source, it records `FAIL_UNRESTRICTED` and withholds live acceptance.
 
 ### 9.2 Negative-Control Proof
-The probe includes an explicit negative-control evaluation against an unrestricted baseline worker (`UnrestrictedWorker`). The negative control proves that the test suite actively detects unrestricted filesystem access (catching violations for source write, unrelated context read, unrelated global read, and secrets read) with verdict `NEGATIVE_CONTROL_PASSED`. This confirms that the test is falsifiable and does not pass vacuously.
+The probe includes an explicit native-tool negative control using the real installed Pi flags. It proves that tool-bearing execution is unrestricted and records `FAIL_UNRESTRICTED` / `WITHHELD_SYNTHETIC_FIXTURE_ONLY`, while the accepted path is the real `--no-tools` stdin-only subprocess.
 
 ### 9.3 Retained Evidence Record
 The retained qualification evidence is saved at `docs/security/probe-one-note-authority-evidence.json`. It records:
-- Schema version, timestamp, harness name (`synthetic-isolated`), launch flags.
-- Source content hash (`4407c1a8aa98e6cf095d9e0377bc53e0be2cf6e2247c57f1c5a88389aadf8c71`).
-- Input byte size and size limit (65,536 bytes).
-- Vector outcomes and verdict (`VERIFIED_RESTRICTED`).
-- Sanitization verification confirming zero leakage of real note text or credential values into the artifact.
+- Schema version, harness path/version, exact launch flags, and tool-mode decision.
+- Source content hash and byte size; raw note, sibling notes, attachment bytes, directory listings, and secret values are not retained.
+- Payload capture verdict (`ONLY_SELECTED_NOTE`) and overall `VERIFIED_RESTRICTED` result.

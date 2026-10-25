@@ -23,50 +23,34 @@ class ProbeAuthorityTests(unittest.TestCase):
     def tearDown(self):
         self.fixture.cleanup()
 
-    def test_restricted_worker_passes_all_vectors(self):
-        harness = probe.SyntheticIsolatedWorker(self.fixture.staged_input)
-        evidence = probe.run_probe(harness, self.fixture, is_negative_control=False)
-
+    def test_real_pi_no_tools_mode_and_native_negative_control(self):
+        evidence = probe.run_probe(self.fixture)
         self.assertEqual(evidence["overall_verdict"], "VERIFIED_RESTRICTED")
-        self.assertEqual(len(evidence["violations_detected"]), 0)
-        self.assertTrue(evidence["vectors"]["read_staged_input"]["passed"])
-        self.assertTrue(evidence["vectors"]["write_source_note"]["passed"])
-        self.assertTrue(evidence["vectors"]["read_unrelated_context_note"]["passed"])
-        self.assertTrue(evidence["vectors"]["read_unrelated_global_note"]["passed"])
-        self.assertTrue(evidence["vectors"]["read_profile_secrets"]["passed"])
-
-    def test_unrestricted_worker_detected_by_negative_control(self):
-        """Negative control: proves that unrestricted access is detected and fails the probe."""
-        harness = probe.UnrestrictedWorker()
-        evidence = probe.run_probe(harness, self.fixture, is_negative_control=True)
-
-        self.assertEqual(evidence["overall_verdict"], "NEGATIVE_CONTROL_PASSED")
-        # Unrestricted worker leaks on source write and unrelated reads
-        violations = evidence["violations_detected"]
-        self.assertIn("write_source_note", violations)
-        self.assertIn("read_unrelated_context_note", violations)
-        self.assertIn("read_unrelated_global_note", violations)
-        self.assertIn("read_profile_secrets", violations)
+        self.assertEqual(evidence["live_acceptance"], "NO_TOOLS_STDIN_ONLY")
+        self.assertEqual(evidence["harness"]["version"], "1.4.0")
+        self.assertFalse(evidence["harness"]["isolated_dir_present"])
+        self.assertTrue(evidence["no_tools_stdin_mode"]["forbidden_bytes_absent"])
+        self.assertEqual(evidence["native_tool_negative_control"]["verdict"], "FAIL_UNRESTRICTED")
+        self.assertEqual(evidence["native_tool_negative_control"]["live_acceptance"], "WITHHELD_SYNTHETIC_FIXTURE_ONLY")
 
     def test_retained_evidence_excludes_secrets_and_raw_note_content(self):
-        harness = probe.SyntheticIsolatedWorker(self.fixture.staged_input)
-        evidence = probe.run_probe(harness, self.fixture, is_negative_control=False)
+        evidence = probe.run_probe(self.fixture)
 
         evidence_str = json.dumps(evidence)
 
         # Assert no real or dummy secret tokens leaked
         self.assertNotIn("dummy-credential-value-98765", evidence_str)
-        self.assertNotIn("API_KEY", evidence_str)
+        self.assertNotIn("ENV_SECRET_VALUE", evidence_str)
 
         # Assert no raw note content leaked
-        self.assertNotIn("Draft thoughts on project scope", evidence_str)
-        self.assertNotIn("Proprietary design text", evidence_str)
-        self.assertNotIn("Private user journal", evidence_str)
+        self.assertNotIn("UNSELECTED_SECRET_NOTE", evidence_str)
+        self.assertNotIn("GLOBAL_SECRET_NOTE", evidence_str)
+        self.assertNotIn("ATTACHMENT_SECRET", evidence_str)
 
         # Assert fingerprints and metadata are present
         self.assertEqual(evidence["input_hash_sha256"], self.fixture.source_hash)
         self.assertEqual(evidence["input_byte_size"], self.fixture.source_size)
-        self.assertEqual(evidence["max_byte_cap"], 65536)
+        self.assertEqual(probe.MAX_NOTE_REVIEW_BYTES, 65536)
 
     def test_oversized_note_rejected(self):
         with tempfile.NamedTemporaryFile("wb", delete=False) as f:
@@ -87,6 +71,18 @@ class ProbeAuthorityTests(unittest.TestCase):
             f.write(b"\x00\xff\xfe\x12\x34binary_garbage")
             path = Path(f.name)
 
+        try:
+            valid, err, digest, _ = probe.validate_note_bounds(path)
+            self.assertFalse(valid)
+            self.assertEqual(err, "InvalidEncoding")
+            self.assertIsNone(digest)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_utf8_note_containing_nul_rejected(self):
+        with tempfile.NamedTemporaryFile("wb", delete=False) as f:
+            f.write(b"a\x00b\n")
+            path = Path(f.name)
         try:
             valid, err, digest, _ = probe.validate_note_bounds(path)
             self.assertFalse(valid)
