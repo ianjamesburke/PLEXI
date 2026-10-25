@@ -136,7 +136,7 @@ def preflight(settings, task_root, sprint_file, requested):
         metadata = body.split("---", 2)
         if len(metadata) < 3:
             raise PolicyError(f"invalid task metadata {task_id}")
-        status = re.search(r"(?m)^status: (\w+)$", metadata[1])
+        status = re.search(r"(?m)^status: ([\w-]+)$", metadata[1])
         size = re.search(r"(?m)^size: ([sml])$", metadata[1])
         blockers = re.search(r"(?ms)^blocked_by:\s*\n((?:  - \d+\n)*)", metadata[1])
         task_data[task_id] = {"status": status.group(1) if status else None,
@@ -171,7 +171,7 @@ def preflight(settings, task_root, sprint_file, requested):
     selected = [f"{int(task_id):04d}" for task_id in requested]
     if not selected or any(task_id == "0991" or task_id not in task_data for task_id in selected):
         raise PolicyError("requested task is missing or not a product task")
-    if any(task_data[task_id]["status"] not in ("todo", "in_progress") for task_id in selected):
+    if any(task_data[task_id]["status"] not in ("todo", "in-progress") for task_id in selected):
         raise PolicyError("requested task is not claimable")
     for task_id in selected:
         for blocker in task_data[task_id]["blocked_by"]:

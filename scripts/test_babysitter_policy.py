@@ -248,6 +248,9 @@ class PolicyTests(unittest.TestCase):
             gate.write_text(gate.read_text().replace("status: todo", "status: done"))
             self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
                              ["0986"])
+            product.write_text(product.read_text().replace("status: todo", "status: in-progress"))
+            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
+                             ["0986"])
             product.write_text(product.read_text().replace("  - 991\n", ""))
             with self.assertRaises(policy.PolicyError):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
