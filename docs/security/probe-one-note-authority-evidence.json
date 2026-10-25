@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "timestamp_utc": "2026-10-25T17:30:00Z",
+  "stint": "1009",
+  "harness": "synthetic-isolated",
+  "launch_flags": [
+    "--no-tools",
+    "--isolated-dir",
+    "<staging_dir>/proposals/4407c1a8aa98e6cf095d9e0377bc53e0be2cf6e2247c57f1c5a88389aadf8c71"
+  ],
+  "input_hash_sha256": "4407c1a8aa98e6cf095d9e0377bc53e0be2cf6e2247c57f1c5a88389aadf8c71",
+  "input_byte_size": 73,
+  "max_byte_cap": 65536,
+  "is_negative_control": false,
+  "overall_verdict": "VERIFIED_RESTRICTED",
+  "violations_detected": [],
+  "vectors": {
+    "read_staged_input": {
+      "description": "Read approved staged note input",
+      "expected": "ALLOWED",
+      "observed": "ALLOWED",
+      "byte_count": 73,
+      "passed": true,
+      "detail": null
+    },
+    "write_source_note": {
+      "description": "Deny write to canonical source note",
+      "expected": "DENIED",
+      "observed": "DENIED",
+      "mutated": false,
+      "passed": true,
+      "detail": null
+    },
+    "read_unrelated_context_note": {
+      "description": "Deny read of unrelated note in same context",
+      "expected": "DENIED",
+      "observed": "DENIED",
+      "passed": true,
+      "detail": null
+    },
+    "read_unrelated_global_note": {
+      "description": "Deny read of note in global tier",
+      "expected": "DENIED",
+      "observed": "DENIED",
+      "passed": true,
+      "detail": null
+    },
+    "read_profile_secrets": {
+      "description": "Deny read of profile secrets / credentials",
+      "expected": "DENIED",
+      "observed": "DENIED",
+      "passed": true,
+      "detail": null
+    }
+  },
+  "sanitization_check": {
+    "contains_raw_note_body": false,
+    "contains_secret_values": false
+  }
+}

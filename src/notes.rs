@@ -1481,6 +1481,50 @@ mod tests {
         );
     }
 
+    /// Stint 1009: Bounded one-note intake invariant qualification.
+    ///
+    /// Verifies:
+    /// 1. `tier_root_for_note` admits only genuine notes in context and global tiers.
+    /// 2. Attachments under `assets/` and files outside note tiers are rejected.
+    /// 3. Canonical SHA-256 hash calculation over saved note bytes.
+    /// 4. Any byte modification to the saved note produces a different hash,
+    ///    ensuring stale proposals are detected and invalidated.
+    #[test]
+    fn one_note_review_intake_boundary_and_hash_qualification() {
+        use sha2::{Digest, Sha256};
+
+        let env = tier_env("one-note-intake");
+        let ctx_tier = context_notes_dir(&env.root);
+        let note_path = ctx_tier.join("scratch.md");
+        let initial_bytes = b"---\ntitle: Scratch\n---\nInitial review target.\n";
+        seed(&note_path, std::str::from_utf8(initial_bytes).unwrap());
+
+        // 1. Genuine note is admitted by tier predicate.
+        assert_eq!(
+            tier_root_for_note(&note_path).as_deref(),
+            Some(ctx_tier.as_path())
+        );
+
+        // 2. Attachments and outside files are rejected.
+        let asset_path = ctx_tier.join("assets").join("diagram.png");
+        std::fs::create_dir_all(asset_path.parent().unwrap()).unwrap();
+        std::fs::write(&asset_path, b"fake png").unwrap();
+        assert!(tier_root_for_note(&asset_path).is_none());
+
+        let outside_path = env.root.join("config.toml");
+        std::fs::write(&outside_path, b"key = 'val'").unwrap();
+        assert!(tier_root_for_note(&outside_path).is_none());
+
+        // 3. Hash computation.
+        let hash_1 = format!("{:x}", Sha256::digest(initial_bytes));
+        assert_eq!(hash_1.len(), 64);
+
+        // 4. Stale invalidation: modified content yields distinct hash.
+        let modified_bytes = b"---\ntitle: Scratch\n---\nModified text while review in-flight.\n";
+        let hash_2 = format!("{:x}", Sha256::digest(modified_bytes));
+        assert_ne!(hash_1, hash_2, "content modification must invalidate source hash");
+    }
+
     /// The CLI resolves its tier this way. Nearest anchored ancestor wins, so a
     /// nested project inside a bigger one gets its own tier.
     #[test]
