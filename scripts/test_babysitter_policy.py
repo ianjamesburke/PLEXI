@@ -263,7 +263,7 @@ class PolicyTests(unittest.TestCase):
             root = Path(directory)
             marker = root / "wtp-called"
             git = root / "git"
-            git.write_text("#!/bin/sh\nprintf 'worktree /tmp/alpha\\nbranch refs/heads/alpha\\nworktree /tmp/aggregate\\nbranch refs/heads/feature/alpha-cleanup\\n'\n")
+            git.write_text("#!/bin/sh\nif [ \"$3\" = branch ]; then printf '%s\\n' \"${FAKE_BRANCH:-feature/alpha-cleanup}\"; else printf 'worktree /tmp/alpha\\nbranch refs/heads/alpha\\nworktree /tmp/aggregate\\nbranch refs/heads/feature/alpha-cleanup\\n'; fi\n")
             uv = root / "uv"
             uv.write_text("#!/bin/sh\nexit 7\n")
             wtp = root / "wtp"
@@ -274,6 +274,13 @@ class PolicyTests(unittest.TestCase):
                                      "feature/alpha-cleanup", "0986"), capture_output=True,
                                     text=True, env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}"})
             self.assertEqual(result.returncode, 7)
+            self.assertFalse(marker.exists())
+            wrong_branch = subprocess.run(("bash", str(SCRIPT.with_name("bs-start.sh")), "--base",
+                                           "feature/alpha-cleanup", "0986"), capture_output=True,
+                                          text=True, env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                                                          "FAKE_BRANCH": "alpha"})
+            self.assertNotEqual(wrong_branch.returncode, 0)
+            self.assertIn("must run the helper", wrong_branch.stderr)
             self.assertFalse(marker.exists())
 
 

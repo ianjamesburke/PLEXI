@@ -47,6 +47,11 @@ if [[ -z "$base_root" ]]; then
   exit 1
 fi
 if [[ "$base_branch" == "feature/alpha-cleanup" ]]; then
+  script_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [[ "$(git -C "$script_root" branch --show-current)" != "$base_branch" ]]; then
+    echo "bs-start: aggregate mode must run the helper from the $base_branch worktree" >&2
+    exit 1
+  fi
   # Refuse blocked product dispatch before worktree creation or stint claim.
   uv run --no-project python "$SCRIPT_DIR/babysitter-policy.py" preflight "${stint_ids[@]}" >/dev/null
 fi
