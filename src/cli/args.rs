@@ -1873,6 +1873,14 @@ pub enum HostCmd {
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
+    /// Inject a key or chord into the host-level keyboard path.
+    ///
+    /// This is a validation seam for host shortcuts: it does not send bytes
+    /// to a focused pane. Example: `plexi-pr-2906 host key cmd+1`.
+    Key {
+        /// Single key, named key, or chord such as `cmd+1` or `cmd+shift+2`.
+        key: String,
+    },
 }
 
 /// `plexi account <cmd>` — marketplace account management.

@@ -535,3 +535,4 @@ pane count (`--json` is supported).
 - `plexi host log`: Write one info-level marker line into the running host's channel log
 - `plexi host status`: Report whether this channel's host is running, its pid, socket path, and pane count
 - `plexi host screenshot`: Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture
+- `plexi host key`: Inject a key or chord into the host-level keyboard path

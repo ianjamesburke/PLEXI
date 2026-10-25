@@ -4032,3 +4032,178 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
         "spawns must land in the caller's context, not the active one"
     );
 }
+
+#[test]
+fn cmd_1_2_3_switches_numbered_contexts() {
+    let mut h = crate::testing::HostHarness::new();
+    h.app.sidebar_visible = true;
+    let cmd = || {
+        if cfg!(target_os = "macos") {
+            egui::Modifiers {
+                command: true,
+                mac_cmd: true,
+                ..egui::Modifiers::NONE
+            }
+        } else {
+            egui::Modifiers::COMMAND
+        }
+    };
+    let assert_sidebar_highlight = |app: &crate::app::PlexiApp, expected_display_idx: usize| {
+        let active_order: Vec<usize> = app
+            .router
+            .top_level_order()
+            .into_iter()
+            .filter(|&i| !app.router.get(i).parked)
+            .collect();
+        let active_idx = app.router.active_idx();
+        assert_eq!(
+            active_order.get(expected_display_idx),
+            Some(&active_idx),
+            "sidebar highlight must follow the numbered active row"
+        );
+        for (display_idx, &router_idx) in active_order.iter().enumerate() {
+            assert_eq!(
+                router_idx == active_idx,
+                display_idx == expected_display_idx,
+                "sidebar row highlight disagrees at display position {}",
+                display_idx + 1
+            );
+        }
+    };
+    let (t1, p1) = h.app.add_app_pane_in_window(0, "p1");
+    h.app.windows[0].navigate_to(t1);
+    let ctx1_id = h.app.router.get(0).context_id;
+
+    let ctx2_id = h.app.create_context_without_pty("ctx-2", None);
+    let win2_idx = h.app.windows.len() - 1;
+    let (t2, p2) = h.app.add_app_pane_in_window(win2_idx, "p2");
+    h.app.windows[win2_idx].navigate_to(t2);
+
+    let ctx3_id = h.app.create_context_without_pty("ctx-3", None);
+    let win3_idx = h.app.windows.len() - 1;
+    let (t3, p3) = h.app.add_app_pane_in_window(win3_idx, "p3");
+    h.app.windows[win3_idx].navigate_to(t3);
+
+    // Switch back to context 1 to start
+    h.app.switch_workspace(0);
+    h.frame(egui::RawInput::default());
+
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+    assert_eq!(h.app.visual_owner_pane(), Some(p1));
+    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p1));
+    assert_eq!(h.app.router.active_idx(), 0);
+    assert_sidebar_highlight(&h.app, 0);
+
+    // Press Cmd+2 -> switches to context 2
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx2_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p2));
+    assert_eq!(h.app.visual_owner_pane(), Some(p2));
+    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p2));
+    assert_eq!(h.app.router.active_idx(), 1);
+    assert_sidebar_highlight(&h.app, 1);
+
+    // Press Cmd+3 -> switches to context 3
+    h.press_key(egui::Key::Num3, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p3));
+    assert_eq!(h.app.visual_owner_pane(), Some(p3));
+    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p3));
+    assert_eq!(h.app.router.active_idx(), 2);
+    assert_sidebar_highlight(&h.app, 2);
+
+    // Press Cmd+1 -> switches back to context 1
+    h.press_key(egui::Key::Num1, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+    assert_eq!(h.app.visual_owner_pane(), Some(p1));
+    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p1));
+    assert_eq!(h.app.router.active_idx(), 0);
+    assert_sidebar_highlight(&h.app, 0);
+
+    // Absent context chord: Cmd+4 does not switch, does not panic, and does not leak
+    h.press_key(egui::Key::Num4, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+    assert_eq!(h.app.visual_owner_pane(), Some(p1));
+
+    // Exact matching: Cmd+Shift+2 does NOT switch to context 2
+    h.press_key(egui::Key::Num2, cmd() | egui::Modifiers::SHIFT);
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+
+    // Park context 2 (router idx 1)
+    h.app.park_context(1);
+    // Now visible top-level unparked order is [context 1, context 3]
+    // Cmd+2 must switch to visible row 2, which is context 3!
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p3));
+    assert_eq!(h.app.visual_owner_pane(), Some(p3));
+    assert_sidebar_highlight(&h.app, 1);
+
+    // Cmd+3 is now out of range because only 2 contexts are active
+    h.press_key(egui::Key::Num3, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+
+    // Return to context 1
+    h.press_key(egui::Key::Num1, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_sidebar_highlight(&h.app, 0);
+
+    // Unpark context 2 so we have 3 top-level contexts again
+    h.app.unpark_context(1);
+    // Add a child context under context 1
+    let _child_id = h.app.create_context_without_pty("child", Some(ctx1_id));
+    let win_child_idx = h.app.windows.len() - 1;
+    let (t_child, _p_child) = h.app.add_app_pane_in_window(win_child_idx, "child-p");
+    h.app.windows[win_child_idx].navigate_to(t_child);
+
+    // Subcontext is excluded from top_level_order; numbered slots remain pinned to masters
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx2_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p2));
+    assert_sidebar_highlight(&h.app, 1);
+
+    h.press_key(egui::Key::Num3, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p3));
+    assert_sidebar_highlight(&h.app, 2);
+
+    // Overlay active (e.g. TreeAtlas): Cmd+1..9 does not trigger ghost switches
+    h.app.zoom.level = crate::app::zoom::ZoomLevel::TreeAtlas;
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id, "no ghost context switch in TreeAtlas");
+}
+
+#[test]
+fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
+    let mut h = crate::testing::HostHarness::new();
+    let (tile, pane) = h.app.add_app_pane_in_window(0, "ctx-1-pane");
+    h.app.windows[0].navigate_to(tile);
+    let first = h.app.router.get(0).context_id;
+    let second = h.app.create_context_without_pty("ctx-2", None);
+    let second_window = h.app.windows.len() - 1;
+    let (second_tile, _second_pane) =
+        h.app.add_app_pane_in_window(second_window, "ctx-2-pane");
+    h.app.windows[second_window].navigate_to(second_tile);
+    h.app.switch_workspace(0);
+
+    let response_dir = tempfile::tempdir().expect("response directory");
+    let response_file = response_dir.path().join("host-key.json");
+    h.inject_ipc(crate::protocol::AppRequest::HostKey {
+        key: "cmd+2".to_string(),
+        response_file: response_file.to_string_lossy().into_owned(),
+    });
+    h.frame(egui::RawInput::default());
+
+    assert_eq!(h.app.router.active().context_id, second);
+    assert_eq!(h.app.active_focused_pane_id(), Some(_second_pane));
+    assert_ne!(h.app.router.active().context_id, first);
+    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(_second_pane));
+    assert_ne!(h.app.active_focused_pane_id(), Some(pane));
+    let response = std::fs::read_to_string(response_file).expect("host key response");
+    assert_eq!(response, r#"{"ok":true}"#);
+}
+

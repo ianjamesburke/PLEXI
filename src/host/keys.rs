@@ -866,8 +866,10 @@ fn modifier_count(m: &egui::Modifiers) -> u32 {
     m.command as u32 + m.shift as u32 + m.ctrl as u32 + m.alt as u32
 }
 
-// egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input always
-// sets mac_cmd=true when Cmd is held. Raw == comparison fails on macOS.
+// egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input also
+// sets mac_cmd=true when Cmd is held. Treat those two fields as one logical
+// modifier when matching exact chords; raw field equality would reject a real
+// macOS Cmd key event.
 // On non-macOS (Linux/Windows), egui sets both `ctrl` and `command` to true
 // when physical Ctrl is held, while `cmd()` patterns set `command=true, ctrl=false`.
 fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) -> bool {
@@ -880,7 +882,7 @@ pub(crate) fn modifiers_match_exact_for_os(
     is_macos: bool,
 ) -> bool {
     if is_macos {
-        actual.command == pattern.command
+        (actual.command || actual.mac_cmd) == (pattern.command || pattern.mac_cmd)
             && actual.ctrl == pattern.ctrl
             && actual.shift == pattern.shift
             && actual.alt == pattern.alt
@@ -1592,7 +1594,8 @@ pub fn poll_actions(
             egui::Key::Num9,
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
+            if input.consume_key_exact(egui::Modifiers::COMMAND, key) {
+                log::info!("keys: poll_actions admitted SwitchContext({i}) for {key:?}");
                 claimed_key_releases.insert(key);
                 actions.push(Action::SwitchContext(i));
             }
@@ -1861,15 +1864,15 @@ mod tests {
             false
         ));
 
-        // macOS: `cmd` and `ctrl` are distinct physical modifiers.
+        // macOS: `cmd` and `ctrl` are distinct physical modifiers. winit's
+        // runtime snapshot carries both command and mac_cmd for Cmd, while a
+        // synthetic input may carry only mac_cmd.
         let mac_cmd_only = egui::Modifiers {
-            command: true,
             mac_cmd: true,
             ctrl: false,
             ..egui::Modifiers::NONE
         };
         let mac_cmd_ctrl = egui::Modifiers {
-            command: true,
             mac_cmd: true,
             ctrl: true,
             ..egui::Modifiers::NONE
@@ -1884,6 +1887,17 @@ mod tests {
         assert!(!modifiers_match_exact_for_os(
             &mac_cmd_only,
             &cmd_ctrl(),
+            true
+        ));
+
+        let mac_cmd_with_command = egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ..egui::Modifiers::NONE
+        };
+        assert!(modifiers_match_exact_for_os(
+            &mac_cmd_with_command,
+            &cmd(),
             true
         ));
     }

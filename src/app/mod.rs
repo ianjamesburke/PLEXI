@@ -4403,12 +4403,19 @@ impl eframe::App for PlexiApp {
                         .filter(|&i| !self.router.get(i).parked)
                         .collect();
                     if let Some(&router_idx) = active_order.get(n) {
+                        let target_ctx_id = self.router.get(router_idx).context_id;
                         log::info!(
-                            "SwitchContext: display_pos={} → router_idx={}",
+                            "SwitchContext: display_pos={} → router_idx={} context_id={target_ctx_id}",
                             n + 1,
                             router_idx
                         );
                         self.switch_workspace(router_idx);
+                    } else {
+                        log::info!(
+                            "SwitchContext: display_pos={} unmapped (active top-level count={})",
+                            n + 1,
+                            active_order.len()
+                        );
                     }
                 }
                 Action::NextTab => {
@@ -4736,7 +4743,7 @@ impl PlexiApp {
         }
     }
 
-    fn resolve_remembered_pane_for_context(
+    pub(crate) fn resolve_remembered_pane_for_context(
         &mut self,
         ctx_id: u64,
     ) -> Option<crate::spatial::tiling::PaneId> {
