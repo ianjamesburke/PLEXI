@@ -838,6 +838,8 @@ impl PlexiApp {
                     }
                 }
 
+                let mut peek_click: Option<bool> = None;
+                let mut reset_dividers: bool = false;
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     child_agent_strips,
@@ -926,6 +928,24 @@ impl PlexiApp {
                         has_right_neighbor,
                         self.colors,
                     );
+                    let (left_peek_rect, right_peek_rect) = crate::app::zoom::peek_strip_rects(
+                        canvas_full_rect,
+                        focused_frame_outer,
+                        has_left_neighbor,
+                        has_right_neighbor,
+                    );
+                    if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)) {
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            if left_peek_rect.is_some_and(|r| r.contains(pos)) {
+                                peek_click = Some(true);
+                            } else if right_peek_rect.is_some_and(|r| r.contains(pos)) {
+                                peek_click = Some(false);
+                            }
+                        }
+                    }
+                    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                        reset_dividers = true;
+                    }
                 }
 
                 // Expire click_flash once FLASH_DUR has elapsed.
@@ -1196,6 +1216,13 @@ impl PlexiApp {
                         log::info!("focus: canvas click flash → win={win_id} tile={new_tile:?}");
                         self.click_flash = Some(ClickFlash { window_id: win_id, tile: new_tile, started_at: std::time::Instant::now() });
                     }
+                }
+
+                if let Some(is_left) = peek_click {
+                    self.handle_peek_click(is_left);
+                }
+                if reset_dividers {
+                    self.reset_column_widths(self.router.active().context_id);
                 }
 
                 // ── Pane swap animation overlays ────────────────────────────────────────

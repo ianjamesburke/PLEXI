@@ -8,4 +8,5 @@ mod pane_lifecycle_consumers;
 mod shortcut_tests;
 
 mod cli_parity_tests;
+mod strip_regression_tests;
 mod zoom_tests;
