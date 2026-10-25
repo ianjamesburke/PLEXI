@@ -78,6 +78,67 @@ pub struct GhostMarker {
     pub strip_offset: usize,
 }
 
+/// Measured geometry for the origin marker ("you were here" circle + label).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OriginMarkerGeometry {
+    pub circle_center: Pos2,
+    pub circle_radius: f32,
+    pub circle_stroke_width: f32,
+    pub text_pos: Pos2,
+    pub text_size: Vec2,
+    pub total_rect: Rect,
+}
+
+pub const ORIGIN_MARKER_TEXT: &str = "you were here";
+pub const ORIGIN_MARKER_CIRCLE_RADIUS: f32 = 3.5;
+pub const ORIGIN_MARKER_CIRCLE_STROKE: f32 = 1.2;
+pub const ORIGIN_MARKER_GAP: f32 = 6.0;
+
+/// Paints the origin marker ("you were here" circle + text) using shared measured geometry.
+/// `anchor_bottom_left` is the bottom-left anchor position within its container.
+pub fn paint_origin_marker(
+    painter: &egui::Painter,
+    anchor_bottom_left: Pos2,
+    color: egui::Color32,
+) -> OriginMarkerGeometry {
+    let font = FontId::new(style::TEXT_HINT, FontFamily::Proportional);
+    let galley = painter.layout_no_wrap(ORIGIN_MARKER_TEXT.to_string(), font, color);
+    let text_size = galley.size();
+    let text_h = text_size.y;
+    let circle_radius = ORIGIN_MARKER_CIRCLE_RADIUS;
+    let circle_stroke_width = ORIGIN_MARKER_CIRCLE_STROKE;
+    let gap = ORIGIN_MARKER_GAP;
+
+    let top_y = anchor_bottom_left.y - text_h;
+    let mid_y = top_y + text_h * 0.5;
+
+    let circle_center = Pos2::new(anchor_bottom_left.x + circle_radius, mid_y);
+    let text_pos = Pos2::new(anchor_bottom_left.x + circle_radius * 2.0 + gap, top_y);
+
+    painter.circle_stroke(
+        circle_center,
+        circle_radius,
+        Stroke::new(circle_stroke_width, color),
+    );
+    painter.galley(text_pos, galley, color);
+
+    let total_w = circle_radius * 2.0 + gap + text_size.x;
+    let total_h = text_h.max(circle_radius * 2.0);
+    let total_rect = Rect::from_min_size(
+        Pos2::new(anchor_bottom_left.x, top_y.min(mid_y - circle_radius)),
+        Vec2::new(total_w, total_h),
+    );
+
+    OriginMarkerGeometry {
+        circle_center,
+        circle_radius,
+        circle_stroke_width,
+        text_pos,
+        text_size,
+        total_rect,
+    }
+}
+
 /// The active window's column strip in window-local indices (`App::active_window_strip`).
 #[derive(Debug, Clone)]
 pub(crate) struct WindowStrip {
@@ -219,6 +280,10 @@ pub struct ZoomState {
     pub column_presets: HashMap<(u64, usize), ColumnWidthPreset>,
     /// Focused context ID while at `ZoomLevel::SiblingCards`.
     pub cards_focused_context: Option<u64>,
+    /// Explicit horizontal viewport scroll offset (center X in content coordinates) for `ZoomLevel::SiblingCards`.
+    pub cards_viewport_offset: f32,
+    /// Last context ID for which cards viewport offset was synchronized with focus.
+    pub cards_last_focused_context: Option<u64>,
     /// Focused context ID while at `ZoomLevel::TreeAtlas`.
     pub atlas_focused_context: Option<u64>,
     /// Per-parent context last-visited child context in the atlas (`h` / `l` memory).
@@ -834,6 +899,8 @@ impl PlexiApp {
                     strip_offset: offset,
                 });
                 self.zoom.cards_focused_context = Some(ctx_id);
+                self.zoom.cards_last_focused_context = None;
+                self.zoom.cards_viewport_offset = 0.0;
                 self.set_zoom_level_with_transition(ZoomLevel::SiblingCards);
                 log::info!(
                     "zoom: Columns -> SiblingCards (ghost ctx={ctx_id} col={col_idx} pane={pane_id})"
@@ -968,6 +1035,8 @@ impl PlexiApp {
                     self.router.set_active(r_idx);
                 }
                 self.zoom.cards_focused_context = Some(target_ctx);
+                self.zoom.cards_last_focused_context = None;
+                self.zoom.cards_viewport_offset = 0.0;
                 self.set_zoom_level_with_transition(ZoomLevel::SiblingCards);
                 log::info!("zoom: TreeAtlas -> SiblingCards (ctx={target_ctx})");
                 true
@@ -1077,30 +1146,37 @@ impl PlexiApp {
             .unwrap_or_else(|| self.router.active().context_id);
         let cur_idx = siblings.iter().position(|&c| c == cur_ctx).unwrap_or(0);
 
-        match dir {
+        let new_idx = match dir {
             Direction::Left => {
                 if cur_idx == 0 {
                     self.record_edge_bump(Direction::Left);
-                    false
-                } else {
-                    self.zoom.cards_focused_context = Some(siblings[cur_idx - 1]);
-                    true
+                    return false;
                 }
+                cur_idx - 1
             }
             Direction::Right => {
                 if cur_idx + 1 >= siblings.len() {
                     self.record_edge_bump(Direction::Right);
-                    false
-                } else {
-                    self.zoom.cards_focused_context = Some(siblings[cur_idx + 1]);
-                    true
+                    return false;
                 }
+                cur_idx + 1
             }
             Direction::Up | Direction::Down => {
                 self.record_edge_bump(dir);
-                false
+                return false;
             }
-        }
+        };
+
+        let target_ctx = siblings[new_idx];
+        self.zoom.cards_focused_context = Some(target_ctx);
+        self.zoom.cards_viewport_offset =
+            (new_idx as f32) * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
+        self.zoom.cards_last_focused_context = Some(target_ctx);
+        log::info!(
+            "zoom: sibling cards navigate dir={dir:?} target_ctx={target_ctx} idx={new_idx} offset={:.1}",
+            self.zoom.cards_viewport_offset
+        );
+        true
     }
 
     /// Enter the currently focused sibling card at its last active pane.
@@ -1112,6 +1188,7 @@ impl PlexiApp {
         self.zoom.ghost = None;
         self.switch_to_context_restoring_last_pane(target_ctx);
         self.set_zoom_level_with_transition(ZoomLevel::Columns);
+        log::info!("zoom: enter sibling card target_ctx={target_ctx}");
         true
     }
 
@@ -2216,27 +2293,89 @@ impl PlexiApp {
             .cards_focused_context
             .unwrap_or_else(|| self.router.active().context_id);
         let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
+        let focused_idx = siblings
+            .iter()
+            .position(|&cid| cid == focused_ctx)
+            .unwrap_or_default();
 
-        let total_w = (siblings.len() as f32) * style::CARD_W
-            + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP;
-        let horizontal_margin = 24.0;
-        // A crowded row cannot show every card at once. Keep the keyboard-selected
-        // card in view so its focus treatment remains visible while h/l moves it.
-        // Small rows retain the centered presentation used before overflow support.
-        let start_x = if total_w <= rect.width() - horizontal_margin * 2.0 {
-            rect.center().x - total_w * 0.5
+        let total_w = if siblings.is_empty() {
+            0.0
         } else {
-            let focused_idx = siblings
-                .iter()
-                .position(|&cid| cid == focused_ctx)
-                .unwrap_or_default() as f32;
-            rect.center().x
-                - style::CARD_W * 0.5
-                - focused_idx * (style::CARD_W + style::CARD_GAP)
+            (siblings.len() as f32) * style::CARD_W
+                + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP
         };
+        let horizontal_margin = 24.0;
+        let is_overflow = total_w > rect.width() - horizontal_margin * 2.0;
+
+        let ideal_offset = if !is_overflow {
+            total_w * 0.5
+        } else {
+            (focused_idx as f32) * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5
+        };
+
+        // Selection-follow behavior: keep selected card visible and centered.
+        if self.zoom.cards_last_focused_context != Some(focused_ctx) {
+            self.zoom.cards_last_focused_context = Some(focused_ctx);
+            self.zoom.cards_viewport_offset = ideal_offset;
+            log::info!(
+                "zoom: sibling cards selection follow ctx={focused_ctx} idx={focused_idx} offset={:.1}",
+                self.zoom.cards_viewport_offset
+            );
+        } else if !is_overflow && self.zoom.cards_viewport_offset == 0.0 {
+            self.zoom.cards_viewport_offset = ideal_offset;
+        }
+
+        // Pointer scrolling & drag handling
+        let min_offset = style::CARD_W * 0.5;
+        let max_offset = (siblings.len().saturating_sub(1) as f32) * (style::CARD_W + style::CARD_GAP)
+            + style::CARD_W * 0.5;
+
+        let bg_resp = ui.interact(rect, egui::Id::new("sibling_cards_canvas_drag"), Sense::drag());
+        if bg_resp.dragged() {
+            let drag_x = bg_resp.drag_delta().x;
+            if drag_x.abs() > 0.0 {
+                self.zoom.cards_viewport_offset -= drag_x;
+                if is_overflow {
+                    self.zoom.cards_viewport_offset = self.zoom.cards_viewport_offset.clamp(
+                        min_offset.min(max_offset),
+                        min_offset.max(max_offset),
+                    );
+                }
+                log::info!(
+                    "zoom: sibling cards pointer drag delta={drag_x:.1} offset={:.1}",
+                    self.zoom.cards_viewport_offset
+                );
+            }
+        }
+
+        if ui.rect_contains_pointer(rect) {
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+            let delta_x = if scroll_delta.x.abs() > 0.0 {
+                scroll_delta.x
+            } else {
+                scroll_delta.y
+            };
+            if delta_x.abs() > 0.0 {
+                self.zoom.cards_viewport_offset -= delta_x;
+                if is_overflow {
+                    self.zoom.cards_viewport_offset = self.zoom.cards_viewport_offset.clamp(
+                        min_offset.min(max_offset),
+                        min_offset.max(max_offset),
+                    );
+                }
+                log::info!(
+                    "zoom: sibling cards pointer scroll delta={delta_x:.1} offset={:.1}",
+                    self.zoom.cards_viewport_offset
+                );
+            }
+        }
+
+        let start_x = rect.center().x - self.zoom.cards_viewport_offset;
         let center_y = rect.center().y;
 
         let mut clicked_ctx: Option<u64> = None;
+        #[cfg(test)]
+        let mut painted_origin_geom: Option<OriginMarkerGeometry> = None;
         #[cfg(test)]
         let mut painted_cards = Vec::with_capacity(siblings.len());
 
@@ -2291,13 +2430,15 @@ impl PlexiApp {
             let card_painter = painter.with_clip_rect(card_rect.shrink(1.0));
 
             if is_ghost {
-                card_painter.text(
-                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 10.0),
-                    Align2::LEFT_BOTTOM,
-                    "◌ you were here",
-                    FontId::new(style::TEXT_HINT, FontFamily::Proportional),
+                let _geom = paint_origin_marker(
+                    &card_painter,
+                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 12.0),
                     colors.accent,
                 );
+                #[cfg(test)]
+                {
+                    painted_origin_geom = Some(_geom);
+                }
             }
 
             // Mini column tiles inside the card, below the header block.
@@ -2379,6 +2520,14 @@ impl PlexiApp {
             data.insert_temp(
                 egui::Id::new("sibling_cards_painted_geometry"),
                 (rect, painted_cards),
+            );
+            data.insert_temp(
+                egui::Id::new("sibling_cards_viewport_offset"),
+                self.zoom.cards_viewport_offset,
+            );
+            data.insert_temp(
+                egui::Id::new("sibling_cards_origin_marker_geometry"),
+                painted_origin_geom,
             );
         });
     }

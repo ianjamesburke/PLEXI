@@ -335,6 +335,44 @@ fn sibling_cards_navigation_and_context_restore_r34_r36() {
     assert_eq!(h.app.active_focused_pane_id(), Some(ctx1_p2));
 }
 
+/// Stint 0988: Sibling cards selection-follow updates viewport offset, and pointer scrolling can be recovered by navigation.
+#[test]
+fn sibling_cards_selection_follow_and_pointer_scrolling() {
+    let mut h = HostHarness::new();
+    let ctx0_id = h.app.router.active().context_id;
+    let p0 = h.add_test_pane();
+    h.app.set_context_columns(ctx0_id, vec![vec![p0]]);
+
+    let mut sibs = vec![ctx0_id];
+    for i in 1..5 {
+        let cid = h.app.create_context_without_pty(&format!("ctx-{i}"), None);
+        let pid = h.add_test_pane();
+        h.app.set_context_columns(cid, vec![vec![pid]]);
+        sibs.push(cid);
+    }
+
+    h.app.switch_to_context_restoring_last_pane(ctx0_id);
+    h.app.zoom_out_or_close_surface();
+    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
+    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
+
+    // Move Right with L to card 1
+    assert!(h.app.navigate_sibling_cards(Direction::Right));
+    assert_eq!(h.app.zoom.cards_focused_context, Some(sibs[1]));
+    let expected_offset_1 = 1.0 * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
+    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_1);
+
+    // Simulate pointer scroll adjusting viewport offset
+    h.app.zoom.cards_viewport_offset += 50.0;
+    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_1 + 50.0);
+
+    // Navigating with keyboard (Left to card 0) triggers selection-follow and snaps back to centered card 0!
+    assert!(h.app.navigate_sibling_cards(Direction::Left));
+    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
+    let expected_offset_0 = 0.0 * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
+    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_0);
+}
+
 /// R35: Tree Atlas left-to-right tidy tree (`parent.x < child.x`), `h`/`l`/`j`/`k`,
 /// `[`/`]` sibling wrap, `n`/`N` needs-you wrap, `p` peek, `q` ghost return,
 /// and `Enter` dive (asking node -> asking pane + DecisionOverlay open; calm node -> last active pane).
