@@ -17,6 +17,10 @@ use std::ops::Range;
 pub struct SearchBarOutput {
     /// True if the query text was modified this frame (typing, paste, or clear button).
     pub changed: bool,
+    /// True if the search input or magnifier icon was clicked.
+    pub clicked: bool,
+    /// True if the search input gained focus this frame.
+    pub gained_focus: bool,
 }
 
 /// Shared search input bar with leading magnifier icon, [`SurfaceKey`] focus
@@ -30,6 +34,7 @@ pub struct SearchBar<'a> {
     scanning: bool,
     font_size: f32,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    shortcut: Option<&'a [&'a str]>,
 }
 
 impl<'a> SearchBar<'a> {
@@ -43,6 +48,7 @@ impl<'a> SearchBar<'a> {
             scanning: false,
             font_size: style::TEXT_HINT,
             pending_click: None,
+            shortcut: None,
         }
     }
 
@@ -63,6 +69,12 @@ impl<'a> SearchBar<'a> {
     pub fn status(mut self, match_count: usize, scanning: bool) -> Self {
         self.match_count = Some(match_count);
         self.scanning = scanning;
+        self
+    }
+
+    /// Display shortcut hint chips on the trailing edge when query is empty.
+    pub fn shortcut(mut self, shortcut: Option<&'a [&'a str]>) -> Self {
+        self.shortcut = shortcut;
         self
     }
 
@@ -104,18 +116,26 @@ impl<'a> SearchBar<'a> {
         let has_clear = !query.is_empty();
 
         let mut text_response: Option<egui::Response> = None;
+        let mut icon_clicked = false;
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = style::SPACE_SM;
 
             // Leading magnifier icon
             let icon_side = (self.font_size + 4.0).max(16.0);
-            let (icon_rect, _) =
-                ui.allocate_exact_size(egui::vec2(icon_side, icon_side), Sense::hover());
+            let (icon_rect, icon_resp) =
+                ui.allocate_exact_size(egui::vec2(icon_side, icon_side), Sense::click());
             paint_magnifier_icon(ui.painter(), icon_rect, colors.accent);
+            if icon_resp.clicked()
+                || self
+                    .pending_click
+                    .is_some_and(|c| c.targets_id(icon_resp.id))
+            {
+                icon_clicked = true;
+            }
 
             // Compute trailing width reservation so the TextField doesn't push
-            // the status badge and clear button off the right edge.
+            // the status badge, clear button, or shortcut chip off the right edge.
             let font_id = FontId::proportional(self.font_size);
             let status_w = if status_label.is_empty() {
                 0.0
@@ -127,8 +147,21 @@ impl<'a> SearchBar<'a> {
                 }) + style::SPACE_MD
             };
             let clear_w = if has_clear { 26.0 } else { 0.0 };
-            let input_w = (ui.available_width() - status_w - clear_w).max(80.0);
+            let shortcut_w = if !has_clear && status_label.is_empty() {
+                self.shortcut
+                    .map(|keys| crate::ui::shortcuts::key_combo_width(ui, keys))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let trailing_reserve = status_w + clear_w + shortcut_w;
+            let input_w = if trailing_reserve > 0.0 {
+                (ui.available_width() - trailing_reserve - style::SPACE_SM).max(80.0)
+            } else {
+                ui.available_width()
+            };
 
+            let hint_label = self.hint;
             let resp = ui
                 .allocate_ui_with_layout(
                     egui::vec2(input_w, (self.font_size + 12.0).max(24.0)),
@@ -141,9 +174,15 @@ impl<'a> SearchBar<'a> {
                 )
                 .inner;
 
+            if query.is_empty() {
+                resp.widget_info(move || {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, hint_label)
+                });
+            }
+
             if let Some(surface_key) = self.surface {
                 register_default_text_surface(ui.ctx(), surface_key, resp.id);
-                if self.claim_focus {
+                if self.claim_focus || icon_clicked {
                     claim_text_surface(ui.ctx(), surface_key, resp.id);
                 }
             }
@@ -169,6 +208,22 @@ impl<'a> SearchBar<'a> {
                             claim_text_surface(ui.ctx(), surface_key, self.id);
                         }
                     }
+                } else if status_label.is_empty() {
+                    if let Some(keys) = self.shortcut {
+                        let chip_w = crate::ui::shortcuts::key_combo_width(ui, keys);
+                        let chip_h = crate::ui::shortcuts::chip_row_height(ui);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(chip_w, chip_h),
+                            egui::Sense::hover(),
+                        );
+                        crate::ui::shortcuts::key_combo_painted(
+                            ui,
+                            rect.left(),
+                            rect.center().y,
+                            keys,
+                            colors,
+                        );
+                    }
                 }
 
                 if !status_label.is_empty() {
@@ -186,8 +241,18 @@ impl<'a> SearchBar<'a> {
         });
 
         let response = text_response.expect("SearchBar always renders TextField");
+        let clicked = response.clicked()
+            || icon_clicked
+            || self
+                .pending_click
+                .is_some_and(|c| c.targets_id(response.id) || c.targets_id(self.id));
+        let gained_focus = response.gained_focus();
         let changed = response.changed() || cleared || *query != before;
-        SearchBarOutput { changed }
+        SearchBarOutput {
+            changed,
+            clicked,
+            gained_focus,
+        }
     }
 }
 

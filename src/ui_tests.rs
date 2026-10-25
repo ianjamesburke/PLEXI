@@ -7095,6 +7095,194 @@ mod tests {
     }
 
     #[test]
+    fn file_browser_search_discoverable_and_interactive_in_harness() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace-root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(root.join("alpha.rs"), b"fn alpha() {}\n").expect("write alpha");
+        std::fs::write(root.join("beta.md"), b"# Beta\n").expect("write beta");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(640.0, 480.0, 2.0);
+        let root_clone = root.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
+                AppPermissions::builtin(),
+                root_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(2);
+
+        let pane_id = h
+            .with_app(|app| app.windows[app.active_window].panes.keys().copied().next())
+            .expect("opened pane id");
+
+        // 1. SearchBar affordance is visible on initial open
+        assert!(
+            h.pane_has_label(pane_id, "Search files and contents…"),
+            "SearchBar affordance must be visible on initial File Explorer open"
+        );
+
+        // 2. Cmd+F enters search mode and requests text focus
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.run_steps(2);
+
+        let in_search_cmdf = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| fb.is_in_search())
+        });
+        assert_eq!(in_search_cmdf, Some(true), "Cmd+F must enter search mode");
+
+        // Escape exits search mode back to normal browsing
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        let exited_search = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| fb.is_in_search())
+        });
+        assert_eq!(exited_search, Some(false), "Escape must exit search mode");
+
+        // 3. Pointer click on SearchBar enters search mode
+        let search_pos = h
+            .harness()
+            .get_by_label("Search files and contents…")
+            .rect()
+            .center()
+            / 2.0;
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(search_pos),
+            egui::Event::PointerButton {
+                pos: search_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: search_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.run_steps(2);
+
+        let in_search_click = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| fb.is_in_search())
+        });
+        assert_eq!(in_search_click, Some(true), "clicking SearchBar must enter search mode");
+
+        // Escape exits search mode back to normal browsing
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        // 4. Typing ordinary text ("alp") enters search and filters to alpha.rs
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("alp".to_string()));
+        h.run_steps(2);
+
+        let filtered_count = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| (fb.is_in_search(), fb.search_result_count()))
+        });
+        assert_eq!(
+            filtered_count,
+            Some((true, 1)),
+            "typing plain text must enter search mode and filter entries"
+        );
+
+        // 5. Activating result (Enter) opens alpha.rs and exits search mode
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        let search_state = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| (fb.is_in_search(), fb.opened_files.len()))
+        });
+        assert_eq!(
+            search_state,
+            Some((false, 1)),
+            "activating search hit must open the file and exit search mode back to browsing"
+        );
+    }
+
+    #[test]
     fn screenshot_file_browser_status_bar_shortcuts_wide_and_narrow() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("workspace-root");
@@ -7159,6 +7347,37 @@ mod tests {
         });
         h.save_screenshot(&evidence_png!("_wide_1100x720"))
             .expect("render wide 1100x720 status bar");
+
+        h.harness().set_size(egui::vec2(760.0, 520.0));
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let fb = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .expect("FileBrowserApp pane");
+            let layout = fb
+                .last_status_bar_layout
+                .as_ref()
+                .expect("medium 760 status bar layout");
+            assert!(
+                !layout.label_rects.is_empty(),
+                "medium 760x520 pane must fit status bar hints"
+            );
+            let last_label = layout.label_rects.last().unwrap();
+            assert!(
+                (layout.row_rect.max.x - last_label.max.x).abs() <= 2.0,
+                "medium 760 rightmost hint label must sit flush with status bar right edge"
+            );
+        });
+        h.save_screenshot(&evidence_png!("_medium_760x520"))
+            .expect("render medium 760x520 status bar");
 
         h.harness().set_size(egui::vec2(640.0, 520.0));
         h.run_steps(3);

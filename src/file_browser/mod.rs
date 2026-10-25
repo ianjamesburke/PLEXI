@@ -676,6 +676,10 @@ impl FileBrowserApp {
     }
 
     fn navigate_up(&mut self) {
+        if self.in_search {
+            self.exit_search();
+            return;
+        }
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
             let leaving_name = self
                 .cwd
@@ -731,6 +735,11 @@ impl FileBrowserApp {
     #[cfg(test)]
     pub(crate) fn search_result_count(&self) -> usize {
         self.search_session.hits().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_in_search(&self) -> bool {
+        self.in_search
     }
 
     fn selected_entry_or_hit(&self) -> Option<Entry> {
@@ -874,14 +883,25 @@ impl FileBrowserApp {
         self.pending_scroll = true;
     }
 
+    fn enter_search(&mut self) {
+        if !self.in_search {
+            self.in_search = true;
+            self.search_focus_pending = true;
+            log::info!("file_browser: entering search mode");
+        }
+    }
+
     fn exit_search(&mut self) {
-        self.in_search = false;
-        self.search_focus_pending = false;
-        self.search_query.clear();
-        self.search_indices.clear();
-        self.search_session.clear();
-        self.selected = 0;
-        self.pending_scroll = true;
+        if self.in_search {
+            self.in_search = false;
+            self.search_focus_pending = false;
+            self.search_query.clear();
+            self.search_indices.clear();
+            self.search_session.clear();
+            self.selected = 0;
+            self.pending_scroll = true;
+            log::info!("file_browser: exiting search mode");
+        }
     }
 
     pub fn open_palette(&mut self, initial_query: &str) {
@@ -2727,6 +2747,9 @@ impl FileBrowserApp {
         });
 
         if let Some(target) = navigate_target {
+            if self.in_search {
+                self.exit_search();
+            }
             self.navigate_into(target);
         }
     }
@@ -2746,15 +2769,23 @@ impl FileBrowserApp {
             "Search files and contents\u{2026}",
         )
         .claim_focus(claim)
-        .status(hit_count, scanning)
         .font_size(self.font_size)
-        .pending_click(pending_click);
-        if self.rename_path.is_none() {
-            bar = bar.surface(crate::ui::focus::SurfaceKey::Pane(pane_id));
+        .pending_click(pending_click)
+        .shortcut(if self.in_search { None } else { Some(&["cmd", "F"]) });
+        if self.in_search {
+            bar = bar.status(hit_count, scanning);
+            if self.rename_path.is_none() {
+                bar = bar.surface(crate::ui::focus::SurfaceKey::Pane(pane_id));
+            }
         }
         let out = bar.show(ui, &mut self.search_query, colors);
         if out.changed {
+            if !self.in_search {
+                self.enter_search();
+            }
             self.refilter();
+        } else if (out.clicked || out.gained_focus) && !self.in_search {
+            self.enter_search();
         }
     }
 
@@ -3038,13 +3069,18 @@ impl FileBrowserApp {
                 let selected_label =
                     crate::ui::text::tabular_count(self.selected_count(), 3, style::TEXT_HINT);
                 let mut count_job = egui::text::LayoutJob::default();
+                let count_noun = if self.in_search {
+                    ("result", "results")
+                } else {
+                    ("item", "items")
+                };
                 count_job.append(
                     &format!(
                         "{} · selected: ",
                         crate::ui::text::format_count_plural(
                             self.visible_entry_count(),
-                            "item",
-                            "items"
+                            count_noun.0,
+                            count_noun.1,
                         )
                     ),
                     0.0,
@@ -3080,7 +3116,12 @@ impl FileBrowserApp {
                 // important groups (front of the list) until the rest fit in
                 // the width left over after the item-count label.
                 let rem = ui.available_width();
-                let all = [
+                let all_search = [
+                    HintGroup::new(&["Esc"], "browse"),
+                    HintGroup::new(&["Enter"], "open"),
+                    HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
+                ];
+                let all_normal = [
                     HintGroup::new(&["/"], "actions"),
                     HintGroup::new(&["s"], "sort"),
                     HintGroup::new(&["i"], "inspector"),
@@ -3089,6 +3130,11 @@ impl FileBrowserApp {
                     HintGroup::new(&["t"], "cd terminal"),
                     HintGroup::new(&["Esc"], "close"),
                 ];
+                let all: &[HintGroup] = if self.in_search {
+                    &all_search
+                } else {
+                    &all_normal
+                };
                 let fits = |groups: &[HintGroup]| {
                     let total = groups.iter().map(|g| g.width(ui)).sum::<f32>()
                         + style::SPACE_MD * groups.len().saturating_sub(1) as f32;
@@ -3219,8 +3265,7 @@ impl App for FileBrowserApp {
 
                 if self.in_palette {
                     self.draw_action_palette(ui, colors, ctx.pane_id, pending_click);
-                }
-                if self.in_search {
+                } else {
                     self.draw_search_bar(ui, colors, ctx.pane_id, pending_click);
                 }
 
@@ -3547,15 +3592,23 @@ impl App for FileBrowserApp {
                 self.open_palette("/new folder ");
                 KeyDisposition::Consumed
             }
+            (Mode::Search, Some(FileBrowserAction::EnterSearch)) => {
+                self.search_focus_pending = true;
+                KeyDisposition::Consumed
+            }
             // Search mode consumes all unhandled input
             (Mode::Search, _) => KeyDisposition::Consumed,
             // Normal mode actions
             (Mode::Normal, Some(FileBrowserAction::EnterSearch)) => {
-                self.in_search = true;
-                self.search_focus_pending = true;
+                self.enter_search();
                 self.search_query.clear();
                 self.refilter();
-                log::info!("file_browser: entering search mode");
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::AppendText(text))) => {
+                self.enter_search();
+                self.search_query.push_str(&text);
+                self.refilter();
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::EnterPaletteSlash)) => {
@@ -5708,6 +5761,195 @@ mod tests {
         assert!(
             h.pane_count() >= 2,
             "CreateFile with open_in_editor must open hello.rs in a sibling editor pane"
+        );
+    }
+
+    #[test]
+    fn plain_text_search_discoverable_and_interactive_on_initial_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("alpha.rs"), b"fn alpha() {}\n").expect("write alpha");
+        std::fs::write(dir.path().join("beta.txt"), b"beta content\n").expect("write beta");
+
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        assert!(!app.in_search, "initial Explorer open must start in browsing mode");
+
+        // 1. Initial UI pass renders the SearchBar affordance
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        crate::ui::theme::setup_fonts(&ctx);
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| {
+            let render_ctx = AppRenderContext {
+                pane_id: 100,
+                colors: &colors,
+            };
+            app.ui(ui, &render_ctx, None);
+        });
+        assert!(!app.in_search, "rendering idle search bar must keep browsing mode");
+
+        // 2. Typing ordinary text ("alp") enters search mode, populates query, and filters entries
+        let consumed_text = run_handle_key(&mut app, vec![Event::Text("alp".to_string())]);
+        assert!(consumed_text, "typing ordinary text must be consumed by search entry");
+        assert!(app.in_search, "typing ordinary text must enter search mode");
+        assert_eq!(app.search_query, "alp");
+        assert!(app.search_focus_pending, "search focus must be pending on keyboard entry");
+        assert_eq!(app.search_session.hits().len(), 1, "filtered hits must contain alpha.rs");
+        assert_eq!(app.search_session.hits()[0].path, dir.path().join("alpha.rs"));
+
+        // 3. Activating (Enter) opens alpha.rs and returns to browsing mode
+        let consumed_enter = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(consumed_enter);
+        assert_eq!(app.opened_files.last(), Some(&dir.path().join("alpha.rs")));
+        assert!(!app.in_search, "activating file result must exit search mode and return to browsing");
+        assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn slash_and_cmd_k_enter_action_palette_not_search() {
+        let (mut app, _dir) = make_three_file_app();
+
+        // 1. Slash in normal mode opens action palette with "/"
+        let consumed_slash = run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(consumed_slash);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        assert!(!app.in_search, "/ must enter palette, not search");
+        app.exit_palette();
+
+        // 2. Cmd+K in normal mode opens action palette with ""
+        let consumed_cmd_k = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::K,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_cmd_k);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "");
+        assert!(!app.in_search, "Cmd+K must enter palette, not search");
+    }
+
+    #[test]
+    fn search_escape_returns_to_browsing() {
+        let (mut app, _dir) = make_populated_dir_app();
+        run_handle_key(&mut app, vec![Event::Text("file".to_string())]);
+        assert!(app.in_search);
+        assert_eq!(app.search_query, "file");
+
+        let consumed_esc = run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(consumed_esc);
+        assert!(!app.in_search, "Escape must exit search mode");
+        assert_eq!(app.search_query, "", "search query must be cleared on exit");
+        assert!(!app.should_close, "Escape from search mode must not close the browser");
+    }
+
+    #[test]
+    fn empty_search_result_state_and_lifecycle_trace() {
+        use std::sync::{LazyLock, Mutex, Once};
+
+        static TEST_LOGS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+        struct TestLogger;
+        impl log::Log for TestLogger {
+            fn enabled(&self, m: &log::Metadata) -> bool {
+                m.level() <= log::Level::Info
+            }
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) {
+                    if let Ok(mut list) = TEST_LOGS.lock() {
+                        list.push(record.args().to_string());
+                    }
+                }
+            }
+            fn flush(&self) {}
+        }
+        static INIT_LOGGER: Once = Once::new();
+        INIT_LOGGER.call_once(|| {
+            let _ = log::set_boxed_logger(Box::new(TestLogger));
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        if let Ok(mut list) = TEST_LOGS.lock() {
+            list.clear();
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file.txt"), b"content").expect("write");
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+
+        // Enter search with query that has no matches
+        run_handle_key(&mut app, vec![Event::Text("nonexistent_needle".to_string())]);
+        assert!(app.in_search);
+        assert_eq!(app.search_result_count(), 0);
+
+        // Verify lifecycle trace was emitted and that raw query was NOT logged
+        let logs_after_entry = TEST_LOGS.lock().unwrap().clone();
+        assert!(
+            logs_after_entry.iter().any(|line| line.contains("file_browser: entering search mode")),
+            "entering search mode must emit an info lifecycle trace"
+        );
+        assert!(
+            !logs_after_entry.iter().any(|line| line.contains("nonexistent_needle")),
+            "search lifecycle traces must never log the raw query text"
+        );
+
+        // Render UI and verify empty state message is shown
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        crate::ui::theme::setup_fonts(&ctx);
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(raw, |ui| {
+            let render_ctx = AppRenderContext {
+                pane_id: 200,
+                colors: &colors,
+            };
+            app.ui(ui, &render_ctx, None);
+        });
+
+        let mut found_empty_state = false;
+        for s in &output.shapes {
+            match &s.shape {
+                egui::Shape::Text(t) => {
+                    if t.galley.job.text.contains("No matching files or contents") {
+                        found_empty_state = true;
+                    }
+                }
+                egui::Shape::Vec(v) => {
+                    for inner in v {
+                        if let egui::Shape::Text(t) = inner {
+                            if t.galley.job.text.contains("No matching files or contents") {
+                                found_empty_state = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            found_empty_state,
+            "rendered shapes must contain 'No matching files or contents'"
+        );
+
+        // Exiting search returns to browsing and logs exit trace
+        app.exit_search();
+        assert!(!app.in_search);
+        let logs_after_exit = TEST_LOGS.lock().unwrap().clone();
+        assert!(
+            logs_after_exit.iter().any(|line| line.contains("file_browser: exiting search mode")),
+            "exiting search mode must emit an info lifecycle trace"
+        );
+        assert!(
+            !logs_after_exit.iter().any(|line| line.contains("nonexistent_needle")),
+            "search lifecycle traces must never log the raw query text on exit"
         );
     }
 }
