@@ -33,13 +33,13 @@ This document qualifies the permission posture enforcement shipped in #2872 for 
 - **Behavior:**
   - Worker permission posture is serialized in `SavedAgentSession` on workspace save.
   - When restored via Standby or workspace load, `pane_permission_posture` restores the snapshot and enforces broker gating on subsequent IPC requests.
-- **Evidence:** Verified by `testing::harness_tests::saved_agent_pane_restores_permission_posture_and_enters_broker`.
+- **Evidence:** Verified by `testing::harness_tests::restored_agent_pane_enforces_permission_posture_on_pane_send`.
 
 ### 2.5 Retained Audit Evidence Without Secret Values
 - **Behavior:**
   - The permission monitor records audit facts (`AuditFact`) for admissions, denies, and uses.
   - Resource identifiers (e.g. `FOO`) and argument fingerprints are recorded, but raw secret values are never retained in audit records or written to disk.
-- **Evidence:** Verified by `app::secret_get::list_tests::worker_posture_deny_and_ask_apply_to_secret_get_and_pane_send_and_resist_mid_run_edits` and `workspace::secrets::folder::tests::folder_secrets_e2e_records_redacted_audit`.
+- **Evidence:** Verified by `app::secret_get::list_tests::worker_posture_deny_and_ask_apply_to_secret_get_and_pane_send_and_resist_mid_run_edits`, which asserts the audit JSON retains the resource identifier `FOO` but excludes the secret value.
 
 ### 2.6 Same-Name Actor / Subcontext Isolation and Tool-Scoped Grant Binding
 - **Behavior:**
