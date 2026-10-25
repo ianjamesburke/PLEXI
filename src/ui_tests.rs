@@ -2383,6 +2383,39 @@ mod tests {
             .expect("filename screenshot");
     }
 
+    #[test]
+    fn screenshot_file_browser_external_mutation_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha.txt"), "first file").unwrap();
+        std::fs::write(dir.path().join("bravo.txt"), "second file").unwrap();
+        std::fs::write(dir.path().join("charlie.txt"), "third file").unwrap();
+
+        let mut h = PlexiUiHarness::new_sized(680.0, 480.0);
+        h.open_file_browser(dir.path().to_path_buf());
+        h.run_steps(3);
+
+        // External mutations: create, rename, delete
+        std::fs::write(dir.path().join("0-from-agent.txt"), "agent content").unwrap();
+        std::fs::rename(dir.path().join("charlie.txt"), dir.path().join("echo.txt")).unwrap();
+        std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+        h.run_steps(10);
+
+        let shot_path = std::env::temp_dir().join("plexi-evidence-file-browser-mutation.png");
+        h.save_screenshot(shot_path.to_str().unwrap())
+            .expect("save screenshot of file browser after external mutation");
+
+        assert!(shot_path.exists(), "screenshot PNG must exist");
+        let bytes = std::fs::read(&shot_path).expect("read screenshot PNG");
+        assert!(bytes.len() > 100, "screenshot PNG must be non-empty");
+        assert_eq!(&bytes[1..4], b"PNG", "file must have PNG magic bytes");
+
+        let _ = std::fs::remove_file(&shot_path);
+    }
+
     /// Regression for stint 0351: `AppRequest::KeyPane` (the `plexi pane key`
     /// socket path) must drive a native app pane through its real
     /// `App::handle_key` — not the PGAP event queue, which native apps never
