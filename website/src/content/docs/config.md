@@ -215,10 +215,11 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `toggle_minimap` | toggle minimap |
 | `scroll_up` | scroll up |
 | `scroll_down` | scroll down |
-| `increase_font_size` | Deprecated alias for `ui_scale_up`. |
-| `decrease_font_size` | Deprecated alias for `ui_scale_down`. |
-| `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+=). |
-| `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+-). |
+| `increase_font_size` | Increase the focused pane's text size (default Cmd+=). |
+| `decrease_font_size` | Decrease the focused pane's text size (default Cmd+-). |
+| `reset_font_size` | Reset the focused pane's text size (default Cmd+Alt+0). |
+| `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+Shift+=). |
+| `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+Shift+-). |
 | `ui_scale_reset` | Reset app-wide UI scale (default Cmd+Shift+0). |
 | `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
 | `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |

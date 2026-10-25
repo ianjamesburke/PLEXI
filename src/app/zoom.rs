@@ -2219,10 +2219,26 @@ impl PlexiApp {
 
         let total_w = (siblings.len() as f32) * style::CARD_W
             + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP;
-        let start_x = (rect.center().x - total_w * 0.5).max(rect.min.x + 24.0);
+        let horizontal_margin = 24.0;
+        // A crowded row cannot show every card at once. Keep the keyboard-selected
+        // card in view so its focus treatment remains visible while h/l moves it.
+        // Small rows retain the centered presentation used before overflow support.
+        let start_x = if total_w <= rect.width() - horizontal_margin * 2.0 {
+            rect.center().x - total_w * 0.5
+        } else {
+            let focused_idx = siblings
+                .iter()
+                .position(|&cid| cid == focused_ctx)
+                .unwrap_or_default() as f32;
+            rect.center().x
+                - style::CARD_W * 0.5
+                - focused_idx * (style::CARD_W + style::CARD_GAP)
+        };
         let center_y = rect.center().y;
 
         let mut clicked_ctx: Option<u64> = None;
+        #[cfg(test)]
+        let mut painted_cards = Vec::with_capacity(siblings.len());
 
         for (idx, &cid) in siblings.iter().enumerate() {
             let is_focused = cid == focused_ctx;
@@ -2261,6 +2277,8 @@ impl PlexiApp {
                 center_y - card_h * 0.5,
             );
             let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, card_h));
+            #[cfg(test)]
+            painted_cards.push((cid, card_rect, is_focused));
             paint_card(
                 &painter,
                 card_rect,
@@ -2355,6 +2373,14 @@ impl PlexiApp {
             self.zoom.cards_focused_context = Some(cid);
             self.enter_focused_sibling_card();
         }
+
+        #[cfg(test)]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("sibling_cards_painted_geometry"),
+                (rect, painted_cards),
+            );
+        });
     }
 
     /// Render the `ZoomLevel::TreeAtlas` view inside the central canvas (Mini Motorways style).
@@ -2431,6 +2457,8 @@ impl PlexiApp {
         }
 
         let mut clicked_node: Option<u64> = None;
+        #[cfg(test)]
+        let mut painted_nodes = Vec::with_capacity(nodes.len());
 
         // 2. Draw context nodes with depth tinting (0..4 clamped).
         for node in &nodes {
@@ -2469,6 +2497,8 @@ impl PlexiApp {
                 nrect.center(),
                 Vec2::new(nrect.width(), nrect.height().max(layout.height)),
             );
+            #[cfg(test)]
+            painted_nodes.push((node.context_id, nrect, is_focused));
             paint_card(
                 &painter,
                 nrect,
@@ -2564,6 +2594,14 @@ impl PlexiApp {
             self.zoom.atlas_focused_context = Some(cid);
             self.dive_from_tree_atlas();
         }
+
+        #[cfg(test)]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("tree_atlas_painted_geometry"),
+                (rect, painted_nodes),
+            );
+        });
     }
 }
 
