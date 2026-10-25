@@ -51,11 +51,14 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
     assert_eq!(h.app.active_focused_pane_id(), Some(p2));
 
-    // At Columns, Cmd+Enter is at the bottom of the ladder -> no-op + edge bump.
-    let bumps_before = h.app.zoom.edge_bump_count;
-    assert!(!h.app.zoom_in_level());
+    // At Columns with multiple panes, Cmd+Enter toggles focused pane zoom.
+    assert!(h.app.zoom_in_level());
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
-    assert_eq!(h.app.zoom.edge_bump_count, bumps_before + 1);
+    assert!(h.app.windows[0].zoomed_pane.is_some());
+    // Second Cmd+Enter restores prior geometry/unzooms.
+    assert!(h.app.zoom_in_level());
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+    assert!(h.app.windows[0].zoomed_pane.is_none());
 
     // Cmd+Esc: Columns -> SiblingCards, recording ghost marker at (ctx_id, col=1, pane=p2).
     assert!(h.app.zoom_out_or_close_surface());
@@ -945,4 +948,176 @@ fn cmd_enter_zooms_into_selected_card_like_enter() {
         assert_eq!(h.app.zoom.level, ZoomLevel::Columns, "chord {chord:?}");
         assert_eq!(h.app.router.active().context_id, ctx2_id, "chord {chord:?}");
     }
+}
+
+fn press_and_release_key(h: &mut HostHarness, key: Key, modifiers: Modifiers) {
+    h.press_key(key, modifiers);
+    h.frame(egui::RawInput {
+        events: vec![Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+}
+
+/// Stint 0986 Done-When:
+/// Keyboard-injected Cmd+Enter toggles exactly the focused pane and a second press restores
+/// its prior geometry, focus and scroll, for both one-pane and multi-pane columns.
+#[test]
+fn cmd_enter_toggles_focused_pane_zoom_and_restores_geometry_focus_and_scroll() {
+    let mut h = HostHarness::new();
+    let col0_p = h.add_test_pane();
+    h.focus_pane(col0_p).run_frames(1);
+
+    let col1_top = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("split right for column 1");
+    h.run_frames(2).focus_pane(col1_top);
+
+    let col1_bot = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split down to stack inside column 1");
+    h.run_frames(2);
+
+    let ctx = h.app.router.active().context_id;
+    h.app
+        .set_context_columns(ctx, vec![vec![col0_p], vec![col1_top, col1_bot]]);
+    h.run_frames(2);
+
+    let active_win = h.app.active_window;
+    let col0_tile = h.app.windows[active_win]
+        .tree
+        .tiles
+        .find_pane(&col0_p)
+        .expect("col0 pane tile");
+    let col1_top_tile = h.app.windows[active_win]
+        .tree
+        .tiles
+        .find_pane(&col1_top)
+        .expect("col1 top pane tile");
+    let col1_bot_tile = h.app.windows[active_win]
+        .tree
+        .tiles
+        .find_pane(&col1_bot)
+        .expect("col1 bot pane tile");
+
+    let rect_col0_before = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col0_tile)
+        .expect("col0 rect");
+    let rect_top_before = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_top_tile)
+        .expect("col1 top rect");
+    let rect_bot_before = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_bot_tile)
+        .expect("col1 bot rect");
+
+    // 1. Focus stacked pane in multi-pane column (col1_bot).
+    h.focus_pane(col1_bot).run_frames(2);
+    assert_eq!(h.app.active_focused_pane_id(), Some(col1_bot));
+    assert!(h.app.windows[active_win].zoomed_pane.is_none());
+
+    // Press Cmd+Enter -> zooms exactly col1_bot.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.windows[active_win].zoomed_pane,
+        Some(col1_bot_tile),
+        "Cmd+Enter must zoom the focused multi-pane column pane"
+    );
+
+    // Second press Cmd+Enter -> restores prior geometry, focus and scroll.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(
+        h.app.windows[active_win].zoomed_pane.is_none(),
+        "second Cmd+Enter must unzoom"
+    );
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(col1_bot),
+        "focus must be preserved after unzoom"
+    );
+    let rect_bot_after = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_bot_tile)
+        .expect("col1 bot rect after unzoom");
+    assert_eq!(
+        rect_bot_after, rect_bot_before,
+        "multi-pane column geometry must be preserved after unzoom"
+    );
+
+    // 2. Focus one-pane column (col0_p).
+    h.focus_pane(col0_p).run_frames(2);
+    assert_eq!(h.app.active_focused_pane_id(), Some(col0_p));
+    assert!(h.app.windows[active_win].zoomed_pane.is_none());
+
+    // Press Cmd+Enter -> zooms col0_p.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.windows[active_win].zoomed_pane,
+        Some(col0_tile),
+        "Cmd+Enter must zoom the focused one-pane column pane"
+    );
+
+    // Second press Cmd+Enter -> unzooms col0_p and restores geometry.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(
+        h.app.windows[active_win].zoomed_pane.is_none(),
+        "second Cmd+Enter on one-pane column must unzoom"
+    );
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(col0_p),
+        "one-pane column focus must be preserved after unzoom"
+    );
+    let rect_col0_after = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col0_tile)
+        .expect("col0 rect after unzoom");
+    assert_eq!(
+        rect_col0_after, rect_col0_before,
+        "one-pane column geometry must be preserved after unzoom"
+    );
+    let rect_top_after = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_top_tile)
+        .expect("col1 top rect after unzoom");
+    assert_eq!(
+        rect_top_after, rect_top_before,
+        "unrelated pane geometry must remain intact"
+    );
+
+    // 3. Single-pane window records an edge bump down when Cmd+Enter is pressed.
+    let mut single_h = HostHarness::new();
+    let single_p = single_h.add_test_pane();
+    single_h.focus_pane(single_p).run_frames(2);
+    let bumps_before = single_h.app.zoom.edge_bump_count;
+    press_and_release_key(&mut single_h, Key::Enter, Modifiers::COMMAND);
+    single_h.run_frames(2);
+    assert!(
+        single_h.app.windows[0].zoomed_pane.is_none(),
+        "single pane window cannot zoom"
+    );
+    assert_eq!(
+        single_h.app.zoom.edge_bump_count,
+        bumps_before + 1,
+        "single pane Cmd+Enter must record edge bump"
+    );
 }

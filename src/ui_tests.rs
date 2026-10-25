@@ -7437,4 +7437,93 @@ mod tests {
             .expect("render edit_commands header scope banner");
         let _ = std::fs::remove_file(&out);
     }
+
+    #[test]
+    fn screenshot_columns_cmd_enter_zoom_toggle_one_and_multi_pane() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        let p1 = add_focused_pane(&mut h);
+        h.run_steps(2);
+
+        let p2 = h.with_app_mut(|app| {
+            app.split_focused(true, None, false, false, None)
+                .expect("split right for column 1")
+        });
+        h.run_steps(2);
+        h.focus_pane(p2).unwrap();
+
+        let p3 = h.with_app_mut(|app| {
+            app.split_focused(false, None, false, false, None)
+                .expect("split stacked pane inside column 1")
+        });
+        h.run_steps(2);
+
+        h.with_app_mut(|app| {
+            let ctx = app.router.active().context_id;
+            app.set_context_columns(ctx, vec![vec![p1], vec![p2, p3]]);
+        });
+        h.run_steps(4);
+
+        let tiled_shot = evidence_png!("_tiled_columns");
+        h.save_screenshot(&tiled_shot).expect("render tiled columns");
+
+        // 1. Zoom the one-pane column (p1) via Cmd+Enter.
+        h.focus_pane(p1).unwrap();
+        h.run_steps(2);
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_some(),
+                "one-pane column must be zoomed"
+            );
+        });
+        let one_pane_shot = evidence_png!("_one_pane_column_zoomed");
+        h.save_screenshot(&one_pane_shot)
+            .expect("render zoomed one-pane column");
+
+        // Unzoom p1 via Cmd+Enter.
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_none(),
+                "one-pane column must be unzoomed"
+            );
+        });
+
+        // 2. Zoom stacked pane in multi-pane column (p3) via Cmd+Enter.
+        h.focus_pane(p3).unwrap();
+        h.run_steps(2);
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_some(),
+                "multi-pane column pane must be zoomed"
+            );
+        });
+        let multi_pane_shot = evidence_png!("_multi_pane_column_zoomed");
+        h.save_screenshot(&multi_pane_shot)
+            .expect("render zoomed multi-pane column pane");
+
+        // Unzoom p3 via Cmd+Enter.
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_none(),
+                "multi-pane column pane must be unzoomed"
+            );
+        });
+        let restored_shot = evidence_png!("_tiled_restored");
+        h.save_screenshot(&restored_shot)
+            .expect("render restored tiled columns");
+
+        println!(
+            "Screenshots: {tiled_shot}, {one_pane_shot}, {multi_pane_shot}, {restored_shot}"
+        );
+        for p in [&tiled_shot, &one_pane_shot, &multi_pane_shot, &restored_shot] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
