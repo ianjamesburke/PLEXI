@@ -171,10 +171,6 @@ impl PlexiApp {
                 let state = if t.agent_completed {
                     AgentState::Completed
                 } else if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
-                    log::info!(
-                        "agents: pane {pane_id} exited with failure status {:?}; reflecting Failed state in fleet",
-                        t.exit_status
-                    );
                     AgentState::Failed
                 } else {
                     report.map(|a| a.state.clone()).unwrap_or(AgentState::Idle)
@@ -264,8 +260,13 @@ impl PlexiApp {
                             )
                         })
                 });
-                let failure_detail = report
-                    .and_then(|a| a.detail.clone())
+                let exit_failure_detail = t
+                    .exit_status
+                    .filter(|status| t.exited && status.is_failure())
+                    .map(|status| status.summary());
+                let failure_detail = exit_failure_detail
+                    .clone()
+                    .or_else(|| report.and_then(|a| a.detail.clone()))
                     .filter(|s| !s.is_empty())
                     .or_else(|| {
                         t.standby_session
@@ -322,16 +323,18 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        report.and_then(|a| a.detail.clone()).map(|reason| {
-                            format!(
-                                "{}: {reason}",
-                                if state == AgentState::Failed {
-                                    "failed"
-                                } else {
-                                    "exited without report"
-                                }
-                            )
-                        })
+                        exit_failure_detail
+                            .or_else(|| report.and_then(|a| a.detail.clone()))
+                            .map(|reason| {
+                                format!(
+                                    "{}: {reason}",
+                                    if state == AgentState::Failed {
+                                        "failed"
+                                    } else {
+                                        "exited without report"
+                                    }
+                                )
+                            })
                     } else {
                         t.capture_tail_preview()
                     },
@@ -752,8 +755,14 @@ mod tests {
             t.agent_role = Some("build-runner".into());
             t.agent_harness = Some("pi".into());
             t.exited = true;
-            t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(1));
-            t.agent = None;
+            t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+            t.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: pi_pane,
+                state: crate::protocol::AgentState::Working,
+                agent: "pi".into(),
+                detail: Some("building2".into()),
+                session_id: Some("pi-exit-3".into()),
+            });
             t.observed_agent = None;
         }
 
@@ -767,7 +776,7 @@ mod tests {
             row.display_state,
             crate::agent::fleet::DisplayState::Failed
         );
-        assert_eq!(row.reason.as_deref(), Some("exited (1)"));
+        assert_eq!(row.reason.as_deref(), Some("exited (3)"));
 
         // Close pane: record_closed_agent_pane archives it into history
         let win_path = h.app.windows[0].path.clone();
@@ -780,7 +789,7 @@ mod tests {
         assert_eq!(view_closed.older.len(), 1);
         assert_eq!(view_closed.older[0].pane_id, pi_pane);
         assert_eq!(view_closed.older[0].role, "build-runner");
-        assert_eq!(view_closed.older[0].reason.as_deref(), Some("exited (1)"));
+        assert_eq!(view_closed.older[0].reason.as_deref(), Some("exited (3)"));
 
         // Dismissal removes from older while preserving in history
         let dismissed = h.app.dismiss_fleet_agent(Some(pi_pane), false);

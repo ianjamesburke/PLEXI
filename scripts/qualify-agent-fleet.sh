@@ -58,7 +58,7 @@ Surfaces:
 
 Run modes:
   ./scripts/qualify-agent-fleet.sh          # Print qualification contract & inspect target binary/channel
-  ./scripts/qualify-agent-fleet.sh --live   # Spin up an isolated host and drive Pi lifecycle transitions
+  ./scripts/qualify-agent-fleet.sh --live   # Drive Pi reports through working, waiting, done, and failed
 EOF
   exit 0
 fi
@@ -125,15 +125,12 @@ if [[ "$LIVE_MODE" == 1 ]]; then
   WS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/plexi-fleet-qualif-ws.XXXXXX")"
   SHIM_BIN="$WS_DIR/plexi-$LIVE_CHAN"
   ln "$PLEXI_BIN" "$SHIM_BIN" 2>/dev/null || cp "$PLEXI_BIN" "$SHIM_BIN"
-
-  cleanup() {
-    set +e
+  stop_live_host() {
     env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" host stop >/dev/null 2>&1 || true
-    rm -rf "$WS_DIR" "$HOME/.plexi-$LIVE_CHAN" 2>/dev/null || true
   }
-  trap cleanup EXIT
+  trap stop_live_host EXIT
 
-  echo "Starting isolated host on channel $LIVE_CHAN..."
+  echo "Starting isolated host on channel $LIVE_CHAN (scratch retained at $WS_DIR)..."
   env -u PLEXI_SOCKET -u PLEXI_PANE_ID -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_CONTEXT_ROOT -u PLEXI_RUNNING \
     PLEXI_CHANNEL="$LIVE_CHAN" \
     "$SHIM_BIN" host start --ephemeral --timeout-secs 15 --background --pane "cwd=$WS_DIR"
@@ -141,11 +138,40 @@ if [[ "$LIVE_MODE" == 1 ]]; then
   STATUS_JSON="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" host status --json)"
   echo "Host status: $STATUS_JSON"
 
-  echo "Inspecting live empty fleet:"
-  env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent fleet
-  env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent next
+  echo "Creating real Pi-reported lifecycle panes..."
+  printf -v WORKING_BODY '"%s" agent report --state working --agent pi --detail "qualifying working"; sleep 30' "$SHIM_BIN"
+  printf -v WAITING_BODY '"%s" agent report --state blocked --agent pi --detail "Need a decision"; sleep 30' "$SHIM_BIN"
+  printf -v DONE_BODY '"%s" agent report --state completed --agent pi --detail "qualification done"; sleep 30' "$SHIM_BIN"
+  printf -v FAILED_BODY '"%s" agent report --state working --agent pi --detail "building2"; sleep 2; exit 3' "$SHIM_BIN"
+  printf -v WORKING_CMD 'exec bash -c %q' "$WORKING_BODY"
+  printf -v WAITING_CMD 'exec bash -c %q' "$WAITING_BODY"
+  printf -v DONE_CMD 'exec bash -c %q' "$DONE_BODY"
+  printf -v FAILED_CMD 'exec bash -c %q' "$FAILED_BODY"
 
-  echo "✓ Live channel isolation verified."
+  WORKING_PANE="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" pane new --no-focus --name "Pi qualification working" --cwd "$WS_DIR" "$WORKING_CMD")"
+  WAITING_PANE="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" pane new --no-focus --name "Pi qualification waiting" --cwd "$WS_DIR" "$WAITING_CMD")"
+  DONE_PANE="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" pane new --no-focus --name "Pi qualification done" --cwd "$WS_DIR" "$DONE_CMD")"
+  FAILED_PANE="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" pane new --no-focus --name "Pi qualification failed" --cwd "$WS_DIR" "$FAILED_CMD")"
+  echo "Panes: working=$WORKING_PANE waiting=$WAITING_PANE done=$DONE_PANE failed=$FAILED_PANE"
+  sleep 3
+
+  echo "Inspecting fleet and CLI status after the failed Pi process exits:"
+  env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent fleet
+  FLEET_JSON="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent fleet --json)"
+  STATUS_TEXT="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent status)"
+  printf '%s\n' "$FLEET_JSON"
+  printf '%s\n' "$STATUS_TEXT"
+  if [[ "$FLEET_JSON" != *'exited (3)'* || "$STATUS_TEXT" != *'failed'* ]]; then
+    echo "error: fleet/status did not preserve the failed Pi exit state" >&2
+    exit 1
+  fi
+
+  echo "Dismissing the failed fleet row, closing its pane, and inspecting preserved history:"
+  env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent fleet dismiss "$FAILED_PANE"
+  env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" pane close "$FAILED_PANE"
+  env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" agent history
+
+  echo "✓ Live Pi lifecycle trace captured. Scratch workspace and channel profile are retained for inspection."
 else
   echo "--- [4/5] Live Qualification Instruction ---"
   echo "To drive a real headed host with interactive Pi agent, run:"
@@ -159,5 +185,10 @@ fi
 echo ""
 
 echo "--- [5/5] Qualification Summary ---"
-echo "Status: Shipped implementation qualified (#2873 / 1df1cddb)."
-echo "Human name resolution, age bucketing, failure reasons, dismissal, and history verified."
+if [[ "$LIVE_MODE" == 1 ]]; then
+  echo "Status: Live CLI trace captured against shipped implementation (#2873 / 1df1cddb)."
+  echo "Inspect the named Agents-pane and Command-Palette UI surfaces before recording human acceptance."
+else
+  echo "Status: Qualification not yet executed."
+  echo "Focused unit coverage passed; run with --live and inspect the named UI surfaces before claiming human qualification."
+fi

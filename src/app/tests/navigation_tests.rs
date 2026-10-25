@@ -456,6 +456,17 @@ fn get_agent_states_collects_state_from_panes() {
     });
     h.app.drain_pane_cmd_channel();
 
+    {
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("pane must remain present")
+            .as_terminal_mut()
+            .expect("test pane is terminal");
+        terminal.exited = true;
+        terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+    }
+
     let states_file = std::env::temp_dir().join("plexi_test_agent_states_2119.json");
     h.inject_ipc(crate::protocol::AppRequest::GetAgentStates {
         response_file: states_file.to_string_lossy().to_string(),
@@ -467,9 +478,9 @@ fn get_agent_states_collects_state_from_panes() {
     let states: Vec<serde_json::Value> = serde_json::from_str(&states_json).expect("valid JSON");
     assert_eq!(states.len(), 1);
     assert_eq!(states[0]["pane_id"], pane_id);
-    assert_eq!(states[0]["state"], "blocked");
+    assert_eq!(states[0]["state"], "failed");
     assert_eq!(states[0]["agent"], "claude-code");
-    assert!(states[0]["detail"].is_null());
+    assert_eq!(states[0]["detail"], "exited (3)");
     assert!(states[0]["session_id"].is_null());
 
     let _ = std::fs::remove_file(&states_file);
