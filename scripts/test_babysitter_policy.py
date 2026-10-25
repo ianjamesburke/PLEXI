@@ -254,11 +254,28 @@ class PolicyTests(unittest.TestCase):
             product.write_text(product.read_text().replace("status: todo", "status: in-progress"))
             self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
                              ["0986"])
-            product.write_text(product.read_text().replace("  - 991\n", ""))
-            with self.assertRaises(policy.PolicyError):
-                policy.preflight(self.settings, tasks, sprint, ["0986"])
-            product.write_text(product.read_text().replace("blocked_by:\n", "blocked_by:\n  - 991\n  - 986\n"))
+            product.write_text(product.read_text().replace("blocked_by:\n", "blocked_by:\n  - 986\n"))
             with self.assertRaisesRegex(policy.PolicyError, "cycle"):
+                policy.preflight(self.settings, tasks, sprint, ["0986"])
+
+    def test_preflight_accepts_pruned_0991_edge_only_once_0991_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tasks = root / "tasks"
+            tasks.mkdir()
+            sprint = root / "s03.md"
+            sprint.write_text("- [0991](../tasks/0991-gate.md)\n- [0986](../tasks/0986-zoom.md)\n")
+            gate = tasks / "0991-gate.md"
+            gate.write_text("---\nstatus: todo\nsize: s\nblocked_by: []\n---\n## Done-When\n")
+            product = tasks / "0986-zoom.md"
+            product.write_text("---\nstatus: todo\nsize: s\nblocked_by: []\n---\n## Done-When\n")
+            with self.assertRaisesRegex(policy.PolicyError, "0991 dependency"):
+                policy.preflight(self.settings, tasks, sprint, ["0986"])
+            gate.write_text(gate.read_text().replace("status: todo", "status: done"))
+            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
+                             ["0986"])
+            product.write_text(product.read_text().replace("## Done-When\n", ""))
+            with self.assertRaisesRegex(policy.PolicyError, "Done-When"):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
 
     def test_lane_start_stops_before_worktree_when_preflight_fails(self):

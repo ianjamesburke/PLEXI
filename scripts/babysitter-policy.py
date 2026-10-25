@@ -147,7 +147,8 @@ def preflight(settings, task_root, sprint_file, requested):
     if task_data["0991"]["blocked_by"]:
         raise PolicyError("preflight task has a blocking dependency")
     for task_id, task in task_data.items():
-        if not task["done_when"] or not task["size"] or (task_id != "0991" and "0991" not in task["blocked_by"]):
+        if not task["done_when"] or not task["size"] or (
+                task_id != "0991" and "0991" not in task["blocked_by"] and task_data["0991"]["status"] != "done"):
             raise PolicyError(f"task {task_id} is missing Done-When or 0991 dependency")
     visiting = set()
     visited = set()
