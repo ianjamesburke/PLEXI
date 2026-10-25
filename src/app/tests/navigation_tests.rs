@@ -440,16 +440,27 @@ fn pane_info_and_list_include_agent_state() {
 }
 
 #[test]
-fn get_agent_states_collects_state_from_panes() {
+fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_failure() {
     let mut h = HostHarness::new();
-    let pane_id = h.add_test_pane();
+    let app_pane = h.add_test_pane();
+    let terminal_pane = h.add_focused_terminal();
 
     h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
         peer_ancestry: None,
-        pane_id,
+        pane_id: app_pane,
         state: crate::protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
-        detail: None,
+        detail: Some("waiting for review".to_string()),
+        session_id: None,
+        event: None,
+        blocked_reason: None,
+    });
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        peer_ancestry: None,
+        pane_id: terminal_pane,
+        state: crate::protocol::AgentState::Working,
+        agent: "pi".to_string(),
+        detail: Some("building2".to_string()),
         session_id: None,
         event: None,
         blocked_reason: None,
@@ -459,7 +470,7 @@ fn get_agent_states_collects_state_from_panes() {
     {
         let terminal = h.app.windows[0]
             .panes
-            .get_mut(&pane_id)
+            .get_mut(&terminal_pane)
             .expect("pane must remain present")
             .as_terminal_mut()
             .expect("test pane is terminal");
@@ -476,12 +487,24 @@ fn get_agent_states_collects_state_from_panes() {
     let states_json =
         std::fs::read_to_string(&states_file).expect("GetAgentStates must write response file");
     let states: Vec<serde_json::Value> = serde_json::from_str(&states_json).expect("valid JSON");
-    assert_eq!(states.len(), 1);
-    assert_eq!(states[0]["pane_id"], pane_id);
-    assert_eq!(states[0]["state"], "failed");
-    assert_eq!(states[0]["agent"], "claude-code");
-    assert_eq!(states[0]["detail"], "exited (3)");
-    assert!(states[0]["session_id"].is_null());
+    assert_eq!(states.len(), 2);
+    let app_state = states
+        .iter()
+        .find(|state| state["pane_id"].as_u64() == Some(app_pane))
+        .expect("non-terminal agent report must remain visible");
+    assert_eq!(app_state["state"], "blocked");
+    assert_eq!(app_state["agent"], "claude-code");
+    assert_eq!(app_state["detail"], "waiting for review");
+    assert!(app_state["session_id"].is_null());
+
+    let terminal_state = states
+        .iter()
+        .find(|state| state["pane_id"].as_u64() == Some(terminal_pane))
+        .expect("terminal agent report must remain visible");
+    assert_eq!(terminal_state["state"], "failed");
+    assert_eq!(terminal_state["agent"], "pi");
+    assert_eq!(terminal_state["detail"], "exited (3)");
+    assert!(terminal_state["session_id"].is_null());
 
     let _ = std::fs::remove_file(&states_file);
 }

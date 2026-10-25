@@ -588,6 +588,53 @@ mod tests {
     }
 
     #[test]
+    fn dismiss_all_failed_dismisses_live_pi_exit_failure_before_pane_close() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("live terminal must exist")
+            .as_terminal_mut()
+            .expect("focused fixture is a terminal");
+        terminal.agent_role = Some("build-runner".into());
+        terminal.agent_harness = Some("pi".into());
+        terminal.agent = Some(crate::protocol::PaneAgentState {
+            pane_id,
+            state: crate::protocol::AgentState::Working,
+            agent: "pi".into(),
+            detail: Some("building2".into()),
+            session_id: Some("pi-live-exit-3".into()),
+        });
+        terminal.exited = true;
+        terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+
+        let before = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(before.tasks.len(), 1);
+        assert_eq!(
+            before.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::Failed
+        );
+        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exited (3)"));
+
+        let dismissed = h.app.dismiss_fleet_agent(None, true);
+        assert_eq!(dismissed, vec![pane_id]);
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .expect("live terminal must not be closed by dismissal")
+            .as_terminal()
+            .expect("focused fixture is a terminal");
+        assert!(terminal.fleet_dismissed);
+        assert!(terminal.fleet_seen);
+        assert!(h
+            .app
+            .agents_view(crate::protocol::FleetFilter::All)
+            .tasks
+            .is_empty());
+    }
+
+    #[test]
     fn pi_agent_lifecycle_transitions_through_working_waiting_done_failed_with_fleet_and_cli_parity() {
         let mut h = HostHarness::new();
         let pi_pane = h.add_focused_terminal();

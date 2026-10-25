@@ -3791,8 +3791,10 @@ impl PlexiApp {
                     .iter()
                     .flat_map(|win| win.panes.values())
                     .filter_map(|pane| {
-                        let terminal = pane.as_terminal()?;
                         let report = pane.agent()?;
+                        let Some(terminal) = pane.as_terminal() else {
+                            return Some(report.clone());
+                        };
                         let exit_failure = terminal
                             .exit_status
                             .filter(|status| terminal.exited && status.is_failure());

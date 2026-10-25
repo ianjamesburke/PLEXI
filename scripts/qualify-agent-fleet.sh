@@ -70,21 +70,78 @@ if [[ "$TARGET" == "--live" ]]; then
   TARGET="${2:-}"
 fi
 
-# Resolve binary
-if [[ -n "$TARGET" && -x "$TARGET" ]]; then
-  PLEXI_BIN="$TARGET"
-elif [[ -n "${PLEXI_BIN:-}" && -x "$PLEXI_BIN" ]]; then
-  PLEXI_BIN="$PLEXI_BIN"
+# The live shim must be copied from a native host executable. Installed channel
+# commands are shell launchers whose basename hardcodes their channel, so copying
+# one would silently target that installed profile rather than LIVE_CHAN.
+is_native_plexi_binary() {
+  local kind
+  kind="$(file -bL "$1" 2>/dev/null || true)"
+  [[ "$kind" == *"Mach-O"* || "$kind" == *"ELF"* ]]
+}
+
+resolve_channel_target() {
+  local requested="$1"
+  if [[ -x "$requested" ]]; then
+    printf '%s\n' "$requested"
+  elif [[ "$requested" != */* ]] && command -v "plexi-$requested" >/dev/null 2>&1; then
+    command -v "plexi-$requested"
+  elif [[ "$requested" != */* ]] && command -v "$requested" >/dev/null 2>&1; then
+    command -v "$requested"
+  else
+    return 1
+  fi
+}
+
+resolve_real_plexi_binary() {
+  local candidate="$1" wrapper_name channel installer resolved
+  if is_native_plexi_binary "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  wrapper_name="$(basename "$candidate")"
+  if [[ "$wrapper_name" == plexi-* ]]; then
+    channel="${wrapper_name#plexi-}"
+  elif [[ "$wrapper_name" == "plexi" ]]; then
+    channel="stable"
+  else
+    echo "error: $candidate is not a native Plexi executable" >&2
+    return 1
+  fi
+  installer="$(sed -n "s|^exec '\\([^']*\\)' launch.*$|\\1|p" "$candidate" | head -n 1)"
+  if [[ -z "$installer" || ! -x "$installer" ]]; then
+    echo "error: $candidate is an unsupported Plexi launcher; provide target/release/plexi or a Plexi app executable" >&2
+    return 1
+  fi
+  resolved="$($installer locate --channel "$channel" 2>/dev/null | tail -n 1)"
+  if [[ -z "$resolved" || ! -x "$resolved" ]] || ! is_native_plexi_binary "$resolved"; then
+    echo "error: launcher $candidate did not resolve a native Plexi executable" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+if [[ -n "$TARGET" ]]; then
+  CANDIDATE="$(resolve_channel_target "$TARGET")" || {
+    echo "error: $TARGET is neither an executable Plexi path nor an installed channel name" >&2
+    exit 1
+  }
+elif [[ -n "${PLEXI_BIN:-}" ]]; then
+  CANDIDATE="$(resolve_channel_target "$PLEXI_BIN")" || {
+    echo "error: PLEXI_BIN=$PLEXI_BIN is not executable" >&2
+    exit 1
+  }
 elif [[ -x "$ROOT_DIR/target/release/plexi" ]]; then
-  PLEXI_BIN="$ROOT_DIR/target/release/plexi"
+  CANDIDATE="$ROOT_DIR/target/release/plexi"
 elif [[ -x "$ROOT_DIR/target/debug/plexi" ]]; then
-  PLEXI_BIN="$ROOT_DIR/target/debug/plexi"
+  CANDIDATE="$ROOT_DIR/target/debug/plexi"
 elif command -v plexi >/dev/null 2>&1; then
-  PLEXI_BIN="$(command -v plexi)"
+  CANDIDATE="$(command -v plexi)"
 else
   echo "error: plexi binary not found. Build with 'just build' or specify binary path." >&2
   exit 1
 fi
+PLEXI_BIN="$(resolve_real_plexi_binary "$CANDIDATE")"
 
 echo "======================================================================"
 echo " Plexi Agent Fleet Qualification (Stint 0965 / #2873: 1df1cddb)"
