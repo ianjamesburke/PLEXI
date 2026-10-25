@@ -4974,7 +4974,13 @@ impl PlexiApp {
                         if let Some(adapter) =
                             crate::cli::agent::harness_adapter(&record.harness)
                         {
-                            adapter.resume_command(sid)
+                            let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                record.config_name.as_deref(),
+                                adapter.harness,
+                                &crate::config::config_dir(),
+                                Some(&record.cwd),
+                            );
+                            adapter.resume_command_with_flags(sid, &flags)
                         } else {
                             format!("{} --resume {}", record.harness, sid.trim())
                         }

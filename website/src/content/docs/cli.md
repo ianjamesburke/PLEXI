@@ -589,6 +589,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `next` | Focus the next live agent needing attention (needs-you, blocked, done-unseen) |
 | `fleet` | Show tasks and their workers, ordered by attention, with blocking reasons |
 | `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
+| `flags` | Show supported custom harness flags and safety rules for an agent or adapter |
 | `list` | List active agents from both workspace and global tiers |
 | `show` | Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command |
 | `call` | Call an agent role and return its validated completion or blocking question as JSON |
@@ -711,6 +712,20 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
 | `--ephemeral` | flag | no | Auto-close the worker pane on clean exit (`0`) |
 | `--display-name` | string | no | Human-facing display name in `[agent]` (defaults to `<name>`) |
 | `--global` | flag | no | Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace |
+| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--flag` | string (repeatable) | no | Optional custom harness flag(s) passed to the adapter (can be repeated) |
+
+### `plexi agent flags`
+
+Show supported custom harness flags and safety rules for an agent or adapter.
+
+When `<target>` is an agent slug, displays its resolved safe custom flags. When `<target>` is a harness adapter (`pi`, `claude`, `codex`, `agy`, `script`) or omitted, displays the adapter options inventory, reserved options, and security rules.
+
+Example: plexi agent flags Example: plexi agent flags claude Example: plexi agent flags researcher
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<target>` | string | no | Agent slug or harness adapter name (`pi`, `claude`, `codex`, `agy`, `script`) |
 | `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
 
 ### `plexi agent list`

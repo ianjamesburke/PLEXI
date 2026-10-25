@@ -5788,8 +5788,16 @@ pub(crate) fn restore_workspace(
                         if should_auto_resume {
                             if let Some(harness) = crate::cli::AgentHarness::parse(&session.harness)
                             {
-                                let resume_cmd =
-                                    harness.restore_command(session.session_id.as_deref());
+                                let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                    session.config_name.as_deref(),
+                                    harness,
+                                    collaborators.profile_dir,
+                                    cwd.as_deref(),
+                                );
+                                let resume_cmd = harness.restore_command_with_flags(
+                                    session.session_id.as_deref(),
+                                    &flags,
+                                );
                                 if harness == crate::cli::AgentHarness::Pi
                                     && resume_cmd == harness.adapter().binary
                                     && session.session_id.is_some()
@@ -5819,7 +5827,16 @@ pub(crate) fn restore_workspace(
                         .then(|| {
                             effective_session.as_ref().and_then(|session| {
                                 crate::cli::AgentHarness::parse(&session.harness).map(|harness| {
-                                    harness.restore_command(session.session_id.as_deref())
+                                    let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                        session.config_name.as_deref(),
+                                        harness,
+                                        collaborators.profile_dir,
+                                        cwd.as_deref(),
+                                    );
+                                    harness.restore_command_with_flags(
+                                        session.session_id.as_deref(),
+                                        &flags,
+                                    )
                                 })
                             })
                         })

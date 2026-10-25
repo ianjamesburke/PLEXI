@@ -1027,9 +1027,29 @@ impl TerminalPane {
             return None;
         }
         let standby = self.standby_session.take()?;
-        self.standby_resume_command = None;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
-        let cmd = harness.map(|h| h.restore_command(standby.session_id.as_deref()));
+        let cmd = self.standby_resume_command.take().or_else(|| {
+            harness.map(|harness| {
+                let flags = standby
+                    .config_name
+                    .as_deref()
+                    .and_then(|role| {
+                        self.standby_cwd
+                            .as_deref()
+                            .or(self.initial_cwd.as_deref())
+                            .map(|cwd| {
+                                crate::cli::agent::resolved_session_harness_flags_in(
+                                    Some(role),
+                                    harness,
+                                    &crate::config::config_dir(),
+                                    Some(cwd),
+                                )
+                            })
+                    })
+                    .unwrap_or_default();
+                harness.restore_command_with_flags(standby.session_id.as_deref(), &flags)
+            })
+        });
         if let Some(ref resume_cmd) = cmd {
             if harness == Some(crate::cli::AgentHarness::Pi)
                 && resume_cmd == "pi"
@@ -1317,7 +1337,23 @@ impl TerminalPane {
                     .and_then(|s| s.session_id.as_deref())
             })
             .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.as_deref()))?;
-        Some(harness.resume_command(session_id))
+        let flags = self
+            .standby_session
+            .as_ref()
+            .map(|session| session.config_name.as_deref())
+            .unwrap_or(self.agent_role.as_deref())
+            .and_then(|role| {
+                self.initial_cwd.as_deref().map(|cwd| {
+                    crate::cli::agent::resolved_session_harness_flags_in(
+                        Some(role),
+                        harness,
+                        &crate::config::config_dir(),
+                        Some(cwd),
+                    )
+                })
+            })
+            .unwrap_or_default();
+        Some(harness.resume_command_with_flags(session_id, &flags))
     }
 }
 

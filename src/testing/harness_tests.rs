@@ -11520,6 +11520,19 @@ mod agent_state_restoration_tests {
     ) {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let tmp = tempfile::tempdir().expect("tempdir");
+        for (role, harness) in [("lead", "claude"), ("worker", "codex")] {
+            let agent_dir = profile_dir.path().join("agents").join(role);
+            std::fs::create_dir_all(&agent_dir).expect("create agent definition");
+            std::fs::write(agent_dir.join("AGENT.md"), "Resume with the configured flags.")
+                .expect("write agent persona");
+            std::fs::write(
+                agent_dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"{role}\"\ndisplay_name = \"{role}\"\n\n[harness]\ncli = \"{harness}\"\nflags = [\"--verbose\"]\n"
+                ),
+            )
+            .expect("write agent settings");
+        }
         let slot_file = tmp.path().join("question.txt");
         std::fs::write(&slot_file, "Need API schema clarification").unwrap();
         let mut bg_slots = HashMap::new();
@@ -11750,7 +11763,7 @@ mod agent_state_restoration_tests {
             "PortalPane targeting pruned ephemeral sub-context must be removed"
         );
 
-        // 2. Active-context pane (10) auto-resumed with `claude --resume sess-active-10`
+        // 2. Active-context pane (10) auto-resumed with its configured custom flags.
         //    and transitioned from mid-turn `Working` to `Interrupted` with its tail_preview.
         let active_term = h.app.windows[0].panes[&10]
             .as_terminal()
@@ -11761,7 +11774,7 @@ mod agent_state_restoration_tests {
         );
         assert_eq!(
             active_term.last_resumed_command.as_deref(),
-            Some("claude --resume sess-active-10")
+            Some("claude --verbose --resume sess-active-10")
         );
         assert_eq!(
             active_term.agent.as_ref().map(|a| &a.state),
@@ -11862,7 +11875,7 @@ mod agent_state_restoration_tests {
         );
         assert_eq!(
             bg_term_after.last_resumed_command.as_deref(),
-            Some("codex resume thread-bg-20")
+            Some("codex --verbose resume thread-bg-20")
         );
     }
 
@@ -11921,8 +11934,16 @@ mod agent_state_restoration_tests {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
         let tmp = tempfile::tempdir().expect("tempdir");
-
         let mut h = HostHarness::new();
+        let agent_dir = crate::config::config_dir().join("agents").join("auditor");
+        std::fs::create_dir_all(&agent_dir).expect("create active auditor definition");
+        std::fs::write(agent_dir.join("AGENT.md"), "Audit safely.")
+            .expect("write active auditor persona");
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            "[agent]\nid = \"auditor\"\ndisplay_name = \"auditor\"\n\n[harness]\ncli = \"pi\"\nflags = [\"--verbose\"]\n",
+        )
+        .expect("write active auditor settings");
         let master_pane = h.add_focused_terminal();
 
         let spawn_reply = temp_response(tmp.path(), "spawn-worker");
@@ -12015,7 +12036,7 @@ mod agent_state_restoration_tests {
         assert_eq!(reopened["ok"], true);
         assert_eq!(reopened["session_id"], "pi-sess-900");
         assert_eq!(reopened["harness"], "pi");
-        assert_eq!(reopened["command"], "pi --session pi-sess-900");
+        assert_eq!(reopened["command"], "pi --verbose --session pi-sess-900");
         let new_pane_id = reopened["pane_id"].as_u64().unwrap();
         let reopened_term = h.app.windows[0].panes[&new_pane_id]
             .as_terminal()
@@ -12026,7 +12047,7 @@ mod agent_state_restoration_tests {
         );
         assert_eq!(
             reopened_term.last_resumed_command.as_deref(),
-            Some("pi --session pi-sess-900")
+            Some("pi --verbose --session pi-sess-900")
         );
         assert!(reopened_term.slots.contains_key("summary"));
     }

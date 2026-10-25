@@ -3020,6 +3020,26 @@ pub enum AgentCmd {
         /// Directory used to resolve the workspace root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
+        /// Optional custom harness flag(s) passed to the adapter (can be repeated)
+        #[arg(long = "flag", action = clap::ArgAction::Append)]
+        flags: Vec<String>,
+    },
+    /// Show supported custom harness flags and safety rules for an agent or adapter.
+    ///
+    /// When `<target>` is an agent slug, displays its resolved safe custom flags.
+    /// When `<target>` is a harness adapter (`pi`, `claude`, `codex`, `agy`, `script`)
+    /// or omitted, displays the adapter options inventory, reserved options, and security rules.
+    ///
+    /// Example: plexi agent flags
+    /// Example: plexi agent flags claude
+    /// Example: plexi agent flags researcher
+    Flags {
+        /// Agent slug or harness adapter name (`pi`, `claude`, `codex`, `agy`, `script`)
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        /// Directory used to resolve the workspace root (defaults to current working directory)
+        #[arg(long)]
+        cwd: Option<String>,
     },
     /// List active agents from both workspace and global tiers.
     ///
