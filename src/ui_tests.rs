@@ -633,19 +633,64 @@ mod tests {
     }
 
     fn seed_note_picker(h: &mut PlexiUiHarness) {
+        let realistic_notes = [
+            (
+                "Sprint Planning & Alpha Release Milestones",
+                "## Sprint Objectives\n\n- Close P1 focus layer input leaks across modals\n- Validate Cmd+O Notes Picker layout, font and selection visibility\n- Cut next alpha tag with automated release checks\n\n### Open Items\n1. Review telemetry traces\n2. Verify keyboard navigation on dense note collections\n3. Confirm dirty-pane destructive confirmation flow",
+                Some("active"),
+            ),
+            (
+                "Architecture Decision: Unified Input Router",
+                "Context:\nOverlay surfaces previously read raw input directly inside draw passes, leading to missed keys or desynchronized selection states.\n\nDecision:\nRoute all keyboard and paste events through `PlexiInput` before render dispatch.\n\nStatus: Accepted.",
+                Some("active"),
+            ),
+            (
+                "Quick Note Scratchpad",
+                "Check out egui_term scrollback refactor when reviewing pull requests.\nRemember to test with ppp=2.0 on retina displays.",
+                None,
+            ),
+            (
+                "Database Migration Checklist",
+                "- [x] Backup SQLite store\n- [x] Run schema version 4 migration\n- [ ] Vacuum indexes\n- [ ] Rebuild search FTS table",
+                Some("global"),
+            ),
+            (
+                "Short Note",
+                "Plexi notes are markdown files stored in user scopes.",
+                None,
+            ),
+            (
+                "Terminal Font Tuning & Spacing Tokens",
+                "Font: JetBrains Mono 14pt\nLine height: 1.25\nCell spacing: 0px horizontal, 2px vertical\nGlyph fallback: NotoEmoji + Nerd Font symbols.",
+                Some("global"),
+            ),
+        ];
+
         h.with_app_mut(|app| {
             app.open_notes_picker();
-            let mk = |title: &str, label: Option<&str>| crate::notes::NotePickerEntry {
-                path: std::env::temp_dir().join(format!("plexi-ui-scale-{title}.md")),
-                title: title.to_string(),
-                preview: format!("{title} preview text for the picker row"),
-                search_text: title.to_lowercase(),
-                tier_label: label.map(|s| s.to_string()),
-            };
-            app.notes_picker_entries = (0..12)
-                .map(|i| mk(&format!("note number {i}"), (i % 2 == 0).then_some("global")))
+            let entries: Vec<crate::notes::NotePickerEntry> = realistic_notes
+                .iter()
+                .cycle()
+                .take(30)
+                .enumerate()
+                .map(|(i, (title, body, label))| {
+                    let path = std::env::temp_dir().join(format!(
+                        "plexi-ui-scale-note-{}-{i}.md",
+                        std::process::id()
+                    ));
+                    let _ = std::fs::write(&path, body);
+                    crate::notes::NotePickerEntry {
+                        path,
+                        title: title.to_string(),
+                        preview: body.lines().next().unwrap_or("").to_string(),
+                        search_text: format!("{title} {body}").to_lowercase(),
+                        tier_label: label.map(|s| s.to_string()),
+                    }
+                })
                 .collect();
+            app.notes_picker_entries = entries;
             app.notes_picker_selected = 0;
+            app.notes_picker_last_drawn_selected = None;
         });
     }
 
@@ -1978,6 +2023,42 @@ mod tests {
         let path = evidence_png!();
         h.save_screenshot(&path).unwrap();
         assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_notes_picker_wide_and_narrow_layout() {
+        // 1. Wide viewport (1440x900): balanced 50/50 layout with framed monospace preview
+        let mut h_wide = PlexiUiHarness::new_sized(1440.0, 900.0);
+        add_focused_pane(&mut h_wide);
+        seed_note_picker(&mut h_wide);
+        h_wide.run_steps(3);
+        let wide_path = "/tmp/plexi_notes_picker_wide.png";
+        h_wide.save_screenshot(wide_path).unwrap();
+        assert!(std::path::Path::new(wide_path).exists());
+
+        // 2. Narrow viewport (640x520): preview omitted, list fills width, clean hints without overflow
+        let mut h_narrow = PlexiUiHarness::new_sized(640.0, 520.0);
+        add_focused_pane(&mut h_narrow);
+        seed_note_picker(&mut h_narrow);
+        h_narrow.run_steps(3);
+        let narrow_path = "/tmp/plexi_notes_picker_narrow.png";
+        h_narrow.save_screenshot(narrow_path).unwrap();
+        assert!(std::path::Path::new(narrow_path).exists());
+
+        // 3. High UI scale (1.5): everything scales cleanly without clipping
+        let mut h_scaled = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, 1.5);
+        add_focused_pane(&mut h_scaled);
+        seed_note_picker(&mut h_scaled);
+        h_scaled.run_steps(3);
+        let scaled_path = "/tmp/plexi_notes_picker_scale.png";
+        h_scaled.save_screenshot(scaled_path).unwrap();
+        assert!(std::path::Path::new(scaled_path).exists());
+
+        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
+            let _ = std::fs::remove_file(wide_path);
+            let _ = std::fs::remove_file(narrow_path);
+            let _ = std::fs::remove_file(scaled_path);
+        }
     }
 
     #[test]

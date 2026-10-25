@@ -5091,6 +5091,7 @@ impl PlexiApp {
         self.notes_picker_entries = entries;
         if reset_query {
             self.notes_picker_selected = 0;
+            self.notes_picker_last_drawn_selected = None;
             self.notes_picker_query.clear();
             self.notes_picker_pending_delete = None;
             self.notes_picker_status = None;

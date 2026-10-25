@@ -15478,3 +15478,122 @@ fn notes_picker_confirmed_cut_closes_and_restores_pane_input_owner() {
     );
     assert!(!note_path.exists(), "note must be removed from disk");
 }
+
+#[test]
+fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    h.app.notes_picker_entries = (0..30)
+        .map(|i| crate::notes::NotePickerEntry {
+            title: format!("note {i:02}"),
+            preview: format!("preview {i:02}"),
+            search_text: format!("note {i:02}"),
+            path: std::path::PathBuf::from(format!("/tmp/harness-note-{i}.md")),
+            tier_label: None,
+        })
+        .collect();
+    h.app.notes_picker_selected = 0;
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+
+    let id = egui::Id::new("notes_picker")
+        .with("overlay")
+        .with(egui::Id::from("child"))
+        .with(egui::Id::new("notes_picker_halves"))
+        .with(egui::Id::new("notes_picker_list_half"))
+        .with(egui::Id::new("notes_picker_list"));
+
+    let initial_offset = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("notes picker list scroll state loaded")
+        .offset
+        .y;
+    assert_eq!(initial_offset, 0.0);
+
+    for _ in 0..18 {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::J,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.frame(input);
+    }
+
+    assert_eq!(h.app.notes_picker_selected, 18);
+    let offset_down = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state after down")
+        .offset
+        .y;
+    assert!(
+        offset_down > 0.0,
+        "selection at row 18 must scroll the viewport down; offset={offset_down}"
+    );
+
+    // Navigate to the very last row (29)
+    for _ in 18..29 {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.frame(input);
+    }
+    assert_eq!(h.app.notes_picker_selected, 29);
+    let offset_last = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state at last row")
+        .offset
+        .y;
+    assert!(
+        offset_last > offset_down,
+        "last row 29 must scroll further down than row 18; last={offset_last} down={offset_down}"
+    );
+
+    // Simulate wheel scrolling away from the selection towards the top
+    let mut state = egui::scroll_area::State::load(&h.app.ctx, id).unwrap();
+    state.offset.y = 0.0;
+    state.store(&h.app.ctx, id);
+
+    // Run an idle frame without key events
+    h.frame(egui::RawInput::default());
+
+    // Selection must remain at row 29 and the wheel-scrolled offset must NOT be snapped back
+    assert_eq!(h.app.notes_picker_selected, 29);
+    let offset_after_wheel = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state after wheel")
+        .offset
+        .y;
+    assert_eq!(
+        offset_after_wheel, 0.0,
+        "wheel scrolling away from selection must not snap back on an unchanged selection"
+    );
+
+    // Navigate all the way back up to row 0 with Cmd+K
+    for _ in 0..29 {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::K,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.frame(input);
+    }
+    assert_eq!(h.app.notes_picker_selected, 0);
+    let offset_top = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state at top")
+        .offset
+        .y;
+    assert_eq!(
+        offset_top, 0.0,
+        "navigating back to row 0 must keep selection visible at the top"
+    );
+}
