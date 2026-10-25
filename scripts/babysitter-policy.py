@@ -74,7 +74,8 @@ def ledger_summary(run_dir):
             "parks": sum(entry["outcome"] == "parked" for entry in entries),
             "crossovers": sum(entry["outcome"] == "crossed_over" for entry in entries),
             "usage_limit_hits": sum(bool(entry["usage_limit_hit"]) for entry in entries),
-            "wall_minutes": round(sum(entry["wall_minutes"] for entry in entries), 1)}
+            "wall_minutes": round(sum(entry["wall_minutes"] for entry in entries), 1),
+            "follow_up_stints": sum(len(entry.get("follow_up_stints") or []) for entry in entries)}
     return summary
 
 

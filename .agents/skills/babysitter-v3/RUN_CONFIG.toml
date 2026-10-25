@@ -84,7 +84,7 @@ max_fix_rounds = 2                # after this many tester FAILs on one batch, p
 stall_minutes = 25                # idle footer + no terminal slot this long -> inspect
 
 [cadence]
-heartbeat_seconds = 900           # failsafe wake when no slot event arrives
+heartbeat_seconds = 1800          # failsafe only; the head wakes on terminal slot transitions, never on progress slots
 
 [paths]
 run_root = ".stint/runs"          # git-ignored; each run gets <run_root>/<YYYYMMDD-HHMM>/

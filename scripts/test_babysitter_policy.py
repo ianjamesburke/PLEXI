@@ -331,7 +331,20 @@ class PolicyTests(unittest.TestCase):
             "attempts": 3, "batches": 2,
             "first_round_pass": {"count": 1, "rate": 0.5},
             "avg_rounds_to_green": 1.5, "parks": 0, "crossovers": 0,
-            "usage_limit_hits": 0, "wall_minutes": 162.0})
+            "usage_limit_hits": 0, "wall_minutes": 162.0, "follow_up_stints": 0})
+
+    def test_ledger_summary_counts_follow_up_stints_per_alias(self):
+        fixture = SCRIPT.with_name("testdata") / "babysitter-ledger" / "LEDGER.jsonl"
+        real = [json.loads(row) for row in fixture.read_text().splitlines() if row.strip()]
+        synthetic = dict(real[0], batch="9999", stints=["9999"], round=1,
+                         follow_up_stints=["1100", "1101"])
+        omitted_empty = dict(real[1], follow_up_stints=[])
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "LEDGER.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in real + [synthetic, omitted_empty]) + "\n")
+            summary = policy.ledger_summary(Path(directory))
+        self.assertEqual(summary["agyf"]["follow_up_stints"], 2)
+        self.assertEqual(summary["agyf"]["attempts"], 5)
 
     def test_ledger_summary_counts_crossovers_parks_and_limits(self):
         def line(batch, alias, round_, verdict, outcome, **extra):
