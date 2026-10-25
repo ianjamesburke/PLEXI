@@ -19,18 +19,18 @@ cm = "claude"
 cl = "claude"
 agy = "gemini"
 agym = "claude"
-agyl = "gemini"
+agyl = "claude"
 
 [engines.alias_model]
 cos = "Luna"
 com = "Terra"
 col = "Astra"
 cs = "Sonnet"
-cm = "Sonnet"
+cm = "Opus"
 cl = "Opus"
 agy = "Gemini"
 agym = "Sonnet"
-agyl = "Gemini"
+agyl = "Opus"
 
 [topology]
 mode = "aggregate"

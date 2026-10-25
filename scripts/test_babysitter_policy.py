@@ -45,6 +45,9 @@ class PolicyTests(unittest.TestCase):
         self.assertNotEqual(fallback["worker_vendor"], fallback["tester_vendor"])
         pair_fallback = policy.route(self.settings, "M", ["agy", "cs", "agym"])
         self.assertEqual((pair_fallback["worker"], pair_fallback["tester"]), ("cm", "cos"))
+        large_fallback = policy.route(self.settings, "L", ["col", "agy"])
+        self.assertEqual((large_fallback["worker"], large_fallback["tester"]), ("agyl", "cos"))
+        self.assertEqual(large_fallback["worker_vendor"], "claude")
         with self.assertRaises(policy.PolicyError):
             policy.route(self.settings, "S", ["cos", "cs", "agym"])
         with self.assertRaises(policy.PolicyError):
