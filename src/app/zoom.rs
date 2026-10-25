@@ -858,15 +858,88 @@ impl PlexiApp {
         }
     }
 
-    /// `Cmd+Enter`:
-    /// Zooms in one level back toward the ghost (`TreeAtlas -> SiblingCards -> Columns`).
-    /// No-op at `Columns` with an edge bump (`SPEC.md` R31).
-    pub fn zoom_in_level(&mut self) -> bool {
-        match self.zoom.level {
-            ZoomLevel::Columns => {
+    /// Toggle focused pane fullscreen zoom within Columns (`SPEC.md` R31).
+    ///
+    /// Preserves focus, scroll and CLI zoom semantics:
+    /// - If the focused pane is a Portal tile, zooms into its sub-context.
+    /// - If any pane is already zoomed in the active window, clears zoom and
+    ///   restores prior columns geometry, focus and scroll.
+    /// - If the active window has only one pane, zoom is ignored and an edge bump
+    ///   is recorded.
+    /// - Otherwise, zooms the focused pane to fullscreen.
+    pub fn toggle_columns_pane_zoom(&mut self) -> bool {
+        if let Some(parent) = self.fleet_focused_pane() {
+            if self.dive_into_agent_children(parent) {
+                return true;
+            }
+        }
+        let (focused_tile, portal_target) = {
+            let win = &self.windows[self.active_window];
+            let tile = win.focused_pane;
+            let target = tile
+                .and_then(|tile_id| win.tree.tiles.get(tile_id))
+                .and_then(|t| {
+                    if let egui_tiles::Tile::Pane(p) = t {
+                        Some(*p)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|pane_id| win.panes.get(&pane_id))
+                .and_then(|p| p.portal_target());
+            (tile, target)
+        };
+        if let Some(child_ctx_id) = portal_target {
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+                log::info!("zoom: toggle on Portal diving into context_id={child_ctx_id}");
+                let current_ctx_id = self.router.active().context_id;
+                let current_win_id = self.windows[self.active_window].window_id;
+                self.router
+                    .push_depth(current_ctx_id, current_win_id, focused_tile);
+                self.switch_workspace(ctx_idx);
+                true
+            } else {
+                log::warn!(
+                    "zoom: Portal target context_id={child_ctx_id} not found in router"
+                );
+                false
+            }
+        } else {
+            let win = &self.windows[self.active_window];
+            let zoomed = win.zoomed_pane;
+            let focused = win.focused_pane;
+            let pane_count = win.panes.len();
+            let window_id = win.window_id;
+
+            if let Some(prev) = zoomed {
+                self.windows[self.active_window].clear_zoom();
+                log::info!("zoom: toggle off — pane={prev:?}");
+                true
+            } else if let Some(focused) = focused {
+                if pane_count <= 1 {
+                    self.record_edge_bump(Direction::Down);
+                    log::info!(
+                        "zoom: toggle ignored — pane={focused:?} is the only pane in window={window_id}",
+                    );
+                    false
+                } else {
+                    self.windows[self.active_window].zoom_to(focused);
+                    log::info!("zoom: toggle on — pane={focused:?}");
+                    true
+                }
+            } else {
                 self.record_edge_bump(Direction::Down);
                 false
             }
+        }
+    }
+
+    /// `Cmd+Enter`:
+    /// Zooms in one level back toward the ghost (`TreeAtlas -> SiblingCards -> Columns`).
+    /// At `Columns`: toggles fullscreen zoom of the focused pane.
+    pub fn zoom_in_level(&mut self) -> bool {
+        match self.zoom.level {
+            ZoomLevel::Columns => self.toggle_columns_pane_zoom(),
             ZoomLevel::SiblingCards => {
                 let selected = self.zoom.cards_focused_context;
                 let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
