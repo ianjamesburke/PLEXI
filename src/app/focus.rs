@@ -216,10 +216,11 @@ impl FocusOwner for NotesPickerOwner {
     fn handle_key(
         &self,
         app: &mut PlexiApp,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
         input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         app.notes_picker_handle_key(input);
+        app.notes_picker_flush_copy(ctx);
         crate::app::app_trait::KeyDisposition::Passthrough
     }
     fn draw(

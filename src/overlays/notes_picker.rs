@@ -148,11 +148,29 @@ impl PlexiApp {
         Some(text)
     }
 
+    /// Dismiss the notes picker overlay and restore focus to the originating pane.
+    pub(crate) fn close_notes_picker(&mut self) {
+        log::info!("notes_picker: closed");
+        self.notes_picker_pending_delete = None;
+        self.notes_picker_status = None;
+        self.pop_focus_layer(&FocusKind::NotesPicker);
+    }
+
+    /// Flush any pending copied note contents to egui's clipboard output.
+    pub(crate) fn notes_picker_flush_copy(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.notes_picker_copy_unsent) {
+            if let Some(text) = &self.notes_picker_last_copied {
+                ctx.copy_text(text.clone());
+            }
+        }
+    }
+
     /// Copy the selected note's full file content to the clipboard. Returns the
     /// path copied so cut can reuse it.
     fn notes_picker_copy_selected(&mut self) -> Option<std::path::PathBuf> {
         let entry_idx = self.notes_picker_selected_entry()?;
         let path = self.notes_picker_entries[entry_idx].path.clone();
+        let title = self.notes_picker_entries[entry_idx].title.clone();
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 log::info!("notes_picker: copied {} byte(s) from {path:?}", text.len());
@@ -162,6 +180,9 @@ impl PlexiApp {
             }
             Err(e) => {
                 log::warn!("notes_picker: copy failed for {path:?}: {e}");
+                self.notes_picker_status = Some(format!(
+                    "Can't copy \u{201c}{title}\u{201d}: {e}."
+                ));
                 None
             }
         }
@@ -250,15 +271,19 @@ impl PlexiApp {
             pending.cut,
             pending.path
         );
-        self.notes_picker_delete_entry(entry_idx);
+        let deleted = self.notes_picker_delete_entry(entry_idx);
+        if deleted && pending.cut {
+            log::info!("notes_picker: confirmed cut complete — closing picker");
+            self.close_notes_picker();
+        }
     }
 
     /// Delete the entry's file. A text-editor pane holding the note is closed
     /// first (its drop flushes unsaved edits, so the file must be removed after,
-    /// not before, or the editor would recreate it).
-    fn notes_picker_delete_entry(&mut self, entry_idx: usize) {
+    /// not before, or the editor would recreate it). Returns true on success.
+    pub(crate) fn notes_picker_delete_entry(&mut self, entry_idx: usize) -> bool {
         let Some(entry) = self.notes_picker_entries.get(entry_idx).cloned() else {
-            return;
+            return false;
         };
         while let Some(pane_id) = self.find_open_text_editor_pane_any_window(&entry.path) {
             log::info!("notes_picker: closing pane {pane_id} editing the deleted note");
@@ -276,16 +301,20 @@ impl PlexiApp {
             }
             Err(e) => {
                 log::warn!("notes_picker: failed to delete {:?}: {e}", entry.path);
+                self.notes_picker_status = Some(format!(
+                    "Can't delete \u{201c}{}\u{201d}: {e}.",
+                    entry.title
+                ));
                 false
             }
         };
-        self.notes_picker_entries.remove(entry_idx);
-        self.notes_picker_preview = None;
-        let visible = self.notes_picker_filtered().len();
-        if self.notes_picker_selected >= visible {
-            self.notes_picker_selected = visible.saturating_sub(1);
-        }
         if deleted {
+            self.notes_picker_entries.remove(entry_idx);
+            self.notes_picker_preview = None;
+            let visible = self.notes_picker_filtered().len();
+            if self.notes_picker_selected >= visible {
+                self.notes_picker_selected = visible.saturating_sub(1);
+            }
             self.notes_picker_shown_paths = self
                 .notes_picker_entries
                 .iter()
@@ -293,6 +322,7 @@ impl PlexiApp {
                 .collect();
             self.invalidate_notes_index();
         }
+        deleted
     }
 
     pub(crate) fn notes_picker_handle_key(
@@ -360,16 +390,9 @@ impl PlexiApp {
             || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Delete)
         {
             Some(PickerKey::Delete)
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::C)
-            || input
-                .events()
-                .iter()
-                .any(|e| matches!(e, egui::Event::Copy))
-        {
+        } else if input.consume_copy() {
             Some(PickerKey::Copy)
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::X)
-            || input.events().iter().any(|e| matches!(e, egui::Event::Cut))
-        {
+        } else if input.consume_cut() {
             Some(PickerKey::Cut)
         } else {
             None
@@ -377,8 +400,7 @@ impl PlexiApp {
         match action {
             Some(PickerKey::Escape) => {
                 if self.notes_picker_query.is_empty() {
-                    self.notes_picker_status = None;
-                    self.pop_focus_layer(&FocusKind::NotesPicker);
+                    self.close_notes_picker();
                 } else {
                     self.notes_picker_query.clear();
                     self.notes_picker_selected = 0;
@@ -395,7 +417,10 @@ impl PlexiApp {
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
             Some(PickerKey::Delete) => self.notes_picker_request_delete(),
             Some(PickerKey::Copy) => {
-                self.notes_picker_copy_selected();
+                if self.notes_picker_copy_selected().is_some() {
+                    log::info!("notes_picker: copy successful — closing picker");
+                    self.close_notes_picker();
+                }
             }
             Some(PickerKey::Cut) => self.notes_picker_cut_selected(),
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
@@ -416,7 +441,7 @@ impl PlexiApp {
             log::info!("notes_picker: already open in pane {existing_pane_id}, focusing");
             self.set_window_focused_pane(active, existing_tile_id);
             emit_note_opened(&path, Some(&self.router.active().root));
-            self.pop_focus_layer(&FocusKind::NotesPicker);
+            self.close_notes_picker();
             return;
         }
         // Reuse the focused pane only when it's already a text-editor;
@@ -441,7 +466,7 @@ impl PlexiApp {
                         emit_note_opened(&path, Some(&self.router.active().root));
                     }
                 }
-                self.pop_focus_layer(&FocusKind::NotesPicker);
+                self.close_notes_picker();
             }
             None => {
                 log::info!(
@@ -468,7 +493,7 @@ impl PlexiApp {
         {
             emit_note_opened(&path, Some(&context_root));
         }
-        self.pop_focus_layer(&FocusKind::NotesPicker);
+        self.close_notes_picker();
     }
 
     pub(crate) fn draw_notes_picker(&mut self, ctx: &egui::Context) {
@@ -499,11 +524,7 @@ impl PlexiApp {
             )
         });
         let status = self.notes_picker_status.clone();
-        if std::mem::take(&mut self.notes_picker_copy_unsent) {
-            if let Some(text) = &self.notes_picker_last_copied {
-                ctx.copy_text(text.clone());
-            }
-        }
+        self.notes_picker_flush_copy(ctx);
 
         let open_cell = std::cell::Cell::new(None::<usize>);
 
@@ -729,9 +750,7 @@ impl PlexiApp {
         // Dismiss on click outside the modal (processed after picker Area so it
         // doesn't fire when clicking inside the modal itself).
         if modal_response.dismissed {
-            self.notes_picker_pending_delete = None;
-            self.notes_picker_status = None;
-            self.pop_focus_layer(&FocusKind::NotesPicker);
+            self.close_notes_picker();
         }
     }
 }
@@ -822,6 +841,7 @@ mod tests {
         let _ = ctx.run_ui(input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
+            app.notes_picker_flush_copy(ui.ctx());
         });
     }
 
@@ -1227,6 +1247,7 @@ mod tests {
         let _ = ctx.run_ui(input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
+            app.notes_picker_flush_copy(ui.ctx());
         });
     }
 
@@ -1291,18 +1312,35 @@ mod tests {
     }
 
     #[test]
-    fn notes_picker_cmd_c_copies_content_and_keeps_note() {
+    fn notes_picker_cmd_c_copies_content_and_closes_picker() {
         let (mut app, ctx, paths) = picker_with_notes("copy", &["copy me"]);
         press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some("copy me"));
         assert!(app.notes_picker_pending_delete.is_none());
         assert!(paths[0].exists());
-        assert!(app.focus_stack.contains(&FocusKind::NotesPicker));
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "Cmd+C must close the notes picker on successful copy"
+        );
         let _ = std::fs::remove_file(&paths[0]);
     }
 
     #[test]
-    fn notes_picker_cmd_x_copies_then_deletes_after_confirm() {
+    fn notes_picker_cmd_c_read_failure_keeps_picker_open_with_error() {
+        let (mut app, ctx, paths) = picker_with_notes("copy-fail", &["missing note"]);
+        let _ = std::fs::remove_file(&paths[0]);
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert!(app.notes_picker_last_copied.is_none());
+        assert!(
+            app.focus_stack.contains(&FocusKind::NotesPicker),
+            "failed copy must keep the notes picker open"
+        );
+        let status = app.notes_picker_status.as_deref().expect("error status");
+        assert!(status.contains("Can't copy"));
+    }
+
+    #[test]
+    fn notes_picker_cmd_x_copies_then_deletes_and_closes_after_confirm() {
         let (mut app, ctx, paths) = picker_with_notes("cut", &["cut me"]);
         press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some("cut me"));
@@ -1311,10 +1349,95 @@ mod tests {
             .notes_picker_pending_delete
             .as_ref()
             .is_some_and(|p| p.cut));
+        assert!(
+            app.focus_stack.contains(&FocusKind::NotesPicker),
+            "cut must stay open awaiting confirm"
+        );
         press_picker_key(&mut app, &ctx, egui::Key::Enter);
         assert!(!paths[0].exists());
         assert!(app.notes_picker_entries.is_empty());
-        assert!(app.focus_stack.contains(&FocusKind::NotesPicker));
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "confirmed cut must close the notes picker after deleting"
+        );
+    }
+
+    #[test]
+    fn notes_picker_cut_cancel_leaves_note_and_picker_open() {
+        let (mut app, ctx, paths) = picker_with_notes("cut-cancel", &["keep me"]);
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some("keep me"));
+        assert!(app.notes_picker_pending_delete.is_some());
+        press_picker_key(&mut app, &ctx, egui::Key::Escape);
+        assert!(app.notes_picker_pending_delete.is_none());
+        assert!(paths[0].exists());
+        assert!(
+            app.focus_stack.contains(&FocusKind::NotesPicker),
+            "cancelled cut must leave the notes picker open"
+        );
+        let _ = std::fs::remove_file(&paths[0]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn notes_picker_cut_failed_delete_keeps_picker_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+
+        let dir = std::env::temp_dir().join(format!(
+            "plexi-notes-picker-failed-del-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let note_path = dir.join("locked-note.md");
+        std::fs::write(&note_path, "undeletable note content").expect("seed note");
+
+        app.notes_picker_entries =
+            vec![picker_entry(note_path.clone(), "undeletable note content")];
+        app.notes_picker_selected = 0;
+        app.push_focus_layer(FocusKind::NotesPicker);
+
+        // Stage the cut
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
+        assert_eq!(
+            app.notes_picker_last_copied.as_deref(),
+            Some("undeletable note content")
+        );
+        assert!(app.notes_picker_pending_delete.is_some());
+
+        // Make parent directory read-only so remove_file fails with PermissionDenied
+        let orig_perms = std::fs::metadata(&dir).unwrap().permissions();
+        let mut ro_perms = orig_perms.clone();
+        ro_perms.set_mode(0o500);
+        std::fs::set_permissions(&dir, ro_perms).unwrap();
+
+        // Confirm delete
+        press_picker_key(&mut app, &ctx, egui::Key::Enter);
+
+        // Restore permissions for cleanup
+        let mut rw_perms = orig_perms;
+        rw_perms.set_mode(0o700);
+        let _ = std::fs::set_permissions(&dir, rw_perms);
+
+        assert!(
+            note_path.exists(),
+            "note file should still exist when delete fails"
+        );
+        assert!(
+            app.focus_stack.contains(&FocusKind::NotesPicker),
+            "picker must stay open when delete fails"
+        );
+        let status = app.notes_picker_status.as_deref().expect("error status");
+        assert!(status.contains("Can't delete"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1572,17 +1695,25 @@ mod tests {
         let _ = ctx.run_ui(copy_input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
+            app.notes_picker_flush_copy(ui.ctx());
         });
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
         assert!(app.notes_picker_pending_delete.is_none());
         assert!(paths[0].exists());
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "egui Event::Copy must close the notes picker"
+        );
 
+        // Reopen for cut test
+        app.push_focus_layer(FocusKind::NotesPicker);
         app.notes_picker_last_copied = None;
         let mut cut_input = picker_frame_input();
         cut_input.events.push(egui::Event::Cut);
         let _ = ctx.run_ui(cut_input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
+            app.notes_picker_flush_copy(ui.ctx());
         });
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
         assert!(app
@@ -1593,9 +1724,17 @@ mod tests {
             paths[0].exists(),
             "cut must wait for confirm before deleting"
         );
+        assert!(
+            app.focus_stack.contains(&FocusKind::NotesPicker),
+            "egui Event::Cut must stay open awaiting confirm"
+        );
 
-        for p in paths {
-            let _ = std::fs::remove_file(p);
-        }
+        press_picker_key(&mut app, &ctx, egui::Key::Enter);
+        assert!(!paths[0].exists());
+        assert!(app.notes_picker_entries.is_empty());
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "confirmed cut must close the notes picker"
+        );
     }
 }
