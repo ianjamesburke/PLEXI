@@ -115,7 +115,7 @@ pub const GALLERY_NARROW_W: f32 = 320.0;
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTES_PICKER: f32 = 1040.0; // Notes picker — list left, wrapped preview right.
-pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.4; // Share of the notes picker given to the list half.
+pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.5; // Share of the notes picker given to the list half.
 /// Fixed two-line caption slot between the notes picker's body and its hint bar
 /// so confirm prompts and errors never resize or shift the modal.
 pub const NOTES_PICKER_STATUS_HEIGHT: f32 = (TEXT_CAPTION + SPACE_XS) * 2.0;
