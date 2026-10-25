@@ -670,6 +670,8 @@ mod tests {
             app.open_notes_picker();
             let entries: Vec<crate::notes::NotePickerEntry> = realistic_notes
                 .iter()
+                .cycle()
+                .take(30)
                 .enumerate()
                 .map(|(i, (title, body, label))| {
                     let path = std::env::temp_dir().join(format!(
@@ -2052,9 +2054,11 @@ mod tests {
         h_scaled.save_screenshot(scaled_path).unwrap();
         assert!(std::path::Path::new(scaled_path).exists());
 
-        let _ = std::fs::remove_file(wide_path);
-        let _ = std::fs::remove_file(narrow_path);
-        let _ = std::fs::remove_file(scaled_path);
+        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
+            let _ = std::fs::remove_file(wide_path);
+            let _ = std::fs::remove_file(narrow_path);
+            let _ = std::fs::remove_file(scaled_path);
+        }
     }
 
     #[test]

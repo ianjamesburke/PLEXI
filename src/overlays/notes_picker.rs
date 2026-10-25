@@ -548,9 +548,13 @@ impl PlexiApp {
 
         let mut query = self.notes_picker_query.clone();
 
-        // Reserve room for the modal chrome: title, search field, confirm row
-        // and hint bar, so the whole modal stays inside the window.
-        let list_max_h = ((ctx.content_rect().height() - 80.0 - 220.0) * 0.8).max(120.0);
+        // The list and preview take the usable share of the canvas after the
+        // modal's search, status, and shortcut chrome. The earlier nested
+        // 0.8 cap applied the margin twice, leaving a dead band at high UI
+        // scales and clipping the scroll area's final row.
+        let list_max_h = (ctx.content_rect().height() * style::NOTES_PICKER_MODAL_HEIGHT_FRACTION
+            - style::NOTES_PICKER_BODY_CHROME_HEIGHT)
+            .max(style::LIST_ROW_H * 2.0);
 
         // Never wider than the window; below the compact modal width the
         // preview half is dropped and the list takes the whole modal.
@@ -766,12 +770,7 @@ impl PlexiApp {
             });
 
         // The y/n confirm keys also reach the search field as text; drop that.
-        if query != self.notes_picker_query && self.notes_picker_pending_delete.is_none() {
-            self.notes_picker_query = query;
-            self.notes_picker_selected = 0;
-            self.notes_picker_last_drawn_selected = None;
-            self.notes_picker_status = None;
-        }
+        let query_changed = self.notes_picker_apply_query(query);
 
         if let Some(row) = open_cell.get() {
             self.notes_picker_selected = row;
@@ -779,13 +778,33 @@ impl PlexiApp {
             self.notes_picker_open_selected();
         }
 
-        self.notes_picker_last_drawn_selected = Some(selected);
+        // A query can reset the selection after its old row was rendered. Keep
+        // the reset through the next frame so the selected first result is
+        // scrolled into view instead of inheriting a deliberate wheel offset
+        // from the prior result set.
+        if !query_changed {
+            self.notes_picker_last_drawn_selected = Some(selected);
+        }
 
         // Dismiss on click outside the modal (processed after picker Area so it
         // doesn't fire when clicking inside the modal itself).
         if modal_response.dismissed {
             self.close_notes_picker();
         }
+    }
+
+    /// Applies a search query after its frame has painted. Reset the selection
+    /// scroll marker with it so the next frame cannot retain a wheel offset
+    /// belonging to the previous result set.
+    fn notes_picker_apply_query(&mut self, query: String) -> bool {
+        if query == self.notes_picker_query || self.notes_picker_pending_delete.is_some() {
+            return false;
+        }
+        self.notes_picker_query = query;
+        self.notes_picker_selected = 0;
+        self.notes_picker_last_drawn_selected = None;
+        self.notes_picker_status = None;
+        true
     }
 }
 
@@ -892,6 +911,19 @@ mod tests {
             .y
     }
 
+    fn set_picker_scroll_offset(ctx: &egui::Context, offset: f32) {
+        let id = egui::Id::new("notes_picker")
+            .with("overlay")
+            .with(egui::Id::from("child"))
+            .with(egui::Id::new("notes_picker_halves"))
+            .with(egui::Id::new("notes_picker_list_half"))
+            .with(egui::Id::new("notes_picker_list"));
+        let mut state =
+            egui::scroll_area::State::load(ctx, id).expect("notes picker scroll state");
+        state.offset.y = offset;
+        state.store(ctx, id);
+    }
+
     #[test]
     fn notes_picker_scroll_follows_keyboard_selection_in_both_directions() {
         let ctx = egui::Context::default();
@@ -924,6 +956,31 @@ mod tests {
         assert!(
             offset_after_up < offset_after_down,
             "selection above the visible window must scroll back up"
+        );
+    }
+
+    #[test]
+    fn notes_picker_query_reset_keeps_first_result_visible_after_wheel_scroll() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        app.notes_picker_entries = (0..30)
+            .map(|i| picker_entry(format!("/tmp/note-{i}.md").into(), &format!("note {i}")))
+            .collect();
+        app.push_focus_layer(FocusKind::NotesPicker);
+
+        draw_picker_frame(&mut app, &ctx);
+        set_picker_scroll_offset(&ctx, 480.0);
+        // Query handling happens after the list has been drawn for the frame.
+        // The reset must survive into the next draw, otherwise the selected
+        // first result retains a wheel offset from the prior result set.
+        assert!(app.notes_picker_apply_query("note".into()));
+        draw_picker_frame(&mut app, &ctx);
+
+        assert!(
+            picker_scroll_offset(&ctx) < 480.0,
+            "a new query must restore its selected first result instead of preserving an old wheel offset"
         );
     }
 
