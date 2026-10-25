@@ -27,7 +27,7 @@ mod file_browser;
 mod host;
 mod mcp_http;
 mod media;
-mod notes;
+pub mod notes;
 mod overlays;
 mod pane_ops;
 mod platform;
