@@ -4962,6 +4962,308 @@ fn first_boot_shape_matches_new_context() {
     );
 }
 
+/// Stint 1008: Deterministic measurement of new-context workspace initialization
+/// latency across cold and warm runs for both empty directory and existing project paths.
+///
+/// Verifies:
+/// 1. Each stage (id_resolve/config, pane_spawn, router_register, first_paint) is measured.
+/// 2. Stage timings are non-vacuous (timing records exist, match active context_id and kind,
+///    and record nonzero pane spawn and total durations).
+/// 3. Invariants are maintained: context window shape, terminal pane presence, tree root,
+///    and anchor defaults detection for project paths.
+#[test]
+fn measure_new_context_initialization_latency_cold_and_warm() {
+    let mut h = HostHarness::new();
+    let initial_cwd = std::env::temp_dir();
+    let context0 = h.app.pane_context_env_for_window(0);
+    h.app
+        .seed_window_root_pane(
+            0,
+            &context0,
+            initial_cwd,
+            crate::pane_ops::create::TerminalSpawnOptions::default(),
+        )
+        .expect("PTY and shell measurement must be available for latency test");
+
+    // Prepare test directories:
+    // A. An empty directory (no .plexi directory or config).
+    let empty_dir = tempfile::tempdir().expect("create empty tempdir");
+    // B. An existing project directory with anchor workspace defaults.
+    let project_dir = tempfile::tempdir().expect("create project tempdir");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let plexi_dir = project_dir.path().join(&channel_dir);
+    std::fs::create_dir_all(&plexi_dir).expect("create channel dir");
+    std::fs::write(
+        plexi_dir.join("workspace.toml"),
+        r#"id = "anchor-id"
+
+[context]
+name = "anchor-project"
+description = "test anchor project"
+"#,
+    )
+    .expect("write workspace.toml");
+
+    let initial_context_count = h.app.router.len();
+    assert_eq!(initial_context_count, 1);
+
+    // --- Cold Phase 1: New context at an empty directory ---
+    let cold_empty_start = std::time::Instant::now();
+    h.app.new_context_at_path(empty_dir.path().to_path_buf());
+    let cold_empty_host_elapsed = cold_empty_start.elapsed();
+
+    assert_eq!(h.app.router.len(), 2);
+    let active_ctx = h.app.router.active().clone();
+    let active_win = &h.app.windows[h.app.active_window];
+    assert_eq!(active_win.context_id, active_ctx.context_id);
+    assert_eq!(active_win.panes.len(), 1);
+    assert!(active_win.tree.root.is_some());
+    assert!(active_win.focused_pane.is_some());
+
+    // Non-vacuous timing assertion:
+    let timing_cold_empty = h
+        .app
+        .last_new_context_timing
+        .clone()
+        .expect("new_context_at_path must record stage timing");
+    assert_eq!(timing_cold_empty.context_id, active_ctx.context_id);
+    assert_eq!(timing_cold_empty.kind, crate::pane_ops::NewContextKind::AtPath);
+    assert!(timing_cold_empty.total >= timing_cold_empty.pane_spawn);
+    assert!(timing_cold_empty.total <= cold_empty_host_elapsed + std::time::Duration::from_millis(50));
+
+    // First paint frame:
+    let paint_start = std::time::Instant::now();
+    h.run_frames(1);
+    let cold_empty_first_paint = paint_start.elapsed();
+    assert!(cold_empty_first_paint > std::time::Duration::ZERO);
+
+    // Workspace save:
+    let save_start = std::time::Instant::now();
+    h.app.save_workspace_now();
+    let cold_empty_save = save_start.elapsed();
+
+    eprintln!(
+        "[BENCH] Cold Empty: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+        timing_cold_empty.total,
+        timing_cold_empty.id_resolve,
+        timing_cold_empty.pane_spawn,
+        timing_cold_empty.router_register,
+        cold_empty_first_paint,
+        cold_empty_save,
+    );
+
+    // --- Cold Phase 2: New context at an existing project directory ---
+    let cold_project_start = std::time::Instant::now();
+    h.app.new_context_at_path(project_dir.path().to_path_buf());
+    let cold_project_host_elapsed = cold_project_start.elapsed();
+
+    assert_eq!(h.app.router.len(), 3);
+    let active_project_ctx = h.app.router.active().clone();
+    assert_eq!(active_project_ctx.name.displayed(), "anchor-project");
+    assert_eq!(
+        active_project_ctx.description.as_deref(),
+        Some("test anchor project")
+    );
+    let timing_cold_project = h
+        .app
+        .last_new_context_timing
+        .clone()
+        .expect("new_context_at_path for project must record stage timing");
+    assert_eq!(timing_cold_project.context_id, active_project_ctx.context_id);
+    assert_eq!(timing_cold_project.kind, crate::pane_ops::NewContextKind::AtPath);
+    assert!(timing_cold_project.total >= timing_cold_project.pane_spawn);
+    assert!(timing_cold_project.total <= cold_project_host_elapsed + std::time::Duration::from_millis(50));
+
+    let paint_project_start = std::time::Instant::now();
+    h.run_frames(1);
+    let cold_project_first_paint = paint_project_start.elapsed();
+
+    eprintln!(
+        "[BENCH] Cold Project: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?}",
+        timing_cold_project.total,
+        timing_cold_project.id_resolve,
+        timing_cold_project.pane_spawn,
+        timing_cold_project.router_register,
+        cold_project_first_paint,
+    );
+
+    // --- Cold Phase 3: New standalone empty context (home directory) ---
+    h.app.new_context();
+    assert_eq!(h.app.router.len(), 4);
+    let active_empty_home = h.app.router.active().clone();
+    let timing_cold_home = h
+        .app
+        .last_new_context_timing
+        .clone()
+        .expect("new_context must record stage timing");
+    assert_eq!(timing_cold_home.context_id, active_empty_home.context_id);
+    assert_eq!(timing_cold_home.kind, crate::pane_ops::NewContextKind::Empty);
+    let paint_home_start = std::time::Instant::now();
+    h.run_frames(1);
+    let cold_home_first_paint = paint_home_start.elapsed();
+
+    eprintln!(
+        "[BENCH] Cold Home Empty: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?}",
+        timing_cold_home.total,
+        timing_cold_home.id_resolve,
+        timing_cold_home.pane_spawn,
+        timing_cold_home.router_register,
+        cold_home_first_paint,
+    );
+
+    // --- Warm Phase: Repeated iterations to measure warm latency distribution ---
+    #[derive(Debug, Clone, Copy)]
+    struct WarmMeasurement {
+        total: std::time::Duration,
+        id_resolve: std::time::Duration,
+        pane_spawn: std::time::Duration,
+        router_register: std::time::Duration,
+        first_paint: std::time::Duration,
+        save: std::time::Duration,
+    }
+
+    let mut warm_empty = Vec::new();
+    let mut warm_project = Vec::new();
+
+    for i in 0..5 {
+        let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
+        h.app.new_context_at_path(warm_empty_sub.path().to_path_buf());
+        let t_empty = h
+            .app
+            .last_new_context_timing
+            .as_ref()
+            .expect("warm empty must record timing");
+        assert_eq!(t_empty.kind, crate::pane_ops::NewContextKind::AtPath);
+        let t_empty = t_empty.clone();
+        let paint_start = std::time::Instant::now();
+        h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        let save = save_start.elapsed();
+        let empty_measurement = WarmMeasurement {
+            total: t_empty.total,
+            id_resolve: t_empty.id_resolve,
+            pane_spawn: t_empty.pane_spawn,
+            router_register: t_empty.router_register,
+            first_paint,
+            save,
+        };
+        assert!(empty_measurement.total > std::time::Duration::ZERO);
+        assert!(empty_measurement.id_resolve > std::time::Duration::ZERO);
+        assert!(empty_measurement.pane_spawn > std::time::Duration::ZERO);
+        assert!(empty_measurement.router_register > std::time::Duration::ZERO);
+        assert!(empty_measurement.first_paint > std::time::Duration::ZERO);
+        assert!(empty_measurement.save > std::time::Duration::ZERO);
+        eprintln!(
+            "[BENCH] Warm Empty iteration={i}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+            empty_measurement.total,
+            empty_measurement.id_resolve,
+            empty_measurement.pane_spawn,
+            empty_measurement.router_register,
+            empty_measurement.first_paint,
+            empty_measurement.save,
+        );
+        warm_empty.push(empty_measurement);
+
+        let warm_project_sub = tempfile::tempdir().expect("create warm project tempdir");
+        let sub_plexi = warm_project_sub.path().join(&channel_dir);
+        std::fs::create_dir_all(&sub_plexi).expect("create sub channel dir");
+        std::fs::write(
+            sub_plexi.join("workspace.toml"),
+            format!("id = \"warm-{i}\"\n\n[context]\nname = \"warm-{i}\"\n"),
+        )
+        .expect("write sub workspace.toml");
+        h.app.new_context_at_path(warm_project_sub.path().to_path_buf());
+        let t_proj = h
+            .app
+            .last_new_context_timing
+            .as_ref()
+            .expect("warm project must record timing");
+        assert_eq!(t_proj.kind, crate::pane_ops::NewContextKind::AtPath);
+        let t_proj = t_proj.clone();
+        let paint_start = std::time::Instant::now();
+        h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        let save = save_start.elapsed();
+        let project_measurement = WarmMeasurement {
+            total: t_proj.total,
+            id_resolve: t_proj.id_resolve,
+            pane_spawn: t_proj.pane_spawn,
+            router_register: t_proj.router_register,
+            first_paint,
+            save,
+        };
+        assert!(project_measurement.total > std::time::Duration::ZERO);
+        assert!(project_measurement.id_resolve > std::time::Duration::ZERO);
+        assert!(project_measurement.pane_spawn > std::time::Duration::ZERO);
+        assert!(project_measurement.router_register > std::time::Duration::ZERO);
+        assert!(project_measurement.first_paint > std::time::Duration::ZERO);
+        assert!(project_measurement.save > std::time::Duration::ZERO);
+        eprintln!(
+            "[BENCH] Warm Project iteration={i}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+            project_measurement.total,
+            project_measurement.id_resolve,
+            project_measurement.pane_spawn,
+            project_measurement.router_register,
+            project_measurement.first_paint,
+            project_measurement.save,
+        );
+        warm_project.push(project_measurement);
+    }
+
+    assert_eq!(warm_empty.len(), 5);
+    assert_eq!(warm_project.len(), 5);
+    let avg = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).sum::<std::time::Duration>() / values.len() as u32
+    };
+    let min = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).min().expect("five warm samples")
+    };
+    let max = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).max().expect("five warm samples")
+    };
+    eprintln!(
+        "[BENCH] Warm Empty (n=5): total avg={:?} min={:?} max={:?}; id_resolve avg={:?} min={:?} max={:?}; pane_spawn avg={:?} min={:?} max={:?}; router_register avg={:?} min={:?} max={:?}; first_paint avg={:?} min={:?} max={:?}; save avg={:?} min={:?} max={:?}",
+        avg(&warm_empty, |m| m.total), min(&warm_empty, |m| m.total), max(&warm_empty, |m| m.total),
+        avg(&warm_empty, |m| m.id_resolve), min(&warm_empty, |m| m.id_resolve), max(&warm_empty, |m| m.id_resolve),
+        avg(&warm_empty, |m| m.pane_spawn), min(&warm_empty, |m| m.pane_spawn), max(&warm_empty, |m| m.pane_spawn),
+        avg(&warm_empty, |m| m.router_register), min(&warm_empty, |m| m.router_register), max(&warm_empty, |m| m.router_register),
+        avg(&warm_empty, |m| m.first_paint), min(&warm_empty, |m| m.first_paint), max(&warm_empty, |m| m.first_paint),
+        avg(&warm_empty, |m| m.save), min(&warm_empty, |m| m.save), max(&warm_empty, |m| m.save),
+    );
+    eprintln!(
+        "[BENCH] Warm Project (n=5): total avg={:?} min={:?} max={:?}; id_resolve avg={:?} min={:?} max={:?}; pane_spawn avg={:?} min={:?} max={:?}; router_register avg={:?} min={:?} max={:?}; first_paint avg={:?} min={:?} max={:?}; save avg={:?} min={:?} max={:?}",
+        avg(&warm_project, |m| m.total), min(&warm_project, |m| m.total), max(&warm_project, |m| m.total),
+        avg(&warm_project, |m| m.id_resolve), min(&warm_project, |m| m.id_resolve), max(&warm_project, |m| m.id_resolve),
+        avg(&warm_project, |m| m.pane_spawn), min(&warm_project, |m| m.pane_spawn), max(&warm_project, |m| m.pane_spawn),
+        avg(&warm_project, |m| m.router_register), min(&warm_project, |m| m.router_register), max(&warm_project, |m| m.router_register),
+        avg(&warm_project, |m| m.first_paint), min(&warm_project, |m| m.first_paint), max(&warm_project, |m| m.first_paint),
+        avg(&warm_project, |m| m.save), min(&warm_project, |m| m.save), max(&warm_project, |m| m.save),
+    );
+
+    let mut shell_startup = Vec::new();
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let output = std::process::Command::new("/bin/zsh")
+            .args(["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"])
+            .output()
+            .expect("interactive login shell must start for latency measurement");
+        let elapsed = start.elapsed();
+        assert!(output.status.success(), "login shell failed: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("__PLEXI_SHELL_READY__"));
+        shell_startup.push(elapsed);
+    }
+    eprintln!(
+        "[BENCH] Shell login-to-first-output (n=5): avg={:?} min={:?} max={:?}",
+        shell_startup.iter().sum::<std::time::Duration>() / shell_startup.len() as u32,
+        shell_startup.iter().min().expect("five shell samples"),
+        shell_startup.iter().max().expect("five shell samples"),
+    );
+}
+
 // -- Stint 0456: focused TextInput typing ----------------------------------
 
 /// One pressed key event with no modifiers.

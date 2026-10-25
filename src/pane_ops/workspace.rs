@@ -9,6 +9,24 @@ use crate::workspace::WorkspaceFile;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Classification of how a new context was spawned (stint 1008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NewContextKind {
+    Empty,
+    AtPath,
+}
+
+/// Recorded stage durations for a completed new context initialization (stint 1008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewContextTiming {
+    pub(crate) context_id: u64,
+    pub(crate) kind: NewContextKind,
+    pub(crate) id_resolve: std::time::Duration,
+    pub(crate) pane_spawn: std::time::Duration,
+    pub(crate) router_register: std::time::Duration,
+    pub(crate) total: std::time::Duration,
+}
+
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
 /// Calls the shared `init_workspace` function which creates all workspace files
@@ -805,9 +823,11 @@ impl PlexiApp {
 
     /// Create a new standalone empty context at the home directory.
     fn new_context_empty(&mut self) {
+        let total_start = std::time::Instant::now();
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
 
+        let id_start = std::time::Instant::now();
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
@@ -821,9 +841,11 @@ impl PlexiApp {
             root: Some(cwd.clone()),
             depth: 0,
         };
+        let id_duration = id_start.elapsed();
 
         // Push an empty window, then seed its base root pane with the new
         // context's identity before it is registered in the router.
+        let spawn_start = std::time::Instant::now();
         self.windows.push(Window {
             name: String::new(),
             path: cwd.clone(),
@@ -850,7 +872,9 @@ impl PlexiApp {
             self.windows.pop();
             return;
         }
+        let spawn_duration = spawn_start.elapsed();
 
+        let register_start = std::time::Instant::now();
         ensure_context_state_ignore(&cwd);
         self.router.push(crate::host::context::Context {
             name: ContextName::auto(String::new()),
@@ -868,6 +892,20 @@ impl PlexiApp {
         self.apply_context_transition_effects();
 
         self.mark_workspace_dirty();
+        let register_duration = register_start.elapsed();
+        let total_duration = total_start.elapsed();
+
+        log::info!(
+            "new_context_stage_timing: context_id={ctx_id} kind=empty total={total_duration:?} id_resolve={id_duration:?} pane_spawn={spawn_duration:?} router_register={register_duration:?}"
+        );
+        self.last_new_context_timing = Some(NewContextTiming {
+            context_id: ctx_id,
+            kind: NewContextKind::Empty,
+            id_resolve: id_duration,
+            pane_spawn: spawn_duration,
+            router_register: register_duration,
+            total: total_duration,
+        });
         log::info!(
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={ctx_name}"
         );
@@ -887,8 +925,10 @@ impl PlexiApp {
     /// directory basename, unless the path has a `.plexi/workspace.toml` with
     /// `[context]` defaults. Callers must call `mark_workspace_dirty()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
+        let total_start = std::time::Instant::now();
         log::info!("new_context_at_path: path={}", path.display());
 
+        let config_and_id_start = std::time::Instant::now();
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
@@ -932,9 +972,11 @@ impl PlexiApp {
             root: Some(path.clone()),
             depth: 0,
         };
+        let config_and_id_duration = config_and_id_start.elapsed();
 
         // Push an empty window, then seed its base root pane in place with the
         // context identity resolved above.
+        let spawn_start = std::time::Instant::now();
         self.windows.push(Window {
             name: String::new(),
             path: path.clone(),
@@ -964,7 +1006,9 @@ impl PlexiApp {
             self.windows.pop();
             return;
         }
+        let spawn_duration = spawn_start.elapsed();
 
+        let register_start = std::time::Instant::now();
         ensure_context_state_ignore(&path);
         self.router.push(crate::host::context::Context {
             name: context_name,
@@ -980,6 +1024,21 @@ impl PlexiApp {
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
         self.apply_context_transition_effects();
+        self.mark_workspace_dirty();
+        let register_duration = register_start.elapsed();
+        let total_duration = total_start.elapsed();
+
+        log::info!(
+            "new_context_stage_timing: context_id={ctx_id} kind=at_path total={total_duration:?} config_and_id={config_and_id_duration:?} pane_spawn={spawn_duration:?} router_register={register_duration:?}"
+        );
+        self.last_new_context_timing = Some(NewContextTiming {
+            context_id: ctx_id,
+            kind: NewContextKind::AtPath,
+            id_resolve: config_and_id_duration,
+            pane_spawn: spawn_duration,
+            router_register: register_duration,
+            total: total_duration,
+        });
     }
 
     /// Create a new terminal page immediately to the right of the active page
@@ -1117,6 +1176,7 @@ impl PlexiApp {
             agent_pane,
             inject_folder_secrets,
         } = options;
+        let spawn_start = std::time::Instant::now();
         let (tree, panes, root_tile) = self.create_single_pane_tree(
             context,
             Some(cwd),
@@ -1125,10 +1185,15 @@ impl PlexiApp {
             agent_pane,
             inject_folder_secrets,
         )?;
+        let spawn_duration = spawn_start.elapsed();
         let pane_id = *panes
             .keys()
             .next()
             .expect("create_single_pane_tree always yields exactly one pane");
+        log::info!(
+            "seed_window_root_pane: spawned root pane {pane_id} in {spawn_duration:?} (win_idx={win_idx}, context_id={})",
+            context.context_id
+        );
         let win = &mut self.windows[win_idx];
         win.tree = tree;
         win.panes = panes;
@@ -2210,6 +2275,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn save_workspace_now(&self) {
+        let save_start = std::time::Instant::now();
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::WorkspaceSave,
@@ -2352,6 +2418,9 @@ impl PlexiApp {
 
         if let Err(e) = ws.save() {
             log::error!("Failed to save workspace: {e}");
+        } else {
+            let save_duration = save_start.elapsed();
+            log::info!("save_workspace_now: saved workspace in {save_duration:?}");
         }
     }
 }

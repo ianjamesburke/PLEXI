@@ -258,6 +258,8 @@ pub struct PlexiApp {
     pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
     pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
+    /// Last measured new-context initialization stage timings (stint 1008).
+    pub(crate) last_new_context_timing: Option<crate::pane_ops::NewContextTiming>,
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
     pub(crate) pending_agent_waits: Vec<crate::app::pane_wait::PendingAgentWait>,
     pub(crate) child_result_events: HashMap<PaneId, crate::workspace::QueuedChildResult>,
@@ -1832,6 +1834,7 @@ impl PlexiApp {
                     zoom: zoom::ZoomState::default(),
                     attention_queue: attention_queue::AttentionQueueState::default(),
                     approval_keyboard: Default::default(),
+                    last_new_context_timing: None,
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -2102,6 +2105,7 @@ impl PlexiApp {
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
+            last_new_context_timing: None,
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -3066,6 +3070,7 @@ impl PlexiApp {
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
+            last_new_context_timing: None,
         };
         // Launch paths allocate through HostModel, which otherwise starts at 1
         // in every test process. Seed a private block so a pane drop in one

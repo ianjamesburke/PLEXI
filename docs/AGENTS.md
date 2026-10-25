@@ -34,6 +34,7 @@ reports are stored under that profile's `sessions/teams/` directory.
 | `linux-support-plan.md` | Linux x86_64 as a second host platform: phase-by-phase verification contract, platform seam, v0 non-goals | none yet |
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
 | `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
+| `new-context-initialization-latency.md` | New-context workspace initialization latency measurement on Alpha — timings, stage breakdown, and decision | 1008 |
 | `notes-editor.md` | Native Notes editor, Live Preview, links, attachments, and agent validation | see file |
 | `realtime-app-runtime.md` | Stable frame pacing and presentation across Python and native WASM apps | 0553 |
 | `search-primitive.md` | Unified upstream host search engine (`src/search/`) + `SearchBar` UI primitive (`src/ui/search_bar.rs`) for File Explorer, Notes Picker, Command Palette, and host tools | 0814 |
