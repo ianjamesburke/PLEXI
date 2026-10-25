@@ -51,11 +51,14 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
     assert_eq!(h.app.active_focused_pane_id(), Some(p2));
 
-    // At Columns, Cmd+Enter is at the bottom of the ladder -> no-op + edge bump.
-    let bumps_before = h.app.zoom.edge_bump_count;
-    assert!(!h.app.zoom_in_level());
+    // At Columns with multiple panes, Cmd+Enter toggles focused pane zoom.
+    assert!(h.app.zoom_in_level());
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
-    assert_eq!(h.app.zoom.edge_bump_count, bumps_before + 1);
+    assert!(h.app.windows[0].zoomed_pane.is_some());
+    // Second Cmd+Enter restores prior geometry/unzooms.
+    assert!(h.app.zoom_in_level());
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+    assert!(h.app.windows[0].zoomed_pane.is_none());
 
     // Cmd+Esc: Columns -> SiblingCards, recording ghost marker at (ctx_id, col=1, pane=p2).
     assert!(h.app.zoom_out_or_close_surface());
@@ -332,6 +335,44 @@ fn sibling_cards_navigation_and_context_restore_r34_r36() {
     assert_eq!(h.app.active_focused_pane_id(), Some(ctx1_p2));
 }
 
+/// Stint 0988: Sibling cards selection-follow updates viewport offset, and pointer scrolling can be recovered by navigation.
+#[test]
+fn sibling_cards_selection_follow_and_pointer_scrolling() {
+    let mut h = HostHarness::new();
+    let ctx0_id = h.app.router.active().context_id;
+    let p0 = h.add_test_pane();
+    h.app.set_context_columns(ctx0_id, vec![vec![p0]]);
+
+    let mut sibs = vec![ctx0_id];
+    for i in 1..5 {
+        let cid = h.app.create_context_without_pty(&format!("ctx-{i}"), None);
+        let pid = h.add_test_pane();
+        h.app.set_context_columns(cid, vec![vec![pid]]);
+        sibs.push(cid);
+    }
+
+    h.app.switch_to_context_restoring_last_pane(ctx0_id);
+    h.app.zoom_out_or_close_surface();
+    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
+    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
+
+    // Move Right with L to card 1
+    assert!(h.app.navigate_sibling_cards(Direction::Right));
+    assert_eq!(h.app.zoom.cards_focused_context, Some(sibs[1]));
+    let expected_offset_1 = 1.0 * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
+    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_1);
+
+    // Simulate pointer scroll adjusting viewport offset
+    h.app.zoom.cards_viewport_offset += 50.0;
+    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_1 + 50.0);
+
+    // Navigating with keyboard (Left to card 0) triggers selection-follow and snaps back to centered card 0!
+    assert!(h.app.navigate_sibling_cards(Direction::Left));
+    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
+    let expected_offset_0 = 0.0 * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
+    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_0);
+}
+
 /// R35: Tree Atlas left-to-right tidy tree (`parent.x < child.x`), `h`/`l`/`j`/`k`,
 /// `[`/`]` sibling wrap, `n`/`N` needs-you wrap, `p` peek, `q` ghost return,
 /// and `Enter` dive (asking node -> asking pane + DecisionOverlay open; calm node -> last active pane).
@@ -413,25 +454,25 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
     assert_eq!(child_b_node.direct_asks, 1);
     assert!(!edges.is_empty());
 
-    // `l` moves from root to first child (child_a).
-    send_key(&mut h, Modifiers::NONE, Key::L);
+    // `j` moves down from root to first child (child_a).
+    send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_a_id));
 
-    // `j` moves to next node at same depth (child_b); `j` again bumps edge (no wrap).
-    send_key(&mut h, Modifiers::NONE, Key::J);
+    // `l` moves right to neighboring sibling (child_b); `l` again bumps edge (no wrap).
+    send_key(&mut h, Modifiers::NONE, Key::L);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_b_id));
     let b = h.app.zoom.edge_bump_count;
-    send_key(&mut h, Modifiers::NONE, Key::J);
+    send_key(&mut h, Modifiers::NONE, Key::L);
     assert_eq!(h.app.zoom.edge_bump_count, b + 1);
 
     // `]` wraps around siblings from child_b back to child_a.
     send_key(&mut h, Modifiers::NONE, Key::CloseBracket);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_a_id));
 
-    // `h` returns to parent (root), and `l` remembers last-visited child (child_a).
-    send_key(&mut h, Modifiers::NONE, Key::H);
+    // `k` returns to parent (root), and `j` remembers last-visited child (child_a).
+    send_key(&mut h, Modifiers::NONE, Key::K);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(root_ctx_id));
-    send_key(&mut h, Modifiers::NONE, Key::L);
+    send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_a_id));
 
     // `p` opens Peek card; Cmd+Esc closes Peek first without leaving TreeAtlas.
@@ -513,14 +554,16 @@ fn tree_atlas_layout_multi_root_hub_top_down() {
         );
     }
 
-    // Keyboard nav works across roots (j/k at depth 0) and down to child (l).
-    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
-    send_key(&mut h, Modifiers::NONE, Key::J);
-    assert_eq!(h.app.zoom.atlas_focused_context, Some(root2_id));
-    send_key(&mut h, Modifiers::NONE, Key::K);
+    // Keyboard nav works across roots (h/l neighboring siblings) and down to child (j).
     assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
     send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root2_id));
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
+    send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child1_id));
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
 }
 
 /// R37 & R38: Attention queue category ordering (`Ask -> Failed -> Result -> Done`, oldest first)
@@ -945,4 +988,380 @@ fn cmd_enter_zooms_into_selected_card_like_enter() {
         assert_eq!(h.app.zoom.level, ZoomLevel::Columns, "chord {chord:?}");
         assert_eq!(h.app.router.active().context_id, ctx2_id, "chord {chord:?}");
     }
+}
+
+fn press_and_release_key(h: &mut HostHarness, key: Key, modifiers: Modifiers) {
+    h.press_key(key, modifiers);
+    h.frame(egui::RawInput {
+        events: vec![Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+}
+
+/// Stint 0986 Done-When:
+/// Keyboard-injected Cmd+Enter toggles exactly the focused pane and a second press restores
+/// its prior geometry, focus and scroll, for both one-pane and multi-pane columns.
+#[test]
+fn cmd_enter_toggles_focused_pane_zoom_and_restores_geometry_focus_and_scroll() {
+    let mut h = HostHarness::new();
+    let col0_p = h.add_test_pane();
+    h.focus_pane(col0_p).run_frames(1);
+
+    let col1_top = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("split right for column 1");
+    h.run_frames(2).focus_pane(col1_top);
+
+    let col1_bot = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split down to stack inside column 1");
+    h.run_frames(2);
+
+    let ctx = h.app.router.active().context_id;
+    h.app
+        .set_context_columns(ctx, vec![vec![col0_p], vec![col1_top, col1_bot]]);
+    h.run_frames(2);
+
+    let active_win = h.app.active_window;
+    let col0_tile = h.app.windows[active_win]
+        .tree
+        .tiles
+        .find_pane(&col0_p)
+        .expect("col0 pane tile");
+    let col1_top_tile = h.app.windows[active_win]
+        .tree
+        .tiles
+        .find_pane(&col1_top)
+        .expect("col1 top pane tile");
+    let col1_bot_tile = h.app.windows[active_win]
+        .tree
+        .tiles
+        .find_pane(&col1_bot)
+        .expect("col1 bot pane tile");
+
+    let rect_col0_before = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col0_tile)
+        .expect("col0 rect");
+    let rect_top_before = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_top_tile)
+        .expect("col1 top rect");
+    let rect_bot_before = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_bot_tile)
+        .expect("col1 bot rect");
+
+    // 1. Focus stacked pane in multi-pane column (col1_bot).
+    h.focus_pane(col1_bot).run_frames(2);
+    assert_eq!(h.app.active_focused_pane_id(), Some(col1_bot));
+    assert!(h.app.windows[active_win].zoomed_pane.is_none());
+
+    // Press Cmd+Enter -> zooms exactly col1_bot.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.windows[active_win].zoomed_pane,
+        Some(col1_bot_tile),
+        "Cmd+Enter must zoom the focused multi-pane column pane"
+    );
+
+    // Second press Cmd+Enter -> restores prior geometry, focus and scroll.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(
+        h.app.windows[active_win].zoomed_pane.is_none(),
+        "second Cmd+Enter must unzoom"
+    );
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(col1_bot),
+        "focus must be preserved after unzoom"
+    );
+    let rect_bot_after = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_bot_tile)
+        .expect("col1 bot rect after unzoom");
+    assert_eq!(
+        rect_bot_after, rect_bot_before,
+        "multi-pane column geometry must be preserved after unzoom"
+    );
+
+    // 2. Focus one-pane column (col0_p).
+    h.focus_pane(col0_p).run_frames(2);
+    assert_eq!(h.app.active_focused_pane_id(), Some(col0_p));
+    assert!(h.app.windows[active_win].zoomed_pane.is_none());
+
+    // Press Cmd+Enter -> zooms col0_p.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.windows[active_win].zoomed_pane,
+        Some(col0_tile),
+        "Cmd+Enter must zoom the focused one-pane column pane"
+    );
+
+    // Second press Cmd+Enter -> unzooms col0_p and restores geometry.
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(
+        h.app.windows[active_win].zoomed_pane.is_none(),
+        "second Cmd+Enter on one-pane column must unzoom"
+    );
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(col0_p),
+        "one-pane column focus must be preserved after unzoom"
+    );
+    let rect_col0_after = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col0_tile)
+        .expect("col0 rect after unzoom");
+    assert_eq!(
+        rect_col0_after, rect_col0_before,
+        "one-pane column geometry must be preserved after unzoom"
+    );
+    let rect_top_after = h.app.windows[active_win]
+        .tree
+        .tiles
+        .rect(col1_top_tile)
+        .expect("col1 top rect after unzoom");
+    assert_eq!(
+        rect_top_after, rect_top_before,
+        "unrelated pane geometry must remain intact"
+    );
+
+    // 3. Single-pane window records an edge bump down when Cmd+Enter is pressed.
+    let mut single_h = HostHarness::new();
+    let single_p = single_h.add_test_pane();
+    single_h.focus_pane(single_p).run_frames(2);
+    let bumps_before = single_h.app.zoom.edge_bump_count;
+    press_and_release_key(&mut single_h, Key::Enter, Modifiers::COMMAND);
+    single_h.run_frames(2);
+    assert!(
+        single_h.app.windows[0].zoomed_pane.is_none(),
+        "single pane window cannot zoom"
+    );
+    assert_eq!(
+        single_h.app.zoom.edge_bump_count,
+        bumps_before + 1,
+        "single pane Cmd+Enter must record edge bump"
+    );
+}
+
+#[test]
+fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
+    let mut h = HostHarness::new();
+    // Root 1 (active)
+    let r1_pane = h.add_test_pane();
+    let r1_id = h.app.router.active().context_id;
+    h.app.set_context_columns(r1_id, vec![vec![r1_pane]]);
+
+    // Root 1 -> Child 1A
+    let c1a_id = h.app.create_context_without_pty("c1a", Some(r1_id));
+    let c1a_pane = h.add_test_pane();
+    h.app.set_context_columns(c1a_id, vec![vec![c1a_pane]]);
+
+    // Root 1 -> Child 1A -> Grandchild 1A1
+    let g1a1_id = h.app.create_context_without_pty("g1a1", Some(c1a_id));
+    let g1a1_pane = h.add_test_pane();
+    h.app.set_context_columns(g1a1_id, vec![vec![g1a1_pane]]);
+
+    // Root 1 -> Child 1B (leaf)
+    let c1b_id = h.app.create_context_without_pty("c1b", Some(r1_id));
+    let c1b_pane = h.add_test_pane();
+    h.app.set_context_columns(c1b_id, vec![vec![c1b_pane]]);
+
+    // Root 2
+    let r2_id = h.app.create_context_without_pty("r2", None);
+    let r2_pane = h.add_test_pane();
+    h.app.set_context_columns(r2_id, vec![vec![r2_pane]]);
+
+    // Root 2 -> Child 2A, 2B, 2C
+    let c2a_id = h.app.create_context_without_pty("c2a", Some(r2_id));
+    let c2a_pane = h.add_test_pane();
+    h.app.set_context_columns(c2a_id, vec![vec![c2a_pane]]);
+    let c2b_id = h.app.create_context_without_pty("c2b", Some(r2_id));
+    let c2b_pane = h.add_test_pane();
+    h.app.set_context_columns(c2b_id, vec![vec![c2b_pane]]);
+    let c2c_id = h.app.create_context_without_pty("c2c", Some(r2_id));
+    let c2c_pane = h.add_test_pane();
+    h.app.set_context_columns(c2c_id, vec![vec![c2c_pane]]);
+
+    // Root 3: leaf root (no children)
+    let r3_id = h.app.create_context_without_pty("r3", None);
+    let r3_pane = h.add_test_pane();
+    h.app.set_context_columns(r3_id, vec![vec![r3_pane]]);
+
+    // Root 4: missing parent (parent_id points to nonexistent context)
+    let r4_id = h.app.create_context_without_pty("r4-orphan", Some(999999));
+    let r4_pane = h.add_test_pane();
+    h.app.set_context_columns(r4_id, vec![vec![r4_pane]]);
+
+    // Parked context: marked parked
+    let parked_id = h.app.create_context_without_pty("parked-child", Some(r1_id));
+    let parked_pane = h.add_test_pane();
+    h.app.set_context_columns(parked_id, vec![vec![parked_pane]]);
+    if let Some(idx) = h.app.router.as_slice().iter().position(|c| c.context_id == parked_id) {
+        h.app.router.get_mut(idx).parked = true;
+    }
+
+    // Switch to root 1 and zoom out to TreeAtlas
+    h.app.switch_to_context_restoring_last_pane(r1_id);
+    h.app.zoom_out_or_close_surface();
+    h.app.zoom_out_or_close_surface();
+    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
+
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let (nodes, _) = h.app.compute_atlas_graph(viewport);
+
+    // Verify parked context is omitted from nodes
+    assert!(!nodes.iter().any(|n| n.context_id == parked_id));
+
+    // Verify roots are placed left-to-right: r1, r2, r3, r4
+    let r1_node = nodes.iter().find(|n| n.context_id == r1_id).unwrap();
+    let r2_node = nodes.iter().find(|n| n.context_id == r2_id).unwrap();
+    let r3_node = nodes.iter().find(|n| n.context_id == r3_id).unwrap();
+    let r4_node = nodes.iter().find(|n| n.context_id == r4_id).unwrap();
+    assert!(r1_node.rect.center().x < r2_node.rect.center().x);
+    assert!(r2_node.rect.center().x < r3_node.rect.center().x);
+    assert!(r3_node.rect.center().x < r4_node.rect.center().x);
+
+    // Initial focus on r1
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // 1. Root boundary: Up from root is a no-op with edge bump
+    let bumps = h.app.zoom.edge_bump_count;
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 1);
+    // ArrowUp parity
+    send_key(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 2);
+
+    // 2. Leftmost root boundary: Left from r1 is a no-op with edge bump
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 3);
+    send_key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 4);
+
+    // 3. Right through roots: r1 -> r2 (L), r2 -> r3 (ArrowRight), r3 -> r4 (L)
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r2_id));
+    send_key(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r4_id));
+
+    // Rightmost root boundary: Right from r4 is a no-op with edge bump
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r4_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 5);
+
+    // r4 (missing parent) Up is root boundary:
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r4_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 6);
+
+    // Move Left back to r3 (leaf root)
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+
+    // Leaf boundary: Down from r3 (leaf root) is a no-op with edge bump
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 7);
+    send_key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 8);
+
+    // Move Left back to r1: r3 -> r2 (ArrowLeft) -> r1 (H)
+    send_key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r2_id));
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // 4. Down from r1 moves to first child c1a
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Sibling boundary: Left from c1a is a no-op (leftmost child of r1)
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 9);
+
+    // Right from c1a moves to sibling c1b (and updates r1's child memory to c1b)
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+
+    // Sibling boundary: Right from c1b is a no-op (rightmost child of r1)
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 10);
+
+    // Leaf boundary: Down from c1b is a no-op (leaf)
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 11);
+
+    // Up from c1b returns to parent r1
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // Child memory test: Down from r1 now returns to remembered child c1b!
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+
+    // Left to c1a
+    send_key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Down from c1a moves to g1a1 (depth 2)
+    send_key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+
+    // Leaf boundary: Down from g1a1 is a no-op
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 12);
+
+    // Sibling boundaries: g1a1 is an only child
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 13);
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 14);
+
+    // Up to c1a (ArrowUp)
+    send_key(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Up to r1 (K)
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // Child memory: Down from r1 remembers c1a
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Down from c1a remembers g1a1
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
 }

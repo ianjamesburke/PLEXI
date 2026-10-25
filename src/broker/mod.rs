@@ -1323,6 +1323,10 @@ mod tests {
         let request = agent_request();
         assert!(grant.matches(&request, grant.created_at));
 
+        let mut other_actor = agent_binding();
+        other_actor.actor_id = "other-agent".to_string();
+        assert!(!grant.matches(&PermissionRequest::exact(&other_actor), grant.created_at));
+
         let mut other_origin = agent_binding();
         other_origin.trust_origin = "other-host".to_string();
         assert!(!grant.matches(&PermissionRequest::exact(&other_origin), grant.created_at));
@@ -1334,6 +1338,32 @@ mod tests {
         let mut other_context = agent_binding();
         other_context.context_id = Some(4);
         assert!(!grant.matches(&PermissionRequest::exact(&other_context), grant.created_at));
+    }
+
+    #[test]
+    fn same_name_actor_subcontext_isolation() {
+        let mut store = GrantStore::default();
+        let binding_ctx1 = agent_binding();
+        store.record(GrantRecord::from_binding(
+            &binding_ctx1,
+            Decision::Allow,
+            GrantDuration::Always,
+            GrantSource::Workspace,
+            "grant-ctx1",
+        ));
+
+        let req_ctx1 = PermissionRequest::exact(&binding_ctx1);
+        assert_eq!(store.evaluate(&req_ctx1, None), Decision::Allow);
+
+        // Same agent actor name in a different subcontext must NOT match or inherit the grant.
+        let mut binding_ctx2 = agent_binding();
+        binding_ctx2.context_id = Some(4);
+        let req_ctx2 = PermissionRequest::exact(&binding_ctx2);
+        assert_eq!(
+            store.evaluate(&req_ctx2, None),
+            Decision::Ask,
+            "same-name actor in different subcontext must not inherit grant"
+        );
     }
 
     #[test]

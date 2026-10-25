@@ -227,6 +227,32 @@ impl PlexiInput {
         }
     }
 
+    /// Consume a Copy action (Cmd+C key press or synthetic `egui::Event::Copy`).
+    pub(crate) fn consume_copy(&mut self) -> bool {
+        if self.consume_key(egui::Modifiers::COMMAND, egui::Key::C) {
+            return true;
+        }
+        if let Some(pos) = self.events.iter().position(|e| matches!(e, egui::Event::Copy)) {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consume a Cut action (Cmd+X key press or synthetic `egui::Event::Cut`).
+    pub(crate) fn consume_cut(&mut self) -> bool {
+        if self.consume_key(egui::Modifiers::COMMAND, egui::Key::X) {
+            return true;
+        }
+        if let Some(pos) = self.events.iter().position(|e| matches!(e, egui::Event::Cut)) {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Suppress an approval decision key until its physical release. The
     /// matching text/paste events are suppressed too, because OS key repeat can
     /// emit them after the approval overlay has returned focus to a pane.

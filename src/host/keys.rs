@@ -78,6 +78,12 @@ pub enum Action {
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,
+    /// Increase the focused pane's text size.
+    IncreasePaneFontSize,
+    /// Decrease the focused pane's text size.
+    DecreasePaneFontSize,
+    /// Reset the focused pane's text size to default.
+    ResetPaneFontSize,
     /// App-wide UI scale (browser-style zoom): terminal text, UI text, spacing.
     UiScaleUp,
     UiScaleDown,
@@ -200,6 +206,9 @@ pub struct KeyBindings {
     pub toggle_minimap: (egui::Modifiers, egui::Key),
     pub scroll_up: (egui::Modifiers, egui::Key),
     pub scroll_down: (egui::Modifiers, egui::Key),
+    pub increase_font_size: (egui::Modifiers, egui::Key),
+    pub decrease_font_size: (egui::Modifiers, egui::Key),
+    pub reset_font_size: (egui::Modifiers, egui::Key),
     pub ui_scale_up: (egui::Modifiers, egui::Key),
     pub ui_scale_down: (egui::Modifiers, egui::Key),
     pub ui_scale_reset: (egui::Modifiers, egui::Key),
@@ -311,8 +320,11 @@ impl Default for KeyBindings {
             toggle_minimap: (cmd_shift(), egui::Key::M),
             scroll_up: (cmd_shift(), egui::Key::ArrowUp),
             scroll_down: (cmd_shift(), egui::Key::ArrowDown),
-            ui_scale_up: (cmd(), egui::Key::Equals),
-            ui_scale_down: (cmd(), egui::Key::Minus),
+            increase_font_size: (cmd(), egui::Key::Equals),
+            decrease_font_size: (cmd(), egui::Key::Minus),
+            reset_font_size: (cmd_alt(), egui::Key::Num0),
+            ui_scale_up: (cmd_shift(), egui::Key::Equals),
+            ui_scale_down: (cmd_shift(), egui::Key::Minus),
             ui_scale_reset: (cmd_shift(), egui::Key::Num0),
             next_blocked_agent: (cmd_alt(), egui::Key::B),
             focus_approval: (cmd_alt(), egui::Key::P),
@@ -501,38 +513,12 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(toggle_minimap, "toggle_minimap");
     apply_override!(scroll_up, "scroll_up");
     apply_override!(scroll_down, "scroll_down");
+    apply_override!(increase_font_size, "increase_font_size");
+    apply_override!(decrease_font_size, "decrease_font_size");
+    apply_override!(reset_font_size, "reset_font_size");
     apply_override!(ui_scale_up, "ui_scale_up");
     apply_override!(ui_scale_down, "ui_scale_down");
     apply_override!(ui_scale_reset, "ui_scale_reset");
-    // Deprecated aliases: `increase_font_size` / `decrease_font_size` now mean
-    // `ui_scale_up` / `ui_scale_down` unless the new key is also set.
-    for (alias, new_set, field, name) in [
-        (
-            &cfg.increase_font_size,
-            cfg.ui_scale_up.is_some(),
-            &mut bindings.ui_scale_up,
-            "increase_font_size",
-        ),
-        (
-            &cfg.decrease_font_size,
-            cfg.ui_scale_down.is_some(),
-            &mut bindings.ui_scale_down,
-            "decrease_font_size",
-        ),
-    ] {
-        let Some(s) = alias else { continue };
-        if new_set {
-            continue;
-        }
-        match parse_key_combo(s) {
-            Some(combo) => {
-                *field = combo;
-                override_count += 1;
-                log::warn!("keybindings: '{name}' is deprecated; use ui_scale_up/ui_scale_down");
-            }
-            None => log::warn!("keybindings: invalid combo '{s}' for '{name}' — keeping default"),
-        }
-    }
     apply_override!(next_blocked_agent, "next_blocked_agent");
     apply_override!(focus_approval, "focus_approval");
     apply_override!(open_agents, "open_agents");
@@ -594,6 +580,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("toggle_minimap", bindings.toggle_minimap),
         ("scroll_up", bindings.scroll_up),
         ("scroll_down", bindings.scroll_down),
+        ("increase_font_size", bindings.increase_font_size),
+        ("decrease_font_size", bindings.decrease_font_size),
+        ("reset_font_size", bindings.reset_font_size),
         ("ui_scale_up", bindings.ui_scale_up),
         ("ui_scale_down", bindings.ui_scale_down),
         ("ui_scale_reset", bindings.ui_scale_reset),
@@ -686,6 +675,9 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("toggle_minimap", b.toggle_minimap),
             ("scroll_up", b.scroll_up),
             ("scroll_down", b.scroll_down),
+            ("increase_font_size", b.increase_font_size),
+            ("decrease_font_size", b.decrease_font_size),
+            ("reset_font_size", b.reset_font_size),
             ("ui_scale_up", b.ui_scale_up),
             ("ui_scale_down", b.ui_scale_down),
             ("ui_scale_reset", b.ui_scale_reset),
@@ -874,8 +866,10 @@ fn modifier_count(m: &egui::Modifiers) -> u32 {
     m.command as u32 + m.shift as u32 + m.ctrl as u32 + m.alt as u32
 }
 
-// egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input always
-// sets mac_cmd=true when Cmd is held. Raw == comparison fails on macOS.
+// egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input also
+// sets mac_cmd=true when Cmd is held. Treat those two fields as one logical
+// modifier when matching exact chords; raw field equality would reject a real
+// macOS Cmd key event.
 // On non-macOS (Linux/Windows), egui sets both `ctrl` and `command` to true
 // when physical Ctrl is held, while `cmd()` patterns set `command=true, ctrl=false`.
 fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) -> bool {
@@ -888,7 +882,7 @@ pub(crate) fn modifiers_match_exact_for_os(
     is_macos: bool,
 ) -> bool {
     if is_macos {
-        actual.command == pattern.command
+        (actual.command || actual.mac_cmd) == (pattern.command || pattern.mac_cmd)
             && actual.ctrl == pattern.ctrl
             && actual.shift == pattern.shift
             && actual.alt == pattern.alt
@@ -1293,19 +1287,43 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             action: Action::ScrollDown,
         },
         BindingEntry {
+            modifiers: b.increase_font_size.0,
+            key: b.increase_font_size.1,
+            exact: true,
+            no_repeat: false,
+            context: BindingContext::Global,
+            action: Action::IncreasePaneFontSize,
+        },
+        BindingEntry {
+            modifiers: b.decrease_font_size.0,
+            key: b.decrease_font_size.1,
+            exact: true,
+            no_repeat: false,
+            context: BindingContext::Global,
+            action: Action::DecreasePaneFontSize,
+        },
+        BindingEntry {
+            modifiers: b.reset_font_size.0,
+            key: b.reset_font_size.1,
+            exact: true,
+            no_repeat: false,
+            context: BindingContext::Global,
+            action: Action::ResetPaneFontSize,
+        },
+        BindingEntry {
             modifiers: b.ui_scale_up.0,
             key: b.ui_scale_up.1,
-            exact: false,
+            exact: true,
             no_repeat: false,
-            context: BindingContext::Normal,
+            context: BindingContext::Global,
             action: Action::UiScaleUp,
         },
         BindingEntry {
             modifiers: b.ui_scale_down.0,
             key: b.ui_scale_down.1,
-            exact: false,
+            exact: true,
             no_repeat: false,
-            context: BindingContext::Normal,
+            context: BindingContext::Global,
             action: Action::UiScaleDown,
         },
         BindingEntry {
@@ -1313,7 +1331,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             key: b.ui_scale_reset.1,
             exact: true,
             no_repeat: false,
-            context: BindingContext::Normal,
+            context: BindingContext::Global,
             action: Action::UiScaleReset,
         },
         BindingEntry {
@@ -1428,6 +1446,33 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         });
     }
 
+    // Physical Equals and Plus companion bindings: if a chord is bound to Equals,
+    // also accept Plus with the same modifiers (and vice versa) for layout / numpad parity.
+    let mut companions = Vec::new();
+    for entry in &entries {
+        if matches!(
+            entry.action,
+            Action::IncreasePaneFontSize | Action::UiScaleUp
+        ) {
+            let alt_key = match entry.key {
+                egui::Key::Equals => Some(egui::Key::Plus),
+                egui::Key::Plus => Some(egui::Key::Equals),
+                _ => None,
+            };
+            if let Some(key) = alt_key {
+                companions.push(BindingEntry {
+                    modifiers: entry.modifiers,
+                    key,
+                    exact: entry.exact,
+                    no_repeat: entry.no_repeat,
+                    context: entry.context,
+                    action: entry.action.clone(),
+                });
+            }
+        }
+    }
+    entries.extend(companions);
+
     // Sort: exact before non-exact; within each group, higher modifier count first.
     // This eliminates ordering bugs — the table author never needs to worry about
     // more-specific vs. less-specific placement.
@@ -1515,7 +1560,23 @@ pub fn poll_actions(
         };
         if triggered {
             claimed_key_releases.insert(entry.key);
-            actions.push(entry.action.clone());
+            if entry.key == egui::Key::Equals {
+                claimed_key_releases.insert(egui::Key::Plus);
+            } else if entry.key == egui::Key::Plus {
+                claimed_key_releases.insert(egui::Key::Equals);
+            }
+            if !matches!(
+                entry.action,
+                Action::IncreasePaneFontSize
+                    | Action::DecreasePaneFontSize
+                    | Action::ResetPaneFontSize
+                    | Action::UiScaleUp
+                    | Action::UiScaleDown
+                    | Action::UiScaleReset
+            ) || !actions.contains(&entry.action)
+            {
+                actions.push(entry.action.clone());
+            }
         }
     }
 
@@ -1533,7 +1594,8 @@ pub fn poll_actions(
             egui::Key::Num9,
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
+            if input.consume_key_exact(egui::Modifiers::COMMAND, key) {
+                log::info!("keys: poll_actions admitted SwitchContext({i}) for {key:?}");
                 claimed_key_releases.insert(key);
                 actions.push(Action::SwitchContext(i));
             }
@@ -1557,11 +1619,17 @@ mod tests {
     #[test]
     fn ui_scale_defaults_are_unique() {
         let b = KeyBindings::default();
-        assert_eq!(b.ui_scale_up, (cmd(), egui::Key::Equals));
-        assert_eq!(b.ui_scale_down, (cmd(), egui::Key::Minus));
+        assert_eq!(b.increase_font_size, (cmd(), egui::Key::Equals));
+        assert_eq!(b.decrease_font_size, (cmd(), egui::Key::Minus));
+        assert_eq!(b.reset_font_size, (cmd_alt(), egui::Key::Num0));
+        assert_eq!(b.ui_scale_up, (cmd_shift(), egui::Key::Equals));
+        assert_eq!(b.ui_scale_down, (cmd_shift(), egui::Key::Minus));
         assert_eq!(b.ui_scale_reset, (cmd_shift(), egui::Key::Num0));
         let table = build_binding_table(&b);
         for (chord, action) in [
+            (b.increase_font_size, Action::IncreasePaneFontSize),
+            (b.decrease_font_size, Action::DecreasePaneFontSize),
+            (b.reset_font_size, Action::ResetPaneFontSize),
             (b.ui_scale_up, Action::UiScaleUp),
             (b.ui_scale_down, Action::UiScaleDown),
             (b.ui_scale_reset, Action::UiScaleReset),
@@ -1575,6 +1643,9 @@ mod tests {
         }
         let mut seen = std::collections::HashSet::new();
         for (name, (m, k)) in [
+            ("increase_font_size", b.increase_font_size),
+            ("decrease_font_size", b.decrease_font_size),
+            ("reset_font_size", b.reset_font_size),
             ("ui_scale_up", b.ui_scale_up),
             ("ui_scale_down", b.ui_scale_down),
             ("ui_scale_reset", b.ui_scale_reset),
@@ -1683,6 +1754,84 @@ mod tests {
     }
 
     #[test]
+    fn font_and_ui_scale_chords_claim_press_repeat_release_and_modal_edges() {
+        let table = build_binding_table(&KeyBindings::default());
+        let ctx = egui::Context::default();
+        let mut claimed_key_releases = std::collections::HashSet::new();
+        let poll = |
+            events: Vec<egui::Event>,
+            overlay_open: bool,
+            claimed_key_releases: &mut std::collections::HashSet<egui::Key>,
+        | {
+            let mut raw = egui::RawInput::default();
+            raw.events = events;
+            let mut actions = Vec::new();
+            let mut remaining_events = 0;
+            let _ = ctx.run_ui(raw, |ui| {
+                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+                actions = poll_actions(
+                    &mut input,
+                    &table,
+                    claimed_key_releases,
+                    /* app_active */ true,
+                    /* keyboard_capture */ false,
+                    overlay_open,
+                    /* shortcuts_overlay_open */ false,
+                );
+                remaining_events = input.events().len();
+            });
+            (actions, remaining_events)
+        };
+        let key_event = |key, pressed, repeat, modifiers| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat,
+            modifiers,
+        };
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Equals, true, false, cmd())],
+            false,
+            &mut claimed_key_releases,
+        );
+        assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
+        assert_eq!(remaining, 0, "font-size press must not reach the focused pane");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Equals, false, false, egui::Modifiers::NONE)],
+            false,
+            &mut claimed_key_releases,
+        );
+        assert!(actions.is_empty(), "key release must not trigger a second action");
+        assert_eq!(remaining, 0, "font-size release must not leak to the focused pane");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Equals, true, true, cmd())],
+            false,
+            &mut claimed_key_releases,
+        );
+        assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
+        assert_eq!(remaining, 0, "font-size repeat must be claimed exactly once");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Plus, true, false, cmd_shift())],
+            true,
+            &mut claimed_key_releases,
+        );
+        assert_eq!(actions, vec![Action::UiScaleUp]);
+        assert_eq!(remaining, 0, "modal ui-scale chord must not leak to the focused pane");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Plus, false, false, egui::Modifiers::NONE)],
+            true,
+            &mut claimed_key_releases,
+        );
+        assert!(actions.is_empty(), "modal key release must not trigger a second action");
+        assert_eq!(remaining, 0, "modal ui-scale release must not leak to the focused pane");
+    }
+
+    #[test]
     fn modifiers_match_exact_treats_command_and_ctrl_as_one_on_non_mac_and_distinct_on_mac() {
         // Linux/Windows runtime modifiers when physical Ctrl is pressed:
         // egui sets both `ctrl: true` and `command: true`.
@@ -1715,15 +1864,15 @@ mod tests {
             false
         ));
 
-        // macOS: `cmd` and `ctrl` are distinct physical modifiers.
+        // macOS: `cmd` and `ctrl` are distinct physical modifiers. winit's
+        // runtime snapshot carries both command and mac_cmd for Cmd, while a
+        // synthetic input may carry only mac_cmd.
         let mac_cmd_only = egui::Modifiers {
-            command: true,
             mac_cmd: true,
             ctrl: false,
             ..egui::Modifiers::NONE
         };
         let mac_cmd_ctrl = egui::Modifiers {
-            command: true,
             mac_cmd: true,
             ctrl: true,
             ..egui::Modifiers::NONE
@@ -1738,6 +1887,17 @@ mod tests {
         assert!(!modifiers_match_exact_for_os(
             &mac_cmd_only,
             &cmd_ctrl(),
+            true
+        ));
+
+        let mac_cmd_with_command = egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ..egui::Modifiers::NONE
+        };
+        assert!(modifiers_match_exact_for_os(
+            &mac_cmd_with_command,
+            &cmd(),
             true
         ));
     }

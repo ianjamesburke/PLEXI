@@ -342,6 +342,7 @@ pane count (`--json` is supported).
 - `plexi agent fleet`: Show tasks and their workers, ordered by attention, with blocking reasons
 - `plexi agent fleet dismiss`: Dismiss a failed, stalled, or completed agent run from the fleet view while keeping it in `agent history`
 - `plexi agent create`: Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
+- `plexi agent flags`: Show supported custom harness flags and safety rules for an agent or adapter
 - `plexi agent list`: List active agents from both workspace and global tiers
 - `plexi agent show`: Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command
 - `plexi agent call`: Call an agent role and return its validated completion or blocking question as JSON
@@ -535,3 +536,4 @@ pane count (`--json` is supported).
 - `plexi host log`: Write one info-level marker line into the running host's channel log
 - `plexi host status`: Report whether this channel's host is running, its pid, socket path, and pane count
 - `plexi host screenshot`: Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture
+- `plexi host key`: Inject a key or chord into the host-level keyboard path

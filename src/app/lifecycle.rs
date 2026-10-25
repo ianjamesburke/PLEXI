@@ -3232,6 +3232,28 @@ impl PlexiApp {
                     self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
+            crate::protocol::AppRequest::HostKey { key, response_file } => {
+                log::info!(
+                    "pane_ipc: kind=host_key key={key:?} key_chars={}",
+                    key.chars().count()
+                );
+                match super::key_str_to_egui_raw_input(key) {
+                    Some(raw) => {
+                        let modifiers = raw.modifiers;
+                        self.ctx.input_mut(|input| {
+                            input.modifiers = modifiers;
+                            input.events.extend(raw.events);
+                        });
+                        self.ctx.request_repaint_of(egui::ViewportId::ROOT);
+                        write_json_response(response_file, serde_json::json!({"ok": true}));
+                    }
+                    None => {
+                        let error = format!("key {key:?} does not map to a host key event");
+                        log::warn!("pane_ipc: host_key: {error}");
+                        write_json_response(response_file, serde_json::json!({"error": error}));
+                    }
+                }
+            }
             crate::protocol::AppRequest::GetPaneState {
                 pane_id,
                 response_file,
@@ -3764,11 +3786,34 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::GetAgentStates { response_file } => {
                 log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
-                let states: Vec<&crate::protocol::PaneAgentState> = self
+                let states: Vec<crate::protocol::PaneAgentState> = self
                     .windows
                     .iter()
                     .flat_map(|win| win.panes.values())
-                    .filter_map(|pane| pane.agent())
+                    .filter_map(|pane| {
+                        let report = pane.agent()?;
+                        let Some(terminal) = pane.as_terminal() else {
+                            return Some(report.clone());
+                        };
+                        let exit_failure = terminal
+                            .exit_status
+                            .filter(|status| terminal.exited && status.is_failure());
+                        Some(crate::protocol::PaneAgentState {
+                            pane_id: report.pane_id,
+                            state: if terminal.agent_completed {
+                                crate::protocol::AgentState::Completed
+                            } else if exit_failure.is_some() {
+                                crate::protocol::AgentState::Failed
+                            } else {
+                                report.state.clone()
+                            },
+                            agent: report.agent.clone(),
+                            detail: exit_failure
+                                .map(|status| status.summary())
+                                .or_else(|| report.detail.clone()),
+                            session_id: report.session_id.clone(),
+                        })
+                    })
                     .collect();
                 let json_str = serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
@@ -4952,7 +4997,13 @@ impl PlexiApp {
                         if let Some(adapter) =
                             crate::cli::agent::harness_adapter(&record.harness)
                         {
-                            adapter.resume_command(sid)
+                            let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                record.config_name.as_deref(),
+                                adapter.harness,
+                                &crate::config::config_dir(),
+                                Some(&record.cwd),
+                            );
+                            adapter.resume_command_with_flags(sid, &flags)
                         } else {
                             format!("{} --resume {}", record.harness, sid.trim())
                         }
@@ -5865,6 +5916,12 @@ impl PlexiApp {
                                     "pty: pane {id} process exited status={status:?} ephemeral={} is_agent_or_subcontext={is_agent_or_subcontext}",
                                     t.ephemeral
                                 );
+                                if newly_exited && status.is_failure() && is_agent_or_subcontext {
+                                    log::info!(
+                                        "agents: pane {id} observed exit failure {}; preserving Failed state in fleet and history",
+                                        status.summary()
+                                    );
+                                }
                                 // Stint 0765 / 0802: ephemeral agent/sub-context panes only
                                 // self-close on clean exit (0); non-zero or signal-terminated
                                 // crashes stay open in Error state for debugging and prevent
@@ -5919,14 +5976,16 @@ impl PlexiApp {
                                                 Some(curr) => !is_empty && curr == title_trimmed,
                                             };
                                             if !already_matches {
+                                                let old_placeholder = t.placeholder_title.clone();
                                                 t.name = if is_empty {
                                                     None
                                                 } else {
                                                     Some(title_trimmed.to_string())
                                                 };
-                                                log::debug!(
-                                                    "osc_title: pane {id} name set to {:?}",
-                                                    t.name
+                                                log::info!(
+                                                    "osc_title: pane {id} title updated to {:?} (replacing placeholder={:?})",
+                                                    t.name,
+                                                    old_placeholder
                                                 );
                                             }
                                         }

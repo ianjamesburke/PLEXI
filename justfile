@@ -526,6 +526,8 @@ merge-pr PR *FLAGS:
 
 # Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
 test-infra-scripts:
+    uv run --no-project python scripts/test_babysitter_policy.py
+    uv run --no-project python scripts/test_probe_one_note_authority.py
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both

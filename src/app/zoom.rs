@@ -28,7 +28,7 @@ pub enum ZoomLevel {
     Columns,
     /// Current context plus its siblings (same `parent_id`), in creation order.
     SiblingCards,
-    /// Whole-workspace context graph: left-to-right tidy tree with Motorways road edges.
+    /// Whole-workspace context graph: top-down tidy tree with Motorways road edges.
     TreeAtlas,
 }
 
@@ -60,12 +60,13 @@ impl ColumnWidthPreset {
 }
 
 /// One column in a context's horizontal scrolling strip.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StripColumn {
     pub index: usize,
     pub context_id: u64,
     pub panes: Vec<PaneId>,
     pub preset: ColumnWidthPreset,
+    pub width: crate::strip::ColumnWidth,
 }
 
 /// Ghost marker recorded when zooming out from `ZoomLevel::Columns` ("you were here").
@@ -78,13 +79,74 @@ pub struct GhostMarker {
     pub strip_offset: usize,
 }
 
+/// Measured geometry for the origin marker ("you were here" circle + label).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OriginMarkerGeometry {
+    pub circle_center: Pos2,
+    pub circle_radius: f32,
+    pub circle_stroke_width: f32,
+    pub text_pos: Pos2,
+    pub text_size: Vec2,
+    pub total_rect: Rect,
+}
+
+pub const ORIGIN_MARKER_TEXT: &str = "you were here";
+pub const ORIGIN_MARKER_CIRCLE_RADIUS: f32 = 3.5;
+pub const ORIGIN_MARKER_CIRCLE_STROKE: f32 = 1.2;
+pub const ORIGIN_MARKER_GAP: f32 = 6.0;
+
+/// Paints the origin marker ("you were here" circle + text) using shared measured geometry.
+/// `anchor_bottom_left` is the bottom-left anchor position within its container.
+pub fn paint_origin_marker(
+    painter: &egui::Painter,
+    anchor_bottom_left: Pos2,
+    color: egui::Color32,
+) -> OriginMarkerGeometry {
+    let font = FontId::new(style::TEXT_HINT, FontFamily::Proportional);
+    let galley = painter.layout_no_wrap(ORIGIN_MARKER_TEXT.to_string(), font, color);
+    let text_size = galley.size();
+    let text_h = text_size.y;
+    let circle_radius = ORIGIN_MARKER_CIRCLE_RADIUS;
+    let circle_stroke_width = ORIGIN_MARKER_CIRCLE_STROKE;
+    let gap = ORIGIN_MARKER_GAP;
+
+    let top_y = anchor_bottom_left.y - text_h;
+    let mid_y = top_y + text_h * 0.5;
+
+    let circle_center = Pos2::new(anchor_bottom_left.x + circle_radius, mid_y);
+    let text_pos = Pos2::new(anchor_bottom_left.x + circle_radius * 2.0 + gap, top_y);
+
+    painter.circle_stroke(
+        circle_center,
+        circle_radius,
+        Stroke::new(circle_stroke_width, color),
+    );
+    painter.galley(text_pos, galley, color);
+
+    let total_w = circle_radius * 2.0 + gap + text_size.x;
+    let total_h = text_h.max(circle_radius * 2.0);
+    let total_rect = Rect::from_min_size(
+        Pos2::new(anchor_bottom_left.x, top_y.min(mid_y - circle_radius)),
+        Vec2::new(total_w, total_h),
+    );
+
+    OriginMarkerGeometry {
+        circle_center,
+        circle_radius,
+        circle_stroke_width,
+        text_pos,
+        text_size,
+        total_rect,
+    }
+}
+
 /// The active window's column strip in window-local indices (`App::active_window_strip`).
 #[derive(Debug, Clone)]
 pub(crate) struct WindowStrip {
     /// Root `Linear` children, left to right.
     pub children: Vec<TileId>,
-    /// Width preset of each child's global column, when it has live panes.
-    pub presets: Vec<Option<ColumnWidthPreset>>,
+    /// Authoritative width definition of each child's global column.
+    pub widths: Vec<Option<crate::strip::ColumnWidth>>,
     /// First of the two visible columns (always 0 when there are two or fewer).
     pub lo: usize,
 }
@@ -209,19 +271,24 @@ pub struct ZoomState {
     pub ghost: Option<GhostMarker>,
     /// Per-context horizontal scroll offset (index of leftmost visible column in the 2-column viewport).
     pub strip_offsets: HashMap<u64, usize>,
+    /// Authoritative strip state for contexts that have entered column-strip handling.
+    ///
+    /// The tile tree remains the renderer adapter in this slice, but commands mutate this
+    /// state first; it is not a frame-local projection of the tree.
+    pub strips: HashMap<u64, crate::strip::Strip>,
     /// Per-(context_id, column_idx) last focused pane (`SPEC.md` § Focus memory).
     pub column_last_pane: HashMap<(u64, usize), PaneId>,
     /// Per-context last active pane (`SPEC.md` R36).
     pub context_last_pane: HashMap<u64, PaneId>,
-    /// Optional explicit column groupings per context (`context_id -> Vec<Vec<PaneId>>`).
-    pub explicit_columns: HashMap<u64, Vec<Vec<PaneId>>>,
-    /// Optional column width preset overrides (`(context_id, col_idx) -> ColumnWidthPreset`).
-    pub column_presets: HashMap<(u64, usize), ColumnWidthPreset>,
     /// Focused context ID while at `ZoomLevel::SiblingCards`.
     pub cards_focused_context: Option<u64>,
+    /// Explicit horizontal viewport scroll offset (center X in content coordinates) for `ZoomLevel::SiblingCards`.
+    pub cards_viewport_offset: f32,
+    /// Last context ID for which cards viewport offset was synchronized with focus.
+    pub cards_last_focused_context: Option<u64>,
     /// Focused context ID while at `ZoomLevel::TreeAtlas`.
     pub atlas_focused_context: Option<u64>,
-    /// Per-parent context last-visited child context in the atlas (`h` / `l` memory).
+    /// Per-parent context last-visited child context in the atlas (`j` / `k` child memory).
     pub atlas_last_child: HashMap<u64, u64>,
     /// True when the read-only Peek card (`p`) is open in the Tree Atlas.
     pub atlas_peek_open: bool,
@@ -406,9 +473,28 @@ impl PlexiApp {
     /// Also arranges the context's `window.tree` to match (`Horizontal` root of `Vertical` stacks).
     #[allow(dead_code)]
     pub fn set_context_columns(&mut self, context_id: u64, columns: Vec<Vec<PaneId>>) {
-        self.zoom
-            .explicit_columns
-            .insert(context_id, columns.clone());
+        let mut strip = crate::strip::Strip::new(context_id);
+        for (index, panes) in columns.iter().enumerate() {
+            let width = if columns.len() >= 2 && index == 0 {
+                crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35)
+            } else {
+                crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
+            };
+            if panes.len() == 1 {
+                strip.push_column(crate::strip::Column::new(
+                    crate::strip::ColumnId(index),
+                    panes[0],
+                    width,
+                ));
+            } else if !panes.is_empty() {
+                strip.push_column(crate::strip::Column::new_stacked(
+                    crate::strip::ColumnId(index),
+                    panes.clone(),
+                    width,
+                ));
+            }
+        }
+        self.zoom.strips.insert(context_id, strip);
         if let Some(win_idx) = self.windows.iter().position(|w| w.context_id == context_id) {
             let target_pids: Vec<PaneId> = columns.iter().flatten().copied().collect();
             let mut moved_panes = Vec::new();
@@ -479,6 +565,24 @@ impl PlexiApp {
 
     /// Derive the ordered horizontal strip of columns for `context_id`.
     pub fn columns_for_context(&self, context_id: u64) -> Vec<StripColumn> {
+        if let Some(strip) = self.zoom.strips.get(&context_id) {
+            return strip
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(index, column)| StripColumn {
+                    index,
+                    context_id,
+                    panes: column.panes.clone(),
+                    preset: match column.width {
+                        crate::strip::ColumnWidth::Preset(preset) => preset,
+                        _ if strip.column_count() >= 2 && index == 0 => ColumnWidthPreset::Parent35,
+                        _ => ColumnWidthPreset::Child65,
+                    },
+                    width: column.width,
+                })
+                .collect();
+        }
         let mut raw_cols: Vec<(u64, Vec<PaneId>)> = Vec::new();
 
         // Include conjoined parent as column 0 when active in this child context.
@@ -494,63 +598,44 @@ impl PlexiApp {
             }
         }
 
-        if let Some(explicit) = self.zoom.explicit_columns.get(&context_id) {
-            let live_panes: std::collections::HashSet<PaneId> = self
-                .windows
-                .iter()
-                .filter(|w| w.context_id == context_id)
-                .flat_map(|w| w.panes.keys().copied())
-                .collect();
-            for stack in explicit {
-                let filtered: Vec<PaneId> = stack
-                    .iter()
-                    .copied()
-                    .filter(|pid| live_panes.contains(pid))
-                    .collect();
-                if !filtered.is_empty() {
-                    raw_cols.push((context_id, filtered));
-                }
-            }
-        } else {
-            let mut ctx_windows: Vec<(usize, &crate::host::context::Window)> = self
-                .windows
-                .iter()
-                .enumerate()
-                .filter(|(_, w)| w.context_id == context_id)
-                .collect();
-            ctx_windows.sort_by_key(|(idx, w)| (w.grid_x, w.grid_y, *idx));
+        let mut ctx_windows: Vec<(usize, &crate::host::context::Window)> = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.context_id == context_id)
+            .collect();
+        ctx_windows.sort_by_key(|(idx, w)| (w.grid_x, w.grid_y, *idx));
 
-            for (_, win) in ctx_windows {
-                let Some(root_id) = win.tree.root() else {
-                    continue;
-                };
-                match win.tree.tiles.get(root_id) {
-                    Some(Tile::Container(Container::Linear(lin)))
-                        if lin.dir == LinearDir::Horizontal =>
-                    {
-                        for &col_tile in &lin.children {
-                            let mut stack = Vec::new();
-                            collect_leaf_panes_in_tile(&win.tree, &win.panes, col_tile, &mut stack);
-                            if !stack.is_empty() {
-                                raw_cols.push((context_id, stack));
-                            }
-                        }
-                    }
-                    Some(Tile::Container(Container::Grid(grid))) => {
-                        for &col_tile in grid.children() {
-                            let mut stack = Vec::new();
-                            collect_leaf_panes_in_tile(&win.tree, &win.panes, col_tile, &mut stack);
-                            if !stack.is_empty() {
-                                raw_cols.push((context_id, stack));
-                            }
-                        }
-                    }
-                    _ => {
+        for (_, win) in ctx_windows {
+            let Some(root_id) = win.tree.root() else {
+                continue;
+            };
+            match win.tree.tiles.get(root_id) {
+                Some(Tile::Container(Container::Linear(lin)))
+                    if lin.dir == LinearDir::Horizontal =>
+                {
+                    for &col_tile in &lin.children {
                         let mut stack = Vec::new();
-                        collect_leaf_panes_in_tile(&win.tree, &win.panes, root_id, &mut stack);
+                        collect_leaf_panes_in_tile(&win.tree, &win.panes, col_tile, &mut stack);
                         if !stack.is_empty() {
                             raw_cols.push((context_id, stack));
                         }
+                    }
+                }
+                Some(Tile::Container(Container::Grid(grid))) => {
+                    for &col_tile in grid.children() {
+                        let mut stack = Vec::new();
+                        collect_leaf_panes_in_tile(&win.tree, &win.panes, col_tile, &mut stack);
+                        if !stack.is_empty() {
+                            raw_cols.push((context_id, stack));
+                        }
+                    }
+                }
+                _ => {
+                    let mut stack = Vec::new();
+                    collect_leaf_panes_in_tile(&win.tree, &win.panes, root_id, &mut stack);
+                    if !stack.is_empty() {
+                        raw_cols.push((context_id, stack));
                     }
                 }
             }
@@ -566,17 +651,12 @@ impl PlexiApp {
                 } else {
                     ColumnWidthPreset::Child65
                 };
-                let preset = self
-                    .zoom
-                    .column_presets
-                    .get(&(context_id, idx))
-                    .copied()
-                    .unwrap_or(default_preset);
                 StripColumn {
                     index: idx,
                     context_id: col_ctx_id,
                     panes,
-                    preset,
+                    preset: default_preset,
+                    width: crate::strip::ColumnWidth::Preset(default_preset),
                 }
             })
             .collect()
@@ -649,6 +729,9 @@ impl PlexiApp {
         self.mark_agent_seen(pane_id);
 
         self.zoom.context_last_pane.insert(ctx_id, pane_id);
+        if let Some(strip) = self.zoom.strips.get_mut(&ctx_id) {
+            strip.focus_pane(pane_id);
+        }
         let cols = self.columns_for_context(ctx_id);
         if let Some(col) = cols.iter().find(|c| c.panes.contains(&pane_id)) {
             self.zoom
@@ -834,6 +917,8 @@ impl PlexiApp {
                     strip_offset: offset,
                 });
                 self.zoom.cards_focused_context = Some(ctx_id);
+                self.zoom.cards_last_focused_context = None;
+                self.zoom.cards_viewport_offset = 0.0;
                 self.set_zoom_level_with_transition(ZoomLevel::SiblingCards);
                 log::info!(
                     "zoom: Columns -> SiblingCards (ghost ctx={ctx_id} col={col_idx} pane={pane_id})"
@@ -858,15 +943,88 @@ impl PlexiApp {
         }
     }
 
-    /// `Cmd+Enter`:
-    /// Zooms in one level back toward the ghost (`TreeAtlas -> SiblingCards -> Columns`).
-    /// No-op at `Columns` with an edge bump (`SPEC.md` R31).
-    pub fn zoom_in_level(&mut self) -> bool {
-        match self.zoom.level {
-            ZoomLevel::Columns => {
+    /// Toggle focused pane fullscreen zoom within Columns (`SPEC.md` R31).
+    ///
+    /// Preserves focus, scroll and CLI zoom semantics:
+    /// - If the focused pane is a Portal tile, zooms into its sub-context.
+    /// - If any pane is already zoomed in the active window, clears zoom and
+    ///   restores prior columns geometry, focus and scroll.
+    /// - If the active window has only one pane, zoom is ignored and an edge bump
+    ///   is recorded.
+    /// - Otherwise, zooms the focused pane to fullscreen.
+    pub fn toggle_columns_pane_zoom(&mut self) -> bool {
+        if let Some(parent) = self.fleet_focused_pane() {
+            if self.dive_into_agent_children(parent) {
+                return true;
+            }
+        }
+        let (focused_tile, portal_target) = {
+            let win = &self.windows[self.active_window];
+            let tile = win.focused_pane;
+            let target = tile
+                .and_then(|tile_id| win.tree.tiles.get(tile_id))
+                .and_then(|t| {
+                    if let egui_tiles::Tile::Pane(p) = t {
+                        Some(*p)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|pane_id| win.panes.get(&pane_id))
+                .and_then(|p| p.portal_target());
+            (tile, target)
+        };
+        if let Some(child_ctx_id) = portal_target {
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+                log::info!("zoom: toggle on Portal diving into context_id={child_ctx_id}");
+                let current_ctx_id = self.router.active().context_id;
+                let current_win_id = self.windows[self.active_window].window_id;
+                self.router
+                    .push_depth(current_ctx_id, current_win_id, focused_tile);
+                self.switch_workspace(ctx_idx);
+                true
+            } else {
+                log::warn!(
+                    "zoom: Portal target context_id={child_ctx_id} not found in router"
+                );
+                false
+            }
+        } else {
+            let win = &self.windows[self.active_window];
+            let zoomed = win.zoomed_pane;
+            let focused = win.focused_pane;
+            let pane_count = win.panes.len();
+            let window_id = win.window_id;
+
+            if let Some(prev) = zoomed {
+                self.windows[self.active_window].clear_zoom();
+                log::info!("zoom: toggle off — pane={prev:?}");
+                true
+            } else if let Some(focused) = focused {
+                if pane_count <= 1 {
+                    self.record_edge_bump(Direction::Down);
+                    log::info!(
+                        "zoom: toggle ignored — pane={focused:?} is the only pane in window={window_id}",
+                    );
+                    false
+                } else {
+                    self.windows[self.active_window].zoom_to(focused);
+                    log::info!("zoom: toggle on — pane={focused:?}");
+                    true
+                }
+            } else {
                 self.record_edge_bump(Direction::Down);
                 false
             }
+        }
+    }
+
+    /// `Cmd+Enter`:
+    /// Zooms in one level back toward the ghost (`TreeAtlas -> SiblingCards -> Columns`).
+    /// At `Columns`: toggles fullscreen zoom of the focused pane.
+    pub fn zoom_in_level(&mut self) -> bool {
+        match self.zoom.level {
+            ZoomLevel::Columns => self.toggle_columns_pane_zoom(),
             ZoomLevel::SiblingCards => {
                 let selected = self.zoom.cards_focused_context;
                 let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
@@ -895,6 +1053,8 @@ impl PlexiApp {
                     self.router.set_active(r_idx);
                 }
                 self.zoom.cards_focused_context = Some(target_ctx);
+                self.zoom.cards_last_focused_context = None;
+                self.zoom.cards_viewport_offset = 0.0;
                 self.set_zoom_level_with_transition(ZoomLevel::SiblingCards);
                 log::info!("zoom: TreeAtlas -> SiblingCards (ctx={target_ctx})");
                 true
@@ -1004,30 +1164,37 @@ impl PlexiApp {
             .unwrap_or_else(|| self.router.active().context_id);
         let cur_idx = siblings.iter().position(|&c| c == cur_ctx).unwrap_or(0);
 
-        match dir {
+        let new_idx = match dir {
             Direction::Left => {
                 if cur_idx == 0 {
                     self.record_edge_bump(Direction::Left);
-                    false
-                } else {
-                    self.zoom.cards_focused_context = Some(siblings[cur_idx - 1]);
-                    true
+                    return false;
                 }
+                cur_idx - 1
             }
             Direction::Right => {
                 if cur_idx + 1 >= siblings.len() {
                     self.record_edge_bump(Direction::Right);
-                    false
-                } else {
-                    self.zoom.cards_focused_context = Some(siblings[cur_idx + 1]);
-                    true
+                    return false;
                 }
+                cur_idx + 1
             }
             Direction::Up | Direction::Down => {
                 self.record_edge_bump(dir);
-                false
+                return false;
             }
-        }
+        };
+
+        let target_ctx = siblings[new_idx];
+        self.zoom.cards_focused_context = Some(target_ctx);
+        self.zoom.cards_viewport_offset =
+            (new_idx as f32) * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
+        self.zoom.cards_last_focused_context = Some(target_ctx);
+        log::info!(
+            "zoom: sibling cards navigate dir={dir:?} target_ctx={target_ctx} idx={new_idx} offset={:.1}",
+            self.zoom.cards_viewport_offset
+        );
+        true
     }
 
     /// Enter the currently focused sibling card at its last active pane.
@@ -1039,6 +1206,7 @@ impl PlexiApp {
         self.zoom.ghost = None;
         self.switch_to_context_restoring_last_pane(target_ctx);
         self.set_zoom_level_with_transition(ZoomLevel::Columns);
+        log::info!("zoom: enter sibling card target_ctx={target_ctx}");
         true
     }
 
@@ -1382,8 +1550,8 @@ impl PlexiApp {
         out
     }
 
-    /// Move in the Tree Atlas along `h` (`Left` = parent), `l` (`Right` = last-visited/first child),
-    /// `j` (`Down` = next node at same depth), `k` (`Up` = prev node at same depth).
+    /// Move in the Tree Atlas along `k` (`Up` = parent), `j` (`Down` = last-visited/first child),
+    /// `h` (`Left` = previous neighboring sibling), `l` (`Right` = next neighboring sibling).
     /// Never wraps (`SPEC.md` lines 21–22, 32).
     pub fn navigate_tree_atlas_dir(&mut self, dir: Direction) -> bool {
         let (nodes, _) =
@@ -1396,6 +1564,13 @@ impl PlexiApp {
             .zoom
             .atlas_focused_context
             .filter(|id| nodes.iter().any(|n| n.context_id == *id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.context_id == self.router.active().context_id)
+                    .map(|n| n.context_id)
+            })
+            .or_else(|| nodes.first().map(|n| n.context_id))
             .unwrap_or_else(|| self.router.active().context_id);
         let Some(cur_node) = nodes.iter().find(|n| n.context_id == cur_ctx) else {
             self.record_edge_bump(dir);
@@ -1403,27 +1578,32 @@ impl PlexiApp {
         };
 
         match dir {
-            Direction::Left => {
-                // `h`: Parent context.
+            Direction::Up => {
+                // `k` / `ArrowUp`: Parent context. Root boundary if none.
                 let Some(parent_id) = cur_node.parent_id else {
-                    self.record_edge_bump(Direction::Left);
+                    self.record_edge_bump(Direction::Up);
                     return false;
                 };
+                if !nodes.iter().any(|n| n.context_id == parent_id) {
+                    self.record_edge_bump(Direction::Up);
+                    return false;
+                }
                 self.zoom.atlas_last_child.insert(parent_id, cur_ctx);
                 self.zoom.atlas_focused_context = Some(parent_id);
+                log::info!("zoom: atlas nav up parent target_ctx={parent_id}");
                 true
             }
-            Direction::Right => {
-                // `l`: Last-visited (else first) child context.
+            Direction::Down => {
+                // `j` / `ArrowDown`: Last-visited (else first/leftmost) child context. Leaf boundary if none.
                 let mut children: Vec<&AtlasNode> = nodes
                     .iter()
                     .filter(|n| n.parent_id == Some(cur_ctx))
                     .collect();
-                children.sort_by_key(|a| a.order);
                 if children.is_empty() {
-                    self.record_edge_bump(Direction::Right);
+                    self.record_edge_bump(Direction::Down);
                     return false;
                 }
+                children.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
                 let target_child = self
                     .zoom
                     .atlas_last_child
@@ -1433,40 +1613,56 @@ impl PlexiApp {
                     .unwrap_or(children[0].context_id);
                 self.zoom.atlas_last_child.insert(cur_ctx, target_child);
                 self.zoom.atlas_focused_context = Some(target_child);
+                log::info!("zoom: atlas nav down child target_ctx={target_child}");
                 true
             }
-            Direction::Down | Direction::Up => {
-                // `j` / `k`: Next / prev node at the SAME depth in tree (vertical y) order.
-                let mut same_depth: Vec<&AtlasNode> =
-                    nodes.iter().filter(|n| n.depth == cur_node.depth).collect();
-                same_depth.sort_by_key(|a| a.order);
-                let pos = same_depth
+            Direction::Left => {
+                // `h` / `ArrowLeft`: Left neighboring sibling (same parent_id, ordered by x). Boundary if none.
+                let mut siblings: Vec<&AtlasNode> = nodes
+                    .iter()
+                    .filter(|n| n.parent_id == cur_node.parent_id)
+                    .collect();
+                siblings.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
+                let pos = siblings
                     .iter()
                     .position(|n| n.context_id == cur_ctx)
                     .unwrap_or(0);
-                if dir == Direction::Down {
-                    if pos + 1 >= same_depth.len() {
-                        self.record_edge_bump(Direction::Down);
-                        return false;
-                    }
-                    let next_node = same_depth[pos + 1];
-                    if let Some(pid) = next_node.parent_id {
-                        self.zoom.atlas_last_child.insert(pid, next_node.context_id);
-                    }
-                    self.zoom.atlas_focused_context = Some(next_node.context_id);
-                    true
-                } else {
-                    if pos == 0 {
-                        self.record_edge_bump(Direction::Up);
-                        return false;
-                    }
-                    let prev_node = same_depth[pos - 1];
-                    if let Some(pid) = prev_node.parent_id {
-                        self.zoom.atlas_last_child.insert(pid, prev_node.context_id);
-                    }
-                    self.zoom.atlas_focused_context = Some(prev_node.context_id);
-                    true
+                if pos == 0 {
+                    self.record_edge_bump(Direction::Left);
+                    return false;
                 }
+                let target_node = siblings[pos - 1];
+                let target_ctx = target_node.context_id;
+                if let Some(pid) = cur_node.parent_id {
+                    self.zoom.atlas_last_child.insert(pid, target_ctx);
+                }
+                self.zoom.atlas_focused_context = Some(target_ctx);
+                log::info!("zoom: atlas nav left sibling target_ctx={target_ctx}");
+                true
+            }
+            Direction::Right => {
+                // `l` / `ArrowRight`: Right neighboring sibling (same parent_id, ordered by x). Boundary if none.
+                let mut siblings: Vec<&AtlasNode> = nodes
+                    .iter()
+                    .filter(|n| n.parent_id == cur_node.parent_id)
+                    .collect();
+                siblings.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
+                let pos = siblings
+                    .iter()
+                    .position(|n| n.context_id == cur_ctx)
+                    .unwrap_or(0);
+                if pos + 1 >= siblings.len() {
+                    self.record_edge_bump(Direction::Right);
+                    return false;
+                }
+                let target_node = siblings[pos + 1];
+                let target_ctx = target_node.context_id;
+                if let Some(pid) = cur_node.parent_id {
+                    self.zoom.atlas_last_child.insert(pid, target_ctx);
+                }
+                self.zoom.atlas_focused_context = Some(target_ctx);
+                log::info!("zoom: atlas nav right sibling target_ctx={target_ctx}");
+                true
             }
         }
     }
@@ -1478,6 +1674,14 @@ impl PlexiApp {
         let cur_ctx = self
             .zoom
             .atlas_focused_context
+            .filter(|id| nodes.iter().any(|n| n.context_id == *id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.context_id == self.router.active().context_id)
+                    .map(|n| n.context_id)
+            })
+            .or_else(|| nodes.first().map(|n| n.context_id))
             .unwrap_or_else(|| self.router.active().context_id);
         let Some(cur_node) = nodes.iter().find(|n| n.context_id == cur_ctx) else {
             return false;
@@ -1486,12 +1690,12 @@ impl PlexiApp {
             .iter()
             .filter(|n| n.parent_id == cur_node.parent_id)
             .collect();
-        siblings.sort_by_key(|a| a.order);
+        siblings.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
         if siblings.len() <= 1 {
             self.record_edge_bump(if forward {
-                Direction::Down
+                Direction::Right
             } else {
-                Direction::Up
+                Direction::Left
             });
             return false;
         }
@@ -1509,6 +1713,7 @@ impl PlexiApp {
             self.zoom.atlas_last_child.insert(pid, next_ctx);
         }
         self.zoom.atlas_focused_context = Some(next_ctx);
+        log::info!("zoom: atlas nav sibling forward={forward} target_ctx={next_ctx}");
         true
     }
 
@@ -1807,13 +2012,13 @@ impl PlexiApp {
         if n <= 2 {
             lo = 0;
         }
-        let presets = global
+        let widths = global
             .iter()
-            .map(|g| g.and_then(|g| cols.get(g)).map(|c| c.preset))
+            .map(|g| g.and_then(|g| cols.get(g)).map(|c| c.width))
             .collect();
         Some(WindowStrip {
             children,
-            presets,
+            widths,
             lo,
         })
     }
@@ -1829,6 +2034,14 @@ impl PlexiApp {
         self.zoom.strip_layout_jump = false;
         self.zoom.off_strip_panes.clear();
         if self.zoom.level != ZoomLevel::Columns {
+            return;
+        }
+        let ctx_id = self.router.active().context_id;
+        if !self.zoom.strips.contains_key(&ctx_id) {
+            // Keep legacy tile trees live until a strip command establishes the
+            // authoritative model. Applying peek shares here would resize an
+            // ordinary third terminal down to a sliver during a window drag.
+            self.zoom.last_strip_sig = None;
             return;
         }
         let Some(strip) = self.active_window_strip() else {
@@ -1868,18 +2081,38 @@ impl PlexiApp {
         self.zoom.off_strip_panes = off_strip;
 
         let ratios: Vec<f32> = strip
-            .presets
+            .widths
             .iter()
             .enumerate()
-            .map(|(idx, preset)| {
-                preset.map(|p| p.ratio()).unwrap_or(if idx == 0 || idx == strip.lo {
+            .map(|(idx, width)| {
+                width.map(|w| {
+                    let _ = w.is_custom();
+                    w.ratio()
+                }).unwrap_or(if idx == 0 || idx == strip.lo {
                     style::COLUMN_WIDTH_PARENT
                 } else {
                     style::COLUMN_WIDTH_CHILD
                 })
             })
             .collect();
+
         let shares = strip_shares(&ratios, strip.lo, gap, canvas_width);
+
+        // Compute pure authoritative strip layout to validate geometry
+        let authoritative_strip = self.strip_for_context(ctx_id);
+        let vp = crate::strip::StripViewport::new(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(canvas_width, 800.0)),
+            gap,
+        );
+        let layout = crate::strip::layout_strip(&authoritative_strip, &vp);
+        if authoritative_strip.column_count() > 0 {
+            log::debug!(
+                "strip: authoritative layout computed cols={} panes={} dividers={}",
+                authoritative_strip.column_count(),
+                authoritative_strip.pane_count(),
+                layout.dividers.len()
+            );
+        }
 
         let Some(win) = self.windows.get_mut(self.active_window) else {
             return;
@@ -1894,17 +2127,153 @@ impl PlexiApp {
         }
     }
 
-    /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip.
+    /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
+    /// accounting for multi-window pages and off-screen columns across the context.
     pub(crate) fn active_strip_clipped_neighbors(&self) -> (bool, bool) {
         if self.zoom.level != ZoomLevel::Columns {
             return (false, false);
         }
-        match self.active_window_strip() {
-            Some(strip) if strip.children.len() > 2 => {
-                (strip.lo > 0, strip.lo + 2 < strip.children.len())
-            }
-            _ => (false, false),
+        let ctx_id = self.router.active().context_id;
+        let strip = self.strip_for_context(ctx_id);
+        if strip.column_count() <= 1 {
+            return (false, false);
         }
+
+        // If active window contains a multi-column horizontal strip, use window strip indices
+        if let Some(w_strip) = self.active_window_strip() {
+            if w_strip.children.len() > 2 {
+                let has_left = w_strip.lo > 0;
+                let has_right = w_strip.lo + 2 < w_strip.children.len();
+                log::info!(
+                    "strip: active_strip_clipped_neighbors window-local lo={} cols={} has_left={has_left} has_right={has_right}",
+                    w_strip.lo,
+                    w_strip.children.len()
+                );
+                return (has_left, has_right);
+            }
+        }
+
+        // Otherwise check context-wide columns (e.g. across multiple windows / pages)
+        let active_col = strip
+            .focused_pane
+            .and_then(|p| strip.find_column_for_pane(p))
+            .unwrap_or(0);
+        let has_left = active_col > 0;
+        let has_right = active_col + 1 < strip.column_count();
+        log::info!(
+            "strip: active_strip_clipped_neighbors context-wide active_col={active_col} total_cols={} has_left={has_left} has_right={has_right}",
+            strip.column_count()
+        );
+        (has_left, has_right)
+    }
+
+    /// Handle click activation on a left or right peek strip, navigating directly to the nearest off-screen column.
+    pub fn handle_peek_click(&mut self, is_left: bool) -> bool {
+        let ctx_id = self.router.active().context_id;
+        let (target_col, target_pane, scroll_offset) = {
+            let strip = self.ensure_authoritative_strip(ctx_id);
+            let has_left = strip.has_left_clipped();
+            let has_right = strip.has_right_clipped();
+            let target_col = if is_left && has_left {
+                Some(strip.scroll_offset.saturating_sub(1))
+            } else if !is_left && has_right {
+                Some((strip.scroll_offset + 2).min(strip.column_count().saturating_sub(1)))
+            } else {
+                None
+            };
+            let Some(target_col) = target_col else {
+                return false;
+            };
+            strip.ensure_column_visible(target_col);
+            let target_pane = strip.columns[target_col].panes.first().copied();
+            if let Some(pane_id) = target_pane {
+                strip.focus_pane(pane_id);
+            }
+            (target_col, target_pane, strip.scroll_offset)
+        };
+        self.zoom.strip_offsets.insert(ctx_id, scroll_offset);
+        if let Some(pane_id) = target_pane {
+            self.focus_pane_in_strip(pane_id);
+        }
+        if is_left {
+            log::info!("strip: peek clicked left context={ctx_id} target_col={target_col}");
+            true
+        } else {
+            log::info!("strip: peek clicked right context={ctx_id} target_col={target_col}");
+            true
+        }
+    }
+
+    /// Set a custom width ratio on a column in `context_id`.
+    pub fn set_column_width_ratio(&mut self, context_id: u64, col_idx: usize, ratio: f32) {
+        let r = ratio.clamp(0.05, 0.95);
+        let width = crate::strip::ColumnWidth::CustomRatio(r);
+        let strip = self.ensure_authoritative_strip(context_id);
+        strip.set_column_width(col_idx, width);
+        if strip.column_count() == 2 {
+            let other_idx = if col_idx == 0 { 1 } else { 0 };
+            strip.set_column_width(other_idx, crate::strip::ColumnWidth::CustomRatio(1.0 - r));
+        }
+        log::info!("strip: column width updated context={context_id} col={col_idx} ratio={r:.3}");
+    }
+
+    /// Reset column widths in `context_id` back to default presets.
+    pub fn reset_column_widths(&mut self, context_id: u64) {
+        self.set_column_width_ratio(context_id, 0, style::COLUMN_WIDTH_PARENT);
+        let strip = self.ensure_authoritative_strip(context_id);
+        strip.reset_column_widths();
+        log::info!("strip: column widths reset context={context_id}");
+    }
+
+    /// Build the authoritative `Strip` model for `context_id`.
+    pub fn strip_for_context(&self, context_id: u64) -> crate::strip::Strip {
+        if let Some(strip) = self.zoom.strips.get(&context_id) {
+            return strip.clone();
+        }
+        let cols = self.columns_for_context(context_id);
+        let mut strip = crate::strip::Strip::new(context_id);
+        strip.scroll_offset = self.zoom.strip_offset_for(context_id).min(strip.max_scroll_offset());
+        strip.focused_pane = self.active_focused_pane_id();
+        for col in cols {
+            let mut column = if col.panes.len() > 1 {
+                crate::strip::Column::new_stacked(
+                    crate::strip::ColumnId(col.index),
+                    col.panes,
+                    col.width,
+                )
+            } else if let Some(&first) = col.panes.first() {
+                crate::strip::Column::new(
+                    crate::strip::ColumnId(col.index),
+                    first,
+                    col.width,
+                )
+            } else {
+                continue;
+            };
+            if let Some(focused) = strip.focused_pane {
+                column.focus_pane(focused);
+            }
+            strip.push_column(column);
+        }
+        if let Some(focused) = strip.focused_pane {
+            if strip.contains_pane(focused) {
+                strip.focus_pane(focused);
+            }
+        }
+        strip
+    }
+
+    /// Return the stored strip for `context_id`, projecting the current tree only once for
+    /// legacy contexts that have not yet received a strip command.
+    pub fn ensure_authoritative_strip(&mut self, context_id: u64) -> &mut crate::strip::Strip {
+        if !self.zoom.strips.contains_key(&context_id) {
+            let strip = self.strip_for_context(context_id);
+            self.zoom.strips.insert(context_id, strip);
+        }
+        self.zoom
+            .strips
+            .get_mut(&context_id)
+            .expect("strip inserted for context")
     }
 
     /// Paint the `28px` clipped neighbor indicator strips at the left/right edges
@@ -1966,8 +2335,6 @@ impl PlexiApp {
             })
             .unwrap_or(0);
 
-        let mut toggle_queue = false;
-
         egui::Panel::top("zoom_path_bar")
             .exact_size(style::PATH_BAR_H)
             .frame(
@@ -1978,155 +2345,77 @@ impl PlexiApp {
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     let bar = ui.max_rect();
-                    let gap = style::SPACE_SM;
-                    // The chip owns a slot at the right edge: left siblings are
-                    // clipped short of its minimum width, never the other way round.
-                    let left_limit = bar.right() - style::ATTENTION_CHIP_MIN_W - gap;
-                    let left = ui.scope_builder(
+                    ui.scope_builder(
                         egui::UiBuilder::new().layout(egui::Layout::left_to_right(egui::Align::Center)),
                         |ui| {
-                            ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_max(
-                                Pos2::new(f32::MIN, bar.top()),
-                                Pos2::new(left_limit, bar.bottom()),
-                            )));
-                        // Breadcrumb
-                        ui.label(
-                            RichText::new(&breadcrumb)
-                                .font(crate::ui::theme::font_medium(style::TEXT_CAPTION))
-                                .color(colors.text_primary),
-                        );
+                            ui.set_clip_rect(ui.clip_rect().intersect(bar));
+                            // Breadcrumb
+                            ui.label(
+                                RichText::new(&breadcrumb)
+                                    .font(crate::ui::theme::font_medium(style::TEXT_CAPTION))
+                                    .color(colors.text_primary),
+                            );
 
-                        // Level badge when zoomed out
-                        match self.zoom.level {
-                            ZoomLevel::Columns => {}
-                            ZoomLevel::SiblingCards => {
-                                ui.label(
-                                    RichText::new("· SIBLING CARDS")
-                                        .size(style::TEXT_META)
-                                        .color(colors.accent),
-                                );
+                            // Level badge when zoomed out
+                            match self.zoom.level {
+                                ZoomLevel::Columns => {}
+                                ZoomLevel::SiblingCards => {
+                                    ui.label(
+                                        RichText::new("· SIBLING CARDS")
+                                            .size(style::TEXT_META)
+                                            .color(colors.accent),
+                                    );
+                                }
+                                ZoomLevel::TreeAtlas => {
+                                    ui.label(
+                                        RichText::new("· TREE ATLAS")
+                                            .size(style::TEXT_META)
+                                            .color(colors.accent),
+                                    );
+                                }
                             }
-                            ZoomLevel::TreeAtlas => {
-                                ui.label(
-                                    RichText::new("· TREE ATLAS")
-                                        .size(style::TEXT_META)
-                                        .color(colors.accent),
-                                );
-                            }
-                        }
 
-                        // Position pips for columns (Niri strip scroll indicator)
-                        if self.zoom.level == ZoomLevel::Columns && !cols.is_empty() {
-                            ui.add_space(style::SPACE_SM);
-                            let offset = self.zoom.strip_offset_for(active_ctx_id);
-                            for col in &cols {
-                                let is_focused_col = col.index == active_col_idx;
-                                let is_visible =
-                                    cols.len() <= 2 || (col.index >= offset && col.index < offset + 2);
-                                let pip_char = if is_focused_col {
-                                    "●"
-                                } else if is_visible {
-                                    "•"
-                                } else {
-                                    "◦"
-                                };
-                                let pip_color = if is_focused_col {
-                                    colors.accent
-                                } else if is_visible {
-                                    colors.text_primary
-                                } else {
-                                    colors.text_dim
-                                };
-                                ui.label(RichText::new(pip_char).size(11.0).color(pip_color));
-                            }
-                        }
-
-                        // Transient hint if active
-                        if let Some((ref hint, at)) = self.attention_queue.transient_hint {
-                            if at.elapsed() < Duration::from_millis(1600) {
+                            // Position pips for columns (Niri strip scroll indicator)
+                            if self.zoom.level == ZoomLevel::Columns && !cols.is_empty() {
                                 ui.add_space(style::SPACE_SM);
-                                ui.label(
-                                    RichText::new(hint)
-                                        .size(style::TEXT_HINT)
-                                        .color(colors.zoom_needs),
-                                );
+                                let offset = self.zoom.strip_offset_for(active_ctx_id);
+                                for col in &cols {
+                                    let is_focused_col = col.index == active_col_idx;
+                                    let is_visible =
+                                        cols.len() <= 2 || (col.index >= offset && col.index < offset + 2);
+                                    let pip_char = if is_focused_col {
+                                        "●"
+                                    } else if is_visible {
+                                        "•"
+                                    } else {
+                                        "◦"
+                                    };
+                                    let pip_color = if is_focused_col {
+                                        colors.accent
+                                    } else if is_visible {
+                                        colors.text_primary
+                                    } else {
+                                        colors.text_dim
+                                    };
+                                    ui.label(RichText::new(pip_char).size(11.0).color(pip_color));
+                                }
                             }
-                        }
 
+                            // Transient hint if active
+                            if let Some((ref hint, at)) = self.attention_queue.transient_hint {
+                                if at.elapsed() < Duration::from_millis(1600) {
+                                    ui.add_space(style::SPACE_SM);
+                                    ui.label(
+                                        RichText::new(hint)
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.zoom_needs),
+                                    );
+                                }
+                            }
                         },
                     );
-
-                    // Right-anchored calm Attention Queue pill (`◆N · total` + top bar preview)
-                    let asks = self.attention_queue.ask_count();
-                    let failed = self.attention_queue.failed_count();
-                    let total = self.attention_queue.total_count();
-                    let (pill_stroke_col, pill_fill, pill_text_col) = if asks > 0 {
-                        (colors.zoom_needs, colors.needs_badge_fill, colors.zoom_needs)
-                    } else if failed > 0 {
-                        (colors.zoom_failed, colors.failed_fill, colors.zoom_failed)
-                    } else {
-                        (colors.border, colors.code_bg, colors.text_dim)
-                    };
-                    let counts =
-                        crate::app::attention_queue::format_attention_pill_counts(asks, total);
-                    let pill_text = if let Some(top) = self.attention_queue.items.first() {
-                        let lock_prefix = if top.locked { "🔒 " } else { "" };
-                        format!("{lock_prefix}{counts}  {} {}", top.pane_name, top.summary)
-                    } else {
-                        counts
-                    };
-                    let font = FontId::proportional(style::TEXT_HINT);
-                    let pad_x = style::ATTENTION_CHIP_PAD_X;
-                    let preferred_w = ui.fonts_mut(|f| {
-                        f.layout_no_wrap(pill_text.clone(), font.clone(), pill_text_col)
-                            .size()
-                            .x
-                    }) + pad_x * 2.0;
-                    let slot_w = (bar.right() - left.response.rect.right().min(left_limit) - gap)
-                        .max(style::ATTENTION_CHIP_MIN_W);
-                    let chip_w = preferred_w.min(slot_w).min(bar.width());
-                    let text = crate::ui::text::elide(
-                        ui,
-                        &pill_text,
-                        font.clone(),
-                        chip_w - pad_x * 2.0,
-                        crate::ui::text::Side::Trailing,
-                    );
-                    let chip_h = ui.fonts_mut(|f| f.row_height(&font)) + style::SPACE_XS * 1.5;
-                    let chip_rect = Rect::from_min_size(
-                        Pos2::new(bar.right() - chip_w, bar.center().y - chip_h / 2.0),
-                        Vec2::new(chip_w, chip_h),
-                    );
-                    let resp = ui.interact(
-                        chip_rect,
-                        egui::Id::new("attention_queue_chip"),
-                        Sense::click(),
-                    );
-                    let painter = ui.painter();
-                    painter.rect(
-                        chip_rect,
-                        style::RADIUS_PILL,
-                        pill_fill,
-                        Stroke::new(1.0_f32, pill_stroke_col),
-                        egui::StrokeKind::Inside,
-                    );
-                    let galley = painter.layout_no_wrap(text, font, pill_text_col);
-                    painter.galley(
-                        Pos2::new(chip_rect.left() + pad_x, chip_rect.center().y - galley.size().y / 2.0),
-                        galley,
-                        pill_text_col,
-                    );
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(egui::Id::new("attention_chip_rect"), chip_rect));
-                    if resp.clicked() {
-                        toggle_queue = true;
-                    }
                 });
             });
-
-        if toggle_queue {
-            self.toggle_attention_queue_list();
-        }
     }
 
     /// Render the `ZoomLevel::SiblingCards` view inside the central canvas.
@@ -2143,13 +2432,91 @@ impl PlexiApp {
             .cards_focused_context
             .unwrap_or_else(|| self.router.active().context_id);
         let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
+        let focused_idx = siblings
+            .iter()
+            .position(|&cid| cid == focused_ctx)
+            .unwrap_or_default();
 
-        let total_w = (siblings.len() as f32) * style::CARD_W
-            + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP;
-        let start_x = (rect.center().x - total_w * 0.5).max(rect.min.x + 24.0);
+        let total_w = if siblings.is_empty() {
+            0.0
+        } else {
+            (siblings.len() as f32) * style::CARD_W
+                + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP
+        };
+        let horizontal_margin = 24.0;
+        let is_overflow = total_w > rect.width() - horizontal_margin * 2.0;
+
+        let ideal_offset = if !is_overflow {
+            total_w * 0.5
+        } else {
+            (focused_idx as f32) * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5
+        };
+
+        // Selection-follow behavior: keep selected card visible and centered.
+        if self.zoom.cards_last_focused_context != Some(focused_ctx) {
+            self.zoom.cards_last_focused_context = Some(focused_ctx);
+            self.zoom.cards_viewport_offset = ideal_offset;
+            log::info!(
+                "zoom: sibling cards selection follow ctx={focused_ctx} idx={focused_idx} offset={:.1}",
+                self.zoom.cards_viewport_offset
+            );
+        } else if !is_overflow && self.zoom.cards_viewport_offset == 0.0 {
+            self.zoom.cards_viewport_offset = ideal_offset;
+        }
+
+        // Pointer scrolling & drag handling
+        let min_offset = style::CARD_W * 0.5;
+        let max_offset = (siblings.len().saturating_sub(1) as f32) * (style::CARD_W + style::CARD_GAP)
+            + style::CARD_W * 0.5;
+
+        let bg_resp = ui.interact(rect, egui::Id::new("sibling_cards_canvas_drag"), Sense::drag());
+        if bg_resp.dragged() {
+            let drag_x = bg_resp.drag_delta().x;
+            if drag_x.abs() > 0.0 {
+                self.zoom.cards_viewport_offset -= drag_x;
+                if is_overflow {
+                    self.zoom.cards_viewport_offset = self.zoom.cards_viewport_offset.clamp(
+                        min_offset.min(max_offset),
+                        min_offset.max(max_offset),
+                    );
+                }
+                log::info!(
+                    "zoom: sibling cards pointer drag delta={drag_x:.1} offset={:.1}",
+                    self.zoom.cards_viewport_offset
+                );
+            }
+        }
+
+        if ui.rect_contains_pointer(rect) {
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+            let delta_x = if scroll_delta.x.abs() > 0.0 {
+                scroll_delta.x
+            } else {
+                scroll_delta.y
+            };
+            if delta_x.abs() > 0.0 {
+                self.zoom.cards_viewport_offset -= delta_x;
+                if is_overflow {
+                    self.zoom.cards_viewport_offset = self.zoom.cards_viewport_offset.clamp(
+                        min_offset.min(max_offset),
+                        min_offset.max(max_offset),
+                    );
+                }
+                log::info!(
+                    "zoom: sibling cards pointer scroll delta={delta_x:.1} offset={:.1}",
+                    self.zoom.cards_viewport_offset
+                );
+            }
+        }
+
+        let start_x = rect.center().x - self.zoom.cards_viewport_offset;
         let center_y = rect.center().y;
 
         let mut clicked_ctx: Option<u64> = None;
+        #[cfg(test)]
+        let mut painted_origin_geom: Option<OriginMarkerGeometry> = None;
+        #[cfg(test)]
+        let mut painted_cards = Vec::with_capacity(siblings.len());
 
         for (idx, &cid) in siblings.iter().enumerate() {
             let is_focused = cid == focused_ctx;
@@ -2188,6 +2555,8 @@ impl PlexiApp {
                 center_y - card_h * 0.5,
             );
             let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, card_h));
+            #[cfg(test)]
+            painted_cards.push((cid, card_rect, is_focused));
             paint_card(
                 &painter,
                 card_rect,
@@ -2200,13 +2569,15 @@ impl PlexiApp {
             let card_painter = painter.with_clip_rect(card_rect.shrink(1.0));
 
             if is_ghost {
-                card_painter.text(
-                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 10.0),
-                    Align2::LEFT_BOTTOM,
-                    "◌ you were here",
-                    FontId::new(style::TEXT_HINT, FontFamily::Proportional),
+                let _geom = paint_origin_marker(
+                    &card_painter,
+                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 12.0),
                     colors.accent,
                 );
+                #[cfg(test)]
+                {
+                    painted_origin_geom = Some(_geom);
+                }
             }
 
             // Mini column tiles inside the card, below the header block.
@@ -2282,6 +2653,22 @@ impl PlexiApp {
             self.zoom.cards_focused_context = Some(cid);
             self.enter_focused_sibling_card();
         }
+
+        #[cfg(test)]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("sibling_cards_painted_geometry"),
+                (rect, painted_cards),
+            );
+            data.insert_temp(
+                egui::Id::new("sibling_cards_viewport_offset"),
+                self.zoom.cards_viewport_offset,
+            );
+            data.insert_temp(
+                egui::Id::new("sibling_cards_origin_marker_geometry"),
+                painted_origin_geom,
+            );
+        });
     }
 
     /// Render the `ZoomLevel::TreeAtlas` view inside the central canvas (Mini Motorways style).
@@ -2296,7 +2683,16 @@ impl PlexiApp {
         let focused_ctx = self
             .zoom
             .atlas_focused_context
+            .filter(|id| nodes.iter().any(|n| n.context_id == *id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.context_id == self.router.active().context_id)
+                    .map(|n| n.context_id)
+            })
+            .or_else(|| nodes.first().map(|n| n.context_id))
             .unwrap_or_else(|| self.router.active().context_id);
+        self.zoom.atlas_focused_context = Some(focused_ctx);
 
         // 1. Draw Motorways road edges (casing + road stroke, elbow paths for tree edges).
         for edge in &edges {
@@ -2358,6 +2754,8 @@ impl PlexiApp {
         }
 
         let mut clicked_node: Option<u64> = None;
+        #[cfg(test)]
+        let mut painted_nodes = Vec::with_capacity(nodes.len());
 
         // 2. Draw context nodes with depth tinting (0..4 clamped).
         for node in &nodes {
@@ -2396,6 +2794,8 @@ impl PlexiApp {
                 nrect.center(),
                 Vec2::new(nrect.width(), nrect.height().max(layout.height)),
             );
+            #[cfg(test)]
+            painted_nodes.push((node.context_id, nrect, is_focused));
             paint_card(
                 &painter,
                 nrect,
@@ -2482,7 +2882,7 @@ impl PlexiApp {
         painter.text(
             Pos2::new(rect.center().x, rect.max.y - 16.0),
             Align2::CENTER_BOTTOM,
-            "h parent · l child · j/k same depth · [/] sibling · n/N needs you · p peek · Enter dive · q back to ghost",
+            "k parent · j child · h/l sibling · [/] sibling · n/N needs you · p peek · Enter dive · q back to ghost",
             FontId::new(style::TEXT_HINT, FontFamily::Proportional),
             colors.text_dim,
         );
@@ -2491,6 +2891,14 @@ impl PlexiApp {
             self.zoom.atlas_focused_context = Some(cid);
             self.dive_from_tree_atlas();
         }
+
+        #[cfg(test)]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("tree_atlas_painted_geometry"),
+                (rect, painted_nodes),
+            );
+        });
     }
 }
 

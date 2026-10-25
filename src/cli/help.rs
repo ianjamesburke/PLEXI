@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(
             agent,
             [
-                "team", "next", "fleet", "create", "list", "show", "call", "message", "handoff",
+                "team", "next", "fleet", "create", "flags", "list", "show", "call", "message", "handoff",
                 "start", "spawn", "done", "result", "wait", "ask", "report", "status", "history",
                 "reopen", "hook"
             ],

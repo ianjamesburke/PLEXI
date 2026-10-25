@@ -130,8 +130,8 @@ open_config            = "cmd+comma"
 scales everything together: terminal text, UI text, spacing, cards, overlays and
 modals. `ui_scale_reset` (Cmd+Shift+0) returns to 100%. The scale persists as
 top-level `ui_scale` (0.6-2.0, default 1.0; out-of-range values are clamped).
-`increase_font_size` / `decrease_font_size` are deprecated aliases for
-`ui_scale_up` / `ui_scale_down`; there is no separate per-pane font-size chord.
+`increase_font_size` (Cmd+=) / `decrease_font_size` (Cmd+-) adjust the focused
+pane's text size independently of global interface scale.
 
 `focus_approval` defaults to Cmd+Alt+P and focuses the oldest pending permission
 banner. After its dimmed hint arms, `a` allows once, `d` denies, and Escape leaves
@@ -145,7 +145,7 @@ Modifiers: cmd, shift, ctrl, alt. Aliases: command, control, opt, option.
 
 Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down, left, right, open_bracket, close_bracket, backslash, slash, comma, period, equals, minus.
 
-Known actions: focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, ui_scale_up, ui_scale_down, ui_scale_reset, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_app, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
+Known actions: focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, reset_font_size, ui_scale_up, ui_scale_down, ui_scale_reset, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_app, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
 
 Unknown keys or conflicting overrides log a warning at startup and keep the default binding.
 

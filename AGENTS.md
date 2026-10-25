@@ -55,13 +55,9 @@ Alpha dogfood tags are `vX.Y.Z-alpha.N` (see RELEASE_CHANNELS.md). `plexi-alpha 
 An Alpha tag is an externally shareable dogfood or release-candidate snapshot, not a per-commit validation gate. During stabilization, land coherent locally validated slices on `alpha` and use `just channel-install alpha` for local Alpha iteration without a tag, public updater, or release workflow. Use an isolated local channel for risky parallel acceptance. Cut `v*-alpha.*` only when a deliberately batched change is ready for human dogfood or public-artifact/updater qualification. Required local build, focused test, and lint gates still apply before landing; hosted release CI must not block the next stabilization slice. Direct-to-alpha pushes trigger no Rust host CI; `nightly.yml` runs full host tests daily and cuts the next alpha tag (package, signing and Keychain continuity gates via `release.yml`) only when alpha has new commits. Stable and beta promotion require their own intentional release decision.
 
 
-## v1 checklist + alpha dogfood (SSOT outside this repo)
+## V1 hand and Alpha dogfood tracking
 
-Eng status and Ian Mac hand-verify live in one file (do not fork a second board):
-
-`https://github.com/ianjamesburke/daily_log/blob/main/progress/plexi/V1-MASTER-CHECKLIST-2026-09-20.md`
-
-After any `v*-alpha.*` cut or land-on-alpha merge: update that checklist’s **Alpha tag** / **Hand** / **Ian note** columns and refresh its **Dogfood now** section. Eng `done` is not Mac `pass`.
+Record the current Alpha tag, Hand, Ian note, and Dogfood now state in root `TRUTH.md`. The retired daily_log checklist is historical only; do not update it. Eng `done` is not Mac `pass`.
 
 ## Platform bring-up bases
 

@@ -574,10 +574,12 @@ plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest
 --persona "You are a researcher." \
 --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
 PANE=$(plexi agent spawn researcher --task "Summarize AgentRegistry")
-plexi pane result wait "$PANE" --timeout 300
+plexi agent wait "$PANE" --timeout 300
 
+`agent start` without a first message and task-seeded `agent spawn` are both interactive adapter launches;
+only an explicitly configured Script job is one-shot.
 Spawn returns immediately with a pane id, before the worker is done.
-Wait in bounded slices well under your tool harness call limit (e.g. 300s).
+Wait in bounded slices with `plexi agent wait` without capture/send polling.
 Exit 0 means done; exit 2 means report progress and re-run the same wait;
 exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 
@@ -587,6 +589,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `next` | Focus the next live agent needing attention (needs-you, blocked, done-unseen) |
 | `fleet` | Show tasks and their workers, ordered by attention, with blocking reasons |
 | `create` | Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier. |
+| `flags` | Show supported custom harness flags and safety rules for an agent or adapter |
 | `list` | List active agents from both workspace and global tiers |
 | `show` | Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command |
 | `call` | Call an agent role and return its validated completion or blocking question as JSON |
@@ -699,7 +702,7 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Agent slug (`a-z`, `0-9`, `-`) |
-| `--cli` | string | yes | CLI harness to launch (`pi`, `claude`, `codex`, `agy`, or `script`) |
+| `--cli` | string | yes | CLI harness to launch (`pi`, `claude`, `codex`, `agy`, or `script`). Interactive harnesses (`pi`, `claude`, `codex`, `agy`) remain interactive in start/spawn; only explicit script jobs are one-shot |
 | `--model` | string | no | Model identifier passed verbatim via `--model` |
 | `--fallback` | string | no | Fallback CLI harness when the primary binary is not on PATH (`pi`, `claude`, `codex`, `agy`, `script`) |
 | `--description` | string | no | Short human-readable description of the agent's role |
@@ -709,6 +712,20 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
 | `--ephemeral` | flag | no | Auto-close the worker pane on clean exit (`0`) |
 | `--display-name` | string | no | Human-facing display name in `[agent]` (defaults to `<name>`) |
 | `--global` | flag | no | Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace |
+| `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
+| `--flag` | string (repeatable) | no | Optional custom harness flag(s) passed to the adapter (can be repeated) |
+
+### `plexi agent flags`
+
+Show supported custom harness flags and safety rules for an agent or adapter.
+
+When `<target>` is an agent slug, displays its resolved safe custom flags. When `<target>` is a harness adapter (`pi`, `claude`, `codex`, `agy`, `script`) or omitted, displays the adapter options inventory, reserved options, and security rules.
+
+Example: plexi agent flags Example: plexi agent flags claude Example: plexi agent flags researcher
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<target>` | string | no | Agent slug or harness adapter name (`pi`, `claude`, `codex`, `agy`, `script`) |
 | `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
 
 ### `plexi agent list`
@@ -766,6 +783,8 @@ Start an interactive agent session in a new pane from the agent registry (`<work
 
 Resolves `<name>` by walking up from `--cwd` (or the current directory) to the project root (stopping at `$HOME`), then `~/.plexi-<channel>/agents/<name>/`, then built-in. Launches the agent's configured `[harness]` (`pi`, `claude`, `codex`, `agy`) interactively in the project directory with `AGENT.md` persona applied, the `# Plexi worker contract`, and `PLEXI_*` env set.
 
+`agent start` without a first message and task-seeded `agent spawn` are both interactive adapter launches; only an explicitly configured Script job is one-shot. Child results report via `plexi agent done` and are collected with `plexi agent wait` without capture/send polling.
+
 Example: plexi agent start researcher
 
 | Flag / Arg | Type | Required | Description |
@@ -779,7 +798,9 @@ Example: plexi agent start researcher
 
 Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
 
-Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`, and launches the worker pane. Codex workers (including calls and team members) use `exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true`. They can write in their workspace and use the network; Plexi adds no profile writable root.
+Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`, and launches the worker pane. Codex workers (including calls and team members) use `codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true`. They can write in their workspace and use the network; Plexi adds no profile writable root.
+
+Task-seeded `agent spawn` and `agent start` without a first message are both interactive adapter launches; only an explicitly configured Script job is one-shot. Results report via `plexi agent done` and are collected with `plexi agent wait` or parent idle-batch delivery without capture/send polling.
 
 Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
 
@@ -2535,6 +2556,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `log` | Write one info-level marker line into the running host's channel log |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
+| `key` | Inject a key or chord into the host-level keyboard path |
 
 ### `plexi host restart`
 
@@ -2593,3 +2615,13 @@ Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
 |---|---|---|---|
 | `--pane` | string | no | Crop the capture to this pane id or name's current screen rect |
 | `--output` / `-o` | string | no | Where to write the PNG (default: <profile>/screenshots/<timestamp>.png) |
+
+### `plexi host key`
+
+Inject a key or chord into the host-level keyboard path.
+
+This is a validation seam for host shortcuts: it does not send bytes to a focused pane. Example: `plexi-pr-2906 host key cmd+1`.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<key>` | string | yes | Single key, named key, or chord such as `cmd+1` or `cmd+shift+2` |

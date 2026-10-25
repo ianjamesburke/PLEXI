@@ -1,17 +1,48 @@
 # babysitter-v3 run configuration — the single source for run-invariant settings.
 # Values only; mechanics live in SKILL.md. Re-read at every spawn.
 
-# Each role is an ordered fallback list of shell aliases (defined in the
-# operator's zshrc). The head spawns with the first entry (or alternates to
-# split usage across Codex and AGY); when a pane hits a usage limit or a hard
-# problem, it uses `col` (Codex GPT-6 Astra).
-# `col` (GPT-6 Astra) is available and preferred for hard problems, `worker_large`,
-# follow-up rounds, and cross-vendor testing/load-splitting alongside `agy`.
+# Each role is an ordered fallback list of shell aliases. Alias/vendor/model
+# mapping is explicit so fallback never silently permits self-validation.
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
-worker        = ["col", "agy", "com", "agym"]       # split usage across Codex (col = GPT-6 Astra) and AGY
-worker_large  = ["col", "agy", "cl", "agyl"]        # batches containing an L stint, hard problems, or after a reject -> col (GPT-6 Astra) first
-tester        = ["col", "agy", "com", "cs", "agym"] # cross-vendor: use col (GPT-6 Astra) when worker was agy, or agy when worker was col/com
+worker_small  = ["agyf", "cos", "cs", "pi"]
+worker_medium = ["agyf", "com", "cm", "pi"]
+worker_large  = ["agyg", "col", "agyl", "cl", "pi"]
+tester        = ["agy", "cs", "agym", "cos"]
+
+[engines.alias_vendor]
+cos = "codex"
+com = "codex"
+col = "codex"
+cs = "claude"
+cm = "claude"
+cl = "claude"
+agy = "gemini"
+agym = "claude"
+agyl = "claude"
+agyf = "gemini"
+agyg = "gemini"
+pi = "deepseek"
+
+[engines.alias_model]
+cos = "Luna"
+com = "Terra"
+col = "Astra"
+cs = "Sonnet"
+cm = "Opus"
+cl = "Opus"
+agy = "Gemini"
+agym = "Sonnet"
+agyl = "Opus"
+agyf = "Gemini 3.8 Flash"
+agyg = "Gemini 4 Argon High"
+pi = "DeepSeek V4.1 Flash"
+
+[topology]
+mode = "aggregate"
+branch = "feature/alpha-cleanup"
+final_base = "alpha"
+require_final_install = true
 
 # How each engine takes an initial prompt on its command line. {alias} and
 # {prompt} are substituted; {prompt} is always single-quoted by the head.
@@ -19,12 +50,14 @@ tester        = ["col", "agy", "com", "cs", "agym"] # cross-vendor: use col (GPT
 claude = "{alias} {prompt}"
 codex  = "{alias} {prompt}"
 agy    = "{alias} -i {prompt}"
+pi     = "{alias} --model openrouter/deepseek/deepseek-v4.1-flash {prompt}"
 
 # Map alias prefix -> engine. Longest prefix wins.
 [engines.alias_engine]
 c   = "claude"
 co  = "codex"
 agy = "agy"
+pi  = "pi"
 
 # Footer text that means the agent is mid-turn. Absence on the last buffer lines
 # (with a prompt visible) means idle. `plexi pane status` does not recognise agy,
@@ -33,6 +66,7 @@ agy = "agy"
 claude = "esc to interrupt"
 codex  = "esc to interrupt"
 agy    = "esc to cancel"
+pi     = "Working"      # observed: spinner line "── ⠇ Working ──"; absent when idle
 
 # Case-insensitive patterns in a pane capture that mean a usage/quota wall.
 [engines.usage_limit_patterns]
@@ -45,12 +79,12 @@ auto_merge = true                 # tester PASS + green PR checks -> merge witho
 attended_only = ["0601", "0439"]  # never queued unattended
 
 [limits]
-max_concurrent_lanes = 3          # cargo builds are serialized by cargo-with-lease.sh; >3 lanes just queues on it
+max_concurrent_lanes = 2          # cargo builds are serialized by cargo-with-lease.sh; Ian capped the Gemini trial at 2 lanes
 max_fix_rounds = 2                # after this many tester FAILs on one batch, park it
 stall_minutes = 25                # idle footer + no terminal slot this long -> inspect
 
 [cadence]
-heartbeat_seconds = 900           # failsafe wake when no slot event arrives
+heartbeat_seconds = 1800          # failsafe only; the head wakes on terminal slot transitions, never on progress slots
 
 [paths]
 run_root = ".stint/runs"          # git-ignored; each run gets <run_root>/<YYYYMMDD-HHMM>/

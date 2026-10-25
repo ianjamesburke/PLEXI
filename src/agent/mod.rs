@@ -114,6 +114,7 @@ pub struct AgentHarnessConfig {
     pub ephemeral: bool,
     pub result_schema: Option<serde_json::Value>,
     pub extensions: Vec<String>,
+    pub flags: Vec<String>,
 }
 
 /// A loaded agent: `AGENT.md` prose + parsed `settings.toml`.
@@ -186,6 +187,8 @@ struct HarnessTable {
     result_schema: Option<serde_json::Value>,
     #[serde(default)]
     extensions: Vec<String>,
+    #[serde(default, alias = "args")]
+    flags: Vec<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -343,6 +346,26 @@ impl AgentDefinition {
                     }
                     extensions.push(trimmed.to_string());
                 }
+                let mut flags = Vec::with_capacity(h.flags.len());
+                for (i, flag) in h.flags.iter().enumerate() {
+                    let trimmed = flag.trim();
+                    if trimmed.is_empty() {
+                        return Err(format!(
+                            "settings.toml: [harness] flags[{i}] must be non-empty"
+                        ));
+                    }
+                    flags.push(flag.clone());
+                }
+                if let Some(adapter) = crate::cli::agent::harness_adapter(&cli) {
+                    crate::cli::agent::validate_custom_harness_flags(adapter, &flags, model.as_deref())
+                        .map_err(|e| format!("settings.toml: [harness] {e}"))?;
+                }
+                if let Some(ref fb) = fallback {
+                    if let Some(fb_adapter) = crate::cli::agent::harness_adapter(fb) {
+                        crate::cli::agent::validate_custom_harness_flags(fb_adapter, &flags, model.as_deref())
+                            .map_err(|e| format!("settings.toml: [harness] fallback '{fb}': {e}"))?;
+                    }
+                }
                 Some(AgentHarnessConfig {
                     cli,
                     model,
@@ -350,6 +373,7 @@ impl AgentDefinition {
                     ephemeral: h.ephemeral.unwrap_or(false),
                     result_schema,
                     extensions,
+                    flags,
                 })
             }
         };
@@ -2103,5 +2127,93 @@ result_schema = { type = "object", required = ["ok"], properties = { ok = { type
             .and_then(|h| h.result_schema)
             .expect("schema present");
         assert_eq!(schema2["required"], serde_json::json!(["ok"]));
+    }
+
+    #[test]
+    fn harness_flags_parsing_alias_and_validation() {
+        // flags = [...] parsed
+        let toml_flags = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--verbose", "--permission-mode", "plan"]
+"#;
+        let def = AgentDefinition::parse("Test.", toml_flags).expect("valid flags should parse");
+        let harness = def.harness.expect("harness present");
+        assert_eq!(
+            harness.flags,
+            vec!["--verbose", "--permission-mode", "plan"]
+        );
+
+        // args = [...] alias parsed
+        let toml_args = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+args = ["--verbose"]
+"#;
+        let def_args = AgentDefinition::parse("Test.", toml_args).expect("valid args alias should parse");
+        assert_eq!(def_args.harness.unwrap().flags, vec!["--verbose"]);
+
+        // non-array flags must fail deserialization
+        let toml_str_flag = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = "--verbose"
+"#;
+        assert!(AgentDefinition::parse("Test.", toml_str_flag).is_err());
+
+        // injection metacharacter must fail validation
+        let toml_injection = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--verbose; rm -rf /"]
+"#;
+        let err = AgentDefinition::parse("Test.", toml_injection).unwrap_err();
+        assert!(err.contains("forbidden shell operator"), "error was: {err}");
+
+        // reserved security override must fail validation
+        let toml_security = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--dangerously-skip-permissions"]
+"#;
+        let err = AgentDefinition::parse("Test.", toml_security).unwrap_err();
+        assert!(err.contains("reserved security override"), "error was: {err}");
+
+        // fallback harness flags validated against fallback CLI
+        let toml_fallback_invalid = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--theme", "dark"]
+fallback = "codex"
+"#;
+        let err = AgentDefinition::parse("Test.", toml_fallback_invalid).unwrap_err();
+        assert!(
+            err.contains("does not support flag '--theme'"),
+            "fallback validation must fail: {err}"
+        );
     }
 }

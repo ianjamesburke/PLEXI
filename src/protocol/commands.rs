@@ -1073,6 +1073,17 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// Inject a synthetic key into the host-level input path. Sent by
+    /// `plexi host key` for validating host shortcuts without routing the
+    /// chord through a focused pane's PTY or app runtime.
+    /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file`.
+    HostKey {
+        /// Single key, named key, or chord accepted by
+        /// `key_str_to_egui_raw_input` (for example, `cmd+1`).
+        key: String,
+        response_file: String,
+    },
+
     /// Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.
     /// Host delivers `PlexiEvent::Action { action, args }` to the target app pane.
     /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.

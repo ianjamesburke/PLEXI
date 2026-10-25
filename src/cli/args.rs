@@ -441,10 +441,12 @@ pub enum Commands {
     ///     --persona "You are a researcher." \
     ///     --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
     ///   PANE=$(plexi agent spawn researcher --task "Summarize AgentRegistry")
-    ///   plexi pane result wait "$PANE" --timeout 300
+    ///   plexi agent wait "$PANE" --timeout 300
     ///
+    /// `agent start` without a first message and task-seeded `agent spawn` are both interactive adapter launches;
+    /// only an explicitly configured Script job is one-shot.
     /// Spawn returns immediately with a pane id, before the worker is done.
-    /// Wait in bounded slices well under your tool harness call limit (e.g. 300s).
+    /// Wait in bounded slices with `plexi agent wait` without capture/send polling.
     /// Exit 0 means done; exit 2 means report progress and re-run the same wait;
     /// exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
     #[command(verbatim_doc_comment)]
@@ -1871,6 +1873,14 @@ pub enum HostCmd {
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
+    /// Inject a key or chord into the host-level keyboard path.
+    ///
+    /// This is a validation seam for host shortcuts: it does not send bytes
+    /// to a focused pane. Example: `plexi-pr-2906 host key cmd+1`.
+    Key {
+        /// Single key, named key, or chord such as `cmd+1` or `cmd+shift+2`.
+        key: String,
+    },
 }
 
 /// `plexi account <cmd>` — marketplace account management.
@@ -2969,7 +2979,7 @@ pub enum AgentCmd {
     Create {
         /// Agent slug (`a-z`, `0-9`, `-`)
         name: String,
-        /// CLI harness to launch (`pi`, `claude`, `codex`, `agy`, or `script`)
+        /// CLI harness to launch (`pi`, `claude`, `codex`, `agy`, or `script`). Interactive harnesses (`pi`, `claude`, `codex`, `agy`) remain interactive in start/spawn; only explicit script jobs are one-shot.
         #[arg(long, value_parser = ["pi", "claude", "codex", "agy", "script"])]
         cli: String,
         /// Model identifier passed verbatim via `--model`
@@ -3007,6 +3017,26 @@ pub enum AgentCmd {
         /// Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace
         #[arg(long)]
         global: bool,
+        /// Directory used to resolve the workspace root (defaults to current working directory)
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Optional custom harness flag(s) passed to the adapter (can be repeated)
+        #[arg(long = "flag", action = clap::ArgAction::Append)]
+        flags: Vec<String>,
+    },
+    /// Show supported custom harness flags and safety rules for an agent or adapter.
+    ///
+    /// When `<target>` is an agent slug, displays its resolved safe custom flags.
+    /// When `<target>` is a harness adapter (`pi`, `claude`, `codex`, `agy`, `script`)
+    /// or omitted, displays the adapter options inventory, reserved options, and security rules.
+    ///
+    /// Example: plexi agent flags
+    /// Example: plexi agent flags claude
+    /// Example: plexi agent flags researcher
+    Flags {
+        /// Agent slug or harness adapter name (`pi`, `claude`, `codex`, `agy`, `script`)
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
         /// Directory used to resolve the workspace root (defaults to current working directory)
         #[arg(long)]
         cwd: Option<String>,
@@ -3062,6 +3092,10 @@ pub enum AgentCmd {
     /// agent's configured `[harness]` (`pi`, `claude`, `codex`, `agy`) interactively in the project
     /// directory with `AGENT.md` persona applied, the `# Plexi worker contract`, and `PLEXI_*` env set.
     ///
+    /// `agent start` without a first message and task-seeded `agent spawn` are both interactive adapter launches;
+    /// only an explicitly configured Script job is one-shot. Child results report via `plexi agent done` and are
+    /// collected with `plexi agent wait` without capture/send polling.
+    ///
     /// Example: plexi agent start researcher
     Start {
         /// Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
@@ -3081,8 +3115,12 @@ pub enum AgentCmd {
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
     /// a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`,
     /// and launches the worker pane. Codex workers (including calls and team members) use
-    /// `exec --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=true`.
+    /// `codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true`.
     /// They can write in their workspace and use the network; Plexi adds no profile writable root.
+    ///
+    /// Task-seeded `agent spawn` and `agent start` without a first message are both interactive adapter launches;
+    /// only an explicitly configured Script job is one-shot. Results report via `plexi agent done` and are
+    /// collected with `plexi agent wait` or parent idle-batch delivery without capture/send polling.
     ///
     /// Example: plexi agent spawn researcher --task "Audit auth module" --subcontext auth-audit --ephemeral
     Spawn {
@@ -3990,6 +4028,46 @@ mod tests {
         assert!(
             pane_key_help.contains("pane send") && pane_key_help.contains("--submit"),
             "plexi pane key --help must cross-reference pane send --submit for confirmed submission:\n{pane_key_help}"
+        );
+    }
+
+    #[test]
+    fn agent_help_distinguishes_interactive_start_spawn_from_script_jobs_without_capture_send_polling() {
+        let mut root = <Cli as clap::CommandFactory>::command();
+        let render_long_help = |path: &[&str], root: &mut clap::Command| -> String {
+            let mut cmd = root
+                .find_subcommand_mut(path[0])
+                .unwrap_or_else(|| panic!("missing subcommand {}", path[0]));
+            for seg in &path[1..] {
+                cmd = cmd
+                    .find_subcommand_mut(seg)
+                    .unwrap_or_else(|| panic!("missing subcommand {seg}"));
+            }
+            cmd.render_long_help().to_string()
+        };
+
+        let agent_help = render_long_help(&["agent"], &mut root);
+        assert!(
+            agent_help.contains("interactive adapter launches")
+                && agent_help.contains("Script job is one-shot")
+                && agent_help.contains("without capture/send polling"),
+            "plexi agent --help must clarify interactive start/spawn vs one-shot script jobs without capture/send polling:\n{agent_help}"
+        );
+
+        let agent_start_help = render_long_help(&["agent", "start"], &mut root);
+        assert!(
+            agent_start_help.contains("interactive adapter launches")
+                && agent_start_help.contains("Script job is one-shot")
+                && agent_start_help.contains("without capture/send polling"),
+            "plexi agent start --help must clarify interactive start/spawn vs one-shot script jobs without capture/send polling:\n{agent_start_help}"
+        );
+
+        let agent_spawn_help = render_long_help(&["agent", "spawn"], &mut root);
+        assert!(
+            agent_spawn_help.contains("interactive adapter launches")
+                && agent_spawn_help.contains("Script job is one-shot")
+                && agent_spawn_help.contains("without capture/send polling"),
+            "plexi agent spawn --help must clarify interactive start/spawn vs one-shot script jobs without capture/send polling:\n{agent_spawn_help}"
         );
     }
 

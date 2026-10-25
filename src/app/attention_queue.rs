@@ -7,7 +7,7 @@
 //! 2. Lock rule: when the focused pane has an unresolved ask, that ask is pinned
 //!    at item 0 with a lock mark (`locked = true`) under any arrivals until
 //!    answered or focus leaves the pane.
-//! 3. Collapsed calm pill in the path line (`◆N · total` + top bar preview).
+//! 3. Compact top-right mailbox icon/count in existing chrome.
 //! 4. Decision Overlay: opens only on explicit user action (`Enter` on an ask bar,
 //!    `Enter` on an asking atlas node, or `Cmd+Alt+B`). Never opens automatically
 //!    on arrival. Shows `"What would you do here?"`, monospace command text, and
@@ -24,6 +24,7 @@ use egui::{
     Align2, CornerRadius, FontFamily, FontId, Key, Order, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub const OVERLAY_QUESTION: &str = "What would you do here?";
@@ -117,6 +118,14 @@ pub struct DecisionVerdict {
     pub option_idx: usize,
     pub option_key: String,
     pub option_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttentionDestination {
+    DecisionOverlay(String),
+    LiveParent(crate::spatial::tiling::PaneId),
+    SourcePane(crate::spatial::tiling::PaneId),
+    ResultArtifact(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -1151,6 +1160,257 @@ impl PlexiApp {
         true
     }
 
+    pub(crate) fn find_parent_pane_id(&self, pane_id: u64) -> Option<u64> {
+        if let Some(t) = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane_id))
+            .and_then(|p| p.as_terminal())
+        {
+            if t.spawned_by.as_deref() == Some("human") {
+                return None;
+            }
+            if let Some(pid) = t.parent_pane_id {
+                return Some(pid);
+            }
+        }
+
+        if let Some(record) = self
+            .fleet_history
+            .borrow()
+            .iter()
+            .rev()
+            .find(|r| r.pane_id == pane_id)
+        {
+            if record.spawned_by.as_deref() == Some("human") {
+                return None;
+            }
+            if let Some(pid) = record.parent_pane_id {
+                return Some(pid);
+            }
+        }
+
+        if let Some(&pid) = self.child_parent_panes.get(&pane_id) {
+            return Some(pid);
+        }
+
+        None
+    }
+
+    pub(crate) fn find_agent_result_artifact_path(&self, pane_id: u64) -> Option<PathBuf> {
+        // 1. Check workspace directories from live windows
+        for w in &self.windows {
+            let md = w
+                .path
+                .join(".plexi")
+                .join("results")
+                .join(pane_id.to_string())
+                .join("RESULT.md");
+            if md.is_file() {
+                return Some(md);
+            }
+        }
+
+        // 2. Check fleet history closed runs
+        if let Some(r) = self
+            .fleet_history
+            .borrow()
+            .iter()
+            .rev()
+            .find(|r| r.pane_id == pane_id)
+        {
+            let md = r
+                .cwd
+                .join(".plexi")
+                .join("results")
+                .join(pane_id.to_string())
+                .join("RESULT.md");
+            if md.is_file() {
+                return Some(md);
+            }
+        }
+
+        // 3. Check profile results directory
+        let profile_md = crate::config::config_dir()
+            .join("results")
+            .join(pane_id.to_string())
+            .join("RESULT.md");
+        if profile_md.is_file() {
+            return Some(profile_md);
+        }
+
+        // 4. Check NeedsYou records with preview_refs
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        for rec in monitor.open_needs_you() {
+            let rec_pid = rec.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
+                rec.actor
+                    .strip_prefix("pane:")
+                    .and_then(|s| s.parse::<u64>().ok())
+            });
+            if rec_pid == Some(pane_id) {
+                if let Some(p_str) = rec.details.as_ref().and_then(|d| d.preview_refs.first()) {
+                    let p = PathBuf::from(p_str);
+                    if p.is_file() {
+                        return Some(p);
+                    }
+                }
+                if !rec.resource.starts_with("pane:") && !rec.resource.is_empty() {
+                    let p = PathBuf::from(&rec.resource);
+                    if p.is_file() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+
+        // 5. Try resolving through read_persisted_agent_result_in
+        if let Ok((json_p, _, _)) = crate::cli::agent::read_persisted_agent_result_in(
+            Some(&pane_id.to_string()),
+            None,
+            &crate::config::config_dir(),
+        ) {
+            let md = json_p.parent().unwrap_or(Path::new("")).join("RESULT.md");
+            if md.is_file() {
+                return Some(md);
+            }
+        }
+
+        None
+    }
+
+    /// Profile-scoped fallback used when no persisted result artifact remains.
+    ///
+    /// This only identifies the fallback; it must stay side-effect-free because
+    /// destination resolution is also used for preview and keyboard routing.
+    fn fallback_result_artifact_path(&self, pane_id: u64) -> PathBuf {
+        crate::config::config_dir()
+            .join("results")
+            .join(pane_id.to_string())
+            .join("RESULT.md")
+    }
+
+    /// Materialize the fallback only when the person activates it for viewing.
+    fn ensure_fallback_result_artifact(&self, pane_id: u64, path: &Path) -> std::io::Result<()> {
+        if path.is_file() {
+            return Ok(());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let summary_str = self
+            .child_result_events
+            .get(&pane_id)
+            .and_then(|ev| ev.summary.clone())
+            .unwrap_or_else(|| format!("Result for pane {pane_id}"));
+        let content = format!("# Agent Result\n\nPane: {pane_id}\n\n{summary_str}\n");
+        std::fs::write(path, content)
+    }
+
+    /// Resolve the navigation destination for an attention queue item.
+    ///
+    /// For asks and notices, returns `DecisionOverlay`.
+    /// For results:
+    /// - If a live parent agent exists, returns `LiveParent(parent_id)` even if child is closed.
+    /// - Otherwise (absent parent, non-agent parent, or human-started), falls back to:
+    ///   - `SourcePane(pane_id)` if the source pane is still live.
+    ///   - `ResultArtifact(path)` if the source pane is closed.
+    pub fn resolve_attention_destination(&self, bar: &QueueBar) -> AttentionDestination {
+        if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
+            return AttentionDestination::DecisionOverlay(bar.id.clone());
+        }
+
+        if let Some(parent_id) = self.find_parent_pane_id(bar.pane_id) {
+            if let Some(parent_pane) = self.windows.iter().find_map(|w| w.panes.get(&parent_id)) {
+                if parent_pane.is_agent_pane() {
+                    return AttentionDestination::LiveParent(parent_id);
+                }
+            }
+        }
+
+        if self.find_pane_in_any_window(bar.pane_id).is_some() {
+            return AttentionDestination::SourcePane(bar.pane_id);
+        }
+
+        AttentionDestination::ResultArtifact(
+            self.find_agent_result_artifact_path(bar.pane_id)
+                .unwrap_or_else(|| self.fallback_result_artifact_path(bar.pane_id)),
+        )
+    }
+
+    /// Single destination helper for mouse and keyboard activation from attention items.
+    ///
+    /// For asks and notices, opens the Decision Overlay.
+    /// For results, navigates to the resolved destination (live parent, source pane,
+    /// or result artifact) while leaving the child result reachable in the queue.
+    pub fn activate_attention_bar(&mut self, bar: &QueueBar) -> AttentionDestination {
+        let dest = self.resolve_attention_destination(bar);
+        log::info!(
+            "attention_queue: activating bar id={} category={:?} dest={:?}",
+            bar.id,
+            bar.category,
+            dest
+        );
+
+        match &dest {
+            AttentionDestination::DecisionOverlay(ask_id) => {
+                self.open_decision_overlay_for_ask(ask_id);
+            }
+            AttentionDestination::LiveParent(parent_id) => {
+                self.attention_queue.open = false;
+                self.jump_to_pane_at_columns(*parent_id);
+                log::info!(
+                    "attention_queue: navigated result bar_id={} to live parent pane_id={}",
+                    bar.id,
+                    parent_id
+                );
+            }
+            AttentionDestination::SourcePane(source_id) => {
+                self.attention_queue.open = false;
+                self.jump_to_pane_at_columns(*source_id);
+                log::info!(
+                    "attention_queue: navigated result bar_id={} to source pane_id={}",
+                    bar.id,
+                    source_id
+                );
+            }
+            AttentionDestination::ResultArtifact(path) => {
+                self.attention_queue.open = false;
+                if bar.context_id != 0 && self.router.active().context_id != bar.context_id {
+                    self.switch_to_context_restoring_last_pane(bar.context_id);
+                }
+                if let Err(error) = self.ensure_fallback_result_artifact(bar.pane_id, path) {
+                    log::warn!(
+                        "attention_queue: failed to materialize fallback result artifact {} for bar_id={}: {error}",
+                        path.display(),
+                        bar.id
+                    );
+                    return dest;
+                }
+                let path_str = path.to_string_lossy().into_owned();
+                if let Err(e) = self.launch_app_by_id_with_layout(
+                    "text-editor",
+                    Some("split_h".into()),
+                    &[path_str],
+                    None,
+                ) {
+                    log::warn!(
+                        "attention_queue: failed to open result viewer for {}: {e}",
+                        path.display()
+                    );
+                } else {
+                    log::info!(
+                        "attention_queue: opened result artifact {} for bar_id={}",
+                        path.display(),
+                        bar.id
+                    );
+                }
+            }
+        }
+
+        dest
+    }
+
     /// `Cmd+Alt+B`:
     /// - If inside the Decision Overlay: defer current ask and advance to the next ask.
     /// - Else if the focused pane has an open ask: open the Decision Overlay on it.
@@ -1510,12 +1770,7 @@ impl PlexiApp {
                 .get(self.attention_queue.selected_idx)
                 .cloned()
             {
-                if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
-                    let _ = self.open_decision_overlay_for_ask(&bar.id);
-                } else {
-                    self.attention_queue.open = false;
-                    self.jump_to_pane_at_columns(bar.pane_id);
-                }
+                self.activate_attention_bar(&bar);
             } else {
                 self.attention_queue.open = false;
             }
@@ -1617,15 +1872,25 @@ impl PlexiApp {
 
     fn draw_attention_queue_list_panel(&mut self, ctx: &egui::Context) {
         let colors = self.colors;
-        let screen = ctx.Viewport_rect_fallback();
+        let screen = ctx.content_rect();
 
-        // Scrim behind the pulled-up queue list.
+        let mut scrim_clicked = false;
+
+        // Scrim behind the pulled-up queue list, positioned below the toolbar
+        // so the top chrome and mailbox button remain interactively accessible.
+        let scrim_rect = Rect::from_min_max(
+            Pos2::new(screen.min.x, screen.min.y + style::TOOLBAR_H),
+            screen.max,
+        );
         egui::Area::new(egui::Id::new("attention_queue_scrim"))
             .order(Order::Foreground)
-            .fixed_pos(screen.min)
+            .fixed_pos(scrim_rect.min)
+            .fade_in(false)
             .show(ctx, |ui| {
-                let (_, painter) = ui.allocate_painter(screen.size(), Sense::click());
-                painter.rect_filled(screen, CornerRadius::ZERO, colors.scrim_queue);
+                ui.painter().rect_filled(scrim_rect, CornerRadius::ZERO, colors.scrim_queue);
+                if ui.allocate_rect(scrim_rect, egui::Sense::click()).clicked() {
+                    scrim_clicked = true;
+                }
             });
 
         let panel_w = style::QUEUE_PANEL_W.min(screen.width() - 32.0).max(280.0);
@@ -1750,17 +2015,17 @@ impl PlexiApp {
                     });
             });
 
+        if scrim_clicked {
+            self.toggle_attention_queue_list();
+            return;
+        }
+
         if let Some(id) = dismiss_id {
             self.dismiss_queue_bar(&id);
         } else if let Some(idx) = clicked_idx {
             self.attention_queue.selected_idx = idx;
             if let Some(bar) = self.attention_queue.items.get(idx).cloned() {
-                if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
-                    let _ = self.open_decision_overlay_for_ask(&bar.id);
-                } else {
-                    self.attention_queue.open = false;
-                    self.jump_to_pane_at_columns(bar.pane_id);
-                }
+                self.activate_attention_bar(&bar);
             }
         }
     }
@@ -1974,17 +2239,57 @@ pub(crate) fn format_attention_queue_header_count(asks: usize, total: usize) -> 
     }
 }
 
-/// Format the compact count prefix for the top-bar Attention Queue pill
-/// without repeating the count when `asks == total`.
-pub(crate) fn format_attention_pill_counts(asks: usize, total: usize) -> String {
+/// Visual state for the compact top-right attention mailbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionMailboxVisualState {
+    /// No open items; queue is calm.
+    Empty,
+    /// One or more open asks require user decisions.
+    AsksPresent,
+    /// No open asks, but one or more failures require attention.
+    Failed,
+    /// No asks or failures, but one or more results or notices are ready.
+    ResultOrNotice,
+}
+
+/// Format the compact mailbox icon and count label for the top-right chrome.
+///
+/// Returns `(icon, count_text, visual_state)`.
+/// - When `total == 0`: `("📭", "0", Empty)`
+/// - When `asks > 0`: `("📬", count, AsksPresent)` where count is `{asks}` (when asks == total)
+///   or `{asks} · {total}` (when additional non-ask items are present).
+/// - When `asks == 0 && failed > 0`: `("📬", "{total}", Failed)`
+/// - When `asks == 0 && total > 0`: `("📬", "{total}", ResultOrNotice)`
+pub(crate) fn format_attention_mailbox(
+    asks: usize,
+    failed: usize,
+    total: usize,
+) -> (&'static str, String, AttentionMailboxVisualState) {
     if total == 0 {
-        "Queue calm".to_string()
-    } else if asks == 0 {
-        format!("{total}")
-    } else if asks >= total {
-        format!("◆{asks}")
+        ("\u{1F4ED}", "0".to_string(), AttentionMailboxVisualState::Empty)
+    } else if asks > 0 {
+        let count_str = if asks >= total {
+            crate::ui::text::compact_count(asks)
+        } else {
+            format!(
+                "{} \u{00B7} {}",
+                crate::ui::text::compact_count(asks),
+                crate::ui::text::compact_count(total)
+            )
+        };
+        ("\u{1F4EC}", count_str, AttentionMailboxVisualState::AsksPresent)
+    } else if failed > 0 {
+        (
+            "\u{1F4EC}",
+            crate::ui::text::compact_count(total),
+            AttentionMailboxVisualState::Failed,
+        )
     } else {
-        format!("◆{asks} · {total}")
+        (
+            "\u{1F4EC}",
+            crate::ui::text::compact_count(total),
+            AttentionMailboxVisualState::ResultOrNotice,
+        )
     }
 }
 
@@ -2299,17 +2604,15 @@ mod tests {
     }
 
     #[test]
-    fn attention_queue_header_and_pill_never_duplicate_counts() {
+    fn attention_queue_header_never_duplicate_counts() {
         // total == 0
         let h_zero = format_attention_queue_header_count(0, 0);
         assert_eq!(h_zero, "0 items");
-        assert_eq!(format_attention_pill_counts(0, 0), "Queue calm");
 
         // asks == 0, total > 0
         let h_no_asks = format_attention_queue_header_count(0, 3);
         assert_eq!(h_no_asks, "3 items");
         assert!(!h_no_asks.contains('0'), "asks==0 must not print ◆0: {h_no_asks}");
-        assert_eq!(format_attention_pill_counts(0, 3), "3");
 
         // asks == total (must show the number 3 only once!)
         let h_all_asks = format_attention_queue_header_count(3, 3);
@@ -2319,9 +2622,6 @@ mod tests {
             1,
             "asks==total must print the count once: {h_all_asks}"
         );
-        let p_all_asks = format_attention_pill_counts(3, 3);
-        assert_eq!(p_all_asks, "◆3");
-        assert_eq!(p_all_asks.matches('3').count(), 1);
 
         // singular asks == total == 1
         assert_eq!(format_attention_queue_header_count(1, 1), "◆1 item");
@@ -2329,6 +2629,359 @@ mod tests {
         // 0 < asks < total
         let h_mixed = format_attention_queue_header_count(2, 5);
         assert_eq!(h_mixed, "◆2 · 5 items");
-        assert_eq!(format_attention_pill_counts(2, 5), "◆2 · 5");
+    }
+
+    #[test]
+    fn attention_mailbox_formatting_states() {
+        // Empty state: lowered flag, 0 count, Empty visual state
+        let (icon, count, state) = format_attention_mailbox(0, 0, 0);
+        assert_eq!(icon, "\u{1F4ED}");
+        assert_eq!(count, "0");
+        assert_eq!(state, AttentionMailboxVisualState::Empty);
+
+        // Asks present: raised flag, asks count, AsksPresent state
+        let (icon, count, state) = format_attention_mailbox(1, 0, 1);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "1");
+        assert_eq!(state, AttentionMailboxVisualState::AsksPresent);
+
+        // Asks present with additional non-ask items: asks · total
+        let (icon, count, state) = format_attention_mailbox(2, 1, 5);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "2 · 5");
+        assert_eq!(state, AttentionMailboxVisualState::AsksPresent);
+
+        // Failure state: 0 asks, failed > 0: raised flag, total count, Failed state
+        let (icon, count, state) = format_attention_mailbox(0, 2, 3);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "3");
+        assert_eq!(state, AttentionMailboxVisualState::Failed);
+
+        // Result/notice state: 0 asks, 0 failed, total > 0: raised flag, total count, ResultOrNotice state
+        let (icon, count, state) = format_attention_mailbox(0, 0, 4);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "4");
+        assert_eq!(state, AttentionMailboxVisualState::ResultOrNotice);
+    }
+
+    fn add_test_terminal_pane(
+        h: &mut HostHarness,
+        agent: Option<(&str, &str)>,
+        parent_id: Option<u64>,
+        spawned_by: Option<&str>,
+    ) -> u64 {
+        let id = h.app.host.alloc_pane_id();
+        let mut term = crate::host::pane::TerminalPane::new(
+            id,
+            h.app.ctx.clone(),
+            h.app.pty_event_tx.clone(),
+            egui_term::BackendSettings {
+                shell: "/bin/sh".into(),
+                ..Default::default()
+            },
+            14.0,
+        )
+        .expect("create test terminal pane");
+        if let Some((harness, role)) = agent {
+            term.agent_harness = Some(harness.into());
+            term.agent_role = Some(role.into());
+            term.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: id,
+                state: crate::protocol::AgentState::Idle,
+                agent: harness.into(),
+                detail: None,
+                session_id: None,
+            });
+        }
+        term.parent_pane_id = parent_id;
+        term.spawned_by = spawned_by.map(str::to_string);
+        let win = &mut h.app.windows[0];
+        win.panes.insert(id, crate::host::pane::Pane::Terminal(Box::new(term)));
+        let tile = win.tree.tiles.insert_pane(id);
+        if win.tree.root().is_none() {
+            win.tree.root = Some(tile);
+        }
+        id
+    }
+
+    #[test]
+    fn attention_result_nav_live_parent_with_closed_child() {
+        let mut h = HostHarness::new();
+        let p_parent = add_test_terminal_pane(&mut h, Some(("claude", "lead")), None, None);
+        let p_child = add_test_terminal_pane(
+            &mut h,
+            Some(("claude", "worker")),
+            Some(p_parent),
+            Some("agent:lead"),
+        );
+
+        // Child records result
+        h.app.record_child_agent_result(
+            Some(p_parent),
+            crate::workspace::QueuedChildResult {
+                child_pane_id: p_child,
+                child_agent: "worker".into(),
+                status: "completed".into(),
+                summary: Some("subtask finished".into()),
+                result_json: "{}".into(),
+                finished_at_epoch_secs: 1000,
+            },
+        );
+
+        // Child pane is closed
+        h.app.close_pane_by_id(p_child);
+        assert!(h.app.find_pane_in_any_window(p_child).is_none());
+
+        h.app.sync_attention_queue();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.pane_id == p_child)
+            .expect("child result present in attention queue")
+            .clone();
+
+        assert_eq!(bar.pane_name, "worker");
+        assert_eq!(bar.summary, "subtask finished");
+
+        // Destination must resolve to live parent
+        let dest = h.app.resolve_attention_destination(&bar);
+        assert_eq!(dest, AttentionDestination::LiveParent(p_parent));
+
+        // Enter activation jumps to parent
+        h.app.toggle_attention_queue_list();
+        assert!(h.app.attention_queue.open);
+        let idx = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .position(|b| b.id == bar.id)
+            .unwrap();
+        h.app.attention_queue.selected_idx = idx;
+
+        let mut enter_input = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        let disp = h.app.handle_attention_queue_list_input(&mut enter_input);
+        assert!(matches!(disp, KeyDisposition::Consumed));
+        assert!(!h.app.attention_queue.open);
+        assert_eq!(h.app.active_focused_pane_id(), Some(p_parent));
+
+        // Result remains reachable in the queue
+        h.app.sync_attention_queue();
+        assert!(
+            h.app.attention_queue.items.iter().any(|b| b.pane_id == p_child),
+            "child result must remain reachable in the queue"
+        );
+    }
+
+    #[test]
+    fn attention_result_nav_human_started_live_and_closed() {
+        let mut h = HostHarness::new();
+        let p_child = add_test_terminal_pane(&mut h, Some(("claude", "solo")), None, Some("human"));
+
+        h.app.record_child_agent_result(
+            None,
+            crate::workspace::QueuedChildResult {
+                child_pane_id: p_child,
+                child_agent: "solo".into(),
+                status: "completed".into(),
+                summary: Some("solo done".into()),
+                result_json: "{}".into(),
+                finished_at_epoch_secs: 1000,
+            },
+        );
+
+        h.app.sync_attention_queue();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.pane_id == p_child)
+            .unwrap()
+            .clone();
+
+        // 1. Live child: falls back to SourcePane
+        let dest_live = h.app.resolve_attention_destination(&bar);
+        assert_eq!(dest_live, AttentionDestination::SourcePane(p_child));
+
+        // 2. Closed child: falls back to ResultArtifact
+        h.app.close_pane_by_id(p_child);
+        let dest_closed = h.app.resolve_attention_destination(&bar);
+        match dest_closed {
+            AttentionDestination::ResultArtifact(ref path) => {
+                assert!(path.ends_with("RESULT.md"));
+                assert!(
+                    !path.exists(),
+                    "resolving a destination must not create a result artifact"
+                );
+            }
+            other => panic!("expected ResultArtifact, got {other:?}"),
+        }
+
+        // Activation opens text-editor viewer pane
+        h.app.activate_attention_bar(&bar);
+        match dest_closed {
+            AttentionDestination::ResultArtifact(ref path) => {
+                assert!(
+                    path.is_file(),
+                    "opening the fallback artifact must synthesize it only on activation"
+                );
+            }
+            _ => unreachable!("checked ResultArtifact above"),
+        }
+        assert!(
+            h.app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.values())
+                .any(|p| matches!(p, crate::host::pane::Pane::App(app) if app.manifest_id == "text-editor")),
+            "activating closed human-started result must open text-editor"
+        );
+    }
+
+    #[test]
+    fn attention_result_nav_absent_parent_and_non_agent_parent() {
+        let mut h = HostHarness::new();
+        // Case A: Absent parent
+        let p_parent = add_test_terminal_pane(&mut h, Some(("claude", "lead")), None, None);
+        let p_child = add_test_terminal_pane(
+            &mut h,
+            Some(("claude", "child_a")),
+            Some(p_parent),
+            Some("agent:lead"),
+        );
+        h.app.record_child_agent_result(
+            Some(p_parent),
+            crate::workspace::QueuedChildResult {
+                child_pane_id: p_child,
+                child_agent: "child_a".into(),
+                status: "completed".into(),
+                summary: Some("done a".into()),
+                result_json: "{}".into(),
+                finished_at_epoch_secs: 1000,
+            },
+        );
+        // Both parent and child close
+        h.app.close_pane_by_id(p_parent);
+        h.app.close_pane_by_id(p_child);
+        h.app.sync_attention_queue();
+        let bar_a = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child).unwrap().clone();
+        let dest_a = h.app.resolve_attention_destination(&bar_a);
+        assert!(matches!(dest_a, AttentionDestination::ResultArtifact(_)));
+
+        // Case B: Non-agent parent (terminal with no agent harness/role)
+        let p_shell = add_test_terminal_pane(&mut h, None, None, None);
+        let p_child_b = add_test_terminal_pane(
+            &mut h,
+            Some(("claude", "child_b")),
+            Some(p_shell),
+            Some("agent:shell"),
+        );
+        h.app.record_child_agent_result(
+            Some(p_shell),
+            crate::workspace::QueuedChildResult {
+                child_pane_id: p_child_b,
+                child_agent: "child_b".into(),
+                status: "completed".into(),
+                summary: Some("done b".into()),
+                result_json: "{}".into(),
+                finished_at_epoch_secs: 1000,
+            },
+        );
+        h.app.close_pane_by_id(p_child_b);
+        h.app.sync_attention_queue();
+        let bar_b = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child_b).unwrap().clone();
+        assert_eq!(h.app.find_parent_pane_id(p_child_b), Some(p_shell));
+        let (parent_window, _) = h
+            .app
+            .find_pane_in_any_window(p_shell)
+            .expect("live non-agent parent");
+        assert!(
+            !h.app
+                .windows[parent_window]
+                .panes
+                .get(&p_shell)
+                .expect("live non-agent parent pane")
+                .is_agent_pane(),
+            "the parent branch must be reached and reject a live non-agent pane"
+        );
+        let dest_b = h.app.resolve_attention_destination(&bar_b);
+        assert!(matches!(dest_b, AttentionDestination::ResultArtifact(_)));
+    }
+
+    #[test]
+    fn attention_result_nav_enter_preserves_ask_overlay() {
+        let mut h = HostHarness::new();
+        let p_parent = add_test_terminal_pane(&mut h, Some(("claude", "lead")), None, None);
+        let p_child = add_test_terminal_pane(
+            &mut h,
+            Some(("claude", "child")),
+            Some(p_parent),
+            Some("agent:lead"),
+        );
+        h.app.record_child_agent_result(
+            Some(p_parent),
+            crate::workspace::QueuedChildResult {
+                child_pane_id: p_child,
+                child_agent: "child".into(),
+                status: "completed".into(),
+                summary: Some("done".into()),
+                result_json: "{}".into(),
+                finished_at_epoch_secs: 1000,
+            },
+        );
+        h.app.close_pane_by_id(p_child);
+
+        // Also add an ask
+        let p_ask = h.add_test_pane();
+        h.app.enqueue_ask("ask-test", p_ask, "cargo test", 500, Vec::new());
+
+        h.app.sync_attention_queue();
+        let bar_res = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child).unwrap().clone();
+        let bar_ask = h.app.attention_queue.items.iter().find(|b| b.id == "ask-test").unwrap().clone();
+
+        // 1. Enter drives the real queue activation path to the live parent.
+        h.app.toggle_attention_queue_list();
+        let result_idx = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .position(|bar| bar.id == bar_res.id)
+            .expect("result bar");
+        h.app.attention_queue.selected_idx = result_idx;
+        let mut enter_input = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        assert!(matches!(
+            h.app.handle_attention_queue_list_input(&mut enter_input),
+            KeyDisposition::Consumed
+        ));
+        assert_eq!(h.app.active_focused_pane_id(), Some(p_parent));
+
+        // 2. Ask overlay semantics stay on the shared activation helper.
+        let dest_ask = h.app.resolve_attention_destination(&bar_ask);
+        assert_eq!(dest_ask, AttentionDestination::DecisionOverlay("ask-test".into()));
+        h.app.activate_attention_bar(&bar_ask);
+        assert!(h.app.attention_queue.decision_overlay.is_some());
+        assert_eq!(h.app.attention_queue.decision_overlay.as_ref().unwrap().ask_id, "ask-test");
     }
 }

@@ -1889,7 +1889,7 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
 pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
-    agent_tool_cli, agent_ask_cli, agent_create_cli, agent_done_cli, agent_history_cli, agent_hook_install_cli,
+    agent_tool_cli, agent_ask_cli, agent_create_cli, agent_done_cli, agent_flags_cli, agent_history_cli, agent_hook_install_cli,
     agent_hook_event_cli, agent_hook_uninstall_cli, agent_list_cli, agent_reopen_cli, agent_report_cli, agent_result_cli, agent_show_cli,
     agent_spawn_cli, agent_start_cli, agent_status_cli, agent_wait_cli, agent_next_cli, agent_fleet_cli, agent_fleet_dismiss_cli, AgentHarness,
 };
@@ -1924,7 +1924,9 @@ pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
     events_subscribe_cli, pane_lifecycle_wait_cli, pane_lifecycle_follow_cli, EmitArgs,
 };
-pub use host::{host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
+pub use host::{
+    host_key_cli, host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli,
+};
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
     self_update_cli,

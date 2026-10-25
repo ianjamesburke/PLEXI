@@ -4962,6 +4962,308 @@ fn first_boot_shape_matches_new_context() {
     );
 }
 
+/// Stint 1008: Deterministic measurement of new-context workspace initialization
+/// latency across cold and warm runs for both empty directory and existing project paths.
+///
+/// Verifies:
+/// 1. Each stage (id_resolve/config, pane_spawn, router_register, first_paint) is measured.
+/// 2. Stage timings are non-vacuous (timing records exist, match active context_id and kind,
+///    and record nonzero pane spawn and total durations).
+/// 3. Invariants are maintained: context window shape, terminal pane presence, tree root,
+///    and anchor defaults detection for project paths.
+#[test]
+fn measure_new_context_initialization_latency_cold_and_warm() {
+    let mut h = HostHarness::new();
+    let initial_cwd = std::env::temp_dir();
+    let context0 = h.app.pane_context_env_for_window(0);
+    h.app
+        .seed_window_root_pane(
+            0,
+            &context0,
+            initial_cwd,
+            crate::pane_ops::create::TerminalSpawnOptions::default(),
+        )
+        .expect("PTY and shell measurement must be available for latency test");
+
+    // Prepare test directories:
+    // A. An empty directory (no .plexi directory or config).
+    let empty_dir = tempfile::tempdir().expect("create empty tempdir");
+    // B. An existing project directory with anchor workspace defaults.
+    let project_dir = tempfile::tempdir().expect("create project tempdir");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let plexi_dir = project_dir.path().join(&channel_dir);
+    std::fs::create_dir_all(&plexi_dir).expect("create channel dir");
+    std::fs::write(
+        plexi_dir.join("workspace.toml"),
+        r#"id = "anchor-id"
+
+[context]
+name = "anchor-project"
+description = "test anchor project"
+"#,
+    )
+    .expect("write workspace.toml");
+
+    let initial_context_count = h.app.router.len();
+    assert_eq!(initial_context_count, 1);
+
+    // --- Cold Phase 1: New context at an empty directory ---
+    let cold_empty_start = std::time::Instant::now();
+    h.app.new_context_at_path(empty_dir.path().to_path_buf());
+    let cold_empty_host_elapsed = cold_empty_start.elapsed();
+
+    assert_eq!(h.app.router.len(), 2);
+    let active_ctx = h.app.router.active().clone();
+    let active_win = &h.app.windows[h.app.active_window];
+    assert_eq!(active_win.context_id, active_ctx.context_id);
+    assert_eq!(active_win.panes.len(), 1);
+    assert!(active_win.tree.root.is_some());
+    assert!(active_win.focused_pane.is_some());
+
+    // Non-vacuous timing assertion:
+    let timing_cold_empty = h
+        .app
+        .last_new_context_timing
+        .clone()
+        .expect("new_context_at_path must record stage timing");
+    assert_eq!(timing_cold_empty.context_id, active_ctx.context_id);
+    assert_eq!(timing_cold_empty.kind, crate::pane_ops::NewContextKind::AtPath);
+    assert!(timing_cold_empty.total >= timing_cold_empty.pane_spawn);
+    assert!(timing_cold_empty.total <= cold_empty_host_elapsed + std::time::Duration::from_millis(50));
+
+    // First paint frame:
+    let paint_start = std::time::Instant::now();
+    h.run_frames(1);
+    let cold_empty_first_paint = paint_start.elapsed();
+    assert!(cold_empty_first_paint > std::time::Duration::ZERO);
+
+    // Workspace save:
+    let save_start = std::time::Instant::now();
+    h.app.save_workspace_now();
+    let cold_empty_save = save_start.elapsed();
+
+    eprintln!(
+        "[BENCH] Cold Empty: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+        timing_cold_empty.total,
+        timing_cold_empty.id_resolve,
+        timing_cold_empty.pane_spawn,
+        timing_cold_empty.router_register,
+        cold_empty_first_paint,
+        cold_empty_save,
+    );
+
+    // --- Cold Phase 2: New context at an existing project directory ---
+    let cold_project_start = std::time::Instant::now();
+    h.app.new_context_at_path(project_dir.path().to_path_buf());
+    let cold_project_host_elapsed = cold_project_start.elapsed();
+
+    assert_eq!(h.app.router.len(), 3);
+    let active_project_ctx = h.app.router.active().clone();
+    assert_eq!(active_project_ctx.name.displayed(), "anchor-project");
+    assert_eq!(
+        active_project_ctx.description.as_deref(),
+        Some("test anchor project")
+    );
+    let timing_cold_project = h
+        .app
+        .last_new_context_timing
+        .clone()
+        .expect("new_context_at_path for project must record stage timing");
+    assert_eq!(timing_cold_project.context_id, active_project_ctx.context_id);
+    assert_eq!(timing_cold_project.kind, crate::pane_ops::NewContextKind::AtPath);
+    assert!(timing_cold_project.total >= timing_cold_project.pane_spawn);
+    assert!(timing_cold_project.total <= cold_project_host_elapsed + std::time::Duration::from_millis(50));
+
+    let paint_project_start = std::time::Instant::now();
+    h.run_frames(1);
+    let cold_project_first_paint = paint_project_start.elapsed();
+
+    eprintln!(
+        "[BENCH] Cold Project: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?}",
+        timing_cold_project.total,
+        timing_cold_project.id_resolve,
+        timing_cold_project.pane_spawn,
+        timing_cold_project.router_register,
+        cold_project_first_paint,
+    );
+
+    // --- Cold Phase 3: New standalone empty context (home directory) ---
+    h.app.new_context();
+    assert_eq!(h.app.router.len(), 4);
+    let active_empty_home = h.app.router.active().clone();
+    let timing_cold_home = h
+        .app
+        .last_new_context_timing
+        .clone()
+        .expect("new_context must record stage timing");
+    assert_eq!(timing_cold_home.context_id, active_empty_home.context_id);
+    assert_eq!(timing_cold_home.kind, crate::pane_ops::NewContextKind::Empty);
+    let paint_home_start = std::time::Instant::now();
+    h.run_frames(1);
+    let cold_home_first_paint = paint_home_start.elapsed();
+
+    eprintln!(
+        "[BENCH] Cold Home Empty: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?}",
+        timing_cold_home.total,
+        timing_cold_home.id_resolve,
+        timing_cold_home.pane_spawn,
+        timing_cold_home.router_register,
+        cold_home_first_paint,
+    );
+
+    // --- Warm Phase: Repeated iterations to measure warm latency distribution ---
+    #[derive(Debug, Clone, Copy)]
+    struct WarmMeasurement {
+        total: std::time::Duration,
+        id_resolve: std::time::Duration,
+        pane_spawn: std::time::Duration,
+        router_register: std::time::Duration,
+        first_paint: std::time::Duration,
+        save: std::time::Duration,
+    }
+
+    let mut warm_empty = Vec::new();
+    let mut warm_project = Vec::new();
+
+    for i in 0..5 {
+        let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
+        h.app.new_context_at_path(warm_empty_sub.path().to_path_buf());
+        let t_empty = h
+            .app
+            .last_new_context_timing
+            .as_ref()
+            .expect("warm empty must record timing");
+        assert_eq!(t_empty.kind, crate::pane_ops::NewContextKind::AtPath);
+        let t_empty = t_empty.clone();
+        let paint_start = std::time::Instant::now();
+        h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        let save = save_start.elapsed();
+        let empty_measurement = WarmMeasurement {
+            total: t_empty.total,
+            id_resolve: t_empty.id_resolve,
+            pane_spawn: t_empty.pane_spawn,
+            router_register: t_empty.router_register,
+            first_paint,
+            save,
+        };
+        assert!(empty_measurement.total > std::time::Duration::ZERO);
+        assert!(empty_measurement.id_resolve > std::time::Duration::ZERO);
+        assert!(empty_measurement.pane_spawn > std::time::Duration::ZERO);
+        assert!(empty_measurement.router_register > std::time::Duration::ZERO);
+        assert!(empty_measurement.first_paint > std::time::Duration::ZERO);
+        assert!(empty_measurement.save > std::time::Duration::ZERO);
+        eprintln!(
+            "[BENCH] Warm Empty iteration={i}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+            empty_measurement.total,
+            empty_measurement.id_resolve,
+            empty_measurement.pane_spawn,
+            empty_measurement.router_register,
+            empty_measurement.first_paint,
+            empty_measurement.save,
+        );
+        warm_empty.push(empty_measurement);
+
+        let warm_project_sub = tempfile::tempdir().expect("create warm project tempdir");
+        let sub_plexi = warm_project_sub.path().join(&channel_dir);
+        std::fs::create_dir_all(&sub_plexi).expect("create sub channel dir");
+        std::fs::write(
+            sub_plexi.join("workspace.toml"),
+            format!("id = \"warm-{i}\"\n\n[context]\nname = \"warm-{i}\"\n"),
+        )
+        .expect("write sub workspace.toml");
+        h.app.new_context_at_path(warm_project_sub.path().to_path_buf());
+        let t_proj = h
+            .app
+            .last_new_context_timing
+            .as_ref()
+            .expect("warm project must record timing");
+        assert_eq!(t_proj.kind, crate::pane_ops::NewContextKind::AtPath);
+        let t_proj = t_proj.clone();
+        let paint_start = std::time::Instant::now();
+        h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        let save = save_start.elapsed();
+        let project_measurement = WarmMeasurement {
+            total: t_proj.total,
+            id_resolve: t_proj.id_resolve,
+            pane_spawn: t_proj.pane_spawn,
+            router_register: t_proj.router_register,
+            first_paint,
+            save,
+        };
+        assert!(project_measurement.total > std::time::Duration::ZERO);
+        assert!(project_measurement.id_resolve > std::time::Duration::ZERO);
+        assert!(project_measurement.pane_spawn > std::time::Duration::ZERO);
+        assert!(project_measurement.router_register > std::time::Duration::ZERO);
+        assert!(project_measurement.first_paint > std::time::Duration::ZERO);
+        assert!(project_measurement.save > std::time::Duration::ZERO);
+        eprintln!(
+            "[BENCH] Warm Project iteration={i}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+            project_measurement.total,
+            project_measurement.id_resolve,
+            project_measurement.pane_spawn,
+            project_measurement.router_register,
+            project_measurement.first_paint,
+            project_measurement.save,
+        );
+        warm_project.push(project_measurement);
+    }
+
+    assert_eq!(warm_empty.len(), 5);
+    assert_eq!(warm_project.len(), 5);
+    let avg = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).sum::<std::time::Duration>() / values.len() as u32
+    };
+    let min = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).min().expect("five warm samples")
+    };
+    let max = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).max().expect("five warm samples")
+    };
+    eprintln!(
+        "[BENCH] Warm Empty (n=5): total avg={:?} min={:?} max={:?}; id_resolve avg={:?} min={:?} max={:?}; pane_spawn avg={:?} min={:?} max={:?}; router_register avg={:?} min={:?} max={:?}; first_paint avg={:?} min={:?} max={:?}; save avg={:?} min={:?} max={:?}",
+        avg(&warm_empty, |m| m.total), min(&warm_empty, |m| m.total), max(&warm_empty, |m| m.total),
+        avg(&warm_empty, |m| m.id_resolve), min(&warm_empty, |m| m.id_resolve), max(&warm_empty, |m| m.id_resolve),
+        avg(&warm_empty, |m| m.pane_spawn), min(&warm_empty, |m| m.pane_spawn), max(&warm_empty, |m| m.pane_spawn),
+        avg(&warm_empty, |m| m.router_register), min(&warm_empty, |m| m.router_register), max(&warm_empty, |m| m.router_register),
+        avg(&warm_empty, |m| m.first_paint), min(&warm_empty, |m| m.first_paint), max(&warm_empty, |m| m.first_paint),
+        avg(&warm_empty, |m| m.save), min(&warm_empty, |m| m.save), max(&warm_empty, |m| m.save),
+    );
+    eprintln!(
+        "[BENCH] Warm Project (n=5): total avg={:?} min={:?} max={:?}; id_resolve avg={:?} min={:?} max={:?}; pane_spawn avg={:?} min={:?} max={:?}; router_register avg={:?} min={:?} max={:?}; first_paint avg={:?} min={:?} max={:?}; save avg={:?} min={:?} max={:?}",
+        avg(&warm_project, |m| m.total), min(&warm_project, |m| m.total), max(&warm_project, |m| m.total),
+        avg(&warm_project, |m| m.id_resolve), min(&warm_project, |m| m.id_resolve), max(&warm_project, |m| m.id_resolve),
+        avg(&warm_project, |m| m.pane_spawn), min(&warm_project, |m| m.pane_spawn), max(&warm_project, |m| m.pane_spawn),
+        avg(&warm_project, |m| m.router_register), min(&warm_project, |m| m.router_register), max(&warm_project, |m| m.router_register),
+        avg(&warm_project, |m| m.first_paint), min(&warm_project, |m| m.first_paint), max(&warm_project, |m| m.first_paint),
+        avg(&warm_project, |m| m.save), min(&warm_project, |m| m.save), max(&warm_project, |m| m.save),
+    );
+
+    let mut shell_startup = Vec::new();
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let output = std::process::Command::new("/bin/zsh")
+            .args(["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"])
+            .output()
+            .expect("interactive login shell must start for latency measurement");
+        let elapsed = start.elapsed();
+        assert!(output.status.success(), "login shell failed: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("__PLEXI_SHELL_READY__"));
+        shell_startup.push(elapsed);
+    }
+    eprintln!(
+        "[BENCH] Shell login-to-first-output (n=5): avg={:?} min={:?} max={:?}",
+        shell_startup.iter().sum::<std::time::Duration>() / shell_startup.len() as u32,
+        shell_startup.iter().min().expect("five shell samples"),
+        shell_startup.iter().max().expect("five shell samples"),
+    );
+}
+
 // -- Stint 0456: focused TextInput typing ----------------------------------
 
 /// One pressed key event with no modifiers.
@@ -11520,6 +11822,19 @@ mod agent_state_restoration_tests {
     ) {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let tmp = tempfile::tempdir().expect("tempdir");
+        for (role, harness) in [("lead", "claude"), ("worker", "codex")] {
+            let agent_dir = profile_dir.path().join("agents").join(role);
+            std::fs::create_dir_all(&agent_dir).expect("create agent definition");
+            std::fs::write(agent_dir.join("AGENT.md"), "Resume with the configured flags.")
+                .expect("write agent persona");
+            std::fs::write(
+                agent_dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"{role}\"\ndisplay_name = \"{role}\"\n\n[harness]\ncli = \"{harness}\"\nflags = [\"--verbose\"]\n"
+                ),
+            )
+            .expect("write agent settings");
+        }
         let slot_file = tmp.path().join("question.txt");
         std::fs::write(&slot_file, "Need API schema clarification").unwrap();
         let mut bg_slots = HashMap::new();
@@ -11750,7 +12065,7 @@ mod agent_state_restoration_tests {
             "PortalPane targeting pruned ephemeral sub-context must be removed"
         );
 
-        // 2. Active-context pane (10) auto-resumed with `claude --resume sess-active-10`
+        // 2. Active-context pane (10) auto-resumed with its configured custom flags.
         //    and transitioned from mid-turn `Working` to `Interrupted` with its tail_preview.
         let active_term = h.app.windows[0].panes[&10]
             .as_terminal()
@@ -11761,7 +12076,7 @@ mod agent_state_restoration_tests {
         );
         assert_eq!(
             active_term.last_resumed_command.as_deref(),
-            Some("claude --resume sess-active-10")
+            Some("claude --verbose --resume sess-active-10")
         );
         assert_eq!(
             active_term.agent.as_ref().map(|a| &a.state),
@@ -11862,7 +12177,7 @@ mod agent_state_restoration_tests {
         );
         assert_eq!(
             bg_term_after.last_resumed_command.as_deref(),
-            Some("codex resume thread-bg-20")
+            Some("codex --verbose resume thread-bg-20")
         );
     }
 
@@ -11921,8 +12236,16 @@ mod agent_state_restoration_tests {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
         let tmp = tempfile::tempdir().expect("tempdir");
-
         let mut h = HostHarness::new();
+        let agent_dir = crate::config::config_dir().join("agents").join("auditor");
+        std::fs::create_dir_all(&agent_dir).expect("create active auditor definition");
+        std::fs::write(agent_dir.join("AGENT.md"), "Audit safely.")
+            .expect("write active auditor persona");
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            "[agent]\nid = \"auditor\"\ndisplay_name = \"auditor\"\n\n[harness]\ncli = \"pi\"\nflags = [\"--verbose\"]\n",
+        )
+        .expect("write active auditor settings");
         let master_pane = h.add_focused_terminal();
 
         let spawn_reply = temp_response(tmp.path(), "spawn-worker");
@@ -12015,7 +12338,7 @@ mod agent_state_restoration_tests {
         assert_eq!(reopened["ok"], true);
         assert_eq!(reopened["session_id"], "pi-sess-900");
         assert_eq!(reopened["harness"], "pi");
-        assert_eq!(reopened["command"], "pi --session pi-sess-900");
+        assert_eq!(reopened["command"], "pi --verbose --session pi-sess-900");
         let new_pane_id = reopened["pane_id"].as_u64().unwrap();
         let reopened_term = h.app.windows[0].panes[&new_pane_id]
             .as_terminal()
@@ -12026,7 +12349,7 @@ mod agent_state_restoration_tests {
         );
         assert_eq!(
             reopened_term.last_resumed_command.as_deref(),
-            Some("pi --session pi-sess-900")
+            Some("pi --verbose --session pi-sess-900")
         );
         assert!(reopened_term.slots.contains_key("summary"));
     }
@@ -13627,6 +13950,340 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
 }
 
 #[test]
+fn v1_interactive_agent_start_and_task_seeded_spawn_with_human_and_claude_provenance_and_lifecycle() {
+    let fake_home = tempfile::tempdir().expect("fake home");
+    let profile_dir = fake_home.path().join(".plexi-alpha");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.clone());
+
+    // 1. Seed global `researcher` agent definition with [harness] and [permissions].
+    let agent_dir = profile_dir.join("agents").join("researcher");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("AGENT.md"),
+        "You are an interactive researcher persona.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+model = "openrouter/~z-ai/glm-flash-latest"
+
+[permissions]
+default_posture = "deny"
+allow = ["pane.send"]
+"#,
+    )
+    .unwrap();
+
+    let proj_dir = fake_home.path().join("workspace").join("project");
+    std::fs::create_dir_all(&proj_dir).unwrap();
+    let stops = vec![fake_home.path().to_path_buf()];
+
+    let mut h = HostHarness::new();
+    let human_shell = h.add_focused_terminal();
+
+    // 2. Start-without-message with human parent provenance:
+    // Calling `resolve_agent_start_in_stopping_at` with `message: None` from `proj_dir`.
+    let start_payload_no_msg = crate::cli::agent::resolve_agent_start_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        None,
+        Some(human_shell),
+        &stops,
+    )
+    .expect("resolve agent start without message");
+
+    // Command verification: interactive adapter launch with persona and worker contract,
+    // but no -p / --print and no initial prompt string.
+    let cmd = start_payload_no_msg["command"].as_str().unwrap();
+    assert!(
+        cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
+        "must append system prompt with persona and worker contract: {cmd}"
+    );
+    assert!(!cmd.contains(" -p"), "interactive start must not contain -p flag: {cmd}");
+    assert!(!cmd.contains(" --print"), "interactive start must not contain --print flag: {cmd}");
+    assert_eq!(start_payload_no_msg["task"], "");
+    assert_eq!(start_payload_no_msg["ephemeral"], false);
+    assert_eq!(start_payload_no_msg["role"], "researcher");
+
+    // Spawn the start-without-message pane.
+    let spawn_reply_1 = temp_response(fake_home.path(), "start-no-msg-spawn");
+    let mut req_1 = start_payload_no_msg.clone();
+    req_1["command"] = serde_json::Value::String("sleep 30".to_string());
+    req_1["response_file"] = serde_json::Value::String(spawn_reply_1.clone());
+    h.inject_ipc(serde_json::from_value(req_1).unwrap());
+    h.hidden_frame();
+
+    let spawn_resp_1 = read_json_response(&spawn_reply_1);
+    assert_eq!(spawn_resp_1["ok"], true);
+    let start_pane_id = spawn_resp_1["pane_id"].as_u64().unwrap();
+    assert_eq!(spawn_resp_1["spawned_by"], "human", "human parent must yield spawned_by=human");
+
+    let term_1 = h.app.windows[0].panes[&start_pane_id].as_terminal().unwrap();
+    assert_eq!(term_1.spawned_by.as_deref(), Some("human"));
+    assert_eq!(term_1.spawned_by_badge().as_deref(), Some("spawned by you"));
+    assert_eq!(term_1.agent_role.as_deref(), Some("researcher"));
+    assert_eq!(term_1.agent_harness.as_deref(), Some("pi"));
+    assert!(!term_1.ephemeral, "interactive start pane must not be ephemeral");
+
+    // 3. Claude parent provenance:
+    // Spawn a parent agent running Claude (`role: "claude-code"`).
+    let spawn_claude_reply = temp_response(fake_home.path(), "spawn-claude");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "claude-code".into(),
+        harness: "claude".into(),
+        command: "sleep 30".into(),
+        task: Some("Coordinate security audit".into()),
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell),
+        name: None,
+        cwd: Some(proj_dir.to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: spawn_claude_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let claude_resp = read_json_response(&spawn_claude_reply);
+    assert_eq!(claude_resp["ok"], true);
+    let claude_pane = claude_resp["pane_id"].as_u64().unwrap();
+    assert_eq!(claude_resp["spawned_by"], "human");
+
+    // Task-seeded interactive spawn from Claude parent:
+    let spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        Some("Audit token lifetimes"),
+        None,
+        Some(false),
+        Some(claude_pane),
+        &stops,
+    )
+    .expect("resolve agent spawn with task");
+
+    let spawn_cmd = spawn_payload["command"].as_str().unwrap();
+    assert!(
+        spawn_cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
+        "spawn must append system prompt with persona and worker contract: {spawn_cmd}"
+    );
+    assert!(spawn_cmd.contains("'Audit token lifetimes'"));
+    assert!(!spawn_cmd.contains(" -p"));
+    assert_eq!(spawn_payload["task"], "Audit token lifetimes");
+
+    let spawn_reply_2 = temp_response(fake_home.path(), "spawn-claude-child");
+    let mut req_2 = spawn_payload.clone();
+    req_2["command"] = serde_json::Value::String("sleep 30".to_string());
+    req_2["response_file"] = serde_json::Value::String(spawn_reply_2.clone());
+    h.inject_ipc(serde_json::from_value(req_2).unwrap());
+    h.hidden_frame();
+
+    let spawn_resp_2 = read_json_response(&spawn_reply_2);
+    assert_eq!(spawn_resp_2["ok"], true);
+    let child_pane_id = spawn_resp_2["pane_id"].as_u64().unwrap();
+    assert_eq!(
+        spawn_resp_2["spawned_by"], "agent:claude-code",
+        "Claude parent must yield spawned_by=agent:claude-code"
+    );
+
+    let term_2 = h.app.windows[0].panes[&child_pane_id].as_terminal().unwrap();
+    assert_eq!(term_2.spawned_by.as_deref(), Some("agent:claude-code"));
+    assert_eq!(term_2.spawned_by_badge().as_deref(), Some("spawned by claude-code"));
+    assert_eq!(term_2.parent_pane_id, Some(claude_pane));
+
+    // 4. One bounded wait before completion: blocks while child is running.
+    let wait_reply = temp_response(fake_home.path(), "wait-child");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![child_pane_id],
+        timeout_secs: 30.0,
+        response_file: wait_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&wait_reply).exists(),
+        "AgentWait must block until child finishes"
+    );
+
+    // 5. Child calls `AgentDone` with structured result and summary:
+    let done_reply = temp_response(fake_home.path(), "child-done");
+    h.inject_ipc(AppRequest::AgentDone {
+        pane_id: child_pane_id,
+        result: Some(serde_json::json!({"status": "passed", "vulnerabilities": 0}).to_string()),
+        summary: Some("Token lifetime audit passed cleanly".to_string()),
+        peer_ancestry: None,
+        response_file: done_reply.clone(),
+    });
+    h.hidden_frame();
+
+    let done_resp = read_json_response(&done_reply);
+    assert_eq!(done_resp["ok"], true);
+
+    // Bounded wait unblocks and returns the result:
+    let wait_resp = read_json_response(&wait_reply);
+    assert_eq!(wait_resp["ok"], true);
+    let results = wait_resp["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["pane_id"], child_pane_id);
+    assert_eq!(results[0]["summary"], "Token lifetime audit passed cleanly");
+    assert_eq!(results[0]["result"]["status"], "passed");
+    assert_eq!(results[0]["result"]["vulnerabilities"], 0);
+
+    // 6. Verify result persistence on disk:
+    let result_md_path = std::path::PathBuf::from(done_resp["result_path"].as_str().expect("result_path"));
+    let result_json_path = std::path::PathBuf::from(done_resp["json_path"].as_str().expect("json_path"));
+    assert!(result_md_path.exists(), "RESULT.md must exist at {}", result_md_path.display());
+    assert!(result_json_path.exists(), "result.json must exist at {}", result_json_path.display());
+
+    let result_md = std::fs::read_to_string(&result_md_path).expect("read RESULT.md");
+    assert!(result_md.contains("Token lifetime audit passed cleanly"));
+    assert!(result_md.contains("\"status\": \"passed\""));
+
+    let result_json = std::fs::read_to_string(&result_json_path).expect("read result.json");
+    let json_val: serde_json::Value = serde_json::from_str(&result_json).expect("valid json in result.json");
+    assert_eq!(json_val["status"], "passed");
+    assert_eq!(json_val["vulnerabilities"], 0);
+
+    // 7. Interactive child transitions to Idle on done:
+    let term_child_after = h.app.windows[0].panes[&child_pane_id].as_terminal().unwrap();
+    assert_eq!(
+        term_child_after.agent.as_ref().map(|a| a.state.clone()),
+        Some(crate::protocol::AgentState::Idle),
+        "interactive agent pane transitions to Idle on done"
+    );
+
+    // 8. Closing child pane: result remains readable via AgentWait.
+    let close_reply = temp_response(fake_home.path(), "close-child");
+    h.inject_ipc(AppRequest::ClosePane {
+        pane_id: child_pane_id,
+        response_file: Some(close_reply),
+    });
+    h.hidden_frame();
+    assert!(h.app.find_pane_in_any_window(child_pane_id).is_none());
+
+    let wait_after_close = temp_response(fake_home.path(), "wait-after-close");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![child_pane_id],
+        timeout_secs: 5.0,
+        response_file: wait_after_close.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let wait_closed_resp = read_json_response(&wait_after_close);
+    assert_eq!(wait_closed_resp["ok"], true);
+    assert_eq!(wait_closed_resp["results"][0]["result"]["status"], "passed");
+
+    // 9. Closing an interactive start-without-message pane before `agent done`
+    // persists the host-synthesized unreported exit for the bounded wait.
+    let start_close_wait = temp_response(fake_home.path(), "wait-start-closed-without-done");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![start_pane_id],
+        timeout_secs: 30.0,
+        response_file: start_close_wait.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&start_close_wait).exists(),
+        "AgentWait must block until the interactive start pane closes"
+    );
+
+    let start_close_reply = temp_response(fake_home.path(), "close-start-without-done");
+    h.inject_ipc(AppRequest::ClosePane {
+        pane_id: start_pane_id,
+        response_file: Some(start_close_reply),
+    });
+    h.hidden_frame();
+    assert!(h.app.find_pane_in_any_window(start_pane_id).is_none());
+    let start_closed_wait = read_json_response(&start_close_wait);
+    assert_eq!(start_closed_wait["ok"], true);
+    assert_eq!(start_closed_wait["results"][0]["pane_id"], start_pane_id);
+    assert_eq!(start_closed_wait["results"][0]["status"], "exited_unreported");
+    assert_eq!(
+        start_closed_wait["results"][0]["summary"],
+        "pane closed without agent done",
+        "a closed interactive pane without agent done must retain the synthesized exit reason"
+    );
+
+    // 10. A task-seeded interactive child whose harness reports a nonzero exit
+    // persists `failed` and resolves the same bounded wait with the failure.
+    let failed_spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        Some("Exercise nonzero lifecycle"),
+        None,
+        Some(false),
+        Some(claude_pane),
+        &stops,
+    )
+    .expect("resolve task-seeded spawn for failed lifecycle");
+    let failed_spawn_reply = temp_response(fake_home.path(), "spawn-failed-child");
+    let mut failed_request = failed_spawn_payload;
+    failed_request["command"] = serde_json::Value::String("sleep 30".to_string());
+    failed_request["response_file"] = serde_json::Value::String(failed_spawn_reply.clone());
+    h.inject_ipc(serde_json::from_value(failed_request).unwrap());
+    h.hidden_frame();
+    let failed_child_pane_id = read_json_response(&failed_spawn_reply)["pane_id"]
+        .as_u64()
+        .expect("failed child pane id");
+
+    let failed_wait = temp_response(fake_home.path(), "wait-failed-child");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![failed_child_pane_id],
+        timeout_secs: 30.0,
+        response_file: failed_wait.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&failed_wait).exists(),
+        "AgentWait must block until the failed child reports its harness exit"
+    );
+
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: failed_child_pane_id,
+        state: crate::protocol::AgentState::Failed,
+        agent: "pi".to_string(),
+        detail: Some("harness exited with code 7 without agent done".to_string()),
+        session_id: None,
+        event: Some("HarnessExit".to_string()),
+        blocked_reason: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+
+    let failed_wait_response = read_json_response(&failed_wait);
+    assert_eq!(failed_wait_response["ok"], true);
+    assert_eq!(failed_wait_response["results"][0]["pane_id"], failed_child_pane_id);
+    assert_eq!(failed_wait_response["results"][0]["status"], "failed");
+    assert!(
+        failed_wait_response["results"][0]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("code 7")),
+        "failed result must retain the nonzero harness exit detail: {failed_wait_response}"
+    );
+    let failed_child = h.app.windows[0].panes[&failed_child_pane_id]
+        .as_terminal()
+        .expect("failed child terminal");
+    assert_eq!(
+        failed_child.agent.as_ref().map(|agent| agent.state.clone()),
+        Some(crate::protocol::AgentState::Failed),
+        "nonzero harness exit must persist Failed on the interactive task child"
+    );
+}
+
+#[test]
 fn restored_agent_pane_enforces_permission_posture_on_pane_send() {
     let profile_dir = tempfile::tempdir().expect("profile_dir");
     let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
@@ -14829,4 +15486,416 @@ mod strip_navigation_frame_tests {
             "scrolled strip must have clipped columns"
         );
     }
+
+    #[test]
+    fn slow_shell_paints_stable_placeholder_chrome_and_preserves_geometry() {
+        let mut h = HostHarness::new();
+        let app_pane = h.add_test_pane();
+        h.focus_pane(app_pane);
+        h.run_frames(1);
+
+        let ctx_idx = h.app.active_window;
+        h.app.router.get_mut(ctx_idx).name = crate::host::context::ContextName::custom("alpha-cleanup");
+
+        // Split focused to create a new terminal pane.
+        // Before shell integration arrives, the shell is starting up (slow-shell scenario).
+        let new_pane_id = h
+            .app
+            .split_focused(true, None, false, false, None)
+            .expect("split_focused should succeed");
+
+        // Run exactly 1 frame — first paint of the new terminal before any shell title arrives.
+        h.run_frames(1);
+
+        // 1. Verify stable chrome on first frame
+        let layout_frame1 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+            .expect("first frame must render stable pane chrome / tab bar layout");
+        assert_eq!(
+            layout_frame1.elided_label.as_deref(),
+            Some("alpha-cleanup"),
+            "first frame must paint context-derived placeholder title in chrome"
+        );
+        let label_rect_frame1 = layout_frame1.label_rect.expect("label rect must exist on frame 1");
+
+        // Verify provenance icon exists on first frame
+        let prov_rect_frame1 = h.app.ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+        }).expect("provenance icon rect must exist on first frame");
+
+        // Verify correct input ownership on first frame
+        assert_eq!(
+            h.app.input_owner(&h.app.ctx),
+            crate::app::input_owner::InputOwner::Pane(new_pane_id),
+            "new terminal must have input ownership on first frame"
+        );
+
+        // Capture screenshot of first paint with slow shell
+        let tmp_dir = std::env::temp_dir();
+        let png_path = tmp_dir.join("slow_shell_stable_chrome.png");
+        h.render_png(&png_path).expect("render_png must succeed");
+        assert!(png_path.exists(), "PNG screenshot must be written to disk");
+
+        // 2. Deliver delayed shell integration metadata (OSC 2 Title)
+        h.app
+            .pty_event_tx
+            .send((
+                new_pane_id,
+                egui_term::PtyEvent::Title("zsh — ~/work".to_string()),
+            ))
+            .expect("send delayed shell title");
+        h.run_frames(1);
+
+        // Verify title updated
+        let layout_frame2 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+            .expect("chrome layout must persist after delayed metadata arrives");
+        assert_eq!(
+            layout_frame2.elided_label.as_deref(),
+            Some("zsh — ~/work"),
+            "delayed metadata must replace title without error"
+        );
+
+        // Verify NO layout movement / geometry change
+        let prov_rect_frame2 = h.app.ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+        }).expect("provenance icon rect must exist after title update");
+        assert_eq!(
+            prov_rect_frame1, prov_rect_frame2,
+            "provenance icon position must remain identical across shell integration update"
+        );
+
+        let label_rect_frame2 = layout_frame2.label_rect.expect("label rect must exist on frame 2");
+        assert_eq!(
+            label_rect_frame1.center().y, label_rect_frame2.center().y,
+            "chrome header baseline/center must remain identical across shell integration update (zero layout movement)"
+        );
+    }
+
+    #[test]
+    fn terminal_spawn_failure_leaves_no_ghost_pane() {
+        let mut h = HostHarness::new();
+        let existing_pane = h.add_test_pane();
+        let context_id = h.app.router.active().context_id;
+        h.app
+            .set_context_columns(context_id, vec![vec![existing_pane]]);
+        h.app.focus_pane_in_strip(existing_pane);
+        h.run_frames(1);
+
+        let window = &h.app.windows[0];
+        let initial_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
+        let initial_tree_panes: std::collections::BTreeSet<_> = window
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(_, tile)| match tile {
+                egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+            .collect();
+        let initial_tile_count = window.tree.tiles.len();
+        let initial_focus = window.focused_pane;
+        let initial_strip = h.app.zoom.strips.get(&context_id).cloned();
+
+        // `split_focused` is the production terminal-creation path. Force its
+        // real `TerminalPane::new` call to fail without sharing a process env
+        // mutation with concurrent tests.
+        let _shell_override = crate::host::shell::set_test_shell_override(
+            "/nonexistent/plexi-test-shell-that-cannot-spawn",
+        );
+        assert!(
+            h.app
+                .split_focused(true, None, false, false, None)
+                .is_none(),
+            "the real split path must report terminal spawn failure"
+        );
+
+        let window = &h.app.windows[0];
+        let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
+        let final_tree_panes: std::collections::BTreeSet<_> = window
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(_, tile)| match tile {
+                egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            final_panes, initial_panes,
+            "failed split must not add a pane"
+        );
+        assert_eq!(
+            final_tree_panes, initial_tree_panes,
+            "failed split must not add a ghost pane tile"
+        );
+        assert_eq!(
+            window.tree.tiles.len(),
+            initial_tile_count,
+            "failed split must leave the tile tree unchanged"
+        );
+        assert_eq!(
+            window.focused_pane, initial_focus,
+            "failed split must retain focus on the existing pane"
+        );
+        assert_eq!(
+            h.app.zoom.strips.get(&context_id),
+            initial_strip.as_ref(),
+            "failed split must leave the authoritative strip unchanged"
+        );
+    }
+}
+
+#[test]
+fn notes_picker_copy_closes_and_restores_pane_input_owner() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    let ctx = h.app.ctx.clone();
+    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+
+    let note_path = std::env::temp_dir().join(format!(
+        "plexi-harness-copy-note-{}.md",
+        std::process::id()
+    ));
+    std::fs::write(&note_path, "harness note text").expect("seed note");
+    h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+        title: "harness note".to_string(),
+        preview: "harness note text".to_string(),
+        search_text: "harness note".to_string(),
+        path: note_path.clone(),
+        tier_label: None,
+    }];
+    h.app.notes_picker_selected = 0;
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::NotesPicker)),
+        "notes picker owns input when open"
+    );
+
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::C,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    h.frame(input);
+
+    assert!(
+        !h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        "notes picker must close after Cmd+C"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "focus must return to originating pane"
+    );
+    assert!(
+        h.last_platform_output
+            .commands
+            .contains(&egui::OutputCommand::CopyText("harness note text".to_string())),
+        "clipboard command must receive full note contents"
+    );
+    let _ = std::fs::remove_file(&note_path);
+}
+
+#[test]
+fn notes_picker_confirmed_cut_closes_and_restores_pane_input_owner() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    let ctx = h.app.ctx.clone();
+
+    let note_path = std::env::temp_dir().join(format!(
+        "plexi-harness-cut-note-{}.md",
+        std::process::id()
+    ));
+    std::fs::write(&note_path, "cut harness note text").expect("seed note");
+    h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+        title: "cut note".to_string(),
+        preview: "cut harness note text".to_string(),
+        search_text: "cut note".to_string(),
+        path: note_path.clone(),
+        tier_label: None,
+    }];
+    h.app.notes_picker_selected = 0;
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+
+    // Press Cmd+X
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::X,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    h.frame(input);
+
+    assert!(
+        h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        "picker must stay open awaiting confirm"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::NotesPicker))
+    );
+    assert!(
+        h.last_platform_output
+            .commands
+            .contains(&egui::OutputCommand::CopyText("cut harness note text".to_string())),
+        "clipboard command receives text at cut time"
+    );
+    assert!(note_path.exists());
+
+    // Press Enter to confirm
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.frame(input);
+
+    assert!(
+        !h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        "picker must close after confirmed cut"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "focus must return to originating pane"
+    );
+    assert!(!note_path.exists(), "note must be removed from disk");
+}
+
+#[test]
+fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    h.app.notes_picker_entries = (0..30)
+        .map(|i| crate::notes::NotePickerEntry {
+            title: format!("note {i:02}"),
+            preview: format!("preview {i:02}"),
+            search_text: format!("note {i:02}"),
+            path: std::path::PathBuf::from(format!("/tmp/harness-note-{i}.md")),
+            tier_label: None,
+        })
+        .collect();
+    h.app.notes_picker_selected = 0;
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+
+    let id = egui::Id::new("notes_picker")
+        .with("overlay")
+        .with(egui::Id::from("child"))
+        .with(egui::Id::new("notes_picker_halves"))
+        .with(egui::Id::new("notes_picker_list_half"))
+        .with(egui::Id::new("notes_picker_list"));
+
+    let initial_offset = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("notes picker list scroll state loaded")
+        .offset
+        .y;
+    assert_eq!(initial_offset, 0.0);
+
+    for _ in 0..18 {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::J,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.frame(input);
+    }
+
+    assert_eq!(h.app.notes_picker_selected, 18);
+    let offset_down = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state after down")
+        .offset
+        .y;
+    assert!(
+        offset_down > 0.0,
+        "selection at row 18 must scroll the viewport down; offset={offset_down}"
+    );
+
+    // Navigate to the very last row (29)
+    for _ in 18..29 {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.frame(input);
+    }
+    assert_eq!(h.app.notes_picker_selected, 29);
+    let offset_last = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state at last row")
+        .offset
+        .y;
+    assert!(
+        offset_last > offset_down,
+        "last row 29 must scroll further down than row 18; last={offset_last} down={offset_down}"
+    );
+
+    // Simulate wheel scrolling away from the selection towards the top
+    let mut state = egui::scroll_area::State::load(&h.app.ctx, id).unwrap();
+    state.offset.y = 0.0;
+    state.store(&h.app.ctx, id);
+
+    // Run an idle frame without key events
+    h.frame(egui::RawInput::default());
+
+    // Selection must remain at row 29 and the wheel-scrolled offset must NOT be snapped back
+    assert_eq!(h.app.notes_picker_selected, 29);
+    let offset_after_wheel = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state after wheel")
+        .offset
+        .y;
+    assert_eq!(
+        offset_after_wheel, 0.0,
+        "wheel scrolling away from selection must not snap back on an unchanged selection"
+    );
+
+    // Navigate all the way back up to row 0 with Cmd+K
+    for _ in 0..29 {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::K,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.frame(input);
+    }
+    assert_eq!(h.app.notes_picker_selected, 0);
+    let offset_top = egui::scroll_area::State::load(&h.app.ctx, id)
+        .expect("scroll state at top")
+        .offset
+        .y;
+    assert_eq!(
+        offset_top, 0.0,
+        "navigating back to row 0 must keep selection visible at the top"
+    );
 }

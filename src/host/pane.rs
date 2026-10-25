@@ -552,6 +552,15 @@ impl Pane {
         }
     }
 
+    /// True if this pane is an active agent pane (terminal agent or app agent).
+    pub fn is_agent_pane(&self) -> bool {
+        match self {
+            Pane::Terminal(t) => t.is_agent_pane(),
+            Pane::App(a) => a.agent.is_some(),
+            Pane::Portal(_) => false,
+        }
+    }
+
     /// The pane's agent state, from the shared detector's two signal sources:
     /// hook-reported state (`SetAgentState`, authoritative while fresh and
     /// whenever Working) plus the host-observed synthesis from
@@ -753,6 +762,8 @@ pub struct TerminalPane {
     /// retention can distinguish exit 0 from non-zero/signal failures.
     pub(crate) exit_status: Option<crate::host::pane_lifecycle::ExitStatus>,
     pub name: Option<String>,
+    /// Context-derived placeholder title displayed before shell integration reports a title.
+    pub placeholder_title: Option<String>,
     /// When true, the name was set explicitly by the user and OSC title sequences must not overwrite it.
     pub name_locked: bool,
     pub font_size: f32,
@@ -874,6 +885,26 @@ impl TerminalPane {
             || agent_role.is_some();
         let last_resumed_command = settings.env.get("PLEXI_RESUME_COMMAND").cloned();
         let initial_cwd = settings.working_directory.clone();
+        let placeholder_title = if settings.env.contains_key("PLEXI_CONTEXT_NAME") {
+            let context_name = settings
+                .env
+                .get("PLEXI_CONTEXT_NAME")
+                .cloned()
+                .unwrap_or_default();
+            let context_root = settings.env.get("PLEXI_CONTEXT_ROOT").map(PathBuf::from);
+            crate::pane_ops::create::derive_context_placeholder_title(
+                &context_name,
+                settings.working_directory.as_deref(),
+                context_root.as_deref(),
+            )
+        } else {
+            None
+        };
+        if let Some(ref placeholder) = placeholder_title {
+            log::info!(
+                "terminal_pane: initialized stable pane chrome for pane_id={id} placeholder_title={placeholder:?} provenance={spawned_by:?}"
+            );
+        }
         #[cfg(test)]
         let spawn_env = settings.env.clone();
         let program_status = crate::program_status::SharedProgramStatus::default();
@@ -895,6 +926,7 @@ impl TerminalPane {
             exited: false,
             exit_status: None,
             name: None,
+            placeholder_title,
             name_locked: false,
             font_size: default_font_size,
             ephemeral,
@@ -935,6 +967,12 @@ impl TerminalPane {
             #[cfg(test)]
             spawn_env,
         })
+    }
+
+    /// Return the active display name for pane chrome: the explicit or shell-reported
+    /// title when present, falling back to the context-derived placeholder title.
+    pub fn display_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.placeholder_title.as_deref())
     }
 
     /// True if this terminal pane is or was an agent pane (configured harness/role,
@@ -1018,9 +1056,29 @@ impl TerminalPane {
             return None;
         }
         let standby = self.standby_session.take()?;
-        self.standby_resume_command = None;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
-        let cmd = harness.map(|h| h.restore_command(standby.session_id.as_deref()));
+        let cmd = self.standby_resume_command.take().or_else(|| {
+            harness.map(|harness| {
+                let flags = standby
+                    .config_name
+                    .as_deref()
+                    .and_then(|role| {
+                        self.standby_cwd
+                            .as_deref()
+                            .or(self.initial_cwd.as_deref())
+                            .map(|cwd| {
+                                crate::cli::agent::resolved_session_harness_flags_in(
+                                    Some(role),
+                                    harness,
+                                    &crate::config::config_dir(),
+                                    Some(cwd),
+                                )
+                            })
+                    })
+                    .unwrap_or_default();
+                harness.restore_command_with_flags(standby.session_id.as_deref(), &flags)
+            })
+        });
         if let Some(ref resume_cmd) = cmd {
             if harness == Some(crate::cli::AgentHarness::Pi)
                 && resume_cmd == "pi"
@@ -1154,6 +1212,10 @@ impl TerminalPane {
             if self.agent_completed || self.slots.contains_key("completed") {
                 s.last_state = crate::protocol::AgentState::Completed;
             }
+            if self.exited && self.exit_status.is_some_and(|status| status.is_failure()) {
+                s.last_state = crate::protocol::AgentState::Failed;
+                s.last_detail = self.exit_status.map(|status| status.summary());
+            }
             if self.last_blocked_reason.is_some() {
                 s.last_blocked_reason = self.last_blocked_reason;
             }
@@ -1197,15 +1259,18 @@ impl TerminalPane {
         );
         let last_state = if self.agent_completed || self.slots.contains_key("completed") {
             crate::protocol::AgentState::Completed
+        } else if self.exited && self.exit_status.is_some_and(|s| s.is_failure()) {
+            crate::protocol::AgentState::Failed
         } else if let Some(a) = active_agent {
             a.state.clone()
         } else {
             crate::protocol::AgentState::Idle
         };
         let last_detail = self
-            .agent
-            .as_ref()
-            .and_then(|a| a.detail.clone())
+            .exit_status
+            .filter(|status| self.exited && status.is_failure())
+            .map(|status| status.summary())
+            .or_else(|| self.agent.as_ref().and_then(|a| a.detail.clone()))
             .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
 
         Some(crate::workspace::SavedAgentSession {
@@ -1245,6 +1310,8 @@ impl TerminalPane {
                 && self.exit_status == Some(crate::host::pane_lifecycle::ExitStatus::Code(0)))
         {
             session.last_state = crate::protocol::AgentState::Completed;
+        } else if self.exited && self.exit_status.is_some_and(|s| s.is_failure()) {
+            session.last_state = crate::protocol::AgentState::Failed;
         }
         let summary = self
             .slots
@@ -1308,7 +1375,23 @@ impl TerminalPane {
                     .and_then(|s| s.session_id.as_deref())
             })
             .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.as_deref()))?;
-        Some(harness.resume_command(session_id))
+        let flags = self
+            .standby_session
+            .as_ref()
+            .map(|session| session.config_name.as_deref())
+            .unwrap_or(self.agent_role.as_deref())
+            .and_then(|role| {
+                self.initial_cwd.as_deref().map(|cwd| {
+                    crate::cli::agent::resolved_session_harness_flags_in(
+                        Some(role),
+                        harness,
+                        &crate::config::config_dir(),
+                        Some(cwd),
+                    )
+                })
+            })
+            .unwrap_or_default();
+        Some(harness.resume_command_with_flags(session_id, &flags))
     }
 }
 

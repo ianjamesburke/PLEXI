@@ -76,6 +76,8 @@ impl PlexiApp {
                 }
                 let state = if t.agent_completed {
                     AgentState::Completed
+                } else if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
+                    AgentState::Failed
                 } else {
                     t.agent
                         .as_ref()
@@ -168,6 +170,8 @@ impl PlexiApp {
                 let report = pane.agent();
                 let state = if t.agent_completed {
                     AgentState::Completed
+                } else if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
+                    AgentState::Failed
                 } else {
                     report.map(|a| a.state.clone()).unwrap_or(AgentState::Idle)
                 };
@@ -256,8 +260,13 @@ impl PlexiApp {
                             )
                         })
                 });
-                let failure_detail = report
-                    .and_then(|a| a.detail.clone())
+                let exit_failure_detail = t
+                    .exit_status
+                    .filter(|status| t.exited && status.is_failure())
+                    .map(|status| status.summary());
+                let failure_detail = exit_failure_detail
+                    .clone()
+                    .or_else(|| report.and_then(|a| a.detail.clone()))
                     .filter(|s| !s.is_empty())
                     .or_else(|| {
                         t.standby_session
@@ -314,16 +323,18 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        report.and_then(|a| a.detail.clone()).map(|reason| {
-                            format!(
-                                "{}: {reason}",
-                                if state == AgentState::Failed {
-                                    "failed"
-                                } else {
-                                    "exited without report"
-                                }
-                            )
-                        })
+                        exit_failure_detail
+                            .or_else(|| report.and_then(|a| a.detail.clone()))
+                            .map(|reason| {
+                                format!(
+                                    "{}: {reason}",
+                                    if state == AgentState::Failed {
+                                        "failed"
+                                    } else {
+                                        "exited without report"
+                                    }
+                                )
+                            })
                     } else {
                         t.capture_tail_preview()
                     },
@@ -574,6 +585,272 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].pane_id, 215);
         assert!(history[0].fleet_dismissed);
+    }
+
+    #[test]
+    fn dismiss_all_failed_dismisses_live_pi_exit_failure_before_pane_close() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("live terminal must exist")
+            .as_terminal_mut()
+            .expect("focused fixture is a terminal");
+        terminal.agent_role = Some("build-runner".into());
+        terminal.agent_harness = Some("pi".into());
+        terminal.agent = Some(crate::protocol::PaneAgentState {
+            pane_id,
+            state: crate::protocol::AgentState::Working,
+            agent: "pi".into(),
+            detail: Some("building2".into()),
+            session_id: Some("pi-live-exit-3".into()),
+        });
+        terminal.exited = true;
+        terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+
+        let before = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(before.tasks.len(), 1);
+        assert_eq!(
+            before.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::Failed
+        );
+        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exited (3)"));
+
+        let dismissed = h.app.dismiss_fleet_agent(None, true);
+        assert_eq!(dismissed, vec![pane_id]);
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .expect("live terminal must not be closed by dismissal")
+            .as_terminal()
+            .expect("focused fixture is a terminal");
+        assert!(terminal.fleet_dismissed);
+        assert!(terminal.fleet_seen);
+        assert!(h
+            .app
+            .agents_view(crate::protocol::FleetFilter::All)
+            .tasks
+            .is_empty());
+    }
+
+    #[test]
+    fn pi_agent_lifecycle_transitions_through_working_waiting_done_failed_with_fleet_and_cli_parity() {
+        let mut h = HostHarness::new();
+        let pi_pane = h.add_focused_terminal();
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&pi_pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap();
+            t.agent_role = Some("reviewer".into());
+            t.agent_harness = Some("pi".into());
+            t.name = Some("review-bot".into());
+        }
+        let other_pane = h.add_focused_terminal();
+        h.focus_pane(other_pane);
+
+        // 1. Working: Pi starts a turn
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Working,
+            agent: "pi".into(),
+            detail: Some("analyzing diff".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: Some("agent_start".into()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_working = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_working.tasks.len(), 1);
+        let row_working = &view_working.tasks[0].rows[0];
+        assert_eq!(row_working.role, "reviewer");
+        assert_eq!(row_working.harness, "pi");
+        assert_eq!(
+            row_working.display_state,
+            crate::agent::fleet::DisplayState::Working
+        );
+        assert_eq!(view_working.tasks[0].title, "reviewer · Test");
+
+        // 2. Waiting (Blocked on question): Pi asks user for input
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Blocked,
+            agent: "pi".into(),
+            detail: Some("Which branch to compare?".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_waiting = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_waiting.tasks.len(), 1);
+        let row_waiting = &view_waiting.tasks[0].rows[0];
+        assert_eq!(
+            row_waiting.display_state,
+            crate::agent::fleet::DisplayState::Blocked
+        );
+        assert!(row_waiting.needs_you);
+        assert_eq!(
+            row_waiting.blocked_on.as_ref().map(|b| b.label()),
+            Some("Waiting for you: Which branch to compare?".into())
+        );
+        assert_eq!(
+            row_waiting.next_hint.as_deref(),
+            Some(format!("plexi pane focus {pi_pane}").as_str())
+        );
+        assert_eq!(h.app.next_blocked_agent(), Some(pi_pane));
+
+        // 3. Settling to Idle: Pi turn finishes
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Idle,
+            agent: "pi".into(),
+            detail: None,
+            session_id: Some("pi-sess-1".into()),
+            event: Some("agent_end".into()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_idle = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_idle.tasks.len(), 1);
+        let row_idle = &view_idle.tasks[0].rows[0];
+        assert_eq!(
+            row_idle.display_state,
+            crate::agent::fleet::DisplayState::Idle
+        );
+        assert_eq!(row_idle.blocked_on, None);
+
+        // 4. Failed: Pi reports failure
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Failed,
+            agent: "pi".into(),
+            detail: Some("permission denied reading /private/key".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_failed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let row_failed = &view_failed.tasks[0].rows[0];
+        assert_eq!(
+            row_failed.display_state,
+            crate::agent::fleet::DisplayState::Failed
+        );
+        assert_eq!(
+            row_failed.reason.as_deref(),
+            Some("permission denied (permission denied reading /private/key)")
+        );
+        assert!(row_failed
+            .next_hint
+            .as_deref()
+            .unwrap()
+            .contains(&format!("plexi agent fleet dismiss {pi_pane}")));
+
+        // 5. Done (Completed): Pi completes
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Completed,
+            agent: "pi".into(),
+            detail: Some("Review finished".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_done = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(
+            view_done.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::DoneUnseen
+        );
+
+        // Mark pane seen -> Idle
+        h.app.mark_agent_seen(pi_pane);
+        let view_seen = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(
+            view_seen.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::Idle
+        );
+        assert!(view_seen.tasks[0].rows[0].seen);
+    }
+
+    #[test]
+    fn pi_agent_exited_failure_preserves_failed_state_in_fleet_and_history_across_close_and_dismiss(
+    ) {
+        let mut h = HostHarness::new();
+        let pi_pane = h.add_focused_terminal();
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&pi_pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap();
+            t.agent_role = Some("build-runner".into());
+            t.agent_harness = Some("pi".into());
+            t.exited = true;
+            t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+            t.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: pi_pane,
+                state: crate::protocol::AgentState::Working,
+                agent: "pi".into(),
+                detail: Some("building2".into()),
+                session_id: Some("pi-exit-3".into()),
+            });
+            t.observed_agent = None;
+        }
+
+        // Live pane with failure exit status reflects Failed in fleet view
+        let view_live = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_live.tasks.len(), 1);
+        let row = &view_live.tasks[0].rows[0];
+        assert_eq!(row.role, "build-runner");
+        assert_eq!(row.harness, "pi");
+        assert_eq!(
+            row.display_state,
+            crate::agent::fleet::DisplayState::Failed
+        );
+        assert_eq!(row.reason.as_deref(), Some("exited (3)"));
+
+        // Close pane: record_closed_agent_pane archives it into history
+        let win_path = h.app.windows[0].path.clone();
+        let pane = h.app.windows[0].panes.remove(&pi_pane).unwrap();
+        h.app.record_closed_agent_pane(1, &win_path, &pane);
+
+        // Once closed, failure moves into older view
+        let view_closed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(view_closed.tasks.is_empty());
+        assert_eq!(view_closed.older.len(), 1);
+        assert_eq!(view_closed.older[0].pane_id, pi_pane);
+        assert_eq!(view_closed.older[0].role, "build-runner");
+        assert_eq!(view_closed.older[0].reason.as_deref(), Some("exited (3)"));
+
+        // Dismissal removes from older while preserving in history
+        let dismissed = h.app.dismiss_fleet_agent(Some(pi_pane), false);
+        assert_eq!(dismissed, vec![pi_pane]);
+
+        let view_dismissed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(view_dismissed.older.is_empty());
+        let hist = crate::workspace::load_agent_history();
+        let rec = hist
+            .iter()
+            .find(|r| r.pane_id == pi_pane)
+            .expect("archived record");
+        assert_eq!(rec.last_state, crate::protocol::AgentState::Failed);
+        assert!(rec.fleet_dismissed);
     }
 
     #[test]

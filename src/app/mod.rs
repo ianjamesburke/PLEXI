@@ -258,9 +258,12 @@ pub struct PlexiApp {
     pub(crate) conjoined_contexts: std::collections::HashMap<u64, u64>,
     pub(crate) agent_tool_children: std::collections::HashMap<u64, Option<u64>>,
     pub(crate) agent_tool_waits: Vec<agent_tools::AgentToolWait>,
+    /// Last measured new-context initialization stage timings (stint 1008).
+    pub(crate) last_new_context_timing: Option<crate::pane_ops::NewContextTiming>,
     pub(crate) pending_result_waits: Vec<crate::app::pane_wait::PendingResultWait>,
     pub(crate) pending_agent_waits: Vec<crate::app::pane_wait::PendingAgentWait>,
     pub(crate) child_result_events: HashMap<PaneId, crate::workspace::QueuedChildResult>,
+    pub(crate) child_parent_panes: HashMap<PaneId, PaneId>,
     pub(crate) pulled_child_results: std::collections::HashSet<PaneId>,
     pub(crate) delivered_child_batches: HashMap<PaneId, Vec<String>>,
     pub(crate) team_runs: Vec<team::TeamRun>,
@@ -1700,6 +1703,7 @@ impl PlexiApp {
                     pending_result_waits: Vec::new(),
                     pending_agent_waits: Vec::new(),
                     child_result_events: HashMap::new(),
+                    child_parent_panes: HashMap::new(),
                     pulled_child_results: std::collections::HashSet::new(),
                     delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
@@ -1830,6 +1834,7 @@ impl PlexiApp {
                     zoom: zoom::ZoomState::default(),
                     attention_queue: attention_queue::AttentionQueueState::default(),
                     approval_keyboard: Default::default(),
+                    last_new_context_timing: None,
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -1971,6 +1976,7 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
+            child_parent_panes: HashMap::new(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
             agent_tool_waits: Vec::new(),
@@ -2099,6 +2105,7 @@ impl PlexiApp {
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
+            last_new_context_timing: None,
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -2939,6 +2946,7 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
+            child_parent_panes: HashMap::new(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
             agent_tool_waits: Vec::new(),
@@ -3062,6 +3070,7 @@ impl PlexiApp {
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
+            last_new_context_timing: None,
         };
         // Launch paths allocate through HostModel, which otherwise starts at 1
         // in every test process. Seed a private block so a pane drop in one
@@ -4399,12 +4408,19 @@ impl eframe::App for PlexiApp {
                         .filter(|&i| !self.router.get(i).parked)
                         .collect();
                     if let Some(&router_idx) = active_order.get(n) {
+                        let target_ctx_id = self.router.get(router_idx).context_id;
                         log::info!(
-                            "SwitchContext: display_pos={} → router_idx={}",
+                            "SwitchContext: display_pos={} → router_idx={} context_id={target_ctx_id}",
                             n + 1,
                             router_idx
                         );
                         self.switch_workspace(router_idx);
+                    } else {
+                        log::info!(
+                            "SwitchContext: display_pos={} unmapped (active top-level count={})",
+                            n + 1,
+                            active_order.len()
+                        );
                     }
                 }
                 Action::NextTab => {
@@ -4444,6 +4460,15 @@ impl eframe::App for PlexiApp {
                         log::info!("context: moved down — id={ctx_id}");
                         self.mark_workspace_dirty();
                     }
+                }
+                Action::IncreasePaneFontSize => {
+                    self.adjust_active_or_remembered_pane_font_size(1.0);
+                }
+                Action::DecreasePaneFontSize => {
+                    self.adjust_active_or_remembered_pane_font_size(-1.0);
+                }
+                Action::ResetPaneFontSize => {
+                    self.reset_active_or_remembered_pane_font_size();
                 }
                 Action::UiScaleUp => self.set_ui_scale(ui_scale::step_up(self.ui_scale)),
                 Action::UiScaleDown => self.set_ui_scale(ui_scale::step_down(self.ui_scale)),
@@ -4649,6 +4674,7 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Exit,
         );
         log::info!("quit_phase: on_exit begin");
+        self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");
         // eframe stops here: it has destroyed the window but will only end the
@@ -4665,6 +4691,151 @@ fn read_display_version() -> String {
 }
 
 impl PlexiApp {
+    /// Adjust the font size of the active pane in Columns, or the remembered active pane
+    /// of the selected context while Sibling Cards or Tree Atlas is visible.
+    pub(crate) fn adjust_active_or_remembered_pane_font_size(&mut self, delta: f32) {
+        let pane_id = self.resolve_active_or_remembered_pane_id();
+        let Some(pane_id) = pane_id else {
+            return;
+        };
+        self.apply_pane_font_size_delta(pane_id, delta);
+    }
+
+    /// Reset the font size of the active pane in Columns, or the remembered active pane
+    /// of the selected context while Sibling Cards or Tree Atlas is visible.
+    pub(crate) fn reset_active_or_remembered_pane_font_size(&mut self) {
+        let pane_id = self.resolve_active_or_remembered_pane_id();
+        let Some(pane_id) = pane_id else {
+            return;
+        };
+        self.apply_pane_font_size_reset(pane_id);
+    }
+
+    pub(crate) fn resolve_active_or_remembered_pane_id(
+        &mut self,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        match self.zoom.level {
+            crate::app::zoom::ZoomLevel::Columns => {
+                let ctx = &self.windows[self.active_window];
+                let focused_tile = ctx.focused_pane?;
+                match ctx.tree.tiles.get(focused_tile) {
+                    Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                    Some(egui_tiles::Tile::Container(_)) => {
+                        let tile = ctx.find_first_pane_in(focused_tile)?;
+                        if let Some(egui_tiles::Tile::Pane(pid)) = ctx.tree.tiles.get(tile) {
+                            Some(*pid)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                }
+            }
+            crate::app::zoom::ZoomLevel::SiblingCards => {
+                let ctx_id = self
+                    .zoom
+                    .cards_focused_context
+                    .unwrap_or_else(|| self.router.active().context_id);
+                self.resolve_remembered_pane_for_context(ctx_id)
+            }
+            crate::app::zoom::ZoomLevel::TreeAtlas => {
+                let ctx_id = self
+                    .zoom
+                    .atlas_focused_context
+                    .unwrap_or_else(|| self.router.active().context_id);
+                self.resolve_remembered_pane_for_context(ctx_id)
+            }
+        }
+    }
+
+    pub(crate) fn resolve_remembered_pane_for_context(
+        &mut self,
+        ctx_id: u64,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        // 1. Ghost marker if it matches this context and pane is alive.
+        if let Some(ghost) = &self.zoom.ghost {
+            if ghost.context_id == ctx_id
+                && self.find_pane_in_any_window(ghost.pane_id).is_some()
+            {
+                self.zoom.context_last_pane.insert(ctx_id, ghost.pane_id);
+                return Some(ghost.pane_id);
+            }
+        }
+        // 2. Focus memory for this context.
+        if let Some(&last_pid) = self.zoom.context_last_pane.get(&ctx_id) {
+            if self.find_pane_in_any_window(last_pid).is_some() {
+                return Some(last_pid);
+            }
+        }
+        // 3. Fallback: pane in the window corresponding to this context.
+        if let Some(win) = self.windows.iter().find(|w| w.context_id == ctx_id) {
+            if let Some(focused) = win.focused_pane {
+                let pane_tile = match win.tree.tiles.get(focused) {
+                    Some(egui_tiles::Tile::Pane(_)) => Some(focused),
+                    Some(egui_tiles::Tile::Container(_)) => win.find_first_pane_in(focused),
+                    None => None,
+                };
+                if let Some(tile) = pane_tile {
+                    if let Some(egui_tiles::Tile::Pane(pid)) = win.tree.tiles.get(tile) {
+                        self.zoom.context_last_pane.insert(ctx_id, *pid);
+                        return Some(*pid);
+                    }
+                }
+            }
+            if let Some(&first_pid) = win.panes.keys().next() {
+                self.zoom.context_last_pane.insert(ctx_id, first_pid);
+                return Some(first_pid);
+            }
+        }
+        None
+    }
+
+    fn apply_pane_font_size_delta(
+        &mut self,
+        pane_id: crate::spatial::tiling::PaneId,
+        delta: f32,
+    ) {
+        if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
+            if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
+                if let Some(t) = pane.as_terminal_mut() {
+                    let old = t.font_size;
+                    t.font_size = (t.font_size + delta).clamp(8.0, 32.0);
+                    log::info!(
+                        "pane font size: pane_id={pane_id} terminal {old:.1} -> {:.1}",
+                        t.font_size
+                    );
+                } else if let Some(a) = pane.as_app_mut() {
+                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                        app.adjust_font_size(delta);
+                        log::info!(
+                            "pane font size: pane_id={pane_id} builtin app delta={delta}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_pane_font_size_reset(&mut self, pane_id: crate::spatial::tiling::PaneId) {
+        if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
+            if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
+                if let Some(t) = pane.as_terminal_mut() {
+                    let old = t.font_size;
+                    t.font_size = self.config.font_size.unwrap_or(14.0).clamp(8.0, 32.0);
+                    log::info!(
+                        "pane font size reset: pane_id={pane_id} terminal {old:.1} -> {:.1}",
+                        t.font_size
+                    );
+                } else if let Some(a) = pane.as_app_mut() {
+                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                        app.reset_font_size();
+                        log::info!("pane font size reset: pane_id={pane_id} builtin app");
+                    }
+                }
+            }
+        }
+    }
+
     /// True while a drag/resize gesture appears active: the pointer is down
     /// and moving, the screen rect changed since last frame (window resize),
     /// or either signal fired within the last 300ms (stint 0731). The
@@ -4925,6 +5096,7 @@ impl PlexiApp {
         self.notes_picker_entries = entries;
         if reset_query {
             self.notes_picker_selected = 0;
+            self.notes_picker_last_drawn_selected = None;
             self.notes_picker_query.clear();
             self.notes_picker_pending_delete = None;
             self.notes_picker_status = None;
@@ -5622,8 +5794,16 @@ pub(crate) fn restore_workspace(
                         if should_auto_resume {
                             if let Some(harness) = crate::cli::AgentHarness::parse(&session.harness)
                             {
-                                let resume_cmd =
-                                    harness.restore_command(session.session_id.as_deref());
+                                let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                    session.config_name.as_deref(),
+                                    harness,
+                                    collaborators.profile_dir,
+                                    cwd.as_deref(),
+                                );
+                                let resume_cmd = harness.restore_command_with_flags(
+                                    session.session_id.as_deref(),
+                                    &flags,
+                                );
                                 if harness == crate::cli::AgentHarness::Pi
                                     && resume_cmd == harness.adapter().binary
                                     && session.session_id.is_some()
@@ -5653,7 +5833,16 @@ pub(crate) fn restore_workspace(
                         .then(|| {
                             effective_session.as_ref().and_then(|session| {
                                 crate::cli::AgentHarness::parse(&session.harness).map(|harness| {
-                                    harness.restore_command(session.session_id.as_deref())
+                                    let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                        session.config_name.as_deref(),
+                                        harness,
+                                        collaborators.profile_dir,
+                                        cwd.as_deref(),
+                                    );
+                                    harness.restore_command_with_flags(
+                                        session.session_id.as_deref(),
+                                        &flags,
+                                    )
                                 })
                             })
                         })

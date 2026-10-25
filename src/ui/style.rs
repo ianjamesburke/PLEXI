@@ -80,11 +80,9 @@ pub fn radius_fit(rect: egui::Rect) -> CornerRadius {
 
 /// Edge of the square pane-header provenance icon (who spawned the pane).
 pub const PROVENANCE_ICON_SIZE: f32 = 14.0;
-/// Attention chip (path bar, right edge): minimum slot width and horizontal text padding.
-pub const ATTENTION_CHIP_MIN_W: f32 = 64.0;
-pub const ATTENTION_CHIP_PAD_X: f32 = 10.0;
 
 // ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
+pub const TOOLBAR_H: f32 = 28.0;
 pub const PATH_BAR_H: f32 = 34.0;
 #[allow(dead_code)]
 pub const STRIP_GAP: f32 = 10.0;
@@ -117,7 +115,12 @@ pub const GALLERY_NARROW_W: f32 = 320.0;
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTES_PICKER: f32 = 1040.0; // Notes picker — list left, wrapped preview right.
-pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.4; // Share of the notes picker given to the list half.
+pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.5; // Share of the notes picker given to the list half.
+/// The Notes picker uses most of a host canvas without becoming a full-screen
+/// workspace. Its list and preview fill the remainder after search, status,
+/// and shortcut chrome.
+pub const NOTES_PICKER_MODAL_HEIGHT_FRACTION: f32 = 0.8;
+pub const NOTES_PICKER_BODY_CHROME_HEIGHT: f32 = 140.0;
 /// Fixed two-line caption slot between the notes picker's body and its hint bar
 /// so confirm prompts and errors never resize or shift the modal.
 pub const NOTES_PICKER_STATUS_HEIGHT: f32 = (TEXT_CAPTION + SPACE_XS) * 2.0;

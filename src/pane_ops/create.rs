@@ -32,6 +32,27 @@ pub(crate) struct PaneContextEnv {
     pub depth: u32,
 }
 
+/// Derive a placeholder header title for a new terminal pane from its context and cwd.
+pub(crate) fn derive_context_placeholder_title(
+    context_name: &str,
+    cwd: Option<&Path>,
+    context_root: Option<&Path>,
+) -> Option<String> {
+    let trimmed = context_name.trim();
+    if !trimmed.is_empty() {
+        return Some(trimmed.to_string());
+    }
+    if let Some(cwd) = cwd.or(context_root) {
+        if let Some(name) = cwd.file_name().and_then(|n| n.to_str()) {
+            let name_trimmed = name.trim();
+            if !name_trimmed.is_empty() {
+                return Some(name_trimmed.to_string());
+            }
+        }
+    }
+    Some("Terminal".to_string())
+}
+
 /// Shell and environment options for spawning a terminal pane.
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalSpawnOptions<'a> {
@@ -1901,6 +1922,12 @@ impl PlexiApp {
             error
         })
         .ok();
+        if let Some(ref posture) = pane.agent_permission_posture {
+            log::info!(
+                "agent_spawn: posture snapshot for role={role} pane={new_id}: default={}",
+                posture.default_posture.as_str()
+            );
+        }
         pane.name = Some(role.to_string());
         pane.name_locked = true;
         pane.agent = Some(crate::protocol::PaneAgentState {

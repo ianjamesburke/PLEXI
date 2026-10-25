@@ -27,7 +27,7 @@ mod file_browser;
 mod host;
 mod mcp_http;
 mod media;
-mod notes;
+pub mod notes;
 mod overlays;
 mod pane_ops;
 mod platform;
@@ -41,6 +41,7 @@ mod rpc;
 mod scenes;
 mod search;
 mod spatial;
+pub(crate) mod strip;
 #[cfg(test)]
 mod testing;
 mod ui;
@@ -610,6 +611,7 @@ fn main() -> eframe::Result {
                             display_name,
                             global,
                             cwd,
+                            flags,
                         } => cli::trace::exit(cli::agent_create_cli(
                             &name,
                             &harness_cli,
@@ -623,7 +625,11 @@ fn main() -> eframe::Result {
                             display_name.as_deref(),
                             global,
                             cwd.as_deref(),
+                            &flags,
                         )),
+                        AgentCmd::Flags { target, cwd } => {
+                            cli::trace::exit(cli::agent_flags_cli(target.as_deref(), cwd.as_deref(), json))
+                        }
                         AgentCmd::List { cwd } => {
                             cli::trace::exit(cli::agent_list_cli(cwd.as_deref(), json))
                         }
@@ -1175,6 +1181,9 @@ fn main() -> eframe::Result {
                         HostCmd::Screenshot { pane, output } => {
                             let pane = resolve_opt_pane(pane.as_ref());
                             cli::trace::exit(cli::host_screenshot_cli(pane, output.as_deref()))
+                        }
+                        HostCmd::Key { key } => {
+                            cli::trace::exit(cli::host_key_cli(&key))
                         }
                     },
                     Commands::Notify { cmd, post } => {

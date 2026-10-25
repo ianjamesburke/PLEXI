@@ -27,6 +27,9 @@ pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;
 pub(crate) use workspace::ChildContextSpec;
+pub(crate) use workspace::NewContextTiming;
+#[cfg(test)]
+pub(crate) use workspace::NewContextKind;
 
 /// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
 /// logic as `split_focused`. Call before `TerminalPane::new`.
