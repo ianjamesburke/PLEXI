@@ -1015,7 +1015,7 @@ impl PlexiApp {
 
     /// Count of visible notifications for the active context (context-scoped
     /// from active + all globals). Used for the toolbar badge.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn visible_notification_count(&self) -> usize {
         self.pending_notifications
             .iter()

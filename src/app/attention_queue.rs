@@ -2293,21 +2293,6 @@ pub(crate) fn format_attention_mailbox(
     }
 }
 
-/// Format the compact count prefix for the top-bar Attention Queue pill
-/// without repeating the count when `asks == total`.
-#[allow(dead_code)]
-pub(crate) fn format_attention_pill_counts(asks: usize, total: usize) -> String {
-    if total == 0 {
-        "Queue calm".to_string()
-    } else if asks == 0 {
-        format!("{total}")
-    } else if asks >= total {
-        format!("◆{asks}")
-    } else {
-        format!("◆{asks} · {total}")
-    }
-}
-
 /// One decision-overlay option row body: index, label, and (when recommended)
 /// an inline right-aligned tag. Every row is exactly one body-text line tall;
 /// the label ellipsizes to the width the tag leaves, so the tag never grows
@@ -2619,17 +2604,15 @@ mod tests {
     }
 
     #[test]
-    fn attention_queue_header_and_pill_never_duplicate_counts() {
+    fn attention_queue_header_never_duplicate_counts() {
         // total == 0
         let h_zero = format_attention_queue_header_count(0, 0);
         assert_eq!(h_zero, "0 items");
-        assert_eq!(format_attention_pill_counts(0, 0), "Queue calm");
 
         // asks == 0, total > 0
         let h_no_asks = format_attention_queue_header_count(0, 3);
         assert_eq!(h_no_asks, "3 items");
         assert!(!h_no_asks.contains('0'), "asks==0 must not print ◆0: {h_no_asks}");
-        assert_eq!(format_attention_pill_counts(0, 3), "3");
 
         // asks == total (must show the number 3 only once!)
         let h_all_asks = format_attention_queue_header_count(3, 3);
@@ -2639,9 +2622,6 @@ mod tests {
             1,
             "asks==total must print the count once: {h_all_asks}"
         );
-        let p_all_asks = format_attention_pill_counts(3, 3);
-        assert_eq!(p_all_asks, "◆3");
-        assert_eq!(p_all_asks.matches('3').count(), 1);
 
         // singular asks == total == 1
         assert_eq!(format_attention_queue_header_count(1, 1), "◆1 item");
@@ -2649,7 +2629,6 @@ mod tests {
         // 0 < asks < total
         let h_mixed = format_attention_queue_header_count(2, 5);
         assert_eq!(h_mixed, "◆2 · 5 items");
-        assert_eq!(format_attention_pill_counts(2, 5), "◆2 · 5");
     }
 
     #[test]

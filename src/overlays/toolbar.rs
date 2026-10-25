@@ -119,6 +119,7 @@ impl PlexiApp {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(egui::Id::new("attention_chip_rect"), mailbox.rect);
                     d.insert_temp(egui::Id::new("attention_mailbox_rect"), mailbox.rect);
+                    d.insert_temp(egui::Id::new("attention_mailbox_color"), color);
                 });
                 if mailbox.clicked() {
                     log::info!(
