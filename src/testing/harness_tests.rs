@@ -15184,6 +15184,162 @@ mod strip_navigation_frame_tests {
             "scrolled strip must have clipped columns"
         );
     }
+
+    #[test]
+    fn slow_shell_paints_stable_placeholder_chrome_and_preserves_geometry() {
+        let mut h = HostHarness::new();
+        let app_pane = h.add_test_pane();
+        h.focus_pane(app_pane);
+        h.run_frames(1);
+
+        let ctx_idx = h.app.active_window;
+        h.app.router.get_mut(ctx_idx).name = crate::host::context::ContextName::custom("alpha-cleanup");
+
+        // Split focused to create a new terminal pane.
+        // Before shell integration arrives, the shell is starting up (slow-shell scenario).
+        let new_pane_id = h
+            .app
+            .split_focused(true, None, false, false, None)
+            .expect("split_focused should succeed");
+
+        // Run exactly 1 frame — first paint of the new terminal before any shell title arrives.
+        h.run_frames(1);
+
+        // 1. Verify stable chrome on first frame
+        let layout_frame1 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+            .expect("first frame must render stable pane chrome / tab bar layout");
+        assert_eq!(
+            layout_frame1.elided_label.as_deref(),
+            Some("alpha-cleanup"),
+            "first frame must paint context-derived placeholder title in chrome"
+        );
+        let label_rect_frame1 = layout_frame1.label_rect.expect("label rect must exist on frame 1");
+
+        // Verify provenance icon exists on first frame
+        let prov_rect_frame1 = h.app.ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+        }).expect("provenance icon rect must exist on first frame");
+
+        // Verify correct input ownership on first frame
+        assert_eq!(
+            h.app.input_owner(&h.app.ctx),
+            crate::app::input_owner::InputOwner::Pane(new_pane_id),
+            "new terminal must have input ownership on first frame"
+        );
+
+        // Capture screenshot of first paint with slow shell
+        let tmp_dir = std::env::temp_dir();
+        let png_path = tmp_dir.join("slow_shell_stable_chrome.png");
+        h.render_png(&png_path).expect("render_png must succeed");
+        assert!(png_path.exists(), "PNG screenshot must be written to disk");
+
+        // 2. Deliver delayed shell integration metadata (OSC 2 Title)
+        h.app
+            .pty_event_tx
+            .send((
+                new_pane_id,
+                egui_term::PtyEvent::Title("zsh — ~/work".to_string()),
+            ))
+            .expect("send delayed shell title");
+        h.run_frames(1);
+
+        // Verify title updated
+        let layout_frame2 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+            .expect("chrome layout must persist after delayed metadata arrives");
+        assert_eq!(
+            layout_frame2.elided_label.as_deref(),
+            Some("zsh — ~/work"),
+            "delayed metadata must replace title without error"
+        );
+
+        // Verify NO layout movement / geometry change
+        let prov_rect_frame2 = h.app.ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+        }).expect("provenance icon rect must exist after title update");
+        assert_eq!(
+            prov_rect_frame1, prov_rect_frame2,
+            "provenance icon position must remain identical across shell integration update"
+        );
+
+        let label_rect_frame2 = layout_frame2.label_rect.expect("label rect must exist on frame 2");
+        assert_eq!(
+            label_rect_frame1.center().y, label_rect_frame2.center().y,
+            "chrome header baseline/center must remain identical across shell integration update (zero layout movement)"
+        );
+    }
+
+    #[test]
+    fn terminal_spawn_failure_leaves_no_ghost_pane() {
+        let mut h = HostHarness::new();
+        let existing_pane = h.add_test_pane();
+        let context_id = h.app.router.active().context_id;
+        h.app
+            .set_context_columns(context_id, vec![vec![existing_pane]]);
+        h.app.focus_pane_in_strip(existing_pane);
+        h.run_frames(1);
+
+        let window = &h.app.windows[0];
+        let initial_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
+        let initial_tree_panes: std::collections::BTreeSet<_> = window
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(_, tile)| match tile {
+                egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+            .collect();
+        let initial_tile_count = window.tree.tiles.len();
+        let initial_focus = window.focused_pane;
+        let initial_strip = h.app.zoom.strips.get(&context_id).cloned();
+
+        // `split_focused` is the production terminal-creation path. Force its
+        // real `TerminalPane::new` call to fail without sharing a process env
+        // mutation with concurrent tests.
+        let _shell_override = crate::host::shell::set_test_shell_override(
+            "/nonexistent/plexi-test-shell-that-cannot-spawn",
+        );
+        assert!(
+            h.app
+                .split_focused(true, None, false, false, None)
+                .is_none(),
+            "the real split path must report terminal spawn failure"
+        );
+
+        let window = &h.app.windows[0];
+        let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
+        let final_tree_panes: std::collections::BTreeSet<_> = window
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(_, tile)| match tile {
+                egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            final_panes, initial_panes,
+            "failed split must not add a pane"
+        );
+        assert_eq!(
+            final_tree_panes, initial_tree_panes,
+            "failed split must not add a ghost pane tile"
+        );
+        assert_eq!(
+            window.tree.tiles.len(),
+            initial_tile_count,
+            "failed split must leave the tile tree unchanged"
+        );
+        assert_eq!(
+            window.focused_pane, initial_focus,
+            "failed split must retain focus on the existing pane"
+        );
+        assert_eq!(
+            h.app.zoom.strips.get(&context_id),
+            initial_strip.as_ref(),
+            "failed split must leave the authoritative strip unchanged"
+        );
+    }
 }
 
 #[test]

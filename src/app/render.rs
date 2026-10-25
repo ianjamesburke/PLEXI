@@ -475,7 +475,7 @@ impl PlexiApp {
                                         _ => crate::spatial::tiling::PaneKind::Terminal,
                                     };
                                     let title = pane_ref.and_then(|p| {
-                                        p.as_terminal().and_then(|t| t.name.clone())
+                                        p.as_terminal().and_then(|t| t.display_name().map(str::to_string))
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
@@ -706,14 +706,14 @@ impl PlexiApp {
                 let mut pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
-                    .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
+                    .filter_map(|(&id, p)| p.as_terminal()?.display_name().map(|n| (id, n.to_string())))
                     .collect();
                 let tab_labels: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
                     .map(|(&id, p)| {
-                        let label = if let Some(name) = p.as_terminal().and_then(|t| t.name.as_ref()) {
-                            name.clone()
+                        let label = if let Some(name) = p.as_terminal().and_then(|t| t.display_name()) {
+                            name.to_string()
                         } else {
                             match p {
                                 crate::host::pane::Pane::Terminal(_) => "Terminal".to_string(),
