@@ -13,6 +13,8 @@ import {
   formatStatusText,
   formatWidgetLines,
   createPiPlexiExtension,
+  buildContainerContext,
+  PLEXI_CONTAINER_SECTION,
 } from "../index.ts";
 
 function makeFakePiHarness() {
@@ -654,4 +656,88 @@ test("session start synthesizes agent tools from the live pane role", async () =
   assert.equal(tools.has("agent_message"), true);
   assert.ok(calls.some(args => args.join(" ") === "agent show lead --json"));
   await pi.emit("session_shutdown", {}, {});
+});
+
+test("buildContainerContext describes the pane and the native surfaces", () => {
+  const attached = buildContainerContext({
+    status: "attached",
+    attached: true,
+    paneId: 7,
+    contextId: 10,
+    channel: "alpha",
+    plexiBin: "plexi",
+    env: {},
+  });
+  assert.match(attached, /pane #7/);
+  assert.match(attached, /channel: alpha/);
+  assert.match(attached, /plexi app open text-editor/);
+  assert.match(attached, /image-viewer/);
+  assert.match(attached, /video-player/);
+  assert.match(attached, /audio-player/);
+  assert.match(attached, /file_browser/);
+
+  assert.equal(
+    buildContainerContext({
+      status: "detached_outside_plexi",
+      attached: false,
+      channel: "stable",
+      plexiBin: "plexi",
+      env: {},
+    }),
+    undefined,
+  );
+});
+
+test("an attached session injects the Plexi container section into the system prompt", async () => {
+  const { pi } = makeFakePiHarness();
+  const runner = async () => ({ exitCode: 0, stdout: "[]", stderr: "" });
+  createPiPlexiExtension({
+    env: {
+      PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock",
+      PLEXI_PANE_ID: "7",
+      PLEXI_CONTEXT_ID: "10",
+      PLEXI_CHANNEL: "alpha",
+    },
+    checkSocketExists: () => true,
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-container-attached-")),
+  })(pi);
+
+  const event = { systemPromptOptions: { sections: {} } };
+  await pi.emit("before_agent_start", event, {});
+  const text = event.systemPromptOptions.sections[PLEXI_CONTAINER_SECTION];
+  assert.equal(typeof text, "string");
+  assert.match(text, /pane #7/);
+  assert.match(text, /plexi app open text-editor/);
+});
+
+test("a detached session injects no Plexi container section", async () => {
+  const { pi } = makeFakePiHarness();
+  const runner = async () => ({ exitCode: 0, stdout: "[]", stderr: "" });
+  createPiPlexiExtension({
+    env: {},
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-container-detached-")),
+  })(pi);
+
+  const event = { systemPromptOptions: { sections: {} } };
+  await pi.emit("before_agent_start", event, {});
+  assert.deepEqual(event.systemPromptOptions.sections, {});
+});
+
+test("before_agent_start tolerates a prompt event with no system prompt options", async () => {
+  const { pi } = makeFakePiHarness();
+  const runner = async () => ({ exitCode: 0, stdout: "[]", stderr: "" });
+  createPiPlexiExtension({
+    env: {
+      PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock",
+      PLEXI_PANE_ID: "7",
+      PLEXI_CONTEXT_ID: "10",
+      PLEXI_CHANNEL: "alpha",
+    },
+    checkSocketExists: () => true,
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-container-noopts-")),
+  })(pi);
+  await pi.emit("before_agent_start", {}, {});
 });

@@ -17,6 +17,7 @@ First-party [Pi coding agent](https://github.com/earendil-works/pi) package for 
   - `plexi_host_screenshot` — capture a PNG screenshot of the Plexi host window or a specific pane (`plexi host screenshot`).
   - `plexi_run` — list merged workspace and global commands (`plexi run --json`) or execute a named command (`plexi run <name> [-- <args>...]`).
 - **Lifecycle bridge & legacy hook migration** (`src/lifecycle.ts`): reports `working`, `blocked`, and `idle` states to the host and automatically migrates legacy `~/.pi/agent/extensions/plexi-agent-state.ts` hooks to `.plexi-hook.bak` so lifecycle events are never reported twice.
+- **Container awareness** (`src/container-context.ts`): when attached to a live pane, every run injects a short `<plexi_container>` system-prompt section naming the pane and channel and pointing at the native surfaces (`plexi app open text-editor|image-viewer|video-player|audio-player|file_browser`), so the model reaches for Plexi instead of an OS app or external editor. Detached sessions inject nothing and read as plain Pi.
 
 ## Loading from a checkout
 

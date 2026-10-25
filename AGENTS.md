@@ -2,6 +2,8 @@
 
 `CLAUDE.md` is a symlink to this file. Cross-cutting rules for all agents. Domain-specific contracts live in each directory's own `AGENTS.md`.
 
+Plexi is an agent operating system. Judge every change by whether it moves an agent closer to operating the machine *through* Plexi: native surfaces instead of OS apps, brokered capability instead of raw access, structured state instead of scraped output. An agent inside a pane reaches for the Plexi surface first and treats the OS as the fallback.
+
 Before editing any file, read the `AGENTS.md` in its directory if one exists. Child rules add to this file; they never override it.
 
 ## Source of Truth

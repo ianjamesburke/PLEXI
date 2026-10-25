@@ -107,6 +107,23 @@ Completed continuations must not repeat their mutation. For app-to-app data,
 use event streams or typed binary pipes. `pane send` is for driving a terminal
 a person is watching.
 
+## Open files and native surfaces
+
+You run inside a pane, so prefer a Plexi surface over an OS app or an external
+editor. Built-in pane types open any file:
+
+```bash
+plexi app open text-editor <path>     # text, markdown, code (.md gets live preview)
+plexi app open image-viewer <path>
+plexi app open video-player <path>
+plexi app open audio-player <path>
+plexi app open file_browser           # no path: browses the pane's directory
+```
+
+Built-in pane types do not appear in `plexi app list` (that lists installed
+apps only), and `text-editor` with no path opens a fresh scratch note. Read an
+open app pane with `plexi pane state <id>`; `pane capture` is terminal-only.
+
 ## Inspect the host and manage capacity
 
 Use `host status --json` to check readiness after a startup timeout before
