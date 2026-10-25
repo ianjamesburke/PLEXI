@@ -3232,6 +3232,28 @@ impl PlexiApp {
                     self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
+            crate::protocol::AppRequest::HostKey { key, response_file } => {
+                log::info!(
+                    "pane_ipc: kind=host_key key={key:?} key_chars={}",
+                    key.chars().count()
+                );
+                match super::key_str_to_egui_raw_input(key) {
+                    Some(raw) => {
+                        let modifiers = raw.modifiers;
+                        self.ctx.input_mut(|input| {
+                            input.modifiers = modifiers;
+                            input.events.extend(raw.events);
+                        });
+                        self.ctx.request_repaint_of(egui::ViewportId::ROOT);
+                        write_json_response(response_file, serde_json::json!({"ok": true}));
+                    }
+                    None => {
+                        let error = format!("key {key:?} does not map to a host key event");
+                        log::warn!("pane_ipc: host_key: {error}");
+                        write_json_response(response_file, serde_json::json!({"error": error}));
+                    }
+                }
+            }
             crate::protocol::AppRequest::GetPaneState {
                 pane_id,
                 response_file,

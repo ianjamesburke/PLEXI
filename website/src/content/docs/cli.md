@@ -2541,6 +2541,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `log` | Write one info-level marker line into the running host's channel log |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
+| `key` | Inject a key or chord into the host-level keyboard path |
 
 ### `plexi host restart`
 
@@ -2599,3 +2600,13 @@ Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
 |---|---|---|---|
 | `--pane` | string | no | Crop the capture to this pane id or name's current screen rect |
 | `--output` / `-o` | string | no | Where to write the PNG (default: <profile>/screenshots/<timestamp>.png) |
+
+### `plexi host key`
+
+Inject a key or chord into the host-level keyboard path.
+
+This is a validation seam for host shortcuts: it does not send bytes to a focused pane. Example: `plexi-pr-2906 host key cmd+1`.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<key>` | string | yes | Single key, named key, or chord such as `cmd+1` or `cmd+shift+2` |

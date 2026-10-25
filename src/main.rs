@@ -1176,6 +1176,9 @@ fn main() -> eframe::Result {
                             let pane = resolve_opt_pane(pane.as_ref());
                             cli::trace::exit(cli::host_screenshot_cli(pane, output.as_deref()))
                         }
+                        HostCmd::Key { key } => {
+                            cli::trace::exit(cli::host_key_cli(&key))
+                        }
                     },
                     Commands::Notify { cmd, post } => {
                         // The caller's own identity, stamped by the pane env.

@@ -1380,6 +1380,42 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
     }
 }
 
+/// `plexi host key <key>` — inject a synthetic key into the host-level input
+/// path. This deliberately targets the host rather than a pane, so a chord
+/// such as `cmd+1` exercises numbered context switching without writing bytes
+/// into a focused terminal's PTY.
+pub fn host_key_cli(key: &str) -> i32 {
+    log::info!(
+        "host_key:cli: key={key:?} key_chars={}",
+        key.chars().count()
+    );
+    let content = match super::request(
+        serde_json::json!({
+            "type": "host_key",
+            "key": key,
+        }),
+        "host-key-response",
+        "host key",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(reply) if reply.get("error").is_some() => {
+            eprintln!(
+                "error: {}",
+                reply["error"].as_str().unwrap_or("host key failed")
+            );
+            1
+        }
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("error: malformed host key response: {error}");
+            1
+        }
+    }
+}
+
 /// `plexi host screenshot [--pane <id>] [--output <path>]` — capture the
 /// live host window (optionally cropped to one pane) through the real
 /// render pipeline. Prints the written PNG path on success.
