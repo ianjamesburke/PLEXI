@@ -86,7 +86,7 @@ impl HostSnapshot {
             .map(|(id, pane)| {
                 let title = match pane {
                     Pane::App(p) => p.name.clone(),
-                    Pane::Terminal(_) => "Terminal".to_string(),
+                    Pane::Terminal(p) => p.display_name().unwrap_or("Terminal").to_string(),
                     Pane::Portal(p) => format!("Portal({})", p.target_context_id),
                 };
                 (*id, title)
@@ -179,6 +179,10 @@ pub struct HostHarness {
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,
+    /// Full output from the most recently completed frame, retained for offscreen render.
+    pub last_full_output: Option<egui::FullOutput>,
+    /// Offscreen renderer for headless screenshots.
+    renderer: egui_kittest::LazyRenderer,
     /// Keeps the per-test tempdir alive for the harness lifetime when owned; auto-deletes on drop.
     _profile_dir: Option<tempfile::TempDir>,
     /// Profile directory backing this harness (`workspaces/default.json`, `config.toml`, etc.).
@@ -231,6 +235,8 @@ impl HostHarness {
             next_pane_id: reserve_pane_id_block(),
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
+            last_full_output: None,
+            renderer: egui_kittest::LazyRenderer::default(),
             _profile_dir: Some(profile_dir),
             profile_path,
             _workspace_dir: workspace_dir,
@@ -288,6 +294,8 @@ impl HostHarness {
             next_pane_id: reserve_pane_id_block(),
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
+            last_full_output: None,
+            renderer: egui_kittest::LazyRenderer::default(),
             _profile_dir: None,
             profile_path,
             _workspace_dir: workspace_dir,
@@ -493,7 +501,10 @@ impl HostHarness {
             app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
             app.ui(ui, &mut eframe::Frame::_new_kittest());
         });
-        self.last_platform_output = full_output.platform_output;
+        use egui_kittest::TestRenderer;
+        self.renderer.handle_delta(&full_output.textures_delta);
+        self.last_platform_output = full_output.platform_output.clone();
+        self.last_full_output = Some(full_output);
         self
     }
 
@@ -638,6 +649,17 @@ impl HostHarness {
             }],
             ..Default::default()
         })
+    }
+
+    /// Render the current frame's output to a PNG file using wgpu offscreen rendering.
+    pub fn render_png(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let full_output = self
+            .last_full_output
+            .as_ref()
+            .ok_or_else(|| "render_png: no frame rendered yet".to_string())?;
+        use egui_kittest::TestRenderer;
+        let img = self.renderer.render(&self.ctx, full_output)?;
+        img.save(path.as_ref()).map_err(|e| format!("failed to save PNG: {e}"))
     }
 
     /// Inject a `AppRequest` directly into the pane_ipc channel.

@@ -762,6 +762,8 @@ pub struct TerminalPane {
     /// retention can distinguish exit 0 from non-zero/signal failures.
     pub(crate) exit_status: Option<crate::host::pane_lifecycle::ExitStatus>,
     pub name: Option<String>,
+    /// Context-derived placeholder title displayed before shell integration reports a title.
+    pub placeholder_title: Option<String>,
     /// When true, the name was set explicitly by the user and OSC title sequences must not overwrite it.
     pub name_locked: bool,
     pub font_size: f32,
@@ -883,6 +885,26 @@ impl TerminalPane {
             || agent_role.is_some();
         let last_resumed_command = settings.env.get("PLEXI_RESUME_COMMAND").cloned();
         let initial_cwd = settings.working_directory.clone();
+        let placeholder_title = if settings.env.contains_key("PLEXI_CONTEXT_NAME") {
+            let context_name = settings
+                .env
+                .get("PLEXI_CONTEXT_NAME")
+                .cloned()
+                .unwrap_or_default();
+            let context_root = settings.env.get("PLEXI_CONTEXT_ROOT").map(PathBuf::from);
+            crate::pane_ops::create::derive_context_placeholder_title(
+                &context_name,
+                settings.working_directory.as_deref(),
+                context_root.as_deref(),
+            )
+        } else {
+            None
+        };
+        if let Some(ref placeholder) = placeholder_title {
+            log::info!(
+                "terminal_pane: initialized stable pane chrome for pane_id={id} placeholder_title={placeholder:?} provenance={spawned_by:?}"
+            );
+        }
         #[cfg(test)]
         let spawn_env = settings.env.clone();
         let program_status = crate::program_status::SharedProgramStatus::default();
@@ -904,6 +926,7 @@ impl TerminalPane {
             exited: false,
             exit_status: None,
             name: None,
+            placeholder_title,
             name_locked: false,
             font_size: default_font_size,
             ephemeral,
@@ -944,6 +967,12 @@ impl TerminalPane {
             #[cfg(test)]
             spawn_env,
         })
+    }
+
+    /// Return the active display name for pane chrome: the explicit or shell-reported
+    /// title when present, falling back to the context-derived placeholder title.
+    pub fn display_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.placeholder_title.as_deref())
     }
 
     /// True if this terminal pane is or was an agent pane (configured harness/role,

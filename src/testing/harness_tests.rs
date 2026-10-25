@@ -15184,6 +15184,113 @@ mod strip_navigation_frame_tests {
             "scrolled strip must have clipped columns"
         );
     }
+
+    #[test]
+    fn slow_shell_paints_stable_placeholder_chrome_and_preserves_geometry() {
+        let mut h = HostHarness::new();
+        let app_pane = h.add_test_pane();
+        h.focus_pane(app_pane);
+        h.run_frames(1);
+
+        let ctx_idx = h.app.active_window;
+        h.app.router.get_mut(ctx_idx).name = crate::host::context::ContextName::custom("alpha-cleanup");
+
+        // Split focused to create a new terminal pane.
+        // Before shell integration arrives, the shell is starting up (slow-shell scenario).
+        let new_pane_id = h
+            .app
+            .split_focused(true, None, false, false, None)
+            .expect("split_focused should succeed");
+
+        // Run exactly 1 frame — first paint of the new terminal before any shell title arrives.
+        h.run_frames(1);
+
+        // 1. Verify stable chrome on first frame
+        let layout_frame1 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+            .expect("first frame must render stable pane chrome / tab bar layout");
+        assert_eq!(
+            layout_frame1.elided_label.as_deref(),
+            Some("alpha-cleanup"),
+            "first frame must paint context-derived placeholder title in chrome"
+        );
+        let label_rect_frame1 = layout_frame1.label_rect.expect("label rect must exist on frame 1");
+
+        // Verify provenance icon exists on first frame
+        let prov_rect_frame1 = h.app.ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+        }).expect("provenance icon rect must exist on first frame");
+
+        // Verify correct input ownership on first frame
+        assert_eq!(
+            h.app.input_owner(&h.app.ctx),
+            crate::app::input_owner::InputOwner::Pane(new_pane_id),
+            "new terminal must have input ownership on first frame"
+        );
+
+        // Capture screenshot of first paint with slow shell
+        let tmp_dir = std::env::temp_dir();
+        let png_path = tmp_dir.join("slow_shell_stable_chrome.png");
+        h.render_png(&png_path).expect("render_png must succeed");
+        assert!(png_path.exists(), "PNG screenshot must be written to disk");
+
+        // 2. Deliver delayed shell integration metadata (OSC 2 Title)
+        h.app
+            .pty_event_tx
+            .send((
+                new_pane_id,
+                egui_term::PtyEvent::Title("zsh — ~/work".to_string()),
+            ))
+            .expect("send delayed shell title");
+        h.run_frames(1);
+
+        // Verify title updated
+        let layout_frame2 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+            .expect("chrome layout must persist after delayed metadata arrives");
+        assert_eq!(
+            layout_frame2.elided_label.as_deref(),
+            Some("zsh — ~/work"),
+            "delayed metadata must replace title without error"
+        );
+
+        // Verify NO layout movement / geometry change
+        let prov_rect_frame2 = h.app.ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+        }).expect("provenance icon rect must exist after title update");
+        assert_eq!(
+            prov_rect_frame1, prov_rect_frame2,
+            "provenance icon position must remain identical across shell integration update"
+        );
+
+        let label_rect_frame2 = layout_frame2.label_rect.expect("label rect must exist on frame 2");
+        assert_eq!(
+            label_rect_frame1.center().y, label_rect_frame2.center().y,
+            "chrome header baseline/center must remain identical across shell integration update (zero layout movement)"
+        );
+    }
+
+    #[test]
+    fn terminal_spawn_failure_leaves_no_ghost_pane() {
+        let h = HostHarness::new();
+        let initial_panes = h.app.windows[0].panes.len();
+        let initial_tiles = h.app.windows[0].tree.tiles.len();
+
+        let settings = egui_term::BackendSettings {
+            shell: "/nonexistent/binary/path/that/cannot/exist".into(),
+            ..Default::default()
+        };
+        let failed_pane = crate::host::pane::TerminalPane::new(
+            9999,
+            h.app.ctx.clone(),
+            h.app.pty_event_tx.clone(),
+            settings,
+            14.0,
+        );
+        assert!(failed_pane.is_none(), "TerminalPane::new with invalid binary must fail");
+
+        // Verify window state was not touched
+        assert_eq!(h.app.windows[0].panes.len(), initial_panes);
+        assert_eq!(h.app.windows[0].tree.tiles.len(), initial_tiles);
+    }
 }
 
 #[test]

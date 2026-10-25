@@ -5976,14 +5976,16 @@ impl PlexiApp {
                                                 Some(curr) => !is_empty && curr == title_trimmed,
                                             };
                                             if !already_matches {
+                                                let old_placeholder = t.placeholder_title.clone();
                                                 t.name = if is_empty {
                                                     None
                                                 } else {
                                                     Some(title_trimmed.to_string())
                                                 };
-                                                log::debug!(
-                                                    "osc_title: pane {id} name set to {:?}",
-                                                    t.name
+                                                log::info!(
+                                                    "osc_title: pane {id} title updated to {:?} (replacing placeholder={:?})",
+                                                    t.name,
+                                                    old_placeholder
                                                 );
                                             }
                                         }
