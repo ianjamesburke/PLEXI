@@ -15185,3 +15185,140 @@ mod strip_navigation_frame_tests {
         );
     }
 }
+
+#[test]
+fn notes_picker_copy_closes_and_restores_pane_input_owner() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    let ctx = h.app.ctx.clone();
+    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+
+    let note_path = std::env::temp_dir().join(format!(
+        "plexi-harness-copy-note-{}.md",
+        std::process::id()
+    ));
+    std::fs::write(&note_path, "harness note text").expect("seed note");
+    h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+        title: "harness note".to_string(),
+        preview: "harness note text".to_string(),
+        search_text: "harness note".to_string(),
+        path: note_path.clone(),
+        tier_label: None,
+    }];
+    h.app.notes_picker_selected = 0;
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::NotesPicker)),
+        "notes picker owns input when open"
+    );
+
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::C,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    h.frame(input);
+
+    assert!(
+        !h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        "notes picker must close after Cmd+C"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "focus must return to originating pane"
+    );
+    assert!(
+        h.last_platform_output
+            .commands
+            .contains(&egui::OutputCommand::CopyText("harness note text".to_string())),
+        "clipboard command must receive full note contents"
+    );
+    let _ = std::fs::remove_file(&note_path);
+}
+
+#[test]
+fn notes_picker_confirmed_cut_closes_and_restores_pane_input_owner() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    let ctx = h.app.ctx.clone();
+
+    let note_path = std::env::temp_dir().join(format!(
+        "plexi-harness-cut-note-{}.md",
+        std::process::id()
+    ));
+    std::fs::write(&note_path, "cut harness note text").expect("seed note");
+    h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+        title: "cut note".to_string(),
+        preview: "cut harness note text".to_string(),
+        search_text: "cut note".to_string(),
+        path: note_path.clone(),
+        tier_label: None,
+    }];
+    h.app.notes_picker_selected = 0;
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+
+    // Press Cmd+X
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::X,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    h.frame(input);
+
+    assert!(
+        h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        "picker must stay open awaiting confirm"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::NotesPicker))
+    );
+    assert!(
+        h.last_platform_output
+            .commands
+            .contains(&egui::OutputCommand::CopyText("cut harness note text".to_string())),
+        "clipboard command receives text at cut time"
+    );
+    assert!(note_path.exists());
+
+    // Press Enter to confirm
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.frame(input);
+
+    assert!(
+        !h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        "picker must close after confirmed cut"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "focus must return to originating pane"
+    );
+    assert!(!note_path.exists(), "note must be removed from disk");
+}
