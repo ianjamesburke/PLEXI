@@ -323,6 +323,38 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(policy.PolicyError, "Done-When"):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
 
+    def test_ledger_summary_matches_real_trial_ledger(self):
+        fixture = SCRIPT.with_name("testdata") / "babysitter-ledger"
+        summary = policy.ledger_summary(fixture)
+        self.assertEqual(list(summary), ["agyf"])
+        self.assertEqual(summary["agyf"], {
+            "attempts": 3, "batches": 2,
+            "first_round_pass": {"count": 1, "rate": 0.5},
+            "avg_rounds_to_green": 1.5, "parks": 0, "crossovers": 0,
+            "usage_limit_hits": 0, "wall_minutes": 162.0})
+
+    def test_ledger_summary_counts_crossovers_parks_and_limits(self):
+        def line(batch, alias, round_, verdict, outcome, **extra):
+            return json.dumps({"batch": batch, "stints": [batch], "worker_alias": alias,
+                               "round": round_, "verdict": verdict, "outcome": outcome,
+                               "usage_limit_hit": extra.get("limit", False),
+                               "wall_minutes": 10.0})
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "LEDGER.jsonl").write_text("\n".join([
+                line("1", "agyf", 1, "FAIL", "crossed_over"),
+                line("1", "cos", 2, "PASS", "merged"),
+                line("2", "agyf", 1, "FAIL", "follow_up", limit=True),
+                line("2", "agyf", 2, "FAIL", "parked")]) + "\n")
+            summary = policy.ledger_summary(Path(directory))
+        self.assertEqual(summary["agyf"]["crossovers"], 1)
+        self.assertEqual(summary["agyf"]["parks"], 1)
+        self.assertEqual(summary["agyf"]["usage_limit_hits"], 1)
+        self.assertEqual(summary["agyf"]["first_round_pass"], {"count": 0, "rate": 0.0})
+        self.assertIsNone(summary["agyf"]["avg_rounds_to_green"])
+        self.assertEqual(summary["cos"]["avg_rounds_to_green"], 2.0)
+        with self.assertRaises(policy.PolicyError):
+            policy.ledger_summary(Path(directory) / "missing")
+
     def test_lane_start_stops_before_worktree_when_preflight_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

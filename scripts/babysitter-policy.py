@@ -52,6 +52,32 @@ def route(settings, size, exhausted=(), worker_alias=None):
             "tester_model": models[tester_alias], "tester_vendor": vendors[tester_alias]}
 
 
+def ledger_summary(run_dir):
+    """Per worker alias stats from <run_dir>/LEDGER.jsonl (one line per tester verdict or respawn)."""
+    path = Path(run_dir) / "LEDGER.jsonl"
+    try:
+        lines = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    except (OSError, ValueError) as error:
+        raise PolicyError(f"cannot read ledger {path}: {error}") from error
+    by_alias = {}
+    for entry in lines:
+        by_alias.setdefault(entry["worker_alias"], []).append(entry)
+    summary = {}
+    for alias, entries in by_alias.items():
+        batches = {entry["batch"] for entry in entries}
+        first = {entry["batch"] for entry in entries if entry["round"] == 1 and entry["verdict"] == "PASS"}
+        green = [entry["round"] for entry in entries if entry["verdict"] == "PASS"]
+        summary[alias] = {
+            "attempts": len(entries), "batches": len(batches),
+            "first_round_pass": {"count": len(first), "rate": round(len(first) / len(batches), 4)},
+            "avg_rounds_to_green": round(sum(green) / len(green), 2) if green else None,
+            "parks": sum(entry["outcome"] == "parked" for entry in entries),
+            "crossovers": sum(entry["outcome"] == "crossed_over" for entry in entries),
+            "usage_limit_hits": sum(bool(entry["usage_limit_hit"]) for entry in entries),
+            "wall_minutes": round(sum(entry["wall_minutes"] for entry in entries), 1)}
+    return summary
+
+
 def check_gate(settings, record, pr, checks, base_head, phase):
     if settings["topology"]["mode"] != "aggregate" or not settings["authorization"]["auto_merge"]:
         raise PolicyError("aggregate merge-all policy is not configured")
@@ -361,6 +387,8 @@ def main():
     gate_parser.add_argument("pr", type=int)
     gate_parser.add_argument("record", type=Path)
     gate_parser.add_argument("--manifest", type=Path)
+    ledger_parser = sub.add_parser("ledger-summary")
+    ledger_parser.add_argument("run_dir", type=Path)
     preflight_parser = sub.add_parser("preflight")
     preflight_parser.add_argument("tasks", nargs="+")
     merge_parser = sub.add_parser("integrate")
@@ -376,6 +404,8 @@ def main():
     try:
         if args.action == "route":
             print(json.dumps(route(settings, args.size, args.exhausted, args.worker_alias)))
+        elif args.action == "ledger-summary":
+            print(json.dumps(ledger_summary(args.run_dir), indent=2))
         elif args.action == "preflight":
             root = alpha_root()
             print(json.dumps(preflight(settings, root / ".stint/tasks",

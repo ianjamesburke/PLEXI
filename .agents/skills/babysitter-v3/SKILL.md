@@ -43,8 +43,11 @@ Every run writes to exactly one `<run_root>/<YYYYMMDD-HHMM>/`, named from `date 
 | `RUN_STATE.md` | The baton. Overwritten at every merge or park: remaining queue, batches, lane → pane/PR/round, parked items, orphaned worktrees. A fresh head resumes from it alone. |
 | `LOG.md` | Append-only, UTC timestamps: briefs, PR opened, verdicts, merges, respawns, friction. |
 | `REPORT.md` | Written once at close-out. The single artifact Ian reads; see Stop conditions. |
+| `LEDGER.jsonl` | Append-only, one JSON line per tester verdict or respawn, written by the head right after it. Schema below. |
 | `HUMAN_CHECKS.md` | Non-blocking post-merge checks only a human can judge (`- [ ] PR #N (stint): what to look at. Evidence: <path>`). |
 | `briefs/<pane-label>.md` | The full brief for each pane. Panes are told to read it; the launch prompt stays short. |
+
+`LEDGER.jsonl` line keys, all required: `batch` (first stint id), `stints` (list), `worker_alias`, `worker_model`, `round` (1-based, continues across a crossover), `tester_alias`, `verdict` (`PASS`/`FAIL`), `fail_reason` (one line, null on PASS), `outcome` (`merged` · `follow_up` · `crossed_over` · `parked`), `crossed_over_to` (alias or null), `usage_limit_hit` (bool), `wall_minutes` (number, this attempt), `ts` (UTC ISO-8601). `uv run --no-project python scripts/babysitter-policy.py ledger-summary <run-dir>` aggregates it per worker alias.
 
 `resume` = find the newest run dir, read `RUN_STATE.md` (it records `parent`), append a takeover line to `LOG.md`, continue.
 
@@ -99,7 +102,7 @@ Wait (note `<id>` is positional on `slot wait`, `slot read`, and `slot list`; on
 
 If the stints touch the assistant or `ai.query`, use the existing test-key setup in `/drive-host` before starting the host; never echo the key.
 
-**3. Route the verdict.** Read `verdict`, then the tester's final reply (`plexi pane capture <id> --lines 60 --plain`). Close the tester pane.
+**3. Route the verdict.** Read `verdict`, then the tester's final reply (`plexi pane capture <id> --lines 60 --plain`). Close the tester pane. Append the `LEDGER.jsonl` line now, before acting on the verdict.
 
 - **PASS** and `gh pr checks <PR>` green → first check the Done-When yourself. List each item in `LOG.md` as met, overruled with a reason, or unmet. Any unmet item that isn't overruled → treat it as a FAIL caused by the PR. If it can't be met in this run (blocked by something outside the batch), send the worker `PASS`, but also file the remainder as a follow-up stint and name it in `REPORT.md`. Never let a stint close as done with silent gaps. Then send the worker `PASS` (`plexi pane send <worker> "PASS" --submit`) if `auto_merge` is on; otherwise add the PR to `RUN_STATE.md` as awaiting Ian and move on. A red check is not the PR's if it fails the same way on alpha, or passes on one `gh run rerun <run-id> --failed`: overrule it on the record and file a stint (or add the evidence to an existing flake stint).
 - **FAIL caused by the PR** → send the worker `FOLLOW-UP: <tester's numbered list, verbatim>. Write status=impl:working now. Find the root cause, not a patch. Push to the same PR, write status=pr:done again.` Confirm the slot has left `pr:done` before you wait on it again. Then spawn a new tester (`r<round+1>`) to re-check only what changed, plus a one-line smoke of what already passed.
@@ -126,7 +129,7 @@ The head rots too. After every **two** merges, or whenever your own context feel
 
 - **Done** = every batch is merged or parked with a written reason. Then, in order:
   1. Reap orphaned worktrees, stale build targets, and leftover PR channels through a fresh small worker (`just reap-merged-worktrees`, `just clean-stale-targets`, `just channel-clean-merged`; never delete unpushed commits; list kept worktrees in `RUN_STATE.md`). Close `caffeinate`.
-  2. Write `REPORT.md`, the only thing Ian needs to read. Keep it short and lead with the state:
+  2. Write `REPORT.md`, the only thing Ian needs to read. Keep it short and lead with the state. Run `ledger-summary <run-dir>` and paste its output as the **Alias Scorecard**:
      - **Landed:** each PR → stints, rounds, wall time, the worker and tester alias.
      - **Not landed / gaps:** parked batches and why; Done-When items overruled or carried into follow-up stints (by id).
      - **State left behind:** alpha head sha, open PRs from this run, panes still open (should be none), kept worktrees and why.
