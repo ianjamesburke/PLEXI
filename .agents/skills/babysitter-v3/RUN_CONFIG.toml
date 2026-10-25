@@ -74,7 +74,7 @@ auto_merge = true                 # tester PASS + green PR checks -> merge witho
 attended_only = ["0601", "0439"]  # never queued unattended
 
 [limits]
-max_concurrent_lanes = 3          # cargo builds are serialized by cargo-with-lease.sh; >3 lanes just queues on it
+max_concurrent_lanes = 2          # cargo builds are serialized by cargo-with-lease.sh; Ian capped the Gemini trial at 2 lanes
 max_fix_rounds = 2                # after this many tester FAILs on one batch, park it
 stall_minutes = 25                # idle footer + no terminal slot this long -> inspect
 
