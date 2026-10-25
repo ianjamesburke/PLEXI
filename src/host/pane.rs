@@ -1027,8 +1027,29 @@ impl TerminalPane {
             return None;
         }
         let standby = self.standby_session.take()?;
-        let cmd = self.standby_resume_command.take();
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
+        let cmd = self.standby_resume_command.take().or_else(|| {
+            harness.map(|harness| {
+                let flags = standby
+                    .config_name
+                    .as_deref()
+                    .and_then(|role| {
+                        self.standby_cwd
+                            .as_deref()
+                            .or(self.initial_cwd.as_deref())
+                            .map(|cwd| {
+                                crate::cli::agent::resolved_session_harness_flags_in(
+                                    Some(role),
+                                    harness,
+                                    &crate::config::config_dir(),
+                                    Some(cwd),
+                                )
+                            })
+                    })
+                    .unwrap_or_default();
+                harness.restore_command_with_flags(standby.session_id.as_deref(), &flags)
+            })
+        });
         if let Some(ref resume_cmd) = cmd {
             if harness == Some(crate::cli::AgentHarness::Pi)
                 && resume_cmd == "pi"

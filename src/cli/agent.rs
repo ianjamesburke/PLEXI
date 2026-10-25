@@ -95,10 +95,6 @@ impl AgentHarness {
         self.adapter().resume_command_with_flags(session_id, flags)
     }
 
-    pub fn restore_command(self, session_id: Option<&str>) -> String {
-        self.adapter().restore_command(session_id)
-    }
-
     pub fn restore_command_with_flags(self, session_id: Option<&str>, flags: &[String]) -> String {
         self.adapter().restore_command_with_flags(session_id, flags)
     }
@@ -632,11 +628,6 @@ pub fn validate_custom_harness_flags(
 }
 
 impl HarnessAdapter {
-    /// Build the exact CLI command to resume a captured session ID.
-    pub fn resume_command(&self, session_id: &str) -> String {
-        self.resume_command_with_flags(session_id, &[])
-    }
-
     pub fn resume_command_with_flags(&self, session_id: &str, flags: &[String]) -> String {
         let sid = shell_quote_arg(session_id.trim());
         let safe_flags: Vec<String> = flags.iter().map(|f| shell_quote_arg(f)).collect();
@@ -658,10 +649,6 @@ impl HarnessAdapter {
     /// Build the CLI command to restore an agent pane on workspace startup or standby wake.
     /// Falls back to a bare harness binary launch when `session_id` is absent or when a
     /// `pi` session ID has no persisted session file on disk.
-    pub fn restore_command(&self, session_id: Option<&str>) -> String {
-        self.restore_command_with_flags(session_id, &[])
-    }
-
     pub fn restore_command_with_flags(
         &self,
         session_id: Option<&str>,
@@ -1177,7 +1164,11 @@ pub fn resolved_session_harness_flags_in(
             .as_deref()
             .and_then(harness_adapter)
             .is_some_and(|adapter| adapter.harness == harness);
-    configured_for_harness.then_some(config.flags).unwrap_or_default()
+    if configured_for_harness {
+        config.flags
+    } else {
+        Vec::new()
+    }
 }
 
 fn tier_display_label(source: crate::agent::AgentSource) -> &'static str {
@@ -3889,7 +3880,7 @@ mod agent_tests {
     fn multi_cli_harness_adapters_build_spawn_resume_and_capture_session_ids() {
         let claude = super::harness_adapter("claude").expect("claude adapter");
         assert_eq!(
-            claude.resume_command("sess-claude-1"),
+            claude.resume_command_with_flags("sess-claude-1", &[]),
             "claude --resume sess-claude-1"
         );
         assert_eq!(
@@ -3903,7 +3894,7 @@ mod agent_tests {
 
         let codex = super::harness_adapter("codex").expect("codex adapter");
         assert_eq!(
-            codex.resume_command("thread-99"),
+            codex.resume_command_with_flags("thread-99", &[]),
             "codex resume thread-99"
         );
         assert_eq!(
@@ -3917,7 +3908,7 @@ mod agent_tests {
 
         let pi = super::harness_adapter("pi").expect("pi adapter");
         assert_eq!(
-            pi.resume_command("pi-sess-7"),
+            pi.resume_command_with_flags("pi-sess-7", &[]),
             "pi --session pi-sess-7"
         );
         assert_eq!(
@@ -3931,7 +3922,7 @@ mod agent_tests {
 
         let agy = super::harness_adapter("agy").expect("agy adapter");
         assert_eq!(
-            agy.resume_command("conv-123"),
+            agy.resume_command_with_flags("conv-123", &[]),
             "agy --resume conv-123"
         );
         assert_eq!(
@@ -4386,30 +4377,33 @@ mod agent_tests {
         let claude = super::AgentHarness::Claude;
 
         // 1. `session_id: None` dispatches bare binary launch for any harness.
-        assert_eq!(pi.restore_command(None), "pi");
-        assert_eq!(pi.restore_command(Some("   ")), "pi");
-        assert_eq!(claude.restore_command(None), "claude");
+        assert_eq!(pi.restore_command_with_flags(None, &[]), "pi");
+        assert_eq!(pi.restore_command_with_flags(Some("   "), &[]), "pi");
+        assert_eq!(claude.restore_command_with_flags(None, &[]), "claude");
         assert_eq!(
-            claude.restore_command(Some("sess-claude-1")),
+            claude.restore_command_with_flags(Some("sess-claude-1"), &[]),
             "claude --resume sess-claude-1"
         );
 
         // 2. Unpersisted Pi session UUID (no matching file on disk) falls back to bare `pi`.
-        assert_eq!(pi.restore_command(Some("019dcdae-unpersisted")), "pi");
+        assert_eq!(
+            pi.restore_command_with_flags(Some("019dcdae-unpersisted"), &[]),
+            "pi"
+        );
 
         // 3. Once `*_019dcdae-persisted.jsonl` exists under `~/.pi/agent/sessions/`,
         //    `restore_command` resumes via `pi --session 019dcdae-persisted`.
         let persisted_jsonl = proj_dir.join("2026-10-17T05-00-00-000Z_019dcdae-persisted.jsonl");
         fs::write(&persisted_jsonl, "{\"role\":\"user\"}\n").unwrap();
         assert_eq!(
-            pi.restore_command(Some("019dcdae-persisted")),
+            pi.restore_command_with_flags(Some("019dcdae-persisted"), &[]),
             "pi --session 019dcdae-persisted"
         );
 
         // 4. Direct session file path that exists on disk also resumes via `pi --session <path>`.
         let direct_path = persisted_jsonl.to_string_lossy().to_string();
         assert_eq!(
-            pi.restore_command(Some(&direct_path)),
+            pi.restore_command_with_flags(Some(&direct_path), &[]),
             format!("pi --session {direct_path}")
         );
     }

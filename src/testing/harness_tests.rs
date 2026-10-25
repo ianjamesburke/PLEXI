@@ -11934,16 +11934,6 @@ mod agent_state_restoration_tests {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
         let tmp = tempfile::tempdir().expect("tempdir");
-        let agent_dir = profile_dir.path().join("agents").join("auditor");
-        std::fs::create_dir_all(&agent_dir).expect("create auditor definition");
-        std::fs::write(agent_dir.join("AGENT.md"), "Audit safely.")
-            .expect("write auditor persona");
-        std::fs::write(
-            agent_dir.join("settings.toml"),
-            "[agent]\nid = \"auditor\"\ndisplay_name = \"auditor\"\n\n[harness]\ncli = \"pi\"\nflags = [\"--verbose\"]\n",
-        )
-        .expect("write auditor settings");
-
         let mut h = HostHarness::new();
         let agent_dir = crate::config::config_dir().join("agents").join("auditor");
         std::fs::create_dir_all(&agent_dir).expect("create active auditor definition");
