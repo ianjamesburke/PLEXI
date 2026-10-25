@@ -1226,6 +1226,8 @@ impl TerminalPane {
         );
         let last_state = if self.agent_completed || self.slots.contains_key("completed") {
             crate::protocol::AgentState::Completed
+        } else if self.exited && self.exit_status.is_some_and(|s| s.is_failure()) {
+            crate::protocol::AgentState::Failed
         } else if let Some(a) = active_agent {
             a.state.clone()
         } else {
@@ -1235,7 +1237,16 @@ impl TerminalPane {
             .agent
             .as_ref()
             .and_then(|a| a.detail.clone())
-            .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
+            .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()))
+            .or_else(|| match self.exit_status {
+                Some(crate::host::pane_lifecycle::ExitStatus::Code(c)) if c != 0 => {
+                    Some(format!("exited ({c})"))
+                }
+                Some(crate::host::pane_lifecycle::ExitStatus::Signal(sig)) => {
+                    Some(format!("killed by signal {sig}"))
+                }
+                _ => None,
+            });
 
         Some(crate::workspace::SavedAgentSession {
             fleet_result: self.fleet_result.clone(),
@@ -1274,6 +1285,8 @@ impl TerminalPane {
                 && self.exit_status == Some(crate::host::pane_lifecycle::ExitStatus::Code(0)))
         {
             session.last_state = crate::protocol::AgentState::Completed;
+        } else if self.exited && self.exit_status.is_some_and(|s| s.is_failure()) {
+            session.last_state = crate::protocol::AgentState::Failed;
         }
         let summary = self
             .slots
