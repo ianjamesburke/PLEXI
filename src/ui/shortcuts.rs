@@ -1,4 +1,4 @@
-use egui::{Color32, Pos2, RichText, Vec2};
+use egui::{Color32, Pos2, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -206,17 +206,8 @@ pub(crate) fn key_chip(
 
 pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = style::KEYCHIP_GAP;
-        for (i, key) in display_tokens(keys).iter().enumerate() {
-            if i > 0 {
-                ui.label(
-                    RichText::new("+")
-                        .size(style::TEXT_HINT)
-                        .color(shortcut_label_color(colors)),
-                );
-            }
-            key_chip(ui, key, colors, combo_chip_font());
-        }
+        ui.spacing_mut().item_spacing.x = 0.0;
+        key_combo_list_inline(ui, &[keys], None, colors);
     });
 }
 

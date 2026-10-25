@@ -154,7 +154,12 @@ impl<'a> SearchBar<'a> {
             } else {
                 0.0
             };
-            let input_w = (ui.available_width() - status_w - clear_w - shortcut_w).max(80.0);
+            let trailing_reserve = status_w + clear_w + shortcut_w;
+            let input_w = if trailing_reserve > 0.0 {
+                (ui.available_width() - trailing_reserve - style::SPACE_SM).max(80.0)
+            } else {
+                ui.available_width()
+            };
 
             let hint_label = self.hint;
             let resp = ui
@@ -205,11 +210,18 @@ impl<'a> SearchBar<'a> {
                     }
                 } else if status_label.is_empty() {
                     if let Some(keys) = self.shortcut {
-                        ui.with_layout(
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                crate::ui::shortcuts::key_combo(ui, keys, colors);
-                            },
+                        let chip_w = crate::ui::shortcuts::key_combo_width(ui, keys);
+                        let chip_h = crate::ui::shortcuts::chip_row_height(ui);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(chip_w, chip_h),
+                            egui::Sense::hover(),
+                        );
+                        crate::ui::shortcuts::key_combo_painted(
+                            ui,
+                            rect.left(),
+                            rect.center().y,
+                            keys,
+                            colors,
                         );
                     }
                 }

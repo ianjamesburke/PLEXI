@@ -4,13 +4,68 @@
 # must not collide. 680x600 is the middle width that previously broke: details
 # layout is active but the old toolbar chip strip didn't fit, and its
 # right-to-left overflow shoved the whole table past the pane's left edge.
-sizes = [[360.0, 280.0], [520.0, 400.0], [680.0, 600.0], [1280.0, 800.0]]
+# 760x500 exercises the middle-width pane to ensure Cmd+F chip and toolbar fit
+# cleanly without right-edge clipping.
+sizes = [[360.0, 280.0], [520.0, 400.0], [680.0, 600.0], [760.0, 500.0], [1280.0, 800.0]]
 
 [[steps]]
 open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
 
 [[steps]]
 run_steps = 3
+
+# 1. Initial discoverability assertion
+[[steps]]
+assert_label = { target = "files", label = "Search files and contents…" }
+
+# 2. Cmd+F enters search mode and typing text drives search query
+[[steps]]
+key = { target = "files", value = "cmd+f" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "files", value = "Cargo" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "files", label = "×" }
+
+# Escape exits search mode back to browsing
+[[steps]]
+key = { target = "files", value = "escape" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "files", label = "Search files and contents…" }
+
+# 3. Click focuses search bar and enters search mode
+[[steps]]
+drag = { target = "files", from = [80.0, 42.0], to = [80.0, 42.0], steps = 0 }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "files", value = "foo" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "files", label = "×" }
+
+# Escape exits search mode back to browsing
+[[steps]]
+key = { target = "files", value = "escape" }
+
+[[steps]]
+run_steps = 2
 
 [[steps]]
 assert_label = { target = "files", label = "Search files and contents…" }

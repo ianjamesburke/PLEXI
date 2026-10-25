@@ -1607,9 +1607,8 @@ fn search_worker_loop(
         }
 
         log::info!(
-            "search: completed query='{}' root='{}' hits={}",
-            trimmed_query,
-            root.display(),
+            "search: completed query_len={} hits={}",
+            trimmed_query.len(),
             merged_hits.len()
         );
 

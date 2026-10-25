@@ -5852,6 +5852,32 @@ mod tests {
 
     #[test]
     fn empty_search_result_state_and_lifecycle_trace() {
+        use std::sync::{LazyLock, Mutex, Once};
+
+        static TEST_LOGS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+        struct TestLogger;
+        impl log::Log for TestLogger {
+            fn enabled(&self, m: &log::Metadata) -> bool {
+                m.level() <= log::Level::Info
+            }
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) {
+                    if let Ok(mut list) = TEST_LOGS.lock() {
+                        list.push(record.args().to_string());
+                    }
+                }
+            }
+            fn flush(&self) {}
+        }
+        static INIT_LOGGER: Once = Once::new();
+        INIT_LOGGER.call_once(|| {
+            let _ = log::set_boxed_logger(Box::new(TestLogger));
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        if let Ok(mut list) = TEST_LOGS.lock() {
+            list.clear();
+        }
+
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("file.txt"), b"content").expect("write");
         let mut app = FileBrowserApp::new(dir.path().to_path_buf());
@@ -5861,6 +5887,17 @@ mod tests {
         assert!(app.in_search);
         assert_eq!(app.search_result_count(), 0);
 
+        // Verify lifecycle trace was emitted and that raw query was NOT logged
+        let logs_after_entry = TEST_LOGS.lock().unwrap().clone();
+        assert!(
+            logs_after_entry.iter().any(|line| line.contains("file_browser: entering search mode")),
+            "entering search mode must emit an info lifecycle trace"
+        );
+        assert!(
+            !logs_after_entry.iter().any(|line| line.contains("nonexistent_needle")),
+            "search lifecycle traces must never log the raw query text"
+        );
+
         // Render UI and verify empty state message is shown
         let ctx = egui::Context::default();
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
@@ -5869,7 +5906,7 @@ mod tests {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
             ..Default::default()
         };
-        let _ = ctx.run_ui(raw, |ui| {
+        let output = ctx.run_ui(raw, |ui| {
             let render_ctx = AppRenderContext {
                 pane_id: 200,
                 colors: &colors,
@@ -5877,8 +5914,42 @@ mod tests {
             app.ui(ui, &render_ctx, None);
         });
 
-        // Exiting search returns to browsing
+        let mut found_empty_state = false;
+        for s in &output.shapes {
+            match &s.shape {
+                egui::Shape::Text(t) => {
+                    if t.galley.job.text.contains("No matching files or contents") {
+                        found_empty_state = true;
+                    }
+                }
+                egui::Shape::Vec(v) => {
+                    for inner in v {
+                        if let egui::Shape::Text(t) = inner {
+                            if t.galley.job.text.contains("No matching files or contents") {
+                                found_empty_state = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            found_empty_state,
+            "rendered shapes must contain 'No matching files or contents'"
+        );
+
+        // Exiting search returns to browsing and logs exit trace
         app.exit_search();
         assert!(!app.in_search);
+        let logs_after_exit = TEST_LOGS.lock().unwrap().clone();
+        assert!(
+            logs_after_exit.iter().any(|line| line.contains("file_browser: exiting search mode")),
+            "exiting search mode must emit an info lifecycle trace"
+        );
+        assert!(
+            !logs_after_exit.iter().any(|line| line.contains("nonexistent_needle")),
+            "search lifecycle traces must never log the raw query text on exit"
+        );
     }
 }
