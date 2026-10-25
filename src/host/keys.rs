@@ -1751,6 +1751,84 @@ mod tests {
     }
 
     #[test]
+    fn font_and_ui_scale_chords_claim_press_repeat_release_and_modal_edges() {
+        let table = build_binding_table(&KeyBindings::default());
+        let ctx = egui::Context::default();
+        let mut claimed_key_releases = std::collections::HashSet::new();
+        let poll = |
+            events: Vec<egui::Event>,
+            overlay_open: bool,
+            claimed_key_releases: &mut std::collections::HashSet<egui::Key>,
+        | {
+            let mut raw = egui::RawInput::default();
+            raw.events = events;
+            let mut actions = Vec::new();
+            let mut remaining_events = 0;
+            let _ = ctx.run_ui(raw, |ui| {
+                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+                actions = poll_actions(
+                    &mut input,
+                    &table,
+                    claimed_key_releases,
+                    /* app_active */ true,
+                    /* keyboard_capture */ false,
+                    overlay_open,
+                    /* shortcuts_overlay_open */ false,
+                );
+                remaining_events = input.events().len();
+            });
+            (actions, remaining_events)
+        };
+        let key_event = |key, pressed, repeat, modifiers| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat,
+            modifiers,
+        };
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Equals, true, false, cmd())],
+            false,
+            &mut claimed_key_releases,
+        );
+        assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
+        assert_eq!(remaining, 0, "font-size press must not reach the focused pane");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Equals, false, false, egui::Modifiers::NONE)],
+            false,
+            &mut claimed_key_releases,
+        );
+        assert!(actions.is_empty(), "key release must not trigger a second action");
+        assert_eq!(remaining, 0, "font-size release must not leak to the focused pane");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Equals, true, true, cmd())],
+            false,
+            &mut claimed_key_releases,
+        );
+        assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
+        assert_eq!(remaining, 0, "font-size repeat must be claimed exactly once");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Plus, true, false, cmd_shift())],
+            true,
+            &mut claimed_key_releases,
+        );
+        assert_eq!(actions, vec![Action::UiScaleUp]);
+        assert_eq!(remaining, 0, "modal ui-scale chord must not leak to the focused pane");
+
+        let (actions, remaining) = poll(
+            vec![key_event(egui::Key::Plus, false, false, egui::Modifiers::NONE)],
+            true,
+            &mut claimed_key_releases,
+        );
+        assert!(actions.is_empty(), "modal key release must not trigger a second action");
+        assert_eq!(remaining, 0, "modal ui-scale release must not leak to the focused pane");
+    }
+
+    #[test]
     fn modifiers_match_exact_treats_command_and_ctrl_as_one_on_non_mac_and_distinct_on_mac() {
         // Linux/Windows runtime modifiers when physical Ctrl is pressed:
         // egui sets both `ctrl: true` and `command: true`.

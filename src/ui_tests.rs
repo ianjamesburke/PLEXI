@@ -1164,10 +1164,19 @@ mod tests {
             app.flush_ui_scale_persist_now();
         });
         let config_path = crate::config::config_path();
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path).unwrap();
-            assert!(content.contains("ui_scale = 1.2"), "persisted scale in config: {content}");
-        }
+        assert!(config_path.exists(), "ui scale persistence must create config.toml");
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("ui_scale = 1.2"), "persisted scale in config: {content}");
+        let reloaded = crate::config::PlexiConfig::load();
+        let (fresh_host, _) = PlexiApp::new_for_test_with_config(
+            egui::Context::default(),
+            Arc::new(AtomicU64::new(0)),
+            reloaded,
+        );
+        assert!(
+            (fresh_host.ui_scale - 1.2).abs() < 1e-4,
+            "fresh host must restore the persisted global scale"
+        );
     }
 
     /// Harness key routing covers physical Equals/Plus and Minus chords, deduplication,
@@ -1294,7 +1303,7 @@ mod tests {
             // Crowded cards (12 siblings)
             {
                 let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
-                h.with_app_mut(|app| {
+                let selected_context = h.with_app_mut(|app| {
                     app.sidebar_visible = false;
                     let root = app.create_context_without_pty("root", None);
                     let mut siblings = Vec::new();
@@ -1325,8 +1334,25 @@ mod tests {
                     }
                     app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
                     app.zoom.cards_focused_context = Some(siblings[5]);
+                    siblings[5]
                 });
                 h.run_steps(6);
+                let (canvas, cards): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
+                    app.ctx
+                        .data(|data| data.get_temp(egui::Id::new("sibling_cards_painted_geometry")))
+                        .expect("Cards render must report its painted geometry")
+                });
+                let selected = cards
+                    .iter()
+                    .find(|(context_id, _, _)| *context_id == selected_context)
+                    .expect("selected Cards context must be painted");
+                assert!(selected.2, "selected Cards context must retain focus treatment");
+                assert!(
+                    canvas.contains_rect(selected.1),
+                    "selected Cards rect {:?} must be wholly visible in {:?}",
+                    selected.1,
+                    canvas
+                );
                 let path = format!("/tmp/plexi_crowded_cards_scale_{scale:.1}.png");
                 h.save_screenshot(&path).unwrap();
                 assert!(std::path::Path::new(&path).exists());
@@ -1338,7 +1364,7 @@ mod tests {
             // Crowded atlas
             {
                 let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
-                h.with_app_mut(|app| {
+                let selected_context = h.with_app_mut(|app| {
                     app.sidebar_visible = false;
                     let r1 = app.create_context_without_pty("hub-main", None);
                     let r2 = app.create_context_without_pty("hub-ops", None);
@@ -1352,8 +1378,25 @@ mod tests {
                     let _g4 = app.create_context_without_pty("billing-invoicing", Some(c2));
                     app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
                     app.zoom.atlas_focused_context = Some(c1);
+                    c1
                 });
                 h.run_steps(6);
+                let (canvas, nodes): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
+                    app.ctx
+                        .data(|data| data.get_temp(egui::Id::new("tree_atlas_painted_geometry")))
+                        .expect("Atlas render must report its painted geometry")
+                });
+                let selected = nodes
+                    .iter()
+                    .find(|(context_id, _, _)| *context_id == selected_context)
+                    .expect("selected Atlas context must be painted");
+                assert!(selected.2, "selected Atlas context must retain focus treatment");
+                assert!(
+                    canvas.contains_rect(selected.1),
+                    "selected Atlas rect {:?} must be wholly visible in {:?}",
+                    selected.1,
+                    canvas
+                );
                 let path = format!("/tmp/plexi_crowded_atlas_scale_{scale:.1}.png");
                 h.save_screenshot(&path).unwrap();
                 assert!(std::path::Path::new(&path).exists());
