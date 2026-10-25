@@ -13,6 +13,9 @@ open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
 run_steps = 3
 
 [[steps]]
+assert_label = { target = "files", label = "Search files and contents…" }
+
+[[steps]]
 assert = { pane_count = 1 }
 
 [[steps]]

@@ -7095,6 +7095,95 @@ mod tests {
     }
 
     #[test]
+    fn file_browser_search_discoverable_and_interactive_in_harness() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace-root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(root.join("alpha.rs"), b"fn alpha() {}\n").expect("write alpha");
+        std::fs::write(root.join("beta.md"), b"# Beta\n").expect("write beta");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(640.0, 480.0, 2.0);
+        let root_clone = root.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_app_pane(
+                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
+                AppPermissions::builtin(),
+                root_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(2);
+
+        let pane_id = h
+            .with_app(|app| app.windows[app.active_window].panes.keys().copied().next())
+            .expect("opened pane id");
+
+        // 1. SearchBar affordance is visible on initial open
+        assert!(
+            h.pane_has_label(pane_id, "Search files and contents…"),
+            "SearchBar affordance must be visible on initial File Explorer open"
+        );
+
+        // 2. Typing ordinary text ("alp") enters search and filters to alpha.rs
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("alp".to_string()));
+        h.run_steps(2);
+
+        let filtered_count = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| (fb.is_in_search(), fb.search_result_count()))
+        });
+        assert_eq!(
+            filtered_count,
+            Some((true, 1)),
+            "typing plain text must enter search mode and filter entries"
+        );
+
+        // 3. Activating result (Enter) opens alpha.rs and exits search mode
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        let search_state = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                })
+                .map(|fb| (fb.is_in_search(), fb.opened_files.len()))
+        });
+        assert_eq!(
+            search_state,
+            Some((false, 1)),
+            "activating search hit must open the file and exit search mode back to browsing"
+        );
+    }
+
+    #[test]
     fn screenshot_file_browser_status_bar_shortcuts_wide_and_narrow() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("workspace-root");
