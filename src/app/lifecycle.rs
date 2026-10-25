@@ -3786,11 +3786,34 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::GetAgentStates { response_file } => {
                 log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
-                let states: Vec<&crate::protocol::PaneAgentState> = self
+                let states: Vec<crate::protocol::PaneAgentState> = self
                     .windows
                     .iter()
                     .flat_map(|win| win.panes.values())
-                    .filter_map(|pane| pane.agent())
+                    .filter_map(|pane| {
+                        let report = pane.agent()?;
+                        let Some(terminal) = pane.as_terminal() else {
+                            return Some(report.clone());
+                        };
+                        let exit_failure = terminal
+                            .exit_status
+                            .filter(|status| terminal.exited && status.is_failure());
+                        Some(crate::protocol::PaneAgentState {
+                            pane_id: report.pane_id,
+                            state: if terminal.agent_completed {
+                                crate::protocol::AgentState::Completed
+                            } else if exit_failure.is_some() {
+                                crate::protocol::AgentState::Failed
+                            } else {
+                                report.state.clone()
+                            },
+                            agent: report.agent.clone(),
+                            detail: exit_failure
+                                .map(|status| status.summary())
+                                .or_else(|| report.detail.clone()),
+                            session_id: report.session_id.clone(),
+                        })
+                    })
                     .collect();
                 let json_str = serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
@@ -5893,6 +5916,12 @@ impl PlexiApp {
                                     "pty: pane {id} process exited status={status:?} ephemeral={} is_agent_or_subcontext={is_agent_or_subcontext}",
                                     t.ephemeral
                                 );
+                                if newly_exited && status.is_failure() && is_agent_or_subcontext {
+                                    log::info!(
+                                        "agents: pane {id} observed exit failure {}; preserving Failed state in fleet and history",
+                                        status.summary()
+                                    );
+                                }
                                 // Stint 0765 / 0802: ephemeral agent/sub-context panes only
                                 // self-close on clean exit (0); non-zero or signal-terminated
                                 // crashes stay open in Error state for debugging and prevent

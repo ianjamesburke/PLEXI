@@ -48,6 +48,15 @@ impl ExitStatus {
     pub(crate) fn is_failure(self) -> bool {
         matches!(self, Self::Code(c) if c != 0) || matches!(self, Self::Signal(_))
     }
+
+    /// Human-facing detail for a terminal process exit.
+    pub(crate) fn summary(self) -> String {
+        match self {
+            Self::Code(code) => format!("exited ({code})"),
+            Self::Signal(signal) => format!("killed by signal {signal}"),
+            Self::Unknown => "exited (unknown status)".into(),
+        }
+    }
 }
 
 impl From<egui_term::PtyExitStatus> for ExitStatus {
