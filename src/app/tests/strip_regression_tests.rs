@@ -146,7 +146,14 @@ fn regression_cmdd_from_stacked_pane_creates_column() {
     h.app.focus_pane_in_strip(col0_top);
     h.run_frames(2);
 
-    assert_eq!(h.app.columns_for_context(ctx_id).len(), 1);
+    assert!(matches!(
+        h.app.windows[h.app.active_window]
+            .tree
+            .tiles
+            .get(h.app.windows[h.app.active_window].tree.root().unwrap()),
+        Some(Tile::Container(Container::Linear(linear)))
+            if linear.dir == egui_tiles::LinearDir::Vertical
+    ));
 
     // Press Cmd+D (split horizontal)
     let new_pane = h.app.split_focused(false, None, false, false, None);
@@ -154,15 +161,14 @@ fn regression_cmdd_from_stacked_pane_creates_column() {
     h.run_frames(2);
 
     // Columns should now be 2: col 0 has [col0_top, col0_bot], col 1 has [new_pane]
-    let cols = h.app.columns_for_context(ctx_id);
-    assert_eq!(
-        cols.len(),
-        2,
-        "Cmd+D from stacked pane must create a second column, got {:?}",
-        cols
-    );
-    assert_eq!(cols[0].panes, vec![col0_top, col0_bot]);
-    assert_eq!(cols[1].panes, vec![new_pane.unwrap()]);
+    let tree = &h.app.windows[h.app.active_window].tree;
+    let root = tree.root().expect("split must retain a root");
+    let Some(Tile::Container(Container::Linear(horizontal))) = tree.tiles.get(root) else {
+        panic!("Cmd+D from a stacked pane must promote the tree to horizontal columns");
+    };
+    assert_eq!(horizontal.dir, egui_tiles::LinearDir::Horizontal);
+    assert_eq!(horizontal.children.len(), 2);
+    assert!(tree.tiles.find_pane(&new_pane.unwrap()).is_some());
 }
 
 /// Defect 4b: Cmd+D from a vertical-first layout models column strip promotion.
@@ -171,7 +177,6 @@ fn regression_cmdd_from_vertical_first_promotes_to_columns() {
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
-    let ctx_id = h.app.router.active().context_id;
 
     // Construct a vertical-first root: LinearDir::Vertical with [p1, p2]
     let win = &mut h.app.windows[0];
@@ -183,22 +188,21 @@ fn regression_cmdd_from_vertical_first_promotes_to_columns() {
 
     h.run_frames(2);
 
-    // Initial vertical-first tree forms column 0 with a stacked pair [p1, p2]
-    let mut strip = h.app.strip_for_context(ctx_id);
-    assert_eq!(strip.column_count(), 1);
-    assert_eq!(strip.columns[0].panes, vec![p1, p2]);
+    // Drive the production Cmd+D path. It must promote the vertical-first tree,
+    // rather than nesting a horizontal pair inside the vertical root.
+    let new_pane = h.app.split_focused(false, None, false, false, None);
+    assert!(new_pane.is_some(), "Cmd+D must create a pane from vertical-first root");
+    h.run_frames(2);
 
-    // Split horizontal (Cmd+D) promotes to a new column right
-    let new_col = strip.insert_column_right_of(
-        0,
-        999,
-        ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
-    );
-    assert_eq!(new_col, 1);
-    assert_eq!(strip.column_count(), 2);
-    assert_eq!(strip.columns[0].panes, vec![p1, p2]);
-    assert_eq!(strip.columns[1].panes, vec![999]);
-    assert_eq!(strip.focused_pane, Some(999));
+    let tree = &h.app.windows[h.app.active_window].tree;
+    let root = tree.root().expect("split must retain a root");
+    let Some(Tile::Container(Container::Linear(horizontal))) = tree.tiles.get(root) else {
+        panic!("Cmd+D from vertical-first root must promote to a horizontal strip");
+    };
+    assert_eq!(horizontal.dir, egui_tiles::LinearDir::Horizontal);
+    assert_eq!(horizontal.children.len(), 2);
+    assert!(tree.tiles.find_pane(&p2).is_some());
+    assert!(tree.tiles.find_pane(&new_pane.unwrap()).is_some());
 }
 
 /// Defect 5: Cmd+N in a single-pane window creates a page right,

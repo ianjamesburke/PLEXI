@@ -1047,8 +1047,13 @@ impl PlexiApp {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
         };
+        let new_pane_id = *panes
+            .keys()
+            .next()
+            .expect("create_single_pane_tree always yields exactly one pane");
         let name = String::new();
         let ctx_id = context_id;
+        self.ensure_authoritative_strip(ctx_id);
         let win_id = self.next_window_id;
         self.next_window_id += 1;
         self.push_focus_history(old_window_id, old_focus);
@@ -1066,6 +1071,18 @@ impl PlexiApp {
         });
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
+        let strip_offset = {
+            let strip = self.ensure_authoritative_strip(ctx_id);
+            strip.push_column(crate::strip::Column::new(
+                crate::strip::ColumnId(strip.column_count()),
+                new_pane_id,
+                crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+            ));
+            strip.focus_pane(new_pane_id);
+            strip.scroll_offset
+        };
+        self.zoom.strip_offsets.insert(ctx_id, strip_offset);
+        log::info!("strip: Cmd+N added authoritative column for pane {new_pane_id}");
         self.minimap.visible = true;
     }
 

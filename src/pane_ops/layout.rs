@@ -435,31 +435,7 @@ impl PlexiApp {
             .get(self.active_window)
             .map(|w| w.context_id)
             .unwrap_or(0);
-        if !vertical {
-            if let Some(focused_pid) = self.active_focused_pane_id() {
-                let mut strip = self.strip_for_context(ctx_id);
-                if let Some(col_idx) = strip.find_column_for_pane(focused_pid) {
-                    strip.insert_column_right_of(
-                        col_idx,
-                        new_id,
-                        crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
-                    );
-                    log::info!(
-                        "split_focused: inserted column right of {col_idx} for pane {new_id}, cols={}",
-                        strip.column_count()
-                    );
-                }
-            }
-        } else if let Some(focused_pid) = self.active_focused_pane_id() {
-            let mut strip = self.strip_for_context(ctx_id);
-            if let Some(col_idx) = strip.find_column_for_pane(focused_pid) {
-                strip.columns[col_idx].push_pane(new_id);
-                log::info!(
-                    "split_focused: pushed pane {new_id} to column {col_idx}, stack_height={}",
-                    strip.columns[col_idx].panes.len()
-                );
-            }
-        }
+        let strip_was_authoritative = self.zoom.strips.contains_key(&ctx_id);
         let context_env = self.pane_context_env_for_context(ctx_id);
         let (mut settings, pending_credential) =
             Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
@@ -551,6 +527,17 @@ impl PlexiApp {
                             }
                         }
                     }
+                } else {
+                    let ordered = if new_pane_first {
+                        vec![new_tile, stack_id]
+                    } else {
+                        vec![stack_id, new_tile]
+                    };
+                    ctx.tree.root = Some(ctx.tree.tiles.insert_horizontal_tile(ordered));
+                    promoted_to_column = true;
+                    log::info!(
+                        "strip: Cmd+D promoted vertical-first stack {stack_id:?} to root columns"
+                    );
                 }
             }
 
@@ -579,23 +566,33 @@ impl PlexiApp {
         ctx.navigate_to(new_tile);
 
         let ws_id = self.router.active().context_id;
-        if let Some(explicit) = self.zoom.explicit_columns.get_mut(&ws_id) {
-            let target_pid = old_focus.and_then(|t| {
-                match self.windows[self.active_window].tree.tiles.get(t) {
-                    Some(Tile::Pane(p)) => Some(*p),
-                    _ => None,
-                }
-            });
+        let target_pid = old_focus.and_then(|tile_id| {
+            match self.windows[self.active_window].tree.tiles.get(tile_id) {
+                Some(Tile::Pane(pane_id)) => Some(*pane_id),
+                _ => None,
+            }
+        });
+        if strip_was_authoritative {
+            let strip = self.zoom.strips.get_mut(&ws_id).expect("stored strip persists");
             if !vertical || promoted_to_column {
                 let col_pos = target_pid
-                    .and_then(|p| explicit.iter().position(|col| col.contains(&p)))
-                    .unwrap_or(explicit.len().saturating_sub(1));
+                    .and_then(|pane_id| strip.find_column_for_pane(pane_id))
+                    .unwrap_or(strip.column_count().saturating_sub(1));
                 let insert_pos = if new_pane_first { col_pos } else { col_pos + 1 };
-                explicit.insert(insert_pos.min(explicit.len()), vec![new_id]);
-            } else if let Some(col) = target_pid.and_then(|p| explicit.iter_mut().find(|c| c.contains(&p))) {
-                col.push(new_id);
-            } else if let Some(first_col) = explicit.first_mut() {
-                first_col.push(new_id);
+                strip.insert_column_right_of(
+                    insert_pos.saturating_sub(1),
+                    new_id,
+                    crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+                );
+                log::info!("split_focused: inserted authoritative column for pane {new_id}");
+            } else if let Some(column) = target_pid
+                .and_then(|pane_id| strip.find_column_for_pane(pane_id))
+                .and_then(|index| strip.columns.get_mut(index))
+            {
+                column.push_pane(new_id);
+                log::info!("split_focused: appended pane {new_id} to authoritative stack");
+            } else if let Some(column) = strip.columns.first_mut() {
+                column.push_pane(new_id);
             }
         }
 
@@ -888,18 +885,19 @@ impl PlexiApp {
         for ctx_idx in 0..self.windows.len() {
             if let Some(tile_id) = self.windows[ctx_idx].tree.tiles.find_pane(&pane_id) {
                 let ctx_id = self.windows[ctx_idx].context_id;
-                let mut strip = self.strip_for_context(ctx_id);
-                if strip.remove_pane(pane_id) {
-                    log::info!(
-                        "close_pane_by_id: removed pane {pane_id} from authoritative strip, cols={}",
-                        strip.column_count()
-                    );
-                }
                 self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::PaneClosed {
                     pane_id,
                     context_id: ctx_id,
                 });
                 self.close_tile(ctx_idx, tile_id);
+                if let Some(strip) = self.zoom.strips.get_mut(&ctx_id) {
+                    if strip.remove_pane(pane_id) {
+                        log::info!(
+                            "close_pane_by_id: removed pane {pane_id} from authoritative strip, cols={}",
+                            strip.column_count()
+                        );
+                    }
+                }
                 // Mirror the guard in execute_close_pane: if the window is now empty
                 // and there are other pages in the same context, delete the zombie window.
                 // Without this, the window stays in self.windows[] as a phantom grid cell.

@@ -167,3 +167,39 @@ fn pure_insert_column_right_maintains_invariants() {
     assert_eq!(strip.columns[1].panes, vec![3]);
     assert_eq!(strip.focused_pane, Some(3));
 }
+
+#[test]
+fn pure_representative_focus_sequence_keeps_order_and_visible_rects_sound() {
+    let mut strip = Strip::new(1);
+    strip.push_column(Column::new_stacked(
+        ColumnId(0),
+        vec![10, 11],
+        ColumnWidth::Preset(ColumnWidthPreset::Parent35),
+    ));
+    strip.push_column(Column::new(ColumnId(1), 20, ColumnWidth::Preset(ColumnWidthPreset::Child65)));
+    strip.push_column(Column::new(ColumnId(2), 30, ColumnWidth::Preset(ColumnWidthPreset::Child65)));
+    strip.push_column(Column::new(ColumnId(3), 40, ColumnWidth::Preset(ColumnWidthPreset::Child65)));
+    let before = strip.columns.iter().map(|column| column.panes.clone()).collect::<Vec<_>>();
+    let viewport = StripViewport::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)), 6.0);
+
+    for focused in [11, 30, 40, 20, 10] {
+        assert!(strip.focus_pane(focused));
+        let layout = layout_strip(&strip, &viewport);
+        let focused_panes = layout.panes.iter().filter(|pane| pane.is_focused).collect::<Vec<_>>();
+        assert_eq!(focused_panes.len(), 1, "exactly one pane stays focused after {focused}");
+        assert_eq!(focused_panes[0].pane_id, focused);
+        for pane in layout.panes.iter().filter(|pane| pane.is_on_screen) {
+            assert!(
+                viewport.canvas_rect.contains_rect(pane.rect),
+                "visible pane {} must remain on-screen after focus sequence",
+                pane.pane_id
+            );
+        }
+    }
+
+    assert_eq!(
+        strip.columns.iter().map(|column| column.panes.clone()).collect::<Vec<_>>(),
+        before,
+        "focus-only commands must not reorder columns or stack members"
+    );
+}
