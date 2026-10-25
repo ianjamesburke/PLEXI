@@ -1901,6 +1901,12 @@ impl PlexiApp {
             error
         })
         .ok();
+        if let Some(ref posture) = pane.agent_permission_posture {
+            log::info!(
+                "agent_spawn: posture snapshot for role={role} pane={new_id}: default={}",
+                posture.default_posture.as_str()
+            );
+        }
         pane.name = Some(role.to_string());
         pane.name_locked = true;
         pane.agent = Some(crate::protocol::PaneAgentState {
