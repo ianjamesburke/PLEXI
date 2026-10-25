@@ -23,43 +23,57 @@ class PolicyTests(unittest.TestCase):
         self.base = "b" * 40
         self.record = {
             "size": "S", "head": self.head, "base_head": self.base, "stints": ["0986"],
-            "worker_alias": "cos", "tester_alias": "agy", "exhausted": [],
+            "worker_alias": "agyf", "tester_alias": "cs", "exhausted": [],
             "local": {"head": self.head, "build": True, "test": True, "clippy": True},
             "checks_head": self.head,
             "validation": {"head": self.head, "verdict": "PASS", "install_head": self.head,
-                           "worker_vendor": "codex", "tester_vendor": "gemini"},
+                           "worker_vendor": "gemini", "tester_vendor": "claude"},
             "waivers": [],
         }
         self.pr = {"baseRefName": "feature/alpha-cleanup", "headRefOid": self.head}
         self.checks = [{"name": "required", "bucket": "pass"}]
 
     def test_sizes_route_distinct_models_and_independent_vendors(self):
-        for size, expected in (("S", "cos"), ("M", "com"), ("L", "col")):
+        for size, expected in (("S", "agyf"), ("M", "agyf"), ("L", "agyg")):
             result = policy.route(self.settings, size)
             self.assertEqual(result["worker"], expected)
             self.assertNotEqual(result["worker_vendor"], result["tester_vendor"])
 
     def test_fallback_and_exhaustion(self):
-        fallback = policy.route(self.settings, "S", ["cos"])
-        self.assertEqual(fallback["worker"], "cs")
+        fallback = policy.route(self.settings, "S", ["agyf"])
+        self.assertEqual((fallback["worker"], fallback["tester"]), ("cos", "agy"))
         self.assertNotEqual(fallback["worker_vendor"], fallback["tester_vendor"])
-        pair_fallback = policy.route(self.settings, "M", ["agy", "cs", "agym"])
-        self.assertEqual((pair_fallback["worker"], pair_fallback["tester"]), ("cm", "cos"))
-        large_fallback = policy.route(self.settings, "L", ["col", "agy"])
-        self.assertEqual((large_fallback["worker"], large_fallback["tester"]), ("agyl", "cos"))
+        pair_fallback = policy.route(self.settings, "M", ["cs"])
+        self.assertEqual((pair_fallback["worker"], pair_fallback["tester"]), ("agyf", "agym"))
+        self.assertEqual(pair_fallback["worker_vendor"], "gemini")
+        medium_fallback = policy.route(self.settings, "M", ["agyf", "com"])
+        self.assertEqual((medium_fallback["worker"], medium_fallback["tester"]), ("cm", "agy"))
+        large_fallback = policy.route(self.settings, "L", ["agyg", "col"])
+        self.assertEqual((large_fallback["worker"], large_fallback["tester"]), ("agyl", "agy"))
         self.assertEqual(large_fallback["worker_vendor"], "claude")
         with self.assertRaises(policy.PolicyError):
-            policy.route(self.settings, "S", ["cos", "cs", "agym"])
+            policy.route(self.settings, "S", ["agyf", "cos", "cs"])
         with self.assertRaises(policy.PolicyError):
-            policy.route(self.settings, "L", ["agy", "cs", "agym", "cos", "agyl", "cl"])
+            policy.route(self.settings, "L", ["agyg", "col", "agyl", "cl"])
         with self.assertRaises(policy.PolicyError):
             policy.route(self.settings, "M", worker_alias="unknown")
+
+    def test_gemini_worker_is_never_validated_by_gemini(self):
+        for size in "SML":
+            for exhausted in ([], ["cs"], ["cs", "agym"], ["cs", "agym", "cos"]):
+                try:
+                    result = policy.route(self.settings, size, exhausted)
+                except policy.PolicyError:
+                    continue
+                self.assertNotEqual(result["worker_vendor"], result["tester_vendor"])
+        with self.assertRaises(policy.PolicyError):
+            policy.route(self.settings, "S", ["cs", "agym", "cos"], worker_alias="agyf")
 
     def test_identical_merge_gates_for_all_sizes(self):
         for size in "SML":
             record = json.loads(json.dumps(self.record))
             record["size"] = size
-            record["worker_alias"] = {"S": "cos", "M": "com", "L": "col"}[size]
+            record["worker_alias"] = {"S": "agyf", "M": "agyf", "L": "agyg"}[size]
             self.assertEqual(policy.check_gate(self.settings, record, self.pr, self.checks,
                                                self.base, "batch"), self.head)
             for key in ("build", "test", "clippy"):
@@ -74,7 +88,7 @@ class PolicyTests(unittest.TestCase):
             lambda record, pr: record.update(base_head="c" * 40),
             lambda record, pr: record.update(checks_head="c" * 40),
             lambda record, pr: record["validation"].update(install_head="c" * 40),
-            lambda record, pr: record["validation"].update(tester_vendor="codex"),
+            lambda record, pr: record["validation"].update(tester_vendor="gemini"),
             lambda record, pr: record["validation"].update(verdict="FAIL"),
         ):
             record = json.loads(json.dumps(self.record))

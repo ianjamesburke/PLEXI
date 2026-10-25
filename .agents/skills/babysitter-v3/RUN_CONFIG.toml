@@ -5,9 +5,9 @@
 # mapping is explicit so fallback never silently permits self-validation.
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
-worker_small  = ["cos", "cs", "agym"]
-worker_medium = ["com", "agy", "cm"]
-worker_large  = ["col", "agyl", "cl"]
+worker_small  = ["agyf", "cos", "cs"]
+worker_medium = ["agyf", "com", "cm"]
+worker_large  = ["agyg", "col", "agyl", "cl"]
 tester        = ["agy", "cs", "agym", "cos"]
 
 [engines.alias_vendor]
@@ -20,6 +20,8 @@ cl = "claude"
 agy = "gemini"
 agym = "claude"
 agyl = "claude"
+agyf = "gemini"
+agyg = "gemini"
 
 [engines.alias_model]
 cos = "Luna"
@@ -31,6 +33,8 @@ cl = "Opus"
 agy = "Gemini"
 agym = "Sonnet"
 agyl = "Opus"
+agyf = "Gemini 3.8 Flash"
+agyg = "Gemini 4 Argon High"
 
 [topology]
 mode = "aggregate"
